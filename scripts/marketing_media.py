@@ -976,7 +976,7 @@ def publish_media(args: argparse.Namespace) -> None:
 	if tag != f"v{version}" or not re.fullmatch(r"v\d+\.\d+\.\d+", tag):
 		raise MarketingMediaError(f"publication tag {tag!r} does not match captured version v{version}")
 	bundle = args.bundle.resolve()
-	repository = "https://raw.githubusercontent.com/beatrice-b-m/dcmview"
+	repository = "https://raw.githubusercontent.com/dcmview/dcmview"
 	artifact_paths = publication_artifact_paths(lock)
 	root_media = REPO_ROOT / "media" / "marketing"
 	vscode_media = REPO_ROOT / "vscode" / "media" / "marketing"

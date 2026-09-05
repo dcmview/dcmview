@@ -13,10 +13,10 @@ from dataclasses import dataclass
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 MARKETPLACE_DOCUMENTATION_URLS = {
-	"https://github.com/beatrice-b-m/dcmview/blob/main/docs/configuration.md",
-	"https://github.com/beatrice-b-m/dcmview/blob/main/docs/index.md",
-	"https://github.com/beatrice-b-m/dcmview/blob/main/docs/python.md",
-	"https://github.com/beatrice-b-m/dcmview/blob/main/docs/troubleshooting.md",
+	"https://github.com/dcmview/dcmview/blob/main/docs/configuration.md",
+	"https://github.com/dcmview/dcmview/blob/main/docs/index.md",
+	"https://github.com/dcmview/dcmview/blob/main/docs/python.md",
+	"https://github.com/dcmview/dcmview/blob/main/docs/troubleshooting.md",
 }
 
 @dataclass(frozen=True)

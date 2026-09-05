@@ -10,9 +10,9 @@
     "color": "#0f172a",
     "theme": "dark"
   },
-  "homepage": "https://github.com/beatrice-b-m/dcmview",
+  "homepage": "https://github.com/dcmview/dcmview",
   "bugs": {
-    "url": "https://github.com/beatrice-b-m/dcmview/issues"
+    "url": "https://github.com/dcmview/dcmview/issues"
   },
   "qna": false,
   "pricing": "Free",
@@ -25,7 +25,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/beatrice-b-m/dcmview.git"
+    "url": "https://github.com/dcmview/dcmview.git"
   },
   "engines": {
     "vscode": "^1.90.0"

@@ -1,4 +1,4 @@
-![dcmview](https://raw.githubusercontent.com/beatrice-b-m/dcmview/main/dcmview-wordmark-darkmode-opaque-background.png)
+![dcmview](https://raw.githubusercontent.com/dcmview/dcmview/main/dcmview-wordmark-darkmode-opaque-background.png)
 
 # dcmview
 
@@ -17,22 +17,22 @@ security issues privately to the maintainers before public disclosure.
 
 For common install, binary resolution, VS Code interception, startup, tunnel,
 and annotation CSV problems, see the main
-[troubleshooting guide](https://github.com/beatrice-b-m/dcmview/blob/main/docs/troubleshooting.md). For settings, binary
+[troubleshooting guide](https://github.com/dcmview/dcmview/blob/main/docs/troubleshooting.md). For settings, binary
 resolution order, and bridge environment variables, see the
-[configuration reference](https://github.com/beatrice-b-m/dcmview/blob/main/docs/configuration.md). For Python scripts and
+[configuration reference](https://github.com/dcmview/dcmview/blob/main/docs/configuration.md). For Python scripts and
 notebooks that may route through the VS Code bridge, see the
-[Python reference](https://github.com/beatrice-b-m/dcmview/blob/main/docs/python.md). The main
-[documentation index](https://github.com/beatrice-b-m/dcmview/blob/main/docs/index.md) links the user, configuration,
+[Python reference](https://github.com/dcmview/dcmview/blob/main/docs/python.md). The main
+[documentation index](https://github.com/dcmview/dcmview/blob/main/docs/index.md) links the user, configuration,
 troubleshooting, API/debugging, development, and release references.
 
 <!-- dcmview-marketing:start -->
 ## In VS Code
 
-![Open DICOM data with dcmview from VS Code Explorer](https://raw.githubusercontent.com/beatrice-b-m/dcmview/v0.2.12/vscode/media/marketing/vscode-workflow.gif)
+![Open DICOM data with dcmview from VS Code Explorer](https://raw.githubusercontent.com/dcmview/dcmview/v0.2.12/vscode/media/marketing/vscode-workflow.gif)
 
-![DICOM cine playback in dcmview](https://raw.githubusercontent.com/beatrice-b-m/dcmview/v0.2.12/vscode/media/marketing/chest-ct-cine.gif)
+![DICOM cine playback in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.2.12/vscode/media/marketing/chest-ct-cine.gif)
 
-[Source imagery attribution](https://raw.githubusercontent.com/beatrice-b-m/dcmview/v0.2.12/vscode/media/marketing/ATTRIBUTION.md)
+[Source imagery attribution](https://raw.githubusercontent.com/dcmview/dcmview/v0.2.12/vscode/media/marketing/ATTRIBUTION.md)
 <!-- dcmview-marketing:end -->
 
 ## Supported Platforms
@@ -86,6 +86,6 @@ integration for a single shell session.
 - `dcmview.terminalInterception.enabled`: route integrated terminal launches
   into editor webviews.
 
-See the main [configuration reference](https://github.com/beatrice-b-m/dcmview/blob/main/docs/configuration.md) for binary
+See the main [configuration reference](https://github.com/dcmview/dcmview/blob/main/docs/configuration.md) for binary
 resolution order, environment variables, and how these settings map to
 `dcmview` CLI arguments.

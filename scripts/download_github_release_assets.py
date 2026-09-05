@@ -73,7 +73,7 @@ def wait_for_assets(repo: str, tag: str, required: list[str], timeout: int, inte
 
 def main() -> int:
 	parser = argparse.ArgumentParser(description="Download required assets from a GitHub Release")
-	parser.add_argument("--repo", required=True, help="GitHub repository, for example beatrice-b-m/dcmview")
+	parser.add_argument("--repo", required=True, help="GitHub repository, for example dcmview/dcmview")
 	parser.add_argument("--tag", required=True, help="Release tag, for example v0.2.1")
 	parser.add_argument("--output-dir", type=pathlib.Path, required=True)
 	parser.add_argument("--required", action="append", required=True, help="Required asset name; may be repeated")

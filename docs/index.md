@@ -10,25 +10,25 @@ or metadata unless they are fully de-identified and approved for public use.
 
 ### Cine playback and semantic context
 
-![Chest CT cine playback in dcmview](https://raw.githubusercontent.com/beatrice-b-m/dcmview/v0.2.12/media/marketing/chest-ct-cine.gif)
+![Chest CT cine playback in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.2.12/media/marketing/chest-ct-cine.gif)
 
-![DICOM SEG semantic overlay in dcmview](https://raw.githubusercontent.com/beatrice-b-m/dcmview/v0.2.12/media/marketing/mr-seg-cine.gif)
+![DICOM SEG semantic overlay in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.2.12/media/marketing/mr-seg-cine.gif)
 
 ### Modality coverage
 
-![Chest radiograph in dcmview](https://raw.githubusercontent.com/beatrice-b-m/dcmview/v0.2.12/media/marketing/radiograph.png)
+![Chest radiograph in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.2.12/media/marketing/radiograph.png)
 
-![Mammography study in dcmview](https://raw.githubusercontent.com/beatrice-b-m/dcmview/v0.2.12/media/marketing/mammography.gif)
+![Mammography study in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.2.12/media/marketing/mammography.gif)
 
-![PET cine playback in dcmview](https://raw.githubusercontent.com/beatrice-b-m/dcmview/v0.2.12/media/marketing/pet-cine.gif)
+![PET cine playback in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.2.12/media/marketing/pet-cine.gif)
 
-![Ultrasound cine playback in dcmview](https://raw.githubusercontent.com/beatrice-b-m/dcmview/v0.2.12/media/marketing/ultrasound-cine.gif)
+![Ultrasound cine playback in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.2.12/media/marketing/ultrasound-cine.gif)
 
-![RT Dose semantic context in dcmview](https://raw.githubusercontent.com/beatrice-b-m/dcmview/v0.2.12/media/marketing/rt-dose-context.png)
+![RT Dose semantic context in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.2.12/media/marketing/rt-dose-context.png)
 
-![DICOM whole-slide microscopy context in dcmview](https://raw.githubusercontent.com/beatrice-b-m/dcmview/v0.2.12/media/marketing/wsi-context.png)
+![DICOM whole-slide microscopy context in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.2.12/media/marketing/wsi-context.png)
 
-[Source imagery attribution](https://raw.githubusercontent.com/beatrice-b-m/dcmview/v0.2.12/media/marketing/ATTRIBUTION.md)
+[Source imagery attribution](https://raw.githubusercontent.com/dcmview/dcmview/v0.2.12/media/marketing/ATTRIBUTION.md)
 <!-- dcmview-marketing:end -->
 
 ## User Guides

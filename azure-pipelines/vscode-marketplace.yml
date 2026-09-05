@@ -6,7 +6,7 @@ trigger:
 pr: none
 
 variables:
-  githubRepository: beatrice-b-m/dcmview
+  githubRepository: dcmview/dcmview
   serviceConnection: dcmview-marketplace-publisher
   marketplaceEnvironment: vscode-marketplace
 
