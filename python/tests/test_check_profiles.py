@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+import os
 from unittest import mock
 
 from scripts import check
@@ -103,6 +104,31 @@ class CheckProfileCompositionTests(unittest.TestCase):
 				"--ignored",
 			],
 		)
+
+	def test_compatibility_artifact_requires_downloaded_root_and_forwards_pins(self) -> None:
+		runner = RecordingRunner()
+		with (
+			mock.patch.dict(
+				os.environ,
+				{
+					"DCMVIEW_COMPAT_CORPUS_ROOT": "/tmp/current-smoke",
+					"DCMVIEW_COMPAT_OUTPUT": "/tmp/compatibility-output",
+					"DCMVIEW_CORPUS_MANIFEST_SHA256": "a" * 64,
+					"DCMVIEW_CORPUS_DEFINITION_SHA256": "b" * 64,
+					"DCMVIEW_CORPUS_GENERATOR_VERSION": "0.3.0",
+					"DCMVIEW_CORPUS_GENERATOR_FEATURES": "jpeg,  wsi",
+				},
+			),
+			mock.patch.object(runner, "build_binary"),
+			mock.patch.object(check, "run") as run,
+		):
+			runner.compatibility_artifact()
+
+		label, command = run.call_args.args
+		self.assertEqual(label, "Run stored external-corpus smoke against the real binary")
+		self.assertIn("--corpus-root", command)
+		self.assertIn("--expected-generator-feature", command)
+		self.assertEqual(command[-2:], ["--expected-generator-feature", "wsi"])
 
 
 if __name__ == "__main__":

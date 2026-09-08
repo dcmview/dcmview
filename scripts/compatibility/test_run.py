@@ -34,6 +34,7 @@ from scripts.compatibility.run import (
     unprobed_capabilities,
     wsi_context_observations,
 )
+from scripts.compatibility.run import parse_args
 
 
 def grayscale_png(
@@ -57,6 +58,17 @@ def grayscale_png(
 
 
 class RunnerTests(unittest.TestCase):
+    def test_artifact_source_does_not_require_suite_checkout(self) -> None:
+        args = parse_args([
+            "--corpus-root", "/tmp/current-smoke",
+            "--binary", "/tmp/dcmview",
+            "--output", "/tmp/compatibility-output",
+        ])
+        self.assertEqual(str(args.corpus_root), "/tmp/current-smoke")
+        self.assertIsNone(args.suite_root)
+        self.assertIsNone(args.worklist)
+        self.assertEqual(args.expected_seed, 1)
+
     def test_metadata_observation_compares_manifest_fields_and_declared_tags(self) -> None:
         expected = {
             "dicom": {"modality": "OT", "sop_class_uid": "1.2.class", "transfer_syntax_uid": "1.2.syntax"},

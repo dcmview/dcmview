@@ -24,9 +24,11 @@ from pathlib import Path
 from typing import Any, BinaryIO, Optional
 
 try:
+    from scripts.compatibility.artifact import ArtifactError, build_external_worklist
     from scripts.compatibility.scope import ScopeError, load_worklist, sha256_file
     from scripts.compatibility.reports import build_evidence_report, build_viewer_report
 except ModuleNotFoundError:
+    from artifact import ArtifactError, build_external_worklist  # type: ignore[no-redef]
     from scope import ScopeError, load_worklist, sha256_file
     from reports import build_evidence_report, build_viewer_report
 
@@ -1981,14 +1983,18 @@ def normalized_report(report: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _ensure_external_output(output: Path, suite_root: Path, viewer_root: Path) -> None:
+def _ensure_external_output(
+    output: Path,
+    source_roots: tuple[Path, ...],
+    viewer_root: Path,
+) -> None:
     resolved = output.resolve()
-    for repository in (suite_root.resolve(),):
+    for repository in source_roots + (viewer_root,):
         try:
             resolved.relative_to(repository)
         except ValueError:
             continue
-        raise CampaignError(f"artifact output must be outside both repositories: {resolved}")
+        raise CampaignError(f"artifact output must be outside input roots: {resolved}")
     if output.exists() and any(output.iterdir()):
         raise CampaignError(f"artifact output is not empty: {output}")
     output.mkdir(parents=True, exist_ok=True)
@@ -1996,14 +2002,39 @@ def _ensure_external_output(output: Path, suite_root: Path, viewer_root: Path) -
 
 def run_campaign(args: argparse.Namespace) -> dict[str, Any]:
     viewer_root = Path(__file__).resolve().parents[2]
-    suite_root = args.suite_root.resolve()
+    artifact_root = args.corpus_root.resolve() if args.corpus_root is not None else None
+    suite_root = args.suite_root.resolve() if args.suite_root is not None else None
     output = args.output.resolve()
-    _ensure_external_output(output, suite_root, viewer_root)
-    worklist_path = args.worklist.resolve()
-    worklist = load_worklist(worklist_path)
-    entries = select_entries(worklist, args.root)
+    if artifact_root is not None:
+        if suite_root is not None or args.worklist is not None:
+            raise CampaignError("--corpus-root cannot be combined with --suite-root or --worklist")
+        if args.root not in {None, "smoke"}:
+            raise CampaignError("external artifact consumption only supports --root smoke")
+        try:
+            worklist = build_external_worklist(
+                artifact_root,
+                expected_seed=args.expected_seed,
+                expected_manifest_sha256=args.expected_manifest_sha256,
+                expected_corpus_definition_sha256=args.expected_corpus_definition_sha256,
+                expected_generator_version=args.expected_generator_version,
+                expected_generator_features=args.expected_generator_features,
+            )
+        except ArtifactError as error:
+            raise CampaignError(str(error)) from error
+        worklist_path = Path(worklist["inputs"]["manifests"][0]["manifest"])
+        source_roots = (artifact_root,)
+        selection = "smoke"
+    else:
+        if suite_root is None or args.worklist is None:
+            raise CampaignError("--suite-root and --worklist are required without --corpus-root")
+        worklist_path = args.worklist.resolve()
+        worklist = load_worklist(worklist_path)
+        source_roots = (suite_root,)
+        selection = args.root or "canonical"
+    _ensure_external_output(output, source_roots, viewer_root)
+    entries = select_entries(worklist, args.root or ("smoke" if artifact_root is not None else None))
     if not entries:
-        raise CampaignError(f"selection contains no cases: {args.root or 'canonical'}")
+        raise CampaignError(f"selection contains no cases: {selection}")
     binary = args.binary.resolve()
     if not os.access(binary, os.X_OK):
         raise CampaignError(f"dcmview binary is not executable: {binary}")
@@ -2101,7 +2132,7 @@ def run_campaign(args: argparse.Namespace) -> dict[str, Any]:
         "run": {
             "started_at": started_at,
             "completed_at": utc_now(),
-            "selection": args.root or "canonical",
+            "selection": selection,
             "base_url": base_url,
             "command": command,
             "timeouts_seconds": {
@@ -2150,23 +2181,21 @@ def run_campaign(args: argparse.Namespace) -> dict[str, Any]:
     evidence_path = output / "evidence-report.json"
     evidence_path.write_text(json.dumps(evidence_report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     viewer_report = build_viewer_report(evidence_report)
-    viewer_schema_path = suite_root / "schemas/viewer-report.schema.json"
+    viewer_schema_path = Path(__file__).with_name("viewer-report.schema.json")
     validate_json_schema(viewer_report, json.loads(viewer_schema_path.read_text(encoding="utf-8")))
     viewer_report_path = output / "viewer-report.json"
     viewer_report_path.write_text(json.dumps(viewer_report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    index = {
-        "artifacts": [
-            artifact(path, kind)
-            for path, kind in (
-                (report_path, "report"),
-                (normalized_path, "normalized_report"),
-                (evidence_path, "evidence_report"),
-                (viewer_report_path, "suite_viewer_report"),
-                (output / "stdout.log", "stdout"),
-                (output / "stderr.log", "stderr"),
-            )
-        ]
-    }
+    index_paths = [
+        (report_path, "report"),
+        (normalized_path, "normalized_report"),
+        (evidence_path, "evidence_report"),
+        (viewer_report_path, "suite_viewer_report"),
+        (output / "stdout.log", "stdout"),
+        (output / "stderr.log", "stderr"),
+    ]
+    if artifact_root is not None:
+        index_paths.append((worklist_path, "corpus_manifest"))
+    index = {"artifacts": [artifact(path, kind) for path, kind in index_paths]}
     (output / "artifact-index.json").write_text(
         json.dumps(index, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
@@ -2175,14 +2204,38 @@ def run_campaign(args: argparse.Namespace) -> dict[str, Any]:
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument(
+        "--worklist", type=Path,
+        help="frozen compatibility worklist (requires --suite-root)",
+    )
+    source.add_argument(
+        "--corpus-root", type=Path,
+        help="published external-corpus root containing manifest.json (smoke only)",
+    )
     parser.add_argument(
         "--suite-root", type=Path, default=os.environ.get("DCMVIEW_COMPAT_SUITE_ROOT"),
-        required="DCMVIEW_COMPAT_SUITE_ROOT" not in os.environ,
     )
-    parser.add_argument("--worklist", type=Path, required=True)
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--root", help="manifest root such as smoke; omit for canonical selection")
+    parser.add_argument("--expected-seed", type=int, default=1)
+    parser.add_argument("--expected-manifest-sha256", default=os.environ.get("DCMVIEW_CORPUS_MANIFEST_SHA256"))
+    parser.add_argument(
+        "--expected-corpus-definition-sha256",
+        default=os.environ.get("DCMVIEW_CORPUS_DEFINITION_SHA256"),
+    )
+    parser.add_argument(
+        "--expected-generator-version",
+        default=os.environ.get("DCMVIEW_CORPUS_GENERATOR_VERSION"),
+    )
+    parser.add_argument(
+        "--expected-generator-feature",
+        dest="expected_generator_features",
+        action="append",
+        default=None,
+        help="repeat for each expected generator feature; an empty list is the default",
+    )
     parser.add_argument("--startup-timeout", type=float, default=20.0)
     parser.add_argument("--request-timeout", type=float, default=10.0)
     parser.add_argument("--case-timeout", type=float, default=60.0)
@@ -2193,8 +2246,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: Optional[list[str]] = None) -> int:
     try:
-        report = run_campaign(parse_args(sys.argv[1:] if argv is None else argv))
-    except (CampaignError, ScopeError, OSError, ValueError, subprocess.SubprocessError) as error:
+        args = parse_args(sys.argv[1:] if argv is None else argv)
+        if args.corpus_root is not None and args.expected_generator_features is None:
+            args.expected_generator_features = ()
+        elif args.expected_generator_features is not None:
+            args.expected_generator_features = tuple(args.expected_generator_features)
+        report = run_campaign(args)
+    except (CampaignError, ScopeError, ArtifactError, OSError, ValueError, subprocess.SubprocessError) as error:
         print(f"compatibility campaign error: {error}", file=sys.stderr)
         return 2
     print(json.dumps(report["summary"], sort_keys=True))

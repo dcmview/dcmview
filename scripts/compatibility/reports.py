@@ -86,8 +86,11 @@ def build_evidence_report(base: dict[str, Any], worklist: dict[str, Any], viewer
         groups: dict[str, Counter[str]] = defaultdict(Counter)
         for row in results: groups[str(row.get(field) or "none")][row["status"]] += 1
         return {key: dict(value) for key, value in sorted(groups.items())}
+    suite = {"commit": worklist["suite"]["commit"], "manifests": worklist["inputs"]["manifests"], "policy_sha256": worklist["inputs"]["policy_sha256"]}
+    if worklist["inputs"].get("artifact_identity") is not None:
+        suite["artifact_identity"] = worklist["inputs"]["artifact_identity"]
     return {"evidence_schema_version": DETAIL_VERSION, "generated_at": base["generated_at"],
-            "suite": {"commit": worklist["suite"]["commit"], "manifests": worklist["inputs"]["manifests"], "policy_sha256": worklist["inputs"]["policy_sha256"]},
+            "suite": suite,
             "viewer": {**base["viewer"], "commit": viewer_commit, "build_features": build_features}, "run": base["run"], "results": results,
             "summary": {"statuses": dict(Counter(row["status"] for row in results)), "by_object_family": grouped("object_family"),
                         "by_transfer_syntax": grouped("transfer_syntax_uid"), "by_classification": grouped_policy(results),
@@ -100,6 +103,11 @@ def grouped_policy(results: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
 
 def build_viewer_report(evidence: dict[str, Any]) -> dict[str, Any]:
     manifests = {row["sha256"] for row in evidence["suite"]["manifests"] if any(result["profile"] == row["profile"] for result in evidence["results"])}
+    if not manifests:
+        # Preserve the input identity when the viewer exits before discovery
+        # yields a result.  The detail/evidence report still records the
+        # startup failure; omitting the companion report would hide that fact.
+        manifests = {row["sha256"] for row in evidence["suite"]["manifests"]}
     if len(manifests) != 1: raise ValueError("suite viewer report requires a single selected profile manifest")
     mapped = {"passed": "passed", "expected_unsupported": "passed", "failed": "failed", "unexpected_unsupported": "failed", "crash": "failed", "timeout": "timeout", "unavailable": "unavailable", "not_applicable": "skipped"}
     rows = []

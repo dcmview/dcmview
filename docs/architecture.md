@@ -321,6 +321,7 @@ flowchart TD
     core --> clayers["fixture regeneration unchanged<br/>default-feature Rust suite<br/>VS Code compile"]
     e2e["e2e"] --> core
     e2e --> elayers["real debug binary build<br/>Python wrapper integration<br/>HTTP binary smoke<br/>VS Code Electron integration"]
+    artifact["compatibility-artifact"] --> alayers["downloaded smoke artifact<br/>manifest/path/hash verification<br/>real HTTP compatibility runner"]
     external["external"] --> xlayers["feature-gated remote fixtures<br/>network or local cache allowed"]
     marketing["marketing"] --> mlayers["capture manifest and driver checks<br/>media drift gate when published"]
     ci["CI component jobs"] -. "reuse focused profiles" .-> qlayers
@@ -339,6 +340,7 @@ The supported development baselines are Rust 1.88+, Node.js 20.19+, and Python
 | `quick` | Normal development loop | Version parity; generated frontend contract check; Svelte/TypeScript checks; Vitest; frontend build; Rust format and strict all-target Clippy; Python unit and packaging-helper tests. It does not run Rust tests or VS Code tests. |
 | `core` | Before handing off a normal code change | Everything in the corresponding frontend/lint/unit layers, plus deterministic fixture regeneration that must leave the current fixture tree unchanged, the default-feature, non-ignored locked Rust suite, and VS Code compilation. |
 | `e2e` | Process or integration changes | `core`, then a real debug binary, Python wrapper binary integration, debug-binary HTTP smoke, and VS Code Electron integration. |
+| `compatibility-artifact` | Stored current corpus integration | Builds only the dcmview binary, verifies an explicitly supplied current external-corpus smoke artifact, and runs the existing HTTP compatibility runner against its DICOM files. It never checks out or builds the generator. The profile fails closed when `DCMVIEW_COMPAT_CORPUS_ROOT` is absent. |
 | `external` | Opt-in upstream DICOM compatibility | Builds frontend assets and runs only ignored integration tests behind `remote-fixtures`; those tests may download or populate the `dicom-test-files` cache. It is separate from `e2e`. |
 | `marketing` | Capture tooling and release media | Validates tracked source/capture manifests, syntax-checks the browser and VS Code capture drivers, runs marketing-media unit tests, and—once an approved bundle is committed—verifies published hashes and the capture-input digest without ignored DICOM sources. |
 
@@ -375,12 +377,20 @@ installation and VS Code Electron integration can also use network/cache state;
   outside-opening replacement was exercised. ICC evidence compares the
   decompressed PNG `iCCP` bytes to the manifest size and SHA-256, while leaving
   numeric color transformation and optical-path mapping explicitly unprobed.
-- `scripts/compatibility` freezes verified, manifest-selected inputs from the
-  pinned read-only `dicom-test-suite` checkout into immutable worklists. The
-  valid and legacy HTTP campaigns, isolated negative runner, stress baseline,
-  and payload-free deterministic fuzz qualification produce separate bounded
-  reports and SHA-256 artifact indexes. They are local opt-in workflows, not
-  CI, scheduled, external-fixture, or release integration.
+- `scripts/compatibility` retains the checkout-based scope freezer for historical
+  and broad campaigns, while `run.py --corpus-root` consumes one published
+  current external-corpus smoke artifact without a generator or suite checkout.
+  The artifact path accepts only manifest schema `2.0.0` smoke/profile output:
+  it checks the declared seed, generator and feature identities, verified
+  corpus-definition identity, safe relative paths, file sizes and SHA-256
+  payload hashes, profile membership, and selection-ledger closure before
+  launching the existing HTTP runner. The valid and legacy HTTP campaigns,
+  isolated negative runner, stress baseline, and payload-free deterministic fuzz
+  qualification produce separate bounded reports and SHA-256 artifact indexes.
+  The stored-artifact profile is wired into CI only when its explicit artifact
+  URL and identity pins are configured; it never regenerates corpus data. The
+  companion `viewer-report.schema.json` is viewer-owned, so this path does not
+  load a generator-owned schema from the artifact or a sibling checkout.
 - Real-browser acceptance uses the actual Svelte app and fixture server to
   exercise canvas/network behavior: metadata-only and unsupported states,
   pixel-preview/semantic-context switching, typed references, SEG/Parametric
@@ -447,3 +457,6 @@ extension points, not current correctness blockers:
 - Use generated synthetic fixtures for integration coverage; never commit PHI.
 - Run the narrow profile while iterating, then the profile required by the
   highest boundary changed.
+- Keep the stored external-corpus consumer fail-closed: viewer CI may consume
+  a downloaded artifact, but it must not acquire, build, or invoke
+  `synth-dicom-gen`.

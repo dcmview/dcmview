@@ -88,6 +88,55 @@ The normalized form removes transient registry indices and omits body hashes and
 sizes only for index-bearing series and reference JSON responses. Stable
 path/SOP identity and pixel payload hashes remain available for comparison.
 
+## Stored current smoke artifact
+
+The current viewer path consumes a pre-generated smoke artifact directly. It
+does not build or invoke `synth-dicom-gen`, and it does not require a
+`dicom-test-suite` checkout. The artifact root must contain the current
+external-corpus `manifest.json` (schema `2.0.0`) and its selected DICOM files:
+
+```bash
+python scripts/compatibility/run.py \
+  --corpus-root /outside/current-smoke \
+  --binary target/debug/dcmview \
+  --output /outside/smoke-run-1 \
+  --expected-generator-version 0.3.0 \
+  --expected-manifest-sha256 "$DCMVIEW_CORPUS_MANIFEST_SHA256" \
+  --expected-corpus-definition-sha256 "$DCMVIEW_CORPUS_DEFINITION_SHA256"
+```
+
+The consumer is smoke-only and expects `run.kind=external_corpus`,
+`run.profile=smoke`, `selector.kind=profile`, `include_stress=false`, and the
+declared seed (seed `1` by default; override it explicitly when a different
+published pin is approved). It also checks the generator execution/toolchain
+feature identities, verified corpus-definition identity, every manifest path
+is safely beneath the artifact root, every declared size and SHA-256 matches,
+each file belongs to smoke, and the selection ledger closes over exactly the
+generated files. Optional expected generator/manifest/definition pins become
+strict equality checks when supplied; the CI lane supplies them.
+
+After those checks, the same existing compatibility runner starts the supplied
+`dcmview` binary with the verified DICOM paths and performs the normal metadata,
+display, raw-frame, cache, error-recovery, and assertion-backed HTTP probes.
+The companion viewer report is checked against the viewer-owned
+`scripts/compatibility/viewer-report.schema.json`; no generator-owned schema is
+needed at consumption time.
+Viewer failures remain viewer-owned outcomes; a successful artifact check does
+not claim that every case renders.
+
+Viewer CI exposes this as `python scripts/check.py compatibility-artifact`.
+The workflow downloads a tarred smoke artifact from the repository variables
+`DCMVIEW_COMPAT_CORPUS_ARTIFACT_URL`, `DCMVIEW_COMPAT_CORPUS_ARTIFACT_SHA256`,
+`DCMVIEW_COMPAT_CORPUS_MANIFEST_SHA256`,
+`DCMVIEW_COMPAT_CORPUS_DEFINITION_SHA256`, and
+`DCMVIEW_COMPAT_CORPUS_GENERATOR_VERSION` (with optional
+`DCMVIEW_COMPAT_CORPUS_GENERATOR_FEATURES` and the
+`DCMVIEW_COMPAT_CORPUS_TOKEN` secret). The archive must extract a
+`smoke/manifest.json` root. The lane verifies the archive and manifest identity
+pins, and then runs this profile. When the cross-repository artifact URL and
+pins are not configured, that conditional lane is skipped; ordinary viewer
+jobs still do not check out or build the generator.
+
 ## Robustness profiles
 
 Negative, stress, and fuzz qualification are deliberately separate from the

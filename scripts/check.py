@@ -9,6 +9,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -214,6 +215,44 @@ class CheckRunner:
 			],
 		)
 
+	def compatibility_artifact(self) -> None:
+		"""Run the viewer-owned consumer against a stored smoke artifact."""
+		corpus_root = os.environ.get("DCMVIEW_COMPAT_CORPUS_ROOT")
+		if not corpus_root:
+			raise CheckError(
+				"DCMVIEW_COMPAT_CORPUS_ROOT must name a downloaded smoke artifact; "
+				"this profile never generates a corpus"
+			)
+		self.build_binary()
+		binary_name = "dcmview.exe" if os.name == "nt" else "dcmview"
+		binary = REPO_ROOT / "target" / "debug" / binary_name
+		output = os.environ.get("DCMVIEW_COMPAT_OUTPUT")
+		if not output:
+			output = tempfile.mkdtemp(prefix="dcmview-compatibility-artifact-")
+		command = [
+			self.python,
+			"scripts/compatibility/run.py",
+			"--corpus-root",
+			corpus_root,
+			"--binary",
+			str(binary),
+			"--output",
+			output,
+		]
+		pins = (
+			("DCMVIEW_CORPUS_MANIFEST_SHA256", "--expected-manifest-sha256"),
+			("DCMVIEW_CORPUS_DEFINITION_SHA256", "--expected-corpus-definition-sha256"),
+			("DCMVIEW_CORPUS_GENERATOR_VERSION", "--expected-generator-version"),
+		)
+		for variable, option in pins:
+			value = os.environ.get(variable)
+			if value:
+				command.extend((option, value))
+		features = os.environ.get("DCMVIEW_CORPUS_GENERATOR_FEATURES", "")
+		for feature in filter(None, (item.strip() for item in features.split(","))):
+			command.extend(("--expected-generator-feature", feature))
+		run("Run stored external-corpus smoke against the real binary", command)
+
 	def quick(self) -> None:
 		self.versions()
 		self.frontend()
@@ -289,6 +328,7 @@ def parse_args() -> argparse.Namespace:
 			"vscode",
 			"vscode-integration",
 			"smoke",
+			"compatibility-artifact",
 			"core",
 			"e2e",
 			"external",
@@ -319,6 +359,7 @@ def main() -> int:
 		"vscode": runner.vscode_compile,
 		"vscode-integration": runner.vscode_integration,
 		"smoke": runner.smoke,
+		"compatibility-artifact": runner.compatibility_artifact,
 		"core": runner.core,
 		"e2e": runner.e2e,
 		"external": runner.external,
