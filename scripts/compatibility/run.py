@@ -2000,16 +2000,48 @@ def _ensure_external_output(
     output.mkdir(parents=True, exist_ok=True)
 
 
+def _require_external_pins(args: argparse.Namespace) -> None:
+    required = (
+        "expected_generator_revision",
+        "expected_generator_artifact_sha256",
+        "expected_generator_artifact_size_bytes",
+        "expected_target",
+        "expected_toolchain",
+        "expected_generator_features",
+        "expected_runtime_identities_sha256",
+        "expected_definition_manifest_sha256",
+        "expected_corpus_definition_sha256",
+        "expected_manifest_sha256",
+        "expected_manifest_size_bytes",
+        "expected_profile",
+        "expected_seed",
+        "expected_binding_id",
+        "expected_archive_sha256",
+        "expected_archive_size_bytes",
+        "expected_generator_version",
+    )
+    missing = [name for name in required if getattr(args, name, None) is None]
+    if missing:
+        raise CampaignError(
+            "stored smoke artifact consumption requires complete immutable pins: "
+            + ", ".join(missing)
+        )
+
+
 def run_campaign(args: argparse.Namespace) -> dict[str, Any]:
     viewer_root = Path(__file__).resolve().parents[2]
-    artifact_root = args.corpus_root.resolve() if args.corpus_root is not None else None
+    # Keep the caller spelling intact until the artifact verifier has rejected
+    # symlink components; resolving here would erase that security boundary.
+    artifact_root = Path(os.path.abspath(args.corpus_root)) if args.corpus_root is not None else None
     suite_root = args.suite_root.resolve() if args.suite_root is not None else None
     output = args.output.resolve()
+    temporary_directory = None
     if artifact_root is not None:
         if suite_root is not None or args.worklist is not None:
             raise CampaignError("--corpus-root cannot be combined with --suite-root or --worklist")
         if args.root not in {None, "smoke"}:
             raise CampaignError("external artifact consumption only supports --root smoke")
+        _require_external_pins(args)
         try:
             worklist = build_external_worklist(
                 artifact_root,
@@ -2018,19 +2050,70 @@ def run_campaign(args: argparse.Namespace) -> dict[str, Any]:
                 expected_corpus_definition_sha256=args.expected_corpus_definition_sha256,
                 expected_generator_version=args.expected_generator_version,
                 expected_generator_features=args.expected_generator_features,
+                expected_generator_revision=args.expected_generator_revision,
+                expected_generator_artifact_sha256=args.expected_generator_artifact_sha256,
+                expected_generator_artifact_size_bytes=args.expected_generator_artifact_size_bytes,
+                expected_target=args.expected_target,
+                expected_toolchain=args.expected_toolchain,
+                expected_runtime_identities_sha256=args.expected_runtime_identities_sha256,
+                expected_definition_manifest_sha256=args.expected_definition_manifest_sha256,
+                expected_manifest_size_bytes=args.expected_manifest_size_bytes,
+                expected_profile=args.expected_profile,
+                expected_binding_id=args.expected_binding_id,
+                expected_archive_sha256=args.expected_archive_sha256,
+                expected_archive_size_bytes=args.expected_archive_size_bytes,
+                required_pins=True,
             )
         except ArtifactError as error:
             raise CampaignError(str(error)) from error
+        temporary_directory = worklist.pop("_temporary_directory", None)
         worklist_path = Path(worklist["inputs"]["manifests"][0]["manifest"])
-        source_roots = (artifact_root,)
+        extracted_root = Path(worklist["inputs"]["manifests"][0]["root"]).parent
+        source_roots = (artifact_root, extracted_root)
         selection = "smoke"
-    else:
-        if suite_root is None or args.worklist is None:
-            raise CampaignError("--suite-root and --worklist are required without --corpus-root")
-        worklist_path = args.worklist.resolve()
-        worklist = load_worklist(worklist_path)
-        source_roots = (suite_root,)
-        selection = args.root or "canonical"
+        try:
+            return _run_campaign_verified(
+                args,
+                viewer_root=viewer_root,
+                artifact_root=artifact_root,
+                output=output,
+                worklist=worklist,
+                worklist_path=worklist_path,
+                source_roots=source_roots,
+                selection=selection,
+            )
+        finally:
+            if temporary_directory is not None:
+                temporary_directory.cleanup()
+    if suite_root is None or args.worklist is None:
+        raise CampaignError("--suite-root and --worklist are required without --corpus-root")
+    worklist_path = args.worklist.resolve()
+    worklist = load_worklist(worklist_path)
+    source_roots = (suite_root,)
+    selection = args.root or "canonical"
+    return _run_campaign_verified(
+        args,
+        viewer_root=viewer_root,
+        artifact_root=None,
+        output=output,
+        worklist=worklist,
+        worklist_path=worklist_path,
+        source_roots=source_roots,
+        selection=selection,
+    )
+
+
+def _run_campaign_verified(
+    args: argparse.Namespace,
+    *,
+    viewer_root: Path,
+    artifact_root: Path | None,
+    output: Path,
+    worklist: dict[str, Any],
+    worklist_path: Path,
+    source_roots: tuple[Path, ...],
+    selection: str,
+) -> dict[str, Any]:
     _ensure_external_output(output, source_roots, viewer_root)
     entries = select_entries(worklist, args.root or ("smoke" if artifact_root is not None else None))
     if not entries:
@@ -2042,6 +2125,13 @@ def run_campaign(args: argparse.Namespace) -> dict[str, Any]:
         [str(binary), "--version"], check=True, capture_output=True, text=True, timeout=5
     ).stdout.strip()
     input_paths = [row["campaign_occurrence"]["normalized_path"] for row in entries]
+    verified_paths = [row["normalized_path"] for row in worklist["files"]]
+    if artifact_root is not None and (
+        len(input_paths) != len(verified_paths) or set(input_paths) != set(verified_paths)
+    ):
+        raise CampaignError(
+            "stored smoke selection does not pass every verified payload to the viewer"
+        )
     command = [
         str(binary), "--no-browser", "--host", "127.0.0.1", "--port", "0",
         "--startup-json", *input_paths,
@@ -2211,7 +2301,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     source.add_argument(
         "--corpus-root", type=Path,
-        help="published external-corpus root containing manifest.json (smoke only)",
+        help="published producer container containing smoke.tar.gz and artifact-index.json (smoke only)",
     )
     parser.add_argument(
         "--suite-root", type=Path, default=os.environ.get("DCMVIEW_COMPAT_SUITE_ROOT"),
@@ -2219,22 +2309,54 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--root", help="manifest root such as smoke; omit for canonical selection")
-    parser.add_argument("--expected-seed", type=int, default=1)
+    parser.add_argument("--expected-seed", type=int, default=os.environ.get("DCMVIEW_CORPUS_SEED", 1))
+    parser.add_argument("--expected-profile", default=os.environ.get("DCMVIEW_CORPUS_PROFILE", "smoke"))
     parser.add_argument("--expected-manifest-sha256", default=os.environ.get("DCMVIEW_CORPUS_MANIFEST_SHA256"))
+    parser.add_argument("--expected-manifest-size-bytes", type=int, default=os.environ.get("DCMVIEW_CORPUS_MANIFEST_SIZE_BYTES"))
     parser.add_argument(
         "--expected-corpus-definition-sha256",
         default=os.environ.get("DCMVIEW_CORPUS_DEFINITION_SHA256"),
+    )
+    parser.add_argument(
+        "--expected-definition-manifest-sha256",
+        default=os.environ.get("DCMVIEW_CORPUS_DEFINITION_MANIFEST_SHA256"),
     )
     parser.add_argument(
         "--expected-generator-version",
         default=os.environ.get("DCMVIEW_CORPUS_GENERATOR_VERSION"),
     )
     parser.add_argument(
+        "--expected-generator-revision",
+        default=os.environ.get("DCMVIEW_CORPUS_GENERATOR_REVISION"),
+    )
+    parser.add_argument(
+        "--expected-generator-artifact-sha256",
+        default=os.environ.get("DCMVIEW_CORPUS_GENERATOR_ARTIFACT_SHA256"),
+    )
+    parser.add_argument(
+        "--expected-generator-artifact-size-bytes",
+        type=int,
+        default=os.environ.get("DCMVIEW_CORPUS_GENERATOR_ARTIFACT_SIZE_BYTES"),
+    )
+    parser.add_argument("--expected-target", default=os.environ.get("DCMVIEW_CORPUS_GENERATOR_TARGET"))
+    parser.add_argument("--expected-toolchain", default=os.environ.get("DCMVIEW_CORPUS_GENERATOR_TOOLCHAIN"))
+    parser.add_argument(
         "--expected-generator-feature",
         dest="expected_generator_features",
         action="append",
         default=None,
         help="repeat for each expected generator feature; an empty list is the default",
+    )
+    parser.add_argument(
+        "--expected-runtime-identities-sha256",
+        default=os.environ.get("DCMVIEW_CORPUS_RUNTIME_IDENTITIES_SHA256"),
+    )
+    parser.add_argument("--expected-binding-id", default=os.environ.get("DCMVIEW_CORPUS_BINDING_ID"))
+    parser.add_argument("--expected-archive-sha256", default=os.environ.get("DCMVIEW_CORPUS_ARCHIVE_SHA256"))
+    parser.add_argument(
+        "--expected-archive-size-bytes",
+        type=int,
+        default=os.environ.get("DCMVIEW_CORPUS_ARCHIVE_SIZE_BYTES"),
     )
     parser.add_argument("--startup-timeout", type=float, default=20.0)
     parser.add_argument("--request-timeout", type=float, default=10.0)
@@ -2247,9 +2369,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: Optional[list[str]] = None) -> int:
     try:
         args = parse_args(sys.argv[1:] if argv is None else argv)
-        if args.corpus_root is not None and args.expected_generator_features is None:
-            args.expected_generator_features = ()
-        elif args.expected_generator_features is not None:
+        if args.expected_generator_features is None:
+            args.expected_generator_features = () if args.corpus_root is not None else None
+        else:
             args.expected_generator_features = tuple(args.expected_generator_features)
         report = run_campaign(args)
     except (CampaignError, ScopeError, ArtifactError, OSError, ValueError, subprocess.SubprocessError) as error:

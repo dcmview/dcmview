@@ -120,7 +120,10 @@ def build_viewer_report(evidence: dict[str, Any]) -> dict[str, Any]:
                      "timing": {"open_ms": None, "render_ms": None, "total_ms": row["timings_ms"].get("total")},
                      "errors": row["errors"], "warnings": [], "artifacts": []})
     counts = Counter(row["status"] for row in rows)
-    return {"viewer_report_schema_version": "0.1.0", "generated_at": evidence["generated_at"], "suite_manifest_sha256": next(iter(manifests)),
+    report = {"viewer_report_schema_version": "0.1.0", "generated_at": evidence["generated_at"], "suite_manifest_sha256": next(iter(manifests)),
             "viewer": {"name": "dcmview", "version": evidence["viewer"]["version"], "command": " ".join(evidence["run"]["command"]), "environment": {}},
             "run": {"started_at": evidence["run"]["started_at"], "completed_at": evidence["run"]["completed_at"], "timeout_seconds": evidence["run"]["timeouts_seconds"]["shard"]},
             "results": rows, "summary": {name: counts[name] for name in ("passed", "failed", "skipped", "timeout", "unavailable")}}
+    if evidence["suite"].get("artifact_identity") is not None:
+        report["artifact_identity"] = evidence["suite"]["artifact_identity"]
+    return report

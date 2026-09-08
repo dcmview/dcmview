@@ -15,6 +15,7 @@
     "viewer_report_schema_version": {"const": "0.1.0"},
     "generated_at": {"type": "string"},
     "suite_manifest_sha256": {"$ref": "#/$defs/sha256"},
+    "artifact_identity": {"type": "object"},
     "viewer": {"$ref": "#/$defs/viewer"},
     "run": {"$ref": "#/$defs/run"},
     "results": {"type": "array", "items": {"$ref": "#/$defs/result"}},

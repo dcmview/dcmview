@@ -113,8 +113,21 @@ class CheckProfileCompositionTests(unittest.TestCase):
 				{
 					"DCMVIEW_COMPAT_CORPUS_ROOT": "/tmp/current-smoke",
 					"DCMVIEW_COMPAT_OUTPUT": "/tmp/compatibility-output",
+					"DCMVIEW_CORPUS_GENERATOR_REVISION": "a" * 40,
+					"DCMVIEW_CORPUS_GENERATOR_ARTIFACT_SHA256": "b" * 64,
+					"DCMVIEW_CORPUS_GENERATOR_ARTIFACT_SIZE_BYTES": "123",
+					"DCMVIEW_CORPUS_GENERATOR_TARGET": "aarch64-apple-darwin",
+					"DCMVIEW_CORPUS_GENERATOR_TOOLCHAIN": "rustc 1.88.0 (fake)",
 					"DCMVIEW_CORPUS_MANIFEST_SHA256": "a" * 64,
 					"DCMVIEW_CORPUS_DEFINITION_SHA256": "b" * 64,
+					"DCMVIEW_CORPUS_DEFINITION_MANIFEST_SHA256": "c" * 64,
+					"DCMVIEW_CORPUS_MANIFEST_SIZE_BYTES": "456",
+					"DCMVIEW_CORPUS_PROFILE": "smoke",
+					"DCMVIEW_CORPUS_SEED": "1",
+					"DCMVIEW_CORPUS_BINDING_ID": "d" * 64,
+					"DCMVIEW_CORPUS_ARCHIVE_SHA256": "e" * 64,
+					"DCMVIEW_CORPUS_ARCHIVE_SIZE_BYTES": "789",
+					"DCMVIEW_CORPUS_RUNTIME_IDENTITIES_SHA256": "f" * 64,
 					"DCMVIEW_CORPUS_GENERATOR_VERSION": "0.3.0",
 					"DCMVIEW_CORPUS_GENERATOR_FEATURES": "jpeg,  wsi",
 				},
@@ -129,6 +142,16 @@ class CheckProfileCompositionTests(unittest.TestCase):
 		self.assertIn("--corpus-root", command)
 		self.assertIn("--expected-generator-feature", command)
 		self.assertEqual(command[-2:], ["--expected-generator-feature", "wsi"])
+
+	def test_compatibility_artifact_fails_closed_when_a_pin_is_missing(self) -> None:
+		runner = RecordingRunner()
+		with mock.patch.dict(
+			os.environ,
+			{"DCMVIEW_COMPAT_CORPUS_ROOT": "/tmp/current-smoke"},
+			clear=True,
+		):
+			with self.assertRaisesRegex(check.CheckError, "complete immutable pins"):
+				runner.compatibility_artifact()
 
 
 if __name__ == "__main__":

@@ -7,31 +7,28 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
-      corpus_artifact_url:
-        description: HTTPS URL for a tarred current smoke artifact
-        required: true
-        type: string
-      corpus_artifact_sha256:
-        description: SHA-256 of the downloaded artifact archive
-        required: true
-        type: string
-      corpus_manifest_sha256:
-        description: SHA-256 of the artifact manifest.json
-        required: true
-        type: string
-      corpus_definition_sha256:
-        description: SHA-256 of identity_projection.corpus_definition.identity
-        required: true
-        type: string
-      corpus_generator_version:
-        description: Expected synth-dicom-gen version recorded by the artifact
-        required: true
-        type: string
-      corpus_generator_features:
-        description: Comma-separated expected generator feature flags (empty when none)
-        required: false
-        default: ""
-        type: string
+      corpus_artifact_repository: {description: Immutable producer repository, required: true, type: string}
+      corpus_artifact_workflow: {description: Immutable producer workflow file, required: true, type: string}
+      corpus_artifact_run_id: {description: Numeric producer workflow run ID, required: true, type: string}
+      corpus_artifact_id: {description: Numeric upload-artifact ID, required: true, type: string}
+      corpus_artifact_digest: {description: SHA-256 digest of the downloaded Actions artifact ZIP, required: true, type: string}
+      corpus_generator_revision: {description: Generator source revision in artifact-index.json, required: true, type: string}
+      corpus_generator_artifact_sha256: {description: Generator executable SHA-256 in artifact-index.json, required: true, type: string}
+      corpus_generator_artifact_size_bytes: {description: Generator executable size in artifact-index.json, required: true, type: string}
+      corpus_generator_target: {description: Generator target in artifact-index.json, required: true, type: string}
+      corpus_generator_toolchain: {description: Generator Rust toolchain in artifact-index.json, required: true, type: string}
+      corpus_generator_features: {description: Comma-separated generator feature flags (empty when none), required: true, type: string}
+      corpus_runtime_identities_sha256: {description: SHA-256 of canonical runtime_identities, required: true, type: string}
+      corpus_definition_manifest_sha256: {description: Corpus definition manifest SHA-256, required: true, type: string}
+      corpus_definition_sha256: {description: Corpus definition identity SHA-256, required: true, type: string}
+      corpus_manifest_sha256: {description: Generated manifest SHA-256, required: true, type: string}
+      corpus_manifest_size_bytes: {description: Generated manifest size in bytes, required: true, type: string}
+      corpus_profile: {description: Generated profile, required: true, type: string}
+      corpus_seed: {description: Generated seed, required: true, type: string}
+      corpus_binding_id: {description: Producer binding ID, required: true, type: string}
+      corpus_archive_sha256: {description: Deterministic smoke.tar.gz SHA-256, required: true, type: string}
+      corpus_archive_size_bytes: {description: Deterministic smoke.tar.gz size in bytes, required: true, type: string}
+      corpus_generator_version: {description: Generator product version, required: true, type: string}
 
 jobs:
   changes:
@@ -160,27 +157,38 @@ jobs:
     name: Stored current corpus compatibility smoke
     if: >-
       ${{
-        (github.event_name == 'workflow_dispatch' &&
-          inputs.corpus_artifact_url != '' &&
-          inputs.corpus_artifact_sha256 != '' &&
-          inputs.corpus_manifest_sha256 != '' &&
-          inputs.corpus_definition_sha256 != '' &&
-          inputs.corpus_generator_version != '') ||
-        (vars.DCMVIEW_COMPAT_CORPUS_ARTIFACT_URL != '' &&
-          vars.DCMVIEW_COMPAT_CORPUS_ARTIFACT_SHA256 != '' &&
-          vars.DCMVIEW_COMPAT_CORPUS_MANIFEST_SHA256 != '' &&
-          vars.DCMVIEW_COMPAT_CORPUS_DEFINITION_SHA256 != '' &&
-          vars.DCMVIEW_COMPAT_CORPUS_GENERATOR_VERSION != '')
+        github.event_name == 'workflow_dispatch' ||
+        vars.DCMVIEW_CORPUS_ARTIFACT_REPOSITORY != '' ||
+        vars.DCMVIEW_CORPUS_ARTIFACT_RUN_ID != '' ||
+        vars.DCMVIEW_CORPUS_ARTIFACT_ID != '' ||
+        vars.DCMVIEW_CORPUS_ARTIFACT_DIGEST != '' ||
+        vars.DCMVIEW_CORPUS_GENERATOR_REVISION != ''
       }}
     runs-on: ubuntu-22.04
     env:
-      DCMVIEW_CORPUS_ARTIFACT_URL: ${{ inputs.corpus_artifact_url || vars.DCMVIEW_COMPAT_CORPUS_ARTIFACT_URL }}
-      DCMVIEW_CORPUS_ARTIFACT_SHA256: ${{ inputs.corpus_artifact_sha256 || vars.DCMVIEW_COMPAT_CORPUS_ARTIFACT_SHA256 }}
-      DCMVIEW_CORPUS_MANIFEST_SHA256: ${{ inputs.corpus_manifest_sha256 || vars.DCMVIEW_COMPAT_CORPUS_MANIFEST_SHA256 }}
-      DCMVIEW_CORPUS_DEFINITION_SHA256: ${{ inputs.corpus_definition_sha256 || vars.DCMVIEW_COMPAT_CORPUS_DEFINITION_SHA256 }}
-      DCMVIEW_CORPUS_GENERATOR_VERSION: ${{ inputs.corpus_generator_version || vars.DCMVIEW_COMPAT_CORPUS_GENERATOR_VERSION }}
-      DCMVIEW_CORPUS_GENERATOR_FEATURES: ${{ inputs.corpus_generator_features || vars.DCMVIEW_COMPAT_CORPUS_GENERATOR_FEATURES }}
-      DCMVIEW_CORPUS_ARTIFACT_TOKEN: ${{ secrets.DCMVIEW_COMPAT_CORPUS_TOKEN }}
+      DCMVIEW_CORPUS_ARTIFACT_REPOSITORY: ${{ inputs.corpus_artifact_repository || vars.DCMVIEW_CORPUS_ARTIFACT_REPOSITORY }}
+      DCMVIEW_CORPUS_ARTIFACT_WORKFLOW: ${{ inputs.corpus_artifact_workflow || vars.DCMVIEW_CORPUS_ARTIFACT_WORKFLOW }}
+      DCMVIEW_CORPUS_ARTIFACT_RUN_ID: ${{ inputs.corpus_artifact_run_id || vars.DCMVIEW_CORPUS_ARTIFACT_RUN_ID }}
+      DCMVIEW_CORPUS_ARTIFACT_ID: ${{ inputs.corpus_artifact_id || vars.DCMVIEW_CORPUS_ARTIFACT_ID }}
+      DCMVIEW_CORPUS_ARTIFACT_DIGEST: ${{ inputs.corpus_artifact_digest || vars.DCMVIEW_CORPUS_ARTIFACT_DIGEST }}
+      DCMVIEW_CORPUS_GENERATOR_REVISION: ${{ inputs.corpus_generator_revision || vars.DCMVIEW_CORPUS_GENERATOR_REVISION }}
+      DCMVIEW_CORPUS_GENERATOR_ARTIFACT_SHA256: ${{ inputs.corpus_generator_artifact_sha256 || vars.DCMVIEW_CORPUS_GENERATOR_ARTIFACT_SHA256 }}
+      DCMVIEW_CORPUS_GENERATOR_ARTIFACT_SIZE_BYTES: ${{ inputs.corpus_generator_artifact_size_bytes || vars.DCMVIEW_CORPUS_GENERATOR_ARTIFACT_SIZE_BYTES }}
+      DCMVIEW_CORPUS_GENERATOR_TARGET: ${{ inputs.corpus_generator_target || vars.DCMVIEW_CORPUS_GENERATOR_TARGET }}
+      DCMVIEW_CORPUS_GENERATOR_TOOLCHAIN: ${{ inputs.corpus_generator_toolchain || vars.DCMVIEW_CORPUS_GENERATOR_TOOLCHAIN }}
+      DCMVIEW_CORPUS_GENERATOR_FEATURES: ${{ inputs.corpus_generator_features || vars.DCMVIEW_CORPUS_GENERATOR_FEATURES }}
+      DCMVIEW_CORPUS_RUNTIME_IDENTITIES_SHA256: ${{ inputs.corpus_runtime_identities_sha256 || vars.DCMVIEW_CORPUS_RUNTIME_IDENTITIES_SHA256 }}
+      DCMVIEW_CORPUS_DEFINITION_MANIFEST_SHA256: ${{ inputs.corpus_definition_manifest_sha256 || vars.DCMVIEW_CORPUS_DEFINITION_MANIFEST_SHA256 }}
+      DCMVIEW_CORPUS_DEFINITION_SHA256: ${{ inputs.corpus_definition_sha256 || vars.DCMVIEW_CORPUS_DEFINITION_SHA256 }}
+      DCMVIEW_CORPUS_MANIFEST_SHA256: ${{ inputs.corpus_manifest_sha256 || vars.DCMVIEW_CORPUS_MANIFEST_SHA256 }}
+      DCMVIEW_CORPUS_MANIFEST_SIZE_BYTES: ${{ inputs.corpus_manifest_size_bytes || vars.DCMVIEW_CORPUS_MANIFEST_SIZE_BYTES }}
+      DCMVIEW_CORPUS_PROFILE: ${{ inputs.corpus_profile || vars.DCMVIEW_CORPUS_PROFILE }}
+      DCMVIEW_CORPUS_SEED: ${{ inputs.corpus_seed || vars.DCMVIEW_CORPUS_SEED }}
+      DCMVIEW_CORPUS_BINDING_ID: ${{ inputs.corpus_binding_id || vars.DCMVIEW_CORPUS_BINDING_ID }}
+      DCMVIEW_CORPUS_ARCHIVE_SHA256: ${{ inputs.corpus_archive_sha256 || vars.DCMVIEW_CORPUS_ARCHIVE_SHA256 }}
+      DCMVIEW_CORPUS_ARCHIVE_SIZE_BYTES: ${{ inputs.corpus_archive_size_bytes || vars.DCMVIEW_CORPUS_ARCHIVE_SIZE_BYTES }}
+      DCMVIEW_CORPUS_GENERATOR_VERSION: ${{ inputs.corpus_generator_version || vars.DCMVIEW_CORPUS_GENERATOR_VERSION }}
+      DCMVIEW_CORPUS_ARTIFACT_TOKEN: ${{ secrets.DCMVIEW_COMPAT_CORPUS_TOKEN || github.token }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -193,23 +201,45 @@ jobs:
           python-version: "3.x"
       - uses: dtolnay/rust-toolchain@1.88.0
       - uses: Swatinem/rust-cache@v2
-      - name: Download and authenticate the stored smoke artifact
+      - name: Download the immutable producer artifact
         shell: bash
         run: |
           set -euo pipefail
-          archive="$RUNNER_TEMP/dcmview-current-smoke.tar.gz"
-          if [[ -n "${DCMVIEW_CORPUS_ARTIFACT_TOKEN:-}" ]]; then
-            curl --fail --location --silent --show-error \
-              --header "Authorization: Bearer ${DCMVIEW_CORPUS_ARTIFACT_TOKEN}" \
-              "$DCMVIEW_CORPUS_ARTIFACT_URL" --output "$archive"
-          else
-            curl --fail --location --silent --show-error \
-              "$DCMVIEW_CORPUS_ARTIFACT_URL" --output "$archive"
-          fi
-          echo "$DCMVIEW_CORPUS_ARTIFACT_SHA256  $archive" | sha256sum --check --strict
-          mkdir -p "$RUNNER_TEMP/dcmview-current-smoke"
-          tar --extract --gzip --file "$archive" --directory "$RUNNER_TEMP/dcmview-current-smoke"
-          test -f "$RUNNER_TEMP/dcmview-current-smoke/smoke/manifest.json"
+          required=(
+            DCMVIEW_CORPUS_ARTIFACT_REPOSITORY DCMVIEW_CORPUS_ARTIFACT_WORKFLOW
+            DCMVIEW_CORPUS_ARTIFACT_RUN_ID DCMVIEW_CORPUS_ARTIFACT_ID
+            DCMVIEW_CORPUS_ARTIFACT_DIGEST DCMVIEW_CORPUS_GENERATOR_REVISION
+            DCMVIEW_CORPUS_GENERATOR_ARTIFACT_SHA256 DCMVIEW_CORPUS_GENERATOR_ARTIFACT_SIZE_BYTES
+            DCMVIEW_CORPUS_GENERATOR_TARGET DCMVIEW_CORPUS_GENERATOR_TOOLCHAIN
+            DCMVIEW_CORPUS_GENERATOR_FEATURES DCMVIEW_CORPUS_RUNTIME_IDENTITIES_SHA256
+            DCMVIEW_CORPUS_DEFINITION_MANIFEST_SHA256 DCMVIEW_CORPUS_DEFINITION_SHA256
+            DCMVIEW_CORPUS_MANIFEST_SHA256 DCMVIEW_CORPUS_MANIFEST_SIZE_BYTES
+            DCMVIEW_CORPUS_PROFILE DCMVIEW_CORPUS_SEED DCMVIEW_CORPUS_BINDING_ID
+            DCMVIEW_CORPUS_ARCHIVE_SHA256 DCMVIEW_CORPUS_ARCHIVE_SIZE_BYTES
+            DCMVIEW_CORPUS_GENERATOR_VERSION
+          )
+          for variable in "${required[@]}"; do
+            if [[ -z "${!variable:-}" && "$variable" != DCMVIEW_CORPUS_GENERATOR_FEATURES ]]; then
+              echo "missing immutable smoke pin: $variable" >&2
+              exit 2
+            fi
+          done
+          [[ "$DCMVIEW_CORPUS_ARTIFACT_REPOSITORY" == "beatrice-b-m/dcmview-test-corpus" ]] || { echo "unexpected producer repository" >&2; exit 2; }
+          [[ "$DCMVIEW_CORPUS_ARTIFACT_WORKFLOW" == "publish-smoke-artifact.yml" ]] || { echo "unexpected producer workflow" >&2; exit 2; }
+          [[ "$DCMVIEW_CORPUS_ARTIFACT_RUN_ID" =~ ^[0-9]+$ ]] || { echo "workflow run ID must be numeric" >&2; exit 2; }
+          [[ "$DCMVIEW_CORPUS_ARTIFACT_ID" =~ ^[0-9]+$ ]] || { echo "artifact ID must be numeric" >&2; exit 2; }
+          artifact_digest="${DCMVIEW_CORPUS_ARTIFACT_DIGEST#sha256:}"
+          [[ "$artifact_digest" =~ ^[0-9a-f]{64}$ ]] || { echo "artifact digest must be SHA-256 (raw or sha256: prefixed)" >&2; exit 2; }
+          zip="$RUNNER_TEMP/dcmview-current-smoke.zip"
+          api="https://api.github.com/repos/${DCMVIEW_CORPUS_ARTIFACT_REPOSITORY}/actions/runs/${DCMVIEW_CORPUS_ARTIFACT_RUN_ID}/artifacts/${DCMVIEW_CORPUS_ARTIFACT_ID}/zip"
+          curl --fail --location --silent --show-error \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer ${DCMVIEW_CORPUS_ARTIFACT_TOKEN}" \
+            "$api" --output "$zip"
+          echo "$artifact_digest  $zip" | sha256sum --check --strict
+          python scripts/compatibility/extract_github_artifact.py "$zip" "$RUNNER_TEMP/dcmview-current-smoke"
+          test -f "$RUNNER_TEMP/dcmview-current-smoke/smoke.tar.gz"
+          test -f "$RUNNER_TEMP/dcmview-current-smoke/artifact-index.json"
       - name: Run the viewer-owned stored-artifact profile
         env:
           DCMVIEW_COMPAT_CORPUS_ROOT: ${{ runner.temp }}/dcmview-current-smoke/smoke

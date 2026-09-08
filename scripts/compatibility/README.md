@@ -90,30 +90,42 @@ path/SOP identity and pixel payload hashes remain available for comparison.
 
 ## Stored current smoke artifact
 
-The current viewer path consumes a pre-generated smoke artifact directly. It
-does not build or invoke `synth-dicom-gen`, and it does not require a
-`dicom-test-suite` checkout. The artifact root must contain the current
-external-corpus `manifest.json` (schema `2.0.0`) and its selected DICOM files:
+The current viewer path consumes the exact producer container directly. It does
+not build or invoke `synth-dicom-gen`, and it does not require a
+`dicom-test-suite` checkout. The container contains sibling
+`smoke.tar.gz` and `artifact-index.json`; the deterministic tar has exactly
+`corpus/manifest.json` plus the manifest-declared DICOM payloads:
 
 ```bash
 python scripts/compatibility/run.py \
-  --corpus-root /outside/current-smoke \
+  --corpus-root /outside/producer-container \
   --binary target/debug/dcmview \
   --output /outside/smoke-run-1 \
+  --expected-generator-revision "$DCMVIEW_CORPUS_GENERATOR_REVISION" \
+  --expected-generator-artifact-sha256 "$DCMVIEW_CORPUS_GENERATOR_ARTIFACT_SHA256" \
+  --expected-generator-artifact-size-bytes "$DCMVIEW_CORPUS_GENERATOR_ARTIFACT_SIZE_BYTES" \
+  --expected-target "$DCMVIEW_CORPUS_GENERATOR_TARGET" \
+  --expected-toolchain "$DCMVIEW_CORPUS_GENERATOR_TOOLCHAIN" \
+  --expected-runtime-identities-sha256 "$DCMVIEW_CORPUS_RUNTIME_IDENTITIES_SHA256" \
+  --expected-definition-manifest-sha256 "$DCMVIEW_CORPUS_DEFINITION_MANIFEST_SHA256" \
   --expected-generator-version 0.3.0 \
   --expected-manifest-sha256 "$DCMVIEW_CORPUS_MANIFEST_SHA256" \
-  --expected-corpus-definition-sha256 "$DCMVIEW_CORPUS_DEFINITION_SHA256"
+  --expected-manifest-size-bytes "$DCMVIEW_CORPUS_MANIFEST_SIZE_BYTES" \
+  --expected-corpus-definition-sha256 "$DCMVIEW_CORPUS_DEFINITION_SHA256" \
+  --expected-profile smoke --expected-seed "$DCMVIEW_CORPUS_SEED" \
+  --expected-binding-id "$DCMVIEW_CORPUS_BINDING_ID" \
+  --expected-archive-sha256 "$DCMVIEW_CORPUS_ARCHIVE_SHA256" \
+  --expected-archive-size-bytes "$DCMVIEW_CORPUS_ARCHIVE_SIZE_BYTES"
 ```
 
-The consumer is smoke-only and expects `run.kind=external_corpus`,
-`run.profile=smoke`, `selector.kind=profile`, `include_stress=false`, and the
-declared seed (seed `1` by default; override it explicitly when a different
-published pin is approved). It also checks the generator execution/toolchain
-feature identities, verified corpus-definition identity, every manifest path
-is safely beneath the artifact root, every declared size and SHA-256 matches,
-each file belongs to smoke, and the selection ledger closes over exactly the
-generated files. Optional expected generator/manifest/definition pins become
-strict equality checks when supplied; the CI lane supplies them.
+The consumer verifies the archive digest and size, the index binding ID, the
+generator revision/artifact SHA-256 and size/target/toolchain/features,
+runtime identities, both definition digests, generated manifest digest/size,
+profile/seed, and every payload hash/size. It rejects symlinks, hard links,
+special entries, path traversal, duplicate members, undeclared outer files,
+and TOCTOU changes. The archive is extracted into a private closed tree with
+no-follow reads; only after the tree is closed do its DICOM paths enter the
+viewer worklist. All immutable pins are required for the CI consumer.
 
 After those checks, the same existing compatibility runner starts the supplied
 `dcmview` binary with the verified DICOM paths and performs the normal metadata,
@@ -125,17 +137,15 @@ Viewer failures remain viewer-owned outcomes; a successful artifact check does
 not claim that every case renders.
 
 Viewer CI exposes this as `python scripts/check.py compatibility-artifact`.
-The workflow downloads a tarred smoke artifact from the repository variables
-`DCMVIEW_COMPAT_CORPUS_ARTIFACT_URL`, `DCMVIEW_COMPAT_CORPUS_ARTIFACT_SHA256`,
-`DCMVIEW_COMPAT_CORPUS_MANIFEST_SHA256`,
-`DCMVIEW_COMPAT_CORPUS_DEFINITION_SHA256`, and
-`DCMVIEW_COMPAT_CORPUS_GENERATOR_VERSION` (with optional
-`DCMVIEW_COMPAT_CORPUS_GENERATOR_FEATURES` and the
-`DCMVIEW_COMPAT_CORPUS_TOKEN` secret). The archive must extract a
-`smoke/manifest.json` root. The lane verifies the archive and manifest identity
-pins, and then runs this profile. When the cross-repository artifact URL and
-pins are not configured, that conditional lane is skipped; ordinary viewer
-jobs still do not check out or build the generator.
+It downloads the GitHub artifact API URL addressed only by the configured
+repository, workflow run ID, and numeric artifact ID, verifies the downloaded
+ZIP digest (the GitHub `sha256:` prefix is accepted and normalized), and safely extracts the producer container with
+`extract_github_artifact.py`. The repository variables are the corresponding
+`DCMVIEW_CORPUS_ARTIFACT_*` locator/digest values plus the complete
+`DCMVIEW_CORPUS_*` index-pin set used above. A partially configured variable
+set fails closed; an entirely unconfigured lane is skipped. No mutable name or
+`latest` lookup is accepted, and ordinary viewer jobs still do not check out or
+build the generator.
 
 ## Robustness profiles
 

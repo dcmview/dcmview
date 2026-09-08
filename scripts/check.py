@@ -216,12 +216,37 @@ class CheckRunner:
 		)
 
 	def compatibility_artifact(self) -> None:
-		"""Run the viewer-owned consumer against a stored smoke artifact."""
+		"""Run the viewer-owned consumer against a pinned producer container."""
 		corpus_root = os.environ.get("DCMVIEW_COMPAT_CORPUS_ROOT")
 		if not corpus_root:
 			raise CheckError(
-				"DCMVIEW_COMPAT_CORPUS_ROOT must name a downloaded smoke artifact; "
+				"DCMVIEW_COMPAT_CORPUS_ROOT must name a downloaded producer container; "
 				"this profile never generates a corpus"
+			)
+		required = (
+			"DCMVIEW_CORPUS_GENERATOR_REVISION",
+			"DCMVIEW_CORPUS_GENERATOR_ARTIFACT_SHA256",
+			"DCMVIEW_CORPUS_GENERATOR_ARTIFACT_SIZE_BYTES",
+			"DCMVIEW_CORPUS_GENERATOR_TARGET",
+			"DCMVIEW_CORPUS_GENERATOR_TOOLCHAIN",
+			"DCMVIEW_CORPUS_GENERATOR_FEATURES",
+			"DCMVIEW_CORPUS_RUNTIME_IDENTITIES_SHA256",
+			"DCMVIEW_CORPUS_DEFINITION_MANIFEST_SHA256",
+			"DCMVIEW_CORPUS_DEFINITION_SHA256",
+			"DCMVIEW_CORPUS_MANIFEST_SHA256",
+			"DCMVIEW_CORPUS_MANIFEST_SIZE_BYTES",
+			"DCMVIEW_CORPUS_PROFILE",
+			"DCMVIEW_CORPUS_SEED",
+			"DCMVIEW_CORPUS_BINDING_ID",
+			"DCMVIEW_CORPUS_ARCHIVE_SHA256",
+			"DCMVIEW_CORPUS_ARCHIVE_SIZE_BYTES",
+			"DCMVIEW_CORPUS_GENERATOR_VERSION",
+		)
+		missing = [name for name in required if name not in os.environ or (name != "DCMVIEW_CORPUS_GENERATOR_FEATURES" and not os.environ[name])]
+		if missing:
+			raise CheckError(
+				"stored smoke artifact profile requires complete immutable pins: "
+				+ ", ".join(missing)
 			)
 		self.build_binary()
 		binary_name = "dcmview.exe" if os.name == "nt" else "dcmview"
@@ -240,14 +265,25 @@ class CheckRunner:
 			output,
 		]
 		pins = (
+			("DCMVIEW_CORPUS_GENERATOR_REVISION", "--expected-generator-revision"),
+			("DCMVIEW_CORPUS_GENERATOR_ARTIFACT_SHA256", "--expected-generator-artifact-sha256"),
+			("DCMVIEW_CORPUS_GENERATOR_ARTIFACT_SIZE_BYTES", "--expected-generator-artifact-size-bytes"),
+			("DCMVIEW_CORPUS_GENERATOR_TARGET", "--expected-target"),
+			("DCMVIEW_CORPUS_GENERATOR_TOOLCHAIN", "--expected-toolchain"),
+			("DCMVIEW_CORPUS_RUNTIME_IDENTITIES_SHA256", "--expected-runtime-identities-sha256"),
+			("DCMVIEW_CORPUS_DEFINITION_MANIFEST_SHA256", "--expected-definition-manifest-sha256"),
 			("DCMVIEW_CORPUS_MANIFEST_SHA256", "--expected-manifest-sha256"),
+			("DCMVIEW_CORPUS_MANIFEST_SIZE_BYTES", "--expected-manifest-size-bytes"),
 			("DCMVIEW_CORPUS_DEFINITION_SHA256", "--expected-corpus-definition-sha256"),
 			("DCMVIEW_CORPUS_GENERATOR_VERSION", "--expected-generator-version"),
+			("DCMVIEW_CORPUS_PROFILE", "--expected-profile"),
+			("DCMVIEW_CORPUS_SEED", "--expected-seed"),
+			("DCMVIEW_CORPUS_BINDING_ID", "--expected-binding-id"),
+			("DCMVIEW_CORPUS_ARCHIVE_SHA256", "--expected-archive-sha256"),
+			("DCMVIEW_CORPUS_ARCHIVE_SIZE_BYTES", "--expected-archive-size-bytes"),
 		)
 		for variable, option in pins:
-			value = os.environ.get(variable)
-			if value:
-				command.extend((option, value))
+			command.extend((option, os.environ[variable]))
 		features = os.environ.get("DCMVIEW_CORPUS_GENERATOR_FEATURES", "")
 		for feature in filter(None, (item.strip() for item in features.split(","))):
 			command.extend(("--expected-generator-feature", feature))
