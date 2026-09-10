@@ -16,9 +16,9 @@ from pathlib import Path
 from typing import Any, BinaryIO
 
 try:
-    from scripts.compatibility.worklist import load_worklist, sha256_file
+    from scripts.compatibility.worklist import CompatibilityError, load_worklist, sha256_file
 except ModuleNotFoundError:
-    from worklist import load_worklist, sha256_file  # type: ignore[no-redef]
+    from worklist import CompatibilityError, load_worklist, sha256_file  # type: ignore[no-redef]
 
 
 class RobustnessError(RuntimeError):
@@ -184,12 +184,18 @@ def poll_catalog(base_url: str, timeout: float, request_timeout: float, max_body
 
 
 def load_profile(path: Path, model: str, profile: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    worklist = load_worklist(path)
-    if profile not in worklist["inputs"]["profiles"]:
-        raise RobustnessError(f"worklist does not select {profile!r} profile")
-    rows = worklist.get("models", {}).get(model)
+    try:
+        worklist = load_worklist(path)
+    except CompatibilityError as error:
+        raise RobustnessError(f"invalid {profile} robustness worklist: {error}") from error
+    selected = worklist["inputs"]["profiles"][0]
+    if selected != profile:
+        raise RobustnessError(
+            f"worklist profile {selected!r} is not supported by the {profile} runner"
+        )
+    rows = worklist["models"].get(model)
     if not isinstance(rows, list):
-        raise RobustnessError(f"worklist 0.2 model {model!r} is absent")
+        raise RobustnessError(f"validated worklist model {model!r} is absent")
     return worklist, rows
 
 

@@ -117,5 +117,9 @@ Generated payloads are not retained when every candidate is rejected cleanly.
 
 These workflows remain local and opt-in. They are not wired into CI, scheduled
 jobs, or the release process. Their worklists are caller-supplied inputs and
-are validated by the viewer-owned generic worklist parser; they do not require
-a generator checkout.
+are validated by the viewer-owned generic worklist parser. The supported 0.2
+shape selects exactly one of `negative`, `stress`, or `fuzz`; JSON size and
+entry counts are bounded, payload paths must be confined regular files, and
+each declared payload SHA-256 and size is checked before the viewer launches.
+Malformed worklists fail with a concise runner error and do not require a
+generator checkout.
