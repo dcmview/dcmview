@@ -1,92 +1,10 @@
 # DICOM compatibility campaign
 
-This directory owns DICOM View's manifest-driven compatibility automation. It
+This directory owns dcmview's manifest-driven compatibility automation. It
 measures viewer behavior; it does not grade DICOM conformance or clinical
-suitability.
-
-Freeze the prepared corpus scope before running any probes:
-
-```bash
-python scripts/compatibility/scope.py \
-  --suite-root /path/to/dicom-test-suite \
-  --output /path/outside/both/repos/canonical-worklist.json
-```
-
-The scope freezer verifies every manifest-selected file hash, records each
-manifest hash, and deduplicates copies only when both the DICOM file hash and a
-normalized expected-contract hash match. The output is created read-only and
-will not be replaced by non-identical content. It separately records execution
-safety (`safe`, `timeout`, `crash`, `flaky`) and compatibility outcomes (`full_support`,
-`metadata_only`, `known_gap`, `failure`, `unavailable`).
-
-When a smaller corrected corpus is a strict subset of an already frozen
-canonical corpus, merge it without weakening the canonical inventory:
-
-```bash
-python scripts/compatibility/merge.py \
-  --base /outside/canonical-worklist.json \
-  --overlay /outside/corrected-subset-worklist.json \
-  --output /outside/corrected-canonical-worklist.json
-```
-
-The merger re-verifies both worklist content hashes, every selected DICOM hash,
-and every expected-contract hash. An overlay row may replace a base row only
-when case ID, selected relative path, SOP Instance UID, DICOM identity, image
-layout, and UIDs remain unchanged; the DICOM file and expected contract must
-change together. The merged worklist records both source worklist hashes and
-the exact replacement count.
-
-Run a bounded HTTP campaign against a previously built binary:
-
-```bash
-python scripts/compatibility/run.py \
-  --suite-root /path/to/dicom-test-suite \
-  --worklist /outside/canonical-worklist.json \
-  --binary target/debug/dcmview \
-  --root smoke \
-  --output /outside/smoke-run-1
-```
-
-The runner launches a loopback, port-zero, no-browser process with structured
-startup output and VS Code bridge bypass. It waits for `scan_complete`, maps
-files by normalized path plus SOP Instance UID, and probes file information,
-tags, display and raw frames, structured errors, and cache MISS/HIT behavior.
-It also captures the completed `/api/series` catalog once per shard and records
-each file's logical stack, virtual position, ordered source frames, geometry
-warnings, concatenation identity, and WSI level/companion classification.
-Manifest-declared series capabilities are evaluated from that server-owned
-evidence rather than by reimplementing DICOM ordering in the harness. For
-reference-bearing objects, the runner compares the typed reference endpoint to
-the manifest identity closure and requires every declared SOP/path/frame target
-to resolve locally before marking reference resolution as probed. Physical
-pixel aspect is compared exactly from `/api/files`; that observation is labeled
-as API metadata evidence and does not claim a real-browser layout check.
-
-For lossless transfer syntaxes, every manifest frame hash is compared with the
-decoded raw endpoint, not only the first frame. The first and last display
-frames are also decoded far enough to validate PNG dimensions, while declared
-small visual patterns are checked from decoded PNG pixels where an explicit
-validator exists.
-
-Presentation evidence follows the same exact-contract rule. The prepared
-2-by-2 diagonal overlay cases use full-dynamic display mode and mark
-`read_overlay_plane` as probed only when the declared overlay pixels are white
-and the two non-overlay pixels retain their exact expected grayscale values.
-This isolates overlay evidence from VOI/windowing behavior. The prepared
-rectangular shutter opening covers the full image, so
-the report records its bounds and a passing display non-regression check but
-keeps `apply_display_shutter` explicitly unprobed: there are no outside-opening
-pixels with which to prove replacement. When a manifest supplies an exact ICC
-profile size and SHA-256, the runner decompresses the PNG `iCCP` chunk and
-compares those bytes. That proves profile preservation only;
-`apply_icc_profile` remains unprobed because neither a numeric color transform
-nor frame-to-optical-path profile selection is measured.
-
-It writes separate process logs, a companion-schema detail report, a timing-free
-normalized report for reproducibility comparison, and a SHA-256 artifact index.
-The normalized form removes transient registry indices and omits body hashes and
-sizes only for index-bearing series and reference JSON responses. Stable
-path/SOP identity and pixel payload hashes remain available for comparison.
+suitability. The valid-corpus path consumes one explicitly pinned producer
+container. It does not freeze a sibling checkout, merge a corrected worklist,
+or invoke a generator from the viewer repository.
 
 ## Stored current smoke artifact
 
@@ -168,7 +86,7 @@ python scripts/compatibility/negative_runner.py \
 Every case must terminate within its deadline, match its declared failure
 layer, avoid a crash, and leave a fresh viewer able to serve the healthy file.
 
-Record the suite stress baseline independently:
+Record a bounded stress baseline independently from a caller-supplied worklist:
 
 ```bash
 python scripts/compatibility/stress_runner.py \
@@ -179,9 +97,9 @@ python scripts/compatibility/stress_runner.py \
 
 The stress runner records discovery, concurrency, frame latency, cache behavior,
 and bounded output. It reports observations rather than inventing performance
-thresholds that are absent from the pinned suite.
+thresholds that are absent from the supplied worklist.
 
-The suite fuzz profile contains qualification evidence but no reusable payload
+The fuzz profile contains qualification evidence but no reusable payload
 corpus. Run deterministic, payload-disciplined mutations from an explicit seed:
 
 ```bash
@@ -198,5 +116,6 @@ process output, response size, and retained failing artifacts are all capped.
 Generated payloads are not retained when every candidate is rejected cleanly.
 
 These workflows remain local and opt-in. They are not wired into CI, scheduled
-jobs, or the release process, and the pinned `dicom-test-suite` checkout is
-always treated as read-only input.
+jobs, or the release process. Their worklists are caller-supplied inputs and
+are validated by the viewer-owned generic worklist parser; they do not require
+a generator checkout.
