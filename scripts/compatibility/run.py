@@ -25,12 +25,12 @@ from typing import Any, BinaryIO, Optional
 
 try:
     from scripts.compatibility.artifact import ArtifactError, build_external_worklist
-    from scripts.compatibility.scope import ScopeError, load_worklist, sha256_file
     from scripts.compatibility.reports import build_evidence_report, build_viewer_report
+    from scripts.compatibility.worklist import CompatibilityError, sha256_file
 except ModuleNotFoundError:
     from artifact import ArtifactError, build_external_worklist  # type: ignore[no-redef]
-    from scope import ScopeError, load_worklist, sha256_file
     from reports import build_evidence_report, build_viewer_report
+    from worklist import CompatibilityError, sha256_file  # type: ignore[no-redef]
 
 
 DETAIL_SCHEMA_VERSION = "0.1.0"
@@ -1076,26 +1076,19 @@ def _normalized_path(value: str) -> str:
 
 
 def select_entries(worklist: dict[str, Any], root: Optional[str]) -> list[dict[str, Any]]:
-    if worklist.get("worklist_schema_version") == "0.2.0":
-        selected = []
-        for entry in worklist["files"]:
-            profile = entry["manifest_identity"]["profile"]
-            if root is not None and profile != root:
-                continue
-            occurrence = {"root": profile, "case_id": entry["case_id"], "path": entry["path"], "normalized_path": entry["normalized_path"], "sop_instance_uid": entry.get("sop_instance_uid")}
-            selected.append({**entry, "campaign_occurrence": occurrence})
-        return sorted(selected, key=lambda row: (row["campaign_occurrence"]["root"], row["case_id"], row["path"]))
-    selected: list[dict[str, Any]] = []
-    for entry in worklist["canonical_files"]:
-        occurrence = None
-        if root is None:
-            occurrence = entry["selected"]
-        else:
-            occurrence = next(
-                (row for row in entry["occurrences"] if row["root"] == root), None
-            )
-        if occurrence is not None:
-            selected.append({**entry, "campaign_occurrence": occurrence})
+    selected = []
+    for entry in worklist["files"]:
+        profile = entry["manifest_identity"]["profile"]
+        if root is not None and profile != root:
+            continue
+        occurrence = {
+            "root": profile,
+            "case_id": entry["case_id"],
+            "path": entry["path"],
+            "normalized_path": entry["normalized_path"],
+            "sop_instance_uid": entry.get("sop_instance_uid"),
+        }
+        selected.append({**entry, "campaign_occurrence": occurrence})
     return sorted(
         selected,
         key=lambda row: (
@@ -2032,82 +2025,59 @@ def run_campaign(args: argparse.Namespace) -> dict[str, Any]:
     viewer_root = Path(__file__).resolve().parents[2]
     # Keep the caller spelling intact until the artifact verifier has rejected
     # symlink components; resolving here would erase that security boundary.
-    artifact_root = Path(os.path.abspath(args.corpus_root)) if args.corpus_root is not None else None
-    suite_root = args.suite_root.resolve() if args.suite_root is not None else None
+    artifact_root = Path(os.path.abspath(args.corpus_root))
     output = args.output.resolve()
     temporary_directory = None
-    if artifact_root is not None:
-        if suite_root is not None or args.worklist is not None:
-            raise CampaignError("--corpus-root cannot be combined with --suite-root or --worklist")
-        if args.root not in {None, "smoke"}:
-            raise CampaignError("external artifact consumption only supports --root smoke")
-        _require_external_pins(args)
-        try:
-            worklist = build_external_worklist(
-                artifact_root,
-                expected_seed=args.expected_seed,
-                expected_manifest_sha256=args.expected_manifest_sha256,
-                expected_corpus_definition_sha256=args.expected_corpus_definition_sha256,
-                expected_generator_version=args.expected_generator_version,
-                expected_generator_features=args.expected_generator_features,
-                expected_generator_revision=args.expected_generator_revision,
-                expected_generator_artifact_sha256=args.expected_generator_artifact_sha256,
-                expected_generator_artifact_size_bytes=args.expected_generator_artifact_size_bytes,
-                expected_target=args.expected_target,
-                expected_toolchain=args.expected_toolchain,
-                expected_runtime_identities_sha256=args.expected_runtime_identities_sha256,
-                expected_definition_manifest_sha256=args.expected_definition_manifest_sha256,
-                expected_manifest_size_bytes=args.expected_manifest_size_bytes,
-                expected_profile=args.expected_profile,
-                expected_binding_id=args.expected_binding_id,
-                expected_archive_sha256=args.expected_archive_sha256,
-                expected_archive_size_bytes=args.expected_archive_size_bytes,
-                required_pins=True,
-            )
-        except ArtifactError as error:
-            raise CampaignError(str(error)) from error
-        temporary_directory = worklist.pop("_temporary_directory", None)
-        worklist_path = Path(worklist["inputs"]["manifests"][0]["manifest"])
-        extracted_root = Path(worklist["inputs"]["manifests"][0]["root"]).parent
-        source_roots = (artifact_root, extracted_root)
-        selection = "smoke"
-        try:
-            return _run_campaign_verified(
-                args,
-                viewer_root=viewer_root,
-                artifact_root=artifact_root,
-                output=output,
-                worklist=worklist,
-                worklist_path=worklist_path,
-                source_roots=source_roots,
-                selection=selection,
-            )
-        finally:
-            if temporary_directory is not None:
-                temporary_directory.cleanup()
-    if suite_root is None or args.worklist is None:
-        raise CampaignError("--suite-root and --worklist are required without --corpus-root")
-    worklist_path = args.worklist.resolve()
-    worklist = load_worklist(worklist_path)
-    source_roots = (suite_root,)
-    selection = args.root or "canonical"
-    return _run_campaign_verified(
-        args,
-        viewer_root=viewer_root,
-        artifact_root=None,
-        output=output,
-        worklist=worklist,
-        worklist_path=worklist_path,
-        source_roots=source_roots,
-        selection=selection,
-    )
+    _require_external_pins(args)
+    try:
+        worklist = build_external_worklist(
+            artifact_root,
+            expected_seed=args.expected_seed,
+            expected_manifest_sha256=args.expected_manifest_sha256,
+            expected_corpus_definition_sha256=args.expected_corpus_definition_sha256,
+            expected_generator_version=args.expected_generator_version,
+            expected_generator_features=args.expected_generator_features,
+            expected_generator_revision=args.expected_generator_revision,
+            expected_generator_artifact_sha256=args.expected_generator_artifact_sha256,
+            expected_generator_artifact_size_bytes=args.expected_generator_artifact_size_bytes,
+            expected_target=args.expected_target,
+            expected_toolchain=args.expected_toolchain,
+            expected_runtime_identities_sha256=args.expected_runtime_identities_sha256,
+            expected_definition_manifest_sha256=args.expected_definition_manifest_sha256,
+            expected_manifest_size_bytes=args.expected_manifest_size_bytes,
+            expected_profile=args.expected_profile,
+            expected_binding_id=args.expected_binding_id,
+            expected_archive_sha256=args.expected_archive_sha256,
+            expected_archive_size_bytes=args.expected_archive_size_bytes,
+            required_pins=True,
+        )
+    except ArtifactError as error:
+        raise CampaignError(str(error)) from error
+    temporary_directory = worklist.pop("_temporary_directory", None)
+    worklist_path = Path(worklist["inputs"]["manifests"][0]["manifest"])
+    extracted_root = Path(worklist["inputs"]["manifests"][0]["root"]).parent
+    source_roots = (artifact_root, extracted_root)
+    try:
+        return _run_campaign_verified(
+            args,
+            viewer_root=viewer_root,
+            artifact_root=artifact_root,
+            output=output,
+            worklist=worklist,
+            worklist_path=worklist_path,
+            source_roots=source_roots,
+            selection="smoke",
+        )
+    finally:
+        if temporary_directory is not None:
+            temporary_directory.cleanup()
 
 
 def _run_campaign_verified(
     args: argparse.Namespace,
     *,
     viewer_root: Path,
-    artifact_root: Path | None,
+    artifact_root: Path,
     output: Path,
     worklist: dict[str, Any],
     worklist_path: Path,
@@ -2115,7 +2085,7 @@ def _run_campaign_verified(
     selection: str,
 ) -> dict[str, Any]:
     _ensure_external_output(output, source_roots, viewer_root)
-    entries = select_entries(worklist, args.root or ("smoke" if artifact_root is not None else None))
+    entries = select_entries(worklist, "smoke")
     if not entries:
         raise CampaignError(f"selection contains no cases: {selection}")
     binary = args.binary.resolve()
@@ -2126,9 +2096,7 @@ def _run_campaign_verified(
     ).stdout.strip()
     input_paths = [row["campaign_occurrence"]["normalized_path"] for row in entries]
     verified_paths = [row["normalized_path"] for row in worklist["files"]]
-    if artifact_root is not None and (
-        len(input_paths) != len(verified_paths) or set(input_paths) != set(verified_paths)
-    ):
+    if len(input_paths) != len(verified_paths) or set(input_paths) != set(verified_paths):
         raise CampaignError(
             "stored smoke selection does not pass every verified payload to the viewer"
         )
@@ -2283,8 +2251,7 @@ def _run_campaign_verified(
         (output / "stdout.log", "stdout"),
         (output / "stderr.log", "stderr"),
     ]
-    if artifact_root is not None:
-        index_paths.append((worklist_path, "corpus_manifest"))
+    index_paths.append((worklist_path, "corpus_manifest"))
     index = {"artifacts": [artifact(path, kind) for path, kind in index_paths]}
     (output / "artifact-index.json").write_text(
         json.dumps(index, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -2294,21 +2261,13 @@ def _run_campaign_verified(
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    source = parser.add_mutually_exclusive_group(required=True)
-    source.add_argument(
-        "--worklist", type=Path,
-        help="frozen compatibility worklist (requires --suite-root)",
-    )
-    source.add_argument(
+    parser.add_argument(
         "--corpus-root", type=Path,
         help="published producer container containing smoke.tar.gz and artifact-index.json (smoke only)",
-    )
-    parser.add_argument(
-        "--suite-root", type=Path, default=os.environ.get("DCMVIEW_COMPAT_SUITE_ROOT"),
+        required=True,
     )
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--root", help="manifest root such as smoke; omit for canonical selection")
     parser.add_argument("--expected-seed", type=int, default=os.environ.get("DCMVIEW_CORPUS_SEED", 1))
     parser.add_argument("--expected-profile", default=os.environ.get("DCMVIEW_CORPUS_PROFILE", "smoke"))
     parser.add_argument("--expected-manifest-sha256", default=os.environ.get("DCMVIEW_CORPUS_MANIFEST_SHA256"))
@@ -2370,11 +2329,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     try:
         args = parse_args(sys.argv[1:] if argv is None else argv)
         if args.expected_generator_features is None:
-            args.expected_generator_features = () if args.corpus_root is not None else None
+            args.expected_generator_features = ()
         else:
             args.expected_generator_features = tuple(args.expected_generator_features)
         report = run_campaign(args)
-    except (CampaignError, ScopeError, ArtifactError, OSError, ValueError, subprocess.SubprocessError) as error:
+    except (CampaignError, CompatibilityError, ArtifactError, OSError, ValueError, subprocess.SubprocessError) as error:
         print(f"compatibility campaign error: {error}", file=sys.stderr)
         return 2
     print(json.dumps(report["summary"], sort_keys=True))

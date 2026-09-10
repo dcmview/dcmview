@@ -23,10 +23,10 @@ try:
         policy_sha256,
         resolve,
     )
-    from scripts.compatibility.scope import (
+    from scripts.compatibility.worklist import (
         CONTRACT_EXCLUDED_FIELDS,
         WORKLIST_SCHEMA_VERSION,
-        ScopeError,
+        CompatibilityError,
         applicable_assertions,
         canonical_json,
     )
@@ -38,10 +38,10 @@ except ModuleNotFoundError:
         policy_sha256,
         resolve,
     )
-    from scope import (  # type: ignore[no-redef]
+    from worklist import (  # type: ignore[no-redef]
         CONTRACT_EXCLUDED_FIELDS,
         WORKLIST_SCHEMA_VERSION,
-        ScopeError,
+        CompatibilityError,
         applicable_assertions,
         canonical_json,
     )
@@ -63,7 +63,7 @@ PRODUCER_REPOSITORY = "beatrice-b-m/dcmview-test-corpus"
 PRODUCER_WORKFLOW = "publish-smoke-artifact.yml"
 
 
-class ArtifactError(ScopeError):
+class ArtifactError(CompatibilityError):
     """The supplied external corpus artifact is not safe to consume."""
 
 
@@ -897,7 +897,7 @@ def verify_external_artifact(
     extraction_root: Path | None = None,
     required_pins: bool = False,
 ) -> dict[str, Any]:
-    """Verify one exact producer container without a suite checkout.
+    """Verify one exact producer container without another repository checkout.
 
     ``root`` is the uploaded container containing ``smoke.tar.gz`` and its
     sibling ``artifact-index.json``.  The tarball is copied into a private,

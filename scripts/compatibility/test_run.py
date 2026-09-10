@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import io
 import struct
 import subprocess
 import sys
@@ -58,16 +60,26 @@ def grayscale_png(
 
 
 class RunnerTests(unittest.TestCase):
-    def test_artifact_source_does_not_require_suite_checkout(self) -> None:
+    def test_artifact_source_uses_only_pinned_producer_container(self) -> None:
         args = parse_args([
             "--corpus-root", "/tmp/current-smoke",
             "--binary", "/tmp/dcmview",
             "--output", "/tmp/compatibility-output",
         ])
         self.assertEqual(str(args.corpus_root), "/tmp/current-smoke")
-        self.assertIsNone(args.suite_root)
-        self.assertIsNone(args.worklist)
+        self.assertFalse(hasattr(args, "suite_root"))
+        self.assertFalse(hasattr(args, "worklist"))
         self.assertEqual(args.expected_seed, 1)
+
+    def test_legacy_checkout_sources_are_not_cli_inputs(self) -> None:
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                parse_args([
+                    "--suite-root", "/tmp/dicom-test-suite",
+                    "--worklist", "/tmp/worklist.json",
+                    "--binary", "/tmp/dcmview",
+                    "--output", "/tmp/compatibility-output",
+                ])
 
     def test_metadata_observation_compares_manifest_fields_and_declared_tags(self) -> None:
         expected = {

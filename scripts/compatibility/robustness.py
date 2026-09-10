@@ -16,9 +16,9 @@ from pathlib import Path
 from typing import Any, BinaryIO
 
 try:
-    from scripts.compatibility.scope import load_worklist, sha256_file
+    from scripts.compatibility.worklist import load_worklist, sha256_file
 except ModuleNotFoundError:
-    from scope import load_worklist, sha256_file  # type: ignore[no-redef]
+    from worklist import load_worklist, sha256_file  # type: ignore[no-redef]
 
 
 class RobustnessError(RuntimeError):
