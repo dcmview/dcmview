@@ -231,7 +231,65 @@ jobs:
           artifact_digest="${DCMVIEW_CORPUS_ARTIFACT_DIGEST#sha256:}"
           [[ "$artifact_digest" =~ ^[0-9a-f]{64}$ ]] || { echo "artifact digest must be SHA-256 (raw or sha256: prefixed)" >&2; exit 2; }
           zip="$RUNNER_TEMP/dcmview-current-smoke.zip"
-          api="https://api.github.com/repos/${DCMVIEW_CORPUS_ARTIFACT_REPOSITORY}/actions/runs/${DCMVIEW_CORPUS_ARTIFACT_RUN_ID}/artifacts/${DCMVIEW_CORPUS_ARTIFACT_ID}/zip"
+          api_root="https://api.github.com/repos/${DCMVIEW_CORPUS_ARTIFACT_REPOSITORY}"
+          artifact_metadata="$RUNNER_TEMP/dcmview-current-smoke-artifact.json"
+          run_metadata="$RUNNER_TEMP/dcmview-current-smoke-run.json"
+          curl --fail --silent --show-error \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer ${DCMVIEW_CORPUS_ARTIFACT_TOKEN}" \
+            "$api_root/actions/artifacts/${DCMVIEW_CORPUS_ARTIFACT_ID}" --output "$artifact_metadata"
+          curl --fail --silent --show-error \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer ${DCMVIEW_CORPUS_ARTIFACT_TOKEN}" \
+            "$api_root/actions/runs/${DCMVIEW_CORPUS_ARTIFACT_RUN_ID}" --output "$run_metadata"
+          python - "$artifact_metadata" "$run_metadata" \
+            "$DCMVIEW_CORPUS_ARTIFACT_REPOSITORY" "$DCMVIEW_CORPUS_ARTIFACT_WORKFLOW" \
+            "$DCMVIEW_CORPUS_ARTIFACT_RUN_ID" "$DCMVIEW_CORPUS_ARTIFACT_ID" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          artifact_path, run_path, expected_repository, expected_workflow, expected_run_id, expected_artifact_id = sys.argv[1:]
+          artifact = json.loads(Path(artifact_path).read_text(encoding="utf-8"))
+          run = json.loads(Path(run_path).read_text(encoding="utf-8"))
+          if not isinstance(artifact, dict) or not isinstance(run, dict):
+              raise SystemExit("GitHub metadata responses must be JSON objects")
+
+          def numeric(value: object, label: str) -> int:
+              if isinstance(value, bool) or not isinstance(value, int):
+                  raise SystemExit(f"GitHub metadata {label} is not numeric")
+              return value
+
+          expected_run = int(expected_run_id)
+          expected_artifact = int(expected_artifact_id)
+          if numeric(artifact.get("id"), "artifact ID") != expected_artifact:
+              raise SystemExit("GitHub artifact metadata ID does not match the configured artifact ID")
+          if numeric(run.get("id"), "workflow run ID") != expected_run:
+              raise SystemExit("GitHub workflow run metadata ID does not match the configured run ID")
+          workflow_run = artifact.get("workflow_run")
+          if not isinstance(workflow_run, dict):
+              raise SystemExit("GitHub artifact metadata lacks workflow_run binding")
+          if numeric(workflow_run.get("id"), "artifact workflow run ID") != expected_run:
+              raise SystemExit("GitHub artifact is not attached to the configured workflow run")
+          repository = run.get("repository")
+          if not isinstance(repository, dict) or repository.get("full_name") != expected_repository:
+              raise SystemExit("GitHub workflow run repository does not match the configured repository")
+          repository_id = numeric(repository.get("id"), "workflow repository ID")
+          if numeric(workflow_run.get("repository_id"), "artifact repository ID") != repository_id:
+              raise SystemExit("GitHub artifact repository does not match the configured repository")
+          workflow_id = numeric(run.get("workflow_id"), "workflow ID")
+          artifact_workflow_id = workflow_run.get("workflow_id")
+          if artifact_workflow_id is not None and numeric(artifact_workflow_id, "artifact workflow ID") != workflow_id:
+              raise SystemExit("GitHub artifact workflow does not match the configured workflow run")
+          expected_path = expected_workflow
+          if not expected_path.startswith(".github/workflows/"):
+              expected_path = ".github/workflows/" + expected_path
+          if run.get("path") != expected_path:
+              raise SystemExit("GitHub workflow run path does not match the configured workflow")
+          if artifact.get("expired") is not False:
+              raise SystemExit("configured GitHub artifact is expired or missing expiry metadata")
+          PY
+          api="$api_root/actions/artifacts/${DCMVIEW_CORPUS_ARTIFACT_ID}/zip"
           curl --fail --location --silent --show-error \
             --header "Accept: application/vnd.github+json" \
             --header "Authorization: Bearer ${DCMVIEW_CORPUS_ARTIFACT_TOKEN}" \
@@ -242,7 +300,7 @@ jobs:
           test -f "$RUNNER_TEMP/dcmview-current-smoke/artifact-index.json"
       - name: Run the viewer-owned stored-artifact profile
         env:
-          DCMVIEW_COMPAT_CORPUS_ROOT: ${{ runner.temp }}/dcmview-current-smoke/smoke
+          DCMVIEW_COMPAT_CORPUS_ROOT: ${{ runner.temp }}/dcmview-current-smoke
           DCMVIEW_COMPAT_OUTPUT: ${{ runner.temp }}/dcmview-compatibility-artifact
         run: python scripts/check.py compatibility-artifact --install
       - name: Upload compatibility evidence
