@@ -13,8 +13,14 @@ on:
       corpus_artifact_id: {description: Numeric upload-artifact ID, required: true, type: string}
       corpus_artifact_digest: {description: SHA-256 digest of the downloaded Actions artifact ZIP, required: true, type: string}
       corpus_generator_revision: {description: Generator source revision in artifact-index.json, required: true, type: string}
-      corpus_generator_artifact_sha256: {description: Generator executable SHA-256 in artifact-index.json, required: true, type: string}
-      corpus_generator_artifact_size_bytes: {description: Generator executable size in artifact-index.json, required: true, type: string}
+      corpus_actions_zip_sha256: {description: Generator Actions ZIP SHA-256 in artifact-index.json, required: true, type: string}
+      corpus_actions_zip_size_bytes: {description: Generator Actions ZIP size in artifact-index.json, required: true, type: string}
+      corpus_nested_archive_sha256: {description: Generator nested archive SHA-256 in artifact-index.json, required: true, type: string}
+      corpus_nested_archive_size_bytes: {description: Generator nested archive size in artifact-index.json, required: true, type: string}
+      corpus_release_manifest_sha256: {description: Generator release manifest SHA-256 in artifact-index.json, required: true, type: string}
+      corpus_release_manifest_size_bytes: {description: Generator release manifest size in artifact-index.json, required: true, type: string}
+      corpus_installed_binary_sha256: {description: Installed generator binary SHA-256 in artifact-index.json, required: true, type: string}
+      corpus_installed_binary_size_bytes: {description: Installed generator binary size in artifact-index.json, required: true, type: string}
       corpus_generator_target: {description: Generator target in artifact-index.json, required: true, type: string}
       corpus_generator_toolchain: {description: Generator Rust toolchain in artifact-index.json, required: true, type: string}
       corpus_generator_features: {description: Comma-separated generator feature flags (empty when none), required: true, type: string}
@@ -155,15 +161,6 @@ jobs:
 
   compatibility-artifact:
     name: Stored current corpus compatibility smoke
-    if: >-
-      ${{
-        github.event_name == 'workflow_dispatch' ||
-        vars.DCMVIEW_CORPUS_ARTIFACT_REPOSITORY != '' ||
-        vars.DCMVIEW_CORPUS_ARTIFACT_RUN_ID != '' ||
-        vars.DCMVIEW_CORPUS_ARTIFACT_ID != '' ||
-        vars.DCMVIEW_CORPUS_ARTIFACT_DIGEST != '' ||
-        vars.DCMVIEW_CORPUS_GENERATOR_REVISION != ''
-      }}
     runs-on: ubuntu-22.04
     env:
       DCMVIEW_CORPUS_ARTIFACT_REPOSITORY: ${{ inputs.corpus_artifact_repository || vars.DCMVIEW_CORPUS_ARTIFACT_REPOSITORY }}
@@ -172,8 +169,14 @@ jobs:
       DCMVIEW_CORPUS_ARTIFACT_ID: ${{ inputs.corpus_artifact_id || vars.DCMVIEW_CORPUS_ARTIFACT_ID }}
       DCMVIEW_CORPUS_ARTIFACT_DIGEST: ${{ inputs.corpus_artifact_digest || vars.DCMVIEW_CORPUS_ARTIFACT_DIGEST }}
       DCMVIEW_CORPUS_GENERATOR_REVISION: ${{ inputs.corpus_generator_revision || vars.DCMVIEW_CORPUS_GENERATOR_REVISION }}
-      DCMVIEW_CORPUS_GENERATOR_ARTIFACT_SHA256: ${{ inputs.corpus_generator_artifact_sha256 || vars.DCMVIEW_CORPUS_GENERATOR_ARTIFACT_SHA256 }}
-      DCMVIEW_CORPUS_GENERATOR_ARTIFACT_SIZE_BYTES: ${{ inputs.corpus_generator_artifact_size_bytes || vars.DCMVIEW_CORPUS_GENERATOR_ARTIFACT_SIZE_BYTES }}
+      DCMVIEW_CORPUS_ACTIONS_ZIP_SHA256: ${{ inputs.corpus_actions_zip_sha256 || vars.DCMVIEW_CORPUS_ACTIONS_ZIP_SHA256 }}
+      DCMVIEW_CORPUS_ACTIONS_ZIP_SIZE_BYTES: ${{ inputs.corpus_actions_zip_size_bytes || vars.DCMVIEW_CORPUS_ACTIONS_ZIP_SIZE_BYTES }}
+      DCMVIEW_CORPUS_NESTED_ARCHIVE_SHA256: ${{ inputs.corpus_nested_archive_sha256 || vars.DCMVIEW_CORPUS_NESTED_ARCHIVE_SHA256 }}
+      DCMVIEW_CORPUS_NESTED_ARCHIVE_SIZE_BYTES: ${{ inputs.corpus_nested_archive_size_bytes || vars.DCMVIEW_CORPUS_NESTED_ARCHIVE_SIZE_BYTES }}
+      DCMVIEW_CORPUS_RELEASE_MANIFEST_SHA256: ${{ inputs.corpus_release_manifest_sha256 || vars.DCMVIEW_CORPUS_RELEASE_MANIFEST_SHA256 }}
+      DCMVIEW_CORPUS_RELEASE_MANIFEST_SIZE_BYTES: ${{ inputs.corpus_release_manifest_size_bytes || vars.DCMVIEW_CORPUS_RELEASE_MANIFEST_SIZE_BYTES }}
+      DCMVIEW_CORPUS_INSTALLED_BINARY_SHA256: ${{ inputs.corpus_installed_binary_sha256 || vars.DCMVIEW_CORPUS_INSTALLED_BINARY_SHA256 }}
+      DCMVIEW_CORPUS_INSTALLED_BINARY_SIZE_BYTES: ${{ inputs.corpus_installed_binary_size_bytes || vars.DCMVIEW_CORPUS_INSTALLED_BINARY_SIZE_BYTES }}
       DCMVIEW_CORPUS_GENERATOR_TARGET: ${{ inputs.corpus_generator_target || vars.DCMVIEW_CORPUS_GENERATOR_TARGET }}
       DCMVIEW_CORPUS_GENERATOR_TOOLCHAIN: ${{ inputs.corpus_generator_toolchain || vars.DCMVIEW_CORPUS_GENERATOR_TOOLCHAIN }}
       DCMVIEW_CORPUS_GENERATOR_FEATURES: ${{ inputs.corpus_generator_features || vars.DCMVIEW_CORPUS_GENERATOR_FEATURES }}
@@ -209,7 +212,10 @@ jobs:
             DCMVIEW_CORPUS_ARTIFACT_REPOSITORY DCMVIEW_CORPUS_ARTIFACT_WORKFLOW
             DCMVIEW_CORPUS_ARTIFACT_RUN_ID DCMVIEW_CORPUS_ARTIFACT_ID
             DCMVIEW_CORPUS_ARTIFACT_DIGEST DCMVIEW_CORPUS_GENERATOR_REVISION
-            DCMVIEW_CORPUS_GENERATOR_ARTIFACT_SHA256 DCMVIEW_CORPUS_GENERATOR_ARTIFACT_SIZE_BYTES
+            DCMVIEW_CORPUS_ACTIONS_ZIP_SHA256 DCMVIEW_CORPUS_ACTIONS_ZIP_SIZE_BYTES
+            DCMVIEW_CORPUS_NESTED_ARCHIVE_SHA256 DCMVIEW_CORPUS_NESTED_ARCHIVE_SIZE_BYTES
+            DCMVIEW_CORPUS_RELEASE_MANIFEST_SHA256 DCMVIEW_CORPUS_RELEASE_MANIFEST_SIZE_BYTES
+            DCMVIEW_CORPUS_INSTALLED_BINARY_SHA256 DCMVIEW_CORPUS_INSTALLED_BINARY_SIZE_BYTES
             DCMVIEW_CORPUS_GENERATOR_TARGET DCMVIEW_CORPUS_GENERATOR_TOOLCHAIN
             DCMVIEW_CORPUS_GENERATOR_FEATURES DCMVIEW_CORPUS_RUNTIME_IDENTITIES_SHA256
             DCMVIEW_CORPUS_DEFINITION_MANIFEST_SHA256 DCMVIEW_CORPUS_DEFINITION_SHA256

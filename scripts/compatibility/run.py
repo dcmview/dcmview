@@ -1996,8 +1996,14 @@ def _ensure_external_output(
 def _require_external_pins(args: argparse.Namespace) -> None:
     required = (
         "expected_generator_revision",
-        "expected_generator_artifact_sha256",
-        "expected_generator_artifact_size_bytes",
+        "expected_actions_zip_sha256",
+        "expected_actions_zip_size_bytes",
+        "expected_nested_archive_sha256",
+        "expected_nested_archive_size_bytes",
+        "expected_release_manifest_sha256",
+        "expected_release_manifest_size_bytes",
+        "expected_installed_binary_sha256",
+        "expected_installed_binary_size_bytes",
         "expected_target",
         "expected_toolchain",
         "expected_generator_features",
@@ -2038,8 +2044,14 @@ def run_campaign(args: argparse.Namespace) -> dict[str, Any]:
             expected_generator_version=args.expected_generator_version,
             expected_generator_features=args.expected_generator_features,
             expected_generator_revision=args.expected_generator_revision,
-            expected_generator_artifact_sha256=args.expected_generator_artifact_sha256,
-            expected_generator_artifact_size_bytes=args.expected_generator_artifact_size_bytes,
+            expected_actions_zip_sha256=args.expected_actions_zip_sha256,
+            expected_actions_zip_size_bytes=args.expected_actions_zip_size_bytes,
+            expected_nested_archive_sha256=args.expected_nested_archive_sha256,
+            expected_nested_archive_size_bytes=args.expected_nested_archive_size_bytes,
+            expected_release_manifest_sha256=args.expected_release_manifest_sha256,
+            expected_release_manifest_size_bytes=args.expected_release_manifest_size_bytes,
+            expected_installed_binary_sha256=args.expected_installed_binary_sha256,
+            expected_installed_binary_size_bytes=args.expected_installed_binary_size_bytes,
             expected_target=args.expected_target,
             expected_toolchain=args.expected_toolchain,
             expected_runtime_identities_sha256=args.expected_runtime_identities_sha256,
@@ -2289,13 +2301,40 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=os.environ.get("DCMVIEW_CORPUS_GENERATOR_REVISION"),
     )
     parser.add_argument(
-        "--expected-generator-artifact-sha256",
-        default=os.environ.get("DCMVIEW_CORPUS_GENERATOR_ARTIFACT_SHA256"),
+        "--expected-actions-zip-sha256",
+        default=os.environ.get("DCMVIEW_CORPUS_ACTIONS_ZIP_SHA256"),
     )
     parser.add_argument(
-        "--expected-generator-artifact-size-bytes",
+        "--expected-actions-zip-size-bytes",
         type=int,
-        default=os.environ.get("DCMVIEW_CORPUS_GENERATOR_ARTIFACT_SIZE_BYTES"),
+        default=os.environ.get("DCMVIEW_CORPUS_ACTIONS_ZIP_SIZE_BYTES"),
+    )
+    parser.add_argument(
+        "--expected-nested-archive-sha256",
+        default=os.environ.get("DCMVIEW_CORPUS_NESTED_ARCHIVE_SHA256"),
+    )
+    parser.add_argument(
+        "--expected-nested-archive-size-bytes",
+        type=int,
+        default=os.environ.get("DCMVIEW_CORPUS_NESTED_ARCHIVE_SIZE_BYTES"),
+    )
+    parser.add_argument(
+        "--expected-release-manifest-sha256",
+        default=os.environ.get("DCMVIEW_CORPUS_RELEASE_MANIFEST_SHA256"),
+    )
+    parser.add_argument(
+        "--expected-release-manifest-size-bytes",
+        type=int,
+        default=os.environ.get("DCMVIEW_CORPUS_RELEASE_MANIFEST_SIZE_BYTES"),
+    )
+    parser.add_argument(
+        "--expected-installed-binary-sha256",
+        default=os.environ.get("DCMVIEW_CORPUS_INSTALLED_BINARY_SHA256"),
+    )
+    parser.add_argument(
+        "--expected-installed-binary-size-bytes",
+        type=int,
+        default=os.environ.get("DCMVIEW_CORPUS_INSTALLED_BINARY_SIZE_BYTES"),
     )
     parser.add_argument("--expected-target", default=os.environ.get("DCMVIEW_CORPUS_GENERATOR_TARGET"))
     parser.add_argument("--expected-toolchain", default=os.environ.get("DCMVIEW_CORPUS_GENERATOR_TOOLCHAIN"))

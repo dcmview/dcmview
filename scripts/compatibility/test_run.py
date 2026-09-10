@@ -71,6 +71,42 @@ class RunnerTests(unittest.TestCase):
         self.assertFalse(hasattr(args, "worklist"))
         self.assertEqual(args.expected_seed, 1)
 
+    def test_v2_release_provenance_pins_are_forwarded_by_the_cli(self) -> None:
+        args = parse_args(
+            [
+                "--corpus-root",
+                "/tmp/current-smoke",
+                "--binary",
+                "/tmp/dcmview",
+                "--output",
+                "/tmp/compatibility-output",
+                "--expected-actions-zip-sha256",
+                "a" * 64,
+                "--expected-actions-zip-size-bytes",
+                "101",
+                "--expected-nested-archive-sha256",
+                "b" * 64,
+                "--expected-nested-archive-size-bytes",
+                "102",
+                "--expected-release-manifest-sha256",
+                "c" * 64,
+                "--expected-release-manifest-size-bytes",
+                "103",
+                "--expected-installed-binary-sha256",
+                "d" * 64,
+                "--expected-installed-binary-size-bytes",
+                "104",
+            ]
+        )
+        self.assertEqual(args.expected_actions_zip_sha256, "a" * 64)
+        self.assertEqual(args.expected_actions_zip_size_bytes, 101)
+        self.assertEqual(args.expected_nested_archive_sha256, "b" * 64)
+        self.assertEqual(args.expected_nested_archive_size_bytes, 102)
+        self.assertEqual(args.expected_release_manifest_sha256, "c" * 64)
+        self.assertEqual(args.expected_release_manifest_size_bytes, 103)
+        self.assertEqual(args.expected_installed_binary_sha256, "d" * 64)
+        self.assertEqual(args.expected_installed_binary_size_bytes, 104)
+
     def test_legacy_checkout_sources_are_not_cli_inputs(self) -> None:
         with contextlib.redirect_stderr(io.StringIO()):
             with self.assertRaises(SystemExit):

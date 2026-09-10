@@ -380,17 +380,19 @@ installation and VS Code Electron integration can also use network/cache state;
 - `scripts/compatibility/run.py --corpus-root` consumes the exact verified
   producer container (`smoke.tar.gz` plus sibling `artifact-index.json`) and is
   the only valid-corpus integration path. It verifies the immutable index
-  binding, generator/target/toolchain/features/runtime pins, both definition
-  identities, generated manifest digest/size, profile/seed, archive
-  digest/size, and every payload hash/size. The tar is extracted with bounded
+  binding, the v2 generator release descriptor (revision, Actions ZIP/nested
+  archive/release manifest/installed binary digests and sizes, closed upstream
+  identity), target/toolchain/features/runtime pins, both definition identities,
+  generated manifest digest/size, profile/seed, archive digest/size, and every
+  payload hash/size. The tar is extracted with bounded
   no-follow reads into a private closed tree; symlinks, hard links, special
   entries, traversal, duplicates, extras, and TOCTOU changes fail closed before
   every payload is passed to the real HTTP runner. The valid-corpus runner,
   isolated negative runner, stress baseline, and payload-free deterministic fuzz
   qualification produce separate bounded reports and SHA-256 artifact indexes.
-  The stored-artifact profile is wired into CI only when its complete immutable
-  locator and index pin set is configured; partial configuration fails closed,
-  and it never regenerates corpus data. The companion
+  The stored-artifact profile is always present in CI and fails closed when its
+  complete immutable locator and index pin set is absent or partial; it never
+  silently skips and never regenerates corpus data. The companion
   `viewer-report.schema.json` is viewer-owned, so this path does not load a
   generator-owned schema from the artifact or a sibling checkout. The generic
   0.2 worklist parser remains only for caller-supplied robustness profiles.

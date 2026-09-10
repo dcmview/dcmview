@@ -125,7 +125,30 @@ class ExternalArtifactTests(unittest.TestCase):
             "generator": {
                 "product": {"name": "synth-dicom-gen", "version": "0.3.0"},
                 "source_revision": "a" * 40,
-                "artifact": {"sha256": "b" * 64, "size_bytes": 123},
+                "actions_zip": {"sha256": "1" * 64, "size_bytes": 101},
+                "nested_archive": {
+                    "path": "synth-dicom-gen.tar.gz",
+                    "sha256": "2" * 64,
+                    "size_bytes": 102,
+                },
+                "release_manifest": {
+                    "path": "synth-dicom-gen/release-manifest.json",
+                    "sha256": "3" * 64,
+                    "size_bytes": 103,
+                },
+                "binary": {
+                    "path": "synth-dicom-gen/bin/synth-dicom-gen",
+                    "sha256": "b" * 64,
+                    "size_bytes": 123,
+                },
+                "upstream": {
+                    "repository": "fixture/synth-dicom-gen",
+                    "workflow": ".github/workflows/release-candidate.yml",
+                    "default_branch": "main",
+                    "run_id": 101,
+                    "artifact_id": 202,
+                    "artifact_name": "synth-dicom-gen-release-candidate-fixture",
+                },
                 "target": "aarch64-apple-darwin",
                 "rust_toolchain": "rustc 1.88.0 (fake)",
                 "enabled_features": [],
@@ -182,7 +205,7 @@ class ExternalArtifactTests(unittest.TestCase):
         binding["archive_sha256"] = archive_sha
         binding_id = _sha256(_canonical(binding))
         index = {
-            "artifact_descriptor_schema_version": "1.0.0",
+            "artifact_descriptor_schema_version": "2.0.0",
             "artifact_name": (
                 "dcmview-smoke-s" + "a" * 40 + "-a" + "b" * 64 + "-d" + "c" * 64 + "-b" + binding_id[:32]
             ),
@@ -193,8 +216,14 @@ class ExternalArtifactTests(unittest.TestCase):
             "archive_size_bytes": len(archive_bytes),
             "archive_kind": "deterministic_tar_gz",
             "source_revision": "a" * 40,
-            "generator_artifact_sha256": "b" * 64,
-            "generator_artifact_size_bytes": 123,
+            "actions_zip_sha256": "1" * 64,
+            "actions_zip_size_bytes": 101,
+            "nested_archive_sha256": "2" * 64,
+            "nested_archive_size_bytes": 102,
+            "release_manifest_sha256": "3" * 64,
+            "release_manifest_size_bytes": 103,
+            "installed_binary_sha256": "b" * 64,
+            "installed_binary_size_bytes": 123,
             "target": "aarch64-apple-darwin",
             "rust_toolchain": "rustc 1.88.0 (fake)",
             "enabled_features": [],
@@ -223,8 +252,14 @@ class ExternalArtifactTests(unittest.TestCase):
     def pins(self, index: dict[str, object]) -> dict[str, object]:
         return {
             "expected_generator_revision": index["source_revision"],
-            "expected_generator_artifact_sha256": index["generator_artifact_sha256"],
-            "expected_generator_artifact_size_bytes": index["generator_artifact_size_bytes"],
+            "expected_actions_zip_sha256": index["actions_zip_sha256"],
+            "expected_actions_zip_size_bytes": index["actions_zip_size_bytes"],
+            "expected_nested_archive_sha256": index["nested_archive_sha256"],
+            "expected_nested_archive_size_bytes": index["nested_archive_size_bytes"],
+            "expected_release_manifest_sha256": index["release_manifest_sha256"],
+            "expected_release_manifest_size_bytes": index["release_manifest_size_bytes"],
+            "expected_installed_binary_sha256": index["installed_binary_sha256"],
+            "expected_installed_binary_size_bytes": index["installed_binary_size_bytes"],
             "expected_target": index["target"],
             "expected_toolchain": index["rust_toolchain"],
             "expected_generator_features": (),

@@ -20,8 +20,14 @@ python scripts/compatibility/run.py \
   --binary target/debug/dcmview \
   --output /outside/smoke-run-1 \
   --expected-generator-revision "$DCMVIEW_CORPUS_GENERATOR_REVISION" \
-  --expected-generator-artifact-sha256 "$DCMVIEW_CORPUS_GENERATOR_ARTIFACT_SHA256" \
-  --expected-generator-artifact-size-bytes "$DCMVIEW_CORPUS_GENERATOR_ARTIFACT_SIZE_BYTES" \
+  --expected-actions-zip-sha256 "$DCMVIEW_CORPUS_ACTIONS_ZIP_SHA256" \
+  --expected-actions-zip-size-bytes "$DCMVIEW_CORPUS_ACTIONS_ZIP_SIZE_BYTES" \
+  --expected-nested-archive-sha256 "$DCMVIEW_CORPUS_NESTED_ARCHIVE_SHA256" \
+  --expected-nested-archive-size-bytes "$DCMVIEW_CORPUS_NESTED_ARCHIVE_SIZE_BYTES" \
+  --expected-release-manifest-sha256 "$DCMVIEW_CORPUS_RELEASE_MANIFEST_SHA256" \
+  --expected-release-manifest-size-bytes "$DCMVIEW_CORPUS_RELEASE_MANIFEST_SIZE_BYTES" \
+  --expected-installed-binary-sha256 "$DCMVIEW_CORPUS_INSTALLED_BINARY_SHA256" \
+  --expected-installed-binary-size-bytes "$DCMVIEW_CORPUS_INSTALLED_BINARY_SIZE_BYTES" \
   --expected-target "$DCMVIEW_CORPUS_GENERATOR_TARGET" \
   --expected-toolchain "$DCMVIEW_CORPUS_GENERATOR_TOOLCHAIN" \
   --expected-runtime-identities-sha256 "$DCMVIEW_CORPUS_RUNTIME_IDENTITIES_SHA256" \
@@ -36,10 +42,12 @@ python scripts/compatibility/run.py \
   --expected-archive-size-bytes "$DCMVIEW_CORPUS_ARCHIVE_SIZE_BYTES"
 ```
 
-The consumer verifies the archive digest and size, the index binding ID, the
-generator revision/artifact SHA-256 and size/target/toolchain/features,
-runtime identities, both definition digests, generated manifest digest/size,
-profile/seed, and every payload hash/size. It rejects symlinks, hard links,
+The consumer accepts only artifact descriptor schema `2.0.0`. It verifies the
+archive digest and size, the index binding ID, the generator revision, Actions
+ZIP/nested archive/release manifest/installed binary SHA-256 and size pairs,
+the closed generator release descriptor and upstream identity, target/toolchain/
+features, runtime identities, both definition digests, generated manifest
+digest/size, profile/seed, and every payload hash/size. It rejects symlinks, hard links,
 special entries, path traversal, duplicate members, undeclared outer files,
 and TOCTOU changes. The archive is extracted into a private closed tree with
 no-follow reads; only after the tree is closed do its DICOM paths enter the
@@ -60,10 +68,11 @@ repository, workflow run ID, and numeric artifact ID, verifies the downloaded
 ZIP digest (the GitHub `sha256:` prefix is accepted and normalized), and safely extracts the producer container with
 `extract_github_artifact.py`. The repository variables are the corresponding
 `DCMVIEW_CORPUS_ARTIFACT_*` locator/digest values plus the complete
-`DCMVIEW_CORPUS_*` index-pin set used above. A partially configured variable
-set fails closed; an entirely unconfigured lane is skipped. No mutable name or
-`latest` lookup is accepted, and ordinary viewer jobs still do not check out or
-build the generator.
+`DCMVIEW_CORPUS_*` index-pin set used above. The compatibility job is always
+present in ordinary viewer CI: an absent or partial variable set fails closed
+before download, so an unconfigured lane cannot silently pass. No mutable name
+or `latest` lookup is accepted, and ordinary viewer jobs still do not check out
+or build the generator.
 
 ## Robustness profiles
 

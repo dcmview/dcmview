@@ -478,14 +478,88 @@ def _expected_pin(value: Any, field: str) -> Any:
     return value
 
 
+def _descriptor(value: Any, field: str, *, has_path: bool) -> dict[str, Any]:
+    """Validate one immutable generator release descriptor."""
+    descriptor = _mapping(value, field)
+    expected_fields = {"sha256", "size_bytes"}
+    if has_path:
+        expected_fields.add("path")
+    if set(descriptor) != expected_fields:
+        raise ArtifactError(f"{field} has an invalid descriptor shape")
+    _require_sha256(descriptor.get("sha256"), f"{field}.sha256")
+    size = descriptor.get("size_bytes")
+    if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+        raise ArtifactError(f"{field}.size_bytes must be a positive integer")
+    if has_path:
+        _relative_path(descriptor.get("path"), f"{field}.path")
+    return descriptor
+
+
+def _verify_upstream_identity(value: Any, field: str) -> dict[str, Any]:
+    """Validate the generator release's trusted upstream identity shape."""
+    upstream = _mapping(value, field)
+    expected_fields = {
+        "repository",
+        "workflow",
+        "default_branch",
+        "run_id",
+        "artifact_id",
+        "artifact_name",
+    }
+    if set(upstream) != expected_fields:
+        raise ArtifactError(f"{field} has an invalid upstream identity shape")
+    repository = upstream.get("repository")
+    if (
+        not isinstance(repository, str)
+        or not repository
+        or repository.count("/") != 1
+        or any(not component for component in repository.split("/"))
+        or "\\" in repository
+        or any(character.isspace() for character in repository)
+    ):
+        raise ArtifactError(f"{field}.repository is invalid")
+    _relative_path(upstream.get("workflow"), f"{field}.workflow")
+    branch = upstream.get("default_branch")
+    if (
+        not isinstance(branch, str)
+        or not branch
+        or "/" in branch
+        or "\\" in branch
+        or "\x00" in branch
+        or any(character.isspace() for character in branch)
+    ):
+        raise ArtifactError(f"{field}.default_branch is invalid")
+    for key in ("run_id", "artifact_id"):
+        value = upstream.get(key)
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise ArtifactError(f"{field}.{key} must be a positive integer")
+    artifact_name = upstream.get("artifact_name")
+    if (
+        not isinstance(artifact_name, str)
+        or not artifact_name
+        or len(artifact_name) > 255
+        or "\x00" in artifact_name
+        or "\n" in artifact_name
+        or "\r" in artifact_name
+    ):
+        raise ArtifactError(f"{field}.artifact_name is invalid")
+    return upstream
+
+
 def _verify_index(
     index: dict[str, Any],
     *,
     archive_sha256: str,
     archive_size: int,
     expected_generator_revision: str | None,
-    expected_generator_artifact_sha256: str | None,
-    expected_generator_artifact_size_bytes: int | None,
+    expected_actions_zip_sha256: str | None,
+    expected_actions_zip_size_bytes: int | None,
+    expected_nested_archive_sha256: str | None,
+    expected_nested_archive_size_bytes: int | None,
+    expected_release_manifest_sha256: str | None,
+    expected_release_manifest_size_bytes: int | None,
+    expected_installed_binary_sha256: str | None,
+    expected_installed_binary_size_bytes: int | None,
     expected_target: str | None,
     expected_toolchain: str | None,
     expected_generator_features: tuple[str, ...] | None,
@@ -512,8 +586,14 @@ def _verify_index(
         "archive_size_bytes",
         "archive_kind",
         "source_revision",
-        "generator_artifact_sha256",
-        "generator_artifact_size_bytes",
+        "actions_zip_sha256",
+        "actions_zip_size_bytes",
+        "nested_archive_sha256",
+        "nested_archive_size_bytes",
+        "release_manifest_sha256",
+        "release_manifest_size_bytes",
+        "installed_binary_sha256",
+        "installed_binary_size_bytes",
         "target",
         "rust_toolchain",
         "enabled_features",
@@ -533,7 +613,7 @@ def _verify_index(
     extra_fields = sorted(set(index) - expected_fields)
     if extra_fields:
         raise ArtifactError(f"artifact-index contains undeclared fields: {extra_fields}")
-    if index.get("artifact_descriptor_schema_version") != "1.0.0":
+    if index.get("artifact_descriptor_schema_version") != "2.0.0":
         raise ArtifactError("unsupported artifact-index schema")
     for field in (
         "artifact_name",
@@ -568,10 +648,23 @@ def _verify_index(
             f"archive size mismatch: index declares {archive_size_declared}, observed {archive_size}"
         )
 
-    artifact_sha = _require_sha256(index.get("generator_artifact_sha256"), "artifact-index.generator_artifact_sha256")
-    artifact_size = index.get("generator_artifact_size_bytes")
-    if not isinstance(artifact_size, int) or isinstance(artifact_size, bool) or artifact_size < 0:
-        raise ArtifactError("artifact-index.generator_artifact_size_bytes must be a non-negative integer")
+    descriptor_pairs = {
+        "actions_zip": ("actions_zip_sha256", "actions_zip_size_bytes"),
+        "nested_archive": ("nested_archive_sha256", "nested_archive_size_bytes"),
+        "release_manifest": ("release_manifest_sha256", "release_manifest_size_bytes"),
+        "installed_binary": ("installed_binary_sha256", "installed_binary_size_bytes"),
+    }
+    descriptors: dict[str, tuple[str, int]] = {}
+    for descriptor_name, (sha_field, size_field) in descriptor_pairs.items():
+        digest = _require_sha256(index.get(sha_field), f"artifact-index.{sha_field}")
+        size = index.get(size_field)
+        if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+            raise ArtifactError(f"artifact-index.{size_field} must be a positive integer")
+        descriptors[descriptor_name] = (digest, size)
+    actions_zip_sha, actions_zip_size = descriptors["actions_zip"]
+    nested_archive_sha, nested_archive_size = descriptors["nested_archive"]
+    release_manifest_sha, release_manifest_size = descriptors["release_manifest"]
+    installed_binary_sha, installed_binary_size = descriptors["installed_binary"]
     features = index.get("enabled_features")
     if not isinstance(features, list) or not all(isinstance(feature, str) and feature for feature in features):
         raise ArtifactError("artifact-index.enabled_features must be a string list")
@@ -601,7 +694,7 @@ def _verify_index(
     if binding_id != binding_sha:
         raise ArtifactError("artifact-index binding_id and binding_sha256 differ")
     expected_artifact_name = (
-        f"dcmview-smoke-s{source_revision}-a{artifact_sha}-d"
+        f"dcmview-smoke-s{source_revision}-a{installed_binary_sha}-d"
         f"{definition_manifest_sha}-b{binding_id[:32]}"
     )
     if index.get("artifact_name") != expected_artifact_name:
@@ -618,13 +711,69 @@ def _verify_index(
     run_binding = _mapping(binding.get("run"), "artifact-index.binding.run")
     runtime_binding = _mapping(binding.get("runtime"), "artifact-index.binding.runtime")
     payload_binding = _mapping(binding.get("payload"), "artifact-index.binding.payload")
-    generator_artifact = _mapping(
-        generator_binding.get("artifact"), "artifact-index.binding.generator.artifact"
+    expected_generator_fields = {
+        "product",
+        "source_revision",
+        "actions_zip",
+        "nested_archive",
+        "release_manifest",
+        "binary",
+        "upstream",
+        "target",
+        "rust_toolchain",
+        "enabled_features",
+    }
+    if set(generator_binding) != expected_generator_fields:
+        raise ArtifactError("artifact-index.binding.generator has an invalid field set")
+    product = _mapping(generator_binding.get("product"), "artifact-index.binding.generator.product")
+    if set(product) != {"name", "version"} or product.get("name") != "synth-dicom-gen":
+        raise ArtifactError("artifact-index.binding.generator.product identity is invalid")
+    if not isinstance(product.get("version"), str) or not product["version"]:
+        raise ArtifactError("artifact-index.binding.generator.product.version is invalid")
+    generator_actions_zip = _descriptor(
+        generator_binding.get("actions_zip"),
+        "artifact-index.binding.generator.actions_zip",
+        has_path=False,
+    )
+    generator_nested_archive = _descriptor(
+        generator_binding.get("nested_archive"),
+        "artifact-index.binding.generator.nested_archive",
+        has_path=True,
+    )
+    if not str(generator_nested_archive["path"]).lower().endswith(".tar.gz"):
+        raise ArtifactError("artifact-index.binding.generator.nested_archive.path is not a tar.gz")
+    generator_release_manifest = _descriptor(
+        generator_binding.get("release_manifest"),
+        "artifact-index.binding.generator.release_manifest",
+        has_path=True,
+    )
+    generator_binary = _descriptor(
+        generator_binding.get("binary"),
+        "artifact-index.binding.generator.binary",
+        has_path=True,
+    )
+    if (
+        PurePosixPath(str(generator_release_manifest["path"])).as_posix().casefold()
+        == PurePosixPath(str(generator_binary["path"])).as_posix().casefold()
+    ):
+        raise ArtifactError("artifact-index generator release manifest and binary paths collide")
+    upstream = _verify_upstream_identity(
+        generator_binding.get("upstream"),
+        "artifact-index.binding.generator.upstream",
     )
     if generator_binding.get("source_revision") != source_revision:
         raise ArtifactError("artifact-index generator source revision is inconsistent")
-    if generator_artifact.get("sha256") != artifact_sha or generator_artifact.get("size_bytes") != artifact_size:
-        raise ArtifactError("artifact-index generator artifact identity is inconsistent")
+    if (
+        generator_actions_zip.get("sha256") != actions_zip_sha
+        or generator_actions_zip.get("size_bytes") != actions_zip_size
+        or generator_nested_archive.get("sha256") != nested_archive_sha
+        or generator_nested_archive.get("size_bytes") != nested_archive_size
+        or generator_release_manifest.get("sha256") != release_manifest_sha
+        or generator_release_manifest.get("size_bytes") != release_manifest_size
+        or generator_binary.get("sha256") != installed_binary_sha
+        or generator_binary.get("size_bytes") != installed_binary_size
+    ):
+        raise ArtifactError("artifact-index generator release descriptor identity is inconsistent")
     if generator_binding.get("target") != index["target"] or generator_binding.get("rust_toolchain") != index["rust_toolchain"]:
         raise ArtifactError("artifact-index generator target/toolchain identity is inconsistent")
     if generator_binding.get("enabled_features") != features:
@@ -663,7 +812,10 @@ def _verify_index(
             raise ArtifactError(f"artifact-index payload {key} size is invalid")
     expected_pairs = (
         (expected_generator_revision, source_revision, "generator revision"),
-        (expected_generator_artifact_sha256, artifact_sha, "generator artifact SHA-256"),
+        (expected_actions_zip_sha256, actions_zip_sha, "Actions ZIP SHA-256"),
+        (expected_nested_archive_sha256, nested_archive_sha, "nested archive SHA-256"),
+        (expected_release_manifest_sha256, release_manifest_sha, "release manifest SHA-256"),
+        (expected_installed_binary_sha256, installed_binary_sha, "installed binary SHA-256"),
         (expected_target, index["target"], "generator target"),
         (expected_toolchain, index["rust_toolchain"], "generator toolchain"),
         (expected_definition_manifest_sha256, definition_manifest_sha, "definition manifest SHA-256"),
@@ -675,8 +827,14 @@ def _verify_index(
     )
     if required_pins:
         _expected_pin(expected_generator_revision, "generator revision")
-        _expected_pin(expected_generator_artifact_sha256, "generator artifact SHA-256")
-        _expected_pin(expected_generator_artifact_size_bytes, "generator artifact size")
+        _expected_pin(expected_actions_zip_sha256, "Actions ZIP SHA-256")
+        _expected_pin(expected_actions_zip_size_bytes, "Actions ZIP size")
+        _expected_pin(expected_nested_archive_sha256, "nested archive SHA-256")
+        _expected_pin(expected_nested_archive_size_bytes, "nested archive size")
+        _expected_pin(expected_release_manifest_sha256, "release manifest SHA-256")
+        _expected_pin(expected_release_manifest_size_bytes, "release manifest size")
+        _expected_pin(expected_installed_binary_sha256, "installed binary SHA-256")
+        _expected_pin(expected_installed_binary_size_bytes, "installed binary size")
         _expected_pin(expected_target, "generator target")
         _expected_pin(expected_toolchain, "generator toolchain")
         _expected_pin(expected_generator_features, "generator features")
@@ -694,8 +852,15 @@ def _verify_index(
     for expected, observed, label in expected_pairs:
         if expected is not None and expected != observed:
             raise ArtifactError(f"{label} mismatch: expected {expected!r}, observed {observed!r}")
-    if expected_generator_artifact_size_bytes is not None and expected_generator_artifact_size_bytes != artifact_size:
-        raise ArtifactError("generator artifact size mismatch")
+    expected_descriptor_sizes = (
+        (expected_actions_zip_size_bytes, actions_zip_size, "Actions ZIP size"),
+        (expected_nested_archive_size_bytes, nested_archive_size, "nested archive size"),
+        (expected_release_manifest_size_bytes, release_manifest_size, "release manifest size"),
+        (expected_installed_binary_size_bytes, installed_binary_size, "installed binary size"),
+    )
+    for expected_size, observed_size, label in expected_descriptor_sizes:
+        if expected_size is not None and expected_size != observed_size:
+            raise ArtifactError(f"{label} mismatch")
     if expected_generator_features is not None and tuple(features) != tuple(expected_generator_features):
         raise ArtifactError(f"generator features mismatch: expected {list(expected_generator_features)!r}, observed {features!r}")
     if expected_runtime_identities_sha256 is not None and runtime_sha != expected_runtime_identities_sha256:
@@ -707,10 +872,11 @@ def _verify_index(
     if expected_archive_size_bytes is not None and expected_archive_size_bytes != archive_size:
         raise ArtifactError("archive size pin mismatch")
     if expected_generator_version is not None:
-        product = _mapping(generator_binding.get("product"), "artifact-index.binding.generator.product")
         if product.get("version") != expected_generator_version:
             raise ArtifactError("generator version mismatch")
     retrieval = _mapping(index.get("retrieval"), "artifact-index.retrieval")
+    if set(retrieval) != {"repository", "workflow", "run_id", "artifact_id", "artifact_digest"}:
+        raise ArtifactError("artifact-index.retrieval has an invalid field set")
     if retrieval.get("repository") != PRODUCER_REPOSITORY or retrieval.get("workflow") != PRODUCER_WORKFLOW:
         raise ArtifactError("artifact-index retrieval origin is not the trusted producer workflow")
     for field in ("run_id", "artifact_id", "artifact_digest"):
@@ -718,8 +884,15 @@ def _verify_index(
             raise ArtifactError("artifact-index retrieval fields must remain unset until upload")
     return {
         "source_revision": source_revision,
-        "generator_artifact_sha256": artifact_sha,
-        "generator_artifact_size_bytes": artifact_size,
+        "actions_zip_sha256": actions_zip_sha,
+        "actions_zip_size_bytes": actions_zip_size,
+        "nested_archive_sha256": nested_archive_sha,
+        "nested_archive_size_bytes": nested_archive_size,
+        "release_manifest_sha256": release_manifest_sha,
+        "release_manifest_size_bytes": release_manifest_size,
+        "installed_binary_sha256": installed_binary_sha,
+        "installed_binary_size_bytes": installed_binary_size,
+        "generator_upstream": upstream,
         "target": index["target"],
         "toolchain": index["rust_toolchain"],
         "features": list(features),
@@ -883,8 +1056,14 @@ def verify_external_artifact(
     expected_generator_version: str | None = None,
     expected_generator_features: tuple[str, ...] | None = None,
     expected_generator_revision: str | None = None,
-    expected_generator_artifact_sha256: str | None = None,
-    expected_generator_artifact_size_bytes: int | None = None,
+    expected_actions_zip_sha256: str | None = None,
+    expected_actions_zip_size_bytes: int | None = None,
+    expected_nested_archive_sha256: str | None = None,
+    expected_nested_archive_size_bytes: int | None = None,
+    expected_release_manifest_sha256: str | None = None,
+    expected_release_manifest_size_bytes: int | None = None,
+    expected_installed_binary_sha256: str | None = None,
+    expected_installed_binary_size_bytes: int | None = None,
     expected_target: str | None = None,
     expected_toolchain: str | None = None,
     expected_runtime_identities_sha256: str | None = None,
@@ -940,8 +1119,14 @@ def verify_external_artifact(
         archive_sha256=archive_sha256,
         archive_size=archive_size,
         expected_generator_revision=expected_generator_revision,
-        expected_generator_artifact_sha256=expected_generator_artifact_sha256,
-        expected_generator_artifact_size_bytes=expected_generator_artifact_size_bytes,
+        expected_actions_zip_sha256=expected_actions_zip_sha256,
+        expected_actions_zip_size_bytes=expected_actions_zip_size_bytes,
+        expected_nested_archive_sha256=expected_nested_archive_sha256,
+        expected_nested_archive_size_bytes=expected_nested_archive_size_bytes,
+        expected_release_manifest_sha256=expected_release_manifest_sha256,
+        expected_release_manifest_size_bytes=expected_release_manifest_size_bytes,
+        expected_installed_binary_sha256=expected_installed_binary_sha256,
+        expected_installed_binary_size_bytes=expected_installed_binary_size_bytes,
         expected_target=expected_target,
         expected_toolchain=expected_toolchain,
         expected_generator_features=expected_generator_features,
@@ -1172,8 +1357,14 @@ def build_external_worklist(
     expected_generator_version: str | None = None,
     expected_generator_features: tuple[str, ...] | None = None,
     expected_generator_revision: str | None = None,
-    expected_generator_artifact_sha256: str | None = None,
-    expected_generator_artifact_size_bytes: int | None = None,
+    expected_actions_zip_sha256: str | None = None,
+    expected_actions_zip_size_bytes: int | None = None,
+    expected_nested_archive_sha256: str | None = None,
+    expected_nested_archive_size_bytes: int | None = None,
+    expected_release_manifest_sha256: str | None = None,
+    expected_release_manifest_size_bytes: int | None = None,
+    expected_installed_binary_sha256: str | None = None,
+    expected_installed_binary_size_bytes: int | None = None,
     expected_target: str | None = None,
     expected_toolchain: str | None = None,
     expected_runtime_identities_sha256: str | None = None,
@@ -1194,8 +1385,14 @@ def build_external_worklist(
         expected_generator_version=expected_generator_version,
         expected_generator_features=expected_generator_features,
         expected_generator_revision=expected_generator_revision,
-        expected_generator_artifact_sha256=expected_generator_artifact_sha256,
-        expected_generator_artifact_size_bytes=expected_generator_artifact_size_bytes,
+        expected_actions_zip_sha256=expected_actions_zip_sha256,
+        expected_actions_zip_size_bytes=expected_actions_zip_size_bytes,
+        expected_nested_archive_sha256=expected_nested_archive_sha256,
+        expected_nested_archive_size_bytes=expected_nested_archive_size_bytes,
+        expected_release_manifest_sha256=expected_release_manifest_sha256,
+        expected_release_manifest_size_bytes=expected_release_manifest_size_bytes,
+        expected_installed_binary_sha256=expected_installed_binary_sha256,
+        expected_installed_binary_size_bytes=expected_installed_binary_size_bytes,
         expected_target=expected_target,
         expected_toolchain=expected_toolchain,
         expected_runtime_identities_sha256=expected_runtime_identities_sha256,

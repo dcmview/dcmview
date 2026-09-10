@@ -43,6 +43,21 @@ class StoredArtifactWorkflowTests(unittest.TestCase):
         ):
             self.assertIn(check, self.workflow)
 
+    def test_stored_artifact_job_is_not_conditionally_skipped_and_uses_v2_pins(self) -> None:
+        job = self.workflow.split("  compatibility-artifact:", 1)[1].split("\n  vscode-compile:", 1)[0]
+        self.assertNotIn("\n    if:", job)
+        for name in (
+            "DCMVIEW_CORPUS_ACTIONS_ZIP_SHA256",
+            "DCMVIEW_CORPUS_ACTIONS_ZIP_SIZE_BYTES",
+            "DCMVIEW_CORPUS_NESTED_ARCHIVE_SHA256",
+            "DCMVIEW_CORPUS_NESTED_ARCHIVE_SIZE_BYTES",
+            "DCMVIEW_CORPUS_RELEASE_MANIFEST_SHA256",
+            "DCMVIEW_CORPUS_RELEASE_MANIFEST_SIZE_BYTES",
+            "DCMVIEW_CORPUS_INSTALLED_BINARY_SHA256",
+            "DCMVIEW_CORPUS_INSTALLED_BINARY_SIZE_BYTES",
+        ):
+            self.assertIn(name, job)
+
     def test_metadata_validator_rejects_untrusted_run_fixtures(self) -> None:
         artifact = {
             "id": 42,
