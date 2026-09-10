@@ -70,7 +70,15 @@ def cancellation_probe(
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
-    worklist, entries = load_profile(args.worklist.resolve(), "stress_files", "stress")
+    loaded = load_profile(args.worklist.resolve(), "stress_files", "stress")
+    try:
+        return _run_loaded(args, loaded)
+    finally:
+        loaded.close()
+
+
+def _run_loaded(args: argparse.Namespace, loaded: Any) -> dict[str, Any]:
+    worklist, entries = loaded.worklist, loaded.entries
     scenarios = worklist["models"].get("stress_scenarios", [])
     if not entries: raise RobustnessError("stress_files model is empty")
     identity = viewer_identity(args.binary); viewer_root = Path(__file__).resolve().parents[2]

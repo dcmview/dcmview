@@ -78,7 +78,15 @@ def exercise(payload: bytes, binary: Path, healthy: Path, viewer_root: Path, arg
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
-    worklist, qualifications = load_profile(args.worklist.resolve(), "fuzz_qualifications", "fuzz")
+    loaded = load_profile(args.worklist.resolve(), "fuzz_qualifications", "fuzz")
+    try:
+        return _run_loaded(args, loaded)
+    finally:
+        loaded.close()
+
+
+def _run_loaded(args: argparse.Namespace, loaded: Any) -> dict[str, Any]:
+    worklist, qualifications = loaded.worklist, loaded.entries
     if len(qualifications) != 1: raise RobustnessError(f"expected exactly one fuzz qualification, found {len(qualifications)}")
     bounds = qualification_budget(qualifications[0], args); identity = viewer_identity(args.binary)
     healthy = args.healthy_file.resolve()

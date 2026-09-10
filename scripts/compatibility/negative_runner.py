@@ -100,7 +100,15 @@ def run_case(entry: dict[str, Any], binary: Path, healthy: Path, viewer_root: Pa
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
-    worklist, entries = load_profile(args.worklist.resolve(), "negative_inputs", "negative")
+    loaded = load_profile(args.worklist.resolve(), "negative_inputs", "negative")
+    try:
+        return _run_loaded(args, loaded)
+    finally:
+        loaded.close()
+
+
+def _run_loaded(args: argparse.Namespace, loaded: Any) -> dict[str, Any]:
+    worklist, entries = loaded.worklist, loaded.entries
     if not entries:
         raise RobustnessError("negative_inputs model is empty")
     healthy = args.healthy_file.resolve()

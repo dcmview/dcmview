@@ -120,6 +120,10 @@ jobs, or the release process. Their worklists are caller-supplied inputs and
 are validated by the viewer-owned generic worklist parser. The supported 0.2
 shape selects exactly one of `negative`, `stress`, or `fuzz`; JSON size and
 entry counts are bounded, payload paths must be confined regular files, and
-each declared payload SHA-256 and size is checked before the viewer launches.
+each declared payload SHA-256 and size is checked before the viewer launches;
+per-payload and aggregate staging budgets are bounded as well.
+Negative and stress payloads are copied from no-follow verified descriptors
+into a private temporary tree owned by the runner for its lifetime, then
+cleaned up; the fuzz profile remains payload-free.
 Malformed worklists fail with a concise runner error and do not require a
 generator checkout.

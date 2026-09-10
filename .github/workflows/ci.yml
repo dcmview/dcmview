@@ -274,6 +274,16 @@ jobs:
           repository = run.get("repository")
           if not isinstance(repository, dict) or repository.get("full_name") != expected_repository:
               raise SystemExit("GitHub workflow run repository does not match the configured repository")
+          if run.get("status") != "completed" or run.get("conclusion") != "success":
+              raise SystemExit("configured GitHub workflow run is not completed successfully")
+          head_repository = run.get("head_repository")
+          if not isinstance(head_repository, dict) or head_repository.get("full_name") != expected_repository:
+              raise SystemExit("GitHub workflow run head repository does not match the configured repository")
+          default_branch = repository.get("default_branch")
+          if not isinstance(default_branch, str) or not default_branch:
+              raise SystemExit("GitHub workflow run repository lacks a default branch")
+          if run.get("head_branch") != default_branch:
+              raise SystemExit("GitHub workflow run head branch is not the repository default branch")
           repository_id = numeric(repository.get("id"), "workflow repository ID")
           if numeric(workflow_run.get("repository_id"), "artifact repository ID") != repository_id:
               raise SystemExit("GitHub artifact repository does not match the configured repository")

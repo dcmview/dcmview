@@ -16,13 +16,41 @@ from pathlib import Path
 from typing import Any, BinaryIO
 
 try:
-    from scripts.compatibility.worklist import CompatibilityError, load_worklist, sha256_file
+    from scripts.compatibility.worklist import CompatibilityError, ValidatedWorklist, load_worklist, sha256_file
 except ModuleNotFoundError:
-    from worklist import CompatibilityError, load_worklist, sha256_file  # type: ignore[no-redef]
+    from worklist import CompatibilityError, ValidatedWorklist, load_worklist, sha256_file  # type: ignore[no-redef]
 
 
 class RobustnessError(RuntimeError):
     """Raised when a runner cannot preserve its safety contract."""
+
+
+class LoadedProfile:
+    """Hold validated rows and their private payload tree for one runner call."""
+
+    def __init__(self, worklist: ValidatedWorklist, entries: list[dict[str, Any]]) -> None:
+        self.worklist = worklist
+        self.entries = entries
+        self._closed = False
+
+    def close(self) -> None:
+        if not self._closed:
+            self._closed = True
+            self.worklist.close()
+
+    def __enter__(self) -> "LoadedProfile":
+        if self._closed:
+            raise RuntimeError("loaded profile lifetime is already closed")
+        return self
+
+    def __exit__(self, _type: object, _value: object, _traceback: object) -> None:
+        self.close()
+
+    def __iter__(self):
+        """Keep tuple unpacking readable for callers while exposing close()."""
+
+        yield self.worklist
+        yield self.entries
 
 
 def utc_now() -> str:
@@ -183,20 +211,24 @@ def poll_catalog(base_url: str, timeout: float, request_timeout: float, max_body
     raise TimeoutError(f"discovery exceeded {timeout:.3f}s")
 
 
-def load_profile(path: Path, model: str, profile: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+def load_profile(path: Path, model: str, profile: str) -> LoadedProfile:
     try:
-        worklist = load_worklist(path)
+        worklist = load_worklist(path, stage_payloads=profile in {"negative", "stress"})
     except CompatibilityError as error:
         raise RobustnessError(f"invalid {profile} robustness worklist: {error}") from error
-    selected = worklist["inputs"]["profiles"][0]
-    if selected != profile:
-        raise RobustnessError(
-            f"worklist profile {selected!r} is not supported by the {profile} runner"
-        )
-    rows = worklist["models"].get(model)
-    if not isinstance(rows, list):
-        raise RobustnessError(f"validated worklist model {model!r} is absent")
-    return worklist, rows
+    try:
+        selected = worklist["inputs"]["profiles"][0]
+        if selected != profile:
+            raise RobustnessError(
+                f"worklist profile {selected!r} is not supported by the {profile} runner"
+            )
+        rows = worklist.staged_models.get(model, worklist["models"].get(model))
+        if not isinstance(rows, list):
+            raise RobustnessError(f"validated worklist model {model!r} is absent")
+        return LoadedProfile(worklist, rows)
+    except Exception:
+        worklist.close()
+        raise
 
 
 def viewer_identity(binary: Path) -> dict[str, Any]:
