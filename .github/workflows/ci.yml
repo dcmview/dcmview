@@ -191,7 +191,6 @@ jobs:
       DCMVIEW_CORPUS_ARCHIVE_SHA256: ${{ inputs.corpus_archive_sha256 || vars.DCMVIEW_CORPUS_ARCHIVE_SHA256 }}
       DCMVIEW_CORPUS_ARCHIVE_SIZE_BYTES: ${{ inputs.corpus_archive_size_bytes || vars.DCMVIEW_CORPUS_ARCHIVE_SIZE_BYTES }}
       DCMVIEW_CORPUS_GENERATOR_VERSION: ${{ inputs.corpus_generator_version || vars.DCMVIEW_CORPUS_GENERATOR_VERSION }}
-      DCMVIEW_CORPUS_ARTIFACT_TOKEN: ${{ secrets.DCMVIEW_COMPAT_CORPUS_TOKEN || github.token }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -205,10 +204,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.88.0
       - uses: Swatinem/rust-cache@v2
       - name: Download the immutable producer artifact
+        env:
+          DCMVIEW_CORPUS_ARTIFACT_TOKEN: ${{ secrets.DCMVIEW_COMPAT_CORPUS_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
           required=(
+            DCMVIEW_CORPUS_ARTIFACT_TOKEN
             DCMVIEW_CORPUS_ARTIFACT_REPOSITORY DCMVIEW_CORPUS_ARTIFACT_WORKFLOW
             DCMVIEW_CORPUS_ARTIFACT_RUN_ID DCMVIEW_CORPUS_ARTIFACT_ID
             DCMVIEW_CORPUS_ARTIFACT_DIGEST DCMVIEW_CORPUS_GENERATOR_REVISION
