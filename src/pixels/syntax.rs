@@ -203,20 +203,7 @@ pub fn classify_pixel_support(file: &FileEntry) -> PixelSupport {
         (1, "PALETTE COLOR") => {
             PixelSupport::unsupported(PixelSupportReason::PaletteColorNotSupported)
         }
-        (3, "RGB" | "YBR_FULL" | "YBR_FULL_422")
-            if matches!(
-                syntax_class,
-                TransferSyntaxClass::Jpeg
-                    | TransferSyntaxClass::Rle
-                    | TransferSyntaxClass::JpegXl
-                    | TransferSyntaxClass::Uncompressed
-            ) && file.bits_allocated == 8 =>
-        {
-            PixelSupport::renderable()
-        }
-        (3, "YBR_FULL_422")
-            if syntax_class == TransferSyntaxClass::Uncompressed && file.bits_allocated == 8 =>
-        {
+        (3, color) if renders_color(syntax_class, color, file.bits_allocated) => {
             PixelSupport::renderable()
         }
         (3, "RGB" | "YBR_FULL" | "YBR_FULL_422" | "YBR_ICT" | "YBR_RCT") => {
@@ -226,6 +213,32 @@ pub fn classify_pixel_support(file: &FileEntry) -> PixelSupport {
             PixelSupport::unsupported(PixelSupportReason::PhotometricInterpretationNotSupported)
         }
         _ => PixelSupport::unsupported(PixelSupportReason::SamplesPerPixelNotSupported),
+    }
+}
+
+/// Three-sample layouts each display decoder actually converts to RGB.
+///
+/// This must stay in step with the color arms of the codec modules; a layout
+/// listed here but rejected by its decoder would be advertised as renderable
+/// and then fail on every frame request.
+fn renders_color(syntax_class: TransferSyntaxClass, photometric: &str, bits: u32) -> bool {
+    match syntax_class {
+        // dicom-pixeldata converts baseline YBR to RGB; native.rs expands 4:2:2.
+        TransferSyntaxClass::Jpeg | TransferSyntaxClass::Uncompressed => {
+            bits == 8 && matches!(photometric, "RGB" | "YBR_FULL" | "YBR_FULL_422")
+        }
+        // rle.rs normalizes RGB and YBR_FULL byte planes only.
+        TransferSyntaxClass::Rle => bits == 8 && matches!(photometric, "RGB" | "YBR_FULL"),
+        // Lossless JPEG and JPEG XL decode without a color transform.
+        TransferSyntaxClass::JpegLossless | TransferSyntaxClass::JpegXl => {
+            bits == 8 && photometric == "RGB"
+        }
+        // OpenJPEG applies the inverse RCT/ICT, so every JPEG 2000 color
+        // photometric decodes to RGB components.
+        TransferSyntaxClass::Jpeg2000 => {
+            matches!(bits, 8 | 16) && matches!(photometric, "RGB" | "YBR_RCT" | "YBR_ICT")
+        }
+        TransferSyntaxClass::JpegLs | TransferSyntaxClass::Unsupported => false,
     }
 }
 
@@ -402,6 +415,34 @@ mod tests {
             classify_pixel_support(&unsupported).reason,
             Some(PixelSupportReason::GenericColorRenderingOnly)
         );
+    }
+
+    #[test]
+    fn color_support_matches_each_decoders_accepted_photometrics() {
+        let color = |uid: &str, bits: u32, photometric: &str| {
+            let mut entry = file(uid);
+            entry.bits_allocated = bits;
+            entry.samples_per_pixel = 3;
+            entry.photometric_interpretation = photometric.to_string();
+            classify_pixel_support(&entry).state
+        };
+        // rle.rs and jpegxl.rs reject these, so they must not be advertised.
+        assert_eq!(
+            color("1.2.840.10008.1.2.5", 8, "YBR_FULL_422"),
+            PixelSupportState::Unsupported
+        );
+        assert_eq!(
+            color("1.2.840.10008.1.2.4.110", 8, "YBR_FULL"),
+            PixelSupportState::Unsupported
+        );
+        // jpeg2000.rs renders three-component codestreams as RGB.
+        for photometric in ["RGB", "YBR_RCT", "YBR_ICT"] {
+            assert_eq!(
+                color("1.2.840.10008.1.2.4.90", 8, photometric),
+                PixelSupportState::Renderable,
+                "{photometric}"
+            );
+        }
     }
 
     #[test]

@@ -110,18 +110,18 @@ Do not rely on browser-native DICOM fragment decoding for viewer correctness.
 
 | Class | Transfer syntaxes | Display action |
 |---|---|---|
-| JPEG Baseline / Extended | `1.2.840.10008.1.2.4.50`, `.51` | Decode server-side with `dicom-pixeldata`; PNG encode |
+| JPEG Baseline | `1.2.840.10008.1.2.4.50` | Decode the requested frame server-side with `dicom-pixeldata`; PNG encode |
 | JPEG Lossless | `1.2.840.10008.1.2.4.57`, `.70` | Decode server-side with `dicom-pixeldata`; PNG encode |
-| JPEG 2000 | `1.2.840.10008.1.2.4.90`, `.91` | Read encapsulated fragment with `DicomCollector`; decode via `jpeg2k`; PNG encode |
+| JPEG 2000 Lossless | `1.2.840.10008.1.2.4.90` | Read encapsulated fragment with `DicomCollector`; decode via `jpeg2k`; PNG encode |
 | JPEG-LS Lossless | `1.2.840.10008.1.2.4.80` | Decode grayscale server-side with statically linked CharLS; PNG encode |
 | JPEG XL Lossless | `1.2.840.10008.1.2.4.110` | Decode RGB server-side with `dicom-pixeldata`; PNG encode |
 | RLE Lossless | `1.2.840.10008.1.2.5` | Decode Annex G header/PackBits byte planes server-side; PNG encode |
 | Native dataset | Implicit LE, Explicit LE, Explicit BE, Deflated Explicit LE | Read decoded/native samples, rescale/window, PNG encode |
-| JPEG-LS Near-Lossless / JPEG XL variants | `.81`, `.111`, `.112` | HTTP 422 unsupported transfer syntax |
+| JPEG Extended, JPEG 2000 lossy, JPEG-LS Near-Lossless, JPEG XL variants | `.51`, `.91`, `.81`, `.111`, `.112` | HTTP 422 unsupported transfer syntax |
 | Other | anything else | HTTP 422 unsupported transfer syntax |
 
 Raw-frame endpoints return decoded sample bytes plus metadata headers for
-native datasets, JPEG Baseline/Extended, JPEG Lossless, JPEG-LS Lossless,
+native datasets, JPEG Baseline, JPEG Lossless, JPEG-LS Lossless,
 JPEG XL Lossless RGB, RLE Lossless, and grayscale JPEG 2000 paths. Unsupported
 syntaxes and unsupported raw component layouts return 422 or a decode error.
 
