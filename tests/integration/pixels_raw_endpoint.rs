@@ -451,3 +451,55 @@ async fn raw_endpoint_multiframe_second_frame_has_correct_pixels() {
         .expect("frame 0 repeat");
     assert!(frame0_repeat.cache_hit, "repeated frame 0 must be HIT");
 }
+
+#[tokio::test]
+async fn raw_native_frame_ignores_nested_icon_pixel_data() {
+    use dicom_core::value::DataSetSequence;
+    use dicom_core::{DataElement, PrimitiveValue, VR};
+    use dicom_dictionary_std::tags;
+    use dicom_object::InMemDicomObject;
+
+    let dir = tempdir().expect("temp dir");
+    let path = dir.path().join("icon.dcm");
+    let image_samples = vec![100_u16, 200, 300, 400];
+    support::write_uncompressed_u16_dicom(
+        &path,
+        "1.2.840.10008.1.2.1",
+        2,
+        2,
+        image_samples.clone(),
+        None,
+        None,
+    );
+    // An Icon Image Sequence sorts before (7FE0,0010) and carries its own
+    // Pixel Data; the frame reader must skip it and read the image's pixels.
+    let mut object = dicom_object::open_file(&path).expect("reopen fixture");
+    let icon = InMemDicomObject::from_element_iter([
+        DataElement::new(tags::ROWS, VR::US, PrimitiveValue::from(2_u16)),
+        DataElement::new(tags::COLUMNS, VR::US, PrimitiveValue::from(2_u16)),
+        DataElement::new(
+            tags::PIXEL_DATA,
+            VR::OB,
+            PrimitiveValue::from(vec![9_u8; 4]),
+        ),
+    ]);
+    object.put(DataElement::new(
+        tags::ICON_IMAGE_SEQUENCE,
+        VR::SQ,
+        DataSetSequence::from(vec![icon]),
+    ));
+    object.write_to_file(&path).expect("write icon fixture");
+
+    let mut file = support::file_entry(path, "1.2.840.10008.1.2.1", 1);
+    file.rows = 2;
+    file.columns = 2;
+    let raw = load_raw_frame(file, new_raw_cache(), RawFrameRequest { frame: 0 })
+        .await
+        .expect("raw native frame");
+
+    let expected = image_samples
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect::<Vec<_>>();
+    assert_eq!(raw.body.as_ref(), expected.as_slice());
+}

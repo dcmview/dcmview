@@ -44,7 +44,8 @@ fn decode_compressed_frame_to_png_blocking(
             file.path.display()
         )
     })?;
-    let decoded = obj.decode_pixel_data().with_context(|| {
+    // Decode only the requested frame; the result holds that frame at index 0.
+    let decoded = obj.decode_pixel_data_frame(frame).with_context(|| {
         format!(
             "unsupported transfer syntax: {}",
             obj.meta().transfer_syntax()
@@ -57,7 +58,7 @@ fn decode_compressed_frame_to_png_blocking(
                 decoded.bits_allocated()
             ));
         }
-        let rgb = decoded.frame_data(frame)?.to_vec();
+        let rgb = decoded.frame_data(0)?.to_vec();
         return encode_rgb8_png_with_icc(
             rgb,
             decoded.columns(),
@@ -73,7 +74,7 @@ fn decode_compressed_frame_to_png_blocking(
         ));
     }
 
-    let (stored, rows, columns) = decoded_luminance_samples(file, &decoded, frame)?;
+    let (stored, rows, columns) = decoded_luminance_samples(file, &decoded)?;
     encode_windowed_luminance_png(
         file,
         &stored,
@@ -91,13 +92,12 @@ fn decode_compressed_frame_to_png_blocking(
 fn decoded_luminance_samples(
     file: &FileEntry,
     decoded: &dicom_pixeldata::DecodedPixelData<'_>,
-    frame: u32,
 ) -> Result<(Vec<f64>, u32, u32)> {
     let bits_allocated = decoded.bits_allocated() as u32;
     let signed = file.pixel_representation == 1;
     let raw_samples = match bits_allocated {
         8 => decoded
-            .frame_data(frame)?
+            .frame_data(0)?
             .iter()
             .map(|value| {
                 if signed {
@@ -108,7 +108,7 @@ fn decoded_luminance_samples(
             })
             .collect::<Vec<_>>(),
         16 => decoded
-            .frame_data_ow(frame)?
+            .frame_data_ow(0)?
             .into_iter()
             .map(|value| {
                 if signed {
@@ -217,7 +217,7 @@ fn decode_raw_jpeg_lossless_blocking(
         .map_err(PixelError::raw_decode)?;
 
     let decoded = obj
-        .decode_pixel_data()
+        .decode_pixel_data_frame(frame)
         .with_context(|| {
             format!(
                 "unsupported transfer syntax: {}",
@@ -236,13 +236,13 @@ fn decode_raw_jpeg_lossless_blocking(
     let sample_bytes = match bits_allocated {
         8 => Bytes::copy_from_slice(
             decoded
-                .frame_data(frame)
+                .frame_data(0)
                 .map_err(anyhow::Error::from)
                 .map_err(PixelError::raw_decode)?,
         ),
         16 => {
             let bytes = decoded
-                .frame_data_ow(frame)
+                .frame_data_ow(0)
                 .map_err(anyhow::Error::from)
                 .map_err(PixelError::raw_decode)?
                 .into_iter()

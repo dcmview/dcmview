@@ -5,6 +5,7 @@ use bytes::Bytes;
 use image::{ImageBuffer, ImageFormat, Luma};
 use std::io::Cursor;
 
+use super::header::open_header;
 use super::window::{
     apply_modality_transform, apply_padding_background, apply_voi_lut_if_selected, apply_window,
     exclude_padding_samples, read_pixel_padding_range, resolve_window_with_mode,
@@ -33,7 +34,7 @@ pub(crate) fn encode_windowed_luminance_png(
         requested_ww,
         window_mode,
     } = options;
-    let object = dicom_object::open_file(&file.path).ok();
+    let object = open_header(&file.path).ok();
     let padding_mask = object
         .as_ref()
         .and_then(|object| read_pixel_padding_range(object, NativePixelDataKind::Integer))

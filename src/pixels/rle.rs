@@ -2,13 +2,13 @@ use crate::api::contracts::{RawFrameMetadata, WindowMode};
 use crate::types::FileEntry;
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
-use dicom_object::open_file;
 use thiserror::Error;
 use tokio::task;
 
 use super::color::{encode_rgb8_png_with_icc, rgb8_interleaved, ybr_full_to_rgb8};
 use super::encapsulated::read_encapsulated_fragment_blocking;
 use super::error::{PixelError, PixelResult};
+use super::header::open_header;
 use super::icc::select_icc_profile;
 use super::render::{encode_windowed_luminance_png, LuminanceRenderOptions};
 use super::stored_bits::canonicalize_integer_samples;
@@ -344,9 +344,7 @@ fn decode_monochrome_samples(
 }
 
 fn read_icc_profile(file: &FileEntry) -> PixelResult<Option<Vec<u8>>> {
-    let object = open_file(&file.path)
-        .with_context(|| format!("failed to open RLE DICOM: {}", file.path.display()))
-        .map_err(PixelError::frame_decode)?;
+    let object = open_header(&file.path).map_err(PixelError::frame_decode)?;
     Ok(select_icc_profile(&object))
 }
 
@@ -400,9 +398,7 @@ fn encode_palette_png(file: &FileEntry, indices: &[u8]) -> PixelResult<Bytes> {
             file.bits_allocated
         )));
     }
-    let object = open_file(&file.path)
-        .with_context(|| format!("failed to open RLE palette DICOM: {}", file.path.display()))
-        .map_err(PixelError::frame_decode)?;
+    let object = open_header(&file.path).map_err(PixelError::frame_decode)?;
     let red = read_palette_channel(
         &object,
         "RedPaletteColorLookupTableDescriptor",

@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Context, Result};
-use dicom_object::open_file;
 use std::path::Path;
+
+use super::header::open_header;
 
 pub(super) fn palette_indices_to_rgb8(
     path: &Path,
@@ -12,8 +13,7 @@ pub(super) fn palette_indices_to_rgb8(
             "palette display requires 8-bit indices, found {bits_allocated}"
         ));
     }
-    let object = open_file(path)
-        .with_context(|| format!("failed to open palette DICOM: {}", path.display()))?;
+    let object = open_header(path)?;
     let red = read_palette_channel(
         &object,
         "RedPaletteColorLookupTableDescriptor",

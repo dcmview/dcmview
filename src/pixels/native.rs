@@ -2,12 +2,20 @@ use crate::api::contracts::{RawFrameMetadata, WindowMode};
 use crate::types::{FileEntry, NativePixelDataKind};
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
-use dicom_object::open_file;
+use dicom_dictionary_std::uids;
+use dicom_encoding::TransferSyntaxIndex;
+use dicom_object::{open_file, FileMetaTable};
+use dicom_parser::dataset::lazy_read::LazyDataSetReader;
+use dicom_parser::dataset::LazyDataToken;
+use dicom_parser::StatefulDecode;
+use dicom_transfer_syntax_registry::TransferSyntaxRegistry;
 use image::{ImageBuffer, ImageFormat, Luma};
-use std::io::Cursor;
+use std::fs::File;
+use std::io::{BufReader, Cursor, Seek, SeekFrom};
 use tokio::task;
 
 use super::color::{encode_rgb8_png_with_icc, rgb8_interleaved, ybr_full_to_rgb8};
+use super::header::open_header;
 use super::icc::select_icc_profile;
 use super::native_layout::{native_pixel_element_tag, NativeByteOrder, NativeFrameLayout};
 use super::overlay::apply_overlay_planes;
@@ -41,22 +49,13 @@ fn decode_uncompressed_to_png_blocking(
     requested_ww: Option<f64>,
     window_mode: WindowMode,
 ) -> Result<Bytes> {
-    let object = open_file(&file.path).with_context(|| {
-        format!(
-            "failed to open DICOM for uncompressed decode: {}",
-            file.path.display()
-        )
-    })?;
+    let object = open_header(&file.path)?;
 
     let rows = file.rows;
     let columns = file.columns;
     let samples_per_pixel = file.samples_per_pixel.max(1);
     let bits_allocated = file.bits_allocated;
-    let layout = native_frame_layout(file);
-    let pixel_bytes = read_native_pixel_bytes(&object, file)?;
-    let mut frame_bytes = layout
-        .extract_display_frame(&pixel_bytes, frame)
-        .context("frame decode failed: invalid native frame layout")?;
+    let mut frame_bytes = read_native_frame(file, frame)?.display_frame()?;
     if native_pixel_data_kind(file) == NativePixelDataKind::Integer && bits_allocated > 1 {
         canonicalize_integer_samples(
             &mut frame_bytes,
@@ -197,23 +196,159 @@ fn native_frame_layout(file: &FileEntry) -> NativeFrameLayout<'_> {
         bits_allocated: file.bits_allocated,
         planar_configuration: file.series_metadata.native_pixel.planar_configuration,
         photometric_interpretation: &file.photometric_interpretation,
-        // dicom-object normalizes native primitive values to host order. The
-        // supported release hosts are little-endian, matching the raw API.
         byte_order: NativeByteOrder::LittleEndian,
     }
 }
 
-fn read_native_pixel_bytes(
-    object: &dicom_object::DefaultDicomObject,
-    file: &FileEntry,
-) -> Result<Vec<u8>> {
-    let kind = native_pixel_data_kind(file);
-    object
-        .element(native_pixel_element_tag(kind))
+// Retired, but still readable; dicom-dictionary-std marks the constant deprecated.
+const EXPLICIT_VR_BIG_ENDIAN: &str = "1.2.840.10008.1.2.2";
+
+/// Stored bytes for one native frame, plus the layout that interprets them.
+struct NativeFrameSource<'a> {
+    bytes: Vec<u8>,
+    frame_in_bytes: u32,
+    layout: NativeFrameLayout<'a>,
+}
+
+impl NativeFrameSource<'_> {
+    fn raw_frame(&self) -> Result<Vec<u8>> {
+        self.layout
+            .extract_raw_frame(&self.bytes, self.frame_in_bytes)
+            .context("frame decode failed: invalid native frame layout")
+    }
+
+    fn display_frame(&self) -> Result<Vec<u8>> {
+        self.layout
+            .extract_display_frame(&self.bytes, self.frame_in_bytes)
+            .context("frame decode failed: invalid native frame layout")
+    }
+}
+
+/// Reads one native frame without loading the rest of the Pixel Data element.
+///
+/// Byte-aligned frames in an undeflated data set are read by seeking straight
+/// to the frame inside the top-level pixel element, so each request costs one
+/// frame of I/O. Deflated data sets cannot be seeked and one-bit frames need
+/// not start on a byte boundary; both are small in practice and fall back to
+/// reading the whole element.
+fn read_native_frame(file: &FileEntry, frame: u32) -> Result<NativeFrameSource<'_>> {
+    let layout = native_frame_layout(file);
+    let seekable = file.transfer_syntax_uid != uids::DEFLATED_EXPLICIT_VR_LITTLE_ENDIAN
+        && layout.bits_allocated != 1;
+    if seekable {
+        let byte_order = if file.transfer_syntax_uid == EXPLICIT_VR_BIG_ENDIAN {
+            NativeByteOrder::BigEndian
+        } else {
+            NativeByteOrder::LittleEndian
+        };
+        let bytes = read_native_frame_bytes(file, layout, frame)?;
+        return Ok(NativeFrameSource {
+            bytes,
+            frame_in_bytes: 0,
+            layout: NativeFrameLayout {
+                byte_order,
+                ..layout
+            },
+        });
+    }
+
+    let object = open_file(&file.path).with_context(|| {
+        format!(
+            "failed to open DICOM for native pixel read: {}",
+            file.path.display()
+        )
+    })?;
+    // dicom-object normalizes native primitive values to host order. The
+    // supported release hosts are little-endian, matching the raw API.
+    let bytes = object
+        .element(native_pixel_element_tag(native_pixel_data_kind(file)))
         .context("frame decode failed: missing native pixel data element")?
         .to_bytes()
-        .context("frame decode failed: pixel bytes unavailable")
-        .map(|bytes| bytes.into_owned())
+        .context("frame decode failed: pixel bytes unavailable")?
+        .into_owned();
+    Ok(NativeFrameSource {
+        bytes,
+        frame_in_bytes: frame,
+        layout,
+    })
+}
+
+/// Returns the stored bytes of `frame`, in the file's byte order, by locating
+/// the top-level native pixel element and seeking past the preceding frames.
+fn read_native_frame_bytes(
+    file: &FileEntry,
+    layout: NativeFrameLayout<'_>,
+    frame: u32,
+) -> Result<Vec<u8>> {
+    let frame_len = layout
+        .stored_frame_bytes()
+        .context("frame decode failed: invalid native frame layout")?;
+    let start = usize::try_from(frame)
+        .ok()
+        .and_then(|frame| frame.checked_mul(frame_len))
+        .context("frame decode failed: frame offset overflowed")?;
+    let end = start
+        .checked_add(frame_len)
+        .context("frame decode failed: frame offset overflowed")?;
+
+    let mut reader = BufReader::new(
+        File::open(&file.path)
+            .with_context(|| format!("failed to open {}", file.path.display()))?,
+    );
+    reader.seek(SeekFrom::Start(128))?;
+    let meta = FileMetaTable::from_reader(&mut reader)
+        .with_context(|| format!("failed to read file meta: {}", file.path.display()))?;
+    let transfer_syntax = TransferSyntaxRegistry
+        .get(meta.transfer_syntax())
+        .with_context(|| format!("unknown transfer syntax {}", meta.transfer_syntax()))?;
+    let mut parser = LazyDataSetReader::new_with_ts(reader, transfer_syntax)
+        .context("failed to start DICOM data set parser")?;
+
+    let pixel_tag = native_pixel_element_tag(native_pixel_data_kind(file));
+    // Nested pixel elements (for example an Icon Image Sequence) must not be
+    // mistaken for the image's own pixel data.
+    let mut sequence_depth = 0_usize;
+    while let Some(token) = parser.advance() {
+        match token.context("failed to parse DICOM data set")? {
+            LazyDataToken::SequenceStart { .. } | LazyDataToken::PixelSequenceStart => {
+                sequence_depth += 1;
+            }
+            LazyDataToken::SequenceEnd => sequence_depth = sequence_depth.saturating_sub(1),
+            LazyDataToken::LazyValue { header, decoder }
+                if sequence_depth == 0 && header.tag == pixel_tag =>
+            {
+                let available = header
+                    .len
+                    .get()
+                    .and_then(|length| usize::try_from(length).ok())
+                    .context("frame decode failed: native pixel data has undefined length")?;
+                if end > available {
+                    return Err(anyhow!(
+                        "frame decode failed: native pixel data frame {frame} extends beyond {available} source bytes"
+                    ));
+                }
+                let value_start = decoder.position();
+                decoder.seek(value_start + start as u64)?;
+                let mut bytes = Vec::with_capacity(frame_len);
+                decoder.read_to_vec(u32::try_from(frame_len)?, &mut bytes)?;
+                return Ok(bytes);
+            }
+            // The lazy reader leaves unread values in the stream; step over
+            // them so the next token starts at the following header.
+            LazyDataToken::LazyValue { header, decoder } => {
+                let length = header
+                    .len
+                    .get()
+                    .context("element with undefined length has no skippable value")?;
+                decoder.skip_bytes(length)?;
+            }
+            LazyDataToken::LazyItemValue { len, decoder } => decoder.skip_bytes(len)?,
+            _ => {}
+        }
+    }
+    Err(anyhow!(
+        "frame decode failed: missing native pixel data element"
+    ))
 }
 
 fn native_pixel_data_kind(file: &FileEntry) -> NativePixelDataKind {
@@ -330,21 +465,11 @@ fn read_raw_uncompressed_blocking(
     file: &FileEntry,
     frame: u32,
 ) -> Result<(Bytes, RawFrameMetadata)> {
-    let object = open_file(&file.path).with_context(|| {
-        format!(
-            "failed to open DICOM for raw uncompressed read: {}",
-            file.path.display()
-        )
-    })?;
-
     let rows = file.rows;
     let columns = file.columns;
     let samples_per_pixel = file.samples_per_pixel.max(1);
     let bits_allocated = file.bits_allocated;
-    let pixel_bytes = read_native_pixel_bytes(&object, file)?;
-    let mut frame_bytes = native_frame_layout(file)
-        .extract_raw_frame(&pixel_bytes, frame)
-        .context("frame decode failed: invalid native frame layout")?;
+    let mut frame_bytes = read_native_frame(file, frame)?.raw_frame()?;
     if native_pixel_data_kind(file) == NativePixelDataKind::Integer && bits_allocated > 1 {
         canonicalize_integer_samples(
             &mut frame_bytes,

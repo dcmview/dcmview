@@ -3,6 +3,7 @@ mod color;
 mod deflated_frame;
 mod encapsulated;
 mod error;
+mod header;
 mod icc;
 mod jpeg;
 mod jpeg2000;
