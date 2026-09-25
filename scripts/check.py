@@ -168,6 +168,10 @@ class CheckRunner:
 			"Run Python unit and packaging-helper tests",
 			[self.python, "-m", "unittest", "discover", "-s", "python/tests"],
 		)
+		run(
+			"Run compatibility runner unit tests",
+			[self.python, "-m", "unittest", "scripts.compatibility.test_run"],
+		)
 
 	def python_integration(self) -> None:
 		self.build_binary()
