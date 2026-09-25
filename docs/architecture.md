@@ -340,7 +340,7 @@ The supported development baselines are Rust 1.88+, Node.js 20.19+, and Python
 | `quick` | Normal development loop | Version parity; generated frontend contract check; Svelte/TypeScript checks; Vitest; frontend build; Rust format and strict all-target Clippy; Python unit and packaging-helper tests. It does not run Rust tests or VS Code tests. |
 | `core` | Before handing off a normal code change | Everything in the corresponding frontend/lint/unit layers, plus deterministic fixture regeneration that must leave the current fixture tree unchanged, the default-feature, non-ignored locked Rust suite, and VS Code compilation. |
 | `e2e` | Process or integration changes | `core`, then a real debug binary, Python wrapper binary integration, debug-binary HTTP smoke, and VS Code Electron integration. |
-| `compatibility-artifact` | Stored current corpus integration | Builds only the dcmview binary, verifies an explicitly supplied producer container and complete immutable index pins, and runs the existing HTTP compatibility runner against every verified DICOM payload. It never checks out or builds the generator. The profile fails closed when the container or required pins are absent. |
+| `compatibility-artifact` | Stored current corpus integration | Builds only the dcmview binary, verifies an explicitly supplied producer container (`DCMVIEW_COMPAT_CORPUS_ROOT`), and runs the existing HTTP compatibility runner against every verified DICOM payload. It never checks out or builds the generator and fails when no container is supplied. It runs only from the manually dispatched `compatibility.yml` workflow, not from push/PR CI. |
 | `external` | Opt-in upstream DICOM compatibility | Builds frontend assets and runs only ignored integration tests behind `remote-fixtures`; those tests may download or populate the `dicom-test-files` cache. It is separate from `e2e`. |
 | `marketing` | Capture tooling and release media | Validates tracked source/capture manifests, syntax-checks the browser and VS Code capture drivers, runs marketing-media unit tests, and—once an approved bundle is committed—verifies published hashes and the capture-input digest without ignored DICOM sources. |
 
@@ -379,20 +379,18 @@ installation and VS Code Electron integration can also use network/cache state;
   numeric color transformation and optical-path mapping explicitly unprobed.
 - `scripts/compatibility/run.py --corpus-root` consumes the exact verified
   producer container (`smoke.tar.gz` plus sibling `artifact-index.json`) and is
-  the only valid-corpus integration path. It verifies the immutable index
-  binding, the v2 generator release descriptor (revision, Actions ZIP/nested
-  archive/release manifest/installed binary digests and sizes, closed upstream
-  identity), target/toolchain/features/runtime pins, both definition identities,
-  generated manifest digest/size, profile/seed, archive digest/size, and every
-  payload hash/size. The tar is extracted with bounded
+  the only valid-corpus integration path. It verifies that the v2 index,
+  archive digest/size, generated manifest, and every payload hash/size agree.
+  The tar is extracted with bounded
   no-follow reads into a private closed tree; symlinks, hard links, special
   entries, traversal, duplicates, extras, and TOCTOU changes fail closed before
   every payload is passed to the real HTTP runner. The valid-corpus runner,
   isolated negative runner, stress baseline, and payload-free deterministic fuzz
   qualification produce separate bounded reports and SHA-256 artifact indexes.
-  The stored-artifact profile is always present in CI and fails closed when its
-  complete immutable locator and index pin set is absent or partial; it never
-  silently skips and never regenerates corpus data. The companion
+  Which container is tested is fixed by the Actions ZIP digest committed in
+  `scripts/compatibility/corpus-artifact.json`; the manually dispatched
+  `compatibility.yml` workflow downloads that artifact by ID and checks the
+  digest before extraction. It never regenerates corpus data. The companion
   `viewer-report.schema.json` is viewer-owned, so this path does not load a
   generator-owned schema from the artifact or a sibling checkout. The generic
   0.2 worklist parser remains only for caller-supplied robustness profiles.
@@ -462,6 +460,6 @@ extension points, not current correctness blockers:
 - Use generated synthetic fixtures for integration coverage; never commit PHI.
 - Run the narrow profile while iterating, then the profile required by the
   highest boundary changed.
-- Keep the stored external-corpus consumer fail-closed: viewer CI may consume
-  a downloaded artifact, but it must not acquire, build, or invoke
-  `synth-dicom-gen`.
+- Keep the stored external-corpus consumer out of push/PR CI: the manual
+  `compatibility.yml` workflow may consume a digest-pinned downloaded
+  artifact, but it must not acquire, build, or invoke `synth-dicom-gen`.

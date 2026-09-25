@@ -18,40 +18,18 @@ not build or invoke `synth-dicom-gen`, and it does not require a
 python scripts/compatibility/run.py \
   --corpus-root /outside/producer-container \
   --binary target/debug/dcmview \
-  --output /outside/smoke-run-1 \
-  --expected-generator-revision "$DCMVIEW_CORPUS_GENERATOR_REVISION" \
-  --expected-actions-zip-sha256 "$DCMVIEW_CORPUS_ACTIONS_ZIP_SHA256" \
-  --expected-actions-zip-size-bytes "$DCMVIEW_CORPUS_ACTIONS_ZIP_SIZE_BYTES" \
-  --expected-nested-archive-sha256 "$DCMVIEW_CORPUS_NESTED_ARCHIVE_SHA256" \
-  --expected-nested-archive-size-bytes "$DCMVIEW_CORPUS_NESTED_ARCHIVE_SIZE_BYTES" \
-  --expected-release-manifest-sha256 "$DCMVIEW_CORPUS_RELEASE_MANIFEST_SHA256" \
-  --expected-release-manifest-size-bytes "$DCMVIEW_CORPUS_RELEASE_MANIFEST_SIZE_BYTES" \
-  --expected-installed-binary-sha256 "$DCMVIEW_CORPUS_INSTALLED_BINARY_SHA256" \
-  --expected-installed-binary-size-bytes "$DCMVIEW_CORPUS_INSTALLED_BINARY_SIZE_BYTES" \
-  --expected-target "$DCMVIEW_CORPUS_GENERATOR_TARGET" \
-  --expected-toolchain "$DCMVIEW_CORPUS_GENERATOR_TOOLCHAIN" \
-  --expected-runtime-identities-sha256 "$DCMVIEW_CORPUS_RUNTIME_IDENTITIES_SHA256" \
-  --expected-definition-manifest-sha256 "$DCMVIEW_CORPUS_DEFINITION_MANIFEST_SHA256" \
-  --expected-generator-version 0.3.0 \
-  --expected-manifest-sha256 "$DCMVIEW_CORPUS_MANIFEST_SHA256" \
-  --expected-manifest-size-bytes "$DCMVIEW_CORPUS_MANIFEST_SIZE_BYTES" \
-  --expected-corpus-definition-sha256 "$DCMVIEW_CORPUS_DEFINITION_SHA256" \
-  --expected-profile smoke --expected-seed "$DCMVIEW_CORPUS_SEED" \
-  --expected-binding-id "$DCMVIEW_CORPUS_BINDING_ID" \
-  --expected-archive-sha256 "$DCMVIEW_CORPUS_ARCHIVE_SHA256" \
-  --expected-archive-size-bytes "$DCMVIEW_CORPUS_ARCHIVE_SIZE_BYTES"
+  --output /outside/smoke-run-1
 ```
 
-The consumer accepts only artifact descriptor schema `2.0.0`. It verifies the
-archive digest and size, the index binding ID, the generator revision, Actions
-ZIP/nested archive/release manifest/installed binary SHA-256 and size pairs,
-the closed generator release descriptor and upstream identity, target/toolchain/
-features, runtime identities, both definition digests, generated manifest
-digest/size, profile/seed, and every payload hash/size. It rejects symlinks, hard links,
-special entries, path traversal, duplicate members, undeclared outer files,
-and TOCTOU changes. The archive is extracted into a private closed tree with
-no-follow reads; only after the tree is closed do its DICOM paths enter the
-viewer worklist. All immutable pins are required for the CI consumer.
+The consumer accepts only artifact descriptor schema `2.0.0`. It checks that
+`artifact-index.json`, the archive, the generated manifest, and every payload
+agree on their hashes and sizes, and that the index describes a closed
+generator release descriptor. It rejects symlinks, hard links, special
+entries, path traversal, duplicate members, undeclared outer files, and TOCTOU
+changes. The archive is extracted into a private closed tree with no-follow
+reads; only after the tree is closed do its DICOM paths enter the viewer
+worklist. Trust in *which* container is being tested comes from the committed
+ZIP digest described below, not from per-field pins.
 
 After those checks, the same existing compatibility runner starts the supplied
 `dcmview` binary with the verified DICOM paths and performs the normal metadata,
@@ -62,17 +40,31 @@ needed at consumption time.
 Viewer failures remain viewer-owned outcomes; a successful artifact check does
 not claim that every case renders.
 
-Viewer CI exposes this as `python scripts/check.py compatibility-artifact`.
-It downloads the GitHub artifact API URL addressed only by the configured
-repository, workflow run ID, and numeric artifact ID, verifies the downloaded
-ZIP digest (the GitHub `sha256:` prefix is accepted and normalized), and safely extracts the producer container with
-`extract_github_artifact.py`. The repository variables are the corresponding
-`DCMVIEW_CORPUS_ARTIFACT_*` locator/digest values plus the complete
-`DCMVIEW_CORPUS_*` index-pin set used above. The compatibility job is always
-present in ordinary viewer CI: an absent or partial variable set fails closed
-before download, so an unconfigured lane cannot silently pass. No mutable name
-or `latest` lookup is accepted, and ordinary viewer jobs still do not check out
-or build the generator.
+### Manual CI workflow
+
+`.github/workflows/compatibility.yml` runs
+`python scripts/check.py compatibility-artifact` and is dispatched manually
+only; it never runs on push or pull request. It reads
+`scripts/compatibility/corpus-artifact.json`:
+
+| Field | Meaning |
+|---|---|
+| `repository` | Producer repository (`owner/name`) |
+| `run_id` | Producer workflow run that uploaded the artifact (provenance record) |
+| `artifact_id` | Numeric Actions artifact ID to download |
+| `zip_sha256` | SHA-256 of the downloaded artifact ZIP (`sha256:` prefix allowed) |
+
+The workflow downloads the artifact by ID with the
+`DCMVIEW_COMPAT_CORPUS_TOKEN` secret, checks the ZIP against `zip_sha256`,
+and extracts it with `extract_github_artifact.py`. It fails with a clear error
+while no artifact is pinned.
+
+To adopt a new producer artifact, pick a successful default-branch run of the
+producer's publish workflow, read the artifact's `id` and `digest` from
+`gh api repos/<repository>/actions/runs/<run_id>/artifacts`, commit them to the
+pin file on a branch, and dispatch the workflow on that branch. The pin change
+is reviewed like any other commit. The viewer repository never checks out or
+builds the generator.
 
 ## Robustness profiles
 
