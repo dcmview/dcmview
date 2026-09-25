@@ -301,10 +301,11 @@ unless one is actually implemented.
 - Window/level interactions should avoid flooding requests; prefer local raw
   rendering or debounced/networked updates depending on the mode being changed.
 - Zoom and pan use canvas/CSS transform state and should not refetch frames.
-- Zoom/pan state is per file. Switching frames preserves viewport transform;
-  switching files resets to identity.
-- Orientation state is per file and supports horizontal flip, vertical flip, and
-  90-degree rotation.
+- Zoom/pan state is per open tab (navigation scope). Moving through a tab's
+  frames, including the single-frame files of a stack, preserves the viewport
+  transform; opening a different tab starts from a fitted view.
+- Orientation state is also per open tab and supports horizontal flip, vertical
+  flip, and 90-degree rotation.
 - ROI editing lives in `ImageViewport.svelte` with geometry helpers in
   `annotationGeometry.ts`; keep frame-scoping semantics consistent with backend
   validation.

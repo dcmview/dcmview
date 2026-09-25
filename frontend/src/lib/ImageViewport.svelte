@@ -150,7 +150,9 @@
 		segmentationOverlay?: SegmentationOverlay | null;
 	} = $props();
 
-	let transformsByFile = $state<Record<number, TransformState>>({});
+	// Keyed by navigation scope (the open tab), so scrolling through a stack of
+	// single-frame files keeps the same zoom and pan, like frames of one object.
+	let transformsByScope = $state<Record<string, TransformState>>({});
 	let dragState = $state<DragState>(null);
 	let loading = $state(false);
 	let loadError = $state<string | null>(null);
@@ -255,7 +257,11 @@
 	const TRACKPAD_WHEEL_DELTA_THRESHOLD = 50;
 	const MOUSE_WHEEL_ZOOM_SENSITIVITY = 0.0025;
 	const PINCH_ZOOM_SENSITIVITY = 0.01;
-	const activeTransform = $derived(activeFile ? transformsByFile[activeFile.index] ?? DEFAULT_TRANSFORM : DEFAULT_TRANSFORM);
+	const activeTransform = $derived(
+		activeFile && navigationScopeKey
+			? transformsByScope[navigationScopeKey] ?? DEFAULT_TRANSFORM
+			: DEFAULT_TRANSFORM,
+	);
 	const transformCss = $derived.by(() => {
 		const { tx, ty, scale } = activeTransform;
 		let css = `translate(${tx}px, ${ty}px) scale(${scale})`;
@@ -1165,12 +1171,14 @@ function startDisplayPrefetch(
 			&& Math.abs(a.ty - b.ty) < 0.01;
 	}
 
-	function updateTransform(index: number, transform: Omit<TransformState, "fit"> | TransformState, fit = false) {
+	function updateTransform(transform: Omit<TransformState, "fit"> | TransformState, fit = false) {
+		const scope = navigationScopeKey;
+		if (!scope) return;
 		const next = { scale: transform.scale, tx: transform.tx, ty: transform.ty, fit };
-		if (sameTransform(transformsByFile[index], next)) return;
-		transformsByFile = {
-			...transformsByFile,
-			[index]: next,
+		if (sameTransform(transformsByScope[scope], next)) return;
+		transformsByScope = {
+			...transformsByScope,
+			[scope]: next,
 		};
 	}
 
@@ -1196,7 +1204,7 @@ function startDisplayPrefetch(
 		if (!activeFile) return;
 		const transform = fitTransformForViewport();
 		if (!transform) return;
-		updateTransform(activeFile.index, transform, true);
+		updateTransform(transform, true);
 	}
 
 	function imageLayoutOrigin(): { left: number; top: number } | null {
@@ -1225,7 +1233,7 @@ function startDisplayPrefetch(
 
 	$effect(() => {
 		if (!activeFile?.has_pixels) return;
-		const existing = transformsByFile[activeFile.index];
+		const existing = transformsByScope[navigationScopeKey];
 		if (!existing || existing.fit) fitActiveImageToViewport();
 	});
 
@@ -1533,7 +1541,7 @@ function startDisplayPrefetch(
 		if (!anchor) return;
 		const transform = zoomTransformForAnchor(newScale, anchor);
 		if (!transform) return;
-		updateTransform(activeFile.index, transform);
+		updateTransform(transform);
 	}
 
 	function startZoomDrag(event: PointerEvent): DragState {
@@ -1552,7 +1560,7 @@ function startDisplayPrefetch(
 		const dy = clientY - drag.startY;
 		const transform = zoomTransformForAnchor(drag.baseScale * Math.exp(-dy * 0.005), drag.anchor);
 		if (!transform) return;
-		updateTransform(activeFile.index, transform);
+		updateTransform(transform);
 	}
 
 	function wheelDeltaPixels(event: WheelEvent): { dx: number; dy: number } {
@@ -1593,7 +1601,7 @@ function startDisplayPrefetch(
 		}
 
 		if (isLikelyTouchpadWheel(event, dx, dy)) {
-			updateTransform(activeFile.index, {
+			updateTransform({
 				...activeTransform,
 				tx: activeTransform.tx - dx,
 				ty: activeTransform.ty - dy,
@@ -1709,7 +1717,7 @@ function startDisplayPrefetch(
 		if (dragState.mode === "pan") {
 			const dx = event.clientX - dragState.startX;
 			const dy = event.clientY - dragState.startY;
-			updateTransform(activeFile.index, {
+			updateTransform({
 				...activeTransform,
 				tx: dragState.baseTx + dx,
 				ty: dragState.baseTy + dy,

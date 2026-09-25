@@ -99,7 +99,9 @@
 	let manualWindowAdjustment = $state<ManualWindowAdjustment | null>(null);
 	let lastWindowFileIndex = $state<number | null>(null);
 	let resetCount = $state(0);
-	let orientationByFile = $state<Record<number, ImageOrientation>>({});
+	// Keyed by navigation scope so a flip or rotation persists across the
+	// single-frame files of a stack, matching zoom and pan in ImageViewport.
+	let orientationByScope = $state<Record<string, ImageOrientation>>({});
 	let fileNavigatorCollapsed = $state(false);
 	let tagPanelWidthPx = $state(clampTagPanelWidth(TAG_PANEL_DEFAULT_WIDTH_PX));
 	let tagPanelCollapsed = $state(false);
@@ -130,7 +132,9 @@
 	});
 	const navigationFrameCount = $derived(navigationFrames.length);
 	const navigationScopeKey = $derived(activeTabId ?? (activeFile ? `file:${activeFile.index}` : ""));
-	const activeOrientation = $derived(activeFileIndex === null ? DEFAULT_ORIENTATION : orientationByFile[activeFileIndex] ?? DEFAULT_ORIENTATION);
+	const activeOrientation = $derived(
+		activeFileIndex === null ? DEFAULT_ORIENTATION : orientationByScope[navigationScopeKey] ?? DEFAULT_ORIENTATION,
+	);
 	const segmentationOverlay = $derived.by(() => {
 		if (semanticMode !== "semantic_context") return null;
 		if (!semanticResponse || semanticResponse.source_file_index !== activeFileIndex) return null;
@@ -373,39 +377,31 @@
 		windowMode = 'default';
 		selectedPresetId = 'default';
 		resetCount += 1;
-		if (orientationByFile[activeFileIndex]) {
-			orientationByFile = { ...orientationByFile, [activeFileIndex]: DEFAULT_ORIENTATION };
+		if (orientationByScope[navigationScopeKey]) {
+			orientationByScope = { ...orientationByScope, [navigationScopeKey]: DEFAULT_ORIENTATION };
 		}
 	}
 
-	function getOrientation(index: number): ImageOrientation {
-		return orientationByFile[index] ?? DEFAULT_ORIENTATION;
+	function updateOrientation(change: (current: ImageOrientation) => ImageOrientation) {
+		if (activeFileIndex === null || !navigationScopeKey) return;
+		const current = orientationByScope[navigationScopeKey] ?? DEFAULT_ORIENTATION;
+		orientationByScope = { ...orientationByScope, [navigationScopeKey]: change(current) };
 	}
 
 	function applyFlipH() {
-		if (activeFileIndex === null) return;
-		const cur = getOrientation(activeFileIndex);
-		orientationByFile = { ...orientationByFile, [activeFileIndex]: { ...cur, flipH: !cur.flipH } };
+		updateOrientation((cur) => ({ ...cur, flipH: !cur.flipH }));
 	}
 
 	function applyFlipV() {
-		if (activeFileIndex === null) return;
-		const cur = getOrientation(activeFileIndex);
-		orientationByFile = { ...orientationByFile, [activeFileIndex]: { ...cur, flipV: !cur.flipV } };
+		updateOrientation((cur) => ({ ...cur, flipV: !cur.flipV }));
 	}
 
 	function applyRotateCW() {
-		if (activeFileIndex === null) return;
-		const cur = getOrientation(activeFileIndex);
-		const r = ((cur.rotation + 90) % 360) as 0 | 90 | 180 | 270;
-		orientationByFile = { ...orientationByFile, [activeFileIndex]: { ...cur, rotation: r } };
+		updateOrientation((cur) => ({ ...cur, rotation: ((cur.rotation + 90) % 360) as 0 | 90 | 180 | 270 }));
 	}
 
 	function applyRotateCCW() {
-		if (activeFileIndex === null) return;
-		const cur = getOrientation(activeFileIndex);
-		const r = ((cur.rotation + 270) % 360) as 0 | 90 | 180 | 270;
-		orientationByFile = { ...orientationByFile, [activeFileIndex]: { ...cur, rotation: r } };
+		updateOrientation((cur) => ({ ...cur, rotation: ((cur.rotation + 270) % 360) as 0 | 90 | 180 | 270 }));
 	}
 
 	function exportAnnotations() {
