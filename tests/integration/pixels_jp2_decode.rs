@@ -56,3 +56,52 @@ async fn invalid_jp2_codestream_surfaces_decode_context() {
         "fallback path should surface JP2 decode failure: {error}"
     );
 }
+
+#[tokio::test]
+async fn jp2_grayscale_display_applies_the_shared_presentation_pipeline() {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/golden-jpeg2000-lossless-u8-single-frame.dcm");
+    let report = dcmview::loader::discover(
+        &[path],
+        dcmview::loader::DiscoverOptions {
+            recursive: false,
+            filters: Vec::new(),
+        },
+    )
+    .await
+    .expect("discover JPEG 2000 golden fixture");
+    let mut file = report.files.into_iter().next().expect("one JPEG 2000 file");
+    // Open only the top-left pixel; everything else must take the shutter's
+    // white P-value, as it would for native, RLE, or JPEG sources.
+    file.series_metadata.presentation.rectangular_shutter =
+        Some(dcmview::types::RectangularDisplayShutter {
+            left_vertical_edge: 1,
+            right_vertical_edge: 1,
+            upper_horizontal_edge: 1,
+            lower_horizontal_edge: 1,
+            presentation_value: u16::MAX,
+        });
+
+    let frame = load_frame(
+        file,
+        new_cache(),
+        FrameRequest {
+            frame: 0,
+            window_center: None,
+            window_width: None,
+            window_mode: dcmview::types::WindowMode::FullDynamic,
+        },
+    )
+    .await
+    .expect("JPEG 2000 display frame");
+    let pixels = image::load_from_memory(&frame.body)
+        .expect("decode PNG")
+        .into_luma8()
+        .into_raw();
+
+    assert!(pixels.len() > 1);
+    assert!(
+        pixels[1..].iter().all(|&value| value == 255),
+        "pixels outside the shutter opening must use the shutter value: {pixels:?}"
+    );
+}

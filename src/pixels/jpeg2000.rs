@@ -2,19 +2,16 @@ use crate::api::contracts::{RawFrameMetadata, WindowMode};
 use crate::types::FileEntry;
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
-use image::{ImageBuffer, ImageFormat, Luma, Rgb};
+use image::{ImageBuffer, ImageFormat, Rgb};
 use std::io::Cursor;
 use tokio::task;
 
 use super::color::encode_rgb8_png_with_icc;
 use super::encapsulated::read_encapsulated_fragment_blocking;
 use super::error::{PixelError, PixelResult};
+use super::header::open_header;
 use super::icc::select_icc_profile;
-use super::render::apply_monochrome1_inversion;
-use super::window::{
-    apply_padding_background, apply_window, exclude_padding_samples, read_pixel_padding_range,
-    resolve_window_with_mode,
-};
+use super::render::{encode_windowed_luminance_png, LuminanceRenderOptions};
 
 pub(crate) async fn decode_jp2_fragment_to_png(
     file: FileEntry,
@@ -38,8 +35,7 @@ fn decode_jp2_fragment_to_png_blocking(
     window_mode: WindowMode,
 ) -> Result<Bytes> {
     let fragment = read_encapsulated_fragment_blocking(&file.path, frame)?;
-    let object = dicom_object::open_file(&file.path)
-        .with_context(|| format!("failed to open JPEG 2000 DICOM: {}", file.path.display()))?;
+    let object = open_header(&file.path)?;
     let icc_profile = select_icc_profile(&object);
 
     let jp2_image = jpeg2k::Image::from_bytes(&fragment)
@@ -54,46 +50,22 @@ fn decode_jp2_fragment_to_png_blocking(
     let mut buffer = Cursor::new(Vec::<u8>::new());
 
     if comps.len() == 1 {
-        // Grayscale — the common medical imaging case
-        let width = comps[0].width();
-        let height = comps[0].height();
+        // Grayscale shares the presentation pipeline used by every other
+        // syntax: Modality LUT/rescale, VOI LUT/window, padding, inversion,
+        // shutter, and overlays.
         let stored_samples: Vec<f64> = comps[0].data().iter().map(|&value| value as f64).collect();
-        let rescaled_samples: Vec<f64> = stored_samples
-            .iter()
-            .map(|value| value * file.rescale_slope + file.rescale_intercept)
-            .collect();
-        let padding_mask =
-            read_pixel_padding_range(&object, crate::types::NativePixelDataKind::Integer)
-                .map(|padding| padding.mask(&stored_samples));
-        let unpadded = padding_mask
-            .as_deref()
-            .map(|mask| exclude_padding_samples(&rescaled_samples, mask));
-        let window_source = unpadded
-            .as_deref()
-            .filter(|samples| !samples.is_empty())
-            .unwrap_or(&rescaled_samples);
-        let resolved_window = resolve_window_with_mode(
-            window_mode,
-            requested_wc,
-            requested_ww,
-            file.default_window,
-            window_source,
-        )
-        .ok_or_else(|| anyhow!("JP2 decode failed: could not resolve window"))?;
-        let mut windowed = apply_window(
-            &rescaled_samples,
-            resolved_window.center,
-            resolved_window.width.max(1.0),
+        return encode_windowed_luminance_png(
+            file,
+            &stored_samples,
+            LuminanceRenderOptions {
+                frame,
+                rows: comps[0].height(),
+                columns: comps[0].width(),
+                requested_wc,
+                requested_ww,
+                window_mode,
+            },
         );
-        if let Some(mask) = padding_mask.as_deref() {
-            apply_padding_background(&mut windowed, mask);
-        }
-        apply_monochrome1_inversion(&mut windowed, &file.photometric_interpretation);
-        let image = ImageBuffer::<Luma<u8>, Vec<u8>>::from_raw(width, height, windowed)
-            .ok_or_else(|| anyhow!("JP2 decoded buffer size mismatch"))?;
-        image::DynamicImage::ImageLuma8(image)
-            .write_to(&mut buffer, ImageFormat::Png)
-            .context("JP2 decode failed: png encoding failed")?;
     } else if comps.len() == 3 {
         // RGB — rare in medical imaging but handle it
         let width = comps[0].width();
