@@ -1,51 +1,57 @@
-# DICOM compatibility campaign
+# DICOM compatibility runner
 
-This directory owns dcmview's manifest-driven compatibility automation. It
-measures viewer behavior; it does not grade DICOM conformance or clinical
-suitability. The valid-corpus path consumes one explicitly pinned producer
-container. It does not freeze a sibling checkout, merge a corrected worklist,
-or invoke a generator from the viewer repository.
-
-## Stored current smoke artifact
-
-The current viewer path consumes the exact producer container directly. It does
-not build or invoke `synth-dicom-gen`, and it does not require a
-`dicom-test-suite` checkout. The container contains sibling
-`smoke.tar.gz` and `artifact-index.json`; the deterministic tar has exactly
-`corpus/manifest.json` plus the manifest-declared DICOM payloads:
+`run.py` checks a real `dcmview` binary against a stored `synth-dicom-gen`
+smoke corpus. It is an occasional validation tool, not part of push or PR CI.
+It measures viewer behavior for research inspection; it does not grade DICOM
+conformance or clinical suitability.
 
 ```bash
 python scripts/compatibility/run.py \
-  --corpus-root /outside/producer-container \
+  --corpus-root /path/to/container \
   --binary target/debug/dcmview \
-  --output /outside/smoke-run-1
+  --output /path/to/empty-output-dir
 ```
 
-The consumer accepts only artifact descriptor schema `2.0.0`. It checks that
-`artifact-index.json`, the archive, the generated manifest, and every payload
-agree on their hashes and sizes, and that the index describes a closed
-generator release descriptor. It rejects symlinks, hard links, special
-entries, path traversal, duplicate members, undeclared outer files, and TOCTOU
-changes. The archive is extracted into a private closed tree with no-follow
-reads; only after the tree is closed do its DICOM paths enter the viewer
-worklist. Trust in *which* container is being tested comes from the committed
-ZIP digest described below, not from per-field pins.
+`--corpus-root` is the unzipped producer artifact: `smoke.tar.gz` plus
+`artifact-index.json`. Before the viewer starts, the runner checks the archive
+against the index digest, extracts it (regular files only, no paths outside
+the corpus), and checks every payload against the SHA-256 and size in
+`corpus/manifest.json`. It then launches the binary on every payload and runs
+these checks per file over HTTP:
 
-After those checks, the same existing compatibility runner starts the supplied
-`dcmview` binary with the verified DICOM paths and performs the normal metadata,
-display, raw-frame, cache, error-recovery, and assertion-backed HTTP probes.
-The companion viewer report is checked against the viewer-owned
-`scripts/compatibility/viewer-report.schema.json`; no generator-owned schema is
-needed at consumption time.
-Viewer failures remain viewer-owned outcomes; a successful artifact check does
-not claim that every case renders.
+| Check | Oracle |
+|---|---|
+| `metadata` | Manifest UIDs, SOP class, transfer syntax, geometry, and declared tag values |
+| `raw_frame_hashes` | SHA-256 of every decoded raw frame equals the manifest frame hash (lossless) |
+| `raw_lossy_error` | JPEG Baseline samples stay within the manifest's max-error/RMSE tolerance |
+| `display_exact` | Every navigated display frame equals the 8-bit output computed from the recipe samples |
+| `display_frames`, `raw_headers`, `cache` | PNG geometry, raw metadata headers, `X-Cache` MISS then HIT |
+| `unsupported_transfer_syntax`, `metadata_only`, `error_recovery` | 422/404 JSON errors, and the server keeps serving |
+| `references`, `series`, segmentation / parametric map / RT dose, `wsi_*`, modality tags | Declared manifest expectations, where the entry declares them |
 
-### Manual CI workflow
+`display_exact` computes the expected frame independently of dcmview: stored
+value, Rescale Slope/Intercept, the DICOM LINEAR window, then MONOCHROME1
+inversion. A declared window is checked through the default request; otherwise
+the check uses `mode=full_dynamic` (the window spanning the frame's rescaled
+minimum and maximum), because the default fallback is a percentile heuristic.
+Pixel Padding samples are excluded from that range and not asserted. RGB frames
+are compared sample for sample. Cases whose display depends on data the
+manifest does not carry (Modality/VOI LUT and palette tables, YBR color, overlays
+and shutters, non-identity presentation LUTs, lossy JPEG) are reported as not
+computable with the reason, rather than passed.
 
-`.github/workflows/compatibility.yml` runs
-`python scripts/check.py compatibility-artifact` and is dispatched manually
-only; it never runs on push or pull request. It reads
-`scripts/compatibility/corpus-artifact.json`:
+The runner writes `report.json` (per-file checks and a per-check tally) plus
+the viewer's stdout/stderr logs, prints a summary, and exits 1 if any check
+failed or 2 if the corpus or viewer could not be prepared.
+
+## Manual CI workflow
+
+`.github/workflows/compatibility.yml` is dispatched manually. It downloads the
+producer artifact named in `corpus-artifact.json` with the
+`DCMVIEW_COMPAT_CORPUS_TOKEN` secret, checks the ZIP against `zip_sha256`,
+unzips it, and runs `python scripts/check.py compatibility-artifact`, which
+builds the debug binary and invokes `run.py`. The committed ZIP digest is what
+fixes which corpus is tested.
 
 | Field | Meaning |
 |---|---|
@@ -54,14 +60,10 @@ only; it never runs on push or pull request. It reads
 | `artifact_id` | Numeric Actions artifact ID to download |
 | `zip_sha256` | SHA-256 of the downloaded artifact ZIP (`sha256:` prefix allowed) |
 
-The workflow downloads the artifact by ID with the
-`DCMVIEW_COMPAT_CORPUS_TOKEN` secret, checks the ZIP against `zip_sha256`,
-and extracts it with `extract_github_artifact.py`. It fails with a clear error
-while no artifact is pinned.
-
 To adopt a new producer artifact, pick a successful default-branch run of the
 producer's publish workflow, read the artifact's `id` and `digest` from
 `gh api repos/<repository>/actions/runs/<run_id>/artifacts`, commit them to the
-pin file on a branch, and dispatch the workflow on that branch. The pin change
-is reviewed like any other commit. The viewer repository never checks out or
-builds the generator.
+pin file on a branch, and dispatch the workflow on that branch.
+
+The runner's own unit tests (`test_run.py`) run in the `python-unit` check
+layer.

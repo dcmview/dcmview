@@ -50,7 +50,7 @@ jobs:
             "https://api.github.com/repos/$repository/actions/artifacts/$artifact_id/zip" \
             --output "$zip"
           echo "${digest#sha256:}  $zip" | sha256sum --check --strict
-          python scripts/compatibility/extract_github_artifact.py "$zip" "$RUNNER_TEMP/corpus"
+          unzip -q "$zip" -d "$RUNNER_TEMP/corpus"
       - name: Run the stored-artifact compatibility profile
         env:
           DCMVIEW_COMPAT_CORPUS_ROOT: ${{ runner.temp }}/corpus

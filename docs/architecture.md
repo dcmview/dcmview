@@ -320,7 +320,7 @@ flowchart TD
     core --> clayers["fixture regeneration unchanged<br/>default-feature Rust suite<br/>VS Code compile"]
     e2e["e2e"] --> core
     e2e --> elayers["real debug binary build<br/>Python wrapper integration<br/>HTTP binary smoke<br/>VS Code Electron integration"]
-    artifact["compatibility-artifact"] --> alayers["immutable producer container<br/>index/tar/path/hash verification<br/>real HTTP compatibility runner"]
+    artifact["compatibility-artifact"] --> alayers["digest-checked producer container<br/>real HTTP compatibility runner"]
     external["external"] --> xlayers["feature-gated remote fixtures<br/>network or local cache allowed"]
     marketing["marketing"] --> mlayers["capture manifest and driver checks<br/>media drift gate when published"]
     ci["CI component jobs"] -. "reuse focused profiles" .-> qlayers
@@ -339,7 +339,7 @@ The supported development baselines are Rust 1.88+, Node.js 20.19+, and Python
 | `quick` | Normal development loop | Version parity; generated frontend contract check; Svelte/TypeScript checks; Vitest; frontend build; Rust format and strict all-target Clippy; Python unit and packaging-helper tests. It does not run Rust tests or VS Code tests. |
 | `core` | Before handing off a normal code change | Everything in the corresponding frontend/lint/unit layers, plus deterministic fixture regeneration that must leave the current fixture tree unchanged, the default-feature, non-ignored locked Rust suite, and VS Code compilation. |
 | `e2e` | Process or integration changes | `core`, then a real debug binary, Python wrapper binary integration, debug-binary HTTP smoke, and VS Code Electron integration. |
-| `compatibility-artifact` | Stored current corpus integration | Builds only the dcmview binary, verifies an explicitly supplied producer container (`DCMVIEW_COMPAT_CORPUS_ROOT`), and runs the existing HTTP compatibility runner against every verified DICOM payload. It never checks out or builds the generator and fails when no container is supplied. It runs only from the manually dispatched `compatibility.yml` workflow, not from push/PR CI. |
+| `compatibility-artifact` | Stored current corpus integration | Builds only the dcmview binary, verifies an explicitly supplied producer container (`DCMVIEW_COMPAT_CORPUS_ROOT`), and runs `scripts/compatibility/run.py` against every verified DICOM payload. It never checks out or builds the generator and fails when no container is supplied. It runs only from the manually dispatched `compatibility.yml` workflow, not from push/PR CI. |
 | `external` | Opt-in upstream DICOM compatibility | Builds frontend assets and runs only ignored integration tests behind `remote-fixtures`; those tests may download or populate the `dicom-test-files` cache. It is separate from `e2e`. |
 | `marketing` | Capture tooling and release media | Validates tracked source/capture manifests, syntax-checks the browser and VS Code capture drivers, runs marketing-media unit tests, and—once an approved bundle is committed—verifies published hashes and the capture-input digest without ignored DICOM sources. |
 
@@ -369,30 +369,19 @@ installation and VS Code Electron integration can also use network/cache state;
   wrappers are tested as TypeScript modules.
 - Python unit tests isolate subprocess policy; `python-integration` adds the real
   binary. VS Code compile and Electron integration remain separate layers.
-- The compatibility runner promotes manifest capabilities only from exact
-  observations. Prepared diagonal overlays have an exact decoded-PNG pixel
-  oracle. The current rectangular shutter fixture covers the full frame and
-  therefore records bounds-preserving non-regression without claiming that
-  outside-opening replacement was exercised. ICC evidence compares the
-  decompressed PNG `iCCP` bytes to the manifest size and SHA-256, while leaving
-  numeric color transformation and optical-path mapping explicitly unprobed.
-- `scripts/compatibility/run.py --corpus-root` consumes the exact verified
-  producer container (`smoke.tar.gz` plus sibling `artifact-index.json`) and is
-  the only valid-corpus integration path. It verifies that the v2 index,
-  archive digest/size, generated manifest, and every payload hash/size agree.
-  The tar is extracted with bounded
-  no-follow reads into a private closed tree; symlinks, hard links, special
-  entries, traversal, duplicates, extras, and TOCTOU changes fail closed before
-  every payload is passed to the real HTTP runner. The valid-corpus runner,
-  isolated negative runner, stress baseline, and payload-free deterministic fuzz
-  qualification produce separate bounded reports and SHA-256 artifact indexes.
-  Which container is tested is fixed by the Actions ZIP digest committed in
-  `scripts/compatibility/corpus-artifact.json`; the manually dispatched
-  `compatibility.yml` workflow downloads that artifact by ID and checks the
-  digest before extraction. It never regenerates corpus data. The companion
-  `viewer-report.schema.json` is viewer-owned, so this path does not load a
-  generator-owned schema from the artifact or a sibling checkout. The generic
-  0.2 worklist parser remains only for caller-supplied robustness profiles.
+- `scripts/compatibility/run.py --corpus-root` checks the real binary against
+  a stored `synth-dicom-gen` smoke container (`smoke.tar.gz` plus
+  `artifact-index.json`) after verifying the archive digest and every payload
+  hash. Its pixel oracles come from the generator's manifest, independent of
+  dcmview: every raw frame hash, JPEG Baseline error bounds, and an exact 8-bit
+  display frame computed from the recipe samples, rescale, LINEAR window, and
+  photometric interpretation. Layouts the manifest cannot describe (LUT and
+  palette tables, YBR color, overlays, shutters) are reported as not
+  computable. Which container is tested is fixed by the Actions ZIP digest
+  committed in `scripts/compatibility/corpus-artifact.json`; the manually
+  dispatched `compatibility.yml` workflow downloads that artifact, checks the
+  digest, and never regenerates corpus data. See
+  `scripts/compatibility/README.md`.
 - Real-browser acceptance uses the actual Svelte app and fixture server to
   exercise canvas/network behavior: metadata-only and unsupported states,
   pixel-preview/semantic-context switching, typed references, SEG/Parametric
