@@ -310,6 +310,10 @@
 	const activeAnnotationPersistence = $derived(
 		activeFile ? annotationPersistenceByFile[activeFile.index] ?? null : null,
 	);
+	// Persistence state exists only once the file's server-side annotations
+	// have loaded. Editing before then would save a set built from nothing and
+	// replace the file's stored ROIs.
+	const annotationsReady = $derived(activeAnnotationPersistence !== null);
 	const selectedRoiIndex = $derived(activeFile ? selectedRoiByFile[activeFile.index] ?? null : null);
 	const imageRows = $derived(
 		pipelineMode === "segmentation_overlay" && segmentationOverlay
@@ -384,18 +388,16 @@
 		return normalizeAnnotationsForEdit(activeAnnotations, activeFile?.frame_count ?? 0);
 	}
 
-	function syncAnnotations(fileIndex: number, annotations: EmbedRoiAnnotations) {
-		if (!annotationPersistence.get(fileIndex)) {
-			annotationPersistence.initialize(fileIndex, annotations);
-		}
-		annotationPersistence.edit(fileIndex, annotations);
-	}
-
 	function commitAnnotations(annotations: EmbedRoiAnnotations, selectedIndex: number | null = selectedRoiIndex) {
-		if (!activeFile) return;
+		if (!activeFile || !annotationPersistence.get(activeFile.index)) return;
 		setAnnotationsForFile(activeFile.index, annotations);
 		setSelectedRoi(selectedIndex);
-		syncAnnotations(activeFile.index, annotations);
+		annotationPersistence.edit(activeFile.index, annotations);
+	}
+
+	function retryAnnotationLoad() {
+		if (!activeFile || annotationPersistence.get(activeFile.index)) return;
+		loadAnnotations(activeFile.index);
 	}
 
 	function retryAnnotationSave() {
@@ -1246,7 +1248,10 @@ function startDisplayPrefetch(
 		if (annotationsByFile[fileIndex] !== undefined || annotationRequestedByFile[fileIndex]) {
 			return;
 		}
+		loadAnnotations(fileIndex);
+	});
 
+	function loadAnnotations(fileIndex: number) {
 		// Direct mutation — annotationRequestedByFile is not $state, so this
 		// does not trigger an effect re-run and will not fire the cleanup.
 		annotationRequestedByFile[fileIndex] = true;
@@ -1275,7 +1280,7 @@ function startDisplayPrefetch(
 					[fileIndex]: false,
 				};
 			});
-	});
+	}
 
 	$effect(() => {
 		const nextScope = navigationScopeKey;
@@ -1672,7 +1677,7 @@ function startDisplayPrefetch(
 					}
 					break;
 				case "annotate_rect": {
-					if (activeAnnotationLoading) break;
+					if (!annotationsReady) break;
 					const point = pointFromPointer(event);
 					if (!point) break;
 					event.preventDefault();
@@ -1786,8 +1791,8 @@ function startDisplayPrefetch(
 				commitAnnotations(next, next.num_roi - 1);
 			}
 		}
-		if ((dragState?.mode === "move_roi" || dragState?.mode === "resize_roi") && activeFile && activeAnnotations) {
-			syncAnnotations(activeFile.index, activeAnnotations);
+		if ((dragState?.mode === "move_roi" || dragState?.mode === "resize_roi") && activeAnnotations) {
+			commitAnnotations(activeAnnotations, selectedRoiIndex);
 		}
 		dragState = null;
 	}
@@ -1942,6 +1947,10 @@ function startDisplayPrefetch(
 						<div class="roi-error-actions">
 							<button type="button" onclick={retryAnnotationSave}>Retry</button>
 							<button type="button" onclick={rollbackAnnotationSave}>Revert</button>
+						</div>
+					{:else if !annotationsReady}
+						<div class="roi-error-actions">
+							<button type="button" onclick={retryAnnotationLoad}>Retry</button>
 						</div>
 					{/if}
 				</div>
