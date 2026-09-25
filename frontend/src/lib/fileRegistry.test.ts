@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { indexFilesById, resolveFilesById } from "./fileRegistry";
+import { indexFilesById, resolveFilesById, reuseUnchangedEntries } from "./fileRegistry";
 
 describe("file registry", () => {
 	it("resolves non-dense identifiers independently of array position", () => {
@@ -28,5 +28,23 @@ describe("file registry", () => {
 	it("rejects duplicate identifiers at the contract boundary", () => {
 		expect(() => indexFilesById([{ index: 5 }, { index: 5 }]))
 			.toThrow("duplicate file index 5");
+	});
+
+	it("keeps unchanged entries identical across catalog polls", () => {
+		const previous = [
+			{ index: 0, frames: [0], label: "stable" },
+			{ index: 1, frames: [0], label: "growing" },
+		];
+		const next = [
+			{ index: 0, frames: [0], label: "stable" },
+			{ index: 1, frames: [0, 1], label: "growing" },
+			{ index: 2, frames: [0], label: "new" },
+		];
+
+		const merged = reuseUnchangedEntries(previous, next, (entry) => entry.index);
+
+		expect(merged[0]).toBe(previous[0]);
+		expect(merged[1]).toBe(next[1]);
+		expect(merged[2]).toBe(next[2]);
 	});
 });

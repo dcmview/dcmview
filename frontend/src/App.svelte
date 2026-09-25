@@ -27,7 +27,7 @@
 	import ViewerToolbar from "./lib/ViewerToolbar.svelte";
 	import WsiTileContext from "./lib/WsiTileContext.svelte";
 	import type { CineDirection, CineMode } from "./lib/cinePlayback";
-	import { indexFilesById, resolveFilesById } from "./lib/fileRegistry";
+	import { indexFilesById, resolveFilesById, reuseUnchangedEntries } from "./lib/fileRegistry";
 	import { focusTrapTarget } from "./lib/focusTrap";
 	import { adjacentFileIndex } from "./lib/fileTree";
 	import {
@@ -461,8 +461,14 @@
 	}
 
 	function applyCatalogResponses(files: FilesResponse, series: SeriesCatalogResponse) {
-		seriesResponse = series;
-		filesResponse = files;
+		seriesResponse = {
+			...series,
+			series: reuseUnchangedEntries(seriesResponse?.series, series.series, (entry) => entry.id),
+		};
+		filesResponse = {
+			...files,
+			files: reuseUnchangedEntries(filesResponse?.files, files.files, (entry) => entry.index),
+		};
 		if (activeFileIndex === null && openTabs.length === 0 && files.files.length > 0) {
 			openOrActivateFile(files.files[0].index);
 			return;
