@@ -114,10 +114,12 @@ async fn run_local_viewer_with_spawner(
 }
 
 fn friendly_bind_error(error: anyhow::Error, port: u16) -> anyhow::Error {
-    let message = error.to_string();
-    if port != 0
-        && (message.contains("Address already in use") || message.contains("failed to bind"))
-    {
+    let address_in_use = error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::AddrInUse)
+    });
+    if port != 0 && address_in_use {
         anyhow::anyhow!("dcmview: port {port} is already in use — try --port 0 for auto-assign")
     } else {
         error
@@ -260,6 +262,21 @@ mod tests {
             error.to_string(),
             format!("dcmview: port {port} is already in use — try --port 0 for auto-assign")
         );
+    }
+
+    #[tokio::test]
+    async fn bind_failures_other_than_address_in_use_keep_their_cause() {
+        // TEST-NET-1 is never assigned to a local interface, so binding fails
+        // with an address-unavailable error rather than an occupied port.
+        let mut unavailable = options(8765);
+        unavailable.host = "192.0.2.1".to_string();
+
+        let error = run_local_viewer_with_spawner(unavailable, &CountingSpawner::new())
+            .await
+            .expect_err("unassigned address should fail");
+
+        assert!(!error.to_string().contains("already in use"), "{error:#}");
+        assert!(format!("{error:#}").contains("192.0.2.1:8765"), "{error:#}");
     }
 
     #[tokio::test]
