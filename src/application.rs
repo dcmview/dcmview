@@ -115,9 +115,6 @@ fn local_viewer_options(cli: Cli) -> LocalViewerOptions {
         timeout_seconds: cli.timeout,
         open_browser: !cli.no_browser,
         startup_json: cli.startup_json,
-        tunnel_enabled: cli.tunnel,
-        tunnel_host: cli.tunnel_host,
-        tunnel_port: cli.tunnel_port,
     }
 }
 
@@ -157,9 +154,6 @@ mod tests {
         timeout_seconds: Option<u64>,
         open_browser: bool,
         startup_json: bool,
-        tunnel_enabled: bool,
-        tunnel_host: Option<String>,
-        tunnel_port: u16,
     }
 
     impl From<LocalViewerOptions> for RecordedLocalOptions {
@@ -174,9 +168,6 @@ mod tests {
                 timeout_seconds: options.timeout_seconds,
                 open_browser: options.open_browser,
                 startup_json: options.startup_json,
-                tunnel_enabled: options.tunnel_enabled,
-                tunnel_host: options.tunnel_host,
-                tunnel_port: options.tunnel_port,
             }
         }
     }
@@ -282,9 +273,6 @@ mod tests {
             port: 8123,
             host: "0.0.0.0".to_string(),
             no_browser: true,
-            tunnel: true,
-            tunnel_host: Some("viewer@example.org".to_string()),
-            tunnel_port: 9123,
             timeout: Some(47),
             no_recursive: true,
             annotations: Some(PathBuf::from("/annotations/rois.csv")),
@@ -317,9 +305,6 @@ mod tests {
             timeout_seconds: Some(47),
             open_browser: false,
             startup_json: true,
-            tunnel_enabled: true,
-            tunnel_host: Some("viewer@example.org".to_string()),
-            tunnel_port: 9123,
         }
     }
 
@@ -349,9 +334,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn workspace_bridge_success_short_circuits_invalid_local_options() {
-        let mut cli = local_cli();
-        cli.tunnel_host = None;
+    async fn workspace_bridge_success_short_circuits_local_viewer() {
+        let cli = local_cli();
         let raw_args = raw_args();
         let services = RecordingApplicationServices::new(
             WorkspaceBridgeBehavior::Exit(1),

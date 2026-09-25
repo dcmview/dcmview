@@ -23,9 +23,6 @@ dcmview [OPTIONS] <PATH> [PATH ...]
 | `-p, --port <PORT>` | `0` | Local HTTP port to bind. `0` asks the OS for an available port. |
 | `--host <ADDR>` | `127.0.0.1` | Local interface to bind. Keep the default for normal and SSH-forwarded use. |
 | `--no-browser` | `false` | Print the viewer URL instead of opening a browser automatically. |
-| `--tunnel` | `false` | Start an SSH local port-forward helper after the viewer starts. |
-| `--tunnel-host <SSH_HOST>` | none | SSH host used with `--tunnel`, for example `user@example.org`. Required when `--tunnel` is set. |
-| `--tunnel-port <PORT>` | `0` | Local forwarded port for `--tunnel`; `0` reuses the viewer port. |
 | `--timeout <SECONDS>` | none | Exit after this many seconds without API or browser requests. |
 | `--no-recursive` | `false` | Scan only the top level of input directories. |
 | `--annotations <CSV>` | none | Load EMBED-style ROI annotations from CSV without modifying the file. |
@@ -55,9 +52,6 @@ python -m dcmview_py [OPTIONS] <PATH> [PATH ...]
 | `-p, --port <PORT>` | `--port <PORT>` |
 | `--host <ADDR>` | `--host <ADDR>` |
 | `--no-browser` | `--no-browser` |
-| `--tunnel` | `--tunnel` |
-| `--tunnel-host <SSH_HOST>` | `--tunnel-host <SSH_HOST>` |
-| `--tunnel-port <PORT>` | `--tunnel-port <PORT>` |
 | `--timeout <SECONDS>` | `--timeout <SECONDS>` |
 | `--no-recursive` | `--no-recursive` |
 | `--annotations <CSV>` | `--annotations <CSV>` |
@@ -76,9 +70,6 @@ single path-like value or an iterable of path-like values.
 | `port` | `0` | Forwards to `--port`. |
 | `host` | `"127.0.0.1"` | Forwards to `--host`. |
 | `browser` | `True` | When `False`, forwards `--no-browser`. |
-| `tunnel` | `False` | When `True`, forwards `--tunnel`. |
-| `tunnel_host` | `None` | Required when `tunnel=True`; forwards `--tunnel-host`. |
-| `tunnel_port` | `0` | Forwards to `--tunnel-port` when `tunnel=True`. |
 | `block` | `True` | When `True`, waits for `dcmview` to exit and returns `None`; when `False`, returns a handle with `.url`, `.stop()`, and context-manager support. |
 | `recursive` | `True` | When `False`, forwards `--no-recursive`. |
 | `timeout` | `None` | Forwards to `--timeout` when set. |

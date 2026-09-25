@@ -420,8 +420,6 @@ export interface FileSummary {
 export interface FilesResponse {
 	files: FileSummary[];
 	discovery: DiscoveryResult[];
-	tunnelled: boolean;
-	tunnel_host: string | null;
 	server_start_ms: number;
 	scan_complete: boolean;
 	scanned: number;

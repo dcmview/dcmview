@@ -8,7 +8,7 @@ mod web;
 pub use api::AppState;
 pub use catalog::{FileRegistry, RegistryStatus};
 pub use lifecycle::{RequestActivity, ShutdownReason};
-pub use runtime::{run, startup_event_json, BoundServer, ServerConfig, ServerExit, TunnelConfig};
+pub use runtime::{run, startup_event_json, BoundServer, ServerConfig, ServerExit};
 
 use axum::Router;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};

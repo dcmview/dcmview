@@ -62,8 +62,6 @@ async fn json_endpoints_match_frontend_contract_shapes() {
             "scanned",
             "server_start_ms",
             "skipped",
-            "tunnel_host",
-            "tunnelled",
         ],
     );
     let file = &files["files"].as_array().expect("files array")[0];

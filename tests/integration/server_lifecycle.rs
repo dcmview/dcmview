@@ -16,7 +16,6 @@ fn server_config(shutdown: Arc<Notify>, timeout_seconds: Option<u64>) -> ServerC
         timeout_seconds,
         open_browser: false,
         startup_json: false,
-        tunnel: None,
         shutdown: Some(shutdown),
     }
 }

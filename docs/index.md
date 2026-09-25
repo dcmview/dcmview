@@ -34,7 +34,7 @@ or metadata unless they are fully de-identified and approved for public use.
 ## User Guides
 
 - [Troubleshooting](troubleshooting.md): fixes for install, startup, discovery,
-  decode, tunnel, VS Code, and annotation CSV problems.
+  decode, remote access, VS Code, and annotation CSV problems.
 - [Configuration reference](configuration.md): CLI flags, Python wrapper
   parameters, VS Code settings, environment variables, and binary resolution.
 - [Annotation reference](annotations.md): EMBED-style ROI CSV columns,

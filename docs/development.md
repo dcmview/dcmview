@@ -148,8 +148,8 @@ cargo run --example generate_test_fixtures
 ```
 
 Integration tests use real DICOM fixtures and cover discovery, display-frame
-decoding, raw-frame transport, cache headers, tag serialization, annotations,
-and tunnel fallback. Do not mock the DICOM layer for integration coverage.
+decoding, raw-frame transport, cache headers, tag serialization, and
+annotations. Do not mock the DICOM layer for integration coverage.
 
 Two upstream fixture cases are behind the `remote-fixtures` feature and ignored
 by default because they may download or cache files through

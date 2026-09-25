@@ -2,7 +2,6 @@
 
 use super::lifecycle::{wait_for_shutdown, ExternalShutdown, ShutdownReason};
 use super::{is_non_loopback_bind, router, AppState, FileRegistry};
-use crate::tunnel::{self, TunnelHandle};
 use anyhow::{Context, Result};
 use serde::Serialize;
 use std::net::SocketAddr;
@@ -14,19 +13,12 @@ use tokio::sync::{oneshot, Notify};
 use tokio::task::JoinHandle;
 
 #[derive(Debug, Clone)]
-pub struct TunnelConfig {
-    pub host: String,
-    pub port: u16,
-}
-
-#[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
     pub timeout_seconds: Option<u64>,
     pub open_browser: bool,
     pub startup_json: bool,
-    pub tunnel: Option<TunnelConfig>,
     pub shutdown: Option<Arc<Notify>>,
 }
 
@@ -72,36 +64,14 @@ impl BoundServer {
         socket_url(self.local_addr)
     }
 
-    pub async fn serve(self, config: ServerConfig, mut state: AppState) -> Result<ServerExit> {
+    pub async fn serve(self, config: ServerConfig, state: AppState) -> Result<ServerExit> {
         let external_shutdown = ExternalShutdown::new(config.shutdown.clone());
         let server_url = self.url();
 
-        if let Some(tunnel_config) = config.tunnel.as_ref() {
-            let tunnel_runtime = tunnel::start_tunnel(
-                self.local_addr.port(),
-                tunnel_config.host.clone(),
-                tunnel_config.port,
-            )?;
-            if let Some(warning) = tunnel_runtime.warning.as_deref() {
-                eprintln!("{warning}");
-                eprintln!("dcmview: to forward manually, run on your local machine:");
-                eprintln!(
-                    "dcmview:   ssh -L {0}:localhost:{0} {1}",
-                    tunnel_runtime.info.tunnel_port, tunnel_runtime.info.tunnel_host
-                );
-            } else {
-                println!(
-                    "dcmview: SSH tunnel active — access at http://localhost:{} on your local machine",
-                    tunnel_runtime.info.tunnel_port
-                );
-            }
-            state.attach_tunnel(tunnel_runtime.info, tunnel_runtime.handle);
-        } else {
-            println!(
-                "dcmview: (on a remote server? run on your local machine: ssh -L {0}:localhost:{0} user@host)",
-                self.local_addr.port()
-            );
-        }
+        println!(
+            "dcmview: (on a remote server? run on your local machine: ssh -L {0}:localhost:{0} user@host)",
+            self.local_addr.port()
+        );
 
         if is_non_loopback_bind(self.local_addr.ip()) {
             eprintln!(
@@ -109,11 +79,10 @@ impl BoundServer {
                 self.local_addr.ip()
             );
             eprintln!(
-                "dcmview: warning — prefer --host 127.0.0.1 (or ::1) and use --tunnel for remote access"
+                "dcmview: warning — prefer --host 127.0.0.1 (or ::1) and use SSH port forwarding for remote access"
             );
         }
 
-        let mut tunnel_cleanup = TunnelCleanup::new(state.tunnel_handle());
         let activity = state.activity().clone();
         let registry = state.registry().clone();
         let app = router(state);
@@ -152,7 +121,6 @@ impl BoundServer {
             .await;
 
         browser_task.abort();
-        tunnel_cleanup.shutdown();
         serve_result.context("server failed")?;
         let reason = reason_rx
             .await
@@ -275,28 +243,6 @@ impl BrowserTask {
 impl Drop for BrowserTask {
     fn drop(&mut self) {
         self.abort();
-    }
-}
-
-struct TunnelCleanup {
-    handle: Option<Arc<TunnelHandle>>,
-}
-
-impl TunnelCleanup {
-    fn new(handle: Option<Arc<TunnelHandle>>) -> Self {
-        Self { handle }
-    }
-
-    fn shutdown(&mut self) {
-        if let Some(handle) = self.handle.take() {
-            handle.shutdown();
-        }
-    }
-}
-
-impl Drop for TunnelCleanup {
-    fn drop(&mut self) {
-        self.shutdown();
     }
 }
 

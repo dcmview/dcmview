@@ -33,7 +33,6 @@ pub(super) async fn health(State(state): State<AppState>) -> Json<HealthResponse
 
 pub(super) async fn files(State(state): State<AppState>) -> Json<FilesResponse> {
     let status = state.registry().status();
-    let tunnel = state.tunnel_info();
     Json(FilesResponse {
         files: state.registry().summaries_snapshot(),
         discovery: state
@@ -51,8 +50,6 @@ pub(super) async fn files(State(state): State<AppState>) -> Json<FilesResponse> 
                 reason: record.reason.code().to_string(),
             })
             .collect(),
-        tunnelled: tunnel.is_some(),
-        tunnel_host: tunnel.map(|info| info.tunnel_host.clone()),
         server_start_ms: state.server_start_ms(),
         scan_complete: status.scan_complete,
         scanned: status.scanned,

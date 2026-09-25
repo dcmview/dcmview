@@ -10,6 +10,17 @@ diagnostic viewer.
 
 ## Unreleased
 
+### Removed
+
+- Removed the `--tunnel`, `--tunnel-host`, and `--tunnel-port` options, the
+  matching `dcmview-py` `view()` keyword arguments, and the `tunnelled` and
+  `tunnel_host` fields of `/api/files`. The helper ran `ssh -L` on the machine
+  serving the viewer, which forwarded to the SSH host's loopback rather than
+  exposing the viewer to the user's machine, and its readiness probe connected
+  to the viewer's own listener, so it reported success even when no forward
+  existed. Use the printed `ssh -L <port>:localhost:<port> user@host` command
+  from your local machine instead.
+
 ## 0.2.12 - 2026-08-31
 
 ### Geometry-Aligned DICOM SEG Overlays

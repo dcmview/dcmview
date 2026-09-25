@@ -167,9 +167,6 @@ def view(
 	port: int = 0,
 	host: str = "127.0.0.1",
 	browser: bool = True,
-	tunnel: bool = False,
-	tunnel_host: Optional[str] = None,
-	tunnel_port: int = 0,
 	block: bool = True,
 	recursive: bool = True,
 	timeout: Optional[int] = None,
@@ -186,11 +183,6 @@ def view(
 			added your own network access controls.
 		browser: Open the system browser when ``True``; pass ``False`` to print
 			the viewer URL for terminals, notebooks, or SSH forwarding.
-		tunnel: Start the Rust binary's optional SSH local port-forward helper.
-		tunnel_host: SSH host used with ``tunnel=True``. Required when
-			``tunnel`` is enabled.
-		tunnel_port: Local forwarded port for ``tunnel=True``. ``0`` reuses the
-			viewer port.
 		block: Wait for the viewer process to exit when ``True``. When ``False``,
 			return a handle with ``url``, ``stop()``, and context-manager support.
 		recursive: Recursively scan input directories when ``True``.
@@ -208,8 +200,7 @@ def view(
 		or ``BridgeShutdownHandle`` for VS Code-managed sessions.
 
 	Raises:
-		ValueError: If no files are provided or ``tunnel=True`` has no
-			``tunnel_host``.
+		ValueError: If no files are provided.
 		TypeError: If file, annotation, or filter arguments have invalid types.
 		RuntimeError: If no dcmview binary can be resolved or startup fails.
 		subprocess.CalledProcessError: If the underlying viewer exits with a
@@ -228,9 +219,6 @@ def view(
 		port=port,
 		host=host,
 		browser=browser,
-		tunnel=tunnel,
-		tunnel_host=tunnel_host,
-		tunnel_port=tunnel_port,
 		recursive=recursive,
 		timeout=timeout,
 		annotations=annotation_path,
@@ -254,9 +242,6 @@ def view(
 			port=port,
 			host=host,
 			browser=browser,
-			tunnel=tunnel,
-			tunnel_host=tunnel_host,
-			tunnel_port=tunnel_port,
 			recursive=recursive,
 			timeout=timeout,
 			annotations=annotation_path,
@@ -389,9 +374,6 @@ def _build_command(
 	port: int,
 	host: str,
 	browser: bool,
-	tunnel: bool,
-	tunnel_host: Optional[str],
-	tunnel_port: int,
 	recursive: bool,
 	timeout: Optional[int],
 	annotations: Optional[str],
@@ -405,9 +387,6 @@ def _build_command(
 			port=port,
 			host=host,
 			browser=browser,
-			tunnel=tunnel,
-			tunnel_host=tunnel_host,
-			tunnel_port=tunnel_port,
 			recursive=recursive,
 			timeout=timeout,
 			annotations=annotations,
@@ -423,26 +402,17 @@ def _build_args(
 	port: int,
 	host: str,
 	browser: bool,
-	tunnel: bool,
-	tunnel_host: Optional[str],
-	tunnel_port: int,
 	recursive: bool,
 	timeout: Optional[int],
 	annotations: Optional[str],
 	filters: Optional[Iterable[str]] = None,
 	include_startup_json: bool = True,
 ) -> list[str]:
-	if tunnel and not tunnel_host:
-		raise ValueError("tunnel_host is required when tunnel=True")
-
 	command = ["--port", str(port), "--host", host]
 	if include_startup_json:
 		command.append("--startup-json")
 	if not browser:
 		command.append("--no-browser")
-	if tunnel:
-		command.append("--tunnel")
-		command.extend(["--tunnel-host", str(tunnel_host), "--tunnel-port", str(tunnel_port)])
 	if timeout is not None:
 		command.extend(["--timeout", str(timeout)])
 	if not recursive:

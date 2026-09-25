@@ -58,27 +58,6 @@ struct Cli {
     no_browser: bool,
 
     #[arg(
-        long = "tunnel",
-        help = "Start an SSH local port-forward helper after the viewer starts"
-    )]
-    tunnel: bool,
-
-    #[arg(
-        long = "tunnel-host",
-        value_name = "SSH_HOST",
-        help = "SSH host used with --tunnel, for example user@example.org"
-    )]
-    tunnel_host: Option<String>,
-
-    #[arg(
-        long = "tunnel-port",
-        value_name = "PORT",
-        default_value_t = 0,
-        help = "Local forwarded port for --tunnel; 0 reuses the viewer port"
-    )]
-    tunnel_port: u16,
-
-    #[arg(
         long = "timeout",
         value_name = "SECONDS",
         help = "Exit after this many seconds without API or browser requests"

@@ -47,7 +47,6 @@ async fn loads_remote_dicom_test_file_through_loader_and_http_contracts() {
 
     let files: Value = test_server.get("/api/files").await.json();
     assert_eq!(files["files"].as_array().expect("files array").len(), 1);
-    assert_eq!(files["tunnelled"], false);
     assert!(files["server_start_ms"].as_u64().is_some());
 
     let info: Value = test_server.get("/api/file/0/info").await.json();

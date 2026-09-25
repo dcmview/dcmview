@@ -54,7 +54,7 @@ Static frontend assets are served at `/` and `/assets/*`.
 | Method | Path | Description |
 |---|---|---|
 | GET | `/api/health` | Ready-state probe with viewer build identity, file count, and server start time. |
-| GET | `/api/files` | File registry, tunnel metadata, and progressive scan status. |
+| GET | `/api/files` | File registry and progressive scan status. |
 | GET | `/api/series` | Server-owned logical series and ordered virtual frame stacks. |
 | GET | `/api/file/:index/info` | Frame metadata for one file. |
 | GET | `/api/file/:index/references` | Typed DICOM relationships plus resolved local file/frame targets. |
@@ -93,7 +93,7 @@ ready.
 
 ## File Registry
 
-`GET /api/files` returns file summaries, tunnel metadata, and scan progress:
+`GET /api/files` returns file summaries and scan progress:
 
 ```json
 {
@@ -133,8 +133,6 @@ ready.
       "reason": "valid_dicom"
     }
   ],
-  "tunnelled": false,
-  "tunnel_host": null,
   "server_start_ms": 1714300000000,
   "scan_complete": true,
   "scanned": 2,

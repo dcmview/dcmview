@@ -846,8 +846,6 @@
 		<StatusBar
 			serverStartMs={filesResponse.server_start_ms}
 			fileCount={filesResponse.files.length}
-			tunnelled={filesResponse.tunnelled}
-			tunnelHost={filesResponse.tunnel_host}
 		/>
 	</main>
 {/if}

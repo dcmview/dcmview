@@ -78,7 +78,6 @@ CLI / Python wrapper / VS Code
                       -> server/api/ routes, handlers, state, errors
                       -> pixels/ display/raw service, codecs, caches
                       -> server/tags.rs and server/web.rs
-                      -> optional tunnel.rs
 
 Frontend (Svelte 5, compiled into the binary via rust-embed):
   App.svelte
@@ -98,7 +97,7 @@ Frontend (Svelte 5, compiled into the binary via rust-embed):
   types. It re-exports selected wire types for compatibility but does not own
   them.
 - `server/api/state.rs` owns private `AppState` resources: `FileRegistry`,
-  display/raw/tag caches, `AnnotationStore`, tunnel resources, server start
+  display/raw/tag caches, `AnnotationStore`, server start
   time, and `RequestActivity`. Construct it through `AppState::new`.
 - `server/catalog.rs` owns progressive registry contents and scan counters.
 - `startup/discovery.rs` owns discovery cancellation, task handles, typed
@@ -145,7 +144,6 @@ dcmview/
 |   |-- annotations.rs   EMBED-style ROI parsing, validation, memory store
 |   |-- pixels/          service, caches, codecs, rendering, windowing
 |   |-- server/          API, catalog, lifecycle, runtime, tags, web assets
-|   |-- tunnel.rs        SSH subprocess lifecycle
 |   `-- types.rs         internal domain and cache-key types
 |-- frontend/
 |   |-- src/
@@ -209,7 +207,6 @@ npm --prefix frontend run typecheck
 - Node.js 20.19+ and npm at build time
 - CMake and a C++ toolchain at Rust build time for statically linked CharLS
 - Python 3.9+ for wrappers and check profiles
-- `ssh` on `PATH` only when using `--tunnel`
 
 `quick` does not run Rust tests or VS Code tests. `core` adds fixture
 regeneration that must leave the current fixture tree unchanged, the
@@ -348,9 +345,6 @@ dcmview [OPTIONS] <PATH> [PATH ...]
   -p, --port <u16>          default: 0 (auto-assign)
   --host <str>              default: 127.0.0.1
   --no-browser
-  --tunnel
-  --tunnel-host <str>
-  --tunnel-port <u16>       default: 0
   --timeout <u64>           seconds; no timeout if absent
   --no-recursive
   --annotations <csv>
@@ -378,7 +372,6 @@ the warning path in `server/runtime.rs`.
 | `src/pixels/` | Pixel service, codecs, display/raw paths, caches, and windowing |
 | `src/annotations.rs` | ROI CSV import/export, validation, in-memory store |
 | `src/types.rs` | Internal domain, transfer-syntax, and cache-key types |
-| `src/tunnel.rs` | SSH subprocess lifecycle |
 | `build.rs` | Frontend build integration and Cargo fingerprints |
 | `scripts/check.py` | Canonical check profiles used locally and in CI |
 | `frontend/src/api.ts` | Typed frontend fetch wrappers |
@@ -452,8 +445,6 @@ default suite.
 - Mixed DICOM/non-DICOM discovery reports valid files and skip counts.
 - Annotation load, edit, validation, and CSV export preserve the EMBED-style
   contract.
-- Tunnel setup degrades gracefully when SSH is unavailable or forwarding cannot
-  become ready.
 
 Do not mock the DICOM layer for integration coverage. Use generated fixtures or
 feature-gated remote fixtures so codec and metadata behavior stay exercised.

@@ -48,7 +48,6 @@ flowchart TD
     discovery --> annotations["annotations.rs<br/>in-memory ROI store"]
     bind --> runtime["BoundServer::serve"]
     runtime --> router["server/api/<br/>routes, handlers, state"]
-    runtime --> tunnel["tunnel.rs<br/>optional SSH helper"]
     router --> pixels["pixels/<br/>display and raw services"]
     router --> registry
     router --> annotations
@@ -69,7 +68,7 @@ modules, not the reverse:
    listener, starts discovery, serves, and joins discovery before returning.
 4. `startup/discovery.rs` translates loader events into registry updates, then
    owns the cancellable blocking annotation pass. It does not own HTTP routing.
-5. `server/runtime.rs` owns listener, browser, tunnel, and graceful-shutdown
+5. `server/runtime.rs` owns listener, browser, and graceful-shutdown
    resources. `server/api/` owns HTTP concerns. `server/catalog.rs` owns the
    progressive file registry.
 6. `pixels/service.rs` is the server-facing pixel boundary. Codec, cache,
@@ -283,7 +282,7 @@ See [the HTTP API reference](api.md) for endpoint payloads and headers.
 
 Local startup follows a strict order:
 
-1. Validate tunnel options and the optional annotation CSV header.
+1. Validate the optional annotation CSV header.
 2. Construct state and configuration.
 3. Bind `BoundServer`; an occupied explicit port fails before discovery starts.
 4. Spawn the owned discovery scan and coordinator.
@@ -303,8 +302,8 @@ cancellation and remains a successful process outcome.
 
 `RequestActivity` tracks in-flight requests and a monotonic idle baseline.
 Idle timeout does not start while the registry is both empty and incomplete,
-and graceful shutdown lets in-flight requests drain. Browser and tunnel tasks
-are owned by `BoundServer::serve` and cleaned up on every normal return or
+and graceful shutdown lets in-flight requests drain. The browser task
+is owned by `BoundServer::serve` and cleaned up on every normal return or
 error.
 
 `DiscoveryHandle::Drop` requests cancellation as a backstop. The supported
@@ -412,8 +411,7 @@ installation and VS Code Electron integration can also use network/cache state;
   `external`.
 - Release workflows, not `core`, prove platform archives, bundled wheels,
   installed console scripts, VSIX packaging, and release-binary smoke behavior.
-- A real SSH server and institution-specific DICOM corpora are not committed
-  test dependencies. Tunnel failure behavior uses controlled integration tests;
+- Institution-specific DICOM corpora are not committed test dependencies;
   broader compatibility is manual or reported with de-identified data.
 - Performance targets require explicit timing and memory instrumentation. They
   are not inferred from mocked or ordinary correctness tests.

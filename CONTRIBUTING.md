@@ -22,7 +22,6 @@ Prerequisites:
 - Rust 1.88+
 - Node.js 20.19+ and npm for frontend and VS Code builds
 - Python 3.9+ for wrappers and repository checks
-- `ssh` only when testing tunnel behavior
 
 Install frontend dependencies:
 

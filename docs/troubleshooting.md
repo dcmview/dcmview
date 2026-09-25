@@ -161,7 +161,7 @@ or the file metadata was readable but no image frames are present.
 Fix: use the tag panel to inspect metadata, or choose an image object with
 Pixel Data. Non-image DICOM objects may still be useful for tag inspection.
 
-## Remote And Tunnel Workflows
+## Remote Workflows
 
 ### Cannot access a remote `dcmview` URL locally
 
@@ -182,25 +182,6 @@ ssh -L 8888:127.0.0.1:8888 user@remote-host
 
 Open `http://localhost:8888` locally. Keep the server bound to loopback unless
 you have separate network access controls.
-
-### `--tunnel` does not become ready
-
-Symptom: `dcmview --tunnel` prints a tunnel warning or continues without an
-active tunnel.
-
-Likely cause: `ssh` is not on `PATH`, `--tunnel-host` is missing or invalid,
-authentication failed, local port forwarding is disabled, or the requested
-local tunnel port is already in use.
-
-Fix: first confirm that a manual SSH command works. Then retry with an explicit
-host:
-
-```bash
-dcmview --no-browser --tunnel --tunnel-host user@remote-host ./study_dir
-```
-
-If the helper remains unreliable in your environment, run
-`dcmview --no-browser` and create the SSH forwarding command manually.
 
 ## VS Code Extension
 

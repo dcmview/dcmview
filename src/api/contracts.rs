@@ -531,8 +531,6 @@ pub struct FileSummary {
 pub struct FilesResponse {
     pub files: Vec<FileSummary>,
     pub discovery: Vec<DiscoveryResult>,
-    pub tunnelled: bool,
-    pub tunnel_host: Option<String>,
     pub server_start_ms: u64,
     pub scan_complete: bool,
     pub scanned: usize,

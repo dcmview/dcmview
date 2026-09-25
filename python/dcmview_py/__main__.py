@@ -76,23 +76,6 @@ server bound to 127.0.0.1, and forward the chosen port over SSH.
 		help="print the viewer URL instead of opening a browser automatically",
 	)
 	parser.add_argument(
-		"--tunnel",
-		action="store_true",
-		help="start an SSH local port-forward helper after the viewer starts",
-	)
-	parser.add_argument(
-		"--tunnel-host",
-		metavar="SSH_HOST",
-		help="SSH host used with --tunnel, for example user@example.org",
-	)
-	parser.add_argument(
-		"--tunnel-port",
-		metavar="PORT",
-		type=int,
-		default=0,
-		help="local forwarded port for --tunnel; 0 reuses the viewer port",
-	)
-	parser.add_argument(
 		"--timeout",
 		metavar="SECONDS",
 		type=int,
@@ -127,9 +110,6 @@ def run_cli(argv: Optional[Sequence[str]] = None) -> int:
 			"port": args.port,
 			"host": args.host,
 			"browser": not args.no_browser,
-			"tunnel": args.tunnel,
-			"tunnel_host": args.tunnel_host,
-			"tunnel_port": args.tunnel_port,
 			"recursive": not args.no_recursive,
 			"timeout": args.timeout,
 			"annotations": args.annotations,

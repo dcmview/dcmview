@@ -167,9 +167,7 @@ http://localhost:8888
 ```
 
 You can also let `dcmview` use an auto-assigned port by omitting `--port`; copy
-the printed port into your SSH command. The optional `--tunnel` flags are
-available for environments where the `dcmview` process can start the SSH helper
-itself.
+the printed port into your SSH command.
 
 The HTTP server is unauthenticated. It binds to `127.0.0.1` by default. If you
 bind to `0.0.0.0` or another public interface, use your own network access
@@ -351,7 +349,7 @@ them and have approval to share them publicly.
 
 Before filing an issue, check the
 [troubleshooting guide](docs/troubleshooting.md) for common install, startup,
-decode, tunnel, VS Code, and annotation CSV problems.
+decode, remote access, VS Code, and annotation CSV problems.
 
 Report suspected security vulnerabilities privately to the maintainers before
 public disclosure; see [SECURITY.md](SECURITY.md).

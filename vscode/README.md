@@ -15,7 +15,7 @@ the bundled server on loopback and displays it in an editor webview.
 Do not include PHI or sensitive DICOM content in public issue reports. Report
 security issues privately to the maintainers before public disclosure.
 
-For common install, binary resolution, VS Code interception, startup, tunnel,
+For common install, binary resolution, VS Code interception, startup, remote access,
 and annotation CSV problems, see the main
 [troubleshooting guide](https://github.com/dcmview/dcmview/blob/main/docs/troubleshooting.md). For settings, binary
 resolution order, and bridge environment variables, see the

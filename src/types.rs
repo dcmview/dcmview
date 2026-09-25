@@ -499,12 +499,6 @@ pub struct LoadReport {
     pub searched_recursive: bool,
 }
 
-#[derive(Debug, Clone)]
-pub struct TunnelInfo {
-    pub tunnel_host: String,
-    pub tunnel_port: u16,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransferSyntaxClass {
     Jpeg,

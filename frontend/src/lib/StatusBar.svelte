@@ -2,13 +2,9 @@
 	let {
 		serverStartMs,
 		fileCount,
-		tunnelled,
-		tunnelHost,
 	}: {
 		serverStartMs: number;
 		fileCount: number;
-		tunnelled: boolean;
-		tunnelHost: string | null;
 	} = $props();
 
 	let nowMs = $state(Date.now());
@@ -31,12 +27,7 @@
 <footer class="status">
 	<span>{window.location.origin}</span>
 	<span>{fileCount} files loaded</span>
-	<span>
-		uptime {uptime}
-		{#if tunnelled}
-			· tunnelled{#if tunnelHost} from {tunnelHost}{/if}
-		{/if}
-	</span>
+	<span>uptime {uptime}</span>
 </footer>
 
 <style>

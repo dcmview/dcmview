@@ -76,7 +76,6 @@ class WrapperTests(unittest.TestCase):
 		help_text = output.getvalue()
 		self.assertIn("DICOM file or directory to inspect", help_text)
 		self.assertIn("--host ADDR", help_text)
-		self.assertIn("--tunnel-host SSH_HOST", help_text)
 		self.assertIn("--annotations CSV", help_text)
 		self.assertIn("--filter FIELD=VALUE", help_text)
 		self.assertIn("ssh -L 8010:127.0.0.1:8010 user@remote", help_text)
@@ -98,9 +97,6 @@ class WrapperTests(unittest.TestCase):
 						port=0,
 						host="127.0.0.1",
 						browser=True,
-						tunnel=False,
-						tunnel_host=None,
-						tunnel_port=0,
 						recursive=True,
 						timeout=None,
 						annotations=None,
@@ -198,11 +194,6 @@ class WrapperTests(unittest.TestCase):
 				Path("C:/venv/Scripts/dcmview.exe"),
 			)
 
-	def test_tunnel_requires_host_before_spawn(self) -> None:
-		with mock.patch("dcmview_py.wrapper.shutil.which", return_value="/tmp/dcmview"):
-			with self.assertRaisesRegex(ValueError, "tunnel_host is required"):
-				wrapper.view([FIXTURE_FILE], browser=False, tunnel=True, vscode_bridge=False)
-
 	def test_cli_forwards_no_browser_no_recursive_and_timeout(self) -> None:
 		with mock.patch("dcmview_py.__main__.view", return_value=None) as view_mock:
 			exit_code = dcmview_main.run_cli(
@@ -225,9 +216,6 @@ class WrapperTests(unittest.TestCase):
 			port=1042,
 			host="0.0.0.0",
 			browser=False,
-			tunnel=False,
-			tunnel_host=None,
-			tunnel_port=0,
 			recursive=False,
 			timeout=9,
 			block=True,
@@ -249,9 +237,6 @@ class WrapperTests(unittest.TestCase):
 			port=0,
 			host="127.0.0.1",
 			browser=True,
-			tunnel=False,
-			tunnel_host=None,
-			tunnel_port=0,
 			recursive=True,
 			timeout=None,
 			annotations=str(annotations_path),
@@ -274,9 +259,6 @@ class WrapperTests(unittest.TestCase):
 			port=0,
 			host="127.0.0.1",
 			browser=True,
-			tunnel=False,
-			tunnel_host=None,
-			tunnel_port=0,
 			recursive=True,
 			timeout=None,
 			annotations=None,
@@ -291,9 +273,6 @@ class WrapperTests(unittest.TestCase):
 				port=0,
 				host="127.0.0.1",
 				browser=True,
-				tunnel=False,
-				tunnel_host=None,
-				tunnel_port=0,
 				recursive=True,
 				timeout=None,
 				annotations="/tmp/annotations.csv",
@@ -310,9 +289,6 @@ class WrapperTests(unittest.TestCase):
 				port=0,
 				host="127.0.0.1",
 				browser=True,
-				tunnel=False,
-				tunnel_host=None,
-				tunnel_port=0,
 				recursive=True,
 				timeout=None,
 				annotations=None,
@@ -332,9 +308,6 @@ class WrapperTests(unittest.TestCase):
 				port=0,
 				host="127.0.0.1",
 				browser=True,
-				tunnel=False,
-				tunnel_host=None,
-				tunnel_port=0,
 				recursive=True,
 				timeout=None,
 				annotations=None,
@@ -931,9 +904,6 @@ class WrapperTests(unittest.TestCase):
 					port=0,
 					host="127.0.0.1",
 					browser=True,
-					tunnel=False,
-					tunnel_host=None,
-					tunnel_port=0,
 					recursive=True,
 					timeout=None,
 					annotations=None,

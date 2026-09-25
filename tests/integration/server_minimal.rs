@@ -46,7 +46,6 @@ async fn exposes_files_info_and_frame_endpoints_with_cache_headers() {
         files_json["files"].as_array().expect("files array").len(),
         1
     );
-    assert_eq!(files_json["tunnelled"], false);
 
     let info_response = test_server.get("/api/file/0/info").await;
     info_response.assert_status_ok();

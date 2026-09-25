@@ -90,9 +90,6 @@ view(
     port=0,
     host="127.0.0.1",
     browser=True,
-    tunnel=False,
-    tunnel_host=None,
-    tunnel_port=0,
     block=True,
     recursive=True,
     timeout=None,
@@ -108,9 +105,6 @@ view(
 | `port` | `0` | Local HTTP port. `0` asks the OS for an available port. |
 | `host` | `"127.0.0.1"` | Local interface to bind. Keep the default for normal and SSH-forwarded use. |
 | `browser` | `True` | Open the system browser. Use `False` to print and capture the URL instead. |
-| `tunnel` | `False` | Ask the Rust binary to start its optional SSH local port-forward helper. |
-| `tunnel_host` | `None` | SSH host used with `tunnel=True`, for example `user@example.org`. Required when `tunnel` is enabled. |
-| `tunnel_port` | `0` | Local forwarded port for `tunnel=True`; `0` reuses the viewer port. |
 | `block` | `True` | Wait for the viewer to exit and return `None`. When `False`, return a shutdown handle. |
 | `recursive` | `True` | Recursively scan input directories. |
 | `timeout` | `None` | Exit after this many seconds without API or browser requests. |
@@ -183,7 +177,7 @@ The wrapper may raise:
 
 | Exception | When it can happen |
 |---|---|
-| `ValueError` | No files were provided, or `tunnel=True` was used without `tunnel_host`. |
+| `ValueError` | No files were provided. |
 | `TypeError` | File, annotation, or filter arguments have invalid types. |
 | `RuntimeError` | No binary can be resolved, the VS Code bridge fails after capturing a session, or startup fails before a handle is available. |
 | `subprocess.CalledProcessError` | The underlying viewer exits with a non-zero status. |

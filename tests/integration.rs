@@ -15,6 +15,5 @@ mod integration {
     mod server_minimal;
     mod support;
     mod tags_endpoint;
-    mod tunnel_lifecycle;
     mod wsi_context;
 }

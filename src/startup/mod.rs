@@ -3,7 +3,7 @@ mod discovery;
 use anyhow::{Context, Result};
 use dcmview::annotations::{AnnotationSource, AnnotationStore};
 use dcmview::loader;
-use dcmview::server::{AppState, BoundServer, FileRegistry, ServerConfig, TunnelConfig};
+use dcmview::server::{AppState, BoundServer, FileRegistry, ServerConfig};
 use discovery::{DiscoveryHandle, DiscoveryInputs, DiscoverySpawner, LoaderDiscoverySpawner};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -20,9 +20,6 @@ pub(crate) struct LocalViewerOptions {
     pub(crate) timeout_seconds: Option<u64>,
     pub(crate) open_browser: bool,
     pub(crate) startup_json: bool,
-    pub(crate) tunnel_enabled: bool,
-    pub(crate) tunnel_host: Option<String>,
-    pub(crate) tunnel_port: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,18 +45,6 @@ async fn run_local_viewer_with_spawner(
     options: LocalViewerOptions,
     spawner: &dyn DiscoverySpawner,
 ) -> Result<LocalViewerOutcome> {
-    let tunnel = if options.tunnel_enabled {
-        let host = options
-            .tunnel_host
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("dcmview: --tunnel requires --tunnel-host"))?;
-        Some(TunnelConfig {
-            host,
-            port: options.tunnel_port,
-        })
-    } else {
-        None
-    };
     let annotation_source = options
         .annotation_path
         .as_ref()
@@ -82,7 +67,6 @@ async fn run_local_viewer_with_spawner(
         timeout_seconds: options.timeout_seconds,
         open_browser: options.open_browser,
         startup_json: options.startup_json,
-        tunnel,
         shutdown: Some(shutdown.clone()),
     };
 
@@ -239,9 +223,6 @@ mod tests {
             timeout_seconds: Some(0),
             open_browser: false,
             startup_json: false,
-            tunnel_enabled: false,
-            tunnel_host: None,
-            tunnel_port: 0,
         }
     }
 

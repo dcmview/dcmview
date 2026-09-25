@@ -2,8 +2,6 @@ use super::super::{now_unix_ms, FileRegistry, RequestActivity};
 use crate::annotations::AnnotationStore;
 use crate::api::contracts::TagNode;
 use crate::pixels::{self, FrameCache, RawFrameCache};
-use crate::tunnel::TunnelHandle;
-use crate::types::TunnelInfo;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -14,8 +12,6 @@ pub struct AppState {
     raw_cache: Arc<Mutex<RawFrameCache>>,
     tag_cache: Arc<Mutex<HashMap<usize, Vec<TagNode>>>>,
     annotations: AnnotationStore,
-    tunnel_info: Option<Arc<TunnelInfo>>,
-    tunnel_handle: Option<Arc<TunnelHandle>>,
     server_start_ms: u64,
     activity: RequestActivity,
 }
@@ -28,8 +24,6 @@ impl AppState {
             raw_cache: pixels::new_raw_cache(),
             tag_cache: Arc::new(Mutex::new(HashMap::new())),
             annotations,
-            tunnel_info: None,
-            tunnel_handle: None,
             server_start_ms: now_unix_ms(),
             activity: RequestActivity::new(),
         }
@@ -68,19 +62,6 @@ impl AppState {
         &self.annotations
     }
 
-    pub(crate) fn tunnel_info(&self) -> Option<&TunnelInfo> {
-        self.tunnel_info.as_deref()
-    }
-
-    pub(crate) fn tunnel_handle(&self) -> Option<Arc<TunnelHandle>> {
-        self.tunnel_handle.clone()
-    }
-
-    pub(crate) fn attach_tunnel(&mut self, info: TunnelInfo, handle: Option<TunnelHandle>) {
-        self.tunnel_info = Some(Arc::new(info));
-        self.tunnel_handle = handle.map(Arc::new);
-    }
-
     pub(crate) fn server_start_ms(&self) -> u64 {
         self.server_start_ms
     }
@@ -101,7 +82,5 @@ mod tests {
         assert_eq!(registry.status().file_count, 0);
         assert!(state.server_start_ms() > 0);
         assert_eq!(state.activity().in_flight(), 0);
-        assert!(state.tunnel_info().is_none());
-        assert!(state.tunnel_handle().is_none());
     }
 }
