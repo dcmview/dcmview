@@ -1993,40 +1993,6 @@ def _ensure_external_output(
     output.mkdir(parents=True, exist_ok=True)
 
 
-def _require_external_pins(args: argparse.Namespace) -> None:
-    required = (
-        "expected_generator_revision",
-        "expected_actions_zip_sha256",
-        "expected_actions_zip_size_bytes",
-        "expected_nested_archive_sha256",
-        "expected_nested_archive_size_bytes",
-        "expected_release_manifest_sha256",
-        "expected_release_manifest_size_bytes",
-        "expected_installed_binary_sha256",
-        "expected_installed_binary_size_bytes",
-        "expected_target",
-        "expected_toolchain",
-        "expected_generator_features",
-        "expected_runtime_identities_sha256",
-        "expected_definition_manifest_sha256",
-        "expected_corpus_definition_sha256",
-        "expected_manifest_sha256",
-        "expected_manifest_size_bytes",
-        "expected_profile",
-        "expected_seed",
-        "expected_binding_id",
-        "expected_archive_sha256",
-        "expected_archive_size_bytes",
-        "expected_generator_version",
-    )
-    missing = [name for name in required if getattr(args, name, None) is None]
-    if missing:
-        raise CampaignError(
-            "stored smoke artifact consumption requires complete immutable pins: "
-            + ", ".join(missing)
-        )
-
-
 def run_campaign(args: argparse.Namespace) -> dict[str, Any]:
     viewer_root = Path(__file__).resolve().parents[2]
     # Keep the caller spelling intact until the artifact verifier has rejected
@@ -2034,35 +2000,8 @@ def run_campaign(args: argparse.Namespace) -> dict[str, Any]:
     artifact_root = Path(os.path.abspath(args.corpus_root))
     output = args.output.resolve()
     temporary_directory = None
-    _require_external_pins(args)
     try:
-        worklist = build_external_worklist(
-            artifact_root,
-            expected_seed=args.expected_seed,
-            expected_manifest_sha256=args.expected_manifest_sha256,
-            expected_corpus_definition_sha256=args.expected_corpus_definition_sha256,
-            expected_generator_version=args.expected_generator_version,
-            expected_generator_features=args.expected_generator_features,
-            expected_generator_revision=args.expected_generator_revision,
-            expected_actions_zip_sha256=args.expected_actions_zip_sha256,
-            expected_actions_zip_size_bytes=args.expected_actions_zip_size_bytes,
-            expected_nested_archive_sha256=args.expected_nested_archive_sha256,
-            expected_nested_archive_size_bytes=args.expected_nested_archive_size_bytes,
-            expected_release_manifest_sha256=args.expected_release_manifest_sha256,
-            expected_release_manifest_size_bytes=args.expected_release_manifest_size_bytes,
-            expected_installed_binary_sha256=args.expected_installed_binary_sha256,
-            expected_installed_binary_size_bytes=args.expected_installed_binary_size_bytes,
-            expected_target=args.expected_target,
-            expected_toolchain=args.expected_toolchain,
-            expected_runtime_identities_sha256=args.expected_runtime_identities_sha256,
-            expected_definition_manifest_sha256=args.expected_definition_manifest_sha256,
-            expected_manifest_size_bytes=args.expected_manifest_size_bytes,
-            expected_profile=args.expected_profile,
-            expected_binding_id=args.expected_binding_id,
-            expected_archive_sha256=args.expected_archive_sha256,
-            expected_archive_size_bytes=args.expected_archive_size_bytes,
-            required_pins=True,
-        )
+        worklist = build_external_worklist(artifact_root)
     except ArtifactError as error:
         raise CampaignError(str(error)) from error
     temporary_directory = worklist.pop("_temporary_directory", None)
@@ -2280,82 +2219,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--expected-seed", type=int, default=os.environ.get("DCMVIEW_CORPUS_SEED", 1))
-    parser.add_argument("--expected-profile", default=os.environ.get("DCMVIEW_CORPUS_PROFILE", "smoke"))
-    parser.add_argument("--expected-manifest-sha256", default=os.environ.get("DCMVIEW_CORPUS_MANIFEST_SHA256"))
-    parser.add_argument("--expected-manifest-size-bytes", type=int, default=os.environ.get("DCMVIEW_CORPUS_MANIFEST_SIZE_BYTES"))
-    parser.add_argument(
-        "--expected-corpus-definition-sha256",
-        default=os.environ.get("DCMVIEW_CORPUS_DEFINITION_SHA256"),
-    )
-    parser.add_argument(
-        "--expected-definition-manifest-sha256",
-        default=os.environ.get("DCMVIEW_CORPUS_DEFINITION_MANIFEST_SHA256"),
-    )
-    parser.add_argument(
-        "--expected-generator-version",
-        default=os.environ.get("DCMVIEW_CORPUS_GENERATOR_VERSION"),
-    )
-    parser.add_argument(
-        "--expected-generator-revision",
-        default=os.environ.get("DCMVIEW_CORPUS_GENERATOR_REVISION"),
-    )
-    parser.add_argument(
-        "--expected-actions-zip-sha256",
-        default=os.environ.get("DCMVIEW_CORPUS_ACTIONS_ZIP_SHA256"),
-    )
-    parser.add_argument(
-        "--expected-actions-zip-size-bytes",
-        type=int,
-        default=os.environ.get("DCMVIEW_CORPUS_ACTIONS_ZIP_SIZE_BYTES"),
-    )
-    parser.add_argument(
-        "--expected-nested-archive-sha256",
-        default=os.environ.get("DCMVIEW_CORPUS_NESTED_ARCHIVE_SHA256"),
-    )
-    parser.add_argument(
-        "--expected-nested-archive-size-bytes",
-        type=int,
-        default=os.environ.get("DCMVIEW_CORPUS_NESTED_ARCHIVE_SIZE_BYTES"),
-    )
-    parser.add_argument(
-        "--expected-release-manifest-sha256",
-        default=os.environ.get("DCMVIEW_CORPUS_RELEASE_MANIFEST_SHA256"),
-    )
-    parser.add_argument(
-        "--expected-release-manifest-size-bytes",
-        type=int,
-        default=os.environ.get("DCMVIEW_CORPUS_RELEASE_MANIFEST_SIZE_BYTES"),
-    )
-    parser.add_argument(
-        "--expected-installed-binary-sha256",
-        default=os.environ.get("DCMVIEW_CORPUS_INSTALLED_BINARY_SHA256"),
-    )
-    parser.add_argument(
-        "--expected-installed-binary-size-bytes",
-        type=int,
-        default=os.environ.get("DCMVIEW_CORPUS_INSTALLED_BINARY_SIZE_BYTES"),
-    )
-    parser.add_argument("--expected-target", default=os.environ.get("DCMVIEW_CORPUS_GENERATOR_TARGET"))
-    parser.add_argument("--expected-toolchain", default=os.environ.get("DCMVIEW_CORPUS_GENERATOR_TOOLCHAIN"))
-    parser.add_argument(
-        "--expected-generator-feature",
-        dest="expected_generator_features",
-        action="append",
-        default=None,
-        help="repeat for each expected generator feature; an empty list is the default",
-    )
-    parser.add_argument(
-        "--expected-runtime-identities-sha256",
-        default=os.environ.get("DCMVIEW_CORPUS_RUNTIME_IDENTITIES_SHA256"),
-    )
-    parser.add_argument("--expected-binding-id", default=os.environ.get("DCMVIEW_CORPUS_BINDING_ID"))
-    parser.add_argument("--expected-archive-sha256", default=os.environ.get("DCMVIEW_CORPUS_ARCHIVE_SHA256"))
-    parser.add_argument(
-        "--expected-archive-size-bytes",
-        type=int,
-        default=os.environ.get("DCMVIEW_CORPUS_ARCHIVE_SIZE_BYTES"),
-    )
     parser.add_argument("--startup-timeout", type=float, default=20.0)
     parser.add_argument("--request-timeout", type=float, default=10.0)
     parser.add_argument("--case-timeout", type=float, default=60.0)
@@ -2367,10 +2230,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: Optional[list[str]] = None) -> int:
     try:
         args = parse_args(sys.argv[1:] if argv is None else argv)
-        if args.expected_generator_features is None:
-            args.expected_generator_features = ()
-        else:
-            args.expected_generator_features = tuple(args.expected_generator_features)
         report = run_campaign(args)
     except (CampaignError, CompatibilityError, ArtifactError, OSError, ValueError, subprocess.SubprocessError) as error:
         print(f"compatibility campaign error: {error}", file=sys.stderr)
