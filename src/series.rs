@@ -5,6 +5,7 @@
 //! therefore evolve independently while series grouping and ordering remain a
 //! deterministic, testable domain operation.
 
+use crate::geometry::{cross, dot, magnitude, normalized, scale, subtract};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
@@ -299,7 +300,7 @@ fn build_stack(
         .iter()
         .flat_map(effective_orderings)
         .find_map(|(_, ordering, _)| valid_orientation(ordering.image_orientation_patient));
-    let reference_normal = reference_orientation.map(slice_normal);
+    let reference_normal = reference_orientation.and_then(slice_normal);
 
     let mut candidates = files
         .iter()
@@ -658,7 +659,7 @@ fn valid_orientation(orientation: Option<[f64; 6]>) -> Option<[f64; 6]> {
         .iter()
         .all(|value| value.is_finite())
         .then_some(orientation)
-        .filter(|orientation| magnitude(slice_normal(*orientation)) > f64::EPSILON)
+        .filter(|orientation| slice_normal(*orientation).is_some())
 }
 
 fn orientation_matches(left: [f64; 6], right: [f64; 6], tolerance: f64) -> bool {
@@ -667,50 +668,15 @@ fn orientation_matches(left: [f64; 6], right: [f64; 6], tolerance: f64) -> bool 
         .all(|(left, right)| (left - right).abs() <= tolerance)
 }
 
-fn slice_normal(orientation: [f64; 6]) -> [f64; 3] {
+fn slice_normal(orientation: [f64; 6]) -> Option<[f64; 3]> {
     let row = [orientation[0], orientation[1], orientation[2]];
     let column = [orientation[3], orientation[4], orientation[5]];
-    normalize(cross(row, column))
+    normalized(cross(row, column))
 }
 
-fn normalize(vector: [f64; 3]) -> [f64; 3] {
-    let length = magnitude(vector);
-    if length <= f64::EPSILON {
-        return [0.0; 3];
-    }
-    [vector[0] / length, vector[1] / length, vector[2] / length]
-}
-
-fn cross(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
-    [
-        left[1] * right[2] - left[2] * right[1],
-        left[2] * right[0] - left[0] * right[2],
-        left[0] * right[1] - left[1] * right[0],
-    ]
-}
-
-fn dot(left: [f64; 3], right: [f64; 3]) -> f64 {
-    left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
-}
-
+/// The component of `vector` orthogonal to the unit `normal`.
 fn reject(vector: [f64; 3], normal: [f64; 3]) -> [f64; 3] {
-    let projection = dot(vector, normal);
-    subtract(
-        vector,
-        [
-            normal[0] * projection,
-            normal[1] * projection,
-            normal[2] * projection,
-        ],
-    )
-}
-
-fn subtract(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
-    [left[0] - right[0], left[1] - right[1], left[2] - right[2]]
-}
-
-fn magnitude(vector: [f64; 3]) -> f64 {
-    dot(vector, vector).sqrt()
+    subtract(vector, scale(normal, dot(vector, normal)))
 }
 
 #[cfg(test)]
@@ -798,7 +764,7 @@ mod tests {
             0.0,
             1.0,
         ];
-        let normal = slice_normal(oblique);
+        let normal = slice_normal(oblique).expect("oblique slice normal");
         let mut files = [
             input(0, "study", "series", "for", "z.dcm", Some(30), None),
             input(1, "study", "series", "for", "a.dcm", Some(10), None),

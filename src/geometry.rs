@@ -186,24 +186,31 @@ fn valid_geometry(geometry: PatientFrameGeometry) -> bool {
         .is_some()
 }
 
-fn normalized(vector: [f64; 3]) -> Option<[f64; 3]> {
-    let length = dot(vector, vector).sqrt();
-    (length.is_finite() && length > f64::EPSILON).then(|| scale(vector, 1.0 / length))
+/// The unit vector along `vector`, or `None` when its length is degenerate or
+/// not finite.
+pub(crate) fn normalized(vector: [f64; 3]) -> Option<[f64; 3]> {
+    let length = magnitude(vector);
+    (length.is_finite() && length > f64::EPSILON)
+        .then(|| [vector[0] / length, vector[1] / length, vector[2] / length])
 }
 
-fn subtract(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
+pub(crate) fn magnitude(vector: [f64; 3]) -> f64 {
+    dot(vector, vector).sqrt()
+}
+
+pub(crate) fn subtract(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
     [left[0] - right[0], left[1] - right[1], left[2] - right[2]]
 }
 
-fn scale(vector: [f64; 3], factor: f64) -> [f64; 3] {
+pub(crate) fn scale(vector: [f64; 3], factor: f64) -> [f64; 3] {
     [vector[0] * factor, vector[1] * factor, vector[2] * factor]
 }
 
-fn dot(left: [f64; 3], right: [f64; 3]) -> f64 {
+pub(crate) fn dot(left: [f64; 3], right: [f64; 3]) -> f64 {
     left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
 }
 
-fn cross(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
+pub(crate) fn cross(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
     [
         left[1] * right[2] - left[2] * right[1],
         left[2] * right[0] - left[0] * right[2],
