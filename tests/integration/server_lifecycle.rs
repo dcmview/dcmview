@@ -1,5 +1,5 @@
 use super::support;
-use dcmview::server::{BoundServer, RequestActivity, ServerConfig, ServerExit, ShutdownReason};
+use dcmview::server::{BoundServer, RequestActivity, ServerConfig};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
@@ -22,7 +22,7 @@ fn server_config(shutdown: CancellationToken, timeout_seconds: Option<u64>) -> S
 async fn spawn_server(
     config: ServerConfig,
     state: dcmview::server::AppState,
-) -> (String, JoinHandle<anyhow::Result<ServerExit>>) {
+) -> (String, JoinHandle<anyhow::Result<()>>) {
     let bound = BoundServer::bind(&config).await.expect("bind server");
     assert_ne!(bound.local_addr().port(), 0);
     let url = bound.url();
@@ -50,7 +50,7 @@ async fn wait_until_ready(url: &str) {
     .expect("server readiness");
 }
 
-async fn await_exit(task: JoinHandle<anyhow::Result<ServerExit>>) -> ServerExit {
+async fn await_exit(task: JoinHandle<anyhow::Result<()>>) {
     tokio::time::timeout(Duration::from_secs(3), task)
         .await
         .expect("server exit timeout")
@@ -76,9 +76,7 @@ async fn port_zero_serves_on_the_reported_bound_listener() {
     assert!(response.status().is_success());
 
     shutdown.cancel();
-    let exit = await_exit(task).await;
-    assert_eq!(exit.local_addr, address);
-    assert_eq!(exit.reason, ShutdownReason::External);
+    await_exit(task).await;
 }
 
 #[tokio::test]
@@ -118,7 +116,7 @@ async fn external_notification_returns_from_serve_normally() {
         .is_success());
     shutdown.cancel();
 
-    assert_eq!(await_exit(task).await.reason, ShutdownReason::External);
+    await_exit(task).await;
 }
 
 #[tokio::test]
@@ -128,8 +126,7 @@ async fn idle_timeout_returns_without_terminating_the_test_process() {
     let bound = BoundServer::bind(&config).await.expect("bind server");
     let task = tokio::spawn(bound.serve(config, support::app_state(Vec::new())));
 
-    assert_eq!(await_exit(task).await.reason, ShutdownReason::IdleTimeout);
-    assert_eq!(2 + 2, 4, "the test process remains alive after idle exit");
+    await_exit(task).await;
 }
 
 #[tokio::test]
@@ -154,7 +151,7 @@ async fn browser_route_requests_reset_the_idle_timeout() {
         assert!(!task.is_finished(), "root request did not reset timeout");
     }
 
-    assert_eq!(await_exit(task).await.reason, ShutdownReason::IdleTimeout);
+    await_exit(task).await;
 }
 
 #[tokio::test]
@@ -209,7 +206,7 @@ async fn graceful_shutdown_drains_an_in_flight_request() {
         .expect("read response");
     assert!(response.starts_with(b"HTTP/1.1 404"));
 
-    assert_eq!(await_exit(task).await.reason, ShutdownReason::External);
+    await_exit(task).await;
 }
 
 #[tokio::test]

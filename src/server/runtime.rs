@@ -1,6 +1,6 @@
 //! Bound listener ownership and graceful server resource management.
 
-use super::lifecycle::{wait_for_shutdown, ShutdownReason};
+use super::lifecycle::wait_for_shutdown;
 use super::{is_non_loopback_bind, router, AppState, FileRegistry};
 use crate::signals::StopSignals;
 use anyhow::{Context, Result};
@@ -9,7 +9,6 @@ use std::net::SocketAddr;
 use std::pin::pin;
 use std::time::Duration;
 use tokio::net::TcpListener;
-use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -27,12 +26,6 @@ pub struct ServerConfig {
 pub struct BoundServer {
     listener: TcpListener,
     local_addr: SocketAddr,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ServerExit {
-    pub local_addr: SocketAddr,
-    pub reason: ShutdownReason,
 }
 
 #[derive(Debug, Serialize)]
@@ -66,7 +59,7 @@ impl BoundServer {
         socket_url(self.local_addr)
     }
 
-    pub async fn serve(self, config: ServerConfig, state: AppState) -> Result<ServerExit> {
+    pub async fn serve(self, config: ServerConfig, state: AppState) -> Result<()> {
         // Listen before announcing the URL: a wrapper may stop the process as
         // soon as it reads it, and an unhandled signal would skip the graceful
         // shutdown below.
@@ -98,16 +91,13 @@ impl BoundServer {
         );
 
         let timeout = config.timeout_seconds.map(Duration::from_secs);
-        let external = config.shutdown.clone();
-        let (reason_tx, reason_rx) = oneshot::channel();
-        let shutdown = async move {
-            let reason = wait_for_shutdown(activity, registry, timeout, external, async move {
-                stop_signals.recv().await;
-                ShutdownReason::OsSignal
-            })
-            .await;
-            let _ = reason_tx.send(reason);
-        };
+        let shutdown = wait_for_shutdown(
+            activity,
+            registry,
+            timeout,
+            config.shutdown.clone(),
+            async move { stop_signals.recv().await },
+        );
 
         if config.startup_json {
             println!(
@@ -125,27 +115,13 @@ impl BoundServer {
 
         browser_task.abort();
         serve_result.context("server failed")?;
-        let reason = reason_rx
-            .await
-            .context("server stopped without a shutdown reason")?;
         println!("dcmview: shutting down...");
-
-        Ok(ServerExit {
-            local_addr: self.local_addr,
-            reason,
-        })
+        Ok(())
     }
 }
 
-pub async fn run(config: ServerConfig, state: AppState) -> Result<()> {
-    BoundServer::bind(&config)
-        .await?
-        .serve(config, state)
-        .await
-        .map(|_| ())
-}
-
-pub fn startup_event_json(server_url: &str, host: &str, port: u16) -> serde_json::Result<String> {
+/// The `--startup-json` line that the Python wrapper and VS Code extension parse.
+fn startup_event_json(server_url: &str, host: &str, port: u16) -> serde_json::Result<String> {
     serde_json::to_string(&StartupEvent {
         r#type: "server_started",
         url: server_url,
@@ -203,8 +179,27 @@ impl Drop for BrowserTask {
 
 #[cfg(test)]
 mod tests {
-    use super::socket_url;
+    use super::{socket_url, startup_event_json};
+    use serde_json::json;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+
+    #[test]
+    fn startup_event_json_uses_stable_extension_contract() {
+        let line = startup_event_json("http://127.0.0.1:49321", "127.0.0.1", 49321)
+            .expect("serialize startup event");
+        let event: serde_json::Value =
+            serde_json::from_str(&line).expect("startup event should be valid JSON");
+
+        assert_eq!(
+            event,
+            json!({
+                "type": "server_started",
+                "url": "http://127.0.0.1:49321",
+                "host": "127.0.0.1",
+                "port": 49321
+            })
+        );
+    }
 
     #[test]
     fn socket_urls_are_ipv4_and_ipv6_correct() {

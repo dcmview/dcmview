@@ -4,26 +4,9 @@ use axum_test::TestServer;
 use dcmview::loader::{DiscoveryDisposition, DiscoveryReason, DiscoveryRecord};
 use dcmview::server;
 use dcmview::server::FileRegistry;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::process::Command;
 use tempfile::tempdir;
-
-#[test]
-fn startup_event_json_uses_stable_extension_contract() {
-    let line = server::startup_event_json("http://127.0.0.1:49321", "127.0.0.1", 49321)
-        .expect("serialize startup event");
-    let event: Value = serde_json::from_str(&line).expect("startup event should be valid JSON");
-
-    assert_eq!(
-        event,
-        json!({
-            "type": "server_started",
-            "url": "http://127.0.0.1:49321",
-            "host": "127.0.0.1",
-            "port": 49321
-        })
-    );
-}
 
 #[tokio::test]
 async fn exposes_files_info_and_frame_endpoints_with_cache_headers() {

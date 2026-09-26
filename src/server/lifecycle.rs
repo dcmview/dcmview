@@ -10,13 +10,6 @@ use tokio::sync::Notify;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ShutdownReason {
-    OsSignal,
-    External,
-    IdleTimeout,
-}
-
 #[derive(Clone)]
 pub struct RequestActivity {
     inner: Arc<RequestActivityInner>,
@@ -118,16 +111,15 @@ impl Drop for RequestActivityGuard {
     }
 }
 
-pub(crate) async fn wait_for_shutdown<OsSignal>(
+/// Resolve when the server should stop: on a stop signal, when `external` is
+/// cancelled, or after `timeout` of idleness once the registry is ready.
+pub(crate) async fn wait_for_shutdown(
     activity: RequestActivity,
     registry: FileRegistry,
     timeout: Option<Duration>,
     external: CancellationToken,
-    os_signal: OsSignal,
-) -> ShutdownReason
-where
-    OsSignal: Future<Output = ShutdownReason>,
-{
+    stop_signal: impl Future<Output = ()>,
+) {
     let idle = async move {
         match timeout {
             Some(timeout) => idle_timeout(activity, registry, timeout).await,
@@ -135,17 +127,13 @@ where
         }
     };
     tokio::select! {
-        reason = os_signal => reason,
-        () = external.cancelled() => ShutdownReason::External,
-        reason = idle => reason,
+        () = stop_signal => {}
+        () = external.cancelled() => {}
+        () = idle => {}
     }
 }
 
-async fn idle_timeout(
-    activity: RequestActivity,
-    registry: FileRegistry,
-    timeout: Duration,
-) -> ShutdownReason {
+async fn idle_timeout(activity: RequestActivity, registry: FileRegistry, timeout: Duration) {
     wait_until_registry_ready(&activity, &registry).await;
 
     loop {
@@ -161,7 +149,7 @@ async fn idle_timeout(
 
         let deadline = snapshot.last_activity + timeout;
         if Instant::now() >= deadline {
-            return ShutdownReason::IdleTimeout;
+            return;
         }
 
         tokio::select! {
@@ -169,7 +157,7 @@ async fn idle_timeout(
             _ = tokio::time::sleep_until(deadline) => {
                 let current = activity.snapshot();
                 if current.in_flight == 0 && Instant::now() >= current.last_activity + timeout {
-                    return ShutdownReason::IdleTimeout;
+                    return;
                 }
             }
         }
@@ -192,7 +180,7 @@ async fn wait_until_registry_ready(activity: &RequestActivity, registry: &FileRe
 
 #[cfg(test)]
 mod tests {
-    use super::{idle_timeout, RequestActivity, ShutdownReason};
+    use super::{idle_timeout, RequestActivity};
     use crate::server::FileRegistry;
     use std::time::Duration;
 
@@ -221,7 +209,7 @@ mod tests {
         assert!(!task.is_finished());
 
         tokio::time::advance(Duration::from_millis(1)).await;
-        assert_eq!(task.await.expect("idle task"), ShutdownReason::IdleTimeout);
+        task.await.expect("idle task");
     }
 
     #[tokio::test(start_paused = true)]
@@ -241,7 +229,7 @@ mod tests {
         assert!(!task.is_finished());
 
         tokio::time::advance(Duration::from_secs(1)).await;
-        assert_eq!(task.await.expect("idle task"), ShutdownReason::IdleTimeout);
+        task.await.expect("idle task");
     }
 
     #[tokio::test(start_paused = true)]
@@ -277,7 +265,7 @@ mod tests {
         assert!(!task.is_finished());
 
         tokio::time::advance(Duration::from_millis(1)).await;
-        assert_eq!(task.await.expect("idle task"), ShutdownReason::IdleTimeout);
+        task.await.expect("idle task");
     }
 
     #[tokio::test(start_paused = true)]
@@ -297,14 +285,11 @@ mod tests {
 
         drop(guard);
         tokio::time::advance(Duration::from_secs(5)).await;
-        assert_eq!(task.await.expect("idle task"), ShutdownReason::IdleTimeout);
+        task.await.expect("idle task");
     }
 
     #[tokio::test(start_paused = true)]
     async fn zero_timeout_exits_as_soon_as_the_registry_is_ready() {
-        assert_eq!(
-            idle_timeout(RequestActivity::new(), ready_registry(), Duration::ZERO,).await,
-            ShutdownReason::IdleTimeout
-        );
+        idle_timeout(RequestActivity::new(), ready_registry(), Duration::ZERO).await;
     }
 }
