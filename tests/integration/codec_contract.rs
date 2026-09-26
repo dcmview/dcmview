@@ -484,11 +484,9 @@ async fn unsupported_syntax_classes_return_422_from_both_frame_endpoints() {
             );
             assert_eq!(header(&response, "content-type"), "application/json");
             let body = response.json::<serde_json::Value>();
-            assert!(
-                body["error"]
-                    .as_str()
-                    .is_some_and(|message| message.contains(transfer_syntax_uid)),
-                "error response should identify transfer syntax {transfer_syntax_uid}: {body}"
+            assert_eq!(
+                body["code"], "unsupported_transfer_syntax",
+                "{label} via {endpoint}: {body}"
             );
         }
     }

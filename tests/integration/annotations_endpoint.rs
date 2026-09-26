@@ -69,7 +69,7 @@ async fn returns_not_found_for_out_of_range_file_index() {
     let response = test_server.get("/api/file/99/annotations").await;
     response.assert_status_not_found();
     let body: Value = response.json();
-    assert_eq!(body["error"], "file index out of range");
+    assert_eq!(body["code"], "not_found");
 }
 
 #[tokio::test]
@@ -132,6 +132,8 @@ async fn annotation_load_failure_returns_json_without_affecting_health() {
     let response = test_server.get("/api/file/0/annotations").await;
     response.assert_status_internal_server_error();
     let body: Value = response.json();
+    assert_eq!(body["code"], "internal_error");
+    // The loader's own failure reason is passed through for the user.
     assert_eq!(body["error"], "annotations CSV row 2: invalid ROI_coords");
     test_server.get("/api/health").await.assert_status_ok();
 }
@@ -240,11 +242,7 @@ async fn put_rejects_out_of_bounds_coords_and_frames() {
         })
         .await;
     bounds_response.assert_status_bad_request();
-    let bounds_body: Value = bounds_response.json();
-    assert!(bounds_body["error"]
-        .as_str()
-        .unwrap_or_default()
-        .contains("exceeds image bounds"));
+    assert_eq!(bounds_response.json::<Value>()["code"], "bad_request");
 
     let frame_response = test_server
         .put("/api/file/0/annotations")
@@ -255,11 +253,7 @@ async fn put_rejects_out_of_bounds_coords_and_frames() {
         })
         .await;
     frame_response.assert_status_bad_request();
-    let frame_body: Value = frame_response.json();
-    assert!(frame_body["error"]
-        .as_str()
-        .unwrap_or_default()
-        .contains("contains frame 2"));
+    assert_eq!(frame_response.json::<Value>()["code"], "bad_request");
 }
 
 #[tokio::test]

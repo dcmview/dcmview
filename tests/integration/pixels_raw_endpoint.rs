@@ -237,10 +237,7 @@ async fn raw_endpoint_returns_422_for_multicomponent_jpeg2000() {
     let response = test_server.get("/api/file/0/frame/0/raw").await;
     response.assert_status_unprocessable_entity();
     let payload: serde_json::Value = response.json();
-    assert!(payload["error"]
-        .as_str()
-        .unwrap_or_default()
-        .contains("unsupported pixel layout"));
+    assert_eq!(payload["code"], "unsupported_pixel_layout");
 }
 
 #[tokio::test]

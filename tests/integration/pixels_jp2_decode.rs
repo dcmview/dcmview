@@ -1,5 +1,5 @@
 use super::support;
-use dcmview::pixels::{load_frame, new_cache, FrameRequest};
+use dcmview::pixels::{load_frame, new_cache, FrameRequest, PixelError};
 use tempfile::tempdir;
 
 #[tokio::test]
@@ -26,7 +26,7 @@ async fn invalid_jp2_payload_surfaces_server_side_decode_error() {
     .expect_err("invalid JP2 payload should fail server-side decoding");
 
     assert!(
-        error.to_string().contains("failed to decode JP2 fragment"),
+        matches!(error, PixelError::Decode { .. }),
         "JP2 display path should decode instead of returning raw bytes: {error}"
     );
 }
@@ -52,7 +52,7 @@ async fn invalid_jp2_codestream_surfaces_decode_context() {
     .expect_err("invalid JP2 payload should fail fallback decoding");
 
     assert!(
-        error.to_string().contains("failed to decode JP2 fragment"),
+        matches!(error, PixelError::Decode { .. }),
         "fallback path should surface JP2 decode failure: {error}"
     );
 }

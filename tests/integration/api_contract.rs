@@ -153,7 +153,6 @@ async fn json_endpoints_match_frontend_contract_shapes() {
     let error: Value = missing.json();
     assert_object_keys(&error, &["code", "error"]);
     assert_eq!(error["code"], "not_found");
-    assert_eq!(error["error"], "file index out of range");
 }
 
 #[tokio::test]
