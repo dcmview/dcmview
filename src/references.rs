@@ -410,12 +410,15 @@ fn select_candidates<'a>(
                 .map(|candidate| (ReferenceRelationship::SourceImage, candidate))
                 .collect()
         }
-        uids::REAL_WORLD_VALUE_MAPPING_STORAGE => {
-            matching(&|candidate| candidate.under(tags::REAL_WORLD_VALUE_MAPPING_SEQUENCE))
-                .into_iter()
-                .map(|candidate| (ReferenceRelationship::SourceImage, candidate))
-                .collect()
-        }
+        // PS3.3 C.26.1: each Referenced Image Real World Value Mapping item
+        // pairs its Referenced Image Sequence with the mappings that apply.
+        uids::REAL_WORLD_VALUE_MAPPING_STORAGE => matching(&|candidate| {
+            candidate.starts_with(tags::REFERENCED_IMAGE_REAL_WORLD_VALUE_MAPPING_SEQUENCE)
+                && candidate.under(tags::REFERENCED_IMAGE_SEQUENCE)
+        })
+        .into_iter()
+        .map(|candidate| (ReferenceRelationship::SourceImage, candidate))
+        .collect(),
         uids::SEGMENTATION_STORAGE | uids::LABEL_MAP_SEGMENTATION_STORAGE => {
             matching(&|candidate| {
                 candidate.starts_with(tags::REFERENCED_SERIES_SEQUENCE)
@@ -577,6 +580,9 @@ fn select_rt_candidates<'a>(
                 ReferenceRelationship::ReferencedDose
             } else if candidate.under(tags::CONTOUR_IMAGE_SEQUENCE)
                 || candidate.path.as_slice() == [tags::REFERENCED_IMAGE_SEQUENCE]
+                // RT Dose may name its planning images per Plan Overview item.
+                || candidate.path.as_slice()
+                    == [tags::PLAN_OVERVIEW_SEQUENCE, tags::REFERENCED_IMAGE_SEQUENCE]
             {
                 ReferenceRelationship::SourceImage
             } else {
@@ -738,6 +744,107 @@ mod tests {
                 .collect::<Vec<_>>(),
             [first, second]
         );
+    }
+
+    #[test]
+    fn real_world_value_mapping_references_its_mapped_images() {
+        let uid = "1.2.3.6";
+        let mapping_item = item([
+            DataElement::new(
+                tags::REFERENCED_IMAGE_SEQUENCE,
+                VR::SQ,
+                DataSetSequence::from(vec![referenced(uid, &["1", "2"])]),
+            ),
+            DataElement::new(
+                tags::REAL_WORLD_VALUE_MAPPING_SEQUENCE,
+                VR::SQ,
+                DataSetSequence::from(vec![item([DataElement::new(
+                    tags::LUT_LABEL,
+                    VR::SH,
+                    "HU",
+                )])]),
+            ),
+        ]);
+        let object = item([
+            DataElement::new(
+                tags::SOP_CLASS_UID,
+                VR::UI,
+                uids::REAL_WORLD_VALUE_MAPPING_STORAGE,
+            ),
+            DataElement::new(
+                tags::REFERENCED_SERIES_SEQUENCE,
+                VR::SQ,
+                DataSetSequence::from(vec![item([
+                    DataElement::new(tags::SERIES_INSTANCE_UID, VR::UI, "1.2.3.series"),
+                    DataElement::new(
+                        tags::REFERENCED_INSTANCE_SEQUENCE,
+                        VR::SQ,
+                        DataSetSequence::from(vec![referenced(uid, &[])]),
+                    ),
+                ])]),
+            ),
+            DataElement::new(
+                tags::REFERENCED_IMAGE_REAL_WORLD_VALUE_MAPPING_SEQUENCE,
+                VR::SQ,
+                DataSetSequence::from(vec![mapping_item]),
+            ),
+        ]);
+
+        let edges = extract_reference_edges_from_object(&object);
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].relationship, ReferenceRelationship::SourceImage);
+        assert_eq!(edges[0].target.sop_instance_uid.as_deref(), Some(uid));
+        assert_eq!(edges[0].target.frame_numbers, [1, 2]);
+        assert_eq!(
+            edges[0].target.series_instance_uid.as_deref(),
+            Some("1.2.3.series")
+        );
+    }
+
+    #[test]
+    fn rt_dose_reads_plan_overview_images_and_structure_sets() {
+        let image = referenced("1.2.3.7", &[]);
+        let structure_set = item([
+            DataElement::new(
+                tags::REFERENCED_SOP_CLASS_UID,
+                VR::UI,
+                uids::RT_STRUCTURE_SET_STORAGE,
+            ),
+            DataElement::new(tags::REFERENCED_SOP_INSTANCE_UID, VR::UI, "1.2.3.8"),
+        ]);
+        let object = item([
+            DataElement::new(tags::SOP_CLASS_UID, VR::UI, uids::RT_DOSE_STORAGE),
+            DataElement::new(
+                tags::PLAN_OVERVIEW_SEQUENCE,
+                VR::SQ,
+                DataSetSequence::from(vec![item([
+                    DataElement::new(
+                        tags::REFERENCED_IMAGE_SEQUENCE,
+                        VR::SQ,
+                        DataSetSequence::from(vec![image]),
+                    ),
+                    DataElement::new(
+                        tags::REFERENCED_STRUCTURE_SET_SEQUENCE,
+                        VR::SQ,
+                        DataSetSequence::from(vec![structure_set]),
+                    ),
+                ])]),
+            ),
+        ]);
+
+        let edges = extract_reference_edges_from_object(&object);
+        let relationships = edges
+            .iter()
+            .map(|edge| edge.relationship)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            relationships,
+            [
+                ReferenceRelationship::SourceImage,
+                ReferenceRelationship::SourceStructureSet
+            ]
+        );
+        assert_eq!(edges[0].target.sop_instance_uid.as_deref(), Some("1.2.3.7"));
     }
 
     #[test]
