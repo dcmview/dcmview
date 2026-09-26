@@ -8,10 +8,10 @@ contracts, lifecycle ownership, or the canonical check profiles change.
 the product center; the Svelte frontend is embedded into that binary, and the
 Python and VS Code integrations launch or route to the same executable.
 
-## Assessment
+## Module Boundaries
 
-The codebase is organized around explicit seams rather than one application
-module:
+The codebase is organized around explicit boundaries rather than one
+application module:
 
 | Boundary | Owner | Stable contract or seam |
 |---|---|---|
@@ -32,10 +32,9 @@ module:
 | VS Code extension | `vscode/src/` | `extension.ts` wires activation only. `viewerSessions.ts` owns viewer processes and their webview panels; `customEditor.ts` and `commands.ts` open files through it; `bridgeServer.ts` serves the loopback launch/stop/wait bridge; `bridgeRegistry.ts` publishes and refreshes the registry file; `terminalInterception.ts` sets the terminal environment and PATH shims. |
 | Cross-language generation | `examples/generate_api_types.rs` | Checked-in `frontend/src/generated/api-types.ts` rendered with `ts-rs` from the Rust HTTP contract. |
 
-The current separation is suitable for informative automated tests. Unit tests
-can replace process dispatch and discovery production services, Axum integration
-tests can execute a router without a process, and end-to-end profiles still
-exercise a real binary where process behavior matters.
+Axum integration tests execute the router without a process; discovery and
+lifecycle tests drive the real loader; end-to-end profiles exercise a real
+binary where process behavior matters.
 
 ## Runtime And Module Flow
 
@@ -422,7 +421,7 @@ layer; the aggregate profiles remain the local source of truth. Dependency
 installation and VS Code Electron integration can also use network/cache state;
 `external` specifically denotes upstream DICOM fixture coverage.
 
-### Test Seams
+### What Each Layer Covers
 
 - Discovery lifecycle tests drive the real loader over copies of committed
   fixtures for completion, cancellation, annotation failure, no-files, and
@@ -469,8 +468,8 @@ installation and VS Code Electron integration can also use network/cache state;
   computable. The corpus is handled locally only; no CI workflow runs it. For
   codec or display changes, every check that passed on the base commit must
   still pass. See `scripts/compatibility/README.md`.
-- Real-browser acceptance uses the actual Svelte app and fixture server to
-  exercise canvas/network behavior: metadata-only and unsupported states,
+- No profile automates a real browser. Manual acceptance uses the actual
+  Svelte app and fixture server to exercise canvas/network behavior: metadata-only and unsupported states,
   pixel-preview/semantic-context switching, typed references, SEG/Parametric
   Map/RT Dose context, WSI positioning, cine, windowing, viewport transforms,
   file switching, and recovery after request errors.
@@ -496,22 +495,9 @@ installation and VS Code Electron integration can also use network/cache state;
 - Performance targets require explicit timing and memory instrumentation. They
   are not inferred from mocked or ordinary correctness tests.
 
-## Remediation Map
+## Extension Points
 
-```mermaid
-flowchart LR
-    oldmain["Before: main owned dispatch,<br/>startup, scan, and exit state"] --> newmain["Now: application and startup<br/>have injectable seams"]
-    oldserver["Before: server and pixels<br/>were broad modules"] --> newserver["Now: runtime, API, catalog,<br/>lifecycle, and pixel services"]
-    oldtypes["Before: wire ownership was<br/>mixed with domain types"] --> newtypes["Now: api/contracts.rs is canonical<br/>and TypeScript is generated"]
-    oldscan["Before: discovery was<br/>fire-and-forget"] --> newscan["Now: cancellation, typed outcomes,<br/>drain and join are explicit"]
-    oldchecks["Before: validation was an<br/>ad hoc command list"] --> newchecks["Now: quick, core, e2e,<br/>external, and marketing profiles"]
-    oldui["Before: one file-tab concept<br/>carried navigation concerns"] --> newui["Now: FileNavigator and<br/>OpenImageTabs are separate"]
-```
-
-### Non-Blocking Extension Points
-
-The approved structural remediations are complete. These are non-blocking
-extension points, not current correctness blockers:
+Not current correctness blockers:
 
 1. If local startup is ever exposed as an abortable library API, introduce an
    explicit supervisor/reaper contract for hard task abortion; the binary's

@@ -44,7 +44,7 @@ DCMVIEW_SKIP_FRONTEND_BUILD=1 cargo check --locked
 
 See the [development reference](docs/development.md) for source builds and the
 [architecture and test model](docs/architecture.md) for normative module
-ownership, contracts, lifecycle invariants, and test seams.
+ownership, contracts, lifecycle invariants, and test layers.
 
 ## Tests And Checks
 

@@ -221,14 +221,25 @@ Both display and raw frame endpoints must include `X-Cache: HIT` or
 dcmview/
 |-- src/
 |   |-- main.rs          Clap shape and process exit
-|   |-- application.rs   bridge/local dispatch and tracing seam
+|   |-- application.rs   bridge/local dispatch
 |   |-- bridge/          binary-private bridge protocol, registry, client
 |   |-- startup/         local assembly and owned discovery lifecycle
 |   |-- api/contracts.rs canonical HTTP endpoint and wire contract
 |   |-- loader/          cancellable DICOM discovery and FileEntry creation
 |   |-- annotations.rs   EMBED-style ROI parsing, validation, memory store
-|   |-- pixels/          service, caches, codecs, rendering, windowing
+|   |-- signals.rs       stop-signal listeners registered before startup output
+|   |-- pixels/          service, caches, codecs, rendering, windowing, shutters,
+|   |                    overlay colorwash
 |   |-- server/          API, catalog, lifecycle, runtime, tags, web assets
+|   |-- dicom_values.rs  shared lenient attribute readers
+|   |-- object_kind.rs   SOP class to object-kind classification
+|   |-- geometry.rs      patient geometry and frame-to-frame transforms
+|   |-- series.rs        series/stack catalog ordering
+|   |-- references.rs    typed DICOM reference extraction and resolution
+|   |-- semantic.rs      SEG, Parametric Map, and RT Dose context
+|   |-- plane_stack.rs   dose/PM plane stacks and resampling onto frames
+|   |-- value_mapping.rs per-frame Modality and real-world value mappings
+|   |-- wsi.rs           WSI tile placement and companions
 |   `-- types.rs         internal domain and cache-key types
 |-- frontend/
 |   |-- src/
@@ -248,6 +259,9 @@ dcmview/
 |   |       |-- TagPanel.svelte
 |   |       |-- FrameSlider.svelte
 |   |       |-- StatusBar.svelte
+|   |       |-- SemanticContextPanel.svelte
+|   |       |-- WsiTileContext.svelte
+|   |       |-- ReferenceNavigator.svelte / ReferenceEdge.svelte
 |   |       |-- annotationGeometry.ts
 |   |       |-- keyboardShortcuts.ts
 |   |       |-- keyedAsyncResource.ts
@@ -258,10 +272,13 @@ dcmview/
 |   |-- svelte.config.js
 |   `-- vite.config.ts
 |-- python/dcmview_py/  Python subprocess wrapper and package entrypoint
-|-- vscode/             VS Code extension and Electron integration tests
+|-- vscode/             VS Code extension (src/: activation, sessions, custom
+|                       editor, bridge server/registry, terminal shims) and
+|                       Electron integration tests
 |-- tests/
 |   |-- integration.rs  Integration test module root
 |   |-- integration/    Axum and pixel-path integration tests
+|   |-- windowing-cases.json  windowing oracle shared with rawWindowing.test.ts
 |   `-- fixtures/       Small generated DICOM fixtures
 |-- scripts/check.py    Canonical local and CI check profiles
 |-- examples/generate_test_fixtures.rs
@@ -482,7 +499,7 @@ the warning path in `server/runtime.rs`.
 | `README.md` | Public documentation and PyPI long description |
 | `docs/architecture.md` | Normative architecture, lifecycle, contracts, and check profiles |
 | `src/main.rs` | CLI shape and process exit |
-| `src/application.rs` | Bridge/local dispatch and injectable test seam |
+| `src/application.rs` | Bridge/local dispatch |
 | `src/startup/` | Local viewer assembly and discovery ownership |
 | `src/api/contracts.rs` | Canonical HTTP endpoint and wire contract |
 | `src/server/` | Axum runtime, lifecycle, catalog, API, tags, and web assets |

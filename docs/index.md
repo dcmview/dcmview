@@ -72,7 +72,7 @@ or metadata unless they are fully de-identified and approved for public use.
   fixture policy, documentation expectations, pull request guidance, and
   no-PHI reporting rules.
 - [Architecture and test model](architecture.md): normative module ownership,
-  runtime and HTTP contract flow, lifecycle invariants, test seams, canonical
+  runtime and HTTP contract flow, lifecycle invariants, test layers, canonical
   check profiles, and non-blocking extension points.
 - [Changelog](../CHANGELOG.md): user-visible CLI, Python, VS Code, API/debug,
   documentation, and packaging changes.
