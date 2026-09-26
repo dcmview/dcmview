@@ -121,7 +121,7 @@ pub(super) fn build_entry(path: &Path) -> Result<EntryInspection> {
     let normalized_pixel_aspect = normalize_pixel_aspect(pixel_spacing, pixel_aspect_ratio);
     let modality_lut = read_lut_sequence(&obj, tags::MODALITY_LUT_SEQUENCE);
     let voi_lut = read_lut_sequence(&obj, tags::VOILUT_SEQUENCE);
-    let presentation = read_presentation_metadata(&obj);
+    let presentation = read_presentation_metadata(&obj, frame_count);
     let pixel_representation = read_number::<u32>(&obj, tags::PIXEL_REPRESENTATION).unwrap_or(0);
     let samples_per_pixel = read_number::<u32>(&obj, tags::SAMPLES_PER_PIXEL)
         .unwrap_or(1)

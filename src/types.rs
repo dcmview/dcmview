@@ -78,7 +78,26 @@ pub struct DisplayShutter {
 #[derive(Debug, Clone, Default)]
 pub struct PresentationMetadata {
     pub overlay_planes: Vec<OverlayPlane>,
+    /// The shutter of every frame without its own: the Frame Display Shutter
+    /// of the Shared Functional Groups, else the Display Shutter modules.
     pub display_shutter: Option<DisplayShutter>,
+    /// Frame Display Shutters of the Per-frame Functional Groups, by
+    /// zero-based frame; empty when no frame declares one.
+    pub frame_display_shutters: Vec<Option<DisplayShutter>>,
+}
+
+impl PresentationMetadata {
+    /// The shutter that applies to one zero-based frame.
+    pub fn display_shutter_for_frame(&self, frame: u32) -> Option<&DisplayShutter> {
+        self.frame_display_shutters
+            .get(frame as usize)
+            .and_then(Option::as_ref)
+            .or(self.display_shutter.as_ref())
+    }
+
+    pub fn has_display_shutter(&self) -> bool {
+        self.display_shutter.is_some() || self.frame_display_shutters.iter().any(Option::is_some)
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -272,7 +291,7 @@ fn raw_windowing_incompatibility(metadata: &SeriesMetadata) -> Option<&'static s
         Some("client raw windowing is disabled because a VOI LUT is declared")
     } else if !metadata.presentation.overlay_planes.is_empty() {
         Some("client raw windowing is disabled because an overlay plane is declared")
-    } else if metadata.presentation.display_shutter.is_some() {
+    } else if metadata.presentation.has_display_shutter() {
         Some("client raw windowing is disabled because a display shutter is declared")
     } else {
         None

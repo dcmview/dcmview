@@ -37,6 +37,7 @@ marketing-review/
 !tests/fixtures/golden-shutter-bitmap-u8.dcm
 !tests/fixtures/golden-shutter-circular-cielab-rgb-u8.dcm
 !tests/fixtures/golden-shutter-circular-u8.dcm
+!tests/fixtures/golden-shutter-per-frame-u8.dcm
 !tests/fixtures/golden-shutter-polygonal-rle-rgb-u8.dcm
 !tests/fixtures/golden-shutter-polygonal-u8.dcm
 !tests/fixtures/golden-shutter-rectangular-circular-u8.dcm

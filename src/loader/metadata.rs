@@ -87,13 +87,34 @@ pub(super) fn read_lut_sequence(
 
 pub(super) fn read_presentation_metadata(
     obj: &dicom_object::DefaultDicomObject,
+    frame_count: u32,
 ) -> PresentationMetadata {
     let mut overlay_planes = read_overlay_planes(obj);
-    let display_shutter = read_display_shutter(obj, &mut overlay_planes);
+    let module_shutter = read_display_shutter(obj, &mut overlay_planes);
+    let shared_shutter = sequence_item(obj, tags::SHARED_FUNCTIONAL_GROUPS_SEQUENCE, 0)
+        .and_then(read_frame_display_shutter);
+    let frame_display_shutters = sequence_items(obj, tags::PER_FRAME_FUNCTIONAL_GROUPS_SEQUENCE)
+        .iter()
+        .take(frame_count as usize)
+        .map(read_frame_display_shutter)
+        .collect::<Vec<_>>();
     PresentationMetadata {
         overlay_planes,
-        display_shutter,
+        display_shutter: shared_shutter.or(module_shutter),
+        frame_display_shutters: if frame_display_shutters.iter().any(Option::is_some) {
+            frame_display_shutters
+        } else {
+            Vec::new()
+        },
     }
+}
+
+/// The Frame Display Shutter macro of one functional group item: Display
+/// Shutter attributes inside a one-item sequence, which cannot reference an
+/// overlay plane.
+fn read_frame_display_shutter(group: &InMemDicomObject) -> Option<DisplayShutter> {
+    let item = sequence_item(group, tags::FRAME_DISPLAY_SHUTTER_SEQUENCE, 0)?;
+    read_display_shutter(item, &mut Vec::new())
 }
 
 fn read_overlay_planes(obj: &dicom_object::DefaultDicomObject) -> Vec<OverlayPlane> {
@@ -794,7 +815,7 @@ mod tests {
                     .media_storage_sop_instance_uid("2.25.300"),
             )
             .expect("file meta");
-        read_presentation_metadata(&object)
+        read_presentation_metadata(&object, 2)
     }
 
     fn overlay_plane_elements(group: u16) -> Vec<DataElement<InMemDicomObject>> {
@@ -898,6 +919,74 @@ mod tests {
         assert_eq!(
             shutter.presentation_color_cielab,
             Some([0x8000, 0x8080, 0x8080])
+        );
+    }
+
+    fn frame_display_shutter_group(
+        shutter: Vec<DataElement<InMemDicomObject>>,
+    ) -> InMemDicomObject {
+        InMemDicomObject::from_element_iter([DataElement::new(
+            tags::FRAME_DISPLAY_SHUTTER_SEQUENCE,
+            VR::SQ,
+            DataSetSequence::from(vec![InMemDicomObject::from_element_iter(shutter)]),
+        )])
+    }
+
+    fn circle(center: &str) -> Vec<DataElement<InMemDicomObject>> {
+        vec![
+            DataElement::new(tags::SHUTTER_SHAPE, VR::CS, "CIRCULAR"),
+            DataElement::new(tags::CENTER_OF_CIRCULAR_SHUTTER, VR::IS, center),
+            DataElement::new(tags::RADIUS_OF_CIRCULAR_SHUTTER, VR::IS, "1"),
+        ]
+    }
+
+    fn circle_shutter(center: [i32; 2]) -> DisplayShutter {
+        DisplayShutter {
+            shapes: vec![ShutterShape::Circular { center, radius: 1 }],
+            presentation_value: 0,
+            presentation_color_cielab: None,
+        }
+    }
+
+    #[test]
+    fn frame_display_shutters_come_from_per_frame_then_shared_groups() {
+        // The shared group replaces the Display Shutter module for every
+        // frame; frame 2 declares its own and frame 1 does not.
+        let mut elements = circle("1\\1");
+        elements.extend([
+            DataElement::new(
+                tags::SHARED_FUNCTIONAL_GROUPS_SEQUENCE,
+                VR::SQ,
+                DataSetSequence::from(vec![frame_display_shutter_group(circle("2\\2"))]),
+            ),
+            DataElement::new(
+                tags::PER_FRAME_FUNCTIONAL_GROUPS_SEQUENCE,
+                VR::SQ,
+                DataSetSequence::from(vec![
+                    InMemDicomObject::new_empty(),
+                    frame_display_shutter_group(circle("3\\3")),
+                ]),
+            ),
+        ]);
+        let presentation = presentation_of(elements);
+
+        assert_eq!(presentation.display_shutter, Some(circle_shutter([2, 2])));
+        assert_eq!(
+            presentation.display_shutter_for_frame(0),
+            Some(&circle_shutter([2, 2]))
+        );
+        assert_eq!(
+            presentation.display_shutter_for_frame(1),
+            Some(&circle_shutter([3, 3]))
+        );
+        assert!(presentation.has_display_shutter());
+
+        // Without functional groups the module shutter covers every frame.
+        let module_only = presentation_of(circle("1\\1"));
+        assert!(module_only.frame_display_shutters.is_empty());
+        assert_eq!(
+            module_only.display_shutter_for_frame(1),
+            Some(&circle_shutter([1, 1]))
         );
     }
 

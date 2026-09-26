@@ -20,7 +20,10 @@ fn file_shutter(
     rows: u32,
     columns: u32,
 ) -> Option<(&DisplayShutter, ShutterFrame)> {
-    let shutter = file.series_metadata.presentation.display_shutter.as_ref()?;
+    let shutter = file
+        .series_metadata
+        .presentation
+        .display_shutter_for_frame(frame)?;
     let target = ShutterFrame {
         rows,
         columns,

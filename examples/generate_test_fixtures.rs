@@ -838,6 +838,60 @@ fn write_display_shutter_fixtures(fixture_dir: &Path) {
             shutter_value(0xFFFF),
         ],
     );
+    // Enhanced multi-frame shutters: the shared group's rectangle applies to
+    // frame 1, whose per-frame item declares none; frames 2 and 3 carry the
+    // circle and the triangle in their own Frame Display Shutter Sequence.
+    let frame_display_shutter = |shutter: Vec<DataElement<InMemDicomObject>>| {
+        InMemDicomObject::from_element_iter([DataElement::new(
+            tags::FRAME_DISPLAY_SHUTTER_SEQUENCE,
+            VR::SQ,
+            DataSetSequence::from(vec![InMemDicomObject::from_element_iter(shutter)]),
+        )])
+    };
+    write_display_shutter_fixture(
+        &fixture_dir.join("golden-shutter-per-frame-u8.dcm"),
+        "2.25.2000019",
+        ShutterFixtureImage::Gray {
+            sop_class_uid: uids::ENHANCED_XA_IMAGE_STORAGE,
+            frames: 3,
+        },
+        vec![
+            DataElement::new(
+                tags::SHARED_FUNCTIONAL_GROUPS_SEQUENCE,
+                VR::SQ,
+                DataSetSequence::from(vec![frame_display_shutter(vec![
+                    DataElement::new(tags::SHUTTER_SHAPE, VR::CS, "RECTANGULAR"),
+                    DataElement::new(tags::SHUTTER_LEFT_VERTICAL_EDGE, VR::IS, "3"),
+                    DataElement::new(tags::SHUTTER_RIGHT_VERTICAL_EDGE, VR::IS, "6"),
+                    DataElement::new(tags::SHUTTER_UPPER_HORIZONTAL_EDGE, VR::IS, "2"),
+                    DataElement::new(tags::SHUTTER_LOWER_HORIZONTAL_EDGE, VR::IS, "7"),
+                    shutter_value(0),
+                ])]),
+            ),
+            DataElement::new(
+                tags::PER_FRAME_FUNCTIONAL_GROUPS_SEQUENCE,
+                VR::SQ,
+                DataSetSequence::from(vec![
+                    InMemDicomObject::new_empty(),
+                    frame_display_shutter(vec![
+                        DataElement::new(tags::SHUTTER_SHAPE, VR::CS, "CIRCULAR"),
+                        DataElement::new(tags::CENTER_OF_CIRCULAR_SHUTTER, VR::IS, "4\\5"),
+                        DataElement::new(tags::RADIUS_OF_CIRCULAR_SHUTTER, VR::IS, "3"),
+                        shutter_value(0),
+                    ]),
+                    frame_display_shutter(vec![
+                        DataElement::new(tags::SHUTTER_SHAPE, VR::CS, "POLYGONAL"),
+                        DataElement::new(
+                            tags::VERTICES_OF_THE_POLYGONAL_SHUTTER,
+                            VR::IS,
+                            "1\\1\\1\\8\\6\\1",
+                        ),
+                        shutter_value(0),
+                    ]),
+                ]),
+            ),
+        ],
+    );
 }
 
 /// Pixels of an 8x8 display shutter fixture.

@@ -174,3 +174,27 @@ async fn rle_color_shutter_falls_back_to_the_gray_presentation_value() {
     )
     .await;
 }
+
+#[tokio::test]
+async fn enhanced_frames_take_their_own_or_the_shared_frame_display_shutter() {
+    let name = "golden-shutter-per-frame-u8.dcm";
+    let shared_rectangle = "
+        ........
+        ..####..
+        ..####..
+        ..####..
+        ..####..
+        ..####..
+        ..####..
+        ........
+    ";
+    for (frame, picture) in [(0, shared_rectangle), (1, CIRCLE), (2, TRIANGLE)] {
+        let (display, raw) = shutter_fixture_frame(name, frame).await;
+        assert_eq!(
+            display.to_luma8().into_raw(),
+            expected(picture, &GRAY, &[0]),
+            "frame {frame}"
+        );
+        assert_eq!(raw, [128_u8; 64], "frame {frame}");
+    }
+}
