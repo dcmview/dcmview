@@ -33,13 +33,7 @@
 		type ViewTransform,
 		type ZoomAnchor,
 	} from "./viewport/viewTransform";
-	import {
-		canRunCinePlayback,
-		runRenderPacedCine,
-		waitForCineDeadline,
-		type CineDirection,
-		type CineMode,
-	} from "./cinePlayback";
+	import { canRunCinePlayback, type CineDirection, type CineMode } from "./cinePlayback";
 	import { trackForegroundRequest } from "./requestIndicator";
 	import {
 		resolveDisplayWindow,
@@ -47,8 +41,9 @@
 		validateRenderableRawFrame,
 	} from "./rawWindowing";
 	import type { ActiveTool } from "./viewerTools";
-	import { navigationFrameAtPosition, type NavigationFrameRef } from "./seriesNavigation";
+	import type { NavigationFrameRef } from "./seriesNavigation";
 	import { AnnotationStore } from "./viewport/annotationStore.svelte";
+	import { playDisplayCine } from "./viewport/displayCine";
 	import { DisplayFrameSource } from "./viewport/displayFrameSource";
 	import {
 		composeOverlayFrame,
@@ -606,47 +601,22 @@
 		if (!playing || !canPlay) return;
 
 		const ctrl = new AbortController();
-		const totalFrames = frames.length;
-		let scheduledPosition = untrack(() => navigationPosition);
-		let direction = untrack(() => cineDirection);
 		displayFrames.enterScope(windowOptions);
-
-		void (async () => {
-			const initialFrame = navigationFrameAtPosition(frames, scheduledPosition);
-			if (!initialFrame) return;
-			if (!await rendered.waitFor(
-				initialFrame.file_index,
-				initialFrame.frame_index,
-				ctrl.signal,
-			)) return;
-			await runRenderPacedCine({
-				initialFrame: scheduledPosition,
-				totalFrames,
-				mode: playbackMode,
-				direction,
-				fps,
-				signal: ctrl.signal,
-				now: () => performance.now(),
-				waitForDelay: waitForCineDeadline,
-				prepareFrame: (position) => {
-					const frame = navigationFrameAtPosition(frames, position);
-					if (!frame) return Promise.reject(new Error("logical cine frame is unavailable"));
-					return displayFrames.ensureBlob(frame.file_index, frame.frame_index, windowOptions)
-						.then((blob) => typeof createImageBitmap === "function"
-							? displayFrames.decode(displayFrames.key(frame.file_index, frame.frame_index, windowOptions), blob)
-							: undefined);
-				},
-				presentFrame: async (step, signal) => {
-					const frame = navigationFrameAtPosition(frames, step.frame);
-					if (!frame) return false;
-					direction = step.direction;
-					scheduledPosition = step.frame;
-					cineDirection = direction;
-					onnavigationchange(scheduledPosition);
-					return rendered.waitFor(frame.file_index, frame.frame_index, signal);
-				},
-			});
-		})().catch((error) => {
+		playDisplayCine({
+			frames,
+			startPosition: untrack(() => navigationPosition),
+			direction: untrack(() => cineDirection),
+			mode: playbackMode,
+			fps,
+			windowOptions,
+			display: displayFrames,
+			rendered,
+			signal: ctrl.signal,
+			onstep: (position, direction) => {
+				cineDirection = direction;
+				onnavigationchange(position);
+			},
+		}).catch((error) => {
 			if (ctrl.signal.aborted || (error as Error).name === "AbortError") return;
 			loadError = (error as Error).message || "Failed to prepare cine frame";
 			cinePlaying = false;
