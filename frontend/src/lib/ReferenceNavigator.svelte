@@ -6,6 +6,8 @@
 	} from "../api";
 	import {
 		KeyedAsyncResource,
+		METADATA_CACHE_FILES,
+		METADATA_SETTLE_MS,
 		type AsyncResourceSnapshot,
 	} from "./keyedAsyncResource";
 	import {
@@ -27,15 +29,24 @@
 	let resourcesByFile = $state<Record<number, AsyncResourceSnapshot<ReferenceCatalogResponse> | undefined>>({});
 	const resources = new KeyedAsyncResource<number, ReferenceCatalogResponse>({
 		load: fetchReferences,
+		capacity: METADATA_CACHE_FILES,
 		onChange: (index, snapshot) => {
-			resourcesByFile = { ...resourcesByFile, [index]: snapshot };
+			const { [index]: _previous, ...rest } = resourcesByFile;
+			resourcesByFile = snapshot.status === "idle" ? rest : { ...rest, [index]: snapshot };
 		},
 	});
 	const activeResource = $derived(resourcesByFile[fileIndex]);
 	const references = $derived(activeResource?.value?.references ?? []);
 
 	$effect(() => {
-		void resources.ensure(fileIndex).catch(() => {});
+		const index = fileIndex;
+		resources.abortOthers(index);
+		if (resources.get(index).status === "ready") {
+			void resources.ensure(index);
+			return;
+		}
+		const timer = setTimeout(() => void resources.ensure(index).catch(() => {}), METADATA_SETTLE_MS);
+		return () => clearTimeout(timer);
 	});
 
 	function retry() {
@@ -46,7 +57,7 @@
 <section class="reference-navigator" aria-label="DICOM references">
 	<header>
 		<span class="title">References</span>
-		{#if activeResource?.status === "loading"}
+		{#if !activeResource || activeResource.status === "loading"}
 			<span class="status">Loading…</span>
 		{:else if activeResource?.status === "error"}
 			<span class="status error" title={activeResource.error ?? undefined}>Unavailable</span>

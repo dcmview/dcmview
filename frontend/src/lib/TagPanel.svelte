@@ -2,6 +2,8 @@
 	import { fetchTags, type TagNode } from "../api";
 	import {
 		KeyedAsyncResource,
+		METADATA_CACHE_FILES,
+		METADATA_SETTLE_MS,
 		type AsyncResourceSnapshot,
 	} from "./keyedAsyncResource";
 	import {
@@ -45,11 +47,10 @@
 	let columnResizeState = $state<ColumnResizeState | null>(null);
 	const tagResources = new KeyedAsyncResource<number, TagNode[]>({
 		load: fetchTags,
+		capacity: METADATA_CACHE_FILES,
 		onChange: (fileIndex, snapshot) => {
-			tagResourcesByFile = {
-				...tagResourcesByFile,
-				[fileIndex]: snapshot,
-			};
+			const { [fileIndex]: _previous, ...rest } = tagResourcesByFile;
+			tagResourcesByFile = snapshot.status === "idle" ? rest : { ...rest, [fileIndex]: snapshot };
 		},
 	});
 
@@ -57,11 +58,19 @@
 		`${tagColumnWidthPx}px ${keywordColumnWidthPx}px ${vrColumnWidthPx}px minmax(0, 1fr)`,
 	);
 	const activeTagResource = $derived(tagResourcesByFile[fileIndex]);
-	const loading = $derived(activeTagResource?.status === "loading");
+	// A file waiting out the settle delay counts as loading.
+	const loading = $derived(!activeTagResource || activeTagResource.status === "loading");
 	const error = $derived(activeTagResource?.error ?? null);
 
 	$effect(() => {
-		void tagResources.ensure(fileIndex).catch(() => {});
+		const index = fileIndex;
+		tagResources.abortOthers(index);
+		if (tagResources.get(index).status === "ready") {
+			void tagResources.ensure(index);
+			return;
+		}
+		const timer = setTimeout(() => void tagResources.ensure(index).catch(() => {}), METADATA_SETTLE_MS);
+		return () => clearTimeout(timer);
 	});
 
 	function retryTags() {

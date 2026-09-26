@@ -82,26 +82,26 @@ async function responseError(response: Response, fallback: string): Promise<Erro
 	return new Error(serverMessage ?? `HTTP ${response.status}: ${fallback}`);
 }
 
-type JsonRequestArguments<Id extends JsonApiEndpointId> = [
-	ApiEndpointRequest<Id>,
-] extends [never]
-	? []
-	: [body: ApiEndpointRequest<Id>];
+type JsonRequestInit<Id extends JsonApiEndpointId> = { signal?: AbortSignal } & (
+	[ApiEndpointRequest<Id>] extends [never]
+		? { body?: undefined }
+		: { body: ApiEndpointRequest<Id> }
+);
 
 async function requestJsonEndpoint<Id extends JsonApiEndpointId>(
 	id: Id,
 	params: ApiEndpointParams<Id>,
-	...requestArguments: JsonRequestArguments<Id>
+	request: JsonRequestInit<Id>,
 ): Promise<ApiEndpointResponse<Id>> {
 	const endpoint = API_ENDPOINTS[id];
 	const path = apiEndpointPath(id, params);
-	const init: RequestInit = { method: endpoint.method };
-	if (requestArguments.length > 0) {
+	const init: RequestInit = { method: endpoint.method, signal: request.signal };
+	if (request.body !== undefined) {
 		if (endpoint.requestMediaType === null) {
 			throw new Error(`endpoint ${id} does not declare a request media type`);
 		}
 		init.headers = { "Content-Type": endpoint.requestMediaType };
-		init.body = JSON.stringify(requestArguments[0]);
+		init.body = JSON.stringify(request.body);
 	}
 	const response = await fetch(path, init);
 	if (response.status !== endpoint.successStatus) {
@@ -111,19 +111,22 @@ async function requestJsonEndpoint<Id extends JsonApiEndpointId>(
 }
 
 export function fetchFiles(): Promise<FilesResponse> {
-	return requestJsonEndpoint("files", {});
+	return requestJsonEndpoint("files", {}, {});
 }
 
 export function fetchSeries(): Promise<SeriesCatalogResponse> {
-	return requestJsonEndpoint("series", {});
+	return requestJsonEndpoint("series", {}, {});
 }
 
-export function fetchReferences(fileIndex: number): Promise<ReferenceCatalogResponse> {
-	return requestJsonEndpoint("fileReferences", { index: fileIndex });
+export function fetchReferences(
+	fileIndex: number,
+	signal?: AbortSignal,
+): Promise<ReferenceCatalogResponse> {
+	return requestJsonEndpoint("fileReferences", { index: fileIndex }, { signal });
 }
 
 export function fetchSemanticContext(fileIndex: number): Promise<SemanticContextResponse> {
-	return requestJsonEndpoint("fileSemanticContext", { index: fileIndex });
+	return requestJsonEndpoint("fileSemanticContext", { index: fileIndex }, {});
 }
 
 export async function fetchSegmentationOverlayBlob(
@@ -143,30 +146,26 @@ export function fetchWsiFrameContext(
 	fileIndex: number,
 	frame: number,
 ): Promise<WsiFrameContextResponse> {
-	return requestJsonEndpoint("fileWsiContext", { index: fileIndex, frame });
+	return requestJsonEndpoint("fileWsiContext", { index: fileIndex, frame }, {});
 }
 
 export function fetchFrameInfo(fileIndex: number): Promise<FrameInfo> {
-	return requestJsonEndpoint("fileInfo", { index: fileIndex });
+	return requestJsonEndpoint("fileInfo", { index: fileIndex }, {});
 }
 
-export function fetchTags(fileIndex: number): Promise<TagNode[]> {
-	return requestJsonEndpoint("fileTags", { index: fileIndex });
+export function fetchTags(fileIndex: number, signal?: AbortSignal): Promise<TagNode[]> {
+	return requestJsonEndpoint("fileTags", { index: fileIndex }, { signal });
 }
 
 export function fetchAnnotations(fileIndex: number): Promise<EmbedRoiAnnotations> {
-	return requestJsonEndpoint("fileAnnotationsGet", { index: fileIndex });
+	return requestJsonEndpoint("fileAnnotationsGet", { index: fileIndex }, {});
 }
 
 export function updateAnnotations(
 	fileIndex: number,
 	annotations: EmbedRoiAnnotations,
 ): Promise<EmbedRoiAnnotations> {
-	return requestJsonEndpoint(
-		"fileAnnotationsUpdate",
-		{ index: fileIndex },
-		annotations,
-	);
+	return requestJsonEndpoint("fileAnnotationsUpdate", { index: fileIndex }, { body: annotations });
 }
 
 export function annotationsExportUrl(): string {
