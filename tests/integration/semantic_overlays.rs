@@ -205,6 +205,73 @@ async fn rt_dose_overlay_resamples_the_grid_onto_covered_slices() {
 }
 
 #[tokio::test]
+async fn oblique_rt_dose_is_resampled_trilinearly_onto_axial_slices() {
+    let (server, indices) = serve(&[
+        "golden-rtdose-oblique-u16-grid.dcm",
+        "golden-rtdose-ct-source-z0.dcm",
+        "golden-rtdose-ct-source-z6.dcm",
+        "golden-rtdose-ct-source-z20.dcm",
+    ])
+    .await;
+    let [dose, z0, z6, z20] = indices[..] else {
+        unreachable!()
+    };
+
+    let context: Value = server
+        .get(&format!("/api/file/{dose}/semantic-context"))
+        .await
+        .json();
+    let context = &context["context"];
+    assert_eq!(
+        context["overlay"]["eligible"], true,
+        "{}",
+        context["overlay"]
+    );
+    let mut covered = context["overlay_source_frames"]
+        .as_array()
+        .expect("covered frames")
+        .iter()
+        .map(|frame| frame["file_index"].as_u64().unwrap() as usize)
+        .collect::<Vec<_>>();
+    covered.sort_unstable();
+    let mut expected = vec![z0, z6];
+    expected.sort_unstable();
+    assert_eq!(covered, expected);
+    let legend = &context["legend"];
+
+    let url = format!("/api/file/{z6}/frame/0/dose-overlay?dose={dose}");
+    let first = server.get(&url).await;
+    first.assert_header("X-Cache", "MISS");
+    let overlay = overlay_image(&first);
+    assert_eq!(overlay.dimensions(), (10, 10));
+    // CT pixel (row r, column c) of the z = 6 slice lies 3 - 0.8 Y mm along
+    // the grid normal, 4 + 0.6 Y mm along its rows, and 2c mm along x, with
+    // Y = 2r - 10. Inside the grid the dose is linear, so trilinear
+    // resampling is exact: 850 - 185 Y + 5c stored, in 0.01 Gy.
+    for (row, column, stored) in [(5, 2, 860.0), (3, 4, 1610.0), (6, 6, 510.0)] {
+        assert_color(&overlay, column, row, legend_color(legend, stored / 100.0));
+    }
+    // Row 1 is 9.4 mm along the normal, within half a spacing beyond the
+    // last plane, and just before the first dose row: plane 2, row 0,
+    // column 1 is 2010 stored.
+    assert_color(&overlay, 2, 1, legend_color(legend, 20.1));
+    // Row 0 is beyond the last plane's half spacing, row 9 before the first
+    // plane's, and column 8 beyond the grid's last half voxel.
+    assert_eq!(overlay.get_pixel(2, 0).0[3], 0);
+    assert_eq!(overlay.get_pixel(2, 9).0[3], 0);
+    assert_eq!(overlay.get_pixel(8, 5).0[3], 0);
+    server.get(&url).await.assert_header("X-Cache", "HIT");
+
+    assert_error(
+        &server
+            .get(&format!("/api/file/{z20}/frame/0/dose-overlay?dose={dose}"))
+            .await,
+        StatusCode::NOT_FOUND,
+        "overlay_not_covering_frame",
+    );
+}
+
+#[tokio::test]
 async fn rt_dose_value_mapping_reports_dose_grid_scaling() {
     let (server, indices) = serve(&["golden-rtdose-u16-grid.dcm"]).await;
     let mapping: Value = server

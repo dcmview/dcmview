@@ -163,6 +163,13 @@ fn fixture_code(value: &str, scheme: &str, meaning: &str) -> InMemDicomObject {
 /// Reference. The z = 6 slice lies halfway between the last two planes and
 /// the z = 20 slice beyond the grid. Stored dose is
 /// `1000 * plane + 100 * row + 10 * column`, scaled by 0.01 Gy.
+///
+/// An oblique grid holds the same samples, tilted about the x axis: its
+/// rows advance along (0, 0.6, 0.8) from (0, 10, 1), so its planes (normal
+/// (0, -0.8, 0.6)) cut through the axial slices. Being linear in each
+/// index, its dose at a point inside the grid is exactly
+/// `250 * normal + 25 * row_mm + 2.5 * column_mm` stored, in millimeters
+/// from that origin along the normal, the row direction, and x.
 fn write_rt_dose_overlay_fixtures(fixture_dir: &Path) {
     const FRAME_OF_REFERENCE: &str = "2.25.2000120";
     let dose_samples = (0..3_u16)
@@ -171,36 +178,53 @@ fn write_rt_dose_overlay_fixtures(fixture_dir: &Path) {
                 (0..4_u16).map(move |column| 1000 * plane + 100 * row + 10 * column)
             })
         })
-        .collect();
-    write_native_u16(
-        &fixture_dir.join("golden-rtdose-u16-grid.dcm"),
-        NativeU16Spec {
-            sop_class_uid: uids::RT_DOSE_STORAGE,
-            sop_instance_uid: "2.25.2000101",
-            modality: "RTDOSE",
-            series_instance_uid: "2.25.2000111",
-            frame_of_reference_uid: FRAME_OF_REFERENCE,
-            rows: 4,
-            columns: 4,
-            samples: dose_samples,
-        },
-        vec![
-            DataElement::new(tags::NUMBER_OF_FRAMES, VR::IS, "3"),
-            DataElement::new(
-                tags::FRAME_INCREMENT_POINTER,
-                VR::AT,
-                PrimitiveValue::Tags(vec![tags::GRID_FRAME_OFFSET_VECTOR].into()),
-            ),
-            DataElement::new(tags::IMAGE_POSITION_PATIENT, VR::DS, "0\\0\\0"),
-            DataElement::new(tags::IMAGE_ORIENTATION_PATIENT, VR::DS, AXIAL),
-            DataElement::new(tags::PIXEL_SPACING, VR::DS, "4\\4"),
-            DataElement::new(tags::DOSE_UNITS, VR::CS, "GY"),
-            DataElement::new(tags::DOSE_TYPE, VR::CS, "PHYSICAL"),
-            DataElement::new(tags::DOSE_SUMMATION_TYPE, VR::CS, "PLAN"),
-            DataElement::new(tags::GRID_FRAME_OFFSET_VECTOR, VR::DS, "0\\4\\8"),
-            DataElement::new(tags::DOSE_GRID_SCALING, VR::DS, "0.01"),
-        ],
-    );
+        .collect::<Vec<_>>();
+    for (name, sop_instance_uid, series_instance_uid, position, orientation) in [
+        (
+            "golden-rtdose-u16-grid.dcm",
+            "2.25.2000101",
+            "2.25.2000111",
+            "0\\0\\0",
+            AXIAL,
+        ),
+        (
+            "golden-rtdose-oblique-u16-grid.dcm",
+            "2.25.2000106",
+            "2.25.2000113",
+            "0\\10\\1",
+            "1\\0\\0\\0\\0.6\\0.8",
+        ),
+    ] {
+        write_native_u16(
+            &fixture_dir.join(name),
+            NativeU16Spec {
+                sop_class_uid: uids::RT_DOSE_STORAGE,
+                sop_instance_uid,
+                modality: "RTDOSE",
+                series_instance_uid,
+                frame_of_reference_uid: FRAME_OF_REFERENCE,
+                rows: 4,
+                columns: 4,
+                samples: dose_samples.clone(),
+            },
+            vec![
+                DataElement::new(tags::NUMBER_OF_FRAMES, VR::IS, "3"),
+                DataElement::new(
+                    tags::FRAME_INCREMENT_POINTER,
+                    VR::AT,
+                    PrimitiveValue::Tags(vec![tags::GRID_FRAME_OFFSET_VECTOR].into()),
+                ),
+                DataElement::new(tags::IMAGE_POSITION_PATIENT, VR::DS, position),
+                DataElement::new(tags::IMAGE_ORIENTATION_PATIENT, VR::DS, orientation),
+                DataElement::new(tags::PIXEL_SPACING, VR::DS, "4\\4"),
+                DataElement::new(tags::DOSE_UNITS, VR::CS, "GY"),
+                DataElement::new(tags::DOSE_TYPE, VR::CS, "PHYSICAL"),
+                DataElement::new(tags::DOSE_SUMMATION_TYPE, VR::CS, "PLAN"),
+                DataElement::new(tags::GRID_FRAME_OFFSET_VECTOR, VR::DS, "0\\4\\8"),
+                DataElement::new(tags::DOSE_GRID_SCALING, VR::DS, "0.01"),
+            ],
+        );
+    }
     for (slice, (sop_instance_uid, z)) in [
         ("2.25.2000102", 0),
         ("2.25.2000103", 6),

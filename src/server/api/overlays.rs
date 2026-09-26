@@ -18,8 +18,8 @@ use crate::api::contracts::{
 };
 use crate::geometry::frame_geometry;
 use crate::pixels::{
-    self, ColorScale, ColorwashRequest, PixelError, PixelResult, RawFrameRequest, WeightedPlane,
-    COLORMAP_NAME, COLORMAP_STOPS,
+    self, ColorScale, ColorwashRequest, PixelError, PixelResult, RawFrameRequest, COLORMAP_NAME,
+    COLORMAP_STOPS,
 };
 use crate::plane_stack::{PlaneStack, StackSampleError};
 use crate::types::{FileEntry, NativePixelDataKind, OverlayCacheKey};
@@ -172,7 +172,9 @@ async fn value_overlay(
     })?;
     let sample = stack.sample(geometry).map_err(|error| match error {
         StackSampleError::NotCovered => ApiError::overlay_not_covering_frame(error.to_string()),
-        StackSampleError::NotParallel => ApiError::semantic_mapping_unavailable(error.to_string()),
+        StackSampleError::InvalidGeometry => {
+            ApiError::semantic_mapping_unavailable(error.to_string())
+        }
     })?;
 
     let key = OverlayCacheKey {
@@ -187,12 +189,14 @@ async fn value_overlay(
     let mappings = value_mappings_for(state, overlay.clone())
         .await
         .map_err(|error| ApiError::internal(format!("{error:#}")))?;
-    let mut planes = Vec::with_capacity(sample.planes.len());
-    for (plane_frame, weight) in sample.planes {
-        let values = mapped_frame_values(state, &overlay, &mappings, plane_frame)
-            .await
-            .map_err(error::pixel_error)?;
-        planes.push(WeightedPlane { values, weight });
+    let frames = sample.frames();
+    let mut planes = Vec::with_capacity(frames.len());
+    for plane_frame in frames {
+        planes.push(
+            mapped_frame_values(state, &overlay, &mappings, plane_frame)
+                .await
+                .map_err(error::pixel_error)?,
+        );
     }
     let scale = ColorScale {
         min: legend.min_value,
@@ -200,11 +204,11 @@ async fn value_overlay(
         transparent_at_or_below: legend.transparent_at_or_below,
     };
     let png = task::spawn_blocking(move || {
+        let values = sample.resample(&planes).ok_or_else(|| {
+            PixelError::UnsupportedLayout("overlay plane values do not match the plane grid".into())
+        })?;
         pixels::encode_colorwash_png(ColorwashRequest {
-            planes: &planes,
-            plane_rows: stack.plane_rows(),
-            plane_columns: stack.plane_columns(),
-            transform: sample.transform,
+            values: &values,
             target_rows: target.rows,
             target_columns: target.columns,
             scale,

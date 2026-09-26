@@ -230,11 +230,13 @@ The contract is kept consistent by three layers:
 - `/api/file/{index}/frame/{frame}/dose-overlay?dose=` and
   `.../parametric-map-overlay?map=` (`server/api/overlays.rs`) draw an RT Dose
   grid or Parametric Map on a displayed frame in its Frame of Reference. The
-  volume is a `PlaneStack`; the displayed frame samples its bracketing planes
-  bilinearly and linearly between them, frames are decoded through the raw
-  cache and converted with `value_mapping`, and `pixels/colorwash.rs` encodes
-  viridis over the context legend's range. A frame beyond the stack is
-  `404 overlay_not_covering_frame`. Encoded PNGs are cached per volume and
+  volume is a `PlaneStack`; `StackSample` locates each displayed pixel along
+  the plane normal and in the plane grid and resamples trilinearly (a
+  parallel frame brackets the same planes everywhere, an oblique one per
+  pixel). The planes it reaches are decoded through the raw cache and
+  converted with `value_mapping`, and `pixels/colorwash.rs` encodes viridis
+  over the context legend's range. A frame with no pixel inside the volume
+  is `404 overlay_not_covering_frame`. Encoded PNGs are cached per volume and
   displayed frame, and `X-Cache` reports that cache. Semantic context lists
   covered source frames; the server completes its legend from the decoded
   frames' value range.

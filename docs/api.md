@@ -187,16 +187,21 @@ parallel planes: an RT Dose grid from Image Position/Orientation, Pixel
 Spacing, and Grid Frame Offset Vector (relative or absolute form); a
 Parametric Map from its per-frame positions, which must share orientation,
 spacing, and in-plane origin, one frame per plane. A displayed frame in the
-same Frame of Reference and parallel to the planes is sampled bilinearly
-within the planes and linearly between the two that bracket it; up to half a
-plane spacing beyond an end plane uses that plane. Samples convert through
-each frame's preferred `value-mapping` entry (Dose Grid Scaling for RT Dose).
+same Frame of Reference, in any orientation, is resampled trilinearly: each
+pixel center's patient position is located along the planes' normal and in
+their grid, then sampled bilinearly within the two planes that bracket it
+and linearly between them. A pixel is inside the volume within half a pixel
+of the grid's edge pixel centers and within half a plane spacing beyond an
+end plane (which is then used alone). A frame parallel to the planes
+brackets the same planes at every pixel; an oblique one brackets them pixel
+by pixel. Samples convert through each frame's preferred `value-mapping`
+entry (Dose Grid Scaling for RT Dose).
 
 The PNG has the displayed frame's size. Colors follow the context's `legend`:
 a value `v` sits at `(v - min_value) / (max_value - min_value)`, clamped,
 along the evenly spaced `color_stops` (viridis), interpolated linearly in RGB.
 Colored pixels are opaque, so the viewer applies overlay opacity; pixels
-outside the grid, without a mapped value, or at or below
+outside the volume, without a mapped value, or at or below
 `transparent_at_or_below` are transparent. The RT Dose legend spans 0 to the
 maximum dose of the whole grid with zero dose transparent; the Parametric Map
 legend spans the minimum to maximum mapped value of every frame with no
@@ -216,10 +221,10 @@ decoded, or a dose grid without positive dose, is ineligible.
 
 The overlay endpoints answer `400` when the query names the wrong kind of
 object, `404` for an unknown file index or out-of-range frame, `404
-overlay_not_covering_frame` when the displayed frame is beyond the stack or
-has no in-plane overlap, and `422 semantic_mapping_unavailable` when the
-volume is ineligible, the displayed frame lies in another Frame of
-Reference, lacks geometry, or is not parallel to the planes.
+overlay_not_covering_frame` when no pixel center of the displayed frame
+lies inside the volume, and `422 semantic_mapping_unavailable` when the
+volume is ineligible or the displayed frame lies in another Frame of
+Reference or lacks geometry.
 
 `wsi-context` positions one tile of a Whole Slide Microscopy object in its Total
 Pixel Matrix without stitching. It answers `400` for other objects.

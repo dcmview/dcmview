@@ -23,7 +23,8 @@ The committed corpus is intentionally small and synthetic:
 - `golden-shutter-rectangular-circular-u8.dcm`
 - `golden-image-no-pixels.dcm`
 - `golden-no-pixels-sr.dcm`
-- `golden-rtdose-u16-grid.dcm` with `golden-rtdose-ct-source-z{0,6,20}.dcm`
+- `golden-rtdose-u16-grid.dcm` and `golden-rtdose-oblique-u16-grid.dcm` with
+  `golden-rtdose-ct-source-z{0,6,20}.dcm`
 - `golden-parametric-map-u16-linear.dcm` with
   `golden-parametric-map-mr-source-z{0,1}.dcm`
 - `golden-rwvm-ct-hounsfield.dcm`
@@ -51,7 +52,10 @@ Groups on frame 1 and its per-frame circle and triangle on frames 2 and 3.
 The semantic-overlay fixtures pair a value volume with images in its Frame
 of Reference. The RT Dose grid has three 4x4 planes of 4 mm voxels at
 z = 0, 4, and 8 mm; its CT slices are 10x10 at 2 mm, one on a plane, one
-halfway between two planes, and one beyond the grid. The Parametric Map has
+halfway between two planes, and one beyond the grid. The oblique RT Dose
+grid holds the same samples tilted about the x axis (rows along
+(0, 0.6, 0.8) from (0, 10, 1)), so its planes cut the z = 0 and z = 6 slices
+at an angle and miss the z = 20 slice. The Parametric Map has
 two 4x4 frames at z = 0 and 2 mm with a linear Real World Value Mapping, and
 its MR sources share its grid at z = 0 and 1 mm. Stored values are simple
 functions of plane, row, and column so tests can assert resampled values.
