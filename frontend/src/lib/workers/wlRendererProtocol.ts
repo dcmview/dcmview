@@ -1,13 +1,23 @@
 import type { RawFrameMetadata } from "../../rawFrame";
 
-export type WlRendererRequest = {
-	type: "render";
-	id: number;
+/** Hands the worker the frame that later render requests window. */
+export type WlRendererLoadFrame = {
+	type: "frame";
+	frameId: number;
 	metadata: RawFrameMetadata;
 	buffer: ArrayBuffer;
+};
+
+/** Renders the loaded frame; only the window travels per request. */
+export type WlRendererRender = {
+	type: "render";
+	id: number;
+	frameId: number;
 	wc: number;
 	ww: number;
 };
+
+export type WlRendererRequest = WlRendererLoadFrame | WlRendererRender;
 
 export type WlRendererSuccess = {
 	type: "rendered";

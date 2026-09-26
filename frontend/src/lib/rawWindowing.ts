@@ -116,7 +116,28 @@ export function resolveDisplayWindow(
 	return computePercentileWindow(frame);
 }
 
+// Automatic windows scan every sample, so each frame's result is computed
+// once; frames are immutable once fetched.
+const fullDynamicWindows = new WeakMap<RawFrame, ResolvedWindow>();
+const percentileWindows = new WeakMap<RawFrame, ResolvedWindow>();
+
 export function computeFullDynamicWindow(frame: RawFrame): ResolvedWindow {
+	const cached = fullDynamicWindows.get(frame);
+	if (cached) return cached;
+	const window = scanFullDynamicWindow(frame);
+	fullDynamicWindows.set(frame, window);
+	return window;
+}
+
+export function computePercentileWindow(frame: RawFrame): ResolvedWindow {
+	const cached = percentileWindows.get(frame);
+	if (cached) return cached;
+	const window = scanPercentileWindow(frame);
+	percentileWindows.set(frame, window);
+	return window;
+}
+
+function scanFullDynamicWindow(frame: RawFrame): ResolvedWindow {
 	const values = windowSourceValues(frame);
 	let min = Infinity;
 	let max = -Infinity;
@@ -133,7 +154,7 @@ export function computeFullDynamicWindow(frame: RawFrame): ResolvedWindow {
 	return { wc: min + width / 2, ww: width };
 }
 
-export function computePercentileWindow(frame: RawFrame): ResolvedWindow {
+function scanPercentileWindow(frame: RawFrame): ResolvedWindow {
 	const values = windowSourceValues(frame);
 	const numPixels = values.length;
 

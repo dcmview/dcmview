@@ -239,6 +239,13 @@
 		resolve: (value: WlRenderedFrame) => void;
 		reject: (error: Error) => void;
 	}>();
+	// The raw frame the worker holds; window changes send only {wc, ww}.
+	let workerFrame: RawFrame | null = null;
+	let workerFrameId = 0;
+	// At most one worker render is in flight; newer requests replace the
+	// queued one so a drag never builds a backlog.
+	let workerRenderInFlight = false;
+	let queuedWorkerRender: { frame: RawFrame; wc: number; ww: number; generation: number } | null = null;
 
 	const MIN_ZOOM = 0.05;
 	const MAX_ZOOM = 64;
@@ -508,6 +515,11 @@
 			};
 			wlWorker.onerror = () => {
 				workerAvailable = false;
+				workerFrame = null;
+				for (const pending of pendingWorkerResponses.values()) {
+					pending.reject(new Error("window/level worker failed"));
+				}
+				pendingWorkerResponses.clear();
 			};
 			workerAvailable = true;
 			return true;
@@ -527,20 +539,25 @@
 		if (!wlWorker || !workerAvailable) {
 			throw new Error("worker unavailable");
 		}
+		if (workerFrame !== frame) {
+			// The main thread keeps its buffer for the raw-frame cache, so the
+			// worker gets a copy, once per frame rather than once per render.
+			const buffer = frame.buffer.slice(0);
+			const load: WlRendererRequest = {
+				type: "frame",
+				frameId: ++workerFrameId,
+				metadata: frame.metadata,
+				buffer,
+			};
+			wlWorker.postMessage(load, [buffer]);
+			workerFrame = frame;
+		}
 		const id = ++workerMessageId;
-		const copiedBuffer = frame.buffer.slice(0);
 		const pending = new Promise<WlRenderedFrame>((resolve, reject) => {
 			pendingWorkerResponses.set(id, { resolve, reject });
 		});
-		const request: WlRendererRequest = {
-			type: "render",
-			id,
-			metadata: frame.metadata,
-			wc,
-			ww,
-			buffer: copiedBuffer,
-		};
-		wlWorker.postMessage(request, [copiedBuffer]);
+		const request: WlRendererRequest = { type: "render", id, frameId: workerFrameId, wc, ww };
+		wlWorker.postMessage(request);
 		const result = await pending;
 		return result.bitmap;
 	}
@@ -727,20 +744,39 @@
 	async function renderDiagnosticFrame(frame: RawFrame, wc: number, ww: number, generation: number): Promise<void> {
 		if (!canvasEl) return;
 		if (shouldUseWorker(frame)) {
+			queuedWorkerRender = { frame, wc, ww, generation };
+			if (workerRenderInFlight) return;
+			workerRenderInFlight = true;
 			try {
-				const bitmap = await renderWithWorker(frame, wc, ww);
-				if (generation !== wlRenderGeneration || !canvasEl || pipelineMode !== "diagnostic_wl") {
+				while (queuedWorkerRender) {
+					const next = queuedWorkerRender;
+					queuedWorkerRender = null;
+					const bitmap = await renderWithWorker(next.frame, next.wc, next.ww);
+					if (
+						next.generation !== wlRenderGeneration
+						|| next.frame !== currentRawFrame
+						|| !canvasEl
+						|| pipelineMode !== "diagnostic_wl"
+					) {
+						bitmap.close();
+						continue;
+					}
+					canvasEl.width = bitmap.width;
+					canvasEl.height = bitmap.height;
+					const ctx = canvasEl.getContext("2d", { alpha: false });
+					ctx?.drawImage(bitmap, 0, 0);
 					bitmap.close();
-					return;
 				}
-				canvasEl.width = bitmap.width;
-				canvasEl.height = bitmap.height;
-				const ctx = canvasEl.getContext("2d", { alpha: false });
-				ctx?.drawImage(bitmap, 0, 0);
-				bitmap.close();
 				return;
 			} catch {
 				workerAvailable = false;
+				const latest = queuedWorkerRender ?? { frame, wc, ww, generation };
+				queuedWorkerRender = null;
+				if (latest.generation !== wlRenderGeneration || !canvasEl) return;
+				renderRawFrameOnMainThread(canvasEl, latest.frame, latest.wc, latest.ww);
+				return;
+			} finally {
+				workerRenderInFlight = false;
 			}
 		}
 		renderRawFrameOnMainThread(canvasEl, frame, wc, ww);
@@ -1461,16 +1497,10 @@ function startDisplayPrefetch(
 
 	$effect(() => {
 		if (pipelineMode !== "diagnostic_wl" || !currentRawFrame || !canvasEl) return;
-		const window = resolveDisplayWindow(
-			currentRawFrame,
-			liveWindowCenter,
-			liveWindowWidth,
-			windowCenter,
-			windowWidth,
-			windowMode,
-		);
-		const generation = ++wlRenderGeneration;
-		void renderDiagnosticFrame(currentRawFrame, window.wc, window.ww, generation);
+		// displayWindow already resolved this frame's window; window changes do
+		// not invalidate in-flight renders, only frame, file, and mode changes do.
+		const { wc, ww } = displayWindow;
+		void renderDiagnosticFrame(currentRawFrame, wc, ww, untrack(() => wlRenderGeneration));
 	});
 
 	$effect(() => {
@@ -1498,6 +1528,8 @@ function startDisplayPrefetch(
 			pendingWorkerResponses.clear();
 			wlWorker?.terminate();
 			wlWorker = null;
+			workerFrame = null;
+			queuedWorkerRender = null;
 		};
 	});
 
