@@ -34,6 +34,8 @@ marketing-review/
 !tests/fixtures/golden-rtdose-ct-source-z6.dcm
 !tests/fixtures/golden-rtdose-ct-source-z20.dcm
 !tests/fixtures/golden-rtdose-u16-grid.dcm
+!tests/fixtures/golden-rtdose-oblique-u16-grid.dcm
+!tests/fixtures/golden-rwvm-ct-hounsfield.dcm
 !tests/fixtures/golden-shutter-bitmap-u8.dcm
 !tests/fixtures/golden-shutter-circular-cielab-rgb-u8.dcm
 !tests/fixtures/golden-shutter-circular-u8.dcm
