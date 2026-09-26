@@ -144,43 +144,6 @@ async fn raw_endpoint_x_cache_miss_then_hit() {
 }
 
 #[tokio::test]
-async fn raw_cache_key_is_independent_of_window_params() {
-    // Verifies that the raw cache key does NOT incorporate wc/ww.
-    // We test via the pixel-level API directly: two requests with different
-    // conceptual WL should hit the cache if frame identity matches.
-    let dir = tempdir().expect("temp dir");
-    let path = dir.path().join("raw-wl-cache.dcm");
-    support::write_uncompressed_u16_dicom(
-        &path,
-        "1.2.840.10008.1.2.1",
-        2,
-        2,
-        vec![0, 1000, 2000, 3000],
-        None,
-        None,
-    );
-    let mut entry = support::file_entry(path, "1.2.840.10008.1.2.1", 1);
-    entry.rows = 2;
-    entry.columns = 2;
-
-    let cache = new_raw_cache();
-
-    let first = load_raw_frame(entry.clone(), cache.clone(), RawFrameRequest { frame: 0 })
-        .await
-        .expect("first raw request");
-    assert!(!first.cache_hit, "first request must be MISS");
-
-    // Second request — no WL concept on this path at all; must be a HIT.
-    let second = load_raw_frame(entry, cache.clone(), RawFrameRequest { frame: 0 })
-        .await
-        .expect("second raw request");
-    assert!(second.cache_hit, "repeat raw request must be HIT");
-
-    // Bodies must be identical (same raw bytes regardless of any WL)
-    assert_eq!(first.body.as_ref(), second.body.as_ref());
-}
-
-#[tokio::test]
 async fn raw_endpoint_returns_404_for_out_of_range_frame() {
     let dir = tempdir().expect("temp dir");
     let path = dir.path().join("raw-oob.dcm");
@@ -420,15 +383,9 @@ async fn raw_endpoint_multiframe_second_frame_has_correct_pixels() {
     let frame0 = load_raw_frame(entry.clone(), cache.clone(), RawFrameRequest { frame: 0 })
         .await
         .expect("frame 0");
-    assert!(!frame0.cache_hit);
-
-    let frame1 = load_raw_frame(entry.clone(), cache.clone(), RawFrameRequest { frame: 1 })
+    let frame1 = load_raw_frame(entry, cache, RawFrameRequest { frame: 1 })
         .await
         .expect("frame 1");
-    assert!(
-        !frame1.cache_hit,
-        "frame 1 is a separate cache entry, must be MISS"
-    );
 
     // Bodies must differ (different pixel values)
     assert_ne!(
@@ -444,12 +401,6 @@ async fn raw_endpoint_multiframe_second_frame_has_correct_pixels() {
     // Verify frame 1 first pixel = 500 = 0x01F4 LE → [0xF4, 0x01]
     assert_eq!(frame1.body[0], 0xF4, "frame 1 first pixel low byte");
     assert_eq!(frame1.body[1], 0x01, "frame 1 first pixel high byte");
-
-    // Repeat frame 0 is a HIT
-    let frame0_repeat = load_raw_frame(entry, cache, RawFrameRequest { frame: 0 })
-        .await
-        .expect("frame 0 repeat");
-    assert!(frame0_repeat.cache_hit, "repeated frame 0 must be HIT");
 }
 
 #[tokio::test]

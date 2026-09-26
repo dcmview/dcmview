@@ -60,17 +60,11 @@ async fn assert_compressed_fixture_contract(
     let first_display = test_server.get("/api/file/0/frame/0").await;
     first_display.assert_status_ok();
     assert_eq!(header(&first_display, "content-type"), "image/png");
-    assert_eq!(header(&first_display, "x-cache"), "MISS");
     let display_image =
         image::load_from_memory_with_format(first_display.as_bytes().as_ref(), ImageFormat::Png)
             .expect("display endpoint should return a valid PNG");
     assert_eq!(display_image.height(), rows);
     assert_eq!(display_image.width(), columns);
-
-    let second_display = test_server.get("/api/file/0/frame/0").await;
-    second_display.assert_status_ok();
-    assert_eq!(header(&second_display, "x-cache"), "HIT");
-    assert_eq!(first_display.as_bytes(), second_display.as_bytes());
 
     let first_raw = test_server.get("/api/file/0/frame/0/raw").await;
     first_raw.assert_status_ok();
@@ -78,7 +72,6 @@ async fn assert_compressed_fixture_contract(
         header(&first_raw, "content-type"),
         "application/octet-stream"
     );
-    assert_eq!(header(&first_raw, "x-cache"), "MISS");
     assert_eq!(header(&first_raw, "x-frame-rows"), rows.to_string());
     assert_eq!(header(&first_raw, "x-frame-columns"), columns.to_string());
     assert_eq!(
@@ -102,11 +95,6 @@ async fn assert_compressed_fixture_contract(
         default_window.1.to_string()
     );
     assert_eq!(first_raw.as_bytes().as_ref(), expected_raw);
-
-    let second_raw = test_server.get("/api/file/0/frame/0/raw").await;
-    second_raw.assert_status_ok();
-    assert_eq!(header(&second_raw, "x-cache"), "HIT");
-    assert_eq!(first_raw.as_bytes(), second_raw.as_bytes());
 }
 
 /// Y, Cb, Cr samples shared by the committed color fixtures.
@@ -304,7 +292,6 @@ async fn deflated_explicit_vr_little_endian_satisfies_display_and_raw_contracts(
         .await;
     display.assert_status_ok();
     assert_eq!(header(&display, "content-type"), "image/png");
-    assert_eq!(header(&display, "x-cache"), "MISS");
     let rendered =
         image::load_from_memory_with_format(display.as_bytes().as_ref(), ImageFormat::Png)
             .expect("deflated display should return PNG")
@@ -315,17 +302,12 @@ async fn deflated_explicit_vr_little_endian_satisfies_display_and_raw_contracts(
     let raw = test_server.get("/api/file/0/frame/0/raw").await;
     raw.assert_status_ok();
     assert_eq!(header(&raw, "content-type"), "application/octet-stream");
-    assert_eq!(header(&raw, "x-cache"), "MISS");
     assert_eq!(header(&raw, "x-frame-bits-allocated"), "16");
     let expected_raw = samples
         .into_iter()
         .flat_map(u16::to_le_bytes)
         .collect::<Vec<_>>();
     assert_eq!(raw.as_bytes().as_ref(), expected_raw);
-    let raw_repeat = test_server.get("/api/file/0/frame/0/raw").await;
-    raw_repeat.assert_status_ok();
-    assert_eq!(header(&raw_repeat, "x-cache"), "HIT");
-    assert_eq!(raw_repeat.as_bytes(), raw.as_bytes());
 }
 
 #[tokio::test]
@@ -349,14 +331,12 @@ async fn rle_lossless_reconstructs_standard_most_significant_byte_planes() {
     let display = test_server.get("/api/file/0/frame/0").await;
     display.assert_status_ok();
     assert_eq!(header(&display, "content-type"), "image/png");
-    assert_eq!(header(&display, "x-cache"), "MISS");
     let image = image::load_from_memory_with_format(display.as_bytes().as_ref(), ImageFormat::Png)
         .expect("RLE display should be a valid PNG");
     assert_eq!((image.width(), image.height()), (2, 1));
 
     let raw = test_server.get("/api/file/0/frame/0/raw").await;
     raw.assert_status_ok();
-    assert_eq!(header(&raw, "x-cache"), "MISS");
     assert_eq!(raw.as_bytes().as_ref(), [0x34, 0x12, 0xcd, 0xab]);
 }
 

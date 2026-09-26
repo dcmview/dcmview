@@ -89,14 +89,6 @@ async fn decodes_remote_jpeg2000_fixture_through_display_endpoint() {
             .expect("content-type"),
         "image/png"
     );
-    assert_eq!(first.header("x-cache").to_str().expect("x-cache"), "MISS");
-
-    let second = test_server
-        .get("/api/file/0/frame/0")
-        .add_header(header::ACCEPT, HeaderValue::from_static("image/png"))
-        .await;
-    second.assert_status_ok();
-    assert_eq!(second.header("x-cache").to_str().expect("x-cache"), "HIT");
 }
 
 #[cfg(not(feature = "remote-fixtures"))]

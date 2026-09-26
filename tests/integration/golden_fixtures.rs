@@ -80,7 +80,6 @@ async fn golden_uncompressed_fixture_matches_raw_and_display_contracts() {
 
     let raw = test_server.get("/api/file/0/frame/1/raw").await;
     raw.assert_status_ok();
-    assert_eq!(raw.header("x-cache").to_str().expect("x-cache"), "MISS");
     let expected_frame1 = vec![
         50, 150, 250, 350, 450, 550, 650, 750, 850, 950, 1050, 1150, 1250, 1350, 1450, 1550,
     ];

@@ -268,56 +268,6 @@ async fn serves_js_and_css_assets_with_correct_mime_types() {
 }
 
 #[tokio::test]
-async fn full_dynamic_mode_query_param_accepted_and_returns_valid_image() {
-    let dir = tempdir().expect("temp dir");
-    let path = dir.path().join("server-uncompressed.dcm");
-    support::write_uncompressed_u16_dicom(
-        &path,
-        "1.2.840.10008.1.2.1",
-        2,
-        2,
-        vec![0, 1000, 2000, 3000],
-        None,
-        None,
-    );
-
-    let mut entry = support::file_entry(path, "1.2.840.10008.1.2.1", 1);
-    entry.rows = 2;
-    entry.columns = 2;
-
-    let app = server::router(support::app_state(vec![entry]));
-    let test_server = TestServer::new(app);
-
-    // First request with mode=full_dynamic: MISS, valid PNG
-    let response = test_server
-        .get("/api/file/0/frame/0?mode=full_dynamic")
-        .await;
-    response.assert_status_ok();
-    assert_eq!(
-        response
-            .header(header::CONTENT_TYPE)
-            .to_str()
-            .expect("content-type"),
-        "image/png",
-        "full_dynamic uncompressed frame should be PNG"
-    );
-    assert_eq!(
-        response.header("X-Cache").to_str().expect("cache header"),
-        "MISS"
-    );
-
-    // Second request with same params: HIT
-    let repeat = test_server
-        .get("/api/file/0/frame/0?mode=full_dynamic")
-        .await;
-    repeat.assert_status_ok();
-    assert_eq!(
-        repeat.header("X-Cache").to_str().expect("cache header"),
-        "HIT"
-    );
-}
-
-#[tokio::test]
 async fn default_and_full_dynamic_modes_occupy_independent_cache_slots() {
     // Verifies that ?mode=full_dynamic and no-mode (default) produce separate cache entries,
     // so switching mode always yields a MISS before the first HIT for that mode.

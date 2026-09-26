@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use tempfile::tempdir;
 
 #[tokio::test]
-async fn decodes_jpeg_display_frame_to_png_and_sets_cache_hit_on_repeat() {
+async fn decodes_requested_jpeg_display_frame_to_png() {
     let dir = tempdir().expect("temp dir");
     let path = dir.path().join("jpeg-frames.dcm");
     let frame0 = support::grayscale_jpeg_fragment_16x16(20);
@@ -21,21 +21,16 @@ async fn decodes_jpeg_display_frame_to_png_and_sets_cache_hit_on_repeat() {
     );
 
     let file = support::file_entry(path.clone(), "1.2.840.10008.1.2.4.50", 2);
-    let cache = new_cache();
+    let request = |frame| FrameRequest {
+        frame,
+        window_center: None,
+        window_width: None,
+        window_mode: dcmview::types::WindowMode::Default,
+    };
 
-    let first = load_frame(
-        file.clone(),
-        cache.clone(),
-        FrameRequest {
-            frame: 1,
-            window_center: None,
-            window_width: None,
-            window_mode: dcmview::types::WindowMode::Default,
-        },
-    )
-    .await
-    .expect("first decoded JPEG request");
-
+    let first = load_frame(file.clone(), new_cache(), request(1))
+        .await
+        .expect("decoded JPEG frame 1");
     assert_eq!(first.content_type, "image/png");
     let first_image = image::load_from_memory_with_format(first.body.as_ref(), ImageFormat::Png)
         .expect("valid decoded JPEG PNG")
@@ -47,24 +42,14 @@ async fn decodes_jpeg_display_frame_to_png_and_sets_cache_hit_on_repeat() {
         frame1.as_slice(),
         "display endpoint must not return raw JPEG bytes"
     );
-    assert!(!first.cache_hit);
 
-    let second = load_frame(
-        file,
-        cache,
-        FrameRequest {
-            frame: 1,
-            window_center: None,
-            window_width: None,
-            window_mode: dcmview::types::WindowMode::Default,
-        },
-    )
-    .await
-    .expect("second decoded JPEG request");
-
-    assert_eq!(second.content_type, "image/png");
-    assert_eq!(second.body, first.body);
-    assert!(second.cache_hit);
+    let other = load_frame(file, new_cache(), request(0))
+        .await
+        .expect("decoded JPEG frame 0");
+    assert_ne!(
+        first.body, other.body,
+        "each frame index must decode its own fragment"
+    );
 }
 
 #[tokio::test]
