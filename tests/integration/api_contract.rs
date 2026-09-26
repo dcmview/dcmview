@@ -206,6 +206,7 @@ async fn every_declared_endpoint_matches_its_runtime_contract() {
         if [
             endpoints::FILE_SEGMENTATION_OVERLAY,
             endpoints::FILE_DOSE_OVERLAY,
+            endpoints::FILE_PARAMETRIC_MAP_OVERLAY,
         ]
         .contains(endpoint)
         {

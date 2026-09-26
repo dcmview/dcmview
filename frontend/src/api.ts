@@ -5,6 +5,7 @@ import type {
 	FilesResponse,
 	FrameQuery,
 	FrameValueMapping,
+	ParametricMapOverlayQuery,
 	RawFrameMetadata,
 	ReferenceCatalogResponse,
 	SemanticContextResponse,
@@ -64,7 +65,7 @@ type PathParams = { index?: number; frame?: number };
 function endpointUrl(
 	endpoint: Endpoint,
 	params: PathParams = {},
-	query?: FrameQuery | TagQuery | DoseOverlayQuery,
+	query?: FrameQuery | TagQuery | DoseOverlayQuery | ParametricMapOverlayQuery,
 ): string {
 	const path = endpoint.path.replace(/\{(\w+)\}/g, (_, name: string) => {
 		const value = params[name as keyof PathParams];
@@ -149,6 +150,19 @@ export async function fetchDoseOverlayBlob(
 ): Promise<Blob> {
 	const endpoint = API_ENDPOINTS.fileDoseOverlay;
 	const url = endpointUrl(endpoint, { index: fileIndex, frame }, { dose: doseFileIndex });
+	const response = await send(endpoint, url, { signal });
+	return response.blob();
+}
+
+/** Colorwash PNG of Parametric Map `mapFileIndex` resampled onto one displayed frame. */
+export async function fetchParametricMapOverlayBlob(
+	fileIndex: number,
+	frame: number,
+	mapFileIndex: number,
+	signal?: AbortSignal,
+): Promise<Blob> {
+	const endpoint = API_ENDPOINTS.fileParametricMapOverlay;
+	const url = endpointUrl(endpoint, { index: fileIndex, frame }, { map: mapFileIndex });
 	const response = await send(endpoint, url, { signal });
 	return response.blob();
 }

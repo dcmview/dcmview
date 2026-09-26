@@ -18,7 +18,7 @@ use crate::pixels::open_header;
 use crate::plane_stack::PlaneStack;
 use crate::references::{self, ReferenceCandidate, ReferenceRelationship, ResolvedReferenceEdge};
 use crate::types::FileEntry;
-use crate::value_mapping::stored_value_type;
+use crate::value_mapping::{stored_value_type, FileValueMappings};
 use anyhow::{Context, Result};
 use dicom_core::Tag;
 use dicom_dictionary_std::{tags, uids, StandardDataDictionary};
@@ -187,8 +187,8 @@ pub fn semantic_context(
         ObjectKind::Segmentation => {
             SemanticContext::Segmentation(segmentation_context(source, &object, files, &resolved))
         }
-        ObjectKind::ParametricMap => SemanticContext::ParametricMap(parametric_map_context(
-            source, &object, files, &resolved,
+        ObjectKind::ParametricMap => SemanticContext::ParametricMap(Box::new(
+            parametric_map_context(source, &object, files, &resolved),
         )),
         ObjectKind::RadiationTherapy if source.sop_class_uid == uids::RT_DOSE_STORAGE => {
             SemanticContext::RtDose(Box::new(rt_dose_context(source, &object, files, &resolved)))
@@ -607,6 +607,7 @@ fn parametric_map_context(
     } else {
         "incompatible_mapping"
     };
+    let (overlay, overlay_source_frames) = parametric_map_overlay(source, object, files, resolved);
     ParametricMapContext {
         stored_value_type: stored_value_type(source).to_string(),
         displayed_value_kind: DISPLAYED_VALUE_KIND.to_string(),
@@ -617,6 +618,49 @@ fn parametric_map_context(
             .map(ResolvedReferenceEdge::summary)
             .collect(),
         warnings,
+        overlay,
+        overlay_source_frames,
+        // The legend spans the mapped values of every frame; the server
+        // fills it in from decoded frames once the overlay is eligible.
+        legend: None,
+    }
+}
+
+/// A Parametric Map overlays its source images when every frame carries a
+/// real-world mapping in one unit and the frames form a plane stack.
+fn parametric_map_overlay(
+    map: &FileEntry,
+    object: &InMemDicomObject<StandardDataDictionary>,
+    files: &[Arc<FileEntry>],
+    resolved: &[ResolvedReferenceEdge],
+) -> (OverlayEligibility, Vec<ResolvedSegmentSourceFrame>) {
+    if !map.has_pixels {
+        return (
+            ineligible("the parametric map has no pixel data"),
+            Vec::new(),
+        );
+    }
+    let mappings = FileValueMappings::from_object(map, object);
+    let Some(units) = mappings.real_world(0).first().map(|map| &map.unit_label) else {
+        return (
+            ineligible("the first frame has no usable Real World Value Mapping"),
+            Vec::new(),
+        );
+    };
+    if (1..map.frame_count).any(|frame| {
+        mappings
+            .real_world(frame)
+            .first()
+            .is_none_or(|mapping| mapping.unit_label != *units)
+    }) {
+        return (
+            ineligible("frames lack a Real World Value Mapping or map to different units"),
+            Vec::new(),
+        );
+    }
+    match PlaneStack::from_frames(map) {
+        Ok(stack) => value_overlay_sources(map, &stack, files, resolved),
+        Err(reason) => (ineligible(&reason), Vec::new()),
     }
 }
 

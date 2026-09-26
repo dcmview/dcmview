@@ -162,6 +162,14 @@ pub mod endpoints {
         PNG_MEDIA_TYPE,
         ResponseHeaders::Cache,
     );
+    /// PNG colorwash of a Parametric Map's mapped values resampled onto the
+    /// path's frame; query `ParametricMapOverlayQuery`.
+    pub const FILE_PARAMETRIC_MAP_OVERLAY: Endpoint = binary(
+        "fileParametricMapOverlay",
+        "/file/{index}/frame/{frame}/parametric-map-overlay",
+        PNG_MEDIA_TYPE,
+        ResponseHeaders::Cache,
+    );
     /// `FrameValueMapping`.
     pub const FILE_VALUE_MAPPING: Endpoint = json(
         "fileValueMapping",
@@ -222,6 +230,7 @@ pub mod endpoints {
         FILE_SEMANTIC_CONTEXT,
         FILE_SEGMENTATION_OVERLAY,
         FILE_DOSE_OVERLAY,
+        FILE_PARAMETRIC_MAP_OVERLAY,
         FILE_VALUE_MAPPING,
         FILE_WSI_CONTEXT,
         FILE_FRAME,
@@ -337,7 +346,7 @@ pub struct SemanticContextResponse {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SemanticContext {
     Segmentation(SegmentationContext),
-    ParametricMap(ParametricMapContext),
+    ParametricMap(Box<ParametricMapContext>),
     RtDose(Box<RtDoseContext>),
     NotApplicable { reason: String },
 }
@@ -417,6 +426,14 @@ pub struct ParametricMapContext {
     pub mapping_status: String,
     pub source_references: Vec<ReferenceSummary>,
     pub warnings: Vec<String>,
+    /// Eligibility of the mapped-value colorwash on local image frames that
+    /// share the map's Frame of Reference and lie within its frames.
+    pub overlay: OverlayEligibility,
+    /// The covered local image frames in file and frame order, at most 4096.
+    pub overlay_source_frames: Vec<ResolvedSegmentSourceFrame>,
+    /// Color bar over the mapped values of every frame; present when the
+    /// overlay is eligible.
+    pub legend: Option<OverlayLegend>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -821,6 +838,12 @@ pub struct FrameQuery {
 #[derive(Debug, Clone, Copy, Deserialize, TS)]
 pub struct DoseOverlayQuery {
     pub dose: usize,
+}
+
+/// Parametric-map-overlay query: the Parametric Map drawn on the path's frame.
+#[derive(Debug, Clone, Copy, Deserialize, TS)]
+pub struct ParametricMapOverlayQuery {
+    pub map: usize,
 }
 
 /// Selective tag query: `path` addresses one element, and `offset`/`limit`

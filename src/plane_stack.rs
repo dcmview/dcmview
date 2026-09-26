@@ -9,12 +9,16 @@
 
 use crate::api::contracts::DoseGridGeometry;
 use crate::geometry::{
-    dot, grids_overlap, in_plane_transform, plane_normal, subtract, valid_geometry,
-    GeometryTolerances, PatientFrameGeometry, PixelAffineTransform,
+    dot, frame_geometry, grids_overlap, in_plane_transform, magnitude, orientation_axes,
+    plane_normal, scale, subtract, valid_geometry, GeometryTolerances, PatientFrameGeometry,
+    PixelAffineTransform,
 };
+use crate::types::FileEntry;
 
 /// A stored plane closer than this weight to a displayed frame is used alone.
 const SINGLE_PLANE_WEIGHT: f64 = 1.0e-6;
+/// How far frame origins may drift within the plane and still share a grid.
+const IN_PLANE_ORIGIN_TOLERANCE_MM: f64 = 1.0e-2;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlaneStack {
@@ -95,6 +99,44 @@ impl PlaneStack {
                 })
                 .collect(),
         )
+    }
+
+    /// The frames of a multi-frame object whose per-frame geometry forms a
+    /// stack: one orientation, pixel spacing, and in-plane origin, with each
+    /// frame on its own plane.
+    pub fn from_frames(file: &FileEntry) -> Result<Self, String> {
+        let geometries = (0..file.frame_count)
+            .map(|frame| frame_geometry(file, frame))
+            .collect::<Option<Vec<_>>>()
+            .ok_or("a frame lacks patient position, orientation, or pixel spacing")?;
+        let base = *geometries.first().ok_or("the object has no frames")?;
+        let normal = plane_normal(base.orientation)
+            .ok_or("overlay plane orientation is degenerate".to_string())?;
+        let [base_row, base_column] = orientation_axes(base.orientation)
+            .ok_or("overlay plane orientation is degenerate".to_string())?;
+        let tolerances = GeometryTolerances::default();
+        let mut planes = Vec::with_capacity(geometries.len());
+        for (geometry, frame) in geometries.iter().zip(0_u32..) {
+            let same_axes = orientation_axes(geometry.orientation).is_some_and(|[row, column]| {
+                1.0 - dot(row, base_row) <= tolerances.orientation
+                    && 1.0 - dot(column, base_column) <= tolerances.orientation
+            });
+            let same_spacing = geometry
+                .pixel_spacing
+                .iter()
+                .zip(base.pixel_spacing)
+                .all(|(spacing, base)| (spacing - base).abs() <= base * 1.0e-4);
+            if !same_axes || !same_spacing {
+                return Err("frames differ in orientation or pixel spacing".to_string());
+            }
+            let delta = subtract(geometry.position, base.position);
+            let offset = dot(delta, normal);
+            if magnitude(subtract(delta, scale(normal, offset))) > IN_PLANE_ORIGIN_TOLERANCE_MM {
+                return Err("frames are shifted within their plane".to_string());
+            }
+            planes.push(StackPlane { offset, frame });
+        }
+        Self::new(base, planes)
     }
 
     fn new(base: PatientFrameGeometry, mut planes: Vec<StackPlane>) -> Result<Self, String> {
@@ -253,6 +295,35 @@ mod tests {
         let mut sagittal = slice(12.0);
         sagittal.orientation = [0.0, 1.0, 0.0, 0.0, 0.0, -1.0];
         assert_eq!(stack.sample(sagittal), Err(StackSampleError::NotParallel));
+    }
+
+    fn multiframe(positions: &[[f64; 3]]) -> FileEntry {
+        let mut file = crate::loader::test_entry(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/golden-uncompressed-u16-multiframe.dcm"),
+        );
+        file.frame_count = positions.len() as u32;
+        let metadata = &mut file.series_metadata;
+        metadata.frame_image_positions_patient = positions.iter().copied().map(Some).collect();
+        metadata.image_orientation_patient = Some([1.0, 0.0, 0.0, 0.0, 1.0, 0.0]);
+        metadata.native_pixel.pixel_spacing = Some([4.0, 4.0]);
+        file
+    }
+
+    #[test]
+    fn frame_stacks_order_planes_by_position_along_the_normal() {
+        let file = multiframe(&[[0.0, 0.0, 18.0], [0.0, 0.0, 10.0], [0.0, 0.0, 14.0]]);
+        let stack = PlaneStack::from_frames(&file).expect("frame stack");
+        let sample = stack.sample(slice(12.0)).expect("covered");
+        assert_eq!(sample.planes, vec![(1, 0.5), (2, 0.5)]);
+    }
+
+    #[test]
+    fn frame_stacks_reject_shared_planes_and_in_plane_shifts() {
+        let shared = multiframe(&[[0.0, 0.0, 10.0], [0.0, 0.0, 10.0]]);
+        assert!(PlaneStack::from_frames(&shared).is_err());
+        let shifted = multiframe(&[[0.0, 0.0, 10.0], [1.0, 0.0, 14.0]]);
+        assert!(PlaneStack::from_frames(&shifted).is_err());
     }
 
     #[test]

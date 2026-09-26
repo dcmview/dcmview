@@ -36,6 +36,10 @@ pub(crate) fn router(state: AppState) -> Router {
             get(overlays::dose_overlay),
         )
         .route(
+            endpoints::FILE_PARAMETRIC_MAP_OVERLAY.path,
+            get(overlays::parametric_map_overlay),
+        )
+        .route(
             endpoints::FILE_VALUE_MAPPING.path,
             get(handlers::value_mapping),
         )

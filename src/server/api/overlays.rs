@@ -1,5 +1,6 @@
-//! Value overlays: an RT Dose grid colorized in real-world units and
-//! resampled onto a displayed image frame, and the legend that describes it.
+//! Value overlays: an RT Dose grid or Parametric Map colorized in
+//! real-world units and resampled onto a displayed image frame, and the
+//! legend that describes the colors.
 //!
 //! Semantic context decides eligibility from metadata; this module decodes
 //! the overlay's frames through the raw-frame cache, applies each frame's
@@ -9,8 +10,9 @@ use super::error::{self, ApiError};
 use super::handlers::{semantic_context_for, value_mappings_for};
 use super::state::AppState;
 use crate::api::contracts::{
-    DoseOverlayQuery, OverlayLegend, SemanticContext, SemanticContextResponse, CACHE_HEADER,
-    CACHE_HIT, CACHE_MISS, PNG_MEDIA_TYPE,
+    DoseOverlayQuery, OverlayEligibility, OverlayLegend, ParametricMapOverlayQuery,
+    ResolvedSegmentSourceFrame, SemanticContext, SemanticContextResponse, CACHE_HEADER, CACHE_HIT,
+    CACHE_MISS, PNG_MEDIA_TYPE,
 };
 use crate::geometry::frame_geometry;
 use crate::pixels::{
@@ -47,6 +49,29 @@ pub(super) async fn dose_overlay(
         return Err(ApiError::bad_request("dose must select an RT Dose object"));
     }
     value_overlay(&state, dose, target, frame).await
+}
+
+pub(super) async fn parametric_map_overlay(
+    State(state): State<AppState>,
+    path: Result<Path<(usize, u32)>, PathRejection>,
+    query: Result<Query<ParametricMapOverlayQuery>, QueryRejection>,
+) -> Result<Response, ApiError> {
+    let Path((index, frame)) = path.map_err(error::path_rejection)?;
+    let target = state
+        .registry()
+        .get(index)
+        .ok_or_else(|| ApiError::not_found("file index out of range"))?;
+    let Query(query) = query.map_err(error::query_rejection)?;
+    let map = state
+        .registry()
+        .get(query.map)
+        .ok_or_else(|| ApiError::not_found("parametric map file index out of range"))?;
+    if map.sop_class_uid != uids::PARAMETRIC_MAP_STORAGE {
+        return Err(ApiError::bad_request(
+            "map must select a Parametric Map object",
+        ));
+    }
+    value_overlay(&state, map, target, frame).await
 }
 
 /// Colorize `overlay`'s planes onto one displayed frame of `target`.
@@ -128,82 +153,123 @@ fn overlay_plan(
     overlay: &FileEntry,
     context: &SemanticContextResponse,
 ) -> Result<(PlaneStack, OverlayLegend), ApiError> {
-    let SemanticContext::RtDose(dose) = &context.context else {
-        return Err(ApiError::bad_request(
-            "value overlays are defined for RT Dose objects",
-        ));
+    let (eligibility, legend, stack) = match &context.context {
+        SemanticContext::RtDose(dose) => (
+            &dose.overlay,
+            &dose.legend,
+            PlaneStack::from_dose_grid(
+                overlay.rows,
+                overlay.columns,
+                overlay.frame_count,
+                &dose.geometry,
+            ),
+        ),
+        SemanticContext::ParametricMap(map) => {
+            (&map.overlay, &map.legend, PlaneStack::from_frames(overlay))
+        }
+        _ => {
+            return Err(ApiError::bad_request(
+                "value overlays are defined for RT Dose and Parametric Map objects",
+            ))
+        }
     };
-    if !dose.overlay.eligible {
+    if !eligibility.eligible {
         return Err(ApiError::semantic_mapping_unavailable(
-            dose.overlay.reason.clone(),
+            eligibility.reason.clone(),
         ));
     }
-    let legend = dose
-        .legend
-        .clone()
-        .ok_or_else(|| ApiError::semantic_mapping_unavailable("the dose legend is unavailable"))?;
-    let stack = PlaneStack::from_dose_grid(
-        overlay.rows,
-        overlay.columns,
-        overlay.frame_count,
-        &dose.geometry,
-    )
-    .map_err(ApiError::semantic_mapping_unavailable)?;
+    let legend = legend.clone().ok_or_else(|| {
+        ApiError::semantic_mapping_unavailable("the overlay legend is unavailable")
+    })?;
+    let stack = stack.map_err(ApiError::semantic_mapping_unavailable)?;
     Ok((stack, legend))
 }
 
-/// Complete an eligible RT Dose context with its legend, which needs the
-/// maximum dose of the whole grid so every slice shares one color scale.
-/// A grid that cannot be decoded or holds no positive dose makes the
-/// overlay ineligible instead.
+/// How an overlay kind turns the value range of its frames into a legend.
+#[derive(Clone, Copy)]
+enum LegendScale {
+    /// RT Dose: `0..max` of the whole grid, zero dose transparent.
+    PositiveDose,
+    /// Parametric Map: `min..max` of every frame's mapped values.
+    MappedRange,
+}
+
+/// Complete an eligible RT Dose or Parametric Map context with its legend,
+/// which spans the values of every frame so all displayed frames share one
+/// color scale. Frames that cannot be decoded, or hold no usable value,
+/// make the overlay ineligible instead.
 pub(super) async fn add_overlay_legend(
     state: &AppState,
     file: &FileEntry,
     context: &mut SemanticContextResponse,
 ) {
-    let SemanticContext::RtDose(dose) = &mut context.context else {
-        return;
+    let (eligibility, source_frames, legend, scale): (
+        &mut OverlayEligibility,
+        &mut Vec<ResolvedSegmentSourceFrame>,
+        &mut Option<OverlayLegend>,
+        LegendScale,
+    ) = match &mut context.context {
+        SemanticContext::RtDose(dose) => (
+            &mut dose.overlay,
+            &mut dose.overlay_source_frames,
+            &mut dose.legend,
+            LegendScale::PositiveDose,
+        ),
+        SemanticContext::ParametricMap(map) => (
+            &mut map.overlay,
+            &mut map.overlay_source_frames,
+            &mut map.legend,
+            LegendScale::MappedRange,
+        ),
+        _ => return,
     };
-    if !dose.overlay.eligible {
+    if !eligibility.eligible {
         return;
     }
-    match dose_legend(state, file).await {
-        Ok(legend) => dose.legend = Some(legend),
+    match value_legend(state, file, scale).await {
+        Ok(value) => *legend = Some(value),
         Err(reason) => {
-            dose.overlay = crate::semantic::ineligible(&reason);
-            dose.overlay_source_frames.clear();
+            *eligibility = crate::semantic::ineligible(&reason);
+            source_frames.clear();
         }
     }
 }
 
-async fn dose_legend(state: &AppState, dose: &FileEntry) -> Result<OverlayLegend, String> {
-    let mappings = value_mappings_for(state, dose.clone())
+async fn value_legend(
+    state: &AppState,
+    file: &FileEntry,
+    scale: LegendScale,
+) -> Result<OverlayLegend, String> {
+    let mappings = value_mappings_for(state, file.clone())
         .await
-        .map_err(|error| format!("dose metadata could not be read: {error:#}"))?;
+        .map_err(|error| format!("overlay metadata could not be read: {error:#}"))?;
     let map = mappings
         .real_world(0)
         .first()
-        .ok_or("Dose Grid Scaling is missing or malformed")?
+        .ok_or("the overlay has no real-world value mapping")?
         .clone();
-    let mut max = f64::NEG_INFINITY;
-    for frame in 0..dose.frame_count {
-        let values = mapped_frame_values(state, dose, &mappings, frame)
+    let (mut min, mut max) = (f64::INFINITY, f64::NEG_INFINITY);
+    for frame in 0..file.frame_count {
+        let values = mapped_frame_values(state, file, &mappings, frame)
             .await
-            .map_err(|error| format!("dose grid could not be decoded: {error}"))?;
-        max = values
-            .into_iter()
-            .filter(|value| value.is_finite())
-            .fold(max, f64::max);
+            .map_err(|error| format!("overlay frames could not be decoded: {error}"))?;
+        for value in values.into_iter().filter(|value| value.is_finite()) {
+            min = min.min(value);
+            max = max.max(value);
+        }
     }
-    if max.is_nan() || max <= 0.0 {
-        return Err("the dose grid holds no positive dose".to_string());
-    }
+    let (min_value, transparent_at_or_below) = match scale {
+        LegendScale::PositiveDose if max > 0.0 => (0.0, Some(0.0)),
+        LegendScale::PositiveDose => return Err("the dose grid holds no positive dose".into()),
+        LegendScale::MappedRange if min <= max => (min, None),
+        LegendScale::MappedRange => return Err("no sample has a mapped value".into()),
+    };
     Ok(OverlayLegend {
         unit_label: map.unit_label,
         units: map.units,
-        min_value: 0.0,
+        min_value,
         max_value: max,
-        transparent_at_or_below: Some(0.0),
+        transparent_at_or_below,
         colormap: COLORMAP_NAME.to_string(),
         color_stops: COLORMAP_STOPS.to_vec(),
     })

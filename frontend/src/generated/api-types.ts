@@ -10,6 +10,7 @@ export const API_ENDPOINTS = {
 	fileSemanticContext: { method: "GET", path: "/api/file/{index}/semantic-context" },
 	fileSegmentationOverlay: { method: "GET", path: "/api/file/{index}/frame/{frame}/segmentation-overlay" },
 	fileDoseOverlay: { method: "GET", path: "/api/file/{index}/frame/{frame}/dose-overlay" },
+	fileParametricMapOverlay: { method: "GET", path: "/api/file/{index}/frame/{frame}/parametric-map-overlay" },
 	fileValueMapping: { method: "GET", path: "/api/file/{index}/frame/{frame}/value-mapping" },
 	fileWsiContext: { method: "GET", path: "/api/file/{index}/frame/{frame}/wsi-context" },
 	fileFrame: { method: "GET", path: "/api/file/{index}/frame/{frame}" },
@@ -134,7 +135,26 @@ export type ParametricMapContext = { stored_value_type: string,
  * What the display and raw frames carry: `stored` values (after any
  * Modality rescale). Mapped units are converted client-side.
  */
-displayed_value_kind: string, mappings: Array<RealWorldValueMappingSummary>, mapping_status: string, source_references: Array<ReferenceSummary>, warnings: Array<string>, };
+displayed_value_kind: string, mappings: Array<RealWorldValueMappingSummary>, mapping_status: string, source_references: Array<ReferenceSummary>, warnings: Array<string>, 
+/**
+ * Eligibility of the mapped-value colorwash on local image frames that
+ * share the map's Frame of Reference and lie within its frames.
+ */
+overlay: OverlayEligibility, 
+/**
+ * The covered local image frames in file and frame order, at most 4096.
+ */
+overlay_source_frames: Array<ResolvedSegmentSourceFrame>, 
+/**
+ * Color bar over the mapped values of every frame; present when the
+ * overlay is eligible.
+ */
+legend: OverlayLegend | null, };
+
+/**
+ * Parametric-map-overlay query: the Parametric Map drawn on the path's frame.
+ */
+export type ParametricMapOverlayQuery = { map: number, };
 
 export type RawFrameMetadata = { rows: number, columns: number, bitsAllocated: number, pixelRepresentation: number, samplesPerPixel: number, photometricInterpretation: string, rescaleSlope: number, rescaleIntercept: number, defaultWc: number | null, defaultWw: number | null, 
 /**
