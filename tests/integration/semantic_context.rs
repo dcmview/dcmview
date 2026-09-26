@@ -352,7 +352,8 @@ async fn segmentation_overlay_returns_source_sized_transparent_png() {
     let response = server.get("/api/file/0/frame/0/segmentation-overlay").await;
     response.assert_status_ok();
     response.assert_header(header::CONTENT_TYPE, "image/png");
-    assert!(response.maybe_header("X-Cache").is_some());
+    // X-Cache reports the decoded SEG frame, which the repeat reuses.
+    response.assert_header("X-Cache", "MISS");
     let overlay = image::load_from_memory(response.as_bytes().as_ref())
         .expect("decode overlay PNG")
         .to_rgba8();
@@ -360,6 +361,9 @@ async fn segmentation_overlay_returns_source_sized_transparent_png() {
     assert_eq!(overlay.get_pixel(0, 0).0[3], 0);
     assert_eq!(overlay.get_pixel(1, 0).0[3], 178);
     assert_eq!(overlay.get_pixel(0, 1).0[3], 178);
+    let repeat = server.get("/api/file/0/frame/0/segmentation-overlay").await;
+    repeat.assert_header("X-Cache", "HIT");
+    assert_eq!(repeat.as_bytes(), response.as_bytes());
 }
 
 #[tokio::test]
@@ -567,10 +571,7 @@ async fn rt_dose_context_reports_scaling_geometry_and_refuses_overlay_in_another
     );
     // The only image lies in another Frame of Reference.
     assert_eq!(context["overlay"]["eligible"], false);
-    assert!(context["overlay"]["reason"]
-        .as_str()
-        .expect("overlay reason")
-        .contains("Frame of Reference"));
+    assert!(context["overlay"]["source_file_index"].is_null());
     assert_eq!(context["overlay_source_frames"], serde_json::json!([]));
     assert!(context["legend"].is_null());
     assert!(context["clinical_use_warning"]
