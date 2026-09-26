@@ -27,7 +27,7 @@ struct BridgeRegistryEntry {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RegistryMatch {
+enum RegistryMatch {
     AllowAny,
     RequireWorkspace,
 }
@@ -107,23 +107,19 @@ impl RegistryEnvironment {
     }
 }
 
-pub(crate) fn discover_vscode_bridge_endpoints(
-    cwd: &Path,
-    registry_match: RegistryMatch,
-) -> Vec<BridgeEndpoint> {
+/// Endpoints to route a launch through, best first; empty means run locally.
+///
+/// One rule for every entry point: a process with the bridge environment (a
+/// VS Code terminal) may use any live bridge, preferring its own; any other
+/// process routes only when `cwd` is inside a registered workspace folder.
+pub(crate) fn discover_vscode_bridge_endpoints(cwd: &Path) -> Vec<BridgeEndpoint> {
     let environment = BridgeEnvironment::capture();
-    discover_vscode_bridge_endpoints_with_environment(
-        &environment,
-        cwd,
-        registry_match,
-        now_unix_ms(),
-    )
+    discover_vscode_bridge_endpoints_with_environment(&environment, cwd, now_unix_ms())
 }
 
 fn discover_vscode_bridge_endpoints_with_environment(
     environment: &BridgeEnvironment,
     cwd: &Path,
-    registry_match: RegistryMatch,
     now_ms: u64,
 ) -> Vec<BridgeEndpoint> {
     if environment.bypass {
@@ -140,6 +136,11 @@ fn discover_vscode_bridge_endpoints_with_environment(
             &format!("accepted env endpoint {}", endpoint.url),
         );
     }
+    let registry_match = if environment.direct_endpoint.is_some() {
+        RegistryMatch::AllowAny
+    } else {
+        RegistryMatch::RequireWorkspace
+    };
     let registry_endpoints = discover_vscode_bridge_registry_endpoints_in_environment(
         &environment.registry,
         cwd,
@@ -166,20 +167,6 @@ fn select_bridge_endpoints(
         }
     }
     endpoints
-}
-
-pub(super) fn discover_vscode_bridge_registry_endpoints(
-    cwd: &Path,
-    registry_match: RegistryMatch,
-    now_ms: u64,
-) -> Vec<BridgeEndpoint> {
-    let environment = RegistryEnvironment::capture();
-    discover_vscode_bridge_registry_endpoints_in_environment(
-        &environment,
-        cwd,
-        registry_match,
-        now_ms,
-    )
 }
 
 fn discover_vscode_bridge_registry_endpoints_in_environment(
@@ -620,36 +607,50 @@ mod tests {
             .to_string(),
         )
         .expect("matching registry");
-        let environment = bridge_environment(temp.path(), None, false);
-
-        let endpoints = discover_vscode_bridge_endpoints_with_environment(
-            &environment,
-            &cwd,
-            RegistryMatch::AllowAny,
-            now_ms,
-        );
+        let matching = BridgeEndpoint {
+            url: "http://127.0.0.1:2222".to_string(),
+            token: "match-token".to_string(),
+        };
+        let other = BridgeEndpoint {
+            url: "http://127.0.0.1:1111".to_string(),
+            token: "old-token".to_string(),
+        };
+        let direct = BridgeEndpoint {
+            url: "http://127.0.0.1:3333".to_string(),
+            token: "env-token".to_string(),
+        };
+        let outside_vscode = bridge_environment(temp.path(), None, false);
+        let vscode_terminal = bridge_environment(temp.path(), Some(direct.clone()), false);
 
         assert_eq!(
-            endpoints,
-            vec![
-                BridgeEndpoint {
-                    url: "http://127.0.0.1:2222".to_string(),
-                    token: "match-token".to_string(),
-                },
-                BridgeEndpoint {
-                    url: "http://127.0.0.1:1111".to_string(),
-                    token: "old-token".to_string(),
-                },
-            ]
+            discover_vscode_bridge_registry_endpoints_in_environment(
+                &outside_vscode.registry,
+                &cwd,
+                RegistryMatch::AllowAny,
+                now_ms,
+            ),
+            vec![matching.clone(), other.clone()],
+            "workspace match ranks first, then newest"
         );
-
-        let direct_cli_endpoints = discover_vscode_bridge_endpoints_with_environment(
-            &environment,
-            temp.path(),
-            RegistryMatch::RequireWorkspace,
-            now_ms,
+        assert_eq!(
+            discover_vscode_bridge_endpoints_with_environment(&outside_vscode, &cwd, now_ms),
+            vec![matching.clone()],
+            "without the bridge environment only a containing workspace routes"
         );
-        assert!(direct_cli_endpoints.is_empty());
+        assert!(
+            discover_vscode_bridge_endpoints_with_environment(&outside_vscode, temp.path(), now_ms)
+                .is_empty(),
+            "outside every workspace and outside VS Code, nothing routes"
+        );
+        assert_eq!(
+            discover_vscode_bridge_endpoints_with_environment(
+                &vscode_terminal,
+                temp.path(),
+                now_ms
+            ),
+            vec![direct, other, matching],
+            "a VS Code terminal may use any live bridge after its own"
+        );
     }
 
     #[test]
@@ -787,12 +788,7 @@ mod tests {
         );
 
         assert_eq!(
-            discover_vscode_bridge_endpoints_with_environment(
-                &environment,
-                temp.path(),
-                RegistryMatch::RequireWorkspace,
-                now_ms,
-            ),
+            discover_vscode_bridge_endpoints_with_environment(&environment, temp.path(), now_ms),
             vec![
                 BridgeEndpoint {
                     url: "http://127.0.0.1:2222".to_string(),
@@ -809,8 +805,7 @@ mod tests {
         assert!(discover_vscode_bridge_endpoints_with_environment(
             &bypass_environment,
             temp.path(),
-            RegistryMatch::AllowAny,
-            now_ms,
+            now_ms
         )
         .is_empty());
     }

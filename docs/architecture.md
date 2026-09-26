@@ -15,7 +15,7 @@ module:
 
 | Boundary | Owner | Stable contract or seam |
 |---|---|---|
-| Process dispatch | `src/application.rs` | `ApplicationServices` selects hidden bridge, workspace bridge, or local viewer without starting unrelated subsystems. |
+| Process dispatch | `src/application.rs` | Routes a launch into VS Code through `bridge::launch_in_vscode` when the routing rule selects a bridge, otherwise runs the local viewer in-process. |
 | Local startup | `src/startup/` | `LocalViewerOptions`, `LocalViewerOutcome`, `DiscoveryHandle`, and `DiscoverySpawner`. |
 | HTTP wire model | `src/api/contracts.rs` | Typed endpoint registry, wire structs, query names, response header names, and error envelope. |
 | HTTP runtime | `src/server/` | Listener/runtime, route registration, handlers, state, registry, activity tracking, tags, and embedded assets. |
@@ -61,8 +61,15 @@ The binary-private orchestration modules depend on the reusable library
 modules, not the reverse:
 
 1. `main.rs` owns the Clap shape and process exit only.
-2. `application.rs` owns dispatch order and tracing initialization. It tries the
-   hidden bridge mode, then workspace bridge routing, then local startup.
+2. `application.rs` owns dispatch and tracing initialization. It unwraps the
+   hidden `--vscode-bridge-client <program> <args>...` form used by the terminal
+   shims and the Python wrapper, then tries the VS Code bridge, then falls back
+   to local startup in the same process. Bridge routing follows one rule for
+   every entry point: a process with the bridge environment (a VS Code
+   terminal) may use any live bridge; any other process routes only when its
+   working directory is inside a registered workspace folder. A launch that
+   reached a bridge without confirmation exits instead of starting a second,
+   local viewer. Only refused connections mark a registry entry stale.
 3. `startup/mod.rs` validates local options and the annotation CSV header, constructs
    `FileRegistry`, `AnnotationStore`, `AppState`, and `ServerConfig`, binds the
    listener, starts discovery, serves, and joins discovery before returning.
@@ -352,8 +359,6 @@ installation and VS Code Electron integration can also use network/cache state;
 
 ### Test Seams
 
-- `ApplicationServices` records dispatch calls without launching bridge or
-  server processes.
 - `DiscoverySpawner` drives completion, cancellation, annotation failure,
   scan failure, and no-files cases without filesystem timing.
 - `BoundServer::bind` is separate from `serve`, so bind ordering and occupied

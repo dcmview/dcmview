@@ -1,301 +1,215 @@
 use super::protocol::{BridgeLaunchRequest, BridgeLaunchResponse, BridgeWaitResponse};
 use super::registry::{
-    bridge_debug, discover_vscode_bridge_endpoints, discover_vscode_bridge_registry_endpoints,
-    remove_vscode_bridge_registry_endpoint, BridgeEndpoint, RegistryMatch,
-    VSCODE_BRIDGE_BYPASS_ENV,
+    bridge_debug, discover_vscode_bridge_endpoints, remove_vscode_bridge_registry_endpoint,
+    BridgeEndpoint,
 };
 use anyhow::{Context, Result};
-use dcmview::server::now_unix_ms;
 use std::env;
 use std::future::Future;
-use std::io;
-use std::path::PathBuf;
-use std::pin::Pin;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
-use tokio::process::Command;
 
+/// Budget for connecting to a bridge and for the best-effort stop request.
 const BRIDGE_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Budget for a `/launch` response. The extension answers only after the
+/// viewer has started, bounded by its `startupTimeoutSeconds` setting (20 s by
+/// default), so this must comfortably exceed that.
+const BRIDGE_LAUNCH_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Whether a launch was handed to VS Code.
+pub(crate) enum BridgeOutcome {
+    /// VS Code owns the launch; exit with this code.
+    Routed(i32),
+    /// No bridge took the launch; run the local viewer.
+    NotRouted,
+}
+
+/// A failed launch, classified by whether VS Code may have opened a viewer.
 #[derive(Debug, thiserror::Error)]
-enum BridgeLaunchError {
-    #[error("failed to contact VS Code bridge: {0}")]
-    Connect(String),
-    #[error("VS Code bridge returned {status}: {message}")]
-    Http {
-        status: reqwest::StatusCode,
-        message: String,
+enum LaunchError {
+    /// Nothing listens at the endpoint, so its registry entry is stale.
+    #[error("VS Code bridge is not running: {0}")]
+    Unreachable(String),
+    /// The bridge never received or explicitly refused the launch.
+    #[error("{0}")]
+    NotLaunched(String),
+    /// The bridge received the launch but did not confirm it. VS Code may
+    /// still open a viewer, so neither another endpoint nor the local viewer
+    /// may be tried.
+    #[error("VS Code bridge did not confirm the launch: {0}")]
+    Uncertain(String),
+}
+
+enum LaunchAttempt {
+    Launched {
+        endpoint: BridgeEndpoint,
+        response: BridgeLaunchResponse,
     },
-    #[error("failed to parse VS Code bridge launch response: {0}")]
-    Decode(String),
-    #[error("VS Code bridge request failed: {0}")]
-    Request(String),
+    Failed(LaunchError),
+    Uncertain(LaunchError),
 }
 
-#[derive(Debug, Clone)]
-struct ClientContext {
-    cwd: PathBuf,
-    current_executable: std::result::Result<PathBuf, String>,
-    registry_endpoints: Vec<BridgeEndpoint>,
-    request_timeout: Duration,
-}
-
-impl ClientContext {
-    fn capture(cwd: PathBuf, registry_endpoints: Vec<BridgeEndpoint>) -> Self {
-        Self {
-            cwd,
-            current_executable: env::current_exe().map_err(|error| error.to_string()),
-            registry_endpoints,
-            request_timeout: BRIDGE_REQUEST_TIMEOUT,
-        }
-    }
-
-    fn launch_request(&self, program: &str, args: &[String]) -> BridgeLaunchRequest {
-        BridgeLaunchRequest {
-            program: program.to_string(),
-            args: args.to_vec(),
-            cwd: self.cwd.display().to_string(),
-            wait: false,
-            binary_path: self
-                .current_executable
-                .as_ref()
-                .ok()
-                .map(|path| path.display().to_string()),
-        }
-    }
-
-    fn fallback_request(&self, args: &[String]) -> Result<ProcessRequest> {
-        let executable = self.current_executable.as_ref().map_err(|error| {
-            anyhow::Error::msg(error.clone()).context("failed to resolve current executable")
-        })?;
-        Ok(ProcessRequest::local_fallback(executable.clone(), args))
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ProcessRequest {
-    executable: PathBuf,
-    args: Vec<String>,
-    environment: Vec<(String, String)>,
-}
-
-impl ProcessRequest {
-    fn local_fallback(executable: PathBuf, args: &[String]) -> Self {
-        Self {
-            executable,
-            args: args.to_vec(),
-            environment: vec![(VSCODE_BRIDGE_BYPASS_ENV.to_string(), "1".to_string())],
-        }
-    }
-}
-
-type ProcessFuture<'a> = Pin<Box<dyn Future<Output = io::Result<Option<i32>>> + Send + 'a>>;
-
-trait ProcessRunner: Send + Sync {
-    fn run<'a>(&'a self, request: &'a ProcessRequest) -> ProcessFuture<'a>;
-}
-
-struct TokioProcessRunner;
-
-impl ProcessRunner for TokioProcessRunner {
-    fn run<'a>(&'a self, request: &'a ProcessRequest) -> ProcessFuture<'a> {
-        Box::pin(async move {
-            let mut command = Command::new(&request.executable);
-            command.args(&request.args);
-            for (key, value) in &request.environment {
-                command.env(key, value);
-            }
-            let status = command.status().await?;
-            Ok(status.code())
-        })
-    }
-}
-
-trait RegistryEndpointRemover: Send + Sync {
-    fn remove(&self, endpoint: &BridgeEndpoint);
-}
-
-struct ProductionRegistryEndpointRemover;
-
-impl RegistryEndpointRemover for ProductionRegistryEndpointRemover {
-    fn remove(&self, endpoint: &BridgeEndpoint) {
-        remove_vscode_bridge_registry_endpoint(endpoint);
-    }
-}
-
-pub(crate) async fn run_vscode_bridge_client(values: Vec<String>) -> Result<i32> {
-    let Some((program, args)) = values.split_first() else {
-        return Ok(1);
-    };
-
-    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let bridge_endpoints = discover_vscode_bridge_endpoints(&cwd, RegistryMatch::AllowAny);
-    let registry_endpoints = if bridge_endpoints.is_empty() {
-        Vec::new()
-    } else {
-        discover_vscode_bridge_registry_endpoints(&cwd, RegistryMatch::AllowAny, now_unix_ms())
-    };
-    let context = ClientContext::capture(cwd, registry_endpoints);
-    let process_runner = TokioProcessRunner;
-    let registry_remover = ProductionRegistryEndpointRemover;
-    let http_client = if bridge_endpoints.is_empty() {
-        None
-    } else {
-        Some(build_http_client()?)
-    };
-
-    run_vscode_bridge_client_with_dependencies(
-        program,
-        args,
-        &bridge_endpoints,
-        &context,
-        http_client.as_ref(),
-        &process_runner,
-        &registry_remover,
-    )
-    .await
-}
-
-pub(crate) async fn run_vscode_bridge_launch(
+/// Route a launch into VS Code when the routing rule selects a bridge.
+///
+/// `program` only names the VS Code tab; `args` are forwarded unchanged.
+pub(crate) async fn launch_in_vscode(
     program: &str,
     args: &[String],
-    bridge_endpoints: &[BridgeEndpoint],
-) -> Result<i32> {
+    startup_json: bool,
+) -> BridgeOutcome {
     let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let registry_endpoints =
-        discover_vscode_bridge_registry_endpoints(&cwd, RegistryMatch::AllowAny, now_unix_ms());
-    let context = ClientContext::capture(cwd, registry_endpoints);
-    let client = build_http_client()?;
-    let registry_remover = ProductionRegistryEndpointRemover;
-
-    run_vscode_bridge_launch_with_dependencies(
-        program,
-        args,
-        bridge_endpoints,
-        &context,
-        &client,
-        &registry_remover,
-    )
-    .await
-}
-
-fn build_http_client() -> Result<reqwest::Client> {
-    reqwest::Client::builder()
+    let endpoints = discover_vscode_bridge_endpoints(&cwd);
+    if endpoints.is_empty() {
+        return BridgeOutcome::NotRouted;
+    }
+    let client = match reqwest::Client::builder()
+        .connect_timeout(BRIDGE_REQUEST_TIMEOUT)
         .build()
-        .context("failed to create VS Code bridge HTTP client")
-}
-
-async fn run_vscode_bridge_client_with_dependencies(
-    program: &str,
-    args: &[String],
-    bridge_endpoints: &[BridgeEndpoint],
-    context: &ClientContext,
-    client: Option<&reqwest::Client>,
-    process_runner: &dyn ProcessRunner,
-    registry_remover: &dyn RegistryEndpointRemover,
-) -> Result<i32> {
-    if bridge_endpoints.is_empty() {
-        return fallback_to_local_viewer(context, args, process_runner).await;
-    }
-    let client =
-        client.ok_or_else(|| anyhow::anyhow!("VS Code bridge HTTP client is unavailable"))?;
-
-    match run_vscode_bridge_launch_with_dependencies(
-        program,
-        args,
-        bridge_endpoints,
-        context,
-        client,
-        registry_remover,
-    )
-    .await
     {
-        Ok(exit_code) => Ok(exit_code),
+        Ok(client) => client,
         Err(error) => {
             eprintln!(
                 "dcmview: VS Code bridge unavailable ({error}); falling back to local viewer"
             );
-            fallback_to_local_viewer(context, args, process_runner).await
+            return BridgeOutcome::NotRouted;
+        }
+    };
+
+    let request = launch_request(program, args, &cwd, current_executable());
+    let (attempt, unreachable) =
+        launch_on_first_endpoint(&client, &endpoints, &request, BRIDGE_LAUNCH_TIMEOUT).await;
+    for endpoint in &unreachable {
+        remove_vscode_bridge_registry_endpoint(endpoint);
+    }
+
+    match attempt {
+        LaunchAttempt::Launched { endpoint, response } => {
+            print_launched(&response.url, startup_json);
+            BridgeOutcome::Routed(
+                wait_for_launched_vscode_session(&client, &endpoint, &response).await,
+            )
+        }
+        LaunchAttempt::Failed(error) => {
+            eprintln!(
+                "dcmview: VS Code bridge unavailable ({error}); falling back to local viewer"
+            );
+            BridgeOutcome::NotRouted
+        }
+        LaunchAttempt::Uncertain(error) => {
+            eprintln!(
+                "dcmview: {error}. VS Code may still open the viewer, so no local viewer was started."
+            );
+            BridgeOutcome::Routed(1)
         }
     }
 }
 
-async fn run_vscode_bridge_launch_with_dependencies(
+fn current_executable() -> Option<String> {
+    env::current_exe()
+        .ok()
+        .map(|path| path.display().to_string())
+}
+
+fn launch_request(
     program: &str,
     args: &[String],
-    bridge_endpoints: &[BridgeEndpoint],
-    context: &ClientContext,
+    cwd: &Path,
+    binary_path: Option<String>,
+) -> BridgeLaunchRequest {
+    BridgeLaunchRequest {
+        program: program.to_string(),
+        args: args.to_vec(),
+        cwd: cwd.display().to_string(),
+        wait: false,
+        binary_path,
+    }
+}
+
+fn print_launched(url: &str, startup_json: bool) {
+    if startup_json {
+        println!(
+            "{}",
+            serde_json::json!({ "type": "vscode_session_started", "url": url })
+        );
+    }
+    println!("dcmview: opened in VS Code at {url}");
+}
+
+/// Try endpoints in order until one launches or the outcome is uncertain.
+///
+/// Also returns the endpoints that refused the connection, whose registry
+/// entries are stale.
+async fn launch_on_first_endpoint(
     client: &reqwest::Client,
-    registry_remover: &dyn RegistryEndpointRemover,
-) -> Result<i32> {
-    let launch = context.launch_request(program, args);
+    endpoints: &[BridgeEndpoint],
+    request: &BridgeLaunchRequest,
+    launch_timeout: Duration,
+) -> (LaunchAttempt, Vec<BridgeEndpoint>) {
+    let mut unreachable = Vec::new();
     let mut last_error = None;
-    for endpoint in bridge_endpoints {
-        match launch_vscode_session(client, endpoint, &launch, context.request_timeout).await {
-            Ok(launch_response) => {
-                return match wait_for_launched_vscode_session(
-                    client,
-                    endpoint,
-                    launch_response,
-                    context.request_timeout,
-                )
-                .await
-                {
-                    Ok(exit_code) => Ok(exit_code),
-                    Err(error) => {
-                        eprintln!(
-                            "dcmview: VS Code bridge session was captured but wait failed: {error}"
-                        );
-                        Ok(1)
-                    }
+    for endpoint in endpoints {
+        match launch_vscode_session(client, endpoint, request, launch_timeout).await {
+            Ok(response) => {
+                let attempt = LaunchAttempt::Launched {
+                    endpoint: endpoint.clone(),
+                    response,
                 };
+                return (attempt, unreachable);
+            }
+            Err(error @ LaunchError::Uncertain(_)) => {
+                return (LaunchAttempt::Uncertain(error), unreachable);
             }
             Err(error) => {
-                if should_remove_registry_entry_after_launch_error(
-                    &error,
-                    endpoint,
-                    &context.registry_endpoints,
-                ) {
-                    registry_remover.remove(endpoint);
-                }
                 bridge_debug(&format!("endpoint {} failed: {error}", endpoint.url));
-                last_error = Some(anyhow::Error::from(error));
+                if matches!(error, LaunchError::Unreachable(_)) {
+                    unreachable.push(endpoint.clone());
+                }
+                last_error = Some(error);
             }
         }
     }
-
-    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("no VS Code bridge endpoints available")))
+    let error = last_error
+        .unwrap_or_else(|| LaunchError::NotLaunched("no VS Code bridge endpoints".to_string()));
+    (LaunchAttempt::Failed(error), unreachable)
 }
 
 async fn launch_vscode_session(
     client: &reqwest::Client,
     endpoint: &BridgeEndpoint,
-    launch: &BridgeLaunchRequest,
-    request_timeout: Duration,
-) -> std::result::Result<BridgeLaunchResponse, BridgeLaunchError> {
+    request: &BridgeLaunchRequest,
+    launch_timeout: Duration,
+) -> std::result::Result<BridgeLaunchResponse, LaunchError> {
     let launch_url = format!("{}/launch", endpoint.url.trim_end_matches('/'));
-    let response = match client
+    let response = client
         .post(launch_url)
         .bearer_auth(&endpoint.token)
-        .json(launch)
-        .timeout(request_timeout)
+        .json(request)
+        .timeout(launch_timeout)
         .send()
         .await
-    {
-        Ok(response) => response,
-        Err(error) if error.is_connect() || error.is_timeout() => {
-            return Err(BridgeLaunchError::Connect(error.to_string()));
-        }
-        Err(error) => return Err(BridgeLaunchError::Request(error.to_string())),
-    };
+        .map_err(classify_send_error)?;
     if !response.status().is_success() {
         let status = response.status();
         let message = bridge_error_response_message(response).await;
-        return Err(BridgeLaunchError::Http { status, message });
+        return Err(LaunchError::NotLaunched(format!(
+            "VS Code bridge returned {status}: {message}"
+        )));
     }
     response
         .json::<BridgeLaunchResponse>()
         .await
-        .map_err(|error| BridgeLaunchError::Decode(error.to_string()))
+        .map_err(|error| LaunchError::Uncertain(format!("unreadable launch response: {error}")))
+}
+
+fn classify_send_error(error: reqwest::Error) -> LaunchError {
+    if error.is_connect() && !error.is_timeout() {
+        LaunchError::Unreachable(error.to_string())
+    } else if error.is_connect() || error.is_builder() {
+        LaunchError::NotLaunched(format!("failed to contact VS Code bridge: {error}"))
+    } else {
+        LaunchError::Uncertain(error.to_string())
+    }
 }
 
 async fn bridge_error_response_message(response: reqwest::Response) -> String {
@@ -315,51 +229,38 @@ async fn bridge_error_response_message(response: reqwest::Response) -> String {
     }
 }
 
-fn should_remove_registry_entry_after_launch_error(
-    error: &BridgeLaunchError,
-    endpoint: &BridgeEndpoint,
-    registry_endpoints: &[BridgeEndpoint],
-) -> bool {
-    matches!(error, BridgeLaunchError::Connect(_)) && registry_endpoints.contains(endpoint)
-}
-
 async fn wait_for_launched_vscode_session(
     client: &reqwest::Client,
     endpoint: &BridgeEndpoint,
-    launch_response: BridgeLaunchResponse,
-    request_timeout: Duration,
-) -> Result<i32> {
-    wait_for_launched_vscode_session_with_interrupt(
+    response: &BridgeLaunchResponse,
+) -> i32 {
+    let result = wait_for_launched_vscode_session_with_interrupt(
         client,
         endpoint,
-        launch_response,
-        request_timeout,
+        response,
+        BRIDGE_REQUEST_TIMEOUT,
         wait_for_bridge_interrupt(),
     )
-    .await
+    .await;
+    result.unwrap_or_else(|error| {
+        eprintln!("dcmview: VS Code bridge session was captured but wait failed: {error:#}");
+        1
+    })
 }
 
 async fn wait_for_launched_vscode_session_with_interrupt<F>(
     client: &reqwest::Client,
     endpoint: &BridgeEndpoint,
-    launch_response: BridgeLaunchResponse,
+    response: &BridgeLaunchResponse,
     request_timeout: Duration,
     interrupt: F,
 ) -> Result<i32>
 where
     F: Future<Output = Result<()>>,
 {
-    println!("dcmview: opened in VS Code at {}", launch_response.url);
-    let wait_url = format!(
-        "{}/sessions/{}/wait",
-        endpoint.url.trim_end_matches('/'),
-        launch_response.session_id
-    );
-    let stop_url = format!(
-        "{}/sessions/{}/stop",
-        endpoint.url.trim_end_matches('/'),
-        launch_response.session_id
-    );
+    let base_url = endpoint.url.trim_end_matches('/');
+    let wait_url = format!("{base_url}/sessions/{}/wait", response.session_id);
+    let stop_url = format!("{base_url}/sessions/{}/stop", response.session_id);
 
     tokio::select! {
         wait_result = wait_for_vscode_session(client, &wait_url, &endpoint.token) => wait_result,
@@ -421,23 +322,10 @@ async fn wait_for_vscode_session(
     Ok(wait_response.exit_code.unwrap_or(0))
 }
 
-async fn fallback_to_local_viewer(
-    context: &ClientContext,
-    args: &[String],
-    process_runner: &dyn ProcessRunner,
-) -> Result<i32> {
-    let request = context.fallback_request(args)?;
-    let exit_code = process_runner
-        .run(&request)
-        .await
-        .context("failed to run local dcmview fallback")?;
-    Ok(exit_code.unwrap_or(1))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::extract::{Path, State};
+    use axum::extract::{Path as AxumPath, State};
     use axum::http::{header::AUTHORIZATION, HeaderMap, StatusCode};
     use axum::response::{IntoResponse, Response};
     use axum::routing::{get, post};
@@ -447,74 +335,6 @@ mod tests {
     use tokio::sync::Notify;
     use tokio::task::JoinHandle;
 
-    #[derive(Debug, Clone, Copy)]
-    enum ProcessOutcome {
-        Exit(Option<i32>),
-        Error(io::ErrorKind),
-    }
-
-    struct RecordingProcessRunner {
-        requests: Mutex<Vec<ProcessRequest>>,
-        outcome: ProcessOutcome,
-    }
-
-    impl RecordingProcessRunner {
-        fn exiting(exit_code: Option<i32>) -> Self {
-            Self {
-                requests: Mutex::new(Vec::new()),
-                outcome: ProcessOutcome::Exit(exit_code),
-            }
-        }
-
-        fn failing(kind: io::ErrorKind) -> Self {
-            Self {
-                requests: Mutex::new(Vec::new()),
-                outcome: ProcessOutcome::Error(kind),
-            }
-        }
-
-        fn requests(&self) -> Vec<ProcessRequest> {
-            self.requests.lock().expect("process requests").clone()
-        }
-    }
-
-    impl ProcessRunner for RecordingProcessRunner {
-        fn run<'a>(&'a self, request: &'a ProcessRequest) -> ProcessFuture<'a> {
-            Box::pin(async move {
-                self.requests
-                    .lock()
-                    .expect("process requests")
-                    .push(request.clone());
-                match self.outcome {
-                    ProcessOutcome::Exit(exit_code) => Ok(exit_code),
-                    ProcessOutcome::Error(kind) => {
-                        Err(io::Error::new(kind, "injected process failure"))
-                    }
-                }
-            })
-        }
-    }
-
-    #[derive(Default)]
-    struct RecordingRegistryRemover {
-        endpoints: Mutex<Vec<BridgeEndpoint>>,
-    }
-
-    impl RecordingRegistryRemover {
-        fn endpoints(&self) -> Vec<BridgeEndpoint> {
-            self.endpoints.lock().expect("removed endpoints").clone()
-        }
-    }
-
-    impl RegistryEndpointRemover for RecordingRegistryRemover {
-        fn remove(&self, endpoint: &BridgeEndpoint) {
-            self.endpoints
-                .lock()
-                .expect("removed endpoints")
-                .push(endpoint.clone());
-        }
-    }
-
     fn endpoint(url: impl Into<String>) -> BridgeEndpoint {
         BridgeEndpoint {
             url: url.into(),
@@ -522,92 +342,25 @@ mod tests {
         }
     }
 
-    fn test_context(registry_endpoints: Vec<BridgeEndpoint>) -> ClientContext {
-        ClientContext {
-            cwd: PathBuf::from("/workspace"),
-            current_executable: Ok(PathBuf::from("/opt/dcmview/bin/dcmview")),
-            registry_endpoints,
-            request_timeout: Duration::from_millis(100),
-        }
-    }
-
-    #[tokio::test]
-    async fn fallback_request_sets_bypass_and_preserves_exit_code() {
-        let runner = RecordingProcessRunner::exiting(Some(7));
-        let context = test_context(Vec::new());
-        let args = vec!["scan.dcm".to_string(), "--no-browser".to_string()];
-
-        let exit_code = fallback_to_local_viewer(&context, &args, &runner)
-            .await
-            .expect("fallback succeeds");
-
-        assert_eq!(exit_code, 7);
-        assert_eq!(
-            runner.requests(),
-            vec![ProcessRequest {
-                executable: PathBuf::from("/opt/dcmview/bin/dcmview"),
-                args,
-                environment: vec![("DCMVIEW_VSCODE_BYPASS".to_string(), "1".to_string())],
-            }]
-        );
-    }
-
-    #[tokio::test]
-    async fn fallback_maps_signal_exit_to_one_and_preserves_launch_failure_context() {
-        let context = test_context(Vec::new());
-        let signaled_runner = RecordingProcessRunner::exiting(None);
-        assert_eq!(
-            fallback_to_local_viewer(&context, &[], &signaled_runner)
-                .await
-                .expect("signal exit maps"),
-            1
-        );
-
-        let failing_runner = RecordingProcessRunner::failing(io::ErrorKind::PermissionDenied);
-        let error = fallback_to_local_viewer(&context, &[], &failing_runner)
-            .await
-            .expect_err("process launch fails");
-        assert!(error
-            .to_string()
-            .contains("failed to run local dcmview fallback"));
-    }
-
-    #[tokio::test]
-    async fn bridge_client_launch_failure_falls_back_without_recursing() {
-        let dead_url = unused_loopback_url().await;
-        let direct_endpoint = endpoint(dead_url);
-        let context = test_context(Vec::new());
-        let client = reqwest::Client::new();
-        let runner = RecordingProcessRunner::exiting(Some(23));
-        let remover = RecordingRegistryRemover::default();
-        let args = vec!["scan.dcm".to_string()];
-
-        let exit_code = run_vscode_bridge_client_with_dependencies(
+    fn test_request() -> BridgeLaunchRequest {
+        launch_request(
             "dcmview",
-            &args,
-            std::slice::from_ref(&direct_endpoint),
-            &context,
-            Some(&client),
-            &runner,
-            &remover,
+            &["scan.dcm".to_string()],
+            Path::new("/workspace"),
+            Some("/opt/dcmview/bin/dcmview".to_string()),
         )
-        .await
-        .expect("fallback succeeds");
-
-        assert_eq!(exit_code, 23);
-        assert_eq!(remover.endpoints(), Vec::<BridgeEndpoint>::new());
-        let requests = runner.requests();
-        assert_eq!(requests.len(), 1);
-        assert_eq!(
-            requests[0].environment,
-            vec![(VSCODE_BRIDGE_BYPASS_ENV.to_string(), "1".to_string())]
-        );
     }
 
     #[derive(Clone, Default)]
     struct MockBridgeState {
         events: Arc<Mutex<Vec<String>>>,
         launch_requests: Arc<Mutex<Vec<serde_json::Value>>>,
+    }
+
+    impl MockBridgeState {
+        fn events(&self) -> Vec<String> {
+            self.events.lock().expect("mock events").clone()
+        }
     }
 
     async fn authenticated_launch(
@@ -639,7 +392,7 @@ mod tests {
     }
 
     async fn authenticated_wait(
-        Path(session_id): Path<String>,
+        AxumPath(session_id): AxumPath<String>,
         State(state): State<MockBridgeState>,
         headers: HeaderMap,
     ) -> Response {
@@ -661,38 +414,44 @@ mod tests {
             .and_then(|value| value.strip_prefix("Bearer "))
     }
 
+    fn launch_router(state: MockBridgeState) -> Router {
+        Router::new()
+            .route("/launch", post(authenticated_launch))
+            .route("/sessions/{session_id}/wait", get(authenticated_wait))
+            .with_state(state)
+    }
+
     #[tokio::test]
     async fn authenticated_launch_and_wait_round_trip_against_axum_bridge() {
         let state = MockBridgeState::default();
-        let server = MockServer::spawn(
-            Router::new()
-                .route("/launch", post(authenticated_launch))
-                .route("/sessions/{session_id}/wait", get(authenticated_wait))
-                .with_state(state.clone()),
+        let server = MockServer::spawn(launch_router(state.clone())).await;
+        let client = reqwest::Client::new();
+
+        let (attempt, unreachable) = launch_on_first_endpoint(
+            &client,
+            &[endpoint(format!("{}/", server.url()))],
+            &test_request(),
+            Duration::from_secs(1),
         )
         .await;
-        let bridge_endpoint = endpoint(format!("{}/", server.url()));
-        let context = test_context(Vec::new());
-        let remover = RecordingRegistryRemover::default();
-
-        let exit_code = run_vscode_bridge_launch_with_dependencies(
-            "dcmview",
-            &["scan.dcm".to_string()],
-            std::slice::from_ref(&bridge_endpoint),
-            &context,
-            &reqwest::Client::new(),
-            &remover,
+        let LaunchAttempt::Launched { endpoint, response } = attempt else {
+            panic!("launch should succeed");
+        };
+        let exit_code = wait_for_launched_vscode_session_with_interrupt(
+            &client,
+            &endpoint,
+            &response,
+            Duration::from_secs(1),
+            std::future::pending(),
         )
         .await
-        .expect("bridge launch succeeds");
+        .expect("wait succeeds");
 
         assert_eq!(exit_code, 7);
+        assert!(unreachable.is_empty());
         assert_eq!(
-            *state.events.lock().expect("mock events"),
-            vec![
-                "launch:dcmview:/workspace".to_string(),
-                "wait:session-1".to_string()
-            ]
+            state.events(),
+            vec!["launch:dcmview:/workspace", "wait:session-1"]
         );
         assert_eq!(
             *state.launch_requests.lock().expect("mock launch requests"),
@@ -704,7 +463,6 @@ mod tests {
                 "binaryPath": "/opt/dcmview/bin/dcmview"
             })]
         );
-        assert!(remover.endpoints().is_empty());
     }
 
     #[derive(Clone, Default)]
@@ -714,7 +472,7 @@ mod tests {
     }
 
     async fn pending_wait(
-        Path(session_id): Path<String>,
+        AxumPath(session_id): AxumPath<String>,
         State(state): State<InterruptBridgeState>,
         headers: HeaderMap,
     ) -> Response {
@@ -727,7 +485,7 @@ mod tests {
     }
 
     async fn record_stop(
-        Path(session_id): Path<String>,
+        AxumPath(session_id): AxumPath<String>,
         State(state): State<InterruptBridgeState>,
         headers: HeaderMap,
     ) -> Response {
@@ -761,7 +519,7 @@ mod tests {
             wait_for_launched_vscode_session_with_interrupt(
                 &reqwest::Client::new(),
                 &endpoint(server.url()),
-                BridgeLaunchResponse {
+                &BridgeLaunchResponse {
                     session_id: "session-1".to_string(),
                     url: "http://127.0.0.1:51234".to_string(),
                 },
@@ -792,63 +550,8 @@ mod tests {
         (StatusCode::OK, Json(serde_json::json!({ "sessionId": 42 }))).into_response()
     }
 
-    #[tokio::test]
-    async fn launch_errors_classify_http_decode_connect_and_request_failures() {
-        let client = reqwest::Client::new();
-        let launch = test_context(Vec::new()).launch_request("dcmview", &[]);
-
-        let http_server = MockServer::spawn(Router::new().route("/launch", post(http_error))).await;
-        let http = launch_vscode_session(
-            &client,
-            &endpoint(http_server.url()),
-            &launch,
-            Duration::from_secs(1),
-        )
-        .await
-        .expect_err("HTTP status is classified");
-        assert!(matches!(
-            http,
-            BridgeLaunchError::Http {
-                status: StatusCode::SERVICE_UNAVAILABLE,
-                ref message,
-            } if message == "bridge unavailable"
-        ));
-
-        let decode_server =
-            MockServer::spawn(Router::new().route("/launch", post(invalid_launch_response))).await;
-        let decode = launch_vscode_session(
-            &client,
-            &endpoint(decode_server.url()),
-            &launch,
-            Duration::from_secs(1),
-        )
-        .await
-        .expect_err("invalid JSON shape is classified");
-        assert!(matches!(decode, BridgeLaunchError::Decode(_)));
-
-        let connect = launch_vscode_session(
-            &client,
-            &endpoint(unused_loopback_url().await),
-            &launch,
-            Duration::from_millis(100),
-        )
-        .await
-        .expect_err("connection failure is classified");
-        assert!(matches!(connect, BridgeLaunchError::Connect(_)));
-
-        let request = launch_vscode_session(
-            &client,
-            &endpoint("not a URL"),
-            &launch,
-            Duration::from_secs(1),
-        )
-        .await
-        .expect_err("request construction is classified");
-        assert!(matches!(request, BridgeLaunchError::Request(_)));
-    }
-
-    async fn delayed_launch() -> Response {
-        tokio::time::sleep(Duration::from_millis(250)).await;
+    async fn slow_launch() -> Response {
+        tokio::time::sleep(Duration::from_millis(500)).await;
         (
             StatusCode::OK,
             Json(serde_json::json!({
@@ -860,60 +563,98 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn timeout_removes_only_matching_registry_endpoint() {
-        let server = MockServer::spawn(Router::new().route("/launch", post(delayed_launch))).await;
-        let registry_endpoint = endpoint(server.url());
-        let mut context = test_context(vec![registry_endpoint.clone()]);
-        context.request_timeout = Duration::from_millis(20);
-        let remover = RecordingRegistryRemover::default();
+    async fn launch_errors_are_classified_by_whether_vs_code_may_have_launched() {
+        let client = reqwest::Client::new();
+        let launch = |url: String, timeout: Duration| {
+            let client = client.clone();
+            async move {
+                launch_vscode_session(&client, &endpoint(url), &test_request(), timeout)
+                    .await
+                    .expect_err("launch fails")
+            }
+        };
 
-        let error = run_vscode_bridge_launch_with_dependencies(
-            "dcmview",
-            &[],
-            std::slice::from_ref(&registry_endpoint),
-            &context,
-            &reqwest::Client::new(),
-            &remover,
-        )
-        .await
-        .expect_err("timeout fails launch");
+        let refused = launch(unused_loopback_url().await, Duration::from_secs(1)).await;
+        assert!(
+            matches!(refused, LaunchError::Unreachable(_)),
+            "{refused:?}"
+        );
 
-        assert!(error
-            .to_string()
-            .contains("failed to contact VS Code bridge"));
-        assert_eq!(remover.endpoints(), vec![registry_endpoint]);
+        let invalid_url = launch("not a URL".to_string(), Duration::from_secs(1)).await;
+        assert!(
+            matches!(invalid_url, LaunchError::NotLaunched(_)),
+            "{invalid_url:?}"
+        );
+
+        let http_server = MockServer::spawn(Router::new().route("/launch", post(http_error))).await;
+        let http = launch(http_server.url(), Duration::from_secs(1)).await;
+        assert!(
+            matches!(&http, LaunchError::NotLaunched(message) if message.contains("bridge unavailable")),
+            "{http:?}"
+        );
+
+        let decode_server =
+            MockServer::spawn(Router::new().route("/launch", post(invalid_launch_response))).await;
+        let decode = launch(decode_server.url(), Duration::from_secs(1)).await;
+        assert!(matches!(decode, LaunchError::Uncertain(_)), "{decode:?}");
+
+        let slow_server =
+            MockServer::spawn(Router::new().route("/launch", post(slow_launch))).await;
+        let timed_out = launch(slow_server.url(), Duration::from_millis(50)).await;
+        assert!(
+            matches!(timed_out, LaunchError::Uncertain(_)),
+            "{timed_out:?}"
+        );
     }
 
-    #[test]
-    fn cleanup_policy_excludes_non_connect_errors_and_direct_endpoints() {
-        let registry_endpoint = endpoint("http://127.0.0.1:1111");
-        let direct_endpoint = endpoint("http://127.0.0.1:2222");
-        let registry_endpoints = vec![registry_endpoint.clone()];
+    #[tokio::test]
+    async fn refused_and_rejected_endpoints_fall_through_to_the_next() {
+        let state = MockBridgeState::default();
+        let good = MockServer::spawn(launch_router(state.clone())).await;
+        let rejecting = MockServer::spawn(Router::new().route("/launch", post(http_error))).await;
+        let refused = endpoint(unused_loopback_url().await);
 
-        assert!(should_remove_registry_entry_after_launch_error(
-            &BridgeLaunchError::Connect("connection refused".to_string()),
-            &registry_endpoint,
-            &registry_endpoints,
-        ));
-        assert!(!should_remove_registry_entry_after_launch_error(
-            &BridgeLaunchError::Connect("request timed out".to_string()),
-            &direct_endpoint,
-            &registry_endpoints,
-        ));
-        for error in [
-            BridgeLaunchError::Http {
-                status: reqwest::StatusCode::INTERNAL_SERVER_ERROR,
-                message: "failed".to_string(),
-            },
-            BridgeLaunchError::Decode("invalid response".to_string()),
-            BridgeLaunchError::Request("request failed".to_string()),
-        ] {
-            assert!(!should_remove_registry_entry_after_launch_error(
-                &error,
-                &registry_endpoint,
-                &registry_endpoints,
-            ));
-        }
+        let (attempt, unreachable) = launch_on_first_endpoint(
+            &reqwest::Client::new(),
+            &[
+                refused.clone(),
+                endpoint(rejecting.url()),
+                endpoint(good.url()),
+            ],
+            &test_request(),
+            Duration::from_secs(1),
+        )
+        .await;
+
+        assert!(matches!(attempt, LaunchAttempt::Launched { .. }));
+        assert_eq!(
+            unreachable,
+            vec![refused],
+            "only refused endpoints are stale"
+        );
+        assert_eq!(state.events(), vec!["launch:dcmview:/workspace"]);
+    }
+
+    #[tokio::test]
+    async fn slow_launch_stops_without_trying_other_bridges_or_marking_it_stale() {
+        let state = MockBridgeState::default();
+        let slow = MockServer::spawn(Router::new().route("/launch", post(slow_launch))).await;
+        let good = MockServer::spawn(launch_router(state.clone())).await;
+
+        let (attempt, unreachable) = launch_on_first_endpoint(
+            &reqwest::Client::new(),
+            &[endpoint(slow.url()), endpoint(good.url())],
+            &test_request(),
+            Duration::from_millis(50),
+        )
+        .await;
+
+        assert!(matches!(attempt, LaunchAttempt::Uncertain(_)));
+        assert!(
+            unreachable.is_empty(),
+            "a live but slow bridge is not stale"
+        );
+        assert!(state.events().is_empty(), "no second viewer is launched");
     }
 
     struct MockServer {
