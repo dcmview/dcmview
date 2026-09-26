@@ -25,6 +25,22 @@ diagnostic viewer.
 - Display shutters now also mask color frames from every codec, filled with
   the Shutter Presentation Color CIELab Value when present, and enhanced
   multi-frame objects apply each frame's Frame Display Shutter Sequence.
+- A pixel readout follows the cursor over the image: row, column, and frame,
+  the stored sample (color components or palette index for color images),
+  the Modality value (HU for CT), and the preferred real-world value with its
+  unit and the mapping it came from, including RT Dose Grid Scaling in Gy.
+  Files whose raw samples the server cannot serve keep the coordinates and
+  say the value is unavailable.
+- Window/level on a frame with a linear Real World Value Mapping or Dose
+  Grid Scaling now works in that unit: the HUD shows center and width in it,
+  a legend shows the window's range, and a dragged window is kept in mapped
+  units across frames and files.
+- RT Dose and Parametric Map colorwash overlays can be drawn on the images
+  they cover. An Overlay bar above the viewport turns one on and sets its
+  opacity, a color bar shows Gy or the map's unit, and a slice outside the
+  volume shows a note instead of a layer. "Show dose on source image" and
+  "Show map on source image" in the volume's Semantic Context open a covered
+  image with the overlay on.
 
 ### Changed
 

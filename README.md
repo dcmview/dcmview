@@ -233,6 +233,15 @@ The embedded browser viewer includes:
   and sweep.
 - Study and directory navigation with typed links between locally resolved
   referenced objects and frames.
+- A pixel readout under the cursor: row, column, and frame, the stored
+  sample (or color components), the Modality value (such as HU), and the
+  real-world value with its unit (such as a Parametric Map's mapped value or
+  an RT Dose in Gy), naming the mapping it used.
+- Window/level in real-world units, with a legend, for frames that carry a
+  linear Real World Value Mapping or Dose Grid Scaling.
+- RT Dose and Parametric Map colorwash overlays on the images they cover,
+  with an opacity control and a color bar in Gy or the map's unit. Slices the
+  volume does not reach say so instead of showing a layer.
 - Default pixel preview plus opt-in declared semantic context for SEG,
   Parametric Map, and RT Dose. Validated SEG mappings can compose binary or
   fractional masks over referenced source images even when compatible patient

@@ -67,30 +67,27 @@ would remove behavior, raise it as a question instead of acting.
   binary's hidden `--vscode-bridge-client` form.
 - **Viewer** - cine playback, server- and client-side window/level, presets,
   per-tab zoom/pan/orientation, series and stack navigation, tag panel,
-  reference navigation, and the codec coverage in the pixel pipeline table.
+  reference navigation, a pixel-value readout (stored, Modality, and
+  real-world values) for every modality, window/level in real-world units
+  with a legend, and the codec coverage in the pixel pipeline table.
 - **Semantic context** - SEG (with a drawn overlay), Parametric Map, RT Dose,
-  and WSI context; RT Dose and Parametric Map colorwash overlay endpoints and
-  per-frame value mappings for any modality.
+  and WSI context; RT Dose and Parametric Map colorwash overlays on the
+  images they cover (opacity control and color bar), and per-frame value
+  mappings for any modality.
 
 **Known gaps (intended work, not settled scope):**
 
-- **RT Dose overlay is not drawn in the viewer.** The backend is done: the
-  `dose-overlay` endpoint resamples the grid onto a displayed frame as a
-  viridis colorwash in Gy, and the semantic context lists covered source
-  frames and the legend. Owner decision (2026-09-26): draw it as a
-  semi-transparent colorwash with a Gy color bar and an opacity toggle,
-  controlled like the SEG overlay.
-- **Parametric Map values are not applied in the viewer.** The display
-  windows stored values (`displayed_value_kind: stored`). The backend is done:
-  `value-mapping` gives every frame's Modality and real-world conversions,
-  and `parametric-map-overlay` plus the context legend draw a PM on its
-  source images. Intended UI, in order:
-  1. a pixel readout of stored and mapped values under the cursor, for every
-     modality (including Dose Grid Scaling);
-  2. window/level in mapped units, with a color bar or legend;
-  3. the Parametric Map overlay on its source image, like the SEG overlay.
-- **No pixel-value readout.** Neither stored nor mapped values (Parametric
-  Map, RT Dose) can be read per pixel in the viewport; see Parametric Map above.
+- **Real-world window/level is linear only.** Window/level switches to
+  mapped units only when the frame's preferred real-world mapping is linear
+  and its Modality transform has no LUT; a LUT mapping keeps stored units
+  (the readout still converts it). During cine, a real-world window is
+  converted through the last mapping loaded for the file, so frames with
+  their own per-frame mapping are windowed with that conversion until
+  playback stops.
+- **The readout does not report overlay values.** Under a dose or Parametric
+  Map colorwash the readout shows the displayed image's samples, not the
+  overlaid volume's value at that pixel; the overlay endpoints return colors,
+  not values.
 
 `docs/planned/` temporarily holds uncommitted proposals, such as the JupyterLab
 integration and the original compatibility plan. They are not specs and not
@@ -406,8 +403,10 @@ unless one is actually implemented.
 - Shared root state is owned by `App.svelte`, which instantiates its
   controllers and passes their state down: `lib/app/` `Catalog` (file and
   series catalogs), `TabNavigation` (open tabs, active file/frame/stack
-  position), `WindowSettings` (window, mode, preset, manual adjustment), and
-  `SidebarLayout` (navigator and tag panel layout, compact drawers), plus
+  position), `WindowSettings` (window, its real-world unit, mode, preset,
+  manual adjustment), `ValueOverlays` (which RT Dose or Parametric Map
+  colorwash is shown, its opacity, and which volumes cover the active tab),
+  and `SidebarLayout` (navigator and tag panel layout, compact drawers), plus
   `lib/viewport/` `ViewStates` (per-tab zoom, pan, and orientation). Active
   tool, cine settings, and semantic mode are plain `App.svelte` state.
 - Global keyboard shortcuts go through the single dispatcher in
@@ -436,7 +435,10 @@ unless one is actually implemented.
   consistent with backend validation.
 - Map cursor positions to image pixels with `clientToImagePoint` in
   `viewport/viewTransform.ts`; per-frame layers over a source image go through
-  `viewport/frameOverlay.ts`.
+  `viewport/frameOverlay.ts` (a SEG `FrameOverlay` replaces the displayed
+  image, a `ValueOverlay` colorwash is drawn on its own canvas above it).
+  Pixel values come from `viewport/pixelProbe.svelte.ts` and the per-frame
+  `value-mapping` conversions in `viewport/valueMapping.ts`.
 - No external CSS frameworks. Use scoped Svelte styles.
 - Theme tokens live as CSS variables in `App.svelte`; reuse them instead of
   introducing component-local chrome palettes.

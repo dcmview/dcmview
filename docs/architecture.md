@@ -117,8 +117,18 @@ shortcut through `lib/keyboardShortcuts.ts`. Keyed fetches share and abort
 in-flight requests through `lib/keyedAsyncResource.ts`. `ImageViewport`
 composes units in `frontend/src/lib/viewport/`: raw and display frame sources,
 the window/level worker client, rendered-frame tracking for cine pacing,
-per-frame overlay layers, the ROI annotation store and components, and the
-view transform math, including the client-to-image-pixel mapping.
+per-frame overlay layers, the ROI annotation store and components, the
+pixel probe and value-mapping conversions behind the readout, and the view
+transform math, including the client-to-image-pixel mapping.
+
+The pixel readout reads the frame on screen: the samples the window/level
+renderer already holds, or a raw frame fetched through the shared raw-frame
+source once the cursor rests, converted with that frame's `value-mapping`.
+A linear real-world mapping also switches the window to its unit:
+`WindowSettings` records a drag in that unit and the viewport converts it
+through each frame's mapping to the Modality scale that the display query
+and the raw renderer window, so a mapped value looks the same on every
+frame. Files without such a mapping keep the stored-unit path unchanged.
 
 For SEG objects, `SemanticContextPanel` keeps Pixel Preview as the initial mode
 and publishes an explicit Semantic Context selection to `App.svelte`.
@@ -128,6 +138,19 @@ mapping. The active logical frame remains the SEG frame; source identity and
 geometry come from the mapping. ROI editing, interactive window/level, and cine
 are disabled for the composed view because their existing state belongs to the
 SEG object or requires a separate source-window contract.
+
+RT Dose and Parametric Map colorwashes work the other way round: they
+decorate the displayed image rather than replace it. `lib/app/valueOverlays`
+reads the semantic context of each volume that shares a Frame of Reference
+with the active file (from the series catalog) and offers the eligible ones
+whose `overlay_source_frames` include a frame of the active tab; the
+Overlay bar toggles one and sets its opacity, and the volume's own Semantic
+Context mode can open its source image with it shown. `ImageViewport` draws
+the displayed frame's `dose-overlay` or `parametric-map-overlay` PNG on a
+separate canvas above whatever pipeline renders the frame, so window/level,
+cine, ROIs, and the view transform keep working. Frames the context does not
+list, or that answer `404 overlay_not_covering_frame`, show no layer and a
+note in the legend.
 
 `FileNavigator` owns the active clinical-versus-directory organization and
 publishes the corresponding flattened file order to `App.svelte`. Global
@@ -477,7 +500,8 @@ installation and VS Code Electron integration can also use network/cache state;
 - No profile automates a real browser. Manual acceptance uses the actual
   Svelte app and fixture server to exercise canvas/network behavior: metadata-only and unsupported states,
   pixel-preview/semantic-context switching, typed references, SEG/Parametric
-  Map/RT Dose context, WSI positioning, cine, windowing, viewport transforms,
+  Map/RT Dose context and colorwash overlays, the pixel readout, real-world
+  window/level, WSI positioning, cine, windowing, viewport transforms,
   file switching, and recovery after request errors.
 - `python/tests/test_check_profiles.py` locks the documented
   `quick`/`core`/`e2e` composition and the exact independent `external` and
