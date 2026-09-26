@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `dcmview` no longer looks for bridges in the pre-0.2.5 registry locations
+  under `$XDG_RUNTIME_DIR` and `/tmp`. Extension 0.2.5 and later already
+  publish only to the per-user state directory.
+
 ## 0.2.12 - 2026-08-31
 
 - Publish the target-specific extension packages to Open VSX through an

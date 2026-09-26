@@ -131,7 +131,6 @@ These variables affect viewer launch and VS Code bridge routing at runtime.
 | `DCMVIEW_VSCODE_BRIDGE_REGISTRY_DIR` | Rust binary (including Python launches), VS Code extension | Override the bridge registry directory used for out-of-band discovery. |
 | `DCMVIEW_VSCODE_BRIDGE_DEBUG` | Rust binary (including Python launches) | Set to `1` to print bridge discovery diagnostics to stderr. |
 | `XDG_STATE_HOME` | Rust binary (including Python launches) | Preferred base directory for bridge registry files on Unix-like systems when absolute. |
-| `XDG_RUNTIME_DIR` | Rust binary (including Python launches) | Legacy bridge registry fallback when absolute. |
 
 Bridge registry entries expire after three hours. Registry directories must be
 trusted on Unix: owned by the current user and not group- or world-writable.

@@ -39,6 +39,11 @@ diagnostic viewer.
   to the viewer's own listener, so it reported success even when no forward
   existed. Use the printed `ssh -L <port>:localhost:<port> user@host` command
   from your local machine instead.
+- The binary no longer scans the pre-0.2.5 VS Code bridge registry locations
+  (`$XDG_RUNTIME_DIR/dcmview/vscode-bridges` and
+  `/tmp/dcmview-vscode-bridges-$USER`). Only extension builds older than 0.2.5
+  publish there; update the extension if terminal or notebook launches stop
+  opening in VS Code.
 
 ## 0.2.12 - 2026-08-31
 

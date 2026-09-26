@@ -24,7 +24,6 @@ import {
   parseStartupLine,
   posixShim,
   registryDirectoryIsTrusted,
-  safeRegistrySegment,
   waitForStartup,
   waitForStartupOrTerminate,
   writeBridgeRegistry,
@@ -180,15 +179,15 @@ suite('dcmview extension', () => {
 
   test('builds deterministic bridge registry locations', () => {
     assert.strictEqual(
-      bridgeRegistryDirectory({ DCMVIEW_VSCODE_BRIDGE_REGISTRY_DIR: '/custom/bridges' }, '/tmp'),
+      bridgeRegistryDirectory({ DCMVIEW_VSCODE_BRIDGE_REGISTRY_DIR: '/custom/bridges' }),
       '/custom/bridges',
     );
     assert.strictEqual(
-      bridgeRegistryDirectory({ XDG_STATE_HOME: '/home/research/.local/state' }, '/tmp'),
+      bridgeRegistryDirectory({ XDG_STATE_HOME: '/home/research/.local/state' }),
       path.join('/home/research/.local/state', 'dcmview', 'vscode-bridges'),
     );
     assert.strictEqual(
-      bridgeRegistryDirectory({ HOME: '/home/research', USER: 'remote user' }, '/tmp'),
+      bridgeRegistryDirectory({ HOME: '/home/research' }),
       path.join('/home/research', '.local', 'state', 'dcmview', 'vscode-bridges'),
     );
   });
@@ -199,10 +198,7 @@ suite('dcmview extension', () => {
     assert.strictEqual(BRIDGE_REGISTRY_PRESENCE_CHECK_MS, registryContract.presenceCheckMs);
 
     for (const testCase of registryContract.registryDirs) {
-      assert.strictEqual(bridgeRegistryDirectory(testCase.env, testCase.tmpDir), testCase.expected);
-    }
-    for (const testCase of registryContract.safeSegments) {
-      assert.strictEqual(safeRegistrySegment(testCase.input), testCase.expected);
+      assert.strictEqual(bridgeRegistryDirectory(testCase.env), testCase.expected);
     }
     for (const testCase of registryContract.expiry.cases) {
       assert.strictEqual(

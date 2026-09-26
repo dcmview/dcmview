@@ -65,9 +65,6 @@ struct RegistryEnvironment {
     state_home: Option<String>,
     home: Option<String>,
     user_profile: Option<String>,
-    runtime_dir: Option<String>,
-    user: Option<String>,
-    temp_dir: PathBuf,
     debug: bool,
 }
 
@@ -78,32 +75,17 @@ impl RegistryEnvironment {
             state_home: env::var("XDG_STATE_HOME").ok(),
             home: env::var("HOME").ok(),
             user_profile: env::var("USERPROFILE").ok(),
-            runtime_dir: env::var("XDG_RUNTIME_DIR").ok(),
-            user: env::var("USER").or_else(|_| env::var("USERNAME")).ok(),
-            temp_dir: env::temp_dir(),
             debug: env::var(VSCODE_BRIDGE_DEBUG_ENV).as_deref() == Ok("1"),
         }
     }
 
-    fn registry_dirs(&self) -> Vec<PathBuf> {
-        if let Some(configured) = self.configured_dir.as_deref() {
-            if !configured.is_empty() {
-                return vec![PathBuf::from(configured)];
-            }
-        }
-
-        let mut dirs = vec![vscode_bridge_registry_dir_from_values(
-            None,
+    fn registry_dir(&self) -> PathBuf {
+        vscode_bridge_registry_dir_from_values(
+            self.configured_dir.as_deref(),
             self.state_home.as_deref(),
             self.home.as_deref(),
             self.user_profile.as_deref(),
-        )];
-        dirs.extend(legacy_vscode_bridge_registry_dirs_from_values(
-            self.runtime_dir.as_deref(),
-            self.user.as_deref(),
-            &self.temp_dir,
-        ));
-        dedupe_paths(dirs)
+        )
     }
 }
 
@@ -141,11 +123,12 @@ fn discover_vscode_bridge_endpoints_with_environment(
     } else {
         RegistryMatch::RequireWorkspace
     };
-    let registry_endpoints = discover_vscode_bridge_registry_endpoints_in_environment(
-        &environment.registry,
+    let registry_endpoints = discover_vscode_bridge_registry_endpoints_from_dir(
         cwd,
         registry_match,
         now_ms,
+        &environment.registry.registry_dir(),
+        environment.registry.debug,
     );
     let endpoints =
         select_bridge_endpoints(environment.direct_endpoint.as_ref(), registry_endpoints);
@@ -164,29 +147,6 @@ fn select_bridge_endpoints(
     for endpoint in registry_endpoints {
         if !endpoints.contains(&endpoint) {
             endpoints.push(endpoint);
-        }
-    }
-    endpoints
-}
-
-fn discover_vscode_bridge_registry_endpoints_in_environment(
-    environment: &RegistryEnvironment,
-    cwd: &Path,
-    registry_match: RegistryMatch,
-    now_ms: u64,
-) -> Vec<BridgeEndpoint> {
-    let mut endpoints = Vec::new();
-    for registry_dir in environment.registry_dirs() {
-        for endpoint in discover_vscode_bridge_registry_endpoints_from_dir(
-            cwd,
-            registry_match,
-            now_ms,
-            &registry_dir,
-            environment.debug,
-        ) {
-            if !endpoints.contains(&endpoint) {
-                endpoints.push(endpoint);
-            }
         }
     }
     endpoints
@@ -360,17 +320,8 @@ fn is_expired_registry_entry(created_at_ms: u64, now_ms: u64) -> bool {
 }
 
 pub(super) fn remove_vscode_bridge_registry_endpoint(endpoint: &BridgeEndpoint) {
-    let environment = RegistryEnvironment::capture();
-    remove_vscode_bridge_registry_endpoint_in_environment(endpoint, &environment);
-}
-
-fn remove_vscode_bridge_registry_endpoint_in_environment(
-    endpoint: &BridgeEndpoint,
-    environment: &RegistryEnvironment,
-) {
-    for registry_dir in environment.registry_dirs() {
-        remove_vscode_bridge_registry_endpoint_from_dir(endpoint, &registry_dir);
-    }
+    let registry_dir = RegistryEnvironment::capture().registry_dir();
+    remove_vscode_bridge_registry_endpoint_from_dir(endpoint, &registry_dir);
 }
 
 fn remove_vscode_bridge_registry_endpoint_from_dir(endpoint: &BridgeEndpoint, registry_dir: &Path) {
@@ -445,42 +396,11 @@ fn vscode_bridge_registry_dir_from_values(
         .join("vscode-bridges")
 }
 
-fn legacy_vscode_bridge_registry_dirs_from_values(
-    runtime_dir: Option<&str>,
-    user: Option<&str>,
-    temp_dir: &Path,
-) -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    if let Some(runtime_dir) = runtime_dir {
-        if registry_env_path_is_absolute(runtime_dir) {
-            let runtime_dir = PathBuf::from(runtime_dir);
-            dirs.push(runtime_dir.join("dcmview").join("vscode-bridges"));
-        }
-    }
-
-    let user = user.unwrap_or("default");
-    dirs.push(temp_dir.join(format!(
-        "dcmview-vscode-bridges-{}",
-        safe_registry_segment(user)
-    )));
-    dirs
-}
-
 fn registry_env_path_is_absolute(path: &str) -> bool {
     Path::new(path).is_absolute()
         || path.starts_with('/')
         || path.starts_with('\\')
         || path.as_bytes().get(1) == Some(&b':')
-}
-
-fn dedupe_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
-    let mut result = Vec::new();
-    for path in paths {
-        if !result.contains(&path) {
-            result.push(path);
-        }
-    }
-    result
 }
 
 pub(super) fn bridge_debug(message: &str) {
@@ -494,19 +414,6 @@ fn log_bridge_debug(enabled: bool, message: &str) {
     if enabled {
         eprintln!("dcmview bridge: {message}");
     }
-}
-
-fn safe_registry_segment(value: &str) -> String {
-    value
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || matches!(character, '_' | '.' | '-') {
-                character
-            } else {
-                '_'
-            }
-        })
-        .collect()
 }
 
 fn normalized_path(path: &Path) -> PathBuf {
@@ -534,9 +441,6 @@ mod tests {
             state_home: None,
             home: None,
             user_profile: None,
-            runtime_dir: None,
-            user: None,
-            temp_dir: PathBuf::from("/tmp"),
             debug: false,
         }
     }
@@ -623,11 +527,12 @@ mod tests {
         let vscode_terminal = bridge_environment(temp.path(), Some(direct.clone()), false);
 
         assert_eq!(
-            discover_vscode_bridge_registry_endpoints_in_environment(
-                &outside_vscode.registry,
+            discover_vscode_bridge_registry_endpoints_from_dir(
                 &cwd,
                 RegistryMatch::AllowAny,
                 now_ms,
+                temp.path(),
+                false,
             ),
             vec![matching.clone(), other.clone()],
             "workspace match ranks first, then newest"
@@ -680,30 +585,6 @@ mod tests {
                 expected,
                 "registry dir contract case {:?}",
                 test_case["name"].as_str()
-            );
-        }
-        for test_case in contract["legacyRegistryDirs"].as_array().unwrap() {
-            let env = test_case["env"].as_object().unwrap();
-            let runtime_dir = env.get("XDG_RUNTIME_DIR").and_then(|value| value.as_str());
-            let user = env
-                .get("USER")
-                .or_else(|| env.get("USERNAME"))
-                .and_then(|value| value.as_str());
-            let actual = legacy_vscode_bridge_registry_dirs_from_values(
-                runtime_dir,
-                user,
-                Path::new(test_case["tmpDir"].as_str().unwrap()),
-            );
-            assert!(
-                actual.contains(&PathBuf::from(test_case["expected"].as_str().unwrap())),
-                "legacy registry dir contract case {:?}",
-                test_case["name"].as_str()
-            );
-        }
-        for test_case in contract["safeSegments"].as_array().unwrap() {
-            assert_eq!(
-                safe_registry_segment(test_case["input"].as_str().unwrap()),
-                test_case["expected"].as_str().unwrap()
             );
         }
         for test_case in contract["expiry"]["cases"].as_array().unwrap() {
@@ -911,14 +792,12 @@ mod tests {
             .to_string(),
         )
         .expect("live registry");
-        let environment = registry_environment(temp.path());
-
-        remove_vscode_bridge_registry_endpoint_in_environment(
+        remove_vscode_bridge_registry_endpoint_from_dir(
             &BridgeEndpoint {
                 url: "http://127.0.0.1:1111".to_string(),
                 token: "stale-token".to_string(),
             },
-            &environment,
+            temp.path(),
         );
 
         assert!(!stale_path.exists());

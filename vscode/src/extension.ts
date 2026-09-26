@@ -1001,10 +1001,7 @@ async function ensureShimDirectory(context: vscode.ExtensionContext, binary: str
   return shimDir;
 }
 
-export function bridgeRegistryDirectory(
-  env: NodeJS.ProcessEnv = process.env,
-  _tmpDir: string = os.tmpdir(),
-): string {
+export function bridgeRegistryDirectory(env: NodeJS.ProcessEnv = process.env): string {
   const configured = env[BRIDGE_REGISTRY_DIR_ENV];
   if (configured && configured.trim().length > 0) {
     return configured;
@@ -1032,10 +1029,6 @@ export function bridgeRegistryDirectory(
   const fallbackHome = os.homedir();
   const homePath = fallbackHome && path.isAbsolute(fallbackHome) ? fallbackHome : '.';
   return path.join(homePath, '.local', 'state', 'dcmview', 'vscode-bridges');
-}
-
-export function safeRegistrySegment(value: string): string {
-  return value.replace(/[^A-Za-z0-9_.-]/g, '_');
 }
 
 export function isExpiredRegistryEntry(createdAtMs: number, nowMs: number): boolean {

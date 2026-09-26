@@ -30,10 +30,7 @@ terminal after the Extension Development Host starts so the terminal receives
 the bridge environment and PATH shims.
 
 The registry lets processes that did not inherit the integrated-terminal
-environment route into VS Code. For one release, readers also scan the legacy
-`$XDG_RUNTIME_DIR/dcmview/vscode-bridges` and
-`/tmp/dcmview-vscode-bridges-$USER` locations so updated wrappers can still find
-an older extension. The extension refreshes the registry hourly, re-publishes it
+environment route into VS Code. The extension refreshes the registry hourly, re-publishes it
 when terminals open, and checks once per minute that the file still exists;
 entries expire after 3 hours so crash leftovers do not affect future sessions
 indefinitely.

@@ -7,67 +7,30 @@
       "name": "env override",
       "env": {
         "DCMVIEW_VSCODE_BRIDGE_REGISTRY_DIR": "/custom/bridges",
-        "XDG_STATE_HOME": "/home/research/.local/state",
-        "USER": "ignored"
+        "XDG_STATE_HOME": "/home/research/.local/state"
       },
-      "tmpDir": "/tmp",
       "expected": "/custom/bridges"
     },
     {
       "name": "xdg state",
       "env": {
-        "XDG_STATE_HOME": "/home/research/.local/state",
-        "USER": "ignored"
+        "XDG_STATE_HOME": "/home/research/.local/state"
       },
-      "tmpDir": "/tmp",
       "expected": "/home/research/.local/state/dcmview/vscode-bridges"
     },
     {
       "name": "home fallback",
       "env": {
-        "HOME": "/home/research",
-        "USER": "remote user@example"
+        "HOME": "/home/research"
       },
-      "tmpDir": "/tmp",
       "expected": "/home/research/.local/state/dcmview/vscode-bridges"
     },
     {
       "name": "userprofile fallback",
       "env": {
-        "USERPROFILE": "/Users/research",
-        "USERNAME": "research"
+        "USERPROFILE": "/Users/research"
       },
-      "tmpDir": "/tmp",
       "expected": "/Users/research/.local/state/dcmview/vscode-bridges"
-    }
-  ],
-  "legacyRegistryDirs": [
-    {
-      "name": "xdg runtime",
-      "env": {
-        "XDG_RUNTIME_DIR": "/run/user/1000",
-        "USER": "ignored"
-      },
-      "tmpDir": "/tmp",
-      "expected": "/run/user/1000/dcmview/vscode-bridges"
-    },
-    {
-      "name": "tmp fallback",
-      "env": {
-        "USER": "remote user@example"
-      },
-      "tmpDir": "/tmp",
-      "expected": "/tmp/dcmview-vscode-bridges-remote_user_example"
-    }
-  ],
-  "safeSegments": [
-    {
-      "input": "remote user@example",
-      "expected": "remote_user_example"
-    },
-    {
-      "input": "abc.DEF-123_ok",
-      "expected": "abc.DEF-123_ok"
     }
   ],
   "expiry": {
