@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "../api";
 import { fileSummary, rawFrame } from "../testing/fixtures";
 import ImageViewport from "./ImageViewport.svelte";
+import * as frameOverlay from "./viewport/frameOverlay";
 import { navigationFramesForFile } from "./seriesNavigation";
 import type { ActiveTool } from "./viewerTools";
 import { ViewStates } from "./viewport/viewStates.svelte";
@@ -14,12 +15,22 @@ vi.mock("../api", async (importOriginal) => ({
 	fetchDisplayFrameBlob: vi.fn(async () => new Blob(["png"], { type: "image/png" })),
 	fetchRawFrame: vi.fn(),
 	fetchFrameValueMapping: vi.fn(),
+	fetchDoseOverlayBlob: vi.fn(),
 	updateAnnotations: vi.fn(),
+}));
+
+// happy-dom cannot decode PNGs or draw on a canvas; the layer is recorded.
+vi.mock("./viewport/frameOverlay", async (importOriginal) => ({
+	...await importOriginal<typeof import("./viewport/frameOverlay")>(),
+	decodeCanvasImage: vi.fn(async () => ({ source: {}, width: 64, height: 64, dispose: vi.fn() })),
+	drawOverlayLayer: vi.fn(),
 }));
 
 const fetchDisplayFrameBlob = vi.mocked(api.fetchDisplayFrameBlob);
 const fetchRawFrame = vi.mocked(api.fetchRawFrame);
 const fetchFrameValueMapping = vi.mocked(api.fetchFrameValueMapping);
+const fetchDoseOverlayBlob = vi.mocked(api.fetchDoseOverlayBlob);
+const drawOverlayLayer = vi.mocked(frameOverlay.drawOverlayLayer);
 
 function identityMapping(fileIndex = 5): api.FrameValueMapping {
 	return {
@@ -55,6 +66,7 @@ function renderViewport({
 	windowWidth = null as number | null,
 	windowUnit = null as string | null,
 	onmanualwindowlevel = vi.fn(),
+	valueOverlay = null as frameOverlay.ValueOverlay | null,
 } = {}) {
 	return render(ImageViewport, {
 		activeFile: file,
@@ -76,6 +88,7 @@ function renderViewport({
 		onnavigationchange: vi.fn(),
 		onreset: vi.fn(),
 		onmanualwindowlevel,
+		valueOverlay,
 	});
 }
 
@@ -85,6 +98,9 @@ beforeEach(() => {
 	fetchRawFrame.mockResolvedValue(rawFrame());
 	fetchFrameValueMapping.mockReset();
 	fetchFrameValueMapping.mockResolvedValue(identityMapping());
+	fetchDoseOverlayBlob.mockReset();
+	fetchDoseOverlayBlob.mockResolvedValue(new Blob(["png"], { type: "image/png" }));
+	drawOverlayLayer.mockClear();
 });
 
 describe("ImageViewport window/level path", () => {
@@ -235,5 +251,64 @@ describe("ImageViewport window/level in real-world units", () => {
 
 		// Stored W 1 + 10 px × 4 = 41 → 20.5 um2/s; C 0.5 stored → -9.75 um2/s.
 		expect(onmanualwindowlevel).toHaveBeenCalledWith(-9.75, 20.5, "um2/s");
+	});
+});
+
+describe("ImageViewport value overlays", () => {
+	const legend: api.OverlayLegend = {
+		unit_label: "Gy",
+		units: null,
+		min_value: 0,
+		max_value: 23.3,
+		transparent_at_or_below: 0,
+		colormap: "viridis",
+		color_stops: [[68, 1, 84], [253, 231, 37]],
+	};
+
+	function dose(overrides: Partial<frameOverlay.ValueOverlay> = {}): frameOverlay.ValueOverlay {
+		return { kind: "rt_dose", volumeFileIndex: 9, title: "RT Dose", legend, opacity: 0.4, coversFrame: true, ...overrides };
+	}
+
+	function layerCanvas(): HTMLCanvasElement | null {
+		return document.querySelector(".value-overlay-canvas");
+	}
+
+	it("draws the dose colorwash over the frame at the chosen opacity, with a Gy legend", async () => {
+		renderViewport({ valueOverlay: dose() });
+
+		await waitFor(() => expect(drawOverlayLayer).toHaveBeenCalledOnce());
+		expect(fetchDoseOverlayBlob).toHaveBeenCalledWith(5, 0, 9, expect.any(AbortSignal));
+		// The image underneath keeps its own render path and window.
+		expect(fetchDisplayFrameBlob).toHaveBeenCalledWith(5, 0, {}, expect.any(AbortSignal));
+		await waitFor(() => expect(layerCanvas()?.hidden).toBe(false));
+		expect(layerCanvas()?.style.opacity).toBe("0.4");
+		const legendFigure = screen.getByRole("figure", { name: "RT Dose: 0 to 23.3 Gy" });
+		expect(legendFigure.textContent).toContain("≤ 0 Gy transparent");
+	});
+
+	it("skips frames the dose context does not cover", async () => {
+		renderViewport({ valueOverlay: dose({ coversFrame: false }) });
+
+		expect(await screen.findByText("Not covering this frame")).toBeTruthy();
+		expect(fetchDoseOverlayBlob).not.toHaveBeenCalled();
+		expect(layerCanvas()?.hidden).toBe(true);
+	});
+
+	it("hides the layer when the server says the grid misses the frame", async () => {
+		fetchDoseOverlayBlob.mockRejectedValue(
+			new api.ApiError("beyond the dose grid", 404, "overlay_not_covering_frame"),
+		);
+		renderViewport({ valueOverlay: dose() });
+
+		expect(await screen.findByText("Not covering this frame")).toBeTruthy();
+		expect(drawOverlayLayer).not.toHaveBeenCalled();
+		expect(layerCanvas()?.hidden).toBe(true);
+	});
+
+	it("says when a layer fails for another reason", async () => {
+		fetchDoseOverlayBlob.mockRejectedValue(new api.ApiError("mapping unavailable", 422, "semantic_mapping_unavailable"));
+		renderViewport({ valueOverlay: dose() });
+
+		expect(await screen.findByText("Overlay unavailable for this frame")).toBeTruthy();
 	});
 });

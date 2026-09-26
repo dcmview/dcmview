@@ -27,6 +27,7 @@
 		onopenreference,
 		onmodechange,
 		oncontextchange,
+		onshowoverlay,
 	}: {
 		fileIndex: number;
 		currentFrame: number;
@@ -34,6 +35,8 @@
 		onopenreference: (fileIndex: number, frameIndex: number) => void;
 		onmodechange?: (mode: SemanticMode) => void;
 		oncontextchange?: (response: SemanticContextResponse | null) => void;
+		/** Opens the source image this volume's colorwash is drawn on. */
+		onshowoverlay?: (response: SemanticContextResponse) => void;
 	} = $props();
 	let snapshotsByFile = $state<Record<number, AsyncResourceSnapshot<SemanticContextResponse> | undefined>>({});
 	let mode = $state<SemanticMode>("pixel_preview");
@@ -212,6 +215,12 @@
 				<p class:eligible={response.context.overlay.eligible} class="reason">
 					Overlay {response.context.overlay.eligible ? "eligible" : "unavailable"}: {response.context.overlay.reason}.
 				</p>
+				{#if response.context.overlay.eligible && onshowoverlay}
+					{@const shown = response}
+					<button type="button" class="show-overlay" onclick={() => onshowoverlay(shown)}>
+						Show dose on source image
+					</button>
+				{/if}
 				<p class="warning">{response.context.clinical_use_warning}</p>
 			</div>
 		{/if}
@@ -246,5 +255,6 @@
 	.references { display: grid; gap: 4px; margin-top: 4px; }
 	.reason { color: var(--text-muted); }
 	.reason.eligible { color: var(--success-text); }
+	.show-overlay { margin-top: 5px; }
 	@media (max-width: 700px) { header { align-items: flex-start; } .details { max-height: 130px; } }
 </style>

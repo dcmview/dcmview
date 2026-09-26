@@ -24,7 +24,7 @@
 </script>
 
 <figure class="value-legend" aria-label={`${title}: ${formatValue(low)} to ${formatValue(high)} ${unit}`}>
-	<figcaption>{title}</figcaption>
+	<figcaption {title}>{title}</figcaption>
 	<div class="scale">
 		<span class="bar" style:background-image={gradient}></span>
 		<span class="ticks" aria-hidden="true">

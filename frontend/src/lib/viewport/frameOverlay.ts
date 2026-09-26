@@ -1,4 +1,11 @@
-import { fetchSegmentationOverlayBlob, type FileSummary } from "../../api";
+import {
+	fetchDoseOverlayBlob,
+	fetchSegmentationOverlayBlob,
+	type FileSummary,
+	type OverlayLegend,
+} from "../../api";
+import { ByteBudgetLruCache } from "../frameCache";
+import { SharedRequestRegistry } from "../keyedAsyncResource";
 
 /**
  * A SEG frame shown as its transparent mask over the one source frame it
@@ -15,11 +22,79 @@ export type SegmentationOverlay = {
 };
 
 /**
- * Layers composed over a source frame's display image. Parametric Map and RT
- * Dose colorwash overlays are planned as further members of this union: each
- * names its source frame and the layer images drawn over it.
+ * Layers composed over a source frame's display image, shown in place of
+ * the active file's own frame. Value volumes that decorate the displayed
+ * frame itself are `ValueOverlay`s instead.
  */
 export type FrameOverlay = SegmentationOverlay;
+
+export type ValueOverlayKind = "rt_dose";
+
+/**
+ * A value volume drawn as a translucent colorwash over the displayed frame.
+ * Unlike a SEG overlay the displayed image and its render path stay as they
+ * are: the layer sits above whatever the viewport renders, so window/level,
+ * cine, and ROIs keep working, and opacity is applied when it is shown.
+ */
+export type ValueOverlay = {
+	kind: ValueOverlayKind;
+	volumeFileIndex: number;
+	title: string;
+	legend: OverlayLegend;
+	/** 0..1 */
+	opacity: number;
+	/** False when the volume's context lists no coverage of the displayed frame. */
+	coversFrame: boolean;
+};
+
+/** The colorwash of `overlay` resampled onto one displayed frame. */
+export function valueOverlayLayerRequest(
+	overlay: Pick<ValueOverlay, "kind" | "volumeFileIndex">,
+	fileIndex: number,
+	frameIndex: number,
+): OverlayLayerRequest {
+	const { kind, volumeFileIndex } = overlay;
+	return {
+		key: `${kind}:${volumeFileIndex}:${fileIndex}:${frameIndex}`,
+		load: (signal) => fetchDoseOverlayBlob(fileIndex, frameIndex, volumeFileIndex, signal),
+	};
+}
+
+/** Encoded colorwash layers kept for revisited frames. */
+export const VALUE_OVERLAY_CACHE_BYTES = 32 * 1024 * 1024;
+
+/** Value overlay PNGs: one shared request per layer, recent layers cached. */
+export class OverlayLayerCache {
+	readonly #cache = new ByteBudgetLruCache<string, Blob>({
+		maxBytes: VALUE_OVERLAY_CACHE_BYTES,
+		sizeOf: (blob) => blob.size,
+	});
+	readonly #requests = new SharedRequestRegistry<string, Blob>();
+
+	load({ key, load }: OverlayLayerRequest): Promise<Blob> {
+		const cached = this.#cache.get(key);
+		if (cached) return Promise.resolve(cached);
+		return this.#requests.request(key, load).then((blob) => {
+			this.#cache.set(key, blob);
+			return blob;
+		});
+	}
+
+	/** Aborts layer requests other than `key`'s, such as frames scrolled past. */
+	abortOthers(key: string): void {
+		this.#requests.abortOthers(key);
+	}
+
+	clear(): void {
+		this.#requests.abortAll();
+		this.#cache.clear();
+	}
+}
+
+/** CSS colors of a legend's color stops, lowest value first. */
+export function legendColors(legend: OverlayLegend): string[] {
+	return legend.color_stops.map(([red, green, blue]) => `rgb(${red}, ${green}, ${blue})`);
+}
 
 /** One overlay layer image, fetched in the display fetch scope under `key`. */
 export type OverlayLayerRequest = {
@@ -74,6 +149,16 @@ export async function decodeCanvasImage(blob: Blob): Promise<DecodedCanvasImage>
 		URL.revokeObjectURL(url);
 		throw error;
 	}
+}
+
+/** Replaces a transparent layer canvas's contents with `layer` at its own size. */
+export function drawOverlayLayer(canvas: HTMLCanvasElement, layer: DecodedCanvasImage): void {
+	canvas.width = layer.width;
+	canvas.height = layer.height;
+	const ctx = canvas.getContext("2d");
+	if (!ctx) throw new Error("2D canvas is unavailable");
+	ctx.clearRect(0, 0, layer.width, layer.height);
+	ctx.drawImage(layer.source, 0, 0);
 }
 
 /** Draws `base` at its own size, then each layer stretched over it. */

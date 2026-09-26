@@ -228,3 +228,39 @@ describe("SemanticContextPanel RT Dose section", () => {
 		expect(screen.getByText("No plan, structure set, or image references are declared.")).toBeTruthy();
 	});
 });
+
+describe("SemanticContextPanel RT Dose overlay", () => {
+	function renderWithOverlay() {
+		const onshowoverlay = vi.fn();
+		render(SemanticContextPanel, {
+			fileIndex: RT_DOSE.index,
+			currentFrame: 0,
+			files: [RT_DOSE, CT],
+			onopenreference: vi.fn(),
+			onshowoverlay,
+		});
+		return { onshowoverlay };
+	}
+
+	it("opens an eligible dose on its source image", async () => {
+		const response = rtDoseContext({
+			overlay: { eligible: true, reason: "1 local image frame(s) lie within it", source_file_index: CT.index, mapped_source_count: 1 },
+			overlay_source_frames: [{ file_index: CT.index, frame_index: 0, sop_instance_uid: CT.sop_instance_uid }],
+		});
+		fetchSemanticContext.mockResolvedValue(response);
+		const { onshowoverlay } = renderWithOverlay();
+		await showSemanticContext();
+
+		await fireEvent.click(screen.getByRole("button", { name: "Show dose on source image" }));
+		expect(onshowoverlay).toHaveBeenCalledWith(response);
+	});
+
+	it("offers no overlay for an ineligible dose", async () => {
+		fetchSemanticContext.mockResolvedValue(rtDoseContext());
+		renderWithOverlay();
+		await showSemanticContext();
+
+		expect(screen.getByText(/Overlay unavailable: not drawn/)).toBeTruthy();
+		expect(screen.queryByRole("button", { name: "Show dose on source image" })).toBeNull();
+	});
+});

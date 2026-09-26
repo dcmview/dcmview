@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { untrack } from "svelte";
 	import {
+		isApiError,
 		type DisplayFrameWindowOptions,
 		type FileSummary,
 		type RawFrame,
@@ -38,8 +39,13 @@
 	import {
 		composeOverlayFrame,
 		decodeCanvasImage,
+		drawOverlayLayer,
+		legendColors,
+		OverlayLayerCache,
 		overlayLayerRequests,
+		valueOverlayLayerRequest,
 		type FrameOverlay,
+		type ValueOverlay,
 	} from "./viewport/frameOverlay";
 	import {
 		observePrefetchConcurrency,
@@ -109,6 +115,7 @@
 		navigationPosition,
 		onnavigationchange,
 		overlay = null,
+		valueOverlay = null,
 	}: {
 		activeFile: FileSummary;
 		currentFrame: number;
@@ -135,6 +142,8 @@
 		navigationPosition: number;
 		onnavigationchange: (position: number) => void;
 		overlay?: FrameOverlay | null;
+		/** A colorwash drawn over the displayed frame; ignored under a SEG overlay. */
+		valueOverlay?: ValueOverlay | null;
 	} = $props();
 
 	let dragState = $state<DragState>(null);
@@ -158,6 +167,10 @@
 		onScopeChange: () => rendered.reset(),
 	});
 	const valueMappings = new ValueMappings();
+	const overlayLayers = new OverlayLayerCache();
+	let valueOverlayCanvas: HTMLCanvasElement | undefined = $state();
+	type ValueOverlayState = { key: string; status: "loading" | "shown" | "not_covering" | "error" };
+	let valueOverlayState = $state<ValueOverlayState | null>(null);
 	const probe = new PixelProbe(rawFrames);
 	let probeClientPoint: { x: number; y: number } | null = null;
 	let probeAnimationFrame = 0;
@@ -255,6 +268,23 @@
 		const high = mappedScale.toMapped(mappedWindow.wc + mappedWindow.ww / 2);
 		const mapped = windowToMapped({ center: mappedWindow.wc, width: mappedWindow.ww }, mappedScale);
 		return { low, high, ...mapped };
+	});
+
+	// The colorwash layer depends only on which volume is shown and whether
+	// it covers the frame; opacity is applied to the drawn layer.
+	const shownValueOverlay = $derived(overlay || !activeFile.has_pixels ? null : valueOverlay);
+	const valueOverlayVolume = $derived(
+		shownValueOverlay ? `${shownValueOverlay.kind}:${shownValueOverlay.volumeFileIndex}` : null,
+	);
+	const valueOverlayCovers = $derived(shownValueOverlay?.coversFrame ?? false);
+	const valueOverlayCaption = $derived.by(() => {
+		if (!shownValueOverlay) return null;
+		const { legend } = shownValueOverlay;
+		if (!valueOverlayCovers || valueOverlayState?.status === "not_covering") return "Not covering this frame";
+		if (valueOverlayState?.status === "error") return "Overlay unavailable for this frame";
+		return legend.transparent_at_or_below === null
+			? null
+			: `≤ ${formatValue(legend.transparent_at_or_below)} ${legend.unit_label} transparent`;
 	});
 
 	const activeAnnotations = $derived(annotations.annotations(activeFile.index));
@@ -801,11 +831,58 @@
 		});
 	});
 
+	// Fetches the displayed frame's colorwash and draws it on its own canvas.
+	// A frame the volume does not reach shows no layer and a legend note.
+	$effect(() => {
+		const volume = valueOverlayVolume;
+		const covers = valueOverlayCovers;
+		const canvas = valueOverlayCanvas;
+		const fileIndex = activeFile.index;
+		const frameIndex = currentFrame;
+		const shown = untrack(() => shownValueOverlay);
+		if (!volume || !shown) {
+			valueOverlayState = null;
+			return;
+		}
+		const request = valueOverlayLayerRequest(shown, fileIndex, frameIndex);
+		const key = request.key;
+		if (!covers) {
+			valueOverlayState = { key, status: "not_covering" };
+			return;
+		}
+		if (!canvas) return;
+		let current = true;
+		valueOverlayState = { key, status: "loading" };
+		overlayLayers.abortOthers(key);
+		overlayLayers.load(request)
+			.then(decodeCanvasImage)
+			.then((layer) => {
+				try {
+					if (!current) return;
+					drawOverlayLayer(canvas, layer);
+					valueOverlayState = { key, status: "shown" };
+				} finally {
+					layer.dispose();
+				}
+			})
+			.catch((error: unknown) => {
+				if (!current || (error as Error).name === "AbortError") return;
+				valueOverlayState = {
+					key,
+					status: isApiError(error, "overlay_not_covering_frame") ? "not_covering" : "error",
+				};
+			});
+		return () => {
+			current = false;
+		};
+	});
+
 	$effect(() => observePrefetchConcurrency((concurrency) => { prefetchConcurrency = concurrency; }));
 
 	$effect(() => {
 		return () => {
 			stopProbe();
+			overlayLayers.clear();
 			rawFrames.clear();
 			displayFrames.clear();
 			wlRenderer.dispose();
@@ -1181,6 +1258,15 @@
 				class="dicom-canvas"
 				data-capture-rendered={rendered.token}
 			></canvas>
+			{#if valueOverlayVolume}
+				<canvas
+					bind:this={valueOverlayCanvas}
+					class="value-overlay-canvas"
+					hidden={valueOverlayState?.status !== "shown"}
+					style:opacity={shownValueOverlay?.opacity ?? 0}
+					aria-hidden="true"
+				></canvas>
+			{/if}
 			{#if !overlay && imageColumns > 0 && imageRows > 0}
 				<RoiOverlay
 					rois={visibleRois}
@@ -1237,15 +1323,27 @@
 				onrevert={() => annotations.rollback(activeFile.index)}
 			/>
 		{/if}
-		{#if mappedScale && mappedLegend}
+		{#if (mappedScale && mappedLegend) || shownValueOverlay}
 			<div class="legends">
-				<ValueLegend
-					title={mappedScale.label ?? "Window"}
-					unit={mappedScale.unit}
-					low={mappedLegend.low}
-					high={mappedLegend.high}
-					colors={["#000", "#fff"]}
-				/>
+				{#if shownValueOverlay}
+					<ValueLegend
+						title={shownValueOverlay.title}
+						unit={shownValueOverlay.legend.unit_label}
+						low={shownValueOverlay.legend.min_value}
+						high={shownValueOverlay.legend.max_value}
+						colors={legendColors(shownValueOverlay.legend)}
+						caption={valueOverlayCaption}
+					/>
+				{/if}
+				{#if mappedScale && mappedLegend}
+					<ValueLegend
+						title={mappedScale.label ?? "Window"}
+						unit={mappedScale.unit}
+						low={mappedLegend.low}
+						high={mappedLegend.high}
+						colors={["#000", "#fff"]}
+					/>
+				{/if}
 			</div>
 		{/if}
 		<ZoomControls scale={activeTransform.scale} onstep={stepZoom} onfit={fitActiveImageToViewport} />
@@ -1278,6 +1376,17 @@
 		top: 0;
 		transform-origin: 0 0;
 		transition: transform 0.03s linear;
+	}
+	.value-overlay-canvas {
+		position: absolute;
+		inset: 0;
+		width: 100%;
+		height: 100%;
+		image-rendering: pixelated;
+		pointer-events: none;
+	}
+	.value-overlay-canvas[hidden] {
+		display: none;
 	}
 	.dicom-canvas {
 		display: block;
@@ -1333,10 +1442,10 @@
 	.legends {
 		position: absolute;
 		right: 0.75rem;
-		bottom: 3.1rem;
+		top: 50%;
+		transform: translateY(-50%);
 		display: flex;
-		flex-direction: column;
-		align-items: flex-end;
+		align-items: center;
 		gap: 0.4rem;
 	}
 	.mapped-window {

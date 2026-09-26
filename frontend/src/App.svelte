@@ -14,6 +14,7 @@
 	} from "./lib/semanticPresentation";
 	import StatusBar from "./lib/StatusBar.svelte";
 	import TagPanel from "./lib/TagPanel.svelte";
+	import ValueOverlayBar from "./lib/ValueOverlayBar.svelte";
 	import ViewerToolbar from "./lib/ViewerToolbar.svelte";
 	import WsiTileContext from "./lib/WsiTileContext.svelte";
 	import { Catalog } from "./lib/app/catalog.svelte";
@@ -23,6 +24,7 @@
 		TAG_PANEL_MIN_WIDTH_PX,
 	} from "./lib/app/sidebarLayout.svelte";
 	import { TabNavigation } from "./lib/app/tabNavigation.svelte";
+	import { overlayEntryFrame, ValueOverlays } from "./lib/app/valueOverlays.svelte";
 	import { WindowSettings } from "./lib/app/windowSettings.svelte";
 	import type { CineDirection, CineMode } from "./lib/cinePlayback";
 	import { resolveFilesById } from "./lib/fileRegistry";
@@ -53,6 +55,12 @@
 	// Zoom, pan, and orientation per open tab: the viewport zooms and pans,
 	// the toolbar reorients.
 	const viewStates = new ViewStates();
+	// Value colorwashes (RT Dose) over the images they cover.
+	const valueOverlays = new ValueOverlays({
+		files: () => catalog.filesById,
+		series: () => catalog.series?.series ?? [],
+		scanComplete: () => (catalog.files?.scan_complete ?? false) && (catalog.series?.scan_complete ?? false),
+	});
 
 	let activeTool = $state<ActiveTool>("pan");
 	let cinePlaying = $state(false);
@@ -75,12 +83,28 @@
 		if (!sourceFile) return null;
 		return { kind: "segmentation", ...selection, sourceFile };
 	});
+	const overlayCandidates = $derived(
+		tabs.activeFileIndex === null ? [] : valueOverlays.candidatesFor(tabs.activeFileIndex, tabs.frames),
+	);
+	const valueOverlay = $derived(
+		frameOverlay || tabs.activeFileIndex === null
+			? null
+			: valueOverlays.overlayFor(overlayCandidates, tabs.activeFileIndex, tabs.currentFrame),
+	);
 	const openTabFiles = $derived(resolveFilesById(catalog.filesById, tabs.tabs.map((tab) => tab.fileIndex)));
 
 	/** A different tab starts paused and playing forward. */
 	function resetCine() {
 		cinePlaying = false;
 		cineDirection = 1;
+	}
+
+	/** Opens a volume's source image with its colorwash shown. */
+	function showValueOverlay(response: SemanticContextResponse) {
+		const entry = overlayEntryFrame(response);
+		if (!entry) return;
+		valueOverlays.select(response.source_file_index);
+		tabs.openReference(entry.fileIndex, entry.frameIndex);
 	}
 
 	function openFileFromNavigator(fileIndex: number) {
@@ -155,6 +179,8 @@
 				return;
 		}
 	}
+
+	$effect(() => valueOverlays.load(tabs.activeFileIndex));
 
 	onMount(() => catalog.poll(() => tabs.syncCatalog(catalog.files?.files[0]?.index ?? null)));
 </script>
@@ -264,6 +290,17 @@
 								onopenreference={(fileIndex, frameIndex) => tabs.openReference(fileIndex, frameIndex)}
 								onmodechange={(mode) => { semanticMode = mode; }}
 								oncontextchange={(response) => { semanticResponse = response; }}
+								onshowoverlay={showValueOverlay}
+							/>
+						{/if}
+						{#if overlayCandidates.length > 0 && !frameOverlay}
+							<ValueOverlayBar
+								candidates={overlayCandidates}
+								selectedVolume={valueOverlays.selectedVolume}
+								opacity={valueOverlays.opacity}
+								coversFrame={valueOverlay?.coversFrame ?? false}
+								ontoggle={(volumeFileIndex) => valueOverlays.toggle(volumeFileIndex)}
+								onopacity={(opacity) => valueOverlays.setOpacity(opacity)}
 							/>
 						{/if}
 						{#if activeFile.object_kind === "whole_slide_microscopy"}
@@ -286,6 +323,7 @@
 						{activeTool}
 						{viewStates}
 						overlay={frameOverlay}
+						{valueOverlay}
 						bind:cinePlaying
 						{cineFps}
 						{cineMode}
