@@ -78,8 +78,7 @@ or metadata unless they are fully de-identified and approved for public use.
   documentation, and packaging changes.
 - [Development reference](development.md): source builds, frontend proxy
   workflow, canonical check profiles, fixture policy, and cache budgets.
-- [Release process](releasing.md): local release checks, GitHub Release assets,
-  PyPI wheels, VS Code Marketplace publishing, and Homebrew tap prerequisites.
 - [Release checklist](release-checklist.md): repeatable release-note,
   publication, CI qualification, tagging, documentation synchronization,
-  incident handling, and next-version steps for every tagged release.
+  incident handling, and next-version steps for every tagged release, plus the
+  release channels, repository configuration, and Homebrew tap prerequisites.

@@ -116,7 +116,7 @@ Useful entry points:
 - [Python reference](docs/python.md)
 - [Internal API reference](docs/api.md)
 - [Architecture and test model](docs/architecture.md)
-- [Release process](docs/releasing.md)
+- [Release checklist](docs/release-checklist.md)
 
 ## Pull Requests
 
