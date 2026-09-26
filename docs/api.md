@@ -47,6 +47,9 @@ All paths are under `/api`; `{index}` is a file index from `/api/files` and
 | GET | `/file/{index}/frame/{frame}` | Display frame as `image/png`, with `X-Cache`. Query: `wc`, `ww`, `mode`. |
 | GET | `/file/{index}/frame/{frame}/raw` | Decoded samples as `application/octet-stream`, with `X-Cache` and `X-Frame-*` metadata headers. |
 | GET | `/file/{index}/frame/{frame}/segmentation-overlay` | Transparent source-sized SEG mask as `image/png`, with `X-Cache`. |
+| GET | `/file/{index}/frame/{frame}/dose-overlay` | RT Dose colorwash sized to this frame as `image/png`, with `X-Cache`. Query: `dose` (RT Dose file index). |
+| GET | `/file/{index}/frame/{frame}/parametric-map-overlay` | Parametric Map colorwash sized to this frame as `image/png`, with `X-Cache`. Query: `map` (Parametric Map file index). |
+| GET | `/file/{index}/frame/{frame}/value-mapping` | `FrameValueMapping`: how this frame's stored samples convert to modality and real-world values. |
 | GET | `/file/{index}/frame/{frame}/wsi-context` | `WsiFrameContextResponse`: position of one Whole Slide Microscopy tile. |
 | GET | `/file/{index}/tags` | `TagNode[]`: preview tag tree. |
 | GET | `/file/{index}/tags/select` | One `TagNode`. Query: `path`, `offset`, `limit`. |
@@ -118,10 +121,33 @@ Transfer syntax coverage:
 | Implicit LE, Explicit LE/BE, Deflated Explicit LE | 1/8/16/32-bit monochrome integer, float, double float, RGB (planar 0/1), YBR_FULL, YBR_FULL_422, palette color. | Native samples; planar order kept, padding bits masked, signed values sign-extended. |
 | JPEG Extended (`.51`), JPEG 2000 lossy (`.91`), JPEG-LS Near-Lossless (`.81`), JPEG XL `.111`/`.112`, anything else | `422 unsupported_transfer_syntax` | `422` |
 
-Real World Value Mapping is not applied to display or raw pixels, including
-float and double-float data.
+Real World Value Mapping and RT Dose Grid Scaling are not applied to display
+or raw pixels, including float and double-float data; `value-mapping` tells the
+client how to convert them.
 
-## Semantic Context, SEG Overlay, And WSI
+## Value Mapping
+
+`value-mapping` describes one frame of any object, so a client can read
+stored, modality, and real-world values out of a raw frame:
+
+- `stored_value_type`: `integer`, `float32`, or `float64` samples.
+- `modality`: the transform the display pipeline applies before windowing,
+  the same one the raw-frame rescale headers carry: `rescale_slope`,
+  `rescale_intercept`, `rescale_type`, and a `lut` (`first_value_mapped`,
+  `values`) that replaces the rescale when present.
+- `real_world`: validated conversions that apply to this frame, preferred
+  first. A frame's own Real World Value Mapping functional group overrides
+  the shared group, which overrides a top-level sequence. Each entry has a
+  `transform` (`{kind: "linear", slope, intercept}` or `{kind: "lut",
+  values}` indexed by `stored - first_value_mapped`), the inclusive stored
+  range `first_value_mapped..=last_value_mapped` (stored values outside it
+  have no mapped value), `unit_label` (a UCUM code or unit text), and the
+  coded `units` and `quantity`. RT Dose reports its Dose Grid Scaling as
+  `source: "dose_grid_scaling"`, a linear map with `unit_label` `Gy` or the
+  declared Dose Units. RWVM instances referenced from another object are
+  listed in the Parametric Map context only.
+
+## Semantic Context, Overlays, And WSI
 
 `semantic-context` interprets declared SEG, Parametric Map, and RT Dose
 metadata without changing the ordinary pixel preview. For SEG it returns one
@@ -138,6 +164,49 @@ and the mask is nearest-neighbor resampled onto the source frame. Colors come
 from a fixed per-segment palette. It answers `400` for a non-SEG object, `404`
 for an out-of-range frame, and `422 semantic_mapping_unavailable` when the
 mapping, geometry, or source file is missing or ambiguous.
+
+Parametric Map and RT Dose contexts report `displayed_value_kind: "stored"`:
+the frame endpoints window stored values, and mapped units are the client's
+conversion.
+
+`dose-overlay` and `parametric-map-overlay` draw a value volume on a displayed
+frame: the path names the displayed image frame and the query names the RT
+Dose (`dose`) or Parametric Map (`map`). The volume's frames are a stack of
+parallel planes: an RT Dose grid from Image Position/Orientation, Pixel
+Spacing, and Grid Frame Offset Vector (relative or absolute form); a
+Parametric Map from its per-frame positions, which must share orientation,
+spacing, and in-plane origin, one frame per plane. A displayed frame in the
+same Frame of Reference and parallel to the planes is sampled bilinearly
+within the planes and linearly between the two that bracket it; up to half a
+plane spacing beyond an end plane uses that plane. Samples convert through
+each frame's preferred `value-mapping` entry (Dose Grid Scaling for RT Dose).
+
+The PNG has the displayed frame's size. Colors follow the context's `legend`:
+a value `v` sits at `(v - min_value) / (max_value - min_value)`, clamped,
+along the evenly spaced `color_stops` (viridis), interpolated linearly in RGB.
+Colored pixels are opaque, so the viewer applies overlay opacity; pixels
+outside the grid, without a mapped value, or at or below
+`transparent_at_or_below` are transparent. The RT Dose legend spans 0 to the
+maximum dose of the whole grid with zero dose transparent; the Parametric Map
+legend spans the minimum to maximum mapped value of every frame with no
+floor. Both use one scale for every slice. Encoded overlays are cached per
+volume and displayed frame.
+
+In the semantic context, RT Dose and Parametric Map carry `overlay`
+(eligibility), `overlay_source_frames` (the local image frames in the
+volume's Frame of Reference that it covers, in file and frame order, at most
+4096), and `legend` (present only when eligible). `overlay.source_file_index`
+is the declared source image when exactly one covered file is declared, or
+the only covered file. The Parametric Map overlay also needs a usable
+mapping on every frame, all in one unit. A volume whose frames cannot be
+decoded, or a dose grid without positive dose, is ineligible.
+
+The overlay endpoints answer `400` when the query names the wrong kind of
+object, `404` for an unknown file index or out-of-range frame, `404
+overlay_not_covering_frame` when the displayed frame is beyond the stack or
+has no in-plane overlap, and `422 semantic_mapping_unavailable` when the
+volume is ineligible, the displayed frame lies in another Frame of
+Reference, lacks geometry, or is not parallel to the planes.
 
 `wsi-context` positions one tile of a Whole Slide Microscopy object in its Total
 Pixel Matrix without stitching. It answers `400` for other objects.
@@ -181,7 +250,7 @@ Branch on `code`; `error` is diagnostic text and may change.
 | Status | Codes |
 |---|---|
 | `400` | `invalid_path`, `invalid_query`, `invalid_json` (malformed body), `bad_request`, `invalid_window` |
-| `404` | `not_found`, `route_not_found`, `asset_not_found`, `no_pixel_data`, `frame_out_of_range` |
+| `404` | `not_found`, `route_not_found`, `asset_not_found`, `no_pixel_data`, `frame_out_of_range`, `overlay_not_covering_frame` |
 | `405` | `method_not_allowed` |
 | `415` | `invalid_json` (missing `Content-Type: application/json`) |
 | `422` | `invalid_json` (valid JSON of the wrong shape), `unsupported_transfer_syntax`, `unsupported_pixel_layout`, `semantic_mapping_unavailable` |
