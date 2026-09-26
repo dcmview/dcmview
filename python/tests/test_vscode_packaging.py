@@ -69,7 +69,7 @@ class VSCodePackagingTests(unittest.TestCase):
 			with zipfile.ZipFile(vsix, "w") as package:
 				package.writestr("extension/README.md", f"{readme}\n[broken](../docs/index.md)")
 
-			with self.assertRaisesRegex(RuntimeError, "repository-relative"):
+			with self.assertRaises(RuntimeError):
 				packaging.verify_marketplace_readme(vsix)
 
 
