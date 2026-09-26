@@ -4,6 +4,7 @@
 //! by identity. Classification does not imply pixel or semantic support; it is
 //! an observability primitive for describing what kind of object was opened.
 
+use dicom_dictionary_std::uids;
 use std::fmt;
 
 /// A coarse DICOM object family derived from an exact SOP Class UID.
@@ -60,58 +61,64 @@ impl fmt::Display for ObjectKind {
 pub fn classify_sop_class(sop_class_uid: &str) -> ObjectKind {
     match sop_class_uid {
         // Prepared classic and visible-light image families.
-        "1.2.840.10008.5.1.4.1.1.1"
-        | "1.2.840.10008.5.1.4.1.1.1.1"
-        | "1.2.840.10008.5.1.4.1.1.1.2"
-        | "1.2.840.10008.5.1.4.1.1.1.2.1"
-        | "1.2.840.10008.5.1.4.1.1.2"
-        | "1.2.840.10008.5.1.4.1.1.3.1"
-        | "1.2.840.10008.5.1.4.1.1.4"
-        | "1.2.840.10008.5.1.4.1.1.6.1"
-        | "1.2.840.10008.5.1.4.1.1.7"
-        | "1.2.840.10008.5.1.4.1.1.7.1"
-        | "1.2.840.10008.5.1.4.1.1.12.1"
-        | "1.2.840.10008.5.1.4.1.1.12.2"
-        | "1.2.840.10008.5.1.4.1.1.20"
-        | "1.2.840.10008.5.1.4.1.1.77.1.1"
-        | "1.2.840.10008.5.1.4.1.1.77.1.2"
-        | "1.2.840.10008.5.1.4.1.1.77.1.4"
-        | "1.2.840.10008.5.1.4.1.1.128" => ObjectKind::ClassicImage,
+        uids::COMPUTED_RADIOGRAPHY_IMAGE_STORAGE
+        | uids::DIGITAL_X_RAY_IMAGE_STORAGE_FOR_PRESENTATION
+        | uids::DIGITAL_MAMMOGRAPHY_X_RAY_IMAGE_STORAGE_FOR_PRESENTATION
+        | uids::DIGITAL_MAMMOGRAPHY_X_RAY_IMAGE_STORAGE_FOR_PROCESSING
+        | uids::CT_IMAGE_STORAGE
+        | uids::ULTRASOUND_MULTI_FRAME_IMAGE_STORAGE
+        | uids::MR_IMAGE_STORAGE
+        | uids::ULTRASOUND_IMAGE_STORAGE
+        | uids::SECONDARY_CAPTURE_IMAGE_STORAGE
+        | uids::MULTI_FRAME_SINGLE_BIT_SECONDARY_CAPTURE_IMAGE_STORAGE
+        | uids::X_RAY_ANGIOGRAPHIC_IMAGE_STORAGE
+        | uids::X_RAY_RADIOFLUOROSCOPIC_IMAGE_STORAGE
+        | uids::NUCLEAR_MEDICINE_IMAGE_STORAGE
+        | uids::VL_ENDOSCOPIC_IMAGE_STORAGE
+        | uids::VL_MICROSCOPIC_IMAGE_STORAGE
+        | uids::VL_PHOTOGRAPHIC_IMAGE_STORAGE
+        | uids::POSITRON_EMISSION_TOMOGRAPHY_IMAGE_STORAGE => ObjectKind::ClassicImage,
 
         // Prepared enhanced image families. Concatenation membership is an
         // instance-level identity layered on top of this object kind.
-        "1.2.840.10008.5.1.4.1.1.2.1"
-        | "1.2.840.10008.5.1.4.1.1.4.1"
-        | "1.2.840.10008.5.1.4.1.1.130" => ObjectKind::EnhancedImage,
+        uids::ENHANCED_CT_IMAGE_STORAGE
+        | uids::ENHANCED_MR_IMAGE_STORAGE
+        | uids::ENHANCED_PET_IMAGE_STORAGE => ObjectKind::EnhancedImage,
 
-        "1.2.840.10008.5.1.4.1.1.77.1.6" => ObjectKind::WholeSlideMicroscopy,
+        uids::VL_WHOLE_SLIDE_MICROSCOPY_IMAGE_STORAGE => ObjectKind::WholeSlideMicroscopy,
 
-        "1.2.840.10008.5.1.4.1.1.66.4" | "1.2.840.10008.5.1.4.1.1.66.7" => ObjectKind::Segmentation,
-        "1.2.840.10008.5.1.4.1.1.30" => ObjectKind::ParametricMap,
-        "1.2.840.10008.5.1.4.1.1.67" => ObjectKind::RealWorldValueMapping,
+        uids::SEGMENTATION_STORAGE | uids::LABEL_MAP_SEGMENTATION_STORAGE => {
+            ObjectKind::Segmentation
+        }
+        uids::PARAMETRIC_MAP_STORAGE => ObjectKind::ParametricMap,
+        uids::REAL_WORLD_VALUE_MAPPING_STORAGE => ObjectKind::RealWorldValueMapping,
 
-        "1.2.840.10008.5.1.4.1.1.11.1"
-        | "1.2.840.10008.5.1.4.1.1.11.2"
-        | "1.2.840.10008.5.1.4.1.1.11.4"
-        | "1.2.840.10008.5.1.4.1.1.11.8" => ObjectKind::PresentationState,
+        uids::GRAYSCALE_SOFTCOPY_PRESENTATION_STATE_STORAGE
+        | uids::COLOR_SOFTCOPY_PRESENTATION_STATE_STORAGE
+        | uids::BLENDING_SOFTCOPY_PRESENTATION_STATE_STORAGE
+        | uids::ADVANCED_BLENDING_PRESENTATION_STATE_STORAGE => ObjectKind::PresentationState,
 
-        "1.2.840.10008.5.1.4.1.1.66.1" | "1.2.840.10008.5.1.4.1.1.66.3" => ObjectKind::Registration,
+        uids::SPATIAL_REGISTRATION_STORAGE | uids::DEFORMABLE_SPATIAL_REGISTRATION_STORAGE => {
+            ObjectKind::Registration
+        }
 
-        "1.2.840.10008.5.1.4.1.1.88.11"
-        | "1.2.840.10008.5.1.4.1.1.88.33"
-        | "1.2.840.10008.5.1.4.1.1.88.34" => ObjectKind::StructuredReport,
-        "1.2.840.10008.5.1.4.1.1.88.59" => ObjectKind::KeyObjectSelection,
+        uids::BASIC_TEXT_SR_STORAGE
+        | uids::COMPREHENSIVE_SR_STORAGE
+        | uids::COMPREHENSIVE3_DSR_STORAGE => ObjectKind::StructuredReport,
+        uids::KEY_OBJECT_SELECTION_DOCUMENT_STORAGE => ObjectKind::KeyObjectSelection,
 
-        "1.2.840.10008.5.1.4.1.1.9.1.1" | "1.2.840.10008.5.1.4.1.1.9.1.2" => ObjectKind::Waveform,
+        uids::TWELVE_LEAD_ECG_WAVEFORM_STORAGE | uids::GENERAL_ECG_WAVEFORM_STORAGE => {
+            ObjectKind::Waveform
+        }
 
-        "1.2.840.10008.5.1.4.1.1.481.1"
-        | "1.2.840.10008.5.1.4.1.1.481.2"
-        | "1.2.840.10008.5.1.4.1.1.481.3"
-        | "1.2.840.10008.5.1.4.1.1.481.5"
-        | "1.2.840.10008.5.1.4.1.1.481.12"
-        | "1.2.840.10008.5.1.4.1.1.481.13" => ObjectKind::RadiationTherapy,
+        uids::RT_IMAGE_STORAGE
+        | uids::RT_DOSE_STORAGE
+        | uids::RT_STRUCTURE_SET_STORAGE
+        | uids::RT_PLAN_STORAGE
+        | uids::RT_RADIATION_SET_STORAGE
+        | uids::C_ARM_PHOTON_ELECTRON_RADIATION_STORAGE => ObjectKind::RadiationTherapy,
 
-        "1.2.840.10008.5.1.4.1.1.104.1" => ObjectKind::EncapsulatedPdf,
+        uids::ENCAPSULATED_PDF_STORAGE => ObjectKind::EncapsulatedPdf,
         _ => ObjectKind::Unknown,
     }
 }

@@ -19,7 +19,7 @@ use crate::references::{self, ReferenceCandidate, ReferenceRelationship, Resolve
 use crate::types::FileEntry;
 use anyhow::{Context, Result};
 use dicom_core::Tag;
-use dicom_dictionary_std::{tags, StandardDataDictionary};
+use dicom_dictionary_std::{tags, uids, StandardDataDictionary};
 use dicom_object::{InMemDicomObject, OpenFileOptions};
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -195,7 +195,7 @@ pub fn semantic_context(
         ObjectKind::ParametricMap => {
             SemanticContext::ParametricMap(parametric_map_context(&object, files, &resolved))
         }
-        ObjectKind::RadiationTherapy if source.sop_class_uid == "1.2.840.10008.5.1.4.1.1.481.2" => {
+        ObjectKind::RadiationTherapy if source.sop_class_uid == uids::RT_DOSE_STORAGE => {
             SemanticContext::RtDose(Box::new(rt_dose_context(source, &object, files, &resolved)))
         }
         _ => SemanticContext::NotApplicable {

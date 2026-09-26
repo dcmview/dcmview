@@ -8,6 +8,7 @@ use crate::series::{
     SeriesFileInput, SeriesGroup, SeriesStack, SeriesWarning,
 };
 use crate::types::FileEntry;
+use dicom_dictionary_std::uids;
 use std::collections::{BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use tokio::sync::{futures::Notified, Notify};
@@ -173,8 +174,6 @@ impl FileRegistry {
     }
 }
 
-const VL_WHOLE_SLIDE_MICROSCOPY_IMAGE_STORAGE: &str = "1.2.840.10008.5.1.4.1.1.77.1.6";
-
 fn series_file_input(file: &FileEntry) -> SeriesFileInput {
     let metadata = &file.series_metadata;
     let has_per_frame_geometry = !metadata.frame_image_positions_patient.is_empty()
@@ -202,7 +201,7 @@ fn series_file_input(file: &FileEntry) -> SeriesFileInput {
             concatenation_frame_offset_number: metadata.concatenation_frame_offset_number,
             in_concatenation_number: metadata.in_concatenation_number,
         }
-    } else if file.sop_class_uid == VL_WHOLE_SLIDE_MICROSCOPY_IMAGE_STORAGE {
+    } else if file.sop_class_uid == uids::VL_WHOLE_SLIDE_MICROSCOPY_IMAGE_STORAGE {
         NavigationInput::Wsi {
             pyramid_uid: metadata.pyramid_uid.clone().filter(|uid| !uid.is_empty()),
             image_type_role: metadata
