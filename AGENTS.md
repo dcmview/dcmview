@@ -201,7 +201,7 @@ there, not in a decoder, so what is advertised is what is converted.
 | JPEG Lossless | `1.2.840.10008.1.2.4.57`, `.70` | Decode server-side with `dicom-pixeldata`; convert YBR_FULL components to RGB (the lossless process has no color transform); PNG encode |
 | JPEG 2000 Lossless | `1.2.840.10008.1.2.4.90` | Read encapsulated fragment with `DicomCollector`; decode via `jpeg2k`; PNG encode |
 | JPEG-LS Lossless | `1.2.840.10008.1.2.4.80` | Decode grayscale server-side with statically linked CharLS; PNG encode |
-| JPEG XL Lossless | `1.2.840.10008.1.2.4.110` | Decode server-side with `dicom-pixeldata`; RGB as decoded, YBR_FULL channels converted to RGB; PNG encode |
+| JPEG XL Lossless | `1.2.840.10008.1.2.4.110` | Decode server-side with `dicom-pixeldata`; RGB and YBR_RCT as decoded (the decoder inverts the RCT), YBR_FULL channels converted to RGB; PNG encode |
 | RLE Lossless | `1.2.840.10008.1.2.5` | Decode Annex G header/PackBits byte planes server-side; RGB, YBR_FULL, and full-resolution YBR_FULL_422 color; PNG encode |
 | Native dataset | Implicit LE, Explicit LE, Explicit BE, Deflated Explicit LE | Read decoded/native samples, rescale/window, PNG encode |
 | JPEG Extended, JPEG 2000 lossy, JPEG-LS Near-Lossless, JPEG XL variants | `.51`, `.91`, `.81`, `.111`, `.112` | HTTP 422 unsupported transfer syntax |

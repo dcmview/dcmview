@@ -306,8 +306,9 @@ reinterpreted.
 JPEG-LS Lossless `.80` uses the vendored CharLS build through
 `dicom-pixeldata`; the supported path is 8-bit grayscale, while `.81` remains
 unsupported. JPEG XL Lossless `.110` uses the pure-Rust codec graph and retains
-all interleaved channels in both PNG and raw output; three-channel frames
-labelled YBR_FULL are converted to RGB for display. `.111` and `.112`
+all interleaved channels in both PNG and raw output; YBR_RCT frames are RGB
+once the decoder inverts the codestream's reversible color transform, and
+three-channel frames labelled YBR_FULL are converted to RGB for display. `.111` and `.112`
 remain unsupported until independently exercised. JPEG Lossless has no color
 transform in its codestream, so YBR_FULL components are converted to RGB after
 decoding, while JPEG Baseline relies on the decoder's own YCbCr conversion. Deflated Explicit VR Little

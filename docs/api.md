@@ -113,7 +113,7 @@ Transfer syntax coverage:
 | JPEG Lossless (`.57`, `.70`) | PNG; 8-bit RGB, and YBR_FULL converted to RGB. | 8- or 16-bit grayscale. |
 | JPEG 2000 Lossless (`.90`) | PNG | 8- or 16-bit grayscale; multi-component is `422`. |
 | JPEG-LS Lossless (`.80`) | Grayscale PNG | Unsigned 8-bit grayscale. |
-| JPEG XL Lossless (`.110`) | PNG; 8-bit RGB, and YBR_FULL converted to RGB. | Unsigned interleaved 8-bit samples: RGB, or a YBR_FULL frame's stored channels labelled `YBR_FULL`. |
+| JPEG XL Lossless (`.110`) | PNG; 8-bit RGB and YBR_RCT (RGB after the decoder inverts the RCT), and YBR_FULL converted to RGB. | Unsigned interleaved 8-bit samples: RGB (YBR_RCT frames included), or a YBR_FULL frame's stored channels labelled `YBR_FULL`. |
 | RLE Lossless (`.5`) | 8/16-bit monochrome, 8-bit RGB, YBR_FULL, YBR_FULL_422 (full resolution, shown as YBR_FULL), palette color. | Interleaved native samples; YBR_FULL_422 frames are labelled `YBR_FULL`. |
 | Implicit LE, Explicit LE/BE, Deflated Explicit LE | 1/8/16/32-bit monochrome integer, float, double float, RGB (planar 0/1), YBR_FULL, YBR_FULL_422, palette color. | Native samples; planar order kept, padding bits masked, signed values sign-extended. |
 | JPEG Extended (`.51`), JPEG 2000 lossy (`.91`), JPEG-LS Near-Lossless (`.81`), JPEG XL `.111`/`.112`, anything else | `422 unsupported_transfer_syntax` | `422` |
