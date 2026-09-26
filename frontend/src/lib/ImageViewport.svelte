@@ -26,7 +26,9 @@
 	import {
 		computeFullDynamicWindow,
 		computePercentileWindow,
+		mappedUnitsPerStoredUnit,
 		resolveDisplayWindow,
+		resolveMappedDisplayWindow,
 		selectWindowingPipeline,
 		validateRenderableRawFrame,
 		type ResolvedWindow,
@@ -94,7 +96,7 @@
 	type PipelineMode = "cine" | "diagnostic_wl" | "server_wl" | "overlay";
 	type DragState =
 		| { mode: "pan"; startX: number; startY: number; baseTx: number; baseTy: number }
-		| { mode: "wl"; startX: number; startY: number; baseCenter: number; baseWidth: number }
+		| { mode: "wl"; startX: number; startY: number; baseCenter: number; baseWidth: number; step: number }
 		| { mode: "zoom_drag"; startY: number; baseScale: number; anchor: ZoomAnchor }
 		| { mode: "scroll_drag"; startY: number; baseFrame: number }
 		| { mode: "draw_roi"; start: ImagePoint; current: ImagePoint }
@@ -202,18 +204,32 @@
 	const activeTransform = $derived(viewStates.transform(activeFile ? navigationScopeKey : ""));
 	const orientation = $derived(viewStates.orientation(navigationScopeKey));
 	const isDragging = $derived(dragState !== null);
-	const pipelineMode = $derived.by<PipelineMode>(() => overlay
-		? "overlay"
-		: selectWindowingPipeline(
-			activeTool === "window_level",
-			rawWindowLevelFallbackByFile[activeFile.index] ?? false,
-			activeFile.raw_windowing_compatible,
-		));
-
-	// A window in real-world units converts through the displayed frame's
-	// mapping (or the file's latest while that frame's loads) to the
-	// Modality scale that both render paths window.
+	// The displayed frame's value mapping (or the file's latest while that
+	// frame's loads) decides whether the window is in real-world units.
 	const frameMapping = $derived(valueMappings.forFrame(activeFile.index, currentFrame));
+	// A LUT real-world mapping has no linear stored window: the raw renderer
+	// windows its values directly, from its automatic window or one set in
+	// its unit. A window set on the stored scale (a preset) stays stored.
+	const lutMap = $derived.by(() => {
+		const map = overlay ? null : frameMapping?.real_world[0];
+		return map?.transform.kind === "lut" ? map : null;
+	});
+	const lutWindowing = $derived(
+		lutMap !== null && (windowUnit === lutMap.unit_label || (windowUnit === null && windowCenter === null)),
+	);
+	const pipelineMode = $derived.by<PipelineMode>(() => {
+		if (overlay) return "overlay";
+		const rawFallback = rawWindowLevelFallbackByFile[activeFile.index] ?? false;
+		// Stills keep a window set in LUT units on the raw path, whatever the
+		// tool; cine plays display frames windowed by the LUT's ends.
+		if (lutWindowing && windowUnit !== null && !cinePlaying && !rawFallback && activeFile.raw_windowing_compatible) {
+			return "diagnostic_wl";
+		}
+		return selectWindowingPipeline(activeTool === "window_level", rawFallback, activeFile.raw_windowing_compatible);
+	});
+
+	// A window in real-world units converts through that mapping to the
+	// Modality scale that both render paths window.
 	const mappedScale = $derived(overlay ? null : mappedWindowScale(frameMapping));
 	const renderWindow = $derived.by(() => {
 		if (overlay || windowCenter === null || windowWidth === null || windowUnit === null) {
@@ -238,6 +254,16 @@
 					ww: overlay.sourceFile.default_window.width,
 				}
 				: { wc: 0, ww: 1 }
+			: pipelineMode === "diagnostic_wl" && currentRawFrame && lutWindowing && lutMap
+			? resolveMappedDisplayWindow(
+				currentRawFrame,
+				lutMap,
+				liveWindowCenter,
+				liveWindowWidth,
+				windowUnit === null ? null : windowCenter,
+				windowUnit === null ? null : windowWidth,
+				windowMode,
+			)
 			: pipelineMode === "diagnostic_wl" && currentRawFrame
 			? resolveDisplayWindow(
 				currentRawFrame,
@@ -278,8 +304,27 @@
 		const low = mappedScale.toMapped(mappedWindow.wc - mappedWindow.ww / 2);
 		const high = mappedScale.toMapped(mappedWindow.wc + mappedWindow.ww / 2);
 		const mapped = windowToMapped({ center: mappedWindow.wc, width: mappedWindow.ww }, mappedScale);
-		return { low, high, ...mapped };
+		return { low, high, ...mapped, unit: mappedScale.unit, label: mappedScale.label };
 	});
+	// A LUT-unit window: the raw renderer's, or the one set while cine plays.
+	const lutLegend = $derived.by(() => {
+		if (!lutMap || !lutWindowing) return null;
+		const window = pipelineMode === "diagnostic_wl" && currentRawFrame
+			? displayWindow
+			: windowUnit !== null && windowCenter !== null && windowWidth !== null
+				? { wc: windowCenter, ww: windowWidth }
+				: null;
+		if (!window) return null;
+		return {
+			center: window.wc,
+			width: window.ww,
+			low: window.wc - window.ww / 2,
+			high: window.wc + window.ww / 2,
+			unit: lutMap.unit_label,
+			label: lutMap.label,
+		};
+	});
+	const windowLegend = $derived(mappedLegend ?? lutLegend);
 
 	// The colorwash layer depends only on which volume is shown and whether
 	// it covers the frame; opacity is applied to the drawn layer.
@@ -834,11 +879,13 @@
 		// not invalidate in-flight renders, only frame, file, and mode changes do.
 		const frame = currentRawFrame;
 		const { wc, ww } = displayWindow;
+		const valueMap = lutWindowing ? lutMap : null;
 		const generation = wlRenderGeneration;
 		void wlRenderer.render(() => canvasEl, {
 			frame,
 			wc,
 			ww,
+			valueMap,
 			isCurrent: () => generation === wlRenderGeneration
 				&& frame === currentRawFrame
 				&& pipelineMode === "diagnostic_wl",
@@ -847,12 +894,13 @@
 
 	// The displayed frame's value mapping decides whether the window is shown
 	// in real-world units. It loads once the frame settles, or at once when a
-	// real-world window is waiting to be converted.
+	// real-world window is waiting to be converted or the raw renderer (which
+	// windows a LUT mapping's values) shows the frame.
 	$effect(() => {
 		if (!activeFile.has_pixels || overlay) return;
 		const fileIndex = activeFile.index;
 		const frameIndex = currentFrame;
-		if (renderWindowPending) {
+		if (renderWindowPending || pipelineMode === "diagnostic_wl") {
 			untrack(() => valueMappings.ensure(fileIndex, frameIndex));
 			return;
 		}
@@ -1089,14 +1137,7 @@
 				case "window_level": {
 					if (pipelineMode === "diagnostic_wl" && !currentRawFrame) break;
 					const baseWindow = pipelineMode === "diagnostic_wl" && currentRawFrame
-						? resolveDisplayWindow(
-							currentRawFrame,
-							liveWindowCenter,
-							liveWindowWidth,
-							renderWindowCenter,
-							renderWindowWidth,
-							windowMode,
-						)
+						? displayWindow
 						: mappedWindow ?? displayWindow;
 					nextDragState = {
 						mode: "wl",
@@ -1104,6 +1145,10 @@
 						startY: event.clientY,
 						baseCenter: baseWindow.wc,
 						baseWidth: baseWindow.ww,
+						// A LUT window drags in mapped units, scaled to move like a stored one.
+						step: pipelineMode === "diagnostic_wl" && lutWindowing && lutMap
+							? mappedUnitsPerStoredUnit(lutMap)
+							: 1,
 					};
 					liveWindowCenter = baseWindow.wc;
 					liveWindowWidth = baseWindow.ww;
@@ -1180,8 +1225,8 @@
 		if (dragState.mode === "wl") {
 			const dx = event.clientX - dragState.startX;
 			const dy = event.clientY - dragState.startY;
-			const nextWidth = Math.max(1, dragState.baseWidth + dx * 4);
-			const nextCenter = dragState.baseCenter - dy * 2;
+			const nextWidth = Math.max(dragState.step, dragState.baseWidth + dx * 4 * dragState.step);
+			const nextCenter = dragState.baseCenter - dy * 2 * dragState.step;
 			liveWindowCenter = nextCenter;
 			liveWindowWidth = nextWidth;
 			return;
@@ -1240,7 +1285,9 @@
 			target.releasePointerCapture(event.pointerId);
 		}
 		if (dragState?.mode === "wl" && liveWindowCenter !== null && liveWindowWidth !== null) {
-			if (mappedScale) {
+			if (pipelineMode === "diagnostic_wl" && lutWindowing && lutMap) {
+				onmanualwindowlevel(liveWindowCenter, liveWindowWidth, lutMap.unit_label);
+			} else if (mappedScale) {
 				const mapped = windowToMapped({ center: liveWindowCenter, width: liveWindowWidth }, mappedScale);
 				onmanualwindowlevel(mapped.center, mapped.width, mappedScale.unit);
 			} else {
@@ -1361,14 +1408,12 @@
 					<span>image {navigationPosition + 1} / {navigationFrameCount}</span>
 					<span>source frame {currentFrame + 1} / {activeFile.frame_count}</span>
 				{/if}
-				{#if mappedScale}
+				{#if windowLegend}
 					<span class="mapped-window">
-						{#if mappedLegend}
-							W: {formatValue(mappedLegend.width)} · C: {formatValue(mappedLegend.center)} {mappedScale.unit}
-						{:else}
-							W/L auto · {mappedScale.unit}
-						{/if}
+						W: {formatValue(windowLegend.width)} · C: {formatValue(windowLegend.center)} {windowLegend.unit}
 					</span>
+				{:else if mappedScale}
+					<span class="mapped-window">W/L auto · {mappedScale.unit}</span>
 				{:else}
 					<span>W: {Math.round(displayWindow.ww)} · C: {Math.round(displayWindow.wc)}</span>
 				{/if}
@@ -1395,7 +1440,7 @@
 				onrevert={() => annotations.rollback(activeFile.index)}
 			/>
 		{/if}
-		{#if (mappedScale && mappedLegend) || shownValueOverlay}
+		{#if windowLegend || shownValueOverlay}
 			<div class="legends">
 				{#if shownValueOverlay}
 					<ValueLegend
@@ -1407,12 +1452,12 @@
 						caption={valueOverlayCaption}
 					/>
 				{/if}
-				{#if mappedScale && mappedLegend}
+				{#if windowLegend}
 					<ValueLegend
-						title={mappedScale.label ?? "Window"}
-						unit={mappedScale.unit}
-						low={mappedLegend.low}
-						high={mappedLegend.high}
+						title={windowLegend.label ?? "Window"}
+						unit={windowLegend.unit}
+						low={windowLegend.low}
+						high={windowLegend.high}
 						colors={["#000", "#fff"]}
 					/>
 				{/if}

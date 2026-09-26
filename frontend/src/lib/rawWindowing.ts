@@ -1,5 +1,6 @@
 import type { RawFrame, RawFrameMetadata } from "../rawFrame";
-import type { WindowMode } from "../generated/api-types";
+import type { RealWorldValueMap, WindowMode } from "../generated/api-types";
+import { realWorldValue } from "./viewport/valueMapping";
 
 export type ResolvedWindow = {
 	wc: number;
@@ -58,10 +59,16 @@ export function validateRenderableRawFrame(
 	return null;
 }
 
+/**
+ * Windows a raw frame into RGBA. With `valueMap`, the window applies to
+ * that real-world mapping's values (a LUT mapping included) instead of
+ * Modality values; stored values it does not map are drawn black.
+ */
 export function renderRawFrameToRgba(
 	frame: RawFrame,
 	wc: number,
 	ww: number,
+	valueMap: RealWorldValueMap | null = null,
 ): Uint8ClampedArray<ArrayBuffer> {
 	const validationError = validateRenderableRawFrame(frame);
 	if (validationError) {
@@ -69,7 +76,7 @@ export function renderRawFrameToRgba(
 	}
 
 	const reader = createSampleReader(frame);
-	const lut = buildWindowLut(frame.metadata, reader, wc, Math.max(ww, 1));
+	const lut = buildWindowLut(frame.metadata, reader, wc, Math.max(ww, 1), valueMap);
 	const isPadding = paddingPredicate(frame.metadata);
 	if (isPadding) {
 		// Padding is background: black after any MONOCHROME1 inversion.
@@ -114,6 +121,71 @@ export function resolveDisplayWindow(
 		return { wc: defaultWc, ww: defaultWw };
 	}
 	return computePercentileWindow(frame);
+}
+
+/**
+ * The window of a frame rendered in `valueMap`'s units, in the same order
+ * as `resolveDisplayWindow`: full dynamic, the live or explicit window
+ * (already in those units), else the 1st/99th percentile of mapped values.
+ */
+export function resolveMappedDisplayWindow(
+	frame: RawFrame,
+	valueMap: RealWorldValueMap,
+	liveWc: number | null,
+	liveWw: number | null,
+	wc: number | null,
+	ww: number | null,
+	mode: WindowMode,
+): ResolvedWindow {
+	const step = mappedUnitsPerStoredUnit(valueMap);
+	if (mode === "full_dynamic") return windowOfValues(mappedWindowValues(frame, valueMap), false, step);
+	if (liveWc !== null && liveWw !== null) return { wc: liveWc, ww: liveWw };
+	if (wc !== null && ww !== null) return { wc, ww };
+	return windowOfValues(mappedWindowValues(frame, valueMap), true, step);
+}
+
+/**
+ * Mapped units per stored unit across a mapping's stored range, so a
+ * window drag moves a mapped window about as fast as a stored one.
+ */
+export function mappedUnitsPerStoredUnit(valueMap: RealWorldValueMap): number {
+	const { transform } = valueMap;
+	if (transform.kind === "linear") return Math.abs(transform.slope) || 1;
+	const finite = transform.values.filter(Number.isFinite);
+	if (finite.length < 2) return 1;
+	const range = Math.max(...finite) - Math.min(...finite);
+	return range > 0 ? range / (finite.length - 1) : 1;
+}
+
+function mappedWindowValues(frame: RawFrame, valueMap: RealWorldValueMap): Float64Array {
+	const reader = validatedSampleReader(frame);
+	const { rows, columns } = frame.metadata;
+	const isPadding = paddingPredicate(frame.metadata);
+	const values = new Float64Array(rows * columns);
+	let count = 0;
+	for (let index = 0; index < values.length; index += 1) {
+		const raw = reader.read(index);
+		if (isPadding?.(raw)) continue;
+		const value = realWorldValue(raw, valueMap);
+		if (value === null || !Number.isFinite(value)) continue;
+		values[count] = value;
+		count += 1;
+	}
+	return values.subarray(0, count);
+}
+
+/** A window over `values`, at least `minWidth` (one stored unit's worth) wide. */
+function windowOfValues(values: Float64Array, percentile: boolean, minWidth: number): ResolvedWindow {
+	if (values.length === 0) return { wc: minWidth / 2, ww: minWidth };
+	const sorted = Float64Array.from(values).sort();
+	const low = percentile ? sorted[Math.floor(sorted.length * 0.01)] : sorted[0];
+	const high = percentile
+		? sorted[Math.min(Math.ceil(sorted.length * 0.99), sorted.length - 1)]
+		: sorted[sorted.length - 1];
+	// Mapped values can span less than one unit, so the floor is one stored
+	// unit in mapped units rather than 1.
+	const width = Math.max(high - low, minWidth);
+	return { wc: low + width / 2, ww: width };
 }
 
 // Automatic windows scan every sample, so each frame's result is computed
@@ -245,13 +317,28 @@ function buildWindowLut(
 	reader: SampleReader,
 	wc: number,
 	ww: number,
+	valueMap: RealWorldValueMap | null,
 ): Uint8Array {
+	const invert = metadata.photometricInterpretation.trim().toUpperCase() === "MONOCHROME1";
+	const lut = new Uint8Array(reader.size);
+	if (valueMap) {
+		// Mapped values follow the linear VOI function without the integer
+		// half-unit offsets, which assume Modality integers.
+		const low = wc - ww / 2;
+		for (let index = 0; index < reader.size; index += 1) {
+			const mapped = realWorldValue(index + reader.minRaw, valueMap);
+			const value = mapped === null || !Number.isFinite(mapped)
+				? 0
+				: Math.min(Math.max((mapped - low) / ww, 0), 1);
+			const gray = Math.round(value * 255);
+			lut[index] = invert ? 255 - gray : gray;
+		}
+		return lut;
+	}
 	const width = Math.max(ww, 1);
 	const center = wc - 0.5;
 	const low = center - (width - 1) / 2;
 	const high = center + (width - 1) / 2;
-	const invert = metadata.photometricInterpretation.trim().toUpperCase() === "MONOCHROME1";
-	const lut = new Uint8Array(reader.size);
 
 	for (let index = 0; index < reader.size; index += 1) {
 		const raw = index + reader.minRaw;

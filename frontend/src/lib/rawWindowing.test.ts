@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
-import type { WindowMode } from "../generated/api-types";
+import type { RealWorldValueMap, WindowMode } from "../generated/api-types";
 import type { RawFrame, RawFrameMetadata } from "../rawFrame";
 import oracle from "../../../tests/windowing-cases.json";
 import {
 	computeFullDynamicWindow,
 	computePercentileWindow,
+	mappedUnitsPerStoredUnit,
 	renderRawFrameToRgba,
 	resolveDisplayWindow,
+	resolveMappedDisplayWindow,
 	selectWindowingPipeline,
 	validateRenderableRawFrame,
 } from "./rawWindowing";
@@ -231,5 +233,44 @@ describe("selectWindowingPipeline", () => {
 		expect(selectWindowingPipeline(true, true, true)).toBe("server_wl");
 		expect(selectWindowingPipeline(true, false, true)).toBe("diagnostic_wl");
 		expect(selectWindowingPipeline(false, false, false)).toBe("cine");
+	});
+});
+
+describe("windowing a LUT real-world mapping on the raw path", () => {
+	// Stored 10..14 map through a non-linear LUT; other stored values are unmapped.
+	const lut: RealWorldValueMap = {
+		source: "real_world_value_mapping",
+		source_file_index: null,
+		label: "T1",
+		first_value_mapped: 10,
+		last_value_mapped: 14,
+		transform: { kind: "lut", values: [0, 1, 4, 9, 16] },
+		unit_label: "ms",
+		units: null,
+		quantity: null,
+	};
+	const frame = frameFromSamples([10, 11, 12, 13, 14, 3], 8, 0);
+
+	function grays(rgba: Uint8ClampedArray): number[] {
+		return Array.from({ length: rgba.length / 4 }, (_, index) => rgba[index * 4]);
+	}
+
+	it("windows the LUT's values, not the stored ones", () => {
+		// Window 0..16 ms: gray follows the squared LUT values; unmapped is black.
+		expect(grays(renderRawFrameToRgba(frame, 8, 16, lut))).toEqual([0, 16, 64, 143, 255, 0]);
+		// Window 4..9 ms clips below and above.
+		expect(grays(renderRawFrameToRgba(frame, 6.5, 5, lut))).toEqual([0, 0, 0, 255, 255, 0]);
+	});
+
+	it("resolves live, explicit, and automatic windows in mapped units", () => {
+		expect(resolveMappedDisplayWindow(frame, lut, 3, 4, 1, 2, "default")).toEqual({ wc: 3, ww: 4 });
+		expect(resolveMappedDisplayWindow(frame, lut, null, null, 1, 2, "default")).toEqual({ wc: 1, ww: 2 });
+		expect(resolveMappedDisplayWindow(frame, lut, null, null, null, null, "full_dynamic")).toEqual({ wc: 8, ww: 16 });
+		expect(resolveMappedDisplayWindow(frame, lut, 3, 4, null, null, "full_dynamic")).toEqual({ wc: 8, ww: 16 });
+	});
+
+	it("scales window drags by the LUT's mapped units per stored unit", () => {
+		expect(mappedUnitsPerStoredUnit(lut)).toBe(4);
+		expect(mappedUnitsPerStoredUnit({ ...lut, transform: { kind: "linear", slope: -0.5, intercept: 3 } })).toBe(0.5);
 	});
 });

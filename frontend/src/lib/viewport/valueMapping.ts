@@ -332,15 +332,57 @@ export function windowToRender(window: WindowValues, scale: MappedWindowScale): 
 /**
  * The display request for one frame: a real-world window converted through
  * that frame's own mapping, or the frame's default window when it has no
- * linear mapping in that unit. Other options pass through unchanged.
+ * mapping in that unit that a stored window can express. Other options pass
+ * through unchanged.
+ *
+ * A linear mapping converts exactly. A LUT mapping is not linear in stored
+ * values, so the server's stored window can only match it at its ends: the
+ * request windows the stored range whose LUT values span the window, which
+ * puts black and white at the right mapped values with grays between them
+ * linear in stored values. That needs a non-decreasing LUT behind a linear
+ * Modality transform; the raw renderer applies a LUT exactly.
  */
 export function frameDisplayWindowOptions(
 	options: DisplayFrameWindowOptions,
 	mapping: FrameValueMapping | null,
 ): DisplayFrameWindowOptions {
 	if (!options.unit) return options;
+	if (options.wc == null || options.ww == null) return {};
+	const window = { center: options.wc, width: options.ww };
 	const scale = mappedWindowScale(mapping);
-	if (scale?.unit !== options.unit || options.wc == null || options.ww == null) return {};
-	const window = windowToRender({ center: options.wc, width: options.ww }, scale);
-	return { wc: window.center, ww: window.width, windowMode: "default" };
+	if (scale?.unit === options.unit) {
+		const stored = windowToRender(window, scale);
+		return { wc: stored.center, ww: stored.width, windowMode: "default" };
+	}
+	const lut = lutWindowEnds(window, options.unit, mapping);
+	return lut ? { ...lut, windowMode: "default" } : {};
+}
+
+function lutWindowEnds(
+	window: WindowValues,
+	unit: string,
+	mapping: FrameValueMapping | null,
+): { wc: number; ww: number } | null {
+	const map = preferredRealWorldMap(mapping);
+	if (!mapping || !map || map.unit_label !== unit || map.transform.kind !== "lut" || mapping.modality.lut) return null;
+	const { values } = map.transform;
+	const { rescale_slope: slope, rescale_intercept: intercept } = mapping.modality;
+	if (values.length < 2 || slope === 0 || values.some((value, index) => index > 0 && value < values[index - 1])) {
+		return null;
+	}
+	const low = window.center - window.width / 2;
+	const high = window.center + window.width / 2;
+	let first = values.findIndex((value) => value >= low);
+	if (first < 0) first = values.length - 1;
+	let last = 0;
+	for (let index = values.length - 1; index >= 0; index -= 1) {
+		if (values[index] <= high) {
+			last = index;
+			break;
+		}
+	}
+	last = Math.max(last, first);
+	const base = map.first_value_mapped ?? 0;
+	const [lowRender, highRender] = [base + first, base + last].map((stored) => stored * slope + intercept);
+	return { wc: (lowRender + highRender) / 2, ww: Math.max(Math.abs(highRender - lowRender), 1) };
 }

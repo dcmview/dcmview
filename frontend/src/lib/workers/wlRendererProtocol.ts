@@ -1,3 +1,4 @@
+import type { RealWorldValueMap } from "../../generated/api-types";
 import type { RawFrameMetadata } from "../../rawFrame";
 
 /** Hands the worker the frame that later render requests window. */
@@ -15,6 +16,8 @@ export type WlRendererRender = {
 	frameId: number;
 	wc: number;
 	ww: number;
+	/** Window this real-world mapping's values instead of Modality values. */
+	valueMap: RealWorldValueMap | null;
 };
 
 export type WlRendererRequest = WlRendererLoadFrame | WlRendererRender;

@@ -213,7 +213,51 @@ describe("ImageViewport pixel readout", () => {
 	});
 });
 
+function lutMapping(): api.FrameValueMapping {
+	return {
+		...identityMapping(),
+		real_world: [{
+			source: "real_world_value_mapping",
+			source_file_index: null,
+			label: "T1",
+			first_value_mapped: 0,
+			last_value_mapped: 3,
+			transform: { kind: "lut", values: [0, 10, 40, 90] },
+			unit_label: "ms",
+			units: null,
+			quantity: null,
+		}],
+	};
+}
+
 describe("ImageViewport window/level in real-world units", () => {
+	it("windows a LUT mapping's values on the raw path and reports drags in its unit", async () => {
+		fetchFrameValueMapping.mockResolvedValue(lutMapping());
+		const onmanualwindowlevel = vi.fn();
+		renderViewport({ activeTool: "window_level", onmanualwindowlevel });
+		const viewport = await screen.findByRole("application");
+		// The all-zero frame maps to 0 ms everywhere, so its automatic window
+		// is one stored unit (30 ms) wide.
+		await screen.findByText("W: 30 · C: 15 ms");
+		expect(screen.getByRole("figure", { name: "T1: 0 to 30 ms" })).toBeTruthy();
+
+		await fireEvent.pointerDown(viewport, { button: 0, clientX: 10, clientY: 10, pointerId: 1 });
+		await fireEvent.pointerMove(viewport, { clientX: 20, clientY: 10, pointerId: 1 });
+		await fireEvent.pointerUp(viewport, { clientX: 20, clientY: 10, pointerId: 1 });
+
+		// 30 ms per stored unit: 10 px widen the window by 10 × 4 × 30 ms.
+		expect(onmanualwindowlevel).toHaveBeenCalledWith(15, 1230, "ms");
+	});
+
+	it("keeps a still frame with a LUT-unit window on the raw path in any tool", async () => {
+		fetchFrameValueMapping.mockResolvedValue(lutMapping());
+		renderViewport({ activeTool: "pan", windowCenter: 40, windowWidth: 80, windowUnit: "ms" });
+
+		await waitFor(() => expect(fetchRawFrame).toHaveBeenCalledWith(5, 0, expect.any(AbortSignal)));
+		await screen.findByText("W: 80 · C: 40 ms");
+		expect(fetchDisplayFrameBlob).not.toHaveBeenCalled();
+	});
+
 	it("converts a real-world window to stored units before requesting the frame", async () => {
 		fetchFrameValueMapping.mockResolvedValue(adcMapping());
 		renderViewport({ windowCenter: 40, windowWidth: 100, windowUnit: "um2/s" });

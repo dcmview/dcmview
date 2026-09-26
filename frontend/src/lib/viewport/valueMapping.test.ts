@@ -311,6 +311,24 @@ describe("frameDisplayWindowOptions", () => {
 		expect(frameDisplayWindowOptions(gray, mapping({ real_world: [linearMap(0.5, 0)] }))).toEqual({});
 	});
 
+	it("windows a LUT mapping by the stored range its window spans", () => {
+		// Rendered = 2 × stored − 10; stored 100..104 map to 0, 1, 4, 9, 16 ms.
+		const lut = mapping({
+			modality: { rescale_slope: 2, rescale_intercept: -10, rescale_type: null, lut: null },
+			real_world: [{
+				...linearMap(1, 0, { unit_label: "ms", first_value_mapped: 100, last_value_mapped: 104 }),
+				transform: { kind: "lut", values: [0, 1, 4, 9, 16] },
+			}],
+		});
+		// 1..9 ms is stored 101..103, rendered 192..196.
+		expect(frameDisplayWindowOptions({ wc: 5, ww: 8, unit: "ms" }, lut))
+			.toEqual({ wc: 194, ww: 4, windowMode: "default" });
+		const falling = mapping({
+			real_world: [{ ...linearMap(1, 0, { unit_label: "ms" }), transform: { kind: "lut", values: [4, 1, 0] } }],
+		});
+		expect(frameDisplayWindowOptions({ wc: 2, ww: 2, unit: "ms" }, falling)).toEqual({});
+	});
+
 	it("passes stored-scale windows through", () => {
 		const stored = { wc: 40, ww: 400, windowMode: "default" as const };
 		expect(frameDisplayWindowOptions(stored, dose(0.01))).toBe(stored);

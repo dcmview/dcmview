@@ -1,3 +1,4 @@
+import type { RealWorldValueMap } from "../../api";
 import type { RawFrame } from "../../rawFrame";
 import { renderRawFrameToRgba } from "../rawWindowing";
 import type {
@@ -13,6 +14,8 @@ export type WlRenderRequest = {
 	frame: RawFrame;
 	wc: number;
 	ww: number;
+	/** Window this real-world mapping's values instead of Modality values. */
+	valueMap?: RealWorldValueMap | null;
 	/** False once a newer frame, file, or pipeline supersedes this render. */
 	isCurrent: () => boolean;
 };
@@ -29,14 +32,20 @@ function createWlWorker(): Worker {
 }
 
 /** Windows a raw frame into `canvas` on the main thread. */
-export function drawRawFrame(canvas: HTMLCanvasElement, frame: RawFrame, wc: number, ww: number): void {
+export function drawRawFrame(
+	canvas: HTMLCanvasElement,
+	frame: RawFrame,
+	wc: number,
+	ww: number,
+	valueMap: RealWorldValueMap | null = null,
+): void {
 	const { rows, columns } = frame.metadata;
 	canvas.width = columns;
 	canvas.height = rows;
 	const ctx = canvas.getContext("2d", { alpha: false });
 	if (!ctx) return;
 	const imageData = ctx.createImageData(columns, rows);
-	imageData.data.set(renderRawFrameToRgba(frame, wc, ww));
+	imageData.data.set(renderRawFrameToRgba(frame, wc, ww, valueMap));
 	ctx.putImageData(imageData, 0, 0);
 }
 
@@ -77,7 +86,7 @@ export class WlRendererClient {
 		const canvas = target();
 		if (!canvas) return;
 		if (!this.#shouldUseWorker(request.frame)) {
-			drawRawFrame(canvas, request.frame, request.wc, request.ww);
+			drawRawFrame(canvas, request.frame, request.wc, request.ww, request.valueMap);
 			return;
 		}
 
@@ -88,7 +97,7 @@ export class WlRendererClient {
 			while (this.#queued) {
 				const next = this.#queued;
 				this.#queued = null;
-				const bitmap = await this.#renderInWorker(next.frame, next.wc, next.ww);
+				const bitmap = await this.#renderInWorker(next.frame, next.wc, next.ww, next.valueMap ?? null);
 				const current = target();
 				if (!next.isCurrent() || !current) {
 					bitmap.close();
@@ -105,7 +114,7 @@ export class WlRendererClient {
 			this.#queued = null;
 			const current = target();
 			if (!latest.isCurrent() || !current) return;
-			drawRawFrame(current, latest.frame, latest.wc, latest.ww);
+			drawRawFrame(current, latest.frame, latest.wc, latest.ww, latest.valueMap);
 		} finally {
 			this.#renderInFlight = false;
 		}
@@ -160,7 +169,12 @@ export class WlRendererClient {
 		this.#pending.clear();
 	}
 
-	async #renderInWorker(frame: RawFrame, wc: number, ww: number): Promise<ImageBitmap> {
+	async #renderInWorker(
+		frame: RawFrame,
+		wc: number,
+		ww: number,
+		valueMap: RealWorldValueMap | null,
+	): Promise<ImageBitmap> {
 		const worker = this.#worker;
 		if (!worker || !this.#available) throw new Error("worker unavailable");
 		if (this.#workerFrame !== frame) {
@@ -180,7 +194,7 @@ export class WlRendererClient {
 		const pending = new Promise<RenderedBitmap>((resolve, reject) => {
 			this.#pending.set(id, { resolve, reject });
 		});
-		const request: WlRendererRequest = { type: "render", id, frameId: this.#workerFrameId, wc, ww };
+		const request: WlRendererRequest = { type: "render", id, frameId: this.#workerFrameId, wc, ww, valueMap };
 		worker.postMessage(request);
 		return (await pending).bitmap;
 	}
