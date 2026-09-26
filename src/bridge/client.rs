@@ -272,7 +272,16 @@ where
                 .timeout(request_timeout)
                 .send()
                 .await;
-            Ok(130)
+            // Report how the stopped viewer exited, as a local viewer would.
+            let stopped = tokio::time::timeout(
+                request_timeout,
+                wait_for_vscode_session(client, &wait_url, &endpoint.token),
+            )
+            .await;
+            Ok(match stopped {
+                Ok(Ok(exit_code)) => exit_code,
+                _ => 130,
+            })
         }
     }
 }
@@ -536,6 +545,58 @@ mod tests {
             *state.stop_events.lock().expect("stop events"),
             vec!["session-1:bridge-token".to_string()]
         );
+    }
+
+    #[derive(Clone, Default)]
+    struct StoppableBridgeState {
+        wait_started: Arc<Notify>,
+        stopped: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    async fn wait_until_stopped(State(state): State<StoppableBridgeState>) -> Response {
+        if state.stopped.load(std::sync::atomic::Ordering::SeqCst) {
+            return (StatusCode::OK, Json(serde_json::json!({ "exitCode": 0 }))).into_response();
+        }
+        state.wait_started.notify_one();
+        std::future::pending::<Response>().await
+    }
+
+    async fn accept_stop(State(state): State<StoppableBridgeState>) -> Response {
+        state
+            .stopped
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        (StatusCode::OK, Json(serde_json::json!({ "ok": true }))).into_response()
+    }
+
+    #[tokio::test]
+    async fn interrupt_reports_the_stopped_viewers_exit_code() {
+        let state = StoppableBridgeState::default();
+        let server = MockServer::spawn(
+            Router::new()
+                .route("/sessions/{session_id}/wait", get(wait_until_stopped))
+                .route("/sessions/{session_id}/stop", post(accept_stop))
+                .with_state(state.clone()),
+        )
+        .await;
+        let wait_started = state.wait_started.clone();
+
+        let exit_code = wait_for_launched_vscode_session_with_interrupt(
+            &reqwest::Client::new(),
+            &endpoint(server.url()),
+            &BridgeLaunchResponse {
+                session_id: "session-1".to_string(),
+                url: "http://127.0.0.1:51234".to_string(),
+            },
+            Duration::from_secs(1),
+            async move {
+                wait_started.notified().await;
+                Ok(())
+            },
+        )
+        .await
+        .expect("interrupt flow succeeds");
+
+        assert_eq!(exit_code, 0);
     }
 
     async fn http_error() -> Response {
