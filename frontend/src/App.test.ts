@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/svelte";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "./api";
 import App from "./App.svelte";
+import type { SemanticContextResponse, SeriesSummary } from "./api";
 import { emptySeriesCatalog, fileSummary, filesResponse, rawFrame } from "./testing/fixtures";
 
 vi.mock("./api", async (importOriginal) => ({
@@ -19,6 +20,22 @@ vi.mock("./api", async (importOriginal) => ({
 	updateAnnotations: vi.fn(),
 	fetchDisplayFrameBlob: vi.fn(async () => new Blob(["png"], { type: "image/png" })),
 	fetchRawFrame: vi.fn(async () => rawFrame()),
+	fetchFrameValueMapping: vi.fn(async (fileIndex: number, frameIndex: number) => ({
+		file_index: fileIndex,
+		frame_index: frameIndex,
+		stored_value_type: "integer",
+		modality: { rescale_slope: 1, rescale_intercept: 0, rescale_type: null, lut: null },
+		real_world: [],
+	})),
+	fetchSemanticContext: vi.fn(),
+	fetchDoseOverlayBlob: vi.fn(async () => new Blob(["png"], { type: "image/png" })),
+}));
+
+// happy-dom cannot decode PNGs or draw on a canvas; the layer is recorded.
+vi.mock("./lib/viewport/frameOverlay", async (importOriginal) => ({
+	...await importOriginal<typeof import("./lib/viewport/frameOverlay")>(),
+	decodeCanvasImage: vi.fn(async () => ({ source: {}, width: 64, height: 64, dispose: vi.fn() })),
+	drawOverlayLayer: vi.fn(),
 }));
 
 const files = [
@@ -124,5 +141,100 @@ describe("App", () => {
 		await fireEvent.click(screen.getByRole("button", { name: "Reset" }));
 		await screen.findByText("W: 400 · C: 40");
 		expect(presets.value).toBe("default");
+	});
+});
+
+describe("App value overlays", () => {
+	const DOSE = fileSummary(2, {
+		label: "dose.dcm",
+		path: "dose.dcm",
+		modality: "RTDOSE",
+		sop_class_uid: "1.2.840.10008.5.1.4.1.1.481.2",
+		object_kind: "radiation_therapy",
+		frame_count: 3,
+	});
+
+	function frameSeries(id: string, fileIndexes: number[]): SeriesSummary {
+		return {
+			id,
+			study_instance_uid: "1.2.3",
+			series_instance_uid: id,
+			frame_of_reference_uids: ["1.2.3.for"],
+			stacks: [{
+				id,
+				kind: "ordinary",
+				concatenation_uid: null,
+				pyramid_uid: null,
+				image_type_role: null,
+				total_pixel_matrix_rows: null,
+				total_pixel_matrix_columns: null,
+				frames: fileIndexes.map((file_index, virtual_index) => ({
+					virtual_index,
+					file_index,
+					frame_index: 0,
+					source_path: "",
+					sop_instance_uid: "",
+					instance_number: null,
+					position_along_normal_mm: null,
+				})),
+				warnings: [],
+			}],
+		};
+	}
+
+	function doseContext(): SemanticContextResponse {
+		return {
+			source_file_index: DOSE.index,
+			default_mode: "pixel_preview",
+			pixel_preview_preserves_stored_values: true,
+			context: {
+				kind: "rt_dose",
+				dose_grid_scaling: 0.01,
+				scaling_status: "available",
+				displayed_value_kind: "stored",
+				dose_units: "GY",
+				dose_type: "PHYSICAL",
+				dose_summation_type: "PLAN",
+				geometry: {
+					frame_of_reference_uid: "1.2.3.for",
+					image_position_patient: null,
+					image_orientation_patient: null,
+					pixel_spacing: null,
+					grid_frame_offsets: [],
+				},
+				references: [],
+				overlay: { eligible: true, reason: "covers", source_file_index: 0, mapped_source_count: 1 },
+				overlay_source_frames: [{ file_index: 0, frame_index: 0, sop_instance_uid: "ct" }],
+				legend: {
+					unit_label: "Gy",
+					units: null,
+					min_value: 0,
+					max_value: 23.3,
+					transparent_at_or_below: 0,
+					colormap: "viridis",
+					color_stops: [[68, 1, 84], [253, 231, 37]],
+				},
+				clinical_use_warning: "Not for clinical use.",
+			},
+		};
+	}
+
+	it("offers a covering RT Dose over the image and draws it when switched on", async () => {
+		vi.mocked(api.fetchFiles).mockResolvedValue(filesResponse([...files, DOSE]));
+		vi.mocked(api.fetchSeries).mockResolvedValue({
+			series: [frameSeries("ct", [0]), frameSeries("dose", [2])],
+			scan_complete: true,
+		});
+		vi.mocked(api.fetchSemanticContext).mockResolvedValue(doseContext());
+		await renderApp();
+
+		const toggle = await screen.findByRole("button", { name: "RT Dose · PLAN" });
+		expect(api.fetchSemanticContext).toHaveBeenCalledWith(DOSE.index);
+		expect(api.fetchDoseOverlayBlob).not.toHaveBeenCalled();
+
+		await fireEvent.click(toggle);
+		await waitFor(() => expect(api.fetchDoseOverlayBlob).toHaveBeenCalledWith(0, 0, DOSE.index, expect.any(AbortSignal)));
+		expect(toggle.getAttribute("aria-pressed")).toBe("true");
+		expect(await screen.findByRole("figure", { name: "RT Dose · PLAN: 0 to 23.3 Gy" })).toBeTruthy();
 	});
 });
