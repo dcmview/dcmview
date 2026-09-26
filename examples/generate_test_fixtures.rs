@@ -1,6 +1,6 @@
 use dicom_core::value::fragments::Fragments;
 use dicom_core::value::PixelFragmentSequence;
-use dicom_core::{DataElement, PrimitiveValue, VR};
+use dicom_core::{DataElement, PrimitiveValue, Tag, VR};
 use dicom_dictionary_std::{tags, uids};
 use dicom_object::{meta::FileMetaTableBuilder, InMemDicomObject};
 use image::{GrayImage, Luma};
@@ -56,6 +56,7 @@ fn main() {
         },
         jpeg_xl_lossless_ybr_fragment_4x2(),
     );
+    write_display_shutter_fixtures(&fixture_dir);
     write_sr_without_pixels(&fixture_dir.join("golden-no-pixels-sr.dcm"));
     write_image_without_pixels(&fixture_dir.join("golden-image-no-pixels.dcm"));
 }
@@ -418,6 +419,158 @@ fn write_color_fixture(path: &Path, spec: ColorFixtureSpec<'_>, fragment: Vec<u8
     file_object
         .write_to_file(path)
         .expect("write color golden fixture");
+}
+
+/// Writes one 8x8 mid-gray native DX image per display shutter shape. Every
+/// stored sample is 128 under a 128/256 window, so a displayed pixel is 128
+/// and a shuttered pixel takes the shutter's presentation value.
+fn write_display_shutter_fixtures(fixture_dir: &Path) {
+    let shutter_value = |value: u16| {
+        DataElement::new(
+            tags::SHUTTER_PRESENTATION_VALUE,
+            VR::US,
+            PrimitiveValue::from(value),
+        )
+    };
+    write_display_shutter_fixture(
+        &fixture_dir.join("golden-shutter-circular-u8.dcm"),
+        "2.25.2000012",
+        vec![
+            DataElement::new(tags::SHUTTER_SHAPE, VR::CS, "CIRCULAR"),
+            // Row 4, column 5: off the diagonal so a row/column swap shows.
+            DataElement::new(tags::CENTER_OF_CIRCULAR_SHUTTER, VR::IS, "4\\5"),
+            DataElement::new(tags::RADIUS_OF_CIRCULAR_SHUTTER, VR::IS, "3"),
+            shutter_value(0),
+        ],
+    );
+    write_display_shutter_fixture(
+        &fixture_dir.join("golden-shutter-polygonal-u8.dcm"),
+        "2.25.2000013",
+        vec![
+            DataElement::new(tags::SHUTTER_SHAPE, VR::CS, "POLYGONAL"),
+            DataElement::new(
+                tags::VERTICES_OF_THE_POLYGONAL_SHUTTER,
+                VR::IS,
+                "1\\1\\1\\8\\6\\1",
+            ),
+            shutter_value(0),
+        ],
+    );
+    write_display_shutter_fixture(
+        &fixture_dir.join("golden-shutter-rectangular-circular-u8.dcm"),
+        "2.25.2000014",
+        vec![
+            DataElement::new(tags::SHUTTER_SHAPE, VR::CS, "RECTANGULAR\\CIRCULAR"),
+            DataElement::new(tags::SHUTTER_LEFT_VERTICAL_EDGE, VR::IS, "2"),
+            DataElement::new(tags::SHUTTER_RIGHT_VERTICAL_EDGE, VR::IS, "8"),
+            DataElement::new(tags::SHUTTER_UPPER_HORIZONTAL_EDGE, VR::IS, "1"),
+            DataElement::new(tags::SHUTTER_LOWER_HORIZONTAL_EDGE, VR::IS, "5"),
+            DataElement::new(tags::CENTER_OF_CIRCULAR_SHUTTER, VR::IS, "4\\4"),
+            DataElement::new(tags::RADIUS_OF_CIRCULAR_SHUTTER, VR::IS, "3"),
+            shutter_value(0xFFFF),
+        ],
+    );
+    // Overlay 6000 covers the image and occludes rows 1-2 and column 8.
+    // Overlay 6002 stays a visible one-pixel overlay at row 5, column 4.
+    let mut bitmap =
+        overlay_plane_elements(0x6000, [8, 8], [1, 1], &[0xFFFF, 0x8080, 0x8080, 0x8080]);
+    bitmap.extend(overlay_plane_elements(0x6002, [1, 1], [5, 4], &[0x0001]));
+    bitmap.extend([
+        DataElement::new(tags::SHUTTER_SHAPE, VR::CS, "BITMAP"),
+        DataElement::new(
+            tags::SHUTTER_OVERLAY_GROUP,
+            VR::US,
+            PrimitiveValue::from(0x6000_u16),
+        ),
+        shutter_value(0),
+    ]);
+    write_display_shutter_fixture(
+        &fixture_dir.join("golden-shutter-bitmap-u8.dcm"),
+        "2.25.2000015",
+        bitmap,
+    );
+}
+
+fn overlay_plane_elements(
+    group: u16,
+    [rows, columns]: [u16; 2],
+    [origin_row, origin_column]: [i16; 2],
+    data: &[u16],
+) -> Vec<DataElement<InMemDicomObject>> {
+    vec![
+        DataElement::new(Tag(group, 0x0010), VR::US, PrimitiveValue::from(rows)),
+        DataElement::new(Tag(group, 0x0011), VR::US, PrimitiveValue::from(columns)),
+        DataElement::new(Tag(group, 0x0040), VR::CS, "G"),
+        DataElement::new(
+            Tag(group, 0x0050),
+            VR::SS,
+            PrimitiveValue::I16(vec![origin_row, origin_column].into()),
+        ),
+        DataElement::new(Tag(group, 0x0100), VR::US, PrimitiveValue::from(1_u16)),
+        DataElement::new(Tag(group, 0x0102), VR::US, PrimitiveValue::from(0_u16)),
+        DataElement::new(
+            Tag(group, 0x3000),
+            VR::OW,
+            PrimitiveValue::U16(data.to_vec().into()),
+        ),
+    ]
+}
+
+fn write_display_shutter_fixture(
+    path: &Path,
+    sop_instance_uid: &str,
+    shutter: Vec<DataElement<InMemDicomObject>>,
+) {
+    let sop_class_uid = uids::DIGITAL_X_RAY_IMAGE_STORAGE_FOR_PRESENTATION;
+    let mut obj = InMemDicomObject::from_element_iter([
+        DataElement::new(tags::SOP_CLASS_UID, VR::UI, sop_class_uid),
+        DataElement::new(tags::SOP_INSTANCE_UID, VR::UI, sop_instance_uid),
+        DataElement::new(
+            tags::PATIENT_ID,
+            VR::LO,
+            PrimitiveValue::from("GOLDEN-SHUTTER"),
+        ),
+        DataElement::new(tags::MODALITY, VR::CS, PrimitiveValue::from("DX")),
+        DataElement::new(tags::STUDY_DATE, VR::DA, PrimitiveValue::from("20260926")),
+        DataElement::new(tags::ROWS, VR::US, PrimitiveValue::from(8_u16)),
+        DataElement::new(tags::COLUMNS, VR::US, PrimitiveValue::from(8_u16)),
+        DataElement::new(tags::BITS_ALLOCATED, VR::US, PrimitiveValue::from(8_u16)),
+        DataElement::new(tags::BITS_STORED, VR::US, PrimitiveValue::from(8_u16)),
+        DataElement::new(tags::HIGH_BIT, VR::US, PrimitiveValue::from(7_u16)),
+        DataElement::new(
+            tags::PIXEL_REPRESENTATION,
+            VR::US,
+            PrimitiveValue::from(0_u16),
+        ),
+        DataElement::new(tags::SAMPLES_PER_PIXEL, VR::US, PrimitiveValue::from(1_u16)),
+        DataElement::new(
+            tags::PHOTOMETRIC_INTERPRETATION,
+            VR::CS,
+            PrimitiveValue::from("MONOCHROME2"),
+        ),
+        DataElement::new(tags::WINDOW_CENTER, VR::DS, PrimitiveValue::from("128")),
+        DataElement::new(tags::WINDOW_WIDTH, VR::DS, PrimitiveValue::from("256")),
+        DataElement::new(
+            tags::PIXEL_DATA,
+            VR::OB,
+            PrimitiveValue::from(vec![128_u8; 64]),
+        ),
+    ]);
+    for element in shutter {
+        obj.put(element);
+    }
+
+    obj.with_meta(
+        FileMetaTableBuilder::new()
+            .implementation_class_uid(FIXTURE_IMPLEMENTATION_CLASS_UID)
+            .implementation_version_name(FIXTURE_IMPLEMENTATION_VERSION_NAME)
+            .transfer_syntax(uids::EXPLICIT_VR_LITTLE_ENDIAN)
+            .media_storage_sop_class_uid(sop_class_uid)
+            .media_storage_sop_instance_uid(sop_instance_uid),
+    )
+    .expect("build display shutter fixture meta")
+    .write_to_file(path)
+    .expect("write display shutter golden fixture");
 }
 
 /// PS3.5 Annex G frame: a 64-byte header, then one PackBits literal-run

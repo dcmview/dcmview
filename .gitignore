@@ -26,6 +26,10 @@ marketing-review/
 !tests/fixtures/golden-image-no-pixels.dcm
 !tests/fixtures/golden-no-pixels-sr.dcm
 !tests/fixtures/golden-rle-ybr-full-422-u8-single-frame.dcm
+!tests/fixtures/golden-shutter-bitmap-u8.dcm
+!tests/fixtures/golden-shutter-circular-u8.dcm
+!tests/fixtures/golden-shutter-polygonal-u8.dcm
+!tests/fixtures/golden-shutter-rectangular-circular-u8.dcm
 !tests/fixtures/golden-uncompressed-u16-multiframe.dcm
 
 # python package files
