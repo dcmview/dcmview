@@ -107,7 +107,7 @@ fn convert_interleaved_ybr(ybr: &[u8]) -> Vec<u8> {
 /// Converts DICOM CIELab PCS-values (PS3.3 C.10.7.1.1: L* 0-100 and a*, b*
 /// -128-127 scaled to 0-FFFFH, relative to the D50 PCS white) to 8-bit sRGB,
 /// adapting D50 to sRGB's D65 white with the Bradford transform.
-pub(super) fn cielab_to_srgb8([l, a, b]: [u16; 3]) -> [u8; 3] {
+pub(crate) fn cielab_to_srgb8([l, a, b]: [u16; 3]) -> [u8; 3] {
     let lightness = f64::from(l) * 100.0 / 65_535.0;
     let a = f64::from(a) * 255.0 / 65_535.0 - 128.0;
     let b = f64::from(b) * 255.0 / 65_535.0 - 128.0;

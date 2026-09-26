@@ -143,8 +143,8 @@ pub fn segmentation_overlay_plan(
                 .iter()
                 .find(|segment| segment.number == number)
         })
-        .map(|segment| fallback_segment_color(segment.number))
-        .unwrap_or([255, 79, 132]);
+        .map(|segment| segment.display_color)
+        .unwrap_or_else(|| fallback_segment_color(mapping.segment_number.unwrap_or(1)));
     Ok(SegmentationOverlayPlan {
         segmentation_file_index: source.index,
         segmentation_frame_index: frame,
@@ -155,6 +155,29 @@ pub fn segmentation_overlay_plan(
         maximum_fractional_value: context.maximum_fractional_value,
         color,
     })
+}
+
+/// The overlay color of one segment and where it comes from: the
+/// Recommended Display CIELab Value when it holds three PCS-values, else the
+/// Recommended Display Grayscale Value, else a fixed palette cycled by
+/// segment number. The grayscale value is a P-Value from 0 (black) to FFFFH
+/// (white), shown as the proportional 8-bit gray level.
+fn segment_display_color(
+    number: u16,
+    cielab: Option<&[u16]>,
+    grayscale: Option<u16>,
+) -> ([u8; 3], &'static str) {
+    if let Some(&[l, a, b]) = cielab {
+        return (
+            crate::pixels::cielab_to_srgb8([l, a, b]),
+            "recommended_cielab",
+        );
+    }
+    if let Some(gray) = grayscale {
+        let level = (f64::from(gray) * 255.0 / 65_535.0).round() as u8;
+        return ([level; 3], "recommended_grayscale");
+    }
+    (fallback_segment_color(number), "palette")
 }
 
 fn fallback_segment_color(segment_number: u16) -> [u8; 3] {
@@ -216,22 +239,28 @@ fn segmentation_context(
         .iter()
         .take(MAX_SEQUENCE_ITEMS)
         .filter_map(|item| {
+            let number = read_number::<u16>(item, tags::SEGMENT_NUMBER)?;
+            let recommended_display_cielab =
+                optional_numbers(item, tags::RECOMMENDED_DISPLAY_CIE_LAB_VALUE);
+            let recommended_display_grayscale =
+                read_number(item, tags::RECOMMENDED_DISPLAY_GRAYSCALE_VALUE);
+            let (display_color, display_color_source) = segment_display_color(
+                number,
+                recommended_display_cielab.as_deref(),
+                recommended_display_grayscale,
+            );
             Some(SegmentSummary {
-                number: read_number::<u16>(item, tags::SEGMENT_NUMBER)?,
+                number,
                 label: read_string(item, tags::SEGMENT_LABEL),
                 description: read_string(item, tags::SEGMENT_DESCRIPTION),
                 property_category: read_code(item, tags::SEGMENTED_PROPERTY_CATEGORY_CODE_SEQUENCE),
                 property_type: read_code(item, tags::SEGMENTED_PROPERTY_TYPE_CODE_SEQUENCE),
                 algorithm_type: read_string(item, tags::SEGMENT_ALGORITHM_TYPE),
                 algorithm_name: read_string(item, tags::SEGMENT_ALGORITHM_NAME),
-                recommended_display_cielab: optional_numbers(
-                    item,
-                    tags::RECOMMENDED_DISPLAY_CIE_LAB_VALUE,
-                ),
-                recommended_display_grayscale: read_number(
-                    item,
-                    tags::RECOMMENDED_DISPLAY_GRAYSCALE_VALUE,
-                ),
+                recommended_display_cielab,
+                recommended_display_grayscale,
+                display_color,
+                display_color_source: display_color_source.to_string(),
             })
         })
         .collect::<Vec<_>>();
@@ -928,7 +957,7 @@ fn fixed_numbers<const N: usize>(
 
 #[cfg(test)]
 mod tests {
-    use super::referenced_segment_number;
+    use super::{referenced_segment_number, segment_display_color};
     use dicom_core::{value::DataSetSequence, DataElement, PrimitiveValue, VR};
     use dicom_dictionary_std::tags;
     use dicom_object::InMemDicomObject;
@@ -964,5 +993,24 @@ mod tests {
             referenced_segment_number(&per_frame, Some(&shared)),
             Some(1)
         );
+    }
+
+    #[test]
+    fn segment_color_prefers_cielab_then_grayscale_then_palette() {
+        let white = [0xFFFF, 0x8080, 0x8080];
+        assert_eq!(
+            segment_display_color(2, Some(&white), Some(0)),
+            ([255, 255, 255], "recommended_cielab")
+        );
+        // A malformed CIELab value falls through to the grayscale value.
+        assert_eq!(
+            segment_display_color(2, Some(&[1, 2]), Some(0x8000)),
+            ([128, 128, 128], "recommended_grayscale")
+        );
+        assert_eq!(
+            segment_display_color(2, None, None),
+            ([42, 211, 199], "palette")
+        );
+        assert_eq!(segment_display_color(7, None, None).0, [255, 79, 132]);
     }
 }

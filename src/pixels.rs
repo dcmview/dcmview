@@ -28,6 +28,7 @@ pub use cache::{
     CACHE_CAPACITY, FRAME_CACHE_MAX_BYTES, OVERLAY_CACHE_CAPACITY, OVERLAY_CACHE_MAX_BYTES,
     RAW_CACHE_CAPACITY, RAW_CACHE_MAX_BYTES,
 };
+pub(crate) use color::cielab_to_srgb8;
 pub use colorwash::{
     colormap, encode_colorwash_png, raw_frame_values, ColorScale, ColorwashRequest, WeightedPlane,
     COLORMAP_NAME, COLORMAP_STOPS,

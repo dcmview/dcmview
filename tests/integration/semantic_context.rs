@@ -99,6 +99,10 @@ async fn segmentation_context_reports_segment_closure_and_validated_overlay() {
         context["segments"][0]["property_type"]["meaning"],
         "Neoplasm"
     );
+    assert_eq!(
+        context["segments"][0]["display_color_source"],
+        "recommended_cielab"
+    );
     assert_eq!(context["frame_mappings"][0]["segment_number"], 1);
     assert_eq!(
         context["frame_mappings"][0]["source_file_indices"],
@@ -248,6 +252,12 @@ async fn segmentation_overlay_returns_source_sized_transparent_png() {
         DataElement::new(tags::SEGMENT_NUMBER, VR::US, PrimitiveValue::from(1_u16)),
         DataElement::new(tags::SEGMENT_LABEL, VR::LO, "Tumor"),
         DataElement::new(tags::SEGMENT_ALGORITHM_TYPE, VR::CS, "MANUAL"),
+        // L* 100, a* = b* = 0: white.
+        DataElement::new(
+            tags::RECOMMENDED_DISPLAY_CIE_LAB_VALUE,
+            VR::US,
+            PrimitiveValue::U16(vec![0xFFFF, 0x8080, 0x8080].into()),
+        ),
     ]);
     let shared = InMemDicomObject::from_element_iter([
         sequence(
@@ -359,8 +369,13 @@ async fn segmentation_overlay_returns_source_sized_transparent_png() {
         .to_rgba8();
     assert_eq!(overlay.dimensions(), (2, 2));
     assert_eq!(overlay.get_pixel(0, 0).0[3], 0);
-    assert_eq!(overlay.get_pixel(1, 0).0[3], 178);
-    assert_eq!(overlay.get_pixel(0, 1).0[3], 178);
+    // The mask is painted in the segment's recommended color.
+    assert_eq!(overlay.get_pixel(1, 0).0, [255, 255, 255, 178]);
+    assert_eq!(overlay.get_pixel(0, 1).0, [255, 255, 255, 178]);
+    let context: Value = server.get("/api/file/0/semantic-context").await.json();
+    let segment = &context["context"]["segments"][0];
+    assert_eq!(segment["display_color"], serde_json::json!([255, 255, 255]));
+    assert_eq!(segment["display_color_source"], "recommended_cielab");
     let repeat = server.get("/api/file/0/frame/0/segmentation-overlay").await;
     repeat.assert_header("X-Cache", "HIT");
     assert_eq!(repeat.as_bytes(), response.as_bytes());

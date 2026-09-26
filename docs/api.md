@@ -160,10 +160,15 @@ matrices may differ in size.
 
 `segmentation-overlay` renders only a frame whose mapping resolved. Binary
 samples are a mask, fractional samples are scaled by Maximum Fractional Value,
-and the mask is nearest-neighbor resampled onto the source frame. Colors come
-from a fixed per-segment palette. It answers `400` for a non-SEG object, `404`
-for an out-of-range frame, and `422 semantic_mapping_unavailable` when the
-mapping, geometry, or source file is missing or ambiguous.
+and the mask is nearest-neighbor resampled onto the source frame. Each segment
+is painted in its context `display_color`: the Recommended Display CIELab
+Value converted from D50 CIELab to sRGB, else the Recommended Display
+Grayscale Value as a proportional gray level, else a fixed palette cycled by
+segment number; `display_color_source` (`recommended_cielab`,
+`recommended_grayscale`, or `palette`) says which. It answers `400` for a
+non-SEG object, `404` for an out-of-range frame, and `422
+semantic_mapping_unavailable` when the mapping, geometry, or source file is
+missing or ambiguous.
 
 Parametric Map and RT Dose contexts report `displayed_value_kind: "stored"`:
 the frame endpoints window stored values, and mapped units are the client's

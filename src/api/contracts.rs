@@ -380,6 +380,14 @@ pub struct SegmentSummary {
     pub algorithm_name: Option<String>,
     pub recommended_display_cielab: Option<Vec<u16>>,
     pub recommended_display_grayscale: Option<u16>,
+    /// The sRGB color the segmentation overlay paints this segment with.
+    pub display_color: [u8; 3],
+    /// Where `display_color` comes from: `recommended_cielab` (the
+    /// Recommended Display CIELab Value, D50 CIELab converted to sRGB),
+    /// `recommended_grayscale` (the Recommended Display Grayscale Value as a
+    /// gray level), or `palette` (a fixed palette cycled by segment number,
+    /// when neither is declared).
+    pub display_color_source: String,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]

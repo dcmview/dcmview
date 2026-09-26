@@ -1,17 +1,17 @@
 import { describe, expect, it } from "vitest";
-import type { SemanticContextResponse } from "../generated/api-types";
+import type { SegmentSummary, SemanticContextResponse } from "../generated/api-types";
 import {
 	codedConceptLabel,
-	dicomCielabToRgb,
 	formatDeclaredVector,
 	gridFrameOffsetSummary,
 	mappingFormula,
 	rgbCss,
-	segmentOverlayColor,
+	segmentColorSource,
 	segmentationOverlaySelection,
 	semanticKindLabel,
 	semanticModeLabel,
 	supportsSemanticContext,
+	unusedRecommendedColor,
 } from "./semanticPresentation";
 
 describe("semantic presentation labels", () => {
@@ -89,24 +89,48 @@ describe("semantic presentation labels", () => {
 });
 
 describe("SEG segment colors", () => {
-	it("cycles the server's overlay palette by segment number", () => {
-		expect(segmentOverlayColor(1)).toEqual([255, 79, 132]);
-		expect(segmentOverlayColor(2)).toEqual([42, 211, 199]);
-		expect(segmentOverlayColor(7)).toEqual([255, 79, 132]);
-		expect(segmentOverlayColor(0)).toEqual([255, 79, 132]);
+	function segment(overrides: Partial<SegmentSummary>): SegmentSummary {
+		return {
+			number: 1,
+			label: null,
+			description: null,
+			property_category: null,
+			property_type: null,
+			algorithm_type: null,
+			algorithm_name: null,
+			recommended_display_cielab: null,
+			recommended_display_grayscale: null,
+			display_color: [255, 79, 132],
+			display_color_source: "palette",
+			...overrides,
+		};
+	}
+
+	it("names the source of the server's overlay color", () => {
+		expect(segmentColorSource(segment({}))).toBe("palette, no recommended color declared");
+		expect(segmentColorSource(segment({
+			recommended_display_cielab: [65535, 32896, 32896],
+			display_color_source: "recommended_cielab",
+		}))).toBe("recommended CIELab 65535 \\ 32896 \\ 32896");
+		expect(segmentColorSource(segment({
+			recommended_display_grayscale: 32768,
+			display_color_source: "recommended_grayscale",
+		}))).toBe("recommended grayscale 32768");
+		expect(rgbCss([1, 2, 3])).toBe("rgb(1, 2, 3)");
 	});
 
-	it("converts DICOM-encoded CIELab PCS-Values to sRGB", () => {
-		expect(dicomCielabToRgb([0xffff, 0x8080, 0x8080])).toEqual([255, 255, 255]);
-		expect(dicomCielabToRgb([0, 0x8080, 0x8080])).toEqual([0, 0, 0]);
-		// sRGB red is roughly L* 54.29, a* 80.80, b* 69.89 under D50.
-		const [red, green, blue] = dicomCielabToRgb([35579, 53661, 50858])!;
-		expect(red).toBeGreaterThanOrEqual(253);
-		expect(green).toBeLessThanOrEqual(3);
-		expect(blue).toBeLessThanOrEqual(3);
-		expect(dicomCielabToRgb(null)).toBeNull();
-		expect(dicomCielabToRgb([1, 2])).toBeNull();
-		expect(rgbCss([1, 2, 3])).toBe("rgb(1, 2, 3)");
+	it("reports a declared recommended color the overlay does not paint", () => {
+		expect(unusedRecommendedColor(segment({}))).toBeNull();
+		expect(unusedRecommendedColor(segment({
+			recommended_display_cielab: [65535, 32896, 32896],
+			recommended_display_grayscale: 0xffff,
+			display_color_source: "recommended_cielab",
+		}))).toEqual({ text: "grayscale 65535", color: [255, 255, 255] });
+		expect(unusedRecommendedColor(segment({
+			recommended_display_cielab: [1, 2],
+			recommended_display_grayscale: 0,
+			display_color_source: "recommended_grayscale",
+		}))).toEqual({ text: "CIELab 1 \\ 2 (malformed)", color: null });
 	});
 });
 

@@ -124,8 +124,23 @@ function segmentationContext(): SemanticContextResponse {
 			segmentation_fractional_type: null,
 			maximum_fractional_value: null,
 			segments: [
-				{ ...segment, number: 1, label: "Liver", recommended_display_cielab: [0xffff, 0x8080, 0x8080] },
-				{ ...segment, number: 2, label: "Lesion", recommended_display_cielab: null },
+				{
+					...segment,
+					number: 1,
+					label: "Liver",
+					recommended_display_cielab: [0xffff, 0x8080, 0x8080],
+					recommended_display_grayscale: 0,
+					display_color: [255, 255, 255],
+					display_color_source: "recommended_cielab",
+				},
+				{
+					...segment,
+					number: 2,
+					label: "Lesion",
+					recommended_display_cielab: null,
+					display_color: [42, 211, 199],
+					display_color_source: "palette",
+				},
 			],
 			frame_mappings: [],
 			references: [],
@@ -135,7 +150,7 @@ function segmentationContext(): SemanticContextResponse {
 }
 
 describe("SemanticContextPanel SEG section", () => {
-	it("shows each segment's overlay color beside its recommended color", async () => {
+	it("shows the overlay color the server applies and any unused recommended color", async () => {
 		fetchSemanticContext.mockResolvedValue(segmentationContext());
 		const { container } = render(SemanticContextPanel, {
 			fileIndex: SEG.index,
@@ -147,16 +162,21 @@ describe("SemanticContextPanel SEG section", () => {
 
 		const titles = [...container.querySelectorAll<HTMLElement>(".segment-title")];
 		expect(titles.map((title) => title.textContent?.trim())).toEqual(["Segment 1: Liver", "Segment 2: Lesion"]);
-		// The overlay ignores the recommended color, so the first swatch is
-		// the server palette color, not white.
+		// The swatches show the wire color the overlay paints.
 		expect(titles.map((title) => title.querySelector<HTMLElement>(".swatch")?.style.backgroundColor)).toEqual([
-			"rgb(255, 79, 132)",
+			"rgb(255, 255, 255)",
 			"rgb(42, 211, 199)",
 		]);
-		const recommended = [...container.querySelectorAll<HTMLElement>(".recommended")];
-		expect(recommended[0].querySelector<HTMLElement>(".swatch")?.style.backgroundColor).toBe("rgb(255, 255, 255)");
-		expect(recommended[0].textContent).toContain("not used by the overlay");
-		expect(recommended[1].textContent).toContain("Not declared");
+		const recommended = [...container.querySelectorAll<HTMLElement>(".recommended")].map((line) =>
+			line.textContent?.replace(/\s+/g, " ").trim(),
+		);
+		expect(recommended).toEqual([
+			"Overlay color: recommended CIELab 65535 \\ 32896 \\ 32896",
+			"Also recommended: grayscale 0 (not used by the overlay)",
+			"Overlay color: palette, no recommended color declared",
+		]);
+		const unusedSwatch = container.querySelectorAll<HTMLElement>(".recommended .swatch")[0];
+		expect(unusedSwatch.style.backgroundColor).toBe("rgb(0, 0, 0)");
 	});
 });
 

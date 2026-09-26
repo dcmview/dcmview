@@ -9,14 +9,14 @@
 	import ReferenceEdge from "./ReferenceEdge.svelte";
 	import {
 		codedConceptLabel,
-		dicomCielabToRgb,
 		formatDeclaredVector,
 		gridFrameOffsetSummary,
 		mappingFormula,
 		rgbCss,
-		segmentOverlayColor,
+		segmentColorSource,
 		semanticKindLabel,
 		semanticModeLabel,
+		unusedRecommendedColor,
 		type SemanticMode,
 	} from "./semanticPresentation";
 
@@ -128,32 +128,27 @@
 					<span>Current frame segment <b>{display(currentSegmentMapping?.segment_number)}</b></span>
 				</div>
 				{#each response.context.segments as segment (segment.number)}
-					{@const recommended = dicomCielabToRgb(segment.recommended_display_cielab)}
+					{@const unused = unusedRecommendedColor(segment)}
 					<div class="item">
 						<strong class="segment-title">
 							<span
 								class="swatch"
-								style:background-color={rgbCss(segmentOverlayColor(segment.number))}
+								style:background-color={rgbCss(segment.display_color)}
 								title="Overlay color"
 								aria-hidden="true"
 							></span>
 							Segment {segment.number}: {display(segment.label)}
 						</strong>
-						<span class="recommended">
-							Recommended color:
-							{#if recommended}
-								<span
-									class="swatch"
-									style:background-color={rgbCss(recommended)}
-									aria-hidden="true"
-								></span>
-								CIELab {segment.recommended_display_cielab?.join(" \\ ")} (not used by the overlay)
-							{:else if segment.recommended_display_grayscale !== null}
-								grayscale {segment.recommended_display_grayscale}
-							{:else}
-								Not declared
-							{/if}
-						</span>
+						<span class="recommended">Overlay color: {segmentColorSource(segment)}</span>
+						{#if unused}
+							<span class="recommended">
+								Also recommended:
+								{#if unused.color}
+									<span class="swatch" style:background-color={rgbCss(unused.color)} aria-hidden="true"></span>
+								{/if}
+								{unused.text} (not used by the overlay)
+							</span>
+						{/if}
 						<span>{display(segment.description)}</span>
 						<span>Property: {codedConceptLabel(segment.property_type)}</span>
 						<span>Algorithm: {display(segment.algorithm_type)} / {display(segment.algorithm_name)}</span>

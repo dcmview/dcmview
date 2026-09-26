@@ -250,7 +250,19 @@ mapping_method: string | null,
  */
 mapping_status: string, mapping_reason: string, };
 
-export type SegmentSummary = { number: number, label: string | null, description: string | null, property_category: CodedConceptSummary | null, property_type: CodedConceptSummary | null, algorithm_type: string | null, algorithm_name: string | null, recommended_display_cielab: Array<number> | null, recommended_display_grayscale: number | null, };
+export type SegmentSummary = { number: number, label: string | null, description: string | null, property_category: CodedConceptSummary | null, property_type: CodedConceptSummary | null, algorithm_type: string | null, algorithm_name: string | null, recommended_display_cielab: Array<number> | null, recommended_display_grayscale: number | null, 
+/**
+ * The sRGB color the segmentation overlay paints this segment with.
+ */
+display_color: [number, number, number], 
+/**
+ * Where `display_color` comes from: `recommended_cielab` (the
+ * Recommended Display CIELab Value, D50 CIELab converted to sRGB),
+ * `recommended_grayscale` (the Recommended Display Grayscale Value as a
+ * gray level), or `palette` (a fixed palette cycled by segment number,
+ * when neither is declared).
+ */
+display_color_source: string, };
 
 export type SegmentationContext = { segmentation_type: string | null, segmentation_fractional_type: string | null, maximum_fractional_value: number | null, segments: Array<SegmentSummary>, frame_mappings: Array<SegmentFrameMapping>, references: Array<ReferenceSummary>, overlay: OverlayEligibility, };
 
