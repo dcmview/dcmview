@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import * as api from "../../api";
 import type { FileSummary, OverlayLegend } from "../../api";
 import {
 	composeOverlayFrame,
@@ -10,6 +11,12 @@ import {
 	type DecodedCanvasImage,
 	type SegmentationOverlay,
 } from "./frameOverlay";
+
+vi.mock("../../api", async (importOriginal) => ({
+	...await importOriginal<typeof import("../../api")>(),
+	fetchDoseOverlayBlob: vi.fn(async () => new Blob(["dose"])),
+	fetchParametricMapOverlayBlob: vi.fn(async () => new Blob(["map"])),
+}));
 
 function image(name: string, width: number, height: number): DecodedCanvasImage {
 	return { source: { name } as unknown as CanvasImageSource, width, height, dispose: vi.fn() };
@@ -50,9 +57,16 @@ describe("frame overlays", () => {
 });
 
 describe("value overlays", () => {
-	it("keys one colorwash layer per volume and displayed frame", () => {
-		const request = valueOverlayLayerRequest({ kind: "rt_dose", volumeFileIndex: 9 }, 5, 2);
-		expect(request.key).toBe("rt_dose:9:5:2");
+	it("keys one colorwash layer per volume and displayed frame, from the volume's endpoint", async () => {
+		const signal = new AbortController().signal;
+		const dose = valueOverlayLayerRequest({ kind: "rt_dose", volumeFileIndex: 9 }, 5, 2);
+		const map = valueOverlayLayerRequest({ kind: "parametric_map", volumeFileIndex: 4 }, 1, 0);
+		expect([dose.key, map.key]).toEqual(["rt_dose:9:5:2", "parametric_map:4:1:0"]);
+
+		await dose.load(signal);
+		await map.load(signal);
+		expect(api.fetchDoseOverlayBlob).toHaveBeenCalledWith(5, 2, 9, signal);
+		expect(api.fetchParametricMapOverlayBlob).toHaveBeenCalledWith(1, 0, 4, signal);
 	});
 
 	it("shares in-flight layer requests and serves revisited layers from cache", async () => {

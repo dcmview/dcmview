@@ -264,3 +264,41 @@ describe("SemanticContextPanel RT Dose overlay", () => {
 		expect(screen.queryByRole("button", { name: "Show dose on source image" })).toBeNull();
 	});
 });
+
+describe("SemanticContextPanel Parametric Map overlay", () => {
+	const PM = fileSummary(5, { label: "adc.dcm", modality: "MR", object_kind: "parametric_map", frame_count: 2 });
+
+	it("shows overlay eligibility and opens the map on its source image", async () => {
+		const response: SemanticContextResponse = {
+			source_file_index: PM.index,
+			default_mode: "pixel_preview",
+			pixel_preview_preserves_stored_values: true,
+			context: {
+				kind: "parametric_map",
+				stored_value_type: "integer",
+				displayed_value_kind: "stored",
+				mappings: [],
+				mapping_status: "mapping_available",
+				source_references: [],
+				warnings: [],
+				overlay: { eligible: true, reason: "1 local image frame(s) lie within it", source_file_index: null, mapped_source_count: 1 },
+				overlay_source_frames: [{ file_index: CT.index, frame_index: 0, sop_instance_uid: CT.sop_instance_uid }],
+				legend: null,
+			},
+		};
+		fetchSemanticContext.mockResolvedValue(response);
+		const onshowoverlay = vi.fn();
+		render(SemanticContextPanel, {
+			fileIndex: PM.index,
+			currentFrame: 0,
+			files: [PM, CT],
+			onopenreference: vi.fn(),
+			onshowoverlay,
+		});
+		await showSemanticContext();
+
+		expect(screen.getByText(/Overlay eligible: 1 local image frame\(s\) lie within it/)).toBeTruthy();
+		await fireEvent.click(screen.getByRole("button", { name: "Show map on source image" }));
+		expect(onshowoverlay).toHaveBeenCalledWith(response);
+	});
+});

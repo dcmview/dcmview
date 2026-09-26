@@ -55,7 +55,7 @@
 	// Zoom, pan, and orientation per open tab: the viewport zooms and pans,
 	// the toolbar reorients.
 	const viewStates = new ViewStates();
-	// Value colorwashes (RT Dose) over the images they cover.
+	// Value colorwashes (RT Dose, Parametric Map) over the images they cover.
 	const valueOverlays = new ValueOverlays({
 		files: () => catalog.filesById,
 		series: () => catalog.series?.series ?? [],

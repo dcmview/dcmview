@@ -21,6 +21,7 @@ export const DEFAULT_VALUE_OVERLAY_OPACITY = 0.5;
 /** The value overlay a file can supply, if any. */
 export function valueOverlayKind(file: FileSummary): ValueOverlayKind | null {
 	if (file.sop_class_uid === RT_DOSE_SOP_CLASS_UID) return "rt_dose";
+	if (file.object_kind === "parametric_map") return "parametric_map";
 	return null;
 }
 
@@ -57,11 +58,19 @@ function coverageOf(response: SemanticContextResponse): Coverage | null {
 	if (coverageByResponse.has(response)) return coverageByResponse.get(response) ?? null;
 	const { context } = response;
 	let coverage: Coverage | null = null;
-	if (context.kind === "rt_dose" && context.overlay.eligible && context.legend) {
-		const summation = context.dose_summation_type?.trim();
+	if ((context.kind === "rt_dose" || context.kind === "parametric_map") && context.overlay.eligible && context.legend) {
+		let title: string;
+		if (context.kind === "rt_dose") {
+			const summation = context.dose_summation_type?.trim();
+			title = summation ? `RT Dose · ${summation}` : "RT Dose";
+		} else {
+			const mapping = context.mappings[0];
+			const quantity = mapping?.label?.trim() || mapping?.quantity?.meaning;
+			title = quantity ? `Parametric Map · ${quantity}` : "Parametric Map";
+		}
 		coverage = {
-			kind: "rt_dose",
-			title: summation ? `RT Dose · ${summation}` : "RT Dose",
+			kind: context.kind,
+			title,
 			legend: context.legend,
 			frames: new Set(context.overlay_source_frames.map((frame) => frameKey(frame.file_index, frame.frame_index))),
 			files: new Set(context.overlay_source_frames.map((frame) => frame.file_index)),
@@ -80,7 +89,7 @@ export function overlayEntryFrame(
 	response: SemanticContextResponse,
 ): { fileIndex: number; frameIndex: number } | null {
 	const { context } = response;
-	if (context.kind !== "rt_dose" || !context.overlay.eligible) return null;
+	if ((context.kind !== "rt_dose" && context.kind !== "parametric_map") || !context.overlay.eligible) return null;
 	const frames = context.overlay_source_frames;
 	const declared = context.overlay.source_file_index;
 	const entry = frames.find((frame) => frame.file_index === declared) ?? frames[0];
@@ -95,11 +104,11 @@ export type ValueOverlaysOptions = {
 };
 
 /**
- * RT Dose colorwash overlays on the images they cover. The volumes sharing
- * a Frame of Reference with the active file have their semantic context
- * read; a volume is offered when its overlay is eligible and it covers a
- * frame of the active tab. One volume is shown at a time, at a shared
- * opacity, on every tab it covers.
+ * RT Dose and Parametric Map colorwash overlays on the images they cover.
+ * The volumes sharing a Frame of Reference with the active file have their
+ * semantic context read; a volume is offered when its overlay is eligible
+ * and it covers a frame of the active tab. One volume is shown at a time,
+ * at a shared opacity, on every tab it covers.
  */
 export class ValueOverlays {
 	/** File index of the volume shown, or null when overlays are off. */

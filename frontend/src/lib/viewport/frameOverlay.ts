@@ -1,5 +1,6 @@
 import {
 	fetchDoseOverlayBlob,
+	fetchParametricMapOverlayBlob,
 	fetchSegmentationOverlayBlob,
 	type FileSummary,
 	type OverlayLegend,
@@ -28,7 +29,7 @@ export type SegmentationOverlay = {
  */
 export type FrameOverlay = SegmentationOverlay;
 
-export type ValueOverlayKind = "rt_dose";
+export type ValueOverlayKind = "rt_dose" | "parametric_map";
 
 /**
  * A value volume drawn as a translucent colorwash over the displayed frame.
@@ -56,7 +57,9 @@ export function valueOverlayLayerRequest(
 	const { kind, volumeFileIndex } = overlay;
 	return {
 		key: `${kind}:${volumeFileIndex}:${fileIndex}:${frameIndex}`,
-		load: (signal) => fetchDoseOverlayBlob(fileIndex, frameIndex, volumeFileIndex, signal),
+		load: (signal) => kind === "rt_dose"
+			? fetchDoseOverlayBlob(fileIndex, frameIndex, volumeFileIndex, signal)
+			: fetchParametricMapOverlayBlob(fileIndex, frameIndex, volumeFileIndex, signal),
 	};
 }
 

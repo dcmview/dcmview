@@ -176,6 +176,15 @@
 					<p class="reason">No compatible Real World Value Mapping is available.</p>
 				{/each}
 				{#each response.context.warnings as warning}<p class="reason">{warning}</p>{/each}
+				<p class:eligible={response.context.overlay.eligible} class="reason">
+					Overlay {response.context.overlay.eligible ? "eligible" : "unavailable"}: {response.context.overlay.reason}.
+				</p>
+				{#if response.context.overlay.eligible && onshowoverlay}
+					{@const shown = response}
+					<button type="button" class="show-overlay" onclick={() => onshowoverlay(shown)}>
+						Show map on source image
+					</button>
+				{/if}
 			</div>
 		{:else if response.context.kind === "rt_dose"}
 			<div class="details">

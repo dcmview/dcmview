@@ -189,3 +189,65 @@ describe("overlayEntryFrame", () => {
 		}))).toBeNull();
 	});
 });
+
+function parametricMapContext(index: number, eligible = true): SemanticContextResponse {
+	return {
+		source_file_index: index,
+		default_mode: "pixel_preview",
+		pixel_preview_preserves_stored_values: true,
+		context: {
+			kind: "parametric_map",
+			stored_value_type: "integer",
+			displayed_value_kind: "stored",
+			mappings: [{
+				source: "embedded",
+				source_sop_instance_uid: null,
+				label: "ADC",
+				first_value_mapped: 0,
+				last_value_mapped: 4095,
+				slope: 0.5,
+				intercept: -10,
+				lut_data: [],
+				lut_data_truncated: false,
+				units: { value: "um2/s", scheme: "UCUM", meaning: "um2/s" },
+				quantity: { value: "113041", scheme: "DCM", meaning: "Apparent Diffusion Coefficient" },
+				derivation: null,
+			}],
+			mapping_status: "mapping_available",
+			source_references: [],
+			warnings: [],
+			overlay: eligible
+				? { eligible: true, reason: "2 local image frame(s) lie within it", source_file_index: null, mapped_source_count: 2 }
+				: { eligible: false, reason: "mappings use different units", source_file_index: null, mapped_source_count: 0 },
+			overlay_source_frames: eligible ? [{ file_index: 1, frame_index: 0, sop_instance_uid: "mr.1" }] : [],
+			legend: eligible
+				? { ...LEGEND, unit_label: "um2/s", min_value: 0, max_value: 665, transparent_at_or_below: null }
+				: null,
+		},
+	};
+}
+
+describe("ValueOverlays Parametric Maps", () => {
+	it("offers an eligible map on its source images, titled by its quantity", async () => {
+		const files = new Map<number, FileSummary>([
+			[1, fileSummary(1, { modality: "MR" })],
+			[4, fileSummary(4, { modality: "MR", object_kind: "parametric_map", frame_count: 2 })],
+		]);
+		const controller = new ValueOverlays({
+			files: () => files,
+			series: () => [series("mr", "2.2.for", [1]), series("pm", "2.2.for", [4])],
+			scanComplete: () => true,
+			load: async (index) => parametricMapContext(index),
+		});
+
+		controller.load(1);
+		await vi.waitFor(() => expect(controller.candidatesFor(1, [])).toHaveLength(1));
+		const [candidate] = controller.candidatesFor(1, []);
+		expect(candidate).toMatchObject({ kind: "parametric_map", volumeFileIndex: 4, title: "Parametric Map · ADC" });
+		expect(candidate.legend.unit_label).toBe("um2/s");
+		controller.select(4);
+		expect(controller.overlayFor([candidate], 1, 0)).toMatchObject({ kind: "parametric_map", coversFrame: true });
+		expect(overlayEntryFrame(parametricMapContext(4))).toEqual({ fileIndex: 1, frameIndex: 0 });
+		expect(overlayEntryFrame(parametricMapContext(4, false))).toBeNull();
+	});
+});
