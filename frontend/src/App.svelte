@@ -267,7 +267,12 @@
 							/>
 						{/if}
 						{#if activeFile.object_kind === "whole_slide_microscopy"}
-							<WsiTileContext fileIndex={activeFile.index} frame={tabs.currentFrame} />
+							<WsiTileContext
+								fileIndex={activeFile.index}
+								frame={tabs.currentFrame}
+								files={catalog.files.files}
+								onopenreference={(fileIndex, frameIndex) => tabs.openReference(fileIndex, frameIndex)}
+							/>
 						{/if}
 					</div>
 					<ImageViewport
