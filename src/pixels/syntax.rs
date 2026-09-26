@@ -71,7 +71,10 @@ impl Codec {
             (Self::Native, 8, "YBR_FULL" | "YBR_FULL_422") => Some(YbrFull),
             // The JPEG decoder applies the codestream's YCbCr transform itself.
             (Self::JpegBaseline, 8, "RGB" | "YBR_FULL" | "YBR_FULL_422") => Some(Rgb),
+            // The lossless process has no color transform: jpeg-decoder
+            // returns the stored components, so YBR_FULL is converted here.
             (Self::JpegLossless, 8, "RGB") => Some(Rgb),
+            (Self::JpegLossless, 8, "YBR_FULL") => Some(YbrFull),
             // OpenJPEG applies the inverse RCT/ICT itself.
             (Self::Jpeg2000, 8 | 16, "RGB" | "YBR_RCT" | "YBR_ICT") => Some(Rgb),
             (Self::JpegXl, 8, "RGB") => Some(Rgb),
@@ -433,6 +436,10 @@ mod tests {
         assert_eq!(
             color("1.2.840.10008.1.2.5", 16, "YBR_FULL"),
             SupportState::Unsupported
+        );
+        assert_eq!(
+            color("1.2.840.10008.1.2.4.70", 8, "YBR_FULL"),
+            SupportState::Renderable
         );
         // jpegxl.rs rejects this, so it must not be advertised.
         assert_eq!(

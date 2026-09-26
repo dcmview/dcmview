@@ -36,6 +36,16 @@ fn main() {
         },
         rle_ybr_fragment_4x2(),
     );
+    write_color_fixture(
+        &fixture_dir.join("golden-jpeg-lossless-ybr-full-u8-single-frame.dcm"),
+        ColorFixtureSpec {
+            sop_instance_uid: "2.25.2000010",
+            patient_id: "GOLDEN-JPEG-LOSSLESS-YBR",
+            transfer_syntax_uid: "1.2.840.10008.1.2.4.70",
+            photometric_interpretation: "YBR_FULL",
+        },
+        jpeg_lossless_ybr_fragment_4x2(),
+    );
     write_sr_without_pixels(&fixture_dir.join("golden-no-pixels-sr.dcm"));
     write_image_without_pixels(&fixture_dir.join("golden-image-no-pixels.dcm"));
 }
@@ -618,6 +628,16 @@ fn jpeg_lossless_fragment_4x4_u16() -> Vec<u8> {
         "ffd8ffe000104a46494600010100000100010000ffc3000b100004000401011100",
         "ffc400160001010100000000000000000000000000070910ffda000801010001",
         "0000cc8c8c9641919192c8323232590646464fffd9"
+    ))
+}
+
+fn jpeg_lossless_ybr_fragment_4x2() -> Vec<u8> {
+    // Lossless JPEG process 14, selection value 1, three 8-bit components
+    // holding YBR_4X2 unchanged: one DC table codes SSSS 0-8 with 4 bits.
+    decode_hex(concat!(
+        "ffd8ffc30011080002000403011100021100031100ffc4001c00000000090000",
+        "00000000000000000000000102030405060708ffda000c030100020003000100",
+        "0062d947fe000f29968150006422aa1ac001f1c3236a001fffd9"
     ))
 }
 

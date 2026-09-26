@@ -9,6 +9,7 @@ The committed corpus is intentionally small and synthetic:
 - `golden-jpeg-baseline-large-single-frame.dcm`
 - `golden-jpeg-baseline-multiframe-bot.dcm`
 - `golden-jpeg-lossless-u16-single-frame.dcm`
+- `golden-jpeg-lossless-ybr-full-u8-single-frame.dcm`
 - `golden-jpeg2000-lossless-u8-single-frame.dcm`
 - `golden-rle-ybr-full-422-u8-single-frame.dcm`
 - `golden-image-no-pixels.dcm`

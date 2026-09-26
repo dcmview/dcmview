@@ -186,6 +186,17 @@ async fn rle_ybr_full_422_fixture_displays_full_resolution_ybr_as_rgb() {
 }
 
 #[tokio::test]
+async fn jpeg_lossless_ybr_full_fixture_converts_decoded_components_to_rgb() {
+    // jpeg-decoder applies no color transform to lossless frames, so the
+    // display path must convert the decoded Y, Cb, Cr components itself.
+    assert_color_fixture_display(
+        "golden-jpeg-lossless-ybr-full-u8-single-frame.dcm",
+        "1.2.840.10008.1.2.4.70",
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn jpeg_lossless_fixture_satisfies_display_and_raw_contracts() {
     let samples = [
         0_u16, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100, 1200, 1300, 1400, 1500,
