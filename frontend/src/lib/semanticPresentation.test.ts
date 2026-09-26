@@ -2,9 +2,12 @@ import { describe, expect, it } from "vitest";
 import type { SemanticContextResponse } from "../generated/api-types";
 import {
 	codedConceptLabel,
+	dicomCielabToRgb,
 	formatDeclaredVector,
 	gridFrameOffsetSummary,
 	mappingFormula,
+	rgbCss,
+	segmentOverlayColor,
 	segmentationOverlaySelection,
 	semanticKindLabel,
 	semanticModeLabel,
@@ -82,6 +85,28 @@ describe("semantic presentation labels", () => {
 		} as unknown as SemanticContextResponse;
 
 		expect(segmentationOverlaySelection(response, 0)).toBeNull();
+	});
+});
+
+describe("SEG segment colors", () => {
+	it("cycles the server's overlay palette by segment number", () => {
+		expect(segmentOverlayColor(1)).toEqual([255, 79, 132]);
+		expect(segmentOverlayColor(2)).toEqual([42, 211, 199]);
+		expect(segmentOverlayColor(7)).toEqual([255, 79, 132]);
+		expect(segmentOverlayColor(0)).toEqual([255, 79, 132]);
+	});
+
+	it("converts DICOM-encoded CIELab PCS-Values to sRGB", () => {
+		expect(dicomCielabToRgb([0xffff, 0x8080, 0x8080])).toEqual([255, 255, 255]);
+		expect(dicomCielabToRgb([0, 0x8080, 0x8080])).toEqual([0, 0, 0]);
+		// sRGB red is roughly L* 54.29, a* 80.80, b* 69.89 under D50.
+		const [red, green, blue] = dicomCielabToRgb([35579, 53661, 50858])!;
+		expect(red).toBeGreaterThanOrEqual(253);
+		expect(green).toBeLessThanOrEqual(3);
+		expect(blue).toBeLessThanOrEqual(3);
+		expect(dicomCielabToRgb(null)).toBeNull();
+		expect(dicomCielabToRgb([1, 2])).toBeNull();
+		expect(rgbCss([1, 2, 3])).toBe("rgb(1, 2, 3)");
 	});
 });
 

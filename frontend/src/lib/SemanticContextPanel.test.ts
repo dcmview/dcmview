@@ -96,6 +96,68 @@ beforeEach(() => {
 	fetchSemanticContext.mockReset();
 });
 
+const SEG = fileSummary(4, {
+	label: "seg.dcm",
+	modality: "SEG",
+	sop_class_uid: "1.2.840.10008.5.1.4.1.1.66.4",
+	object_kind: "segmentation",
+});
+
+function segmentationContext(): SemanticContextResponse {
+	const segment = {
+		description: null,
+		property_category: null,
+		property_type: null,
+		algorithm_type: "MANUAL",
+		algorithm_name: null,
+		recommended_display_grayscale: null,
+	};
+	return {
+		source_file_index: SEG.index,
+		default_mode: "pixel_preview",
+		pixel_preview_preserves_stored_values: true,
+		context: {
+			kind: "segmentation",
+			segmentation_type: "BINARY",
+			segmentation_fractional_type: null,
+			maximum_fractional_value: null,
+			segments: [
+				{ ...segment, number: 1, label: "Liver", recommended_display_cielab: [0xffff, 0x8080, 0x8080] },
+				{ ...segment, number: 2, label: "Lesion", recommended_display_cielab: null },
+			],
+			frame_mappings: [],
+			references: [],
+			overlay: { eligible: true, reason: "validated", source_file_index: null, mapped_source_count: 1 },
+		},
+	};
+}
+
+describe("SemanticContextPanel SEG section", () => {
+	it("shows each segment's overlay color beside its recommended color", async () => {
+		fetchSemanticContext.mockResolvedValue(segmentationContext());
+		const { container } = render(SemanticContextPanel, {
+			fileIndex: SEG.index,
+			currentFrame: 0,
+			files: [SEG],
+			onopenreference: vi.fn(),
+		});
+		await showSemanticContext();
+
+		const titles = [...container.querySelectorAll<HTMLElement>(".segment-title")];
+		expect(titles.map((title) => title.textContent?.trim())).toEqual(["Segment 1: Liver", "Segment 2: Lesion"]);
+		// The overlay ignores the recommended color, so the first swatch is
+		// the server palette color, not white.
+		expect(titles.map((title) => title.querySelector<HTMLElement>(".swatch")?.style.backgroundColor)).toEqual([
+			"rgb(255, 79, 132)",
+			"rgb(42, 211, 199)",
+		]);
+		const recommended = [...container.querySelectorAll<HTMLElement>(".recommended")];
+		expect(recommended[0].querySelector<HTMLElement>(".swatch")?.style.backgroundColor).toBe("rgb(255, 255, 255)");
+		expect(recommended[0].textContent).toContain("not used by the overlay");
+		expect(recommended[1].textContent).toContain("Not declared");
+	});
+});
+
 describe("SemanticContextPanel RT Dose section", () => {
 	it("shows the dose grid geometry", async () => {
 		fetchSemanticContext.mockResolvedValue(rtDoseContext());

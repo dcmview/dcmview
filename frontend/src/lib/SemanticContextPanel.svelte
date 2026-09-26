@@ -9,9 +9,12 @@
 	import ReferenceEdge from "./ReferenceEdge.svelte";
 	import {
 		codedConceptLabel,
+		dicomCielabToRgb,
 		formatDeclaredVector,
 		gridFrameOffsetSummary,
 		mappingFormula,
+		rgbCss,
+		segmentOverlayColor,
 		semanticKindLabel,
 		semanticModeLabel,
 		type SemanticMode,
@@ -125,8 +128,32 @@
 					<span>Current frame segment <b>{display(currentSegmentMapping?.segment_number)}</b></span>
 				</div>
 				{#each response.context.segments as segment (segment.number)}
+					{@const recommended = dicomCielabToRgb(segment.recommended_display_cielab)}
 					<div class="item">
-						<strong>Segment {segment.number}: {display(segment.label)}</strong>
+						<strong class="segment-title">
+							<span
+								class="swatch"
+								style:background-color={rgbCss(segmentOverlayColor(segment.number))}
+								title="Overlay color"
+								aria-hidden="true"
+							></span>
+							Segment {segment.number}: {display(segment.label)}
+						</strong>
+						<span class="recommended">
+							Recommended color:
+							{#if recommended}
+								<span
+									class="swatch"
+									style:background-color={rgbCss(recommended)}
+									aria-hidden="true"
+								></span>
+								CIELab {segment.recommended_display_cielab?.join(" \\ ")} (not used by the overlay)
+							{:else if segment.recommended_display_grayscale !== null}
+								grayscale {segment.recommended_display_grayscale}
+							{:else}
+								Not declared
+							{/if}
+						</span>
 						<span>{display(segment.description)}</span>
 						<span>Property: {codedConceptLabel(segment.property_type)}</span>
 						<span>Algorithm: {display(segment.algorithm_type)} / {display(segment.algorithm_name)}</span>
@@ -215,6 +242,8 @@
 	.item { display: grid; gap: 2px; margin-top: 7px; padding: 6px 8px; border-left: 2px solid var(--border-strong); background: var(--surface-panel); }
 	.item strong { color: var(--text-primary); }
 	.item span { font-family: var(--font-mono); }
+	.segment-title, .item .recommended { display: flex; align-items: center; gap: 6px; }
+	.swatch { flex: 0 0 auto; width: 10px; height: 10px; border: 1px solid var(--border-strong); border-radius: 2px; }
 	h3 { margin: 9px 0 0; color: var(--text-primary); font-size: 11px; font-weight: 650; }
 	.geometry { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 12px; margin: 4px 0 0; }
 	.geometry dt { color: var(--text-muted); }
