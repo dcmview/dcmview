@@ -21,6 +21,8 @@ module:
 | HTTP runtime | `src/server/` | Listener/runtime, route registration, handlers, state, registry, activity tracking, tags, and embedded assets. |
 | Pixel service | `src/pixels/` | Typed display/raw requests, cache behavior, transfer-syntax classification, decoding, rendering, and `PixelError`. |
 | Patient geometry | `src/geometry.rs` | Normalized per-frame position, orientation, pixel spacing, coplanarity checks, and target-to-source pixel transforms. |
+| Plane stacks | `src/plane_stack.rs` | RT Dose grids and Parametric Map frames as parallel planes; coverage and bracketing-plane sampling of a displayed frame. |
+| Value mapping | `src/value_mapping.rs` | Per-frame Modality transform and Real World Value Mappings (or Dose Grid Scaling) that convert stored samples. |
 | DICOM references | `src/references.rs` | Bounded extraction of typed instance relationships without implying target presence or semantic rendering. |
 | Semantic context | `src/semantic.rs` | Conservative SEG, Parametric Map, and RT Dose metadata interpretation layered beside unchanged pixel preview. |
 | WSI tile context | `src/wsi.rs` | Bounded positioning of one selected WSI tile without stitching or Total Pixel Matrix reconstruction. |
@@ -224,6 +226,19 @@ The contract is kept consistent by three layers:
   returns a source-sized transparent PNG using nearest-neighbor mask sampling.
   Unavailable semantic mappings return `422 semantic_mapping_unavailable`;
   successful responses include `X-Cache` for the decoded SEG frame.
+- `/api/file/{index}/frame/{frame}/dose-overlay?dose=` and
+  `.../parametric-map-overlay?map=` (`server/api/overlays.rs`) draw an RT Dose
+  grid or Parametric Map on a displayed frame in its Frame of Reference. The
+  volume is a `PlaneStack`; the displayed frame samples its bracketing planes
+  bilinearly and linearly between them, frames are decoded through the raw
+  cache and converted with `value_mapping`, and `pixels/colorwash.rs` encodes
+  viridis over the context legend's range. A frame beyond the stack is
+  `404 overlay_not_covering_frame`. Encoded PNGs are cached per volume and
+  displayed frame, and `X-Cache` reports that cache. Semantic context lists
+  covered source frames; the server completes its legend from the decoded
+  frames' value range.
+- `/api/file/{index}/frame/{frame}/value-mapping` reports the frame's
+  Modality transform and real-world mappings for client-side readouts.
 - `/api/file/{index}/wsi/frame/{frame}` returns bounded placement metadata for
   one selected tile. TILED_FULL uses deterministic raster placement;
   TILED_SPARSE uses per-frame plane positions. The contract exposes matrix,
@@ -263,8 +278,9 @@ normalizing multi-byte values to little endian. Integer sample fields are
 masked to Bits Stored and signed values are extended from High Bit so unused
 allocated bits never affect display or raw consumers; one-bit pixels are
 expanded to one byte per sample. Float and double-float objects are pixel-renderable, but
-real-world-value mapping remains a separate semantic capability rather than an
-implicit part of the display pipeline.
+real-world-value mapping remains a separate semantic capability (the
+value-mapping endpoint and value overlays) rather than an implicit part of the
+display pipeline.
 
 The frontend uses raw frames for local interactive window/level when their
 single-channel 8- or 16-bit layout is supported by the browser renderer. For
