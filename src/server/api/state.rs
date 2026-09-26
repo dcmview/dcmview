@@ -2,6 +2,7 @@ use super::super::{now_unix_ms, FileRegistry, RequestActivity};
 use crate::annotations::AnnotationStore;
 use crate::api::contracts::{SemanticContextResponse, TagNode};
 use crate::pixels::{self, FrameCache, RawFrameCache};
+use crate::value_mapping::FileValueMappings;
 use lru::LruCache;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
@@ -18,6 +19,10 @@ const SEMANTIC_CACHE_MAX_FILES: NonZeroUsize = NonZeroUsize::new(16).expect("non
 /// the registry only grows, so its length identifies that set.
 type SemanticCacheKey = (usize, usize);
 
+/// Parsed value mappings of recently viewed files. A value readout asks for
+/// them on every frame change, and reading them parses the whole header.
+const VALUE_MAPPING_CACHE_MAX_FILES: NonZeroUsize = NonZeroUsize::new(16).expect("non-zero");
+
 #[derive(Clone)]
 pub struct AppState {
     registry: FileRegistry,
@@ -25,6 +30,7 @@ pub struct AppState {
     raw_cache: Arc<Mutex<RawFrameCache>>,
     tag_cache: Arc<Mutex<LruCache<usize, Vec<TagNode>>>>,
     semantic_cache: Arc<Mutex<LruCache<SemanticCacheKey, Arc<SemanticContextResponse>>>>,
+    value_mapping_cache: Arc<Mutex<LruCache<usize, Arc<FileValueMappings>>>>,
     annotations: AnnotationStore,
     server_start_ms: u64,
     activity: RequestActivity,
@@ -38,6 +44,7 @@ impl AppState {
             raw_cache: pixels::new_raw_cache(),
             tag_cache: Arc::new(Mutex::new(LruCache::new(TAG_CACHE_MAX_FILES))),
             semantic_cache: Arc::new(Mutex::new(LruCache::new(SEMANTIC_CACHE_MAX_FILES))),
+            value_mapping_cache: Arc::new(Mutex::new(LruCache::new(VALUE_MAPPING_CACHE_MAX_FILES))),
             annotations,
             server_start_ms: now_unix_ms(),
             activity: RequestActivity::new(),
@@ -90,6 +97,19 @@ impl AppState {
     ) {
         if let Ok(mut cache) = self.semantic_cache.lock() {
             cache.put(key, context);
+        }
+    }
+
+    pub(crate) fn cached_value_mappings(&self, index: usize) -> Option<Arc<FileValueMappings>> {
+        self.value_mapping_cache
+            .lock()
+            .ok()
+            .and_then(|mut cache| cache.get(&index).cloned())
+    }
+
+    pub(crate) fn cache_value_mappings(&self, index: usize, mappings: Arc<FileValueMappings>) {
+        if let Ok(mut cache) = self.value_mapping_cache.lock() {
+            cache.put(index, mappings);
         }
     }
 

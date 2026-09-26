@@ -9,6 +9,7 @@ export const API_ENDPOINTS = {
 	fileReferences: { method: "GET", path: "/api/file/{index}/references" },
 	fileSemanticContext: { method: "GET", path: "/api/file/{index}/semantic-context" },
 	fileSegmentationOverlay: { method: "GET", path: "/api/file/{index}/frame/{frame}/segmentation-overlay" },
+	fileValueMapping: { method: "GET", path: "/api/file/{index}/frame/{frame}/value-mapping" },
 	fileWsiContext: { method: "GET", path: "/api/file/{index}/frame/{frame}/wsi-context" },
 	fileFrame: { method: "GET", path: "/api/file/{index}/frame/{frame}" },
 	fileRawFrame: { method: "GET", path: "/api/file/{index}/frame/{frame}/raw" },
@@ -72,7 +73,32 @@ export type FrameQuery = { wc?: number, ww?: number, mode?: WindowMode, };
 
 export type FrameRefSummary = { virtual_index: number, file_index: number, frame_index: number, source_path: string, sop_instance_uid: string, instance_number: number | null, position_along_normal_mm: number | null, };
 
+/**
+ * How one frame's stored samples, as served by the raw-frame endpoint,
+ * convert to modality and real-world values.
+ */
+export type FrameValueMapping = { file_index: number, 
+/**
+ * Zero-based frame index.
+ */
+frame_index: number, 
+/**
+ * `integer`, `float32`, or `float64` stored samples.
+ */
+stored_value_type: string, modality: ModalityValueTransform, 
+/**
+ * Conversions of stored values into real-world units that apply to this
+ * frame, the preferred one first. Empty when none is declared.
+ */
+real_world: Array<RealWorldValueMap>, };
+
 export type HealthResponse = { status: string, viewer: ViewerIdentity, file_count: number, server_start_ms: number, };
+
+/**
+ * The Modality transform the display pipeline applies to stored values
+ * before windowing: the LUT when present, otherwise the rescale.
+ */
+export type ModalityValueTransform = { rescale_slope: number, rescale_intercept: number, rescale_type: string | null, lut: ValueLookupTable | null, };
 
 export type OverlayEligibility = { eligible: boolean, reason: string, source_file_index: number | null, mapped_source_count: number, };
 
@@ -90,7 +116,28 @@ export type RawFrameMetadata = { rows: number, columns: number, bitsAllocated: n
  */
 paddingLow: number | null, paddingHigh: number | null, };
 
+/**
+ * One validated stored-to-real-world conversion. Stored values outside
+ * `first_value_mapped..=last_value_mapped` have no mapped value.
+ */
+export type RealWorldValueMap = { 
+/**
+ * `real_world_value_mapping` (a declared RWVM item) or
+ * `dose_grid_scaling` (RT Dose: `mapped = stored * DoseGridScaling`).
+ */
+source: string, label: string | null, 
+/**
+ * Inclusive stored-value range; an absent bound is unbounded.
+ */
+first_value_mapped: number | null, last_value_mapped: number | null, transform: RealWorldValueTransform, 
+/**
+ * Short unit text for readouts and legends, such as `Gy` or a UCUM code.
+ */
+unit_label: string, units: CodedConceptSummary | null, quantity: CodedConceptSummary | null, };
+
 export type RealWorldValueMappingSummary = { source: string, source_sop_instance_uid: string | null, label: string | null, first_value_mapped: number | null, last_value_mapped: number | null, slope: number | null, intercept: number | null, lut_data: Array<number>, lut_data_truncated: boolean, units: CodedConceptSummary | null, quantity: CodedConceptSummary | null, derivation: CodedConceptSummary | null, };
+
+export type RealWorldValueTransform = { "kind": "linear", slope: number, intercept: number, } | { "kind": "lut", values: Array<number>, };
 
 export type ReferenceCatalogResponse = { source_file_index: number, source_sop_instance_uid: string, references: Array<ReferenceSummary>, };
 
@@ -174,6 +221,11 @@ export type TagNode = { tag: string, vr: string, keyword: string, value: TagValu
 export type TagQuery = { path: string, offset?: number, limit?: number, };
 
 export type TagValue = { "type": "string", value: string, } | { "type": "number", value: number, } | { "type": "numbers", value: Array<number>, truncated?: boolean, total?: number, } | { "type": "binary", length: number, } | { "type": "sequence", items: Array<Array<TagNode>>, truncated?: boolean, total?: number, } | { "type": "error", message: string, };
+
+/**
+ * `value = values[clamp(stored - first_value_mapped, 0, values.length - 1)]`.
+ */
+export type ValueLookupTable = { first_value_mapped: number, values: Array<number>, };
 
 export type ViewerIdentity = { name: string, version: string, build_git_sha: string, build_target: string, build_profile: string, };
 

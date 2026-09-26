@@ -3,6 +3,7 @@ import type {
 	ErrorResponse,
 	FilesResponse,
 	FrameQuery,
+	FrameValueMapping,
 	RawFrameMetadata,
 	ReferenceCatalogResponse,
 	SemanticContextResponse,
@@ -22,8 +23,12 @@ export type {
 	FilesResponse,
 	FrameQuery,
 	FrameInfo,
+	FrameValueMapping,
 	HealthResponse,
+	ModalityValueTransform,
 	RawFrameMetadata,
+	RealWorldValueMap,
+	RealWorldValueTransform,
 	ReferenceCatalogResponse,
 	ReferenceMatchSummary,
 	ReferenceSummary,
@@ -41,6 +46,7 @@ export type {
 	TagNode,
 	TagQuery,
 	TagValue,
+	ValueLookupTable,
 	WindowMode,
 	WindowPreset,
 	WsiFrameContextResponse,
@@ -130,6 +136,15 @@ export async function fetchSegmentationOverlayBlob(
 		signal,
 	});
 	return response.blob();
+}
+
+export function fetchFrameValueMapping(
+	fileIndex: number,
+	frame: number,
+	signal?: AbortSignal,
+): Promise<FrameValueMapping> {
+	const endpoint = API_ENDPOINTS.fileValueMapping;
+	return getJson(endpoint, endpointUrl(endpoint, { index: fileIndex, frame }), signal);
 }
 
 export function fetchWsiFrameContext(

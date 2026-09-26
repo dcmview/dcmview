@@ -431,6 +431,90 @@ async fn parametric_map_context_exposes_explicit_mapping_without_applying_it() {
 }
 
 #[tokio::test]
+async fn value_mapping_reports_each_frames_conversions() {
+    let dir = tempdir().expect("temp dir");
+    let path = dir.path().join("frame-mappings.dcm");
+    let mapping = |slope: f64, units: &str| {
+        InMemDicomObject::from_element_iter([
+            DataElement::new(tags::LUT_LABEL, VR::SH, "T1"),
+            DataElement::new(
+                tags::REAL_WORLD_VALUE_FIRST_VALUE_MAPPED,
+                VR::US,
+                PrimitiveValue::from(0_u16),
+            ),
+            DataElement::new(
+                tags::REAL_WORLD_VALUE_LAST_VALUE_MAPPED,
+                VR::US,
+                PrimitiveValue::from(4095_u16),
+            ),
+            DataElement::new(
+                tags::REAL_WORLD_VALUE_SLOPE,
+                VR::FD,
+                PrimitiveValue::from(slope),
+            ),
+            DataElement::new(
+                tags::REAL_WORLD_VALUE_INTERCEPT,
+                VR::FD,
+                PrimitiveValue::from(0.0_f64),
+            ),
+            sequence(
+                tags::MEASUREMENT_UNITS_CODE_SEQUENCE,
+                vec![code(units, "UCUM", units)],
+            ),
+        ])
+    };
+    let group = |mapping: InMemDicomObject| {
+        InMemDicomObject::from_element_iter([sequence(
+            tags::REAL_WORLD_VALUE_MAPPING_SEQUENCE,
+            vec![mapping],
+        )])
+    };
+    let object = InMemDicomObject::from_element_iter([
+        DataElement::new(tags::SOP_CLASS_UID, VR::UI, uids::ENHANCED_MR_IMAGE_STORAGE),
+        DataElement::new(tags::SOP_INSTANCE_UID, VR::UI, "2.25.8150"),
+        DataElement::new(tags::RESCALE_TYPE, VR::LO, "US"),
+        sequence(
+            tags::SHARED_FUNCTIONAL_GROUPS_SEQUENCE,
+            vec![group(mapping(2.0, "ms"))],
+        ),
+        sequence(
+            tags::PER_FRAME_FUNCTIONAL_GROUPS_SEQUENCE,
+            vec![InMemDicomObject::new_empty(), group(mapping(0.5, "s"))],
+        ),
+    ]);
+    write_object(&path, uids::ENHANCED_MR_IMAGE_STORAGE, "2.25.8150", object);
+    let mut entry = support::file_entry(path, uids::EXPLICIT_VR_LITTLE_ENDIAN, 2);
+    entry.sop_class_uid = uids::ENHANCED_MR_IMAGE_STORAGE.to_string();
+    entry.rescale_slope = 2.0;
+    entry.rescale_intercept = -5.0;
+    let server = TestServer::new(server::router(support::app_state(vec![entry])));
+
+    let shared: Value = server.get("/api/file/0/frame/0/value-mapping").await.json();
+    assert_eq!(shared["frame_index"], 0);
+    assert_eq!(shared["stored_value_type"], "integer");
+    assert_eq!(shared["modality"]["rescale_slope"], 2.0);
+    assert_eq!(shared["modality"]["rescale_intercept"], -5.0);
+    assert_eq!(shared["modality"]["rescale_type"], "US");
+    assert!(shared["modality"]["lut"].is_null());
+    let map = &shared["real_world"][0];
+    assert_eq!(map["source"], "real_world_value_mapping");
+    assert_eq!(map["unit_label"], "ms");
+    assert_eq!(map["first_value_mapped"], 0.0);
+    assert_eq!(map["last_value_mapped"], 4095.0);
+    assert_eq!(
+        map["transform"],
+        serde_json::json!({"kind": "linear", "slope": 2.0, "intercept": 0.0})
+    );
+
+    let own: Value = server.get("/api/file/0/frame/1/value-mapping").await.json();
+    assert_eq!(own["real_world"][0]["unit_label"], "s");
+
+    let out_of_range = server.get("/api/file/0/frame/2/value-mapping").await;
+    out_of_range.assert_status_not_found();
+    assert_eq!(out_of_range.json::<Value>()["code"], "frame_out_of_range");
+}
+
+#[tokio::test]
 async fn rt_dose_context_reports_scaling_geometry_and_refuses_incompatible_overlay() {
     let dir = tempdir().expect("temp dir");
     let path = dir.path().join("dose.dcm");

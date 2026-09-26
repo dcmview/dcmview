@@ -751,7 +751,7 @@ fn collect_rwvm_mappings(
     }
 }
 
-fn rwvm_mapping(
+pub(crate) fn rwvm_mapping(
     item: &InMemDicomObject<StandardDataDictionary>,
     source: &str,
     source_sop_instance_uid: Option<&str>,
@@ -759,12 +759,16 @@ fn rwvm_mapping(
     let mut lut_data = read_numbers(item, tags::REAL_WORLD_VALUE_LUT_DATA);
     let lut_data_truncated = lut_data.len() > MAX_LUT_VALUES;
     lut_data.truncate(MAX_LUT_VALUES);
+    // Float and double-float pixel data declare their range with the
+    // double-float bounds instead of the US/SS ones.
     RealWorldValueMappingSummary {
         source: source.to_string(),
         source_sop_instance_uid: source_sop_instance_uid.map(str::to_string),
         label: read_string(item, tags::LUT_LABEL),
-        first_value_mapped: read_number(item, tags::REAL_WORLD_VALUE_FIRST_VALUE_MAPPED),
-        last_value_mapped: read_number(item, tags::REAL_WORLD_VALUE_LAST_VALUE_MAPPED),
+        first_value_mapped: read_number(item, tags::REAL_WORLD_VALUE_FIRST_VALUE_MAPPED)
+            .or_else(|| read_number(item, tags::DOUBLE_FLOAT_REAL_WORLD_VALUE_FIRST_VALUE_MAPPED)),
+        last_value_mapped: read_number(item, tags::REAL_WORLD_VALUE_LAST_VALUE_MAPPED)
+            .or_else(|| read_number(item, tags::DOUBLE_FLOAT_REAL_WORLD_VALUE_LAST_VALUE_MAPPED)),
         slope: read_number(item, tags::REAL_WORLD_VALUE_SLOPE),
         intercept: read_number(item, tags::REAL_WORLD_VALUE_INTERCEPT),
         lut_data,
@@ -785,7 +789,7 @@ fn read_quantity_code(
         })
 }
 
-fn valid_mapping(mapping: &RealWorldValueMappingSummary) -> bool {
+pub(crate) fn valid_mapping(mapping: &RealWorldValueMappingSummary) -> bool {
     let range_valid = matches!(
         (mapping.first_value_mapped, mapping.last_value_mapped),
         (Some(first), Some(last)) if first.is_finite() && last.is_finite() && first <= last

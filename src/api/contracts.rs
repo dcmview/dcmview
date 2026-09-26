@@ -154,6 +154,12 @@ pub mod endpoints {
         PNG_MEDIA_TYPE,
         ResponseHeaders::Cache,
     );
+    /// `FrameValueMapping`.
+    pub const FILE_VALUE_MAPPING: Endpoint = json(
+        "fileValueMapping",
+        ApiMethod::Get,
+        "/file/{index}/frame/{frame}/value-mapping",
+    );
     /// `WsiFrameContextResponse`.
     pub const FILE_WSI_CONTEXT: Endpoint = json(
         "fileWsiContext",
@@ -207,6 +213,7 @@ pub mod endpoints {
         FILE_REFERENCES,
         FILE_SEMANTIC_CONTEXT,
         FILE_SEGMENTATION_OVERLAY,
+        FILE_VALUE_MAPPING,
         FILE_WSI_CONTEXT,
         FILE_FRAME,
         FILE_RAW_FRAME,
@@ -417,6 +424,65 @@ pub struct RealWorldValueMappingSummary {
     pub units: Option<CodedConceptSummary>,
     pub quantity: Option<CodedConceptSummary>,
     pub derivation: Option<CodedConceptSummary>,
+}
+
+/// How one frame's stored samples, as served by the raw-frame endpoint,
+/// convert to modality and real-world values.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct FrameValueMapping {
+    pub file_index: usize,
+    /// Zero-based frame index.
+    pub frame_index: u32,
+    /// `integer`, `float32`, or `float64` stored samples.
+    pub stored_value_type: String,
+    pub modality: ModalityValueTransform,
+    /// Conversions of stored values into real-world units that apply to this
+    /// frame, the preferred one first. Empty when none is declared.
+    pub real_world: Vec<RealWorldValueMap>,
+}
+
+/// The Modality transform the display pipeline applies to stored values
+/// before windowing: the LUT when present, otherwise the rescale.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct ModalityValueTransform {
+    pub rescale_slope: f64,
+    pub rescale_intercept: f64,
+    pub rescale_type: Option<String>,
+    pub lut: Option<ValueLookupTable>,
+}
+
+/// `value = values[clamp(stored - first_value_mapped, 0, values.length - 1)]`.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct ValueLookupTable {
+    pub first_value_mapped: f64,
+    pub values: Vec<f64>,
+}
+
+/// One validated stored-to-real-world conversion. Stored values outside
+/// `first_value_mapped..=last_value_mapped` have no mapped value.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct RealWorldValueMap {
+    /// `real_world_value_mapping` (a declared RWVM item) or
+    /// `dose_grid_scaling` (RT Dose: `mapped = stored * DoseGridScaling`).
+    pub source: String,
+    pub label: Option<String>,
+    /// Inclusive stored-value range; an absent bound is unbounded.
+    pub first_value_mapped: Option<f64>,
+    pub last_value_mapped: Option<f64>,
+    pub transform: RealWorldValueTransform,
+    /// Short unit text for readouts and legends, such as `Gy` or a UCUM code.
+    pub unit_label: String,
+    pub units: Option<CodedConceptSummary>,
+    pub quantity: Option<CodedConceptSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RealWorldValueTransform {
+    /// `mapped = stored * slope + intercept`.
+    Linear { slope: f64, intercept: f64 },
+    /// `mapped = values[stored - first_value_mapped]`.
+    Lut { values: Vec<f64> },
 }
 
 #[derive(Debug, Clone, Serialize, TS)]

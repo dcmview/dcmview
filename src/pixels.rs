@@ -27,6 +27,7 @@ pub use cache::{
     RAW_CACHE_CAPACITY, RAW_CACHE_MAX_BYTES,
 };
 pub use error::{PixelError, PixelResult};
+pub(crate) use header::open_header;
 pub use segmentation::encode_segmentation_overlay_png;
 pub use service::{
     load_frame, load_raw_frame, FrameRequest, FrameResponse, RawFrameRequest, RawFrameResponse,

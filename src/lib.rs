@@ -11,4 +11,5 @@ pub mod series;
 pub mod server;
 pub mod signals;
 pub mod types;
+pub mod value_mapping;
 pub mod wsi;

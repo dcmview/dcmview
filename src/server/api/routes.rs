@@ -30,6 +30,10 @@ pub(crate) fn router(state: AppState) -> Router {
             endpoints::FILE_SEGMENTATION_OVERLAY.path,
             get(handlers::segmentation_overlay),
         )
+        .route(
+            endpoints::FILE_VALUE_MAPPING.path,
+            get(handlers::value_mapping),
+        )
         .route(endpoints::FILE_WSI_CONTEXT.path, get(handlers::wsi_context))
         .route(endpoints::FILE_FRAME.path, get(handlers::frame))
         .route(endpoints::FILE_RAW_FRAME.path, get(handlers::raw_frame))

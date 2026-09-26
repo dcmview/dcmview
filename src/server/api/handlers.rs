@@ -2,9 +2,9 @@ use super::error::{self, ApiError};
 use super::state::AppState;
 use crate::api::contracts::{
     DiscoveryResult, EmbedRoiAnnotations, FileSummary, FilesResponse, FrameInfo, FrameQuery,
-    HealthResponse, ReferenceCatalogResponse, SemanticContextResponse, SeriesCatalogResponse,
-    TagNode, TagQuery, ViewerIdentity, WsiFrameContextResponse, CACHE_HEADER, CACHE_HIT,
-    CACHE_MISS, CSV_MEDIA_TYPE, EXPORT_CONTENT_DISPOSITION_HEADER,
+    FrameValueMapping, HealthResponse, ReferenceCatalogResponse, SemanticContextResponse,
+    SeriesCatalogResponse, TagNode, TagQuery, ViewerIdentity, WsiFrameContextResponse,
+    CACHE_HEADER, CACHE_HIT, CACHE_MISS, CSV_MEDIA_TYPE, EXPORT_CONTENT_DISPOSITION_HEADER,
     EXPORT_CONTENT_DISPOSITION_VALUE, OCTET_STREAM_MEDIA_TYPE, PNG_MEDIA_TYPE,
     RAW_FRAME_HEADER_BITS_ALLOCATED, RAW_FRAME_HEADER_COLUMNS, RAW_FRAME_HEADER_DEFAULT_WC,
     RAW_FRAME_HEADER_DEFAULT_WW, RAW_FRAME_HEADER_PADDING_HIGH, RAW_FRAME_HEADER_PADDING_LOW,
@@ -16,6 +16,7 @@ use crate::pixels::{self, FrameRequest, RawFrameRequest};
 use crate::references::{self, ReferenceCandidate};
 use crate::server::tags;
 use crate::types::FileEntry;
+use crate::value_mapping::FileValueMappings;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue};
@@ -221,6 +222,43 @@ pub(super) async fn segmentation_overlay(
         HeaderValue::from_static(PNG_MEDIA_TYPE),
     );
     Ok(response)
+}
+
+pub(super) async fn value_mapping(
+    State(state): State<AppState>,
+    path: Result<Path<(usize, u32)>, PathRejection>,
+) -> Result<Json<FrameValueMapping>, ApiError> {
+    let Path((index, frame)) = path.map_err(error::path_rejection)?;
+    let file = state
+        .registry()
+        .get(index)
+        .ok_or_else(|| ApiError::not_found("file index out of range"))?;
+    if frame >= file.frame_count {
+        return Err(error::pixel_error(
+            crate::pixels::PixelError::FrameOutOfRange,
+        ));
+    }
+    let mappings = value_mappings_for(&state, file)
+        .await
+        .map_err(|error| ApiError::internal(format!("{error:#}")))?;
+    Ok(Json(mappings.frame(index, frame)))
+}
+
+/// The file's parsed value mappings, read at most once while cached.
+pub(super) async fn value_mappings_for(
+    state: &AppState,
+    file: FileEntry,
+) -> anyhow::Result<Arc<FileValueMappings>> {
+    if let Some(mappings) = state.cached_value_mappings(file.index) {
+        return Ok(mappings);
+    }
+    let index = file.index;
+    let mappings = task::spawn_blocking(move || FileValueMappings::read(&file))
+        .await
+        .map_err(|error| anyhow::anyhow!("value mapping task failed: {error}"))??;
+    let mappings = Arc::new(mappings);
+    state.cache_value_mappings(index, mappings.clone());
+    Ok(mappings)
 }
 
 pub(super) async fn wsi_context(
