@@ -145,7 +145,7 @@ CLI / Python wrapper / VS Code
             -> startup/
                  -> BoundServer::bind before discovery
                  -> discovery coordinator
-                      -> loader.rs spawn_blocking + rayon
+                      -> loader/ spawn_blocking + rayon
                       -> server/catalog.rs FileRegistry
                       -> annotations.rs AnnotationStore
                  -> BoundServer::serve
@@ -225,7 +225,7 @@ dcmview/
 |   |-- bridge/          binary-private bridge protocol, registry, client
 |   |-- startup/         local assembly and owned discovery lifecycle
 |   |-- api/contracts.rs canonical HTTP endpoint and wire contract
-|   |-- loader.rs        cancellable DICOM discovery and FileEntry creation
+|   |-- loader/          cancellable DICOM discovery and FileEntry creation
 |   |-- annotations.rs   EMBED-style ROI parsing, validation, memory store
 |   |-- pixels/          service, caches, codecs, rendering, windowing
 |   |-- server/          API, catalog, lifecycle, runtime, tags, web assets
@@ -315,7 +315,7 @@ requires an existing `frontend/dist/index.html`.
 
 **Async / blocking boundary**
 
-- `loader.rs` discovery uses `tokio::task::spawn_blocking`; keep rayon work out
+- `loader/` discovery uses `tokio::task::spawn_blocking`; keep rayon work out
   of the async executor.
 - Pixel decode/encode and tag tree construction use `spawn_blocking` where they
   can do filesystem, codec, or CPU-heavy work.
@@ -459,7 +459,7 @@ the warning path in `server/runtime.rs`.
 | `src/startup/` | Local viewer assembly and discovery ownership |
 | `src/api/contracts.rs` | Canonical HTTP endpoint and wire contract |
 | `src/server/` | Axum runtime, lifecycle, catalog, API, tags, and web assets |
-| `src/loader.rs` | Cancellable DICOM discovery and metadata extraction |
+| `src/loader/` | Cancellable DICOM discovery and metadata extraction |
 | `src/pixels/` | Pixel service, codecs, display/raw paths, caches, and windowing |
 | `src/annotations.rs` | ROI CSV import/export, validation, in-memory store |
 | `src/types.rs` | Internal domain, transfer-syntax, and cache-key types |

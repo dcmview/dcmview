@@ -25,7 +25,7 @@ module:
 | Semantic context | `src/semantic.rs` | Conservative SEG, Parametric Map, and RT Dose metadata interpretation layered beside unchanged pixel preview. |
 | WSI tile context | `src/wsi.rs` | Bounded positioning of one selected WSI tile without stitching or Total Pixel Matrix reconstruction. |
 | Attribute readers | `src/dicom_values.rs` | Lenient string, number, and sequence readers shared by discovery, references, semantic context, and WSI context. |
-| DICOM discovery | `src/loader.rs` | Progressive events, cancellation, reports, metadata filters, and `FileEntry` construction. |
+| DICOM discovery | `src/loader/` | `discovery.rs` progressive events, cancellation, and reports; `entry.rs` `FileEntry` construction; `metadata.rs` geometry, LUT, overlay, and shutter extraction; `filter.rs` metadata filters. |
 | Frontend client | `frontend/src/api.ts` | Typed fetch wrappers over the generated endpoint paths and wire types. |
 | VS Code extension | `vscode/src/` | `extension.ts` wires activation only. `viewerSessions.ts` owns viewer processes and their webview panels; `customEditor.ts` and `commands.ts` open files through it; `bridgeServer.ts` serves the loopback launch/stop/wait bridge; `bridgeRegistry.ts` publishes and refreshes the registry file; `terminalInterception.ts` sets the terminal environment and PATH shims. |
 | Cross-language generation | `examples/generate_api_types.rs` | Checked-in `frontend/src/generated/api-types.ts` rendered with `ts-rs` from the Rust HTTP contract. |
@@ -45,7 +45,7 @@ flowchart TD
     app --> startup["startup/<br/>local viewer assembly"]
     startup --> bind["server/runtime.rs<br/>bind listener first"]
     startup --> discovery["startup/discovery.rs<br/>owned discovery task"]
-    discovery --> loader["loader.rs<br/>spawn_blocking and Rayon"]
+    discovery --> loader["loader/<br/>spawn_blocking and Rayon"]
     discovery --> registry["server/catalog.rs<br/>FileRegistry"]
     discovery --> annotations["annotations.rs<br/>in-memory ROI store"]
     bind --> runtime["BoundServer::serve"]
