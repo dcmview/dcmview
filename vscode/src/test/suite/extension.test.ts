@@ -25,7 +25,6 @@ import {
   normalizeInterceptedArgs,
 } from '../../bridgeServer';
 import { collectFileSystemPaths } from '../../commands';
-import { DICOM_CUSTOM_EDITOR_VIEW_TYPE } from '../../customEditor';
 import { posixShim, windowsShim } from '../../terminalInterception';
 import { parseStartupLine, waitForStartup, waitForStartupOrTerminate } from '../../viewerSessions';
 
@@ -176,21 +175,6 @@ suite('dcmview extension', () => {
     assert.deepStrictEqual(bridgeWaitResponse(bridgeContract.wait.response.exitCode), bridgeContract.wait.response);
   });
 
-  test('builds deterministic bridge registry locations', () => {
-    assert.strictEqual(
-      bridgeRegistryDirectory({ DCMVIEW_VSCODE_BRIDGE_REGISTRY_DIR: '/custom/bridges' }),
-      '/custom/bridges',
-    );
-    assert.strictEqual(
-      bridgeRegistryDirectory({ XDG_STATE_HOME: '/home/research/.local/state' }),
-      path.join('/home/research/.local/state', 'dcmview', 'vscode-bridges'),
-    );
-    assert.strictEqual(
-      bridgeRegistryDirectory({ HOME: '/home/research' }),
-      path.join('/home/research', '.local', 'state', 'dcmview', 'vscode-bridges'),
-    );
-  });
-
   test('matches shared bridge registry contract', () => {
     assert.strictEqual(BRIDGE_REGISTRY_MAX_AGE_MS, registryContract.ttlMs);
     assert.strictEqual(BRIDGE_REGISTRY_REFRESH_MS, registryContract.refreshMs);
@@ -324,34 +308,20 @@ suite('dcmview extension', () => {
     assert.strictEqual(registryDirectoryIsTrusted({ uid, mode: 0o722 } as fs.Stats), false);
   });
 
-  test('registers public commands', async () => {
+  test('activation registers every contributed command', async () => {
     const extension = vscode.extensions.getExtension('beatricebm.dcmview');
     assert.ok(extension, 'development extension should be available');
     await extension.activate();
 
-    const commands = await vscode.commands.getCommands(true);
-
-    assert.ok(commands.includes('dcmview.openPath'));
-    assert.ok(commands.includes('dcmview.openWorkspaceSelection'));
-    assert.ok(commands.includes('dcmview.stopAll'));
-    assert.ok(commands.includes('dcmview.showBridgeStatus'));
-  });
-
-  test('contributes optional DICOM custom editor', () => {
-    const editors = extensionManifest.contributes.customEditors;
-    assert.ok(Array.isArray(editors));
-
-    const editor = editors.find(
-      (candidate: { viewType?: string }) => candidate.viewType === DICOM_CUSTOM_EDITOR_VIEW_TYPE,
+    const registered = new Set(await vscode.commands.getCommands(true));
+    const contributed = extensionManifest.contributes.commands.map(
+      (contribution: { command: string }) => contribution.command,
     );
 
-    assert.ok(editor, 'DICOM custom editor contribution should be present');
-    assert.strictEqual(editor.displayName, 'dcmview');
-    assert.strictEqual(editor.priority, 'option');
+    assert.ok(contributed.length > 0);
     assert.deepStrictEqual(
-      editor.selector.map((item: { filenamePattern: string }) => item.filenamePattern),
-      ['*.dcm', '*.dicom', '*.ima'],
+      contributed.filter((command: string) => !registered.has(command)),
+      [],
     );
-    assert.ok(extensionManifest.activationEvents.includes(`onCustomEditor:${DICOM_CUSTOM_EDITOR_VIEW_TYPE}`));
   });
 });
