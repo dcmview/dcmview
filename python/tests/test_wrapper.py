@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import importlib.util
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -39,17 +38,6 @@ class WrapperTests(unittest.TestCase):
 		self.assertIn('dcmview = "dcmview_py.__main__:main"', pyproject)
 		self.assertIn('dcmview-py = "dcmview_py.__main__:main"', pyproject)
 
-	def test_cli_reports_wrapper_version(self) -> None:
-		with mock.patch("dcmview_py.__main__._package_version", return_value="9.8.7"):
-			parser = dcmview_main._build_parser()
-		output = StringIO()
-		with redirect_stdout(output):
-			with self.assertRaises(SystemExit) as context:
-				parser.parse_args(["--version"])
-
-		self.assertEqual(context.exception.code, 0)
-		self.assertEqual(output.getvalue().strip(), "dcmview 9.8.7")
-
 	def test_view_docstring_documents_public_api(self) -> None:
 		docstring = wrapper.view.__doc__ or ""
 
@@ -59,23 +47,6 @@ class WrapperTests(unittest.TestCase):
 		self.assertIn("Raises:", docstring)
 		self.assertIn("vscode_bridge", docstring)
 		self.assertIn("DCMVIEW_BINARY", docstring)
-
-	def test_module_cli_help_describes_options_and_examples(self) -> None:
-		parser = dcmview_main._build_parser()
-		output = StringIO()
-		with redirect_stdout(output):
-			with self.assertRaises(SystemExit) as context:
-				parser.parse_args(["--help"])
-
-		self.assertEqual(context.exception.code, 0)
-		help_text = output.getvalue()
-		self.assertIn("DICOM file or directory to inspect", help_text)
-		self.assertIn("--host ADDR", help_text)
-		self.assertIn("--annotations CSV", help_text)
-		self.assertIn("--filter FIELD=VALUE", help_text)
-		self.assertIn("ssh -L 8010:127.0.0.1:8010 user@remote", help_text)
-		self.assertIn("not clinical diagnosis", help_text)
-		self.assertNotIn("--startup-json", help_text)
 
 	def test_missing_binary_raises_runtime_error(self) -> None:
 		with mock.patch.dict(os.environ, {}, clear=True):
@@ -188,78 +159,6 @@ class WrapperTests(unittest.TestCase):
 				verify_wheel.console_script(Path("C:/venv/Scripts"), "dcmview"),
 				Path("C:/venv/Scripts/dcmview.exe"),
 			)
-
-	def test_cli_forwards_no_browser_no_recursive_and_timeout(self) -> None:
-		with mock.patch("dcmview_py.__main__.view", return_value=None) as view_mock:
-			exit_code = dcmview_main.run_cli(
-				[
-					"--no-browser",
-					"--no-recursive",
-					"--timeout",
-					"9",
-					"-p",
-					"1042",
-					"--host",
-					"0.0.0.0",
-					str(FIXTURE_FILE),
-				]
-			)
-
-		self.assertEqual(exit_code, 0)
-		view_mock.assert_called_once_with(
-			[str(FIXTURE_FILE)],
-			port=1042,
-			host="0.0.0.0",
-			browser=False,
-			recursive=False,
-			timeout=9,
-			block=True,
-			annotations=None,
-		)
-
-	def test_cli_forwards_annotations_path(self) -> None:
-		annotations_path = REPO_ROOT / "tests" / "fixtures" / "embed_annotations.csv"
-		with mock.patch("dcmview_py.__main__.view", return_value=None) as view_mock:
-			exit_code = dcmview_main.run_cli([
-				"--annotations",
-				str(annotations_path),
-				str(FIXTURE_FILE),
-			])
-
-		self.assertEqual(exit_code, 0)
-		view_mock.assert_called_once_with(
-			[str(FIXTURE_FILE)],
-			port=0,
-			host="127.0.0.1",
-			browser=True,
-			recursive=True,
-			timeout=None,
-			annotations=str(annotations_path),
-			block=True,
-		)
-
-	def test_cli_forwards_filter_flags(self) -> None:
-		with mock.patch("dcmview_py.__main__.view", return_value=None) as view_mock:
-			exit_code = dcmview_main.run_cli([
-				"--filter",
-				"modality=MR",
-				"--filter",
-				"patient_id=123",
-				str(FIXTURE_FILE),
-			])
-
-		self.assertEqual(exit_code, 0)
-		view_mock.assert_called_once_with(
-			[str(FIXTURE_FILE)],
-			port=0,
-			host="127.0.0.1",
-			browser=True,
-			recursive=True,
-			timeout=None,
-			annotations=None,
-			block=True,
-			filters=["modality=MR", "patient_id=123"],
-		)
 
 	def test_build_command_includes_annotations_flag_when_provided(self) -> None:
 		with mock.patch("dcmview_py.wrapper.shutil.which", return_value="/tmp/dcmview"):
@@ -454,14 +353,46 @@ class WrapperTests(unittest.TestCase):
 		self.assertNotIn("--vscode-bridge-client", retried)
 		self.assertNotIn("--startup-json", retried)
 
-	def test_cli_returns_child_exit_code(self) -> None:
-		with mock.patch(
-			"dcmview_py.__main__.view",
-			side_effect=subprocess.CalledProcessError(7, ["dcmview"]),
-		):
-			exit_code = dcmview_main.run_cli([str(FIXTURE_FILE)])
+	def test_cli_forwards_argv_through_the_bridge_client_form(self) -> None:
+		process = mock.Mock()
+		process.wait.return_value = 7
+		argv = ["--no-browser", "--filter", "modality=MR", str(FIXTURE_FILE)]
+
+		with mock.patch("dcmview_py.wrapper.shutil.which", return_value="/tmp/dcmview"):
+			with mock.patch.dict(os.environ, {}, clear=True):
+				with mock.patch("dcmview_py.__main__.subprocess.Popen", return_value=process) as popen:
+					exit_code = dcmview_main.run_cli(argv)
 
 		self.assertEqual(exit_code, 7)
+		popen.assert_called_once_with(["/tmp/dcmview", "--vscode-bridge-client", "dcmview_py", *argv])
+
+	def test_cli_keeps_waiting_for_the_binary_after_ctrl_c(self) -> None:
+		process = mock.Mock()
+		process.wait.side_effect = [KeyboardInterrupt(), 0]
+
+		with mock.patch("dcmview_py.wrapper.shutil.which", return_value="/tmp/dcmview"):
+			with mock.patch.dict(os.environ, {}, clear=True):
+				with mock.patch("dcmview_py.__main__.subprocess.Popen", return_value=process):
+					exit_code = dcmview_main.run_cli([str(FIXTURE_FILE)])
+
+		self.assertEqual(exit_code, 0)
+		self.assertEqual(process.wait.call_count, 2)
+
+	def test_cli_reports_signal_exits_as_shell_status(self) -> None:
+		process = mock.Mock()
+		process.wait.return_value = -9
+
+		with mock.patch("dcmview_py.wrapper.shutil.which", return_value="/tmp/dcmview"):
+			with mock.patch.dict(os.environ, {}, clear=True):
+				with mock.patch("dcmview_py.__main__.subprocess.Popen", return_value=process):
+					self.assertEqual(dcmview_main.run_cli([str(FIXTURE_FILE)]), 137)
+
+	def test_cli_without_a_binary_exits_nonzero(self) -> None:
+		with mock.patch.dict(os.environ, {}, clear=True):
+			with mock.patch("dcmview_py.wrapper.shutil.which", return_value=None):
+				with mock.patch.object(wrapper.Path, "is_file", return_value=False):
+					with mock.patch("sys.stderr", new_callable=StringIO):
+						self.assertEqual(dcmview_main.run_cli([str(FIXTURE_FILE)]), 1)
 
 
 if __name__ == "__main__":

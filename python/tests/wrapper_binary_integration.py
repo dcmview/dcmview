@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import json
 import os
+import queue
+import signal
+import subprocess
 import sys
 import tempfile
 import threading
 import time
 import unittest
+import urllib.request
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -149,6 +153,92 @@ class WrapperBinaryIntegrationTests(unittest.TestCase):
 		while handle.url is None and time.time() < deadline:
 			time.sleep(0.1)
 		return handle.url
+
+	def run_module_cli_until_ctrl_c(self, *args: str) -> tuple[Optional[str], int]:
+		"""Run ``python -m dcmview_py`` in its own process group, wait for its
+		URL, then send Ctrl+C to the whole group as a terminal does."""
+		environment = dict(os.environ)
+		environment["DCMVIEW_BINARY"] = str(self.binary)
+		environment["PYTHONPATH"] = os.pathsep.join(
+			[str(PYTHON_SRC), *filter(None, [environment.get("PYTHONPATH")])]
+		)
+		process = subprocess.Popen(
+			[sys.executable, "-m", "dcmview_py", *args],
+			stdout=subprocess.PIPE,
+			stderr=subprocess.STDOUT,
+			text=True,
+			env=environment,
+			start_new_session=True,
+		)
+		lines: queue.Queue[str] = queue.Queue()
+
+		def read() -> None:
+			assert process.stdout is not None
+			for line in process.stdout:
+				lines.put(line)
+
+		reader = threading.Thread(target=read, daemon=True)
+		reader.start()
+		url: Optional[str] = None
+		deadline = time.time() + 10.0
+		while url is None and time.time() < deadline:
+			try:
+				url = wrapper._parse_startup_url(lines.get(timeout=0.1))
+			except queue.Empty:
+				continue
+
+		if url is not None and url != VSCODE_VIEWER_URL:
+			# The local viewer prints its URL before it installs its Ctrl+C
+			# handler; one served request shows the handler is in place.
+			urllib.request.urlopen(f"{url}/api/health", timeout=10).close()
+		os.killpg(process.pid, signal.SIGINT)
+		try:
+			exit_code = process.wait(timeout=10)
+		except subprocess.TimeoutExpired:
+			process.kill()
+			exit_code = process.wait()
+		reader.join()
+		assert process.stdout is not None
+		process.stdout.close()
+		return url, exit_code
+
+	def test_module_cli_help_and_version_come_from_the_binary(self) -> None:
+		environment = {**os.environ, "DCMVIEW_BINARY": str(self.binary), "PYTHONPATH": str(PYTHON_SRC)}
+		for flag in ("--help", "--version"):
+			with self.subTest(flag=flag):
+				expected = subprocess.run(
+					[str(self.binary), flag], capture_output=True, text=True, check=True
+				)
+				actual = subprocess.run(
+					[sys.executable, "-m", "dcmview_py", flag],
+					capture_output=True,
+					text=True,
+					env=environment,
+				)
+				self.assertEqual(actual.returncode, 0)
+				self.assertEqual(actual.stdout, expected.stdout)
+
+	@unittest.skipIf(os.name == "nt", "process-group Ctrl+C is POSIX-only")
+	def test_module_cli_runs_locally_and_stops_on_ctrl_c(self) -> None:
+		with self.bridge_scenario(terminal_env=False, workspace_contains_cwd=False) as bridge:
+			url, exit_code = self.run_module_cli_until_ctrl_c(
+				"--no-browser", "--timeout", "30", str(FIXTURE_FILE)
+			)
+
+			self.assertIsNotNone(url)
+			self.assertNotEqual(url, VSCODE_VIEWER_URL)
+			self.assertEqual(exit_code, 0)
+			self.assertEqual(bridge.launches, [])
+
+	@unittest.skipIf(os.name == "nt", "process-group Ctrl+C is POSIX-only")
+	def test_module_cli_in_vscode_terminal_opens_in_vscode_and_closes_on_ctrl_c(self) -> None:
+		with self.bridge_scenario(terminal_env=True, workspace_contains_cwd=False) as bridge:
+			url, exit_code = self.run_module_cli_until_ctrl_c("--no-browser", str(FIXTURE_FILE))
+
+			self.assertEqual(url, VSCODE_VIEWER_URL)
+			self.assertEqual(exit_code, 0)
+			self.assertTrue(bridge.stopped.is_set())
+			self.assertEqual(bridge.launches[0]["program"], "dcmview_py")
 
 	def test_vscode_terminal_launch_opens_in_vscode_and_stops_there(self) -> None:
 		with self.bridge_scenario(terminal_env=True, workspace_contains_cwd=False) as bridge:

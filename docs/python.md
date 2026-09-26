@@ -229,8 +229,12 @@ The package also provides a module CLI:
 python -m dcmview_py --no-browser --timeout 120 ./study_dir
 ```
 
-The module CLI mirrors the Rust CLI and runs in blocking mode. Use the Python
-API when a script or notebook needs a non-blocking handle.
+`python -m dcmview_py` and the `dcmview`/`dcmview-py` console scripts forward
+their arguments unchanged to the resolved binary, so options, `--help`, and
+`--version` are the Rust CLI's own. They follow the same VS Code routing rule as
+`view()`, wait for the viewer to exit, and return its exit code; Ctrl+C stops
+the viewer. Use the Python API when a script or notebook needs a non-blocking
+handle.
 
 ## Related Documentation
 
