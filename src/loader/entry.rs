@@ -46,7 +46,7 @@ pub(super) fn build_entry(path: &Path) -> Result<EntryInspection> {
     let modality = read_first_string(&obj, tags::MODALITY).unwrap_or_default();
     let sop_instance_uid = read_first_string(&obj, tags::SOP_INSTANCE_UID).unwrap_or_default();
     let sop_class_uid = read_first_string(&obj, tags::SOP_CLASS_UID).unwrap_or_default();
-    if sop_class_uid == "1.2.840.10008.1.3.10" {
+    if sop_class_uid == uids::MEDIA_STORAGE_DIRECTORY_STORAGE {
         return Ok(EntryInspection::Skipped(
             DiscoveryReason::UnsupportedMediaDirectory,
         ));
