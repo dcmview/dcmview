@@ -107,14 +107,7 @@ pub(super) async fn references(
         .registry()
         .files_snapshot()
         .into_iter()
-        .map(|file| ReferenceCandidate {
-            file_index: file.index,
-            path: file.path.clone(),
-            sop_class_uid: file.sop_class_uid.clone(),
-            sop_instance_uid: file.sop_instance_uid.clone(),
-            series_instance_uid: file.series_instance_uid.clone(),
-            frame_count: file.frame_count,
-        })
+        .map(|file| ReferenceCandidate::from_file(&file))
         .collect::<Vec<_>>();
     let resolved = references::resolve_reference_edges(&edges, &candidates)
         .into_iter()

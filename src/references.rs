@@ -5,6 +5,7 @@
 //! semantic renderer.
 
 use crate::dicom_values::{read_numbers, read_string};
+use crate::types::FileEntry;
 use anyhow::{Context, Result};
 use dicom_core::Tag;
 use dicom_dictionary_std::{tags, uids, StandardDataDictionary};
@@ -88,6 +89,19 @@ pub struct ReferenceCandidate {
     pub sop_instance_uid: String,
     pub series_instance_uid: String,
     pub frame_count: u32,
+}
+
+impl ReferenceCandidate {
+    pub fn from_file(file: &FileEntry) -> Self {
+        Self {
+            file_index: file.index,
+            path: file.path.clone(),
+            sop_class_uid: file.sop_class_uid.clone(),
+            sop_instance_uid: file.sop_instance_uid.clone(),
+            series_instance_uid: file.series_instance_uid.clone(),
+            frame_count: file.frame_count,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
