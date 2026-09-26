@@ -101,7 +101,10 @@ The frontend root is `App.svelte`. It composes `FileNavigator`,
 `ReferenceNavigator`, and `StatusBar`. `ReferenceNavigator` retains declared
 identity when a target is absent and routes validated local file/frame matches
 through the same tab and stack state as ordinary navigation; it does not imply
-semantic rendering of the referencing object. Components use
+semantic rendering of the referencing object. Each declared edge renders through
+`ReferenceEdge`, which `SemanticContextPanel` (RT Dose plan, structure set, and
+image references) and `WsiTileContext` (slide relationships) reuse; WSI
+companions open through the same `openReference` path. Components use
 `frontend/src/api.ts`; new endpoint fetches should not be introduced directly
 inside components.
 

@@ -90,11 +90,12 @@ would remove behavior, raise it as a question instead of acting.
      was part of the original feature and was never finished.
 - **No pixel-value readout.** Neither stored nor mapped values (Parametric
   Map, RT Dose) can be read per pixel in the viewport; see Parametric Map above.
-- **API data the UI never renders:**
-  - RT Dose grid geometry and references;
-  - WSI companions and relationships;
-  - the SEG recommended color, which is used for the overlay but not shown in
-    the panel.
+- **SEG overlay ignores the recommended segment color.** The overlay paints a
+  fixed palette cycled by segment number (`fallback_segment_color` in
+  `src/semantic.rs`) and never reads Recommended Display CIELab Value. The
+  panel shows both colors per segment; its overlay swatch mirrors that palette
+  in `semanticPresentation.ts` because the contract does not carry the applied
+  color.
 - **Display shutters apply to grayscale frames only.** Rectangular, circular,
   polygonal, and bitmap shutters are drawn on monochrome display frames. Color
   frames ignore them, and the per-frame Frame Display Shutter Sequence of
