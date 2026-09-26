@@ -7,11 +7,11 @@ use crate::api::contracts::{
     ReferenceMatchSummary, ReferenceSummary, ReferenceTargetSummary, WsiCompanionSummary,
     WsiFocalPlane, WsiFrameContextResponse, WsiOpticalPath, WsiTileRectangle, WsiTotalPixelMatrix,
 };
+use crate::dicom_values::{read_number, read_string, sequence_item, sequence_items};
 use crate::object_kind::{classify_sop_class, ObjectKind};
 use crate::references::{self, ReferenceCandidate, ResolvedReferenceEdge};
 use crate::types::FileEntry;
 use anyhow::{Context, Result};
-use dicom_core::Tag;
 use dicom_dictionary_std::{tags, StandardDataDictionary};
 use dicom_object::{InMemDicomObject, OpenFileOptions};
 use std::collections::BTreeSet;
@@ -190,9 +190,7 @@ fn sparse_placement(
         warnings.push("selected frame has no Per-Frame Functional Group metadata".to_string());
         return unavailable("unavailable");
     };
-    let Some(position) = sequence_items(frame_group, tags::PLANE_POSITION_SLIDE_SEQUENCE)
-        .first()
-        .copied()
+    let Some(position) = sequence_items(frame_group, tags::PLANE_POSITION_SLIDE_SEQUENCE).first()
     else {
         warnings.push("selected frame has no declared slide position".to_string());
         return unavailable("unavailable");
@@ -217,9 +215,8 @@ fn sparse_placement(
         warnings.push("selected frame rectangle lies outside the Total Pixel Matrix".to_string());
         return unavailable("unavailable");
     }
-    let optical_item = sequence_items(frame_group, tags::OPTICAL_PATH_IDENTIFICATION_SEQUENCE)
-        .first()
-        .copied();
+    let optical_item =
+        sequence_items(frame_group, tags::OPTICAL_PATH_IDENTIFICATION_SEQUENCE).first();
     let optical_identifier =
         optical_item.and_then(|item| read_string(item, tags::OPTICAL_PATH_IDENTIFIER));
     let optical_index = optical_identifier.as_ref().and_then(|identifier| {
@@ -274,9 +271,7 @@ fn sparse_focal_index(
         .iter()
         .take(MAX_FOCAL_METADATA_SCAN)
         .filter_map(|group| {
-            let position = sequence_items(group, tags::PLANE_POSITION_SLIDE_SEQUENCE)
-                .first()
-                .copied()?;
+            let position = sequence_items(group, tags::PLANE_POSITION_SLIDE_SEQUENCE).first()?;
             read_number::<f64>(position, tags::Z_OFFSET_IN_SLIDE_COORDINATE_SYSTEM)
                 .filter(|value| value.is_finite())
         })
@@ -433,41 +428,4 @@ fn reference_summary(edge: &ResolvedReferenceEdge) -> ReferenceSummary {
             })
             .collect(),
     }
-}
-
-fn sequence_items(
-    object: &InMemDicomObject<StandardDataDictionary>,
-    tag: Tag,
-) -> Vec<&InMemDicomObject<StandardDataDictionary>> {
-    object
-        .element(tag)
-        .ok()
-        .and_then(|element| element.items())
-        .map(|items| items.iter().collect())
-        .unwrap_or_default()
-}
-
-fn sequence_item(
-    object: &InMemDicomObject<StandardDataDictionary>,
-    tag: Tag,
-    index: usize,
-) -> Option<&InMemDicomObject<StandardDataDictionary>> {
-    object.element(tag).ok()?.items()?.get(index)
-}
-
-fn read_string(object: &InMemDicomObject<StandardDataDictionary>, tag: Tag) -> Option<String> {
-    let value = object.element(tag).ok()?.to_str().ok()?.trim().to_string();
-    (!value.is_empty()).then_some(value)
-}
-
-fn read_number<T>(object: &InMemDicomObject<StandardDataDictionary>, tag: Tag) -> Option<T>
-where
-    T: std::str::FromStr,
-{
-    read_string(object, tag)?
-        .split('\\')
-        .next()?
-        .trim()
-        .parse()
-        .ok()
 }

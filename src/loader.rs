@@ -1,4 +1,7 @@
 use crate::api::contracts::WindowPreset;
+use crate::dicom_values::{
+    read_first_string, read_number, read_string, read_strings, sequence_item, sequence_items,
+};
 use crate::types::{
     DicomLut, FileEntry, LoadReport, NativePixelDataKind, NativePixelMetadata, OverlayPlane,
     PatientOrientation, PatientPosition, PresentationMetadata, RectangularDisplayShutter,
@@ -541,28 +544,30 @@ fn build_entry(path: &Path) -> Result<EntryInspection> {
     }
 
     let transfer_syntax_uid = obj.meta().transfer_syntax().to_string();
-    let patient_id = read_str(&obj, "PatientID").unwrap_or_default();
-    let patient_name = read_str(&obj, "PatientName").unwrap_or_default();
-    let modality = read_str(&obj, "Modality").unwrap_or_default();
-    let sop_instance_uid = read_str(&obj, "SOPInstanceUID").unwrap_or_default();
-    let sop_class_uid = read_str(&obj, "SOPClassUID").unwrap_or_default();
+    let patient_id = read_first_string(&obj, tags::PATIENT_ID).unwrap_or_default();
+    let patient_name = read_first_string(&obj, tags::PATIENT_NAME).unwrap_or_default();
+    let modality = read_first_string(&obj, tags::MODALITY).unwrap_or_default();
+    let sop_instance_uid = read_first_string(&obj, tags::SOP_INSTANCE_UID).unwrap_or_default();
+    let sop_class_uid = read_first_string(&obj, tags::SOP_CLASS_UID).unwrap_or_default();
     if sop_class_uid == "1.2.840.10008.1.3.10" {
         return Ok(EntryInspection::Skipped(
             DiscoveryReason::UnsupportedMediaDirectory,
         ));
     }
-    let study_instance_uid = read_str(&obj, "StudyInstanceUID").unwrap_or_default();
-    let study_date = read_str(&obj, "StudyDate").unwrap_or_default();
-    let study_description = read_str(&obj, "StudyDescription").unwrap_or_default();
-    let series_instance_uid = read_str(&obj, "SeriesInstanceUID").unwrap_or_default();
-    let series_number = read_str(&obj, "SeriesNumber").unwrap_or_default();
-    let series_description = read_str(&obj, "SeriesDescription").unwrap_or_default();
-    let instance_number = read_str(&obj, "InstanceNumber").unwrap_or_default();
-    let frame_count = read_u32(&obj, "NumberOfFrames").unwrap_or(1);
-    let frame_of_reference_uid = read_str(&obj, "FrameOfReferenceUID").unwrap_or_default();
-    let image_position_patient = read_exact_f64s(&obj, "ImagePositionPatient");
-    let image_orientation_patient = read_exact_f64s(&obj, "ImageOrientationPatient");
-    let top_level_pixel_spacing = read_positive_f64_pair(&obj, "PixelSpacing");
+    let study_instance_uid = read_first_string(&obj, tags::STUDY_INSTANCE_UID).unwrap_or_default();
+    let study_date = read_first_string(&obj, tags::STUDY_DATE).unwrap_or_default();
+    let study_description = read_first_string(&obj, tags::STUDY_DESCRIPTION).unwrap_or_default();
+    let series_instance_uid =
+        read_first_string(&obj, tags::SERIES_INSTANCE_UID).unwrap_or_default();
+    let series_number = read_first_string(&obj, tags::SERIES_NUMBER).unwrap_or_default();
+    let series_description = read_first_string(&obj, tags::SERIES_DESCRIPTION).unwrap_or_default();
+    let instance_number = read_first_string(&obj, tags::INSTANCE_NUMBER).unwrap_or_default();
+    let frame_count = read_number::<u32>(&obj, tags::NUMBER_OF_FRAMES).unwrap_or(1);
+    let frame_of_reference_uid =
+        read_first_string(&obj, tags::FRAME_OF_REFERENCE_UID).unwrap_or_default();
+    let image_position_patient = read_exact_f64s(&obj, tags::IMAGE_POSITION_PATIENT);
+    let image_orientation_patient = read_exact_f64s(&obj, tags::IMAGE_ORIENTATION_PATIENT);
+    let top_level_pixel_spacing = read_positive_f64_pair(&obj, tags::PIXEL_SPACING);
     let (
         frame_image_positions_patient,
         frame_image_orientations_patient,
@@ -575,26 +580,29 @@ fn build_entry(path: &Path) -> Result<EntryInspection> {
         image_orientation_patient,
         top_level_pixel_spacing,
     );
-    let concatenation_uid = read_str(&obj, "ConcatenationUID");
-    let in_concatenation_number = read_u32(&obj, "InConcatenationNumber");
-    let in_concatenation_total_number = read_u32(&obj, "InConcatenationTotalNumber");
-    let concatenation_frame_offset_number = read_u32(&obj, "ConcatenationFrameOffsetNumber");
+    let concatenation_uid = read_first_string(&obj, tags::CONCATENATION_UID);
+    let in_concatenation_number = read_number::<u32>(&obj, tags::IN_CONCATENATION_NUMBER);
+    let in_concatenation_total_number =
+        read_number::<u32>(&obj, tags::IN_CONCATENATION_TOTAL_NUMBER);
+    let concatenation_frame_offset_number =
+        read_number::<u32>(&obj, tags::CONCATENATION_FRAME_OFFSET_NUMBER);
     let sop_instance_uid_of_concatenation_source =
-        read_str(&obj, "SOPInstanceUIDOfConcatenationSource");
-    let image_type = read_strings(&obj, "ImageType");
-    let pyramid_uid = read_str(&obj, "PyramidUID");
-    let dimension_organization_type = read_str(&obj, "DimensionOrganizationType");
+        read_first_string(&obj, tags::SOP_INSTANCE_UID_OF_CONCATENATION_SOURCE);
+    let image_type = read_strings(&obj, tags::IMAGE_TYPE);
+    let pyramid_uid = read_first_string(&obj, tags::PYRAMID_UID);
+    let dimension_organization_type = read_first_string(&obj, tags::DIMENSION_ORGANIZATION_TYPE);
     let dimension_organization_uids = read_sequence_strings(
         &obj,
         tags::DIMENSION_ORGANIZATION_SEQUENCE,
         tags::DIMENSION_ORGANIZATION_UID,
     );
-    let image_orientation_slide = read_exact_f64s(&obj, "ImageOrientationSlide");
-    let total_pixel_matrix_rows = read_u32(&obj, "TotalPixelMatrixRows");
-    let total_pixel_matrix_columns = read_u32(&obj, "TotalPixelMatrixColumns");
-    let total_pixel_matrix_focal_planes = read_u32(&obj, "TotalPixelMatrixFocalPlanes");
-    let number_of_optical_paths = read_u32(&obj, "NumberOfOpticalPaths");
-    let container_identifier = read_str(&obj, "ContainerIdentifier");
+    let image_orientation_slide = read_exact_f64s(&obj, tags::IMAGE_ORIENTATION_SLIDE);
+    let total_pixel_matrix_rows = read_number::<u32>(&obj, tags::TOTAL_PIXEL_MATRIX_ROWS);
+    let total_pixel_matrix_columns = read_number::<u32>(&obj, tags::TOTAL_PIXEL_MATRIX_COLUMNS);
+    let total_pixel_matrix_focal_planes =
+        read_number::<u32>(&obj, tags::TOTAL_PIXEL_MATRIX_FOCAL_PLANES);
+    let number_of_optical_paths = read_number::<u32>(&obj, tags::NUMBER_OF_OPTICAL_PATHS);
+    let container_identifier = read_first_string(&obj, tags::CONTAINER_IDENTIFIER);
     let specimen_uids = read_sequence_strings(
         &obj,
         tags::SPECIMEN_DESCRIPTION_SEQUENCE,
@@ -605,29 +613,31 @@ fn build_entry(path: &Path) -> Result<EntryInspection> {
         tags::OPTICAL_PATH_SEQUENCE,
         tags::OPTICAL_PATH_IDENTIFIER,
     );
-    let rows = read_u32(&obj, "Rows").unwrap_or(0);
-    let columns = read_u32(&obj, "Columns").unwrap_or(0);
-    let bits_allocated = read_u32(&obj, "BitsAllocated").unwrap_or(8);
-    let planar_configuration = read_u32(&obj, "PlanarConfiguration");
-    let bits_stored = read_u32(&obj, "BitsStored");
-    let high_bit = read_u32(&obj, "HighBit");
+    let rows = read_number::<u32>(&obj, tags::ROWS).unwrap_or(0);
+    let columns = read_number::<u32>(&obj, tags::COLUMNS).unwrap_or(0);
+    let bits_allocated = read_number::<u32>(&obj, tags::BITS_ALLOCATED).unwrap_or(8);
+    let planar_configuration = read_number::<u32>(&obj, tags::PLANAR_CONFIGURATION);
+    let bits_stored = read_number::<u32>(&obj, tags::BITS_STORED);
+    let high_bit = read_number::<u32>(&obj, tags::HIGH_BIT);
     let pixel_spacing = top_level_pixel_spacing.or(shared_pixel_spacing);
-    let pixel_aspect_ratio = read_positive_u32_pair(&obj, "PixelAspectRatio");
+    let pixel_aspect_ratio = read_positive_u32_pair(&obj, tags::PIXEL_ASPECT_RATIO);
     let normalized_pixel_aspect = normalize_pixel_aspect(pixel_spacing, pixel_aspect_ratio);
     let modality_lut = read_lut_sequence(&obj, tags::MODALITY_LUT_SEQUENCE);
     let voi_lut = read_lut_sequence(&obj, tags::VOILUT_SEQUENCE);
     let presentation = read_presentation_metadata(&obj);
-    let pixel_representation = read_u32(&obj, "PixelRepresentation").unwrap_or(0);
-    let samples_per_pixel = read_u32(&obj, "SamplesPerPixel").unwrap_or(1).max(1);
-    let photometric_interpretation =
-        read_str(&obj, "PhotometricInterpretation").unwrap_or_else(|| "MONOCHROME2".to_string());
-    let rescale_slope = read_f64(&obj, "RescaleSlope").unwrap_or(1.0);
-    let rescale_intercept = read_f64(&obj, "RescaleIntercept").unwrap_or(0.0);
+    let pixel_representation = read_number::<u32>(&obj, tags::PIXEL_REPRESENTATION).unwrap_or(0);
+    let samples_per_pixel = read_number::<u32>(&obj, tags::SAMPLES_PER_PIXEL)
+        .unwrap_or(1)
+        .max(1);
+    let photometric_interpretation = read_first_string(&obj, tags::PHOTOMETRIC_INTERPRETATION)
+        .unwrap_or_else(|| "MONOCHROME2".to_string());
+    let rescale_slope = read_number::<f64>(&obj, tags::RESCALE_SLOPE).unwrap_or(1.0);
+    let rescale_intercept = read_number::<f64>(&obj, tags::RESCALE_INTERCEPT).unwrap_or(0.0);
     let pixel_data_kind = find_native_pixel_data_kind(path, &transfer_syntax_uid)?;
     let has_pixels = pixel_data_kind.is_some();
     let default_window = match (
-        read_f64(&obj, "WindowCenter"),
-        read_f64(&obj, "WindowWidth"),
+        read_number::<f64>(&obj, tags::WINDOW_CENTER),
+        read_number::<f64>(&obj, tags::WINDOW_WIDTH),
     ) {
         (Some(center), Some(width)) => Some(WindowPreset { center, width }),
         _ => None,
@@ -847,44 +857,19 @@ fn top_level_pixel_data_kind(
     Ok(None)
 }
 
-fn read_str(obj: &dicom_object::DefaultDicomObject, name: &str) -> Option<String> {
-    read_strings(obj, name).into_iter().next()
-}
-
-fn read_strings(obj: &dicom_object::DefaultDicomObject, name: &str) -> Vec<String> {
-    obj.element_by_name(name)
-        .ok()
-        .and_then(|element| element.to_str().ok())
-        .map(|value| split_dicom_values(value.as_ref()))
-        .unwrap_or_default()
-}
-
-fn split_dicom_values(raw: &str) -> Vec<String> {
-    raw.split('\\')
-        .map(str::trim)
-        .map(ToString::to_string)
-        .collect()
-}
-
-fn read_u32(obj: &dicom_object::DefaultDicomObject, name: &str) -> Option<u32> {
-    read_str(obj, name)?.parse::<u32>().ok()
-}
-
-fn read_i32(obj: &dicom_object::DefaultDicomObject, name: &str) -> Option<i32> {
-    read_str(obj, name)?.parse::<i32>().ok()
-}
-
-fn read_f64(obj: &dicom_object::DefaultDicomObject, name: &str) -> Option<f64> {
-    read_str(obj, name)?.parse::<f64>().ok()
-}
-
-fn read_positive_f64_pair(obj: &dicom_object::DefaultDicomObject, name: &str) -> Option<[f64; 2]> {
-    let values = read_exact_f64s(obj, name)?;
+fn read_positive_f64_pair(
+    obj: &dicom_object::DefaultDicomObject,
+    tag: dicom_core::Tag,
+) -> Option<[f64; 2]> {
+    let values = read_exact_f64s(obj, tag)?;
     values.iter().all(|value| *value > 0.0).then_some(values)
 }
 
-fn read_positive_u32_pair(obj: &dicom_object::DefaultDicomObject, name: &str) -> Option<[u32; 2]> {
-    let values = read_strings(obj, name)
+fn read_positive_u32_pair(
+    obj: &dicom_object::DefaultDicomObject,
+    tag: dicom_core::Tag,
+) -> Option<[u32; 2]> {
+    let values = read_strings(obj, tag)
         .into_iter()
         .map(|value| value.parse::<u32>().ok())
         .collect::<Option<Vec<_>>>()?;
@@ -906,7 +891,7 @@ fn read_lut_sequence(
     obj: &dicom_object::DefaultDicomObject,
     sequence_tag: dicom_core::Tag,
 ) -> Option<DicomLut> {
-    let item = obj.element(sequence_tag).ok()?.items()?.first()?;
+    let item = sequence_item(obj, sequence_tag, 0)?;
     let descriptor = item
         .element(tags::LUT_DESCRIPTOR)
         .ok()?
@@ -1008,7 +993,7 @@ fn read_overlay_plane(obj: &dicom_object::DefaultDicomObject, group: u16) -> Opt
         rows,
         columns,
         origin,
-        overlay_type: read_string_tag(obj, dicom_core::Tag(group, 0x0040)).unwrap_or_default(),
+        overlay_type: read_string(obj, dicom_core::Tag(group, 0x0040)).unwrap_or_default(),
         number_of_frames,
         image_frame_origin,
         data,
@@ -1018,18 +1003,22 @@ fn read_overlay_plane(obj: &dicom_object::DefaultDicomObject, group: u16) -> Opt
 fn read_rectangular_display_shutter(
     obj: &dicom_object::DefaultDicomObject,
 ) -> Option<RectangularDisplayShutter> {
-    if !read_strings(obj, "ShutterShape")
+    if !read_strings(obj, tags::SHUTTER_SHAPE)
         .iter()
         .any(|shape| shape.eq_ignore_ascii_case("RECTANGULAR"))
     {
         return None;
     }
     let shutter = RectangularDisplayShutter {
-        left_vertical_edge: read_i32(obj, "ShutterLeftVerticalEdge")?,
-        right_vertical_edge: read_i32(obj, "ShutterRightVerticalEdge")?,
-        upper_horizontal_edge: read_i32(obj, "ShutterUpperHorizontalEdge")?,
-        lower_horizontal_edge: read_i32(obj, "ShutterLowerHorizontalEdge")?,
-        presentation_value: u16::try_from(read_u32(obj, "ShutterPresentationValue")?).ok()?,
+        left_vertical_edge: read_number::<i32>(obj, tags::SHUTTER_LEFT_VERTICAL_EDGE)?,
+        right_vertical_edge: read_number::<i32>(obj, tags::SHUTTER_RIGHT_VERTICAL_EDGE)?,
+        upper_horizontal_edge: read_number::<i32>(obj, tags::SHUTTER_UPPER_HORIZONTAL_EDGE)?,
+        lower_horizontal_edge: read_number::<i32>(obj, tags::SHUTTER_LOWER_HORIZONTAL_EDGE)?,
+        presentation_value: u16::try_from(read_number::<u32>(
+            obj,
+            tags::SHUTTER_PRESENTATION_VALUE,
+        )?)
+        .ok()?,
     };
     (shutter.left_vertical_edge <= shutter.right_vertical_edge
         && shutter.upper_horizontal_edge <= shutter.lower_horizontal_edge)
@@ -1040,19 +1029,11 @@ fn read_u32_tag(obj: &dicom_object::DefaultDicomObject, tag: dicom_core::Tag) ->
     obj.element(tag).ok()?.to_int::<u32>().ok()
 }
 
-fn read_string_tag(obj: &dicom_object::DefaultDicomObject, tag: dicom_core::Tag) -> Option<String> {
-    obj.element(tag)
-        .ok()?
-        .to_str()
-        .ok()
-        .map(|value| value.trim().to_string())
-}
-
 fn read_exact_f64s<const N: usize>(
-    obj: &dicom_object::DefaultDicomObject,
-    name: &str,
+    obj: &dicom_object::InMemDicomObject,
+    tag: dicom_core::Tag,
 ) -> Option<[f64; N]> {
-    let values = read_strings(obj, name)
+    let values = read_strings(obj, tag)
         .into_iter()
         .map(|value| value.parse::<f64>().ok())
         .collect::<Option<Vec<_>>>()?;
@@ -1068,19 +1049,9 @@ fn read_sequence_strings(
     sequence_tag: dicom_core::Tag,
     value_tag: dicom_core::Tag,
 ) -> Vec<String> {
-    let Some(items) = obj
-        .element(sequence_tag)
-        .ok()
-        .and_then(|element| element.items())
-    else {
-        return Vec::new();
-    };
-
-    items
+    sequence_items(obj, sequence_tag)
         .iter()
-        .filter_map(|item| item.element(value_tag).ok())
-        .filter_map(|element| element.to_str().ok())
-        .flat_map(|value| split_dicom_values(value.as_ref()))
+        .flat_map(|item| read_strings(item, value_tag))
         .filter(|value| !value.is_empty())
         .collect()
 }
@@ -1099,11 +1070,7 @@ fn read_frame_patient_geometry(
     top_level_orientation: Option<PatientOrientation>,
     top_level_pixel_spacing: Option<[f64; 2]>,
 ) -> FramePatientGeometry {
-    let shared_orientation = obj
-        .element(tags::SHARED_FUNCTIONAL_GROUPS_SEQUENCE)
-        .ok()
-        .and_then(|element| element.items())
-        .and_then(|items| items.first())
+    let shared_orientation = sequence_item(obj, tags::SHARED_FUNCTIONAL_GROUPS_SEQUENCE, 0)
         .and_then(|item| {
             read_nested_exact_f64s(
                 item,
@@ -1111,11 +1078,7 @@ fn read_frame_patient_geometry(
                 tags::IMAGE_ORIENTATION_PATIENT,
             )
         });
-    let shared_pixel_spacing = obj
-        .element(tags::SHARED_FUNCTIONAL_GROUPS_SEQUENCE)
-        .ok()
-        .and_then(|element| element.items())
-        .and_then(|items| items.first())
+    let shared_pixel_spacing = sequence_item(obj, tags::SHARED_FUNCTIONAL_GROUPS_SEQUENCE, 0)
         .and_then(|item| {
             read_nested_exact_f64s(item, tags::PIXEL_MEASURES_SEQUENCE, tags::PIXEL_SPACING)
         })
@@ -1183,24 +1146,7 @@ fn read_nested_exact_f64s<const N: usize>(
     sequence_tag: dicom_core::Tag,
     value_tag: dicom_core::Tag,
 ) -> Option<[f64; N]> {
-    let value = item
-        .element(sequence_tag)
-        .ok()?
-        .items()?
-        .first()?
-        .element(value_tag)
-        .ok()?
-        .to_str()
-        .ok()?;
-    let values = split_dicom_values(value.as_ref())
-        .into_iter()
-        .map(|value| value.parse::<f64>().ok())
-        .collect::<Option<Vec<_>>>()?;
-    let values: [f64; N] = values.try_into().ok()?;
-    values
-        .iter()
-        .all(|value| value.is_finite())
-        .then_some(values)
+    read_exact_f64s(sequence_item(item, sequence_tag, 0)?, value_tag)
 }
 
 fn build_label(patient_id: &str, modality: &str, study_date: &str, fallback: &str) -> String {
@@ -1225,8 +1171,7 @@ fn build_label(patient_id: &str, modality: &str, study_date: &str, fallback: &st
 #[cfg(test)]
 mod tests {
     use super::{
-        build_entry, read_discovery_metadata, split_dicom_values, valid_specific_character_set,
-        EntryInspection,
+        build_entry, read_discovery_metadata, valid_specific_character_set, EntryInspection,
     };
     use dicom_core::value::DataSetSequence;
     use dicom_core::{DataElement, PrimitiveValue, Tag, VR};
@@ -1355,8 +1300,6 @@ mod tests {
 
     #[test]
     fn rejects_partial_or_non_finite_geometry_values() {
-        assert_eq!(split_dicom_values(" 1 \\ 2 \\ \\ 3 "), ["1", "2", "", "3"]);
-
         let directory = tempdir().expect("temp directory");
         let path = directory.path().join("invalid-geometry.dcm");
         let object = base_object()

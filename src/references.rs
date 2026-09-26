@@ -4,6 +4,7 @@
 //! imply that the referenced object is present or that either object has a
 //! semantic renderer.
 
+use crate::dicom_values::{read_numbers, read_string};
 use anyhow::{Context, Result};
 use dicom_core::Tag;
 use dicom_dictionary_std::{tags, StandardDataDictionary};
@@ -564,29 +565,6 @@ fn select_rt_candidates<'a>(
             Some((relationship, candidate))
         })
         .collect()
-}
-
-fn read_string(object: &InMemDicomObject<StandardDataDictionary>, tag: Tag) -> Option<String> {
-    let value = object.element(tag).ok()?.to_str().ok()?;
-    let value = value.trim().to_string();
-    (!value.is_empty()).then_some(value)
-}
-
-fn read_numbers<T>(object: &InMemDicomObject<StandardDataDictionary>, tag: Tag) -> Vec<T>
-where
-    T: std::str::FromStr,
-{
-    object
-        .element(tag)
-        .ok()
-        .and_then(|element| element.to_str().ok())
-        .map(|value| {
-            value
-                .split('\\')
-                .filter_map(|part| part.trim().parse().ok())
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 #[cfg(test)]

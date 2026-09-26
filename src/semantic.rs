@@ -9,6 +9,7 @@ use crate::api::contracts::{
     ResolvedSegmentSourceFrame, RtDoseContext, SegmentFrameMapping, SegmentSummary,
     SegmentationContext, SemanticContext, SemanticContextResponse,
 };
+use crate::dicom_values::{read_number, read_numbers, read_string, sequence_items};
 use crate::geometry::{
     frame_geometry, grids_overlap, target_to_source_transform, GeometryTolerances,
     PixelAffineTransform,
@@ -217,7 +218,7 @@ fn segmentation_context(
     resolved: &[ResolvedReferenceEdge],
 ) -> SegmentationContext {
     let segments = sequence_items(object, tags::SEGMENT_SEQUENCE)
-        .into_iter()
+        .iter()
         .take(MAX_SEQUENCE_ITEMS)
         .filter_map(|item| {
             Some(SegmentSummary {
@@ -241,24 +242,22 @@ fn segmentation_context(
         .collect::<Vec<_>>();
 
     let mut frame_mappings = Vec::new();
-    let shared_group = sequence_items(object, tags::SHARED_FUNCTIONAL_GROUPS_SEQUENCE)
-        .into_iter()
-        .next();
+    let shared_group = sequence_items(object, tags::SHARED_FUNCTIONAL_GROUPS_SEQUENCE).first();
     let declared_sources = sequence_items(object, tags::SOURCE_IMAGE_SEQUENCE);
     for (frame_index, frame_group) in
         sequence_items(object, tags::PER_FRAME_FUNCTIONAL_GROUPS_SEQUENCE)
-            .into_iter()
+            .iter()
             .take(source.frame_count as usize)
             .enumerate()
     {
         let segment_number = referenced_segment_number(frame_group, shared_group);
         let explicit_source_items = sequence_items(frame_group, tags::DERIVATION_IMAGE_SEQUENCE)
-            .into_iter()
+            .iter()
             .flat_map(|item| sequence_items(item, tags::SOURCE_IMAGE_SEQUENCE))
             .collect::<Vec<_>>();
         let (source_frames, mapping_method, mapping_status, mapping_reason) =
             if explicit_source_items.is_empty() {
-                resolve_geometry_sources(source, frame_index as u32, files, &declared_sources)
+                resolve_geometry_sources(source, frame_index as u32, files, declared_sources)
             } else {
                 resolve_explicit_sources(source, frame_index as u32, files, &explicit_source_items)
             };
@@ -464,7 +463,7 @@ fn resolve_geometry_sources(
     segmentation: &FileEntry,
     segmentation_frame: u32,
     files: &[Arc<FileEntry>],
-    source_items: &[&InMemDicomObject<StandardDataDictionary>],
+    source_items: &[InMemDicomObject<StandardDataDictionary>],
 ) -> (
     Vec<ResolvedSegmentSourceFrame>,
     Option<String>,
@@ -782,7 +781,7 @@ fn read_quantity_code(
     object: &InMemDicomObject<StandardDataDictionary>,
 ) -> Option<CodedConceptSummary> {
     sequence_items(object, tags::QUANTITY_DEFINITION_SEQUENCE)
-        .into_iter()
+        .iter()
         .find_map(|item| {
             read_code(item, tags::CONCEPT_CODE_SEQUENCE).or_else(|| read_direct_code(item))
         })
@@ -805,7 +804,7 @@ fn referenced_rwvm_instances(object: &InMemDicomObject<StandardDataDictionary>) 
         object,
         tags::REFERENCED_REAL_WORLD_VALUE_MAPPING_INSTANCE_SEQUENCE,
     )
-    .into_iter()
+    .iter()
     .filter_map(|item| read_string(item, tags::REFERENCED_SOP_INSTANCE_UID))
     .collect()
 }
@@ -842,24 +841,11 @@ fn ineligible(reason: &str) -> OverlayEligibility {
     }
 }
 
-fn sequence_items(
-    object: &InMemDicomObject<StandardDataDictionary>,
-    tag: Tag,
-) -> Vec<&InMemDicomObject<StandardDataDictionary>> {
-    object
-        .element(tag)
-        .ok()
-        .and_then(|element| element.items())
-        .map(|items| items.iter().collect())
-        .unwrap_or_default()
-}
-
 fn read_code(
     object: &InMemDicomObject<StandardDataDictionary>,
     tag: Tag,
 ) -> Option<CodedConceptSummary> {
-    let item = sequence_items(object, tag).into_iter().next()?;
-    read_direct_code(item)
+    read_direct_code(sequence_items(object, tag).first()?)
 }
 
 fn read_direct_code(
@@ -873,37 +859,6 @@ fn read_direct_code(
         scheme: read_string(item, tags::CODING_SCHEME_DESIGNATOR).unwrap_or_default(),
         meaning: read_string(item, tags::CODE_MEANING).unwrap_or_default(),
     })
-}
-
-fn read_string(object: &InMemDicomObject<StandardDataDictionary>, tag: Tag) -> Option<String> {
-    let value = object.element(tag).ok()?.to_str().ok()?.trim().to_string();
-    (!value.is_empty()).then_some(value)
-}
-
-fn read_number<T>(object: &InMemDicomObject<StandardDataDictionary>, tag: Tag) -> Option<T>
-where
-    T: std::str::FromStr,
-{
-    read_string(object, tag)?
-        .split('\\')
-        .next()?
-        .trim()
-        .parse()
-        .ok()
-}
-
-fn read_numbers<T>(object: &InMemDicomObject<StandardDataDictionary>, tag: Tag) -> Vec<T>
-where
-    T: std::str::FromStr,
-{
-    read_string(object, tag)
-        .map(|value| {
-            value
-                .split('\\')
-                .filter_map(|part| part.trim().parse().ok())
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 fn optional_numbers<T>(
