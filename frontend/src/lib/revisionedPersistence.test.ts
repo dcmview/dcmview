@@ -35,21 +35,6 @@ describe("RevisionedPersistenceController", () => {
 		expect(save).toHaveBeenCalledWith(5, "first local value");
 	});
 
-	it("exposes a dirty draft without starting a request", () => {
-		const save = vi.fn();
-		const controller = new RevisionedPersistenceController<number, string>({ save });
-		controller.initialize(5, "committed");
-
-		const draft = controller.setDraft(5, "local draft");
-		expect(draft).toMatchObject({
-			value: "local draft",
-			status: "dirty",
-			saving: false,
-			dirty: true,
-		});
-		expect(save).not.toHaveBeenCalled();
-	});
-
 	it("serializes writes and keeps a newer edit when the older response completes", async () => {
 		const first = deferred<string>();
 		const second = deferred<string>();
@@ -66,7 +51,6 @@ describe("RevisionedPersistenceController", () => {
 		expect(controller.get(7)).toMatchObject({
 			value: "revision two",
 			status: "saving",
-			dirty: true,
 		});
 
 		first.resolve("canonical one");
@@ -74,19 +58,18 @@ describe("RevisionedPersistenceController", () => {
 
 		expect(save).toHaveBeenCalledTimes(2);
 		expect(save).toHaveBeenLastCalledWith(7, "revision two");
+		// The older response must not replace the newer local edit.
 		expect(controller.get(7)).toMatchObject({
 			value: "revision two",
-			committedValue: "canonical one",
 			status: "saving",
 		});
 
 		second.resolve("canonical two");
 		await flushPromises();
-		expect(controller.get(7)).toMatchObject({
+		expect(controller.get(7)).toEqual({
 			value: "canonical two",
-			committedValue: "canonical two",
 			status: "clean",
-			dirty: false,
+			error: null,
 		});
 	});
 
@@ -119,9 +102,8 @@ describe("RevisionedPersistenceController", () => {
 
 		controller.edit(3, "new");
 		await flushPromises();
-		expect(controller.get(3)).toMatchObject({
+		expect(controller.get(3)).toEqual({
 			value: "new",
-			committedValue: "old",
 			status: "error",
 			error: "network unavailable",
 		});
@@ -140,19 +122,43 @@ describe("RevisionedPersistenceController", () => {
 	});
 
 	it("rolls a failed edit back to the last committed value", async () => {
-		const controller = new RevisionedPersistenceController<number, string>({
-			save: vi.fn().mockRejectedValue(new Error("rejected")),
-		});
+		const save = vi.fn()
+			.mockResolvedValueOnce("canonical first")
+			.mockRejectedValueOnce(new Error("rejected"));
+		const controller = new RevisionedPersistenceController<number, string>({ save });
 		controller.initialize(11, "server value");
-		controller.edit(11, "local edit");
+		controller.edit(11, "first edit");
 		await flushPromises();
+		controller.edit(11, "second edit");
+		await flushPromises();
+		expect(controller.get(11)?.status).toBe("error");
 
-		const rolledBack = controller.rollback(11);
-		expect(rolledBack).toMatchObject({
-			value: "server value",
+		controller.rollback(11);
+		expect(controller.get(11)).toEqual({
+			value: "canonical first",
 			status: "clean",
-			dirty: false,
 			error: null,
 		});
+		expect(save).toHaveBeenCalledTimes(2);
+	});
+
+	it("reports every state change and keeps the first initialization", () => {
+		const onChange = vi.fn();
+		const controller = new RevisionedPersistenceController<number, string>({
+			save: () => new Promise<string>(() => {}),
+			onChange,
+		});
+		controller.initialize(2, "loaded");
+		controller.initialize(2, "late duplicate load");
+		expect(controller.get(2)).toEqual({ value: "loaded", status: "clean", error: null });
+
+		controller.edit(2, "edited");
+		expect(onChange.mock.calls.map(([, snapshot]) => snapshot.status)).toEqual(["clean", "dirty", "saving"]);
+	});
+
+	it("refuses edits before the key has loaded", () => {
+		const controller = new RevisionedPersistenceController<number, string>({ save: vi.fn() });
+		expect(controller.get(4)).toBeUndefined();
+		expect(() => controller.edit(4, "too early")).toThrow("initialized");
 	});
 });

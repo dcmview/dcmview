@@ -2,13 +2,7 @@ export type PersistenceStatus = "clean" | "saving" | "dirty" | "error";
 
 export type PersistenceSnapshot<Value> = {
 	value: Value;
-	committedValue: Value;
-	revision: number;
-	committedRevision: number;
-	inFlightRevision: number | null;
 	status: PersistenceStatus;
-	saving: boolean;
-	dirty: boolean;
 	error: string | null;
 };
 
@@ -49,9 +43,8 @@ export class RevisionedPersistenceController<Key, Value> {
 		this.#errorMessage = errorMessage;
 	}
 
-	initialize(key: Key, value: Value): PersistenceSnapshot<Value> {
-		const existing = this.#states.get(key);
-		if (existing) return this.#snapshot(existing);
+	initialize(key: Key, value: Value): void {
+		if (this.#states.has(key)) return;
 		const state: PersistenceState<Value> = {
 			value,
 			committedValue: value,
@@ -62,7 +55,6 @@ export class RevisionedPersistenceController<Key, Value> {
 		};
 		this.#states.set(key, state);
 		this.#emit(key, state);
-		return this.#snapshot(state);
 	}
 
 	get(key: Key): PersistenceSnapshot<Value> | undefined {
@@ -70,24 +62,13 @@ export class RevisionedPersistenceController<Key, Value> {
 		return state ? this.#snapshot(state) : undefined;
 	}
 
-	setDraft(key: Key, value: Value): PersistenceSnapshot<Value> {
+	/** Records a local edit and writes it once earlier writes settle. */
+	edit(key: Key, value: Value): void {
 		const state = this.#requiredState(key);
 		state.value = value;
 		state.revision += 1;
 		state.error = null;
 		this.#emit(key, state);
-		return this.#snapshot(state);
-	}
-
-	edit(key: Key, value: Value): PersistenceSnapshot<Value> {
-		this.setDraft(key, value);
-		this.persist(key);
-		return this.#snapshot(this.#requiredState(key));
-	}
-
-	persist(key: Key): void {
-		const state = this.#requiredState(key);
-		if (state.error !== null) return;
 		this.#pump(key, state);
 	}
 
@@ -98,7 +79,7 @@ export class RevisionedPersistenceController<Key, Value> {
 		this.#pump(key, state);
 	}
 
-	rollback(key: Key): PersistenceSnapshot<Value> {
+	rollback(key: Key): void {
 		const state = this.#requiredState(key);
 		state.value = state.committedValue;
 		state.revision += 1;
@@ -108,7 +89,6 @@ export class RevisionedPersistenceController<Key, Value> {
 		}
 		this.#emit(key, state);
 		if (state.inFlightRevision !== null) this.#pump(key, state);
-		return this.#snapshot(state);
 	}
 
 	#pump(key: Key, state: PersistenceState<Value>): void {
@@ -151,25 +131,13 @@ export class RevisionedPersistenceController<Key, Value> {
 	}
 
 	#snapshot(state: PersistenceState<Value>): PersistenceSnapshot<Value> {
-		const saving = state.inFlightRevision !== null;
-		const dirty = state.revision !== state.committedRevision;
 		const status: PersistenceStatus = state.error !== null
 			? "error"
-			: saving
+			: state.inFlightRevision !== null
 				? "saving"
-				: dirty
+				: state.revision !== state.committedRevision
 					? "dirty"
 					: "clean";
-		return {
-			value: state.value,
-			committedValue: state.committedValue,
-			revision: state.revision,
-			committedRevision: state.committedRevision,
-			inFlightRevision: state.inFlightRevision,
-			status,
-			saving,
-			dirty,
-			error: state.error,
-		};
+		return { value: state.value, status, error: state.error };
 	}
 }
