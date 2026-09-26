@@ -30,6 +30,63 @@ diagnosis.
 
 ---
 
+## Intended Features and Known Gaps
+
+Every feature listed here exists on purpose. Reviews and cleanups judge *how* a
+feature is implemented (duplication, needless layers, test-only seams, brittle
+design), never *whether* it should exist. Fix or simplify a poor
+implementation; do not delete it.
+
+Removing or narrowing user-facing behavior needs the owner's explicit sign-off
+before the change, noted in the commit body. That covers features, CLI flags,
+Python keywords, wire fields, supported pixel layouts, and the rules that
+decide when a launch routes into VS Code. "Duplicated", "unused by
+production", or "out of scope for a quick viewer" is not sign-off. If a finding
+would remove behavior, raise it as a question instead of acting.
+
+**Intended features:**
+
+- **Local viewer** - CLI over files and directories, recursive or top-level
+  scan, `--filter`, `--timeout`, and EMBED-style ROI load, edit, and export.
+- **Remote use** - loopback bind plus the printed `ssh -L` hint. (`--tunnel`
+  was removed with the owner's agreement on 2026-09-25.)
+- **Python package** - `view()` with blocking and non-blocking handles,
+  `python -m dcmview_py`, and the `dcmview`/`dcmview-py` console scripts, with
+  bundled, `DCMVIEW_BINARY`, or `PATH` binary resolution.
+- **VS Code integration** - extension viewer, readonly DICOM custom editor,
+  terminal interception through PATH shims, and routing into the VS Code viewer
+  from the binary *and* from Python, including notebook kernels that only see
+  the bridge registry. The Rust, Python, and TypeScript bridge code may be
+  consolidated, but no entry point may lose its routing. The binary and Python
+  currently use different workspace-match rules; unifying them is an open owner
+  decision, so keep both behaviors until it is made.
+- **Viewer** - cine playback, server- and client-side window/level, presets,
+  per-tab zoom/pan/orientation, series and stack navigation, tag panel,
+  reference navigation, and the codec coverage in the pixel pipeline table.
+- **Semantic context** - SEG (with a drawn overlay), Parametric Map, RT Dose,
+  and WSI context.
+
+**Known gaps (intended work, not settled scope):**
+
+- **RT Dose overlay is not drawn.** `rt_dose_overlay` computes eligibility and
+  a source file, but nothing consumes it. Drawing it needs:
+  - dose-grid resampling onto each source frame (Grid Frame Offset Vector and
+    patient coordinates);
+  - Dose Grid Scaling;
+  - a color map or isodose bands with a legend;
+  - a check that the grid covers the displayed slice.
+- **Parametric Map values are not applied.** Real World Value Mappings are
+  summarized in the panel only. The display windows stored values even though
+  `displayed_value_kind` reports `mapped`. How mapped values should appear on
+  the image is an open owner decision.
+- **Color layouts reported unsupported because their decoder lacks a color
+  transform:**
+  - RLE YBR_FULL_422;
+  - JPEG Lossless YBR_FULL;
+  - JPEG XL YBR_FULL.
+
+---
+
 ## Git Commit Policy
 
 Every completed task **MUST** be tracked in a descriptive, granular git commit.
