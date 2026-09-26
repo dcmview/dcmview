@@ -10,6 +10,13 @@ diagnostic viewer.
 
 ## Unreleased
 
+### Added
+
+- RLE Lossless frames labelled YBR_FULL_422, and JPEG Lossless and JPEG XL
+  Lossless frames labelled YBR_FULL, now display in color. They were
+  previously reported unsupported; a JPEG Lossless YBR_FULL frame requested
+  anyway showed its Y, Cb, Cr components as red, green, and blue.
+
 ### Changed
 
 - VS Code routing now follows one rule for `dcmview`, `dcmview-py`, and
