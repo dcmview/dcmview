@@ -33,6 +33,19 @@
 		createDisplayFrameCaches,
 	} from "./frameCache";
 	import { fitImageToViewportHeight, imageDisplayGeometry } from "./imageGeometry";
+	import type { ViewStates } from "./viewport/viewStates.svelte";
+	import {
+		clientToImagePoint,
+		layerTransformCss,
+		MAX_ZOOM,
+		MIN_ZOOM,
+		nextZoomStep,
+		zoomAnchor,
+		zoomAroundAnchor,
+		type LayerOrigin,
+		type ViewTransform,
+		type ZoomAnchor,
+	} from "./viewport/viewTransform";
 	import {
 		canRunCinePlayback,
 		runRenderPacedCine,
@@ -57,7 +70,7 @@
 		selectWindowingPipeline,
 		validateRenderableRawFrame,
 	} from "./rawWindowing";
-	import { DEFAULT_ORIENTATION, type ActiveTool, type ImageOrientation } from "./viewerTools";
+	import type { ActiveTool } from "./viewerTools";
 	import { navigationFrameAtPosition, type NavigationFrameRef } from "./seriesNavigation";
 	import type {
 		WlRendererRequest,
@@ -72,13 +85,6 @@
 		sourceFileIndex: number;
 		sourceFrameIndex: number;
 		sourceFile: FileSummary;
-	};
-	type TransformState = { scale: number; tx: number; ty: number; fit: boolean };
-	type ZoomAnchor = {
-		clientX: number;
-		clientY: number;
-		localX: number;
-		localY: number;
 	};
 	type DragState =
 		| { mode: "pan"; startX: number; startY: number; baseTx: number; baseTy: number }
@@ -113,7 +119,7 @@
 		windowMode,
 		selectedPresetId,
 		resetCount,
-		orientation = DEFAULT_ORIENTATION,
+		viewStates,
 		onreset,
 		onmanualwindowlevel,
 		cinePlaying = $bindable(),
@@ -135,7 +141,7 @@
 		windowMode: WindowMode;
 		selectedPresetId: string;
 		resetCount: number;
-		orientation?: ImageOrientation;
+		viewStates: ViewStates;
 		onreset?: () => void;
 		onmanualwindowlevel?: (center: number, width: number) => void;
 		cinePlaying: boolean;
@@ -150,9 +156,6 @@
 		segmentationOverlay?: SegmentationOverlay | null;
 	} = $props();
 
-	// Keyed by navigation scope (the open tab), so scrolling through a stack of
-	// single-frame files keeps the same zoom and pan, like frames of one object.
-	let transformsByScope = $state<Record<string, TransformState>>({});
 	let dragState = $state<DragState>(null);
 	let loading = $state(false);
 	let loadError = $state<string | null>(null);
@@ -162,7 +165,6 @@
 	let viewportSize = $state({ width: 0, height: 0 });
 	let canvasEl: HTMLCanvasElement | undefined = $state();
 	let renderedFrameToken = $state("");
-	let roiSvgEl: SVGSVGElement | undefined = $state();
 	let currentRawFrame = $state<RawFrame | null>(null);
 	let rawWindowLevelFallbackByFile = $state<Record<number, boolean>>({});
 	let annotationsByFile = $state<Record<number, EmbedRoiAnnotations | undefined>>({});
@@ -247,10 +249,6 @@
 	let workerRenderInFlight = false;
 	let queuedWorkerRender: { frame: RawFrame; wc: number; ww: number; generation: number } | null = null;
 
-	const MIN_ZOOM = 0.05;
-	const MAX_ZOOM = 64;
-	const ZOOM_STEPS = [0.05, 0.1, 0.2, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64];
-	const DEFAULT_TRANSFORM: TransformState = { scale: 1, tx: 0, ty: 0, fit: false };
 	const RAW_RING_RADIUS = 10;
 	const DISPLAY_FULL_PREFETCH_BUDGET_BYTES = 320 * 1024 * 1024;
 	const DISPLAY_NEAR_PREFETCH_DISTANCE = 48;
@@ -264,24 +262,9 @@
 	const TRACKPAD_WHEEL_DELTA_THRESHOLD = 50;
 	const MOUSE_WHEEL_ZOOM_SENSITIVITY = 0.0025;
 	const PINCH_ZOOM_SENSITIVITY = 0.01;
-	const activeTransform = $derived(
-		activeFile && navigationScopeKey
-			? transformsByScope[navigationScopeKey] ?? DEFAULT_TRANSFORM
-			: DEFAULT_TRANSFORM,
-	);
-	const transformCss = $derived.by(() => {
-		const { tx, ty, scale } = activeTransform;
-		let css = `translate(${tx}px, ${ty}px) scale(${scale})`;
-		const { flipH, flipV, rotation } = orientation;
-		if (rotation !== 0 || flipH || flipV) {
-			const cx = displayGeometry.centerX;
-			const cy = displayGeometry.centerY;
-			const sx = flipH ? -1 : 1;
-			const sy = flipV ? -1 : 1;
-			css += ` translate(${cx}px,${cy}px) rotate(${rotation}deg) scale(${sx},${sy}) translate(${-cx}px,${-cy}px)`;
-		}
-		return css;
-	});
+	// Zoom, pan, and orientation belong to the open tab (navigation scope).
+	const activeTransform = $derived(viewStates.transform(activeFile ? navigationScopeKey : ""));
+	const orientation = $derived(viewStates.orientation(navigationScopeKey));
 	const zoomPercent = $derived(Math.round(activeTransform.scale * 100));
 	const isDragging = $derived(dragState !== null);
 	const pipelineMode = $derived.by<PipelineMode>(() => segmentationOverlay
@@ -349,6 +332,7 @@
 			segmentationOverlay?.sourceFile.pixel_aspect_ratio ?? activeFile?.pixel_aspect_ratio,
 		),
 	);
+	const transformCss = $derived(layerTransformCss(activeTransform, orientation, displayGeometry));
 	const visibleRois = $derived(
 		segmentationOverlay ? [] : deriveVisibleRois(activeAnnotations, currentFrame),
 	);
@@ -424,11 +408,22 @@
 		setSelectedRoi(null);
 	}
 
+	/** Image coordinates under a client point; the seam for cursor-driven tools. */
+	function imagePointAt(clientX: number, clientY: number): ImagePoint | null {
+		const origin = imageLayoutOrigin();
+		if (!origin) return null;
+		return clientToImagePoint(
+			{ x: clientX, y: clientY },
+			origin,
+			activeTransform,
+			orientation,
+			displayGeometry,
+		);
+	}
+
 	function pointFromPointer(event: PointerEvent): ImagePoint | null {
-		if (!roiSvgEl) return null;
-		const matrix = roiSvgEl.getScreenCTM();
-		if (!matrix) return null;
-		const point = new DOMPoint(event.clientX, event.clientY).matrixTransform(matrix.inverse());
+		const point = imagePointAt(event.clientX, event.clientY);
+		if (!point) return null;
 		return {
 			x: Math.min(imageColumns, Math.max(0, point.x)),
 			y: Math.min(imageRows, Math.max(0, point.y)),
@@ -1199,30 +1194,11 @@ function startDisplayPrefetch(
 		}
 	}
 
-	function sameTransform(a: TransformState | undefined, b: TransformState): boolean {
-		return !!a
-			&& a.fit === b.fit
-			&& Math.abs(a.scale - b.scale) < 0.0001
-			&& Math.abs(a.tx - b.tx) < 0.01
-			&& Math.abs(a.ty - b.ty) < 0.01;
+	function updateTransform(transform: Omit<ViewTransform, "fit">, fit = false) {
+		viewStates.setTransform(navigationScopeKey, transform, fit);
 	}
 
-	function updateTransform(transform: Omit<TransformState, "fit"> | TransformState, fit = false) {
-		const scope = navigationScopeKey;
-		if (!scope) return;
-		const next = { scale: transform.scale, tx: transform.tx, ty: transform.ty, fit };
-		if (sameTransform(transformsByScope[scope], next)) return;
-		transformsByScope = {
-			...transformsByScope,
-			[scope]: next,
-		};
-	}
-
-	function clampZoom(scale: number): number {
-		return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, scale));
-	}
-
-	function fitTransformForViewport(): TransformState | null {
+	function fitTransformForViewport(): ViewTransform | null {
 		const fit = fitImageToViewportHeight(
 			displayGeometry,
 			viewportSize.width,
@@ -1243,7 +1219,7 @@ function startDisplayPrefetch(
 		updateTransform(transform, true);
 	}
 
-	function imageLayoutOrigin(): { left: number; top: number } | null {
+	function imageLayoutOrigin(): LayerOrigin | null {
 		if (!viewportEl || displayGeometry.width <= 0 || displayGeometry.height <= 0) return null;
 		const rect = viewportEl.getBoundingClientRect();
 		return {
@@ -1269,7 +1245,7 @@ function startDisplayPrefetch(
 
 	$effect(() => {
 		if (!activeFile?.has_pixels) return;
-		const existing = transformsByScope[navigationScopeKey];
+		const existing = viewStates.storedTransform(navigationScopeKey);
 		if (!existing || existing.fit) fitActiveImageToViewport();
 	});
 
@@ -1546,25 +1522,12 @@ function startDisplayPrefetch(
 
 	function zoomAnchorFromClient(clientX: number, clientY: number): ZoomAnchor | null {
 		const origin = imageLayoutOrigin();
-		if (!origin) return null;
-		const { scale, tx, ty } = activeTransform;
-		return {
-			clientX,
-			clientY,
-			localX: (clientX - origin.left - tx) / scale,
-			localY: (clientY - origin.top - ty) / scale,
-		};
+		return origin ? zoomAnchor(clientX, clientY, origin, activeTransform) : null;
 	}
 
-	function zoomTransformForAnchor(newScale: number, anchor: ZoomAnchor): Omit<TransformState, "fit"> | null {
+	function zoomTransformForAnchor(newScale: number, anchor: ZoomAnchor): Omit<ViewTransform, "fit"> | null {
 		const origin = imageLayoutOrigin();
-		if (!origin) return null;
-		const clamped = clampZoom(newScale);
-		return {
-			scale: clamped,
-			tx: anchor.clientX - origin.left - anchor.localX * clamped,
-			ty: anchor.clientY - origin.top - anchor.localY * clamped,
-		};
+		return origin ? zoomAroundAnchor(newScale, anchor, origin) : null;
 	}
 
 	function zoomAt(newScale: number, clientX: number, clientY: number) {
@@ -1868,14 +1831,8 @@ function startDisplayPrefetch(
 
 	function stepZoom(direction: 1 | -1) {
 		if (!activeFile) return;
-		const current = activeTransform.scale;
-		if (direction > 0) {
-			const next = ZOOM_STEPS.find((step) => step > current + 0.001);
-			if (next !== undefined) zoomToLevel(next);
-		} else {
-			const previous = [...ZOOM_STEPS].reverse().find((step) => step < current - 0.001);
-			if (previous !== undefined) zoomToLevel(previous);
-		}
+		const level = nextZoomStep(activeTransform.scale, direction);
+		if (level !== undefined) zoomToLevel(level);
 	}
 </script>
 
@@ -1917,7 +1874,6 @@ function startDisplayPrefetch(
 			></canvas>
 			{#if !segmentationOverlay && imageColumns > 0 && imageRows > 0}
 				<svg
-					bind:this={roiSvgEl}
 					class="roi-overlay"
 					viewBox={`0 0 ${imageColumns} ${imageRows}`}
 					preserveAspectRatio="none"

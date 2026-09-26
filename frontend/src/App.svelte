@@ -39,7 +39,14 @@
 		navigationTabId,
 		type NavigationFrameRef,
 	} from "./lib/seriesNavigation";
-	import { DEFAULT_ORIENTATION, WL_PRESETS, type ActiveTool, type ImageOrientation } from "./lib/viewerTools";
+	import { WL_PRESETS, type ActiveTool } from "./lib/viewerTools";
+	import { ViewStates } from "./lib/viewport/viewStates.svelte";
+	import {
+		flipHorizontal,
+		flipVertical,
+		rotateClockwise,
+		rotateCounterClockwise,
+	} from "./lib/viewport/viewTransform";
 
 	const TAG_PANEL_DEFAULT_WIDTH_PX = 360;
 	const TAG_PANEL_MIN_WIDTH_PX = 260;
@@ -99,9 +106,9 @@
 	let manualWindowAdjustment = $state<ManualWindowAdjustment | null>(null);
 	let lastWindowFileIndex = $state<number | null>(null);
 	let resetCount = $state(0);
-	// Keyed by navigation scope so a flip or rotation persists across the
-	// single-frame files of a stack, matching zoom and pan in ImageViewport.
-	let orientationByScope = $state<Record<string, ImageOrientation>>({});
+	// Zoom, pan, and orientation per open tab; ImageViewport reads and zooms,
+	// the toolbar reorients.
+	const viewStates = new ViewStates();
 	let fileNavigatorCollapsed = $state(false);
 	let tagPanelWidthPx = $state(clampTagPanelWidth(TAG_PANEL_DEFAULT_WIDTH_PX));
 	let tagPanelCollapsed = $state(false);
@@ -132,9 +139,6 @@
 	});
 	const navigationFrameCount = $derived(navigationFrames.length);
 	const navigationScopeKey = $derived(activeTabId ?? (activeFile ? `file:${activeFile.index}` : ""));
-	const activeOrientation = $derived(
-		activeFileIndex === null ? DEFAULT_ORIENTATION : orientationByScope[navigationScopeKey] ?? DEFAULT_ORIENTATION,
-	);
 	const segmentationOverlay = $derived.by(() => {
 		if (semanticMode !== "semantic_context") return null;
 		if (!semanticResponse || semanticResponse.source_file_index !== activeFileIndex) return null;
@@ -377,31 +381,12 @@
 		windowMode = 'default';
 		selectedPresetId = 'default';
 		resetCount += 1;
-		if (orientationByScope[navigationScopeKey]) {
-			orientationByScope = { ...orientationByScope, [navigationScopeKey]: DEFAULT_ORIENTATION };
-		}
+		viewStates.resetOrientation(navigationScopeKey);
 	}
 
-	function updateOrientation(change: (current: ImageOrientation) => ImageOrientation) {
-		if (activeFileIndex === null || !navigationScopeKey) return;
-		const current = orientationByScope[navigationScopeKey] ?? DEFAULT_ORIENTATION;
-		orientationByScope = { ...orientationByScope, [navigationScopeKey]: change(current) };
-	}
-
-	function applyFlipH() {
-		updateOrientation((cur) => ({ ...cur, flipH: !cur.flipH }));
-	}
-
-	function applyFlipV() {
-		updateOrientation((cur) => ({ ...cur, flipV: !cur.flipV }));
-	}
-
-	function applyRotateCW() {
-		updateOrientation((cur) => ({ ...cur, rotation: ((cur.rotation + 90) % 360) as 0 | 90 | 180 | 270 }));
-	}
-
-	function applyRotateCCW() {
-		updateOrientation((cur) => ({ ...cur, rotation: ((cur.rotation + 270) % 360) as 0 | 90 | 180 | 270 }));
+	function reorient(change: typeof flipHorizontal) {
+		if (activeFileIndex === null) return;
+		viewStates.updateOrientation(navigationScopeKey, change);
 	}
 
 	function exportAnnotations() {
@@ -709,10 +694,10 @@
 			bind:activeTool
 			bind:selectedPresetId
 			onreset={resetViewport}
-			onflipH={applyFlipH}
-			onflipV={applyFlipV}
-			onrotateCW={applyRotateCW}
-			onrotateCCW={applyRotateCCW}
+			onflipH={() => reorient(flipHorizontal)}
+			onflipV={() => reorient(flipVertical)}
+			onrotateCW={() => reorient(rotateClockwise)}
+			onrotateCCW={() => reorient(rotateCounterClockwise)}
 			onexportAnnotations={exportAnnotations}
 		/>
 		{#if compactDrawer !== null}
@@ -775,7 +760,7 @@
 						windowMode={windowMode}
 						resetCount={resetCount}
 						selectedPresetId={selectedPresetId}
-						orientation={activeOrientation}
+						{viewStates}
 						{segmentationOverlay}
 						bind:cinePlaying
 						{cineFps}
