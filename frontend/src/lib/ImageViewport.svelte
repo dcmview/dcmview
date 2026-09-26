@@ -81,7 +81,7 @@
 
 	let {
 		activeFile,
-		currentFrame = $bindable(),
+		currentFrame,
 		windowCenter = $bindable(),
 		windowWidth = $bindable(),
 		activeTool,
@@ -111,7 +111,7 @@
 		selectedPresetId: string;
 		resetCount: number;
 		viewStates: ViewStates;
-		onreset?: () => void;
+		onreset: () => void;
 		onmanualwindowlevel?: (center: number, width: number) => void;
 		cinePlaying: boolean;
 		cineFps: number;
@@ -1028,15 +1028,6 @@
 		event.preventDefault();
 	}
 
-	function resetViewport() {
-		if (!activeFile) return;
-		fitActiveImageToViewport();
-		windowCenter = activeFile.default_window?.center ?? null;
-		windowWidth = activeFile.default_window?.width ?? null;
-		liveWindowCenter = null;
-		liveWindowWidth = null;
-	}
-
 	function zoomToLevel(level: number) {
 		if (!activeFile || !activeFile.has_pixels) return;
 		const rect = viewportEl?.getBoundingClientRect();
@@ -1064,7 +1055,7 @@
 	onpointerup={onPointerUp}
 	onpointercancel={onPointerCancel}
 	oncontextmenu={onContextMenu}
-	ondblclick={() => { if (onreset) { onreset(); } else { resetViewport(); } }}
+	ondblclick={onreset}
 >
 	{#if !activeFile}
 		<div class="placeholder">No file selected</div>

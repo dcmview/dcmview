@@ -754,7 +754,7 @@
 					</div>
 					<ImageViewport
 						{activeFile}
-						bind:currentFrame
+						{currentFrame}
 						bind:windowCenter
 						bind:windowWidth
 						activeTool={activeTool}
