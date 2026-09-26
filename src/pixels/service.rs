@@ -6,7 +6,7 @@ use crate::types::{
 use bytes::Bytes;
 use std::sync::{Arc, Mutex};
 
-use super::cache::{FrameCache, RawFrameCache, FRAME_CACHE_MAX_BYTES, RAW_CACHE_MAX_BYTES};
+use super::cache::{FrameCache, RawFrameCache};
 use super::deflated_frame::{
     decode_deflated_binary_frame_to_png, decode_raw_deflated_binary_frame, DEFLATED_IMAGE_FRAME_UID,
 };
@@ -98,7 +98,7 @@ pub async fn load_raw_frame(
     }
 
     if let Ok(mut lock) = cache.lock() {
-        lock.insert_with_budget(key, body.clone(), metadata.clone(), RAW_CACHE_MAX_BYTES);
+        lock.insert(key, (body.clone(), metadata.clone()));
     }
 
     Ok(RawFrameResponse {
@@ -285,7 +285,7 @@ pub async fn load_frame(
     };
 
     if let Ok(mut lock) = cache.lock() {
-        lock.insert_with_budget(key, body.clone(), FRAME_CACHE_MAX_BYTES);
+        lock.insert(key, body.clone());
     }
 
     Ok(FrameResponse {
