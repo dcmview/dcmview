@@ -313,6 +313,14 @@ order. These presentation operations affect PNG display frames only; raw-frame
 bytes remain the decoded source samples, and any overlay or shutter marks the
 file incompatible with client raw windowing.
 
+Color display frames take the same shutter. Every color decode path converts
+to interleaved RGB and ends in `render::encode_rgb8_display_png`, which fills
+pixels outside the opening with the Shutter Presentation Color CIELab Value
+converted from D50 PCS-values to sRGB, else the gray P-value on all three
+channels; the 16-bit JPEG 2000 RGB path scales that fill to its precision.
+Each frame's shutter is its Per-frame Functional Groups Frame Display Shutter,
+else the Shared Functional Groups one, else the Display Shutter modules.
+
 RLE Lossless decoding validates the 64-byte Annex G header, segment offsets,
 PackBits runs, byte-plane counts, and decoded sizes before assembling a frame.
 It supports 8/16-bit monochrome plus common 8-bit RGB, YBR_FULL, and palette

@@ -97,10 +97,6 @@ would remove behavior, raise it as a question instead of acting.
   panel shows both colors per segment; its overlay swatch mirrors that palette
   in `semanticPresentation.ts` because the contract does not carry the applied
   color.
-- **Display shutters apply to grayscale frames only.** Rectangular, circular,
-  polygonal, and bitmap shutters are drawn on monochrome display frames. Color
-  frames ignore them, and the per-frame Frame Display Shutter Sequence of
-  enhanced objects is not read.
 
 `docs/planned/` temporarily holds uncommitted proposals, such as the JupyterLab
 integration and the original compatibility plan. They are not specs and not

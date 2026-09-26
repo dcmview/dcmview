@@ -19,9 +19,12 @@ diagnostic viewer.
 - JPEG XL Lossless frames labelled YBR_RCT now display in color; they were
   reported unsupported although PS3.5 lists that layout for the syntax.
 - Circular, polygonal, and bitmap display shutters, alone or combined with a
-  rectangular one, now mask grayscale display frames. Previously only a
-  rectangular shutter was applied, and only when Shutter Presentation Value
-  was present; a shutter without it now defaults to black.
+  rectangular one, now mask display frames. Previously only a rectangular
+  shutter was applied, and only when Shutter Presentation Value was present;
+  a shutter without it now defaults to black.
+- Display shutters now also mask color frames from every codec, filled with
+  the Shutter Presentation Color CIELab Value when present, and enhanced
+  multi-frame objects apply each frame's Frame Display Shutter Sequence.
 
 ### Changed
 
