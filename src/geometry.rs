@@ -70,26 +70,8 @@ pub fn target_to_source_transform(
     if !valid_geometry(source) || !valid_geometry(target) {
         return None;
     }
-    let source_row = normalized([
-        source.orientation[0],
-        source.orientation[1],
-        source.orientation[2],
-    ])?;
-    let source_column = normalized([
-        source.orientation[3],
-        source.orientation[4],
-        source.orientation[5],
-    ])?;
-    let target_row = normalized([
-        target.orientation[0],
-        target.orientation[1],
-        target.orientation[2],
-    ])?;
-    let target_column = normalized([
-        target.orientation[3],
-        target.orientation[4],
-        target.orientation[5],
-    ])?;
+    let [source_row, source_column] = orientation_axes(source.orientation)?;
+    let [target_row, target_column] = orientation_axes(target.orientation)?;
     if 1.0 - dot(source_row, target_row) > tolerances.orientation
         || 1.0 - dot(source_column, target_column) > tolerances.orientation
     {
@@ -100,10 +82,28 @@ pub fn target_to_source_transform(
     if 1.0 - dot(source_normal, target_normal) > tolerances.orientation {
         return None;
     }
-    let origin_delta = subtract(target.position, source.position);
-    if dot(origin_delta, source_normal).abs() > tolerances.plane_distance_mm {
+    if dot(subtract(target.position, source.position), source_normal).abs()
+        > tolerances.plane_distance_mm
+    {
         return None;
     }
+    in_plane_transform(source, target)
+}
+
+/// Project `target` pixels onto the plane of `source` and express them as
+/// `source` pixel coordinates. The distance between the planes and any
+/// in-plane rotation or flip between the grids are not checked; callers
+/// decide which geometric relationship they accept.
+pub fn in_plane_transform(
+    source: PatientFrameGeometry,
+    target: PatientFrameGeometry,
+) -> Option<PixelAffineTransform> {
+    if !valid_geometry(source) || !valid_geometry(target) {
+        return None;
+    }
+    let [source_row, source_column] = orientation_axes(source.orientation)?;
+    let [target_row, target_column] = orientation_axes(target.orientation)?;
+    let origin_delta = subtract(target.position, source.position);
 
     // DICOM Pixel Spacing is [row spacing, column spacing]. Image
     // Orientation's first triplet advances with columns; its second triplet
@@ -161,6 +161,15 @@ pub fn grids_overlap(
         && min_row <= f64::from(source.rows) - 0.5
         && max_column >= -0.5
         && min_column <= f64::from(source.columns) - 0.5
+}
+
+/// The unit row and column direction cosines of an Image Orientation
+/// (Patient): the directions of increasing column and increasing row.
+pub(crate) fn orientation_axes(orientation: [f64; 6]) -> Option<[[f64; 3]; 2]> {
+    Some([
+        normalized([orientation[0], orientation[1], orientation[2]])?,
+        normalized([orientation[3], orientation[4], orientation[5]])?,
+    ])
 }
 
 fn valid_geometry(geometry: PatientFrameGeometry) -> bool {
@@ -242,6 +251,23 @@ mod tests {
         assert_eq!(transform.map(0.0, 0.0), [1.0, 1.0]);
         assert_eq!(transform.map(2.0, 3.0), [3.0, 4.0]);
         assert!(grids_overlap(source, target, transform));
+    }
+
+    #[test]
+    fn in_plane_transform_projects_parallel_planes_and_in_plane_rotations() {
+        let source = geometry(16, 16);
+        let mut target = geometry(8, 8);
+        target.position = [3.0, 2.0, 25.0];
+        // Target rows advance along patient +x and columns along +y.
+        target.orientation = [0.0, 1.0, 0.0, 1.0, 0.0, 0.0];
+        target.pixel_spacing = [3.0, 2.0];
+        assert!(
+            target_to_source_transform(source, target, GeometryTolerances::default()).is_none()
+        );
+        let transform = in_plane_transform(source, target).expect("parallel projection");
+        assert_eq!(transform.map(0.0, 0.0), [1.0, 1.0]);
+        assert_eq!(transform.map(1.0, 0.0), [1.0, 2.0]);
+        assert_eq!(transform.map(0.0, 1.0), [2.0, 1.0]);
     }
 
     #[test]
