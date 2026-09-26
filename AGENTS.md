@@ -162,11 +162,15 @@ Frontend (Svelte 5, compiled into the binary via rust-embed):
 
 ### Contract and state ownership
 
-- `src/api/contracts.rs` is the source of truth for HTTP operations, wire
-  structs, query names, response header names, media types, statuses, and the
-  JSON error envelope.
-- `frontend/src/generated/api-types.ts` is generated from the Rust contract;
-  `frontend/src/api.ts` owns browser fetches.
+- `src/api/contracts.rs` is the source of truth for the HTTP contract: the
+  `endpoints` table (method, path, response media type, response headers,
+  success status) that the router and `tests/integration/api_contract.rs`
+  both read, header names, and every wire struct. Query parameter names are
+  the serde fields of `FrameQuery` and `TagQuery`.
+- Wire types derive `ts_rs::TS`. `cargo run --example generate_api_types`
+  writes `frontend/src/generated/api-types.ts` (types, endpoint paths, and
+  raw-frame header names); `--check` fails on drift. `frontend/src/api.ts`
+  owns browser fetches and builds URLs from the generated table.
 - `src/types.rs` owns internal DICOM, cache-key, transfer-syntax, and windowing
   types. It re-exports selected wire types for compatibility but does not own
   them.
@@ -254,6 +258,7 @@ dcmview/
 |   `-- fixtures/       Small generated DICOM fixtures
 |-- scripts/check.py    Canonical local and CI check profiles
 |-- examples/generate_test_fixtures.rs
+|-- examples/generate_api_types.rs
 |-- build.rs
 |-- Cargo.toml
 `-- pyproject.toml
@@ -278,6 +283,7 @@ python scripts/check.py external
 
 # Targeted iteration remains valid
 DCMVIEW_SKIP_FRONTEND_BUILD=1 cargo test --locked
+npm --prefix frontend run generate:types   # after changing src/api/contracts.rs
 npm --prefix frontend run test
 npm --prefix frontend run typecheck
 ```
@@ -373,7 +379,8 @@ unless one is actually implemented.
 - Use Svelte 5 runes (`$state`, `$derived`, `$effect`); avoid legacy `$:`
   reactive declarations.
 - `src/api/contracts.rs` is the HTTP source of truth. Regenerate
-  `frontend/src/generated/api-types.ts`; never hand-edit it.
+  `frontend/src/generated/api-types.ts` with `npm run generate:types`; never
+  hand-edit it.
 - Shared root state lives in `App.svelte`: active file/frame, window settings,
   open tabs, active tool, selected preset, orientation, reset count, navigator,
   and tag panel layout.
@@ -464,6 +471,7 @@ the warning path in `server/runtime.rs`.
 | `frontend/src/lib/ImageViewport.svelte` | Viewer rendering, tools, ROI editing |
 | `python/dcmview_py/wrapper.py` | Python subprocess wrapper |
 | `examples/generate_test_fixtures.rs` | Synthetic fixture generator |
+| `examples/generate_api_types.rs` | TypeScript contract generator and drift check |
 
 ---
 

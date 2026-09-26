@@ -17,7 +17,7 @@ module:
 |---|---|---|
 | Process dispatch | `src/application.rs` | Routes a launch into VS Code through `bridge::launch_in_vscode` when the routing rule selects a bridge, otherwise runs the local viewer in-process. |
 | Local startup | `src/startup/` | `LocalViewerOptions`, `LocalViewerOutcome`, and `DiscoveryHandle`. |
-| HTTP wire model | `src/api/contracts.rs` | Typed endpoint registry, wire structs, query names, response header names, and error envelope. |
+| HTTP wire model | `src/api/contracts.rs` | Plain `endpoints` table, media types, header names, wire structs (query names are `FrameQuery`/`TagQuery` fields), and error envelope. |
 | HTTP runtime | `src/server/` | Listener/runtime, route registration, handlers, state, registry, activity tracking, tags, and embedded assets. |
 | Pixel service | `src/pixels/` | Typed display/raw requests, cache behavior, transfer-syntax classification, decoding, rendering, and `PixelError`. |
 | Patient geometry | `src/geometry.rs` | Normalized per-frame position, orientation, pixel spacing, coplanarity checks, and target-to-source pixel transforms. |
@@ -26,9 +26,9 @@ module:
 | WSI tile context | `src/wsi.rs` | Bounded positioning of one selected WSI tile without stitching or Total Pixel Matrix reconstruction. |
 | Attribute readers | `src/dicom_values.rs` | Lenient string, number, and sequence readers shared by discovery, references, semantic context, and WSI context. |
 | DICOM discovery | `src/loader.rs` | Progressive events, cancellation, reports, metadata filters, and `FileEntry` construction. |
-| Frontend client | `frontend/src/api.ts` | Typed fetch wrappers over generated endpoint metadata and wire types. |
+| Frontend client | `frontend/src/api.ts` | Typed fetch wrappers over the generated endpoint paths and wire types. |
 | VS Code extension | `vscode/src/` | `extension.ts` wires activation only. `viewerSessions.ts` owns viewer processes and their webview panels; `customEditor.ts` and `commands.ts` open files through it; `bridgeServer.ts` serves the loopback launch/stop/wait bridge; `bridgeRegistry.ts` publishes and refreshes the registry file; `terminalInterception.ts` sets the terminal environment and PATH shims. |
-| Cross-language generation | `scripts/generate_frontend_types.py` | Checked-in `frontend/src/generated/api-types.ts` derived from the Rust HTTP contract. |
+| Cross-language generation | `examples/generate_api_types.rs` | Checked-in `frontend/src/generated/api-types.ts` rendered with `ts-rs` from the Rust HTTP contract. |
 
 The current separation is suitable for informative automated tests. Unit tests
 can replace process dispatch and discovery production services, Axum integration
@@ -140,11 +140,11 @@ frames and uses the same prepare-then-render cache path as manual navigation.
 
 ```mermaid
 flowchart LR
-    contract["api/contracts.rs<br/>typed endpoint registry"] --> routes["server/api/routes.rs<br/>typed registration"]
+    contract["api/contracts.rs<br/>endpoint table and wire types"] --> routes["server/api/routes.rs<br/>axum routes"]
     routes --> handlers["server/api/handlers.rs"]
     handlers --> services["registry, pixels, tags,<br/>annotations, semantics, WSI"]
     handlers --> responses["declared status, media,<br/>headers, JSON errors"]
-    contract --> generator["generate_frontend_types.py"]
+    contract --> generator["examples/generate_api_types.rs<br/>ts-rs"]
     generator --> generated["generated/api-types.ts"]
     generated --> client["frontend/api.ts"]
     client --> components["Svelte components"]
@@ -153,20 +153,24 @@ flowchart LR
     generated -. "drift check" .-> tests
 ```
 
-The endpoint registry declares the operation, method, path, query type, request
-type and media type, response type and media type, response-header kind, error
-type, and success status for every `/api` operation. Route registration matches
-each operation to a handler with compile-time request and response constraints.
+`endpoints::ALL` is plain data: id, method, path, response media type,
+response-header kind, and success status for every `/api` endpoint. The router
+registers each path with an ordinary axum `.route()` call and handlers take
+their typed extractors directly. Wire structs derive `serde` and `ts_rs::TS`,
+so their TypeScript follows the same serde attributes as the JSON.
 
-The executable contract is kept consistent by three layers:
+The contract is kept consistent by three layers:
 
-- Rust contract tests check registry uniqueness, type relationships, query
-  names, and header names.
-- Axum integration tests execute every declared endpoint and compare its
-  status, media type, and required response headers. Boundary rejections are
-  also checked for the shared JSON error envelope.
-- Frontend generation tests and `check:contracts` reject drift in generated
-  endpoint metadata and TypeScript wire types.
+- Rust unit tests check endpoint uniqueness and that the raw-frame header
+  table covers exactly the serialized `RawFrameMetadata` fields.
+- Axum integration tests request every declared endpoint with its declared
+  method and compare status, media type, and response headers, and check that
+  file-scoped endpoints and boundary rejections answer with the shared JSON
+  error envelope. A router method that disagrees with the table fails here.
+- `cargo run --example generate_api_types -- --check` (run by
+  `check:contracts` and every check profile) rejects a stale generated file,
+  and `tsc` checks `api.ts` against it; the generated `RAW_FRAME_HEADERS`
+  must `satisfy` `Record<keyof RawFrameMetadata, string>`.
 
 ### Endpoint Invariants
 
@@ -448,8 +452,10 @@ extension points, not current correctness blockers:
    cache-memory thresholds in CI.
 3. Keep external upstream fixtures opt-in unless their availability and cache
    behavior become deterministic enough for normal CI.
-4. When adding an endpoint, change the Rust contract first, regenerate checked-in
-   TypeScript, register the typed handler, and extend runtime contract tests.
+4. When adding an endpoint, add it to `endpoints` in the Rust contract,
+   register its route, regenerate the checked-in TypeScript, and add a wrapper
+   in `frontend/src/api.ts`; the runtime contract test covers it through
+   `endpoints::ALL`.
 
 ## Maintainer Invariants
 
