@@ -9,24 +9,17 @@ use dicom_parser::dataset::lazy_read::LazyDataSetReader;
 use dicom_parser::dataset::LazyDataToken;
 use dicom_parser::StatefulDecode;
 use dicom_transfer_syntax_registry::TransferSyntaxRegistry;
-use image::{ImageBuffer, ImageFormat, Luma};
 use std::fs::File;
-use std::io::{BufReader, Cursor, Seek, SeekFrom};
+use std::io::{BufReader, Seek, SeekFrom};
 use tokio::task;
 
 use super::color::{encode_rgb8_png_with_icc, rgb8_interleaved, ybr_full_to_rgb8};
 use super::header::open_header;
 use super::icc::select_icc_profile;
 use super::native_layout::{native_pixel_element_tag, NativeByteOrder, NativeFrameLayout};
-use super::overlay::apply_overlay_planes;
 use super::palette::palette_indices_to_rgb8;
-use super::render::apply_monochrome1_inversion;
-use super::shutter::apply_rectangular_shutter;
+use super::render::{encode_windowed_luminance_png, LuminanceRenderOptions};
 use super::stored_bits::canonicalize_integer_samples;
-use super::window::{
-    apply_modality_transform, apply_padding_background, apply_voi_lut_if_selected, apply_window,
-    exclude_padding_samples, read_pixel_padding_range, resolve_window_with_mode,
-};
 
 pub(crate) async fn decode_uncompressed_to_png(
     file: FileEntry,
@@ -49,8 +42,6 @@ fn decode_uncompressed_to_png_blocking(
     requested_ww: Option<f64>,
     window_mode: WindowMode,
 ) -> Result<Bytes> {
-    let object = open_header(&file.path)?;
-
     let rows = file.rows;
     let columns = file.columns;
     let samples_per_pixel = file.samples_per_pixel.max(1);
@@ -89,6 +80,7 @@ fn decode_uncompressed_to_png_blocking(
             _ => None,
         };
         if let Some(rgb) = rgb {
+            let object = open_header(&file.path)?;
             let icc_profile = select_icc_profile(&object);
             return encode_rgb8_png_with_icc(rgb, columns, rows, icc_profile)
                 .context("frame decode failed: color PNG encoding failed");
@@ -101,92 +93,27 @@ fn decode_uncompressed_to_png_blocking(
         ));
     }
 
-    let signed = file.pixel_representation == 1;
     // dicom-object normalizes primitive pixel bytes to host order for native pixel data.
     // Decode from the normalized byte representation directly.
-    let raw_samples = decode_numeric_samples(
+    let stored = decode_numeric_samples(
         &frame_bytes,
         bits_allocated,
-        signed,
+        file.pixel_representation == 1,
         false,
         native_pixel_data_kind(file),
     )?;
-    let padding_mask = read_pixel_padding_range(&object, native_pixel_data_kind(file))
-        .map(|padding| padding.mask(&raw_samples));
-    let rescaled = apply_modality_transform(
-        &raw_samples,
-        file.series_metadata.native_pixel.modality_lut.as_ref(),
-        file.rescale_slope,
-        file.rescale_intercept,
-    );
-
-    let luminance_samples = if samples_per_pixel > 1 {
-        rescaled
-            .chunks(samples_per_pixel as usize)
-            .map(|chunk| chunk[0])
-            .collect::<Vec<_>>()
-    } else {
-        rescaled
-    };
-    let unpadded_samples = padding_mask
-        .as_deref()
-        .map(|mask| exclude_padding_samples(&luminance_samples, mask));
-    let window_source = unpadded_samples
-        .as_deref()
-        .filter(|samples| !samples.is_empty())
-        .unwrap_or(&luminance_samples);
-
-    let mut windowed = if let Some(values) = apply_voi_lut_if_selected(
-        window_mode,
-        requested_wc,
-        requested_ww,
-        file.default_window,
-        file.series_metadata.native_pixel.voi_lut.as_ref(),
-        &luminance_samples,
-    ) {
-        values
-    } else {
-        let resolved_window = resolve_window_with_mode(
-            window_mode,
+    encode_windowed_luminance_png(
+        file,
+        &stored,
+        LuminanceRenderOptions {
+            frame,
+            rows,
+            columns,
             requested_wc,
             requested_ww,
-            file.default_window,
-            window_source,
-        )
-        .ok_or_else(|| anyhow!("frame decode failed: could not resolve window"))?;
-        apply_window(
-            &luminance_samples,
-            resolved_window.center,
-            resolved_window.width.max(1.0),
-        )
-    };
-    apply_monochrome1_inversion(&mut windowed, &file.photometric_interpretation);
-    // Padding is background: black whatever the photometric interpretation.
-    if let Some(mask) = padding_mask.as_deref() {
-        apply_padding_background(&mut windowed, mask);
-    }
-    apply_rectangular_shutter(
-        &mut windowed,
-        rows,
-        columns,
-        file.series_metadata.presentation.rectangular_shutter,
-    );
-    apply_overlay_planes(
-        &mut windowed,
-        rows,
-        columns,
-        frame,
-        &file.series_metadata.presentation.overlay_planes,
-    );
-
-    let image = ImageBuffer::<Luma<u8>, Vec<u8>>::from_raw(columns, rows, windowed)
-        .ok_or_else(|| anyhow!("frame decode failed: windowed buffer size mismatch"))?;
-    let mut encoded = Cursor::new(Vec::<u8>::new());
-    image::DynamicImage::ImageLuma8(image)
-        .write_to(&mut encoded, ImageFormat::Png)
-        .context("frame decode failed: png encoding failed")?;
-
-    Ok(Bytes::from(encoded.into_inner()))
+            window_mode,
+        },
+    )
 }
 
 fn native_frame_layout(file: &FileEntry) -> NativeFrameLayout<'_> {

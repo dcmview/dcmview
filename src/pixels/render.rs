@@ -21,6 +21,11 @@ pub(crate) struct LuminanceRenderOptions {
     pub(crate) window_mode: WindowMode,
 }
 
+/// Renders one frame of stored grayscale samples as an 8-bit PNG.
+///
+/// Every grayscale decode path shares this presentation pipeline: Modality
+/// LUT or rescale, VOI LUT or window, MONOCHROME1 inversion, Pixel Padding as
+/// black background, rectangular shutter, and overlay planes.
 pub(crate) fn encode_windowed_luminance_png(
     file: &FileEntry,
     stored: &[f64],
@@ -34,10 +39,14 @@ pub(crate) fn encode_windowed_luminance_png(
         requested_ww,
         window_mode,
     } = options;
-    let object = open_header(&file.path).ok();
-    let padding_mask = object
-        .as_ref()
-        .and_then(|object| read_pixel_padding_range(object, NativePixelDataKind::Integer))
+    let pixel_kind = file
+        .series_metadata
+        .native_pixel
+        .pixel_data_kind
+        .unwrap_or(NativePixelDataKind::Integer);
+    let padding_mask = open_header(&file.path)
+        .ok()
+        .and_then(|object| read_pixel_padding_range(&object, pixel_kind))
         .map(|padding| padding.mask(stored));
     let rescaled = apply_modality_transform(
         stored,
@@ -69,7 +78,7 @@ pub(crate) fn encode_windowed_luminance_png(
             file.default_window,
             window_source,
         )
-        .ok_or_else(|| anyhow!("compressed decode failed: could not resolve window"))?;
+        .ok_or_else(|| anyhow!("frame decode failed: could not resolve window"))?;
         apply_window(
             &rescaled,
             resolved_window.center,
@@ -96,11 +105,11 @@ pub(crate) fn encode_windowed_luminance_png(
     );
 
     let image = ImageBuffer::<Luma<u8>, Vec<u8>>::from_raw(columns, rows, windowed)
-        .ok_or_else(|| anyhow!("compressed decode failed: windowed buffer size mismatch"))?;
+        .ok_or_else(|| anyhow!("frame decode failed: windowed buffer size mismatch"))?;
     let mut buffer = Cursor::new(Vec::<u8>::new());
     image::DynamicImage::ImageLuma8(image)
         .write_to(&mut buffer, ImageFormat::Png)
-        .context("compressed decode failed: png encoding failed")?;
+        .context("frame decode failed: png encoding failed")?;
     Ok(Bytes::from(buffer.into_inner()))
 }
 
