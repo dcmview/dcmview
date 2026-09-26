@@ -248,6 +248,7 @@
 		};
 	}
 
+	/** Deletes the selected ROI on this file; App's keyboard dispatcher calls it. */
 	export function deleteSelectedRoi() {
 		if (selectedRoiIndex === null || !activeAnnotations) return;
 		const next = deleteRoi(activeAnnotations, selectedRoiIndex, activeFile.frame_count);
@@ -547,20 +548,6 @@
 		liveWindowWidth = null;
 		untrack(() => setSelectedRoi(null));
 		clearCanvas();
-	});
-
-	$effect(() => {
-		const handleKey = (event: KeyboardEvent) => {
-			const target = event.target as HTMLElement | null;
-			if (target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) return;
-			if (activeTool !== "annotate_rect") return;
-			if (event.key === "Delete" || event.key === "Backspace") {
-				event.preventDefault();
-				deleteSelectedRoi();
-			}
-		};
-		window.addEventListener("keydown", handleKey);
-		return () => window.removeEventListener("keydown", handleKey);
 	});
 
 	$effect(() => {

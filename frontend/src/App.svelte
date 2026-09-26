@@ -30,6 +30,7 @@
 	import { indexFilesById, resolveFilesById, reuseUnchangedEntries } from "./lib/fileRegistry";
 	import { focusTrapTarget } from "./lib/focusTrap";
 	import { adjacentFileIndex } from "./lib/fileTree";
+	import { shortcutFor } from "./lib/keyboardShortcuts";
 	import {
 		findSeriesStackForFile,
 		frameAtPosition,
@@ -107,6 +108,7 @@
 	let manualWindowAdjustment = $state<ManualWindowAdjustment | null>(null);
 	let lastWindowFileIndex = $state<number | null>(null);
 	let viewport = $state<ReturnType<typeof ImageViewport>>();
+	let frameSlider = $state<ReturnType<typeof FrameSlider>>();
 	// Zoom, pan, and orientation per open tab; ImageViewport reads and zooms,
 	// the toolbar reorients.
 	const viewStates = new ViewStates();
@@ -560,61 +562,53 @@
 		cineDirection = 1;
 	});
 
-	$effect(() => {
-		const handleKey = (event: KeyboardEvent) => {
-			if (event.key === "Escape" && compactDrawer !== null) {
+	/** The single global keyboard dispatcher; bindings live in keyboardShortcuts.ts. */
+	function handleWindowKeydown(event: KeyboardEvent) {
+		const action = shortcutFor(event, {
+			drawerOpen: compactDrawer !== null,
+			multiFrame: activeFile !== null && navigationFrameCount > 1,
+			roiToolActive: activeFile !== null && activeTool === "annotate_rect",
+		});
+		if (!action) return;
+		switch (action.type) {
+			case "close-drawer":
 				event.preventDefault();
 				closeCompactDrawer();
 				return;
-			}
-			const target = event.target as HTMLElement | null;
-			if (
-				target
-				&& (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))
-			) return;
-			if (
-				!event.altKey
-				&& !event.ctrlKey
-				&& !event.metaKey
-				&& !event.shiftKey
-				&& (event.key === "ArrowUp" || event.key === "ArrowDown")
-			) {
-				const adjacent = adjacentFileIndex(
-					fileNavigationOrder,
-					activeFileIndex,
-					event.key === "ArrowUp" ? -1 : 1,
-				);
-				if (adjacent !== null) {
-					event.preventDefault();
-					cinePlaying = false;
-					openOrActivateFile(adjacent);
-				}
+			case "select-adjacent-file": {
+				const adjacent = adjacentFileIndex(fileNavigationOrder, activeFileIndex, action.step);
+				if (adjacent === null) return;
+				event.preventDefault();
+				cinePlaying = false;
+				openOrActivateFile(adjacent);
 				return;
 			}
-			switch (event.key.toLowerCase()) {
-				case 'w': activeTool = 'window_level'; break;
-				case 'p': activeTool = 'pan'; break;
-				case 'z': activeTool = 'zoom'; break;
-				case 's': activeTool = 'scroll'; break;
-				case 'r': activeTool = 'annotate_rect'; break;
-			}
-		};
-		window.addEventListener('keydown', handleKey);
-		return () => window.removeEventListener('keydown', handleKey);
-	});
+			case "select-tool":
+				activeTool = action.tool;
+				return;
+			case "step-frame":
+				event.preventDefault();
+				frameSlider?.step(action.step);
+				return;
+			case "toggle-cine":
+				event.preventDefault();
+				frameSlider?.togglePlay();
+				return;
+			case "delete-roi":
+				event.preventDefault();
+				viewport?.deleteSelectedRoi();
+				return;
+		}
+	}
 
-	$effect(() => {
-		const handleResize = () => {
-			if (compactDrawer === "explorer" && !window.matchMedia("(max-width: 519px)").matches) {
-				closeCompactDrawer(false);
-			}
-			if (compactDrawer === "tags" && !window.matchMedia("(max-width: 979px)").matches) {
-				closeCompactDrawer(false);
-			}
-		};
-		window.addEventListener("resize", handleResize);
-		return () => window.removeEventListener("resize", handleResize);
-	});
+	function handleWindowResize() {
+		if (compactDrawer === "explorer" && !window.matchMedia("(max-width: 519px)").matches) {
+			closeCompactDrawer(false);
+		}
+		if (compactDrawer === "tags" && !window.matchMedia("(max-width: 979px)").matches) {
+			closeCompactDrawer(false);
+		}
+	}
 
 	onMount(() => {
 		let cancelled = false;
@@ -647,6 +641,8 @@
 		};
 	});
 </script>
+
+<svelte:window onkeydown={handleWindowKeydown} onresize={handleWindowResize} />
 
 {#if loadError}
 	<main class="error">{loadError}</main>
@@ -777,6 +773,7 @@
 						onmanualwindowlevel={recordManualWindowLevel}
 					/>
 					<FrameSlider
+						bind:this={frameSlider}
 						totalFrames={navigationFrameCount}
 						currentPosition={stackPosition}
 						onpositionchange={setStackPosition}

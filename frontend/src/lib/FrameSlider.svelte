@@ -21,23 +21,16 @@
 
 	const FPS_OPTIONS = [1, 5, 10, 15, 24];
 
-	function previous() {
+	/** Stops cine and moves one image back or forward, clamped to the stack. */
+	export function step(delta: -1 | 1) {
 		if (totalFrames <= 1) {
 			return;
 		}
 		cinePlaying = false;
-		onpositionchange(Math.max(0, currentPosition - 1));
+		onpositionchange(Math.max(0, Math.min(totalFrames - 1, currentPosition + delta)));
 	}
 
-	function next() {
-		if (totalFrames <= 1) {
-			return;
-		}
-		cinePlaying = false;
-		onpositionchange(Math.min(totalFrames - 1, currentPosition + 1));
-	}
-
-	function togglePlay() {
+	export function togglePlay() {
 		if (totalFrames <= 1) return;
 		if (!cinePlaying) {
 			cineDirection = 1;
@@ -53,36 +46,6 @@
 			cinePlaying = false;
 		}
 	});
-
-
-	$effect(() => {
-		const handleKey = (event: KeyboardEvent) => {
-			if (totalFrames <= 1) {
-				return;
-			}
-
-			const target = event.target as HTMLElement | null;
-			if (target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) {
-				return;
-			}
-
-			if (event.key === "ArrowLeft" || event.key === "[") {
-				event.preventDefault();
-				previous();
-			}
-			if (event.key === "ArrowRight" || event.key === "]") {
-				event.preventDefault();
-				next();
-			}
-			if (event.key === ' ') {
-				event.preventDefault();
-				togglePlay();
-			}
-		};
-
-		window.addEventListener("keydown", handleKey);
-		return () => window.removeEventListener("keydown", handleKey);
-	});
 </script>
 
 {#if totalFrames > 1}
@@ -96,9 +59,9 @@
 			value={currentPosition}
 			oninput={(event) => onpositionchange(Number(event.currentTarget.value))}
 		/>
-		<button type="button" onclick={previous} aria-label="Previous image">◀</button>
+		<button type="button" onclick={() => step(-1)} aria-label="Previous image">◀</button>
 		<span>image {currentPosition + 1} / {totalFrames}</span>
-		<button type="button" onclick={next} aria-label="Next image">▶</button>
+		<button type="button" onclick={() => step(1)} aria-label="Next image">▶</button>
 		<button type="button" class="play" onclick={togglePlay} aria-label={cinePlaying ? "Pause cine" : "Play cine"}>
 			{cinePlaying ? "⏸" : "▶"}
 		</button>
