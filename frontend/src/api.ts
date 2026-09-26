@@ -1,4 +1,5 @@
 import type {
+	DoseOverlayQuery,
 	EmbedRoiAnnotations,
 	ErrorResponse,
 	FilesResponse,
@@ -26,6 +27,7 @@ export type {
 	FrameValueMapping,
 	HealthResponse,
 	ModalityValueTransform,
+	OverlayLegend,
 	RawFrameMetadata,
 	RealWorldValueMap,
 	RealWorldValueTransform,
@@ -62,7 +64,7 @@ type PathParams = { index?: number; frame?: number };
 function endpointUrl(
 	endpoint: Endpoint,
 	params: PathParams = {},
-	query?: FrameQuery | TagQuery,
+	query?: FrameQuery | TagQuery | DoseOverlayQuery,
 ): string {
 	const path = endpoint.path.replace(/\{(\w+)\}/g, (_, name: string) => {
 		const value = params[name as keyof PathParams];
@@ -135,6 +137,19 @@ export async function fetchSegmentationOverlayBlob(
 	const response = await send(endpoint, endpointUrl(endpoint, { index: fileIndex, frame }), {
 		signal,
 	});
+	return response.blob();
+}
+
+/** Colorwash PNG of RT Dose `doseFileIndex` resampled onto one displayed frame. */
+export async function fetchDoseOverlayBlob(
+	fileIndex: number,
+	frame: number,
+	doseFileIndex: number,
+	signal?: AbortSignal,
+): Promise<Blob> {
+	const endpoint = API_ENDPOINTS.fileDoseOverlay;
+	const url = endpointUrl(endpoint, { index: fileIndex, frame }, { dose: doseFileIndex });
+	const response = await send(endpoint, url, { signal });
 	return response.blob();
 }
 

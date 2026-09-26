@@ -1,5 +1,5 @@
 use crate::api::contracts::RawFrameMetadata;
-use crate::types::{FrameCacheKey, RawFrameCacheKey};
+use crate::types::{FrameCacheKey, OverlayCacheKey, RawFrameCacheKey};
 use bytes::Bytes;
 use lru::LruCache;
 use std::hash::Hash;
@@ -11,11 +11,15 @@ pub const CACHE_CAPACITY: usize = 128;
 pub const FRAME_CACHE_MAX_BYTES: usize = 256 * 1024 * 1024; // 256 MiB
 pub const RAW_CACHE_CAPACITY: usize = 512;
 pub const RAW_CACHE_MAX_BYTES: usize = 384 * 1024 * 1024; // 384 MiB
+pub const OVERLAY_CACHE_CAPACITY: usize = 256;
+pub const OVERLAY_CACHE_MAX_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
 
 /// Encoded display frames keyed by file, frame, and window request.
 pub type FrameCache = BudgetedLru<FrameCacheKey, Bytes>;
 /// Decoded raw samples and their metadata keyed by file and frame.
 pub type RawFrameCache = BudgetedLru<RawFrameCacheKey, (Bytes, RawFrameMetadata)>;
+/// Encoded value-overlay PNGs keyed by overlay object and displayed frame.
+pub type OverlayCache = BudgetedLru<OverlayCacheKey, Bytes>;
 
 /// A cached value whose memory cost is the length of its frame body.
 pub trait FrameBody: Clone {
@@ -95,6 +99,13 @@ pub fn new_raw_cache() -> Arc<Mutex<RawFrameCache>> {
     Arc::new(Mutex::new(RawFrameCache::new(
         RAW_CACHE_CAPACITY,
         RAW_CACHE_MAX_BYTES,
+    )))
+}
+
+pub fn new_overlay_cache() -> Arc<Mutex<OverlayCache>> {
+    Arc::new(Mutex::new(OverlayCache::new(
+        OVERLAY_CACHE_CAPACITY,
+        OVERLAY_CACHE_MAX_BYTES,
     )))
 }
 

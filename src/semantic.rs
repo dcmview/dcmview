@@ -14,6 +14,7 @@ use crate::geometry::{
     PixelAffineTransform,
 };
 use crate::object_kind::{classify_sop_class, ObjectKind};
+use crate::plane_stack::PlaneStack;
 use crate::references::{self, ReferenceCandidate, ReferenceRelationship, ResolvedReferenceEdge};
 use crate::types::FileEntry;
 use anyhow::{Context, Result};
@@ -25,6 +26,7 @@ use std::sync::Arc;
 
 const MAX_SEQUENCE_ITEMS: usize = 4_096;
 const MAX_LUT_VALUES: usize = 4_096;
+const MAX_OVERLAY_SOURCE_FRAMES: usize = 4_096;
 
 /// The frame endpoints window stored values (after any Modality rescale):
 /// neither Real World Value Mapping nor Dose Grid Scaling is applied to the
@@ -646,7 +648,8 @@ fn rt_dose_context(
         pixel_spacing: fixed_numbers(object, tags::PIXEL_SPACING),
         grid_frame_offsets: read_numbers(object, tags::GRID_FRAME_OFFSET_VECTOR),
     };
-    let overlay = rt_dose_overlay(source, files, resolved);
+    let (overlay, overlay_source_frames) =
+        rt_dose_overlay(source, scaling, &geometry, files, resolved);
     RtDoseContext {
         dose_grid_scaling: scaling,
         scaling_status: if scaling.is_some() { "available" } else { "missing_or_malformed" }
@@ -658,6 +661,10 @@ fn rt_dose_context(
         geometry,
         references: resolved.iter().map(ResolvedReferenceEdge::summary).collect(),
         overlay,
+        overlay_source_frames,
+        // The legend needs the whole grid's maximum; the server fills it in
+        // from decoded frames once the overlay is known to be eligible.
+        legend: None,
         clinical_use_warning:
             "Semantic context does not establish prescription correctness or clinical acceptability."
                 .to_string(),
@@ -665,65 +672,95 @@ fn rt_dose_context(
 }
 
 fn rt_dose_overlay(
-    source: &FileEntry,
+    dose: &FileEntry,
+    scaling: Option<f64>,
+    geometry: &DoseGridGeometry,
     files: &[Arc<FileEntry>],
     resolved: &[ResolvedReferenceEdge],
-) -> OverlayEligibility {
-    let matches = resolved
+) -> (OverlayEligibility, Vec<ResolvedSegmentSourceFrame>) {
+    if scaling.is_none() {
+        return (
+            ineligible("Dose Grid Scaling is missing or malformed"),
+            Vec::new(),
+        );
+    }
+    if !dose.has_pixels {
+        return (ineligible("the dose object has no pixel data"), Vec::new());
+    }
+    match PlaneStack::from_dose_grid(dose.rows, dose.columns, dose.frame_count, geometry) {
+        Ok(stack) => value_overlay_sources(dose, &stack, files, resolved),
+        Err(reason) => (ineligible(&reason), Vec::new()),
+    }
+}
+
+/// The local image frames a value overlay (dose grid or Parametric Map
+/// planes) covers: frames of other image objects in the overlay's Frame of
+/// Reference that its plane stack samples. Eligible when any is covered.
+fn value_overlay_sources(
+    overlay: &FileEntry,
+    stack: &PlaneStack,
+    files: &[Arc<FileEntry>],
+    resolved: &[ResolvedReferenceEdge],
+) -> (OverlayEligibility, Vec<ResolvedSegmentSourceFrame>) {
+    let frame_of_reference = &overlay.series_metadata.frame_of_reference_uid;
+    if frame_of_reference.is_empty() {
+        return (
+            ineligible("the overlay object declares no Frame of Reference"),
+            Vec::new(),
+        );
+    }
+    let mut frames = Vec::new();
+    let mut covered_files = BTreeSet::new();
+    for file in files.iter().filter(|file| {
+        file.index != overlay.index
+            && file.has_pixels
+            && file.sop_class_uid != overlay.sop_class_uid
+            && file.series_metadata.frame_of_reference_uid == *frame_of_reference
+    }) {
+        for frame_index in 0..file.frame_count {
+            if frame_geometry(file, frame_index).is_some_and(|target| stack.sample(target).is_ok())
+            {
+                covered_files.insert(file.index);
+                if frames.len() < MAX_OVERLAY_SOURCE_FRAMES {
+                    frames.push(ResolvedSegmentSourceFrame {
+                        file_index: file.index,
+                        frame_index,
+                        sop_instance_uid: file.sop_instance_uid.clone(),
+                    });
+                }
+            }
+        }
+    }
+    let Some(&only_file) = covered_files.first() else {
+        return (
+            ineligible("no local image frame in the overlay's Frame of Reference lies within it"),
+            Vec::new(),
+        );
+    };
+    let declared_sources = resolved
         .iter()
         .filter(|edge| edge.relationship == ReferenceRelationship::SourceImage)
         .flat_map(|edge| edge.matches.iter())
-        .collect::<Vec<_>>();
-    if matches.len() != 1 {
-        return ineligible(if matches.is_empty() {
-            "no uniquely resolved source-image reference is available"
-        } else {
-            "source-image reference resolves ambiguously"
-        });
-    }
-    let target_index = matches[0].file_index;
-    let Some(target) = files.iter().find(|file| file.index == target_index) else {
-        return ineligible("the referenced source image is not available");
+        .map(|candidate| candidate.file_index)
+        .filter(|index| covered_files.contains(index))
+        .collect::<BTreeSet<_>>();
+    let source_file_index = match (declared_sources.len(), covered_files.len()) {
+        (1, _) => declared_sources.first().copied(),
+        (_, 1) => Some(only_file),
+        _ => None,
     };
-    if !patient_geometry_compatible(source, target) {
-        return ineligible("frame of reference or patient geometry is incompatible");
-    }
-    OverlayEligibility {
-        eligible: true,
-        reason: "declared source identity and patient geometry are uniquely validated".to_string(),
-        source_file_index: Some(target_index),
-        mapped_source_count: 1,
-    }
-}
-
-fn patient_geometry_compatible(left: &FileEntry, right: &FileEntry) -> bool {
-    let left_meta = &left.series_metadata;
-    let right_meta = &right.series_metadata;
-    !left_meta.frame_of_reference_uid.is_empty()
-        && left_meta.frame_of_reference_uid == right_meta.frame_of_reference_uid
-        && left.rows == right.rows
-        && left.columns == right.columns
-        && near_array(
-            left_meta.image_position_patient,
-            right_meta.image_position_patient,
-        )
-        && near_array(
-            left_meta.image_orientation_patient,
-            right_meta.image_orientation_patient,
-        )
-        && near_array(
-            left_meta.native_pixel.pixel_spacing,
-            right_meta.native_pixel.pixel_spacing,
-        )
-}
-
-fn near_array<const N: usize>(left: Option<[f64; N]>, right: Option<[f64; N]>) -> bool {
-    match (left, right) {
-        (Some(left), Some(right)) => left.iter().zip(right.iter()).all(|(left, right)| {
-            left.is_finite() && right.is_finite() && (left - right).abs() <= 1e-6
-        }),
-        _ => false,
-    }
+    let covered_frames = frames.len();
+    (
+        OverlayEligibility {
+            eligible: true,
+            reason: format!(
+                "{covered_frames} local image frame(s) in the overlay's Frame of Reference lie within it"
+            ),
+            source_file_index,
+            mapped_source_count: covered_files.len(),
+        },
+        frames,
+    )
 }
 
 fn collect_rwvm_mappings(
@@ -811,7 +848,7 @@ fn referenced_rwvm_instances(object: &InMemDicomObject<StandardDataDictionary>) 
     .collect()
 }
 
-fn ineligible(reason: &str) -> OverlayEligibility {
+pub(crate) fn ineligible(reason: &str) -> OverlayEligibility {
     OverlayEligibility {
         eligible: false,
         reason: reason.to_string(),

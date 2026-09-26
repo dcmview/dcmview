@@ -9,6 +9,7 @@ export const API_ENDPOINTS = {
 	fileReferences: { method: "GET", path: "/api/file/{index}/references" },
 	fileSemanticContext: { method: "GET", path: "/api/file/{index}/semantic-context" },
 	fileSegmentationOverlay: { method: "GET", path: "/api/file/{index}/frame/{frame}/segmentation-overlay" },
+	fileDoseOverlay: { method: "GET", path: "/api/file/{index}/frame/{frame}/dose-overlay" },
 	fileValueMapping: { method: "GET", path: "/api/file/{index}/frame/{frame}/value-mapping" },
 	fileWsiContext: { method: "GET", path: "/api/file/{index}/frame/{frame}/wsi-context" },
 	fileFrame: { method: "GET", path: "/api/file/{index}/frame/{frame}" },
@@ -35,13 +36,18 @@ export const RAW_FRAME_HEADERS = {
 	paddingHigh: "X-Frame-Padding-High",
 } as const satisfies Record<keyof RawFrameMetadata, string>;
 
-export type ApiErrorCode = "invalid_path" | "invalid_query" | "invalid_json" | "bad_request" | "not_found" | "route_not_found" | "asset_not_found" | "method_not_allowed" | "no_pixel_data" | "frame_out_of_range" | "invalid_window" | "unsupported_transfer_syntax" | "unsupported_pixel_layout" | "semantic_mapping_unavailable" | "pixel_decode_failed" | "internal_error";
+export type ApiErrorCode = "invalid_path" | "invalid_query" | "invalid_json" | "bad_request" | "not_found" | "route_not_found" | "asset_not_found" | "method_not_allowed" | "no_pixel_data" | "frame_out_of_range" | "invalid_window" | "unsupported_transfer_syntax" | "unsupported_pixel_layout" | "semantic_mapping_unavailable" | "overlay_not_covering_frame" | "pixel_decode_failed" | "internal_error";
 
 export type CodedConceptSummary = { value: string, scheme: string, meaning: string, };
 
 export type DiscoveryResult = { path: string, disposition: string, reason: string, };
 
 export type DoseGridGeometry = { frame_of_reference_uid: string | null, image_position_patient: [number, number, number] | null, image_orientation_patient: [number, number, number, number, number, number] | null, pixel_spacing: [number, number] | null, grid_frame_offsets: Array<number>, };
+
+/**
+ * Dose-overlay query: the RT Dose object drawn on the path's frame.
+ */
+export type DoseOverlayQuery = { dose: number, };
 
 export type EmbedRoiAnnotations = { num_roi: number, roi_coords: Array<[number, number, number, number]>, roi_frames: Array<Array<number>>, };
 
@@ -101,6 +107,27 @@ export type HealthResponse = { status: string, viewer: ViewerIdentity, file_coun
 export type ModalityValueTransform = { rescale_slope: number, rescale_intercept: number, rescale_type: string | null, lut: ValueLookupTable | null, };
 
 export type OverlayEligibility = { eligible: boolean, reason: string, source_file_index: number | null, mapped_source_count: number, };
+
+/**
+ * Color bar of a value overlay. The overlay PNG colors a value `v` at
+ * position `(v - min_value) / (max_value - min_value)`, clamped to `0..=1`,
+ * along `color_stops`, which are evenly spaced and interpolated linearly in
+ * RGB. Colored pixels are opaque, so the viewer applies overlay opacity.
+ */
+export type OverlayLegend = { 
+/**
+ * Short unit text, such as `Gy`, `RELATIVE`, or a UCUM code.
+ */
+unit_label: string, units: CodedConceptSummary | null, min_value: number, max_value: number, 
+/**
+ * Values at or below this are transparent, as are pixels outside the
+ * overlay grid.
+ */
+transparent_at_or_below: number | null, 
+/**
+ * Name of the fixed colormap, `viridis`.
+ */
+colormap: string, color_stops: Array<[number, number, number]>, };
 
 export type ParametricMapContext = { stored_value_type: string, 
 /**
@@ -166,7 +193,20 @@ export type RtDoseContext = { dose_grid_scaling: number | null, scaling_status: 
  * What the display and raw frames carry: `stored` values (after any
  * Modality rescale). Mapped units are converted client-side.
  */
-displayed_value_kind: string, dose_units: string | null, dose_type: string | null, dose_summation_type: string | null, geometry: DoseGridGeometry, references: Array<ReferenceSummary>, overlay: OverlayEligibility, clinical_use_warning: string, };
+displayed_value_kind: string, dose_units: string | null, dose_type: string | null, dose_summation_type: string | null, geometry: DoseGridGeometry, references: Array<ReferenceSummary>, 
+/**
+ * Eligibility of the dose colorwash on local image frames that share the
+ * dose's Frame of Reference and lie within its grid.
+ */
+overlay: OverlayEligibility, 
+/**
+ * The covered local image frames in file and frame order, at most 4096.
+ */
+overlay_source_frames: Array<ResolvedSegmentSourceFrame>, 
+/**
+ * Color bar of the dose colorwash; present when the overlay is eligible.
+ */
+legend: OverlayLegend | null, clinical_use_warning: string, };
 
 export type SegmentFrameMapping = { 
 /**

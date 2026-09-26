@@ -5,6 +5,7 @@ pub mod geometry;
 pub mod loader;
 pub mod object_kind;
 pub mod pixels;
+pub mod plane_stack;
 pub mod references;
 pub mod semantic;
 pub mod series;

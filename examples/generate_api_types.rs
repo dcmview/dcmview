@@ -4,8 +4,8 @@
 //! it exits non-zero when the committed file differs from the Rust contract.
 
 use dcmview::api::contracts::{
-    endpoints, EmbedRoiAnnotations, ErrorResponse, FilesResponse, FrameInfo, FrameQuery,
-    FrameValueMapping, HealthResponse, RawFrameMetadata, ReferenceCatalogResponse,
+    endpoints, DoseOverlayQuery, EmbedRoiAnnotations, ErrorResponse, FilesResponse, FrameInfo,
+    FrameQuery, FrameValueMapping, HealthResponse, RawFrameMetadata, ReferenceCatalogResponse,
     SemanticContextResponse, SeriesCatalogResponse, TagNode, TagQuery, WsiFrameContextResponse,
     API_PREFIX, RAW_FRAME_HEADERS,
 };
@@ -61,6 +61,7 @@ fn render() -> String {
     declarations.visit::<FrameValueMapping>();
     declarations.visit::<WsiFrameContextResponse>();
     declarations.visit::<FrameQuery>();
+    declarations.visit::<DoseOverlayQuery>();
     declarations.visit::<RawFrameMetadata>();
     declarations.visit::<TagNode>();
     declarations.visit::<TagQuery>();

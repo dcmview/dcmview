@@ -172,7 +172,13 @@ pub(crate) fn orientation_axes(orientation: [f64; 6]) -> Option<[[f64; 3]; 2]> {
     ])
 }
 
-fn valid_geometry(geometry: PatientFrameGeometry) -> bool {
+/// The unit normal of an Image Orientation (Patient) plane.
+pub(crate) fn plane_normal(orientation: [f64; 6]) -> Option<[f64; 3]> {
+    let [row, column] = orientation_axes(orientation)?;
+    normalized(cross(row, column))
+}
+
+pub(crate) fn valid_geometry(geometry: PatientFrameGeometry) -> bool {
     geometry.rows > 0
         && geometry.columns > 0
         && geometry.position.iter().all(|value| value.is_finite())

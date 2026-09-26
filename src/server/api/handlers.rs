@@ -1,4 +1,5 @@
 use super::error::{self, ApiError};
+use super::overlays;
 use super::state::AppState;
 use crate::api::contracts::{
     DiscoveryResult, EmbedRoiAnnotations, FileSummary, FilesResponse, FrameInfo, FrameQuery,
@@ -139,7 +140,7 @@ pub(super) async fn semantic_context(
 
 /// The source's semantic context against `files`, built at most once per
 /// file set and kept in a small LRU.
-async fn semantic_context_for(
+pub(super) async fn semantic_context_for(
     state: &AppState,
     source: FileEntry,
     files: Vec<Arc<FileEntry>>,
@@ -148,9 +149,12 @@ async fn semantic_context_for(
     if let Some(context) = state.cached_semantic_context(key) {
         return Ok(context);
     }
-    let context = task::spawn_blocking(move || crate::semantic::semantic_context(&source, &files))
-        .await
-        .map_err(|error| anyhow::anyhow!("semantic context task failed: {error}"))??;
+    let object = source.clone();
+    let mut context =
+        task::spawn_blocking(move || crate::semantic::semantic_context(&object, &files))
+            .await
+            .map_err(|error| anyhow::anyhow!("semantic context task failed: {error}"))??;
+    overlays::add_overlay_legend(state, &source, &mut context).await;
     let context = Arc::new(context);
     state.cache_semantic_context(key, context.clone());
     Ok(context)

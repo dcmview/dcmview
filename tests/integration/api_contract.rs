@@ -200,9 +200,15 @@ async fn every_declared_endpoint_matches_its_runtime_contract() {
             let missing = request(endpoint, "99").await;
             assert_json_error(endpoint.id, &missing, StatusCode::NOT_FOUND);
         }
-        // SEG overlay requires a linked segmentation/source pair and is covered
-        // by semantic_context::segmentation_overlay_returns_source_sized_transparent_png.
-        if *endpoint == endpoints::FILE_SEGMENTATION_OVERLAY {
+        // Overlays require a linked overlay/source pair: SEG is covered by
+        // semantic_context::segmentation_overlay_returns_source_sized_transparent_png
+        // and the value overlays by the semantic_overlays fixture tests.
+        if [
+            endpoints::FILE_SEGMENTATION_OVERLAY,
+            endpoints::FILE_DOSE_OVERLAY,
+        ]
+        .contains(endpoint)
+        {
             continue;
         }
         let response = request(endpoint, "0").await;

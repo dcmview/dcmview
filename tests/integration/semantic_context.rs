@@ -515,7 +515,7 @@ async fn value_mapping_reports_each_frames_conversions() {
 }
 
 #[tokio::test]
-async fn rt_dose_context_reports_scaling_geometry_and_refuses_incompatible_overlay() {
+async fn rt_dose_context_reports_scaling_geometry_and_refuses_overlay_in_another_frame() {
     let dir = tempdir().expect("temp dir");
     let path = dir.path().join("dose.dcm");
     let target_uid = "2.25.8201";
@@ -563,11 +563,14 @@ async fn rt_dose_context_reports_scaling_geometry_and_refuses_incompatible_overl
         context["geometry"]["grid_frame_offsets"],
         serde_json::json!([0.0, 2.5, 5.0])
     );
+    // The only image lies in another Frame of Reference.
     assert_eq!(context["overlay"]["eligible"], false);
     assert!(context["overlay"]["reason"]
         .as_str()
         .expect("overlay reason")
-        .contains("incompatible"));
+        .contains("Frame of Reference"));
+    assert_eq!(context["overlay_source_frames"], serde_json::json!([]));
+    assert!(context["legend"].is_null());
     assert!(context["clinical_use_warning"]
         .as_str()
         .expect("warning")

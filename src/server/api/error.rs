@@ -61,6 +61,14 @@ impl ApiError {
         }
     }
 
+    pub(super) fn overlay_not_covering_frame(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::NOT_FOUND,
+            code: ApiErrorCode::OverlayNotCoveringFrame,
+            message: message.into(),
+        }
+    }
+
     fn coded(status: StatusCode, code: ApiErrorCode, message: impl Into<String>) -> Self {
         Self {
             status,

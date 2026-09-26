@@ -154,6 +154,14 @@ pub mod endpoints {
         PNG_MEDIA_TYPE,
         ResponseHeaders::Cache,
     );
+    /// PNG colorwash of an RT Dose grid resampled onto the path's frame;
+    /// query `DoseOverlayQuery`.
+    pub const FILE_DOSE_OVERLAY: Endpoint = binary(
+        "fileDoseOverlay",
+        "/file/{index}/frame/{frame}/dose-overlay",
+        PNG_MEDIA_TYPE,
+        ResponseHeaders::Cache,
+    );
     /// `FrameValueMapping`.
     pub const FILE_VALUE_MAPPING: Endpoint = json(
         "fileValueMapping",
@@ -213,6 +221,7 @@ pub mod endpoints {
         FILE_REFERENCES,
         FILE_SEMANTIC_CONTEXT,
         FILE_SEGMENTATION_OVERLAY,
+        FILE_DOSE_OVERLAY,
         FILE_VALUE_MAPPING,
         FILE_WSI_CONTEXT,
         FILE_FRAME,
@@ -497,8 +506,33 @@ pub struct RtDoseContext {
     pub dose_summation_type: Option<String>,
     pub geometry: DoseGridGeometry,
     pub references: Vec<ReferenceSummary>,
+    /// Eligibility of the dose colorwash on local image frames that share the
+    /// dose's Frame of Reference and lie within its grid.
     pub overlay: OverlayEligibility,
+    /// The covered local image frames in file and frame order, at most 4096.
+    pub overlay_source_frames: Vec<ResolvedSegmentSourceFrame>,
+    /// Color bar of the dose colorwash; present when the overlay is eligible.
+    pub legend: Option<OverlayLegend>,
     pub clinical_use_warning: String,
+}
+
+/// Color bar of a value overlay. The overlay PNG colors a value `v` at
+/// position `(v - min_value) / (max_value - min_value)`, clamped to `0..=1`,
+/// along `color_stops`, which are evenly spaced and interpolated linearly in
+/// RGB. Colored pixels are opaque, so the viewer applies overlay opacity.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct OverlayLegend {
+    /// Short unit text, such as `Gy`, `RELATIVE`, or a UCUM code.
+    pub unit_label: String,
+    pub units: Option<CodedConceptSummary>,
+    pub min_value: f64,
+    pub max_value: f64,
+    /// Values at or below this are transparent, as are pixels outside the
+    /// overlay grid.
+    pub transparent_at_or_below: Option<f64>,
+    /// Name of the fixed colormap, `viridis`.
+    pub colormap: String,
+    pub color_stops: Vec<[u8; 3]>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -713,6 +747,8 @@ pub enum ApiErrorCode {
     UnsupportedTransferSyntax,
     UnsupportedPixelLayout,
     SemanticMappingUnavailable,
+    /// A value overlay's planes do not reach the requested frame.
+    OverlayNotCoveringFrame,
     PixelDecodeFailed,
     InternalError,
 }
@@ -779,6 +815,12 @@ pub struct FrameQuery {
     pub wc: Option<f64>,
     pub ww: Option<f64>,
     pub mode: Option<WindowMode>,
+}
+
+/// Dose-overlay query: the RT Dose object drawn on the path's frame.
+#[derive(Debug, Clone, Copy, Deserialize, TS)]
+pub struct DoseOverlayQuery {
+    pub dose: usize,
 }
 
 /// Selective tag query: `path` addresses one element, and `offset`/`limit`

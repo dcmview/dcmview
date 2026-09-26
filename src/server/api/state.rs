@@ -1,8 +1,10 @@
 use super::super::{now_unix_ms, FileRegistry, RequestActivity};
 use crate::annotations::AnnotationStore;
 use crate::api::contracts::{SemanticContextResponse, TagNode};
-use crate::pixels::{self, FrameCache, RawFrameCache};
+use crate::pixels::{self, FrameCache, OverlayCache, RawFrameCache};
+use crate::types::OverlayCacheKey;
 use crate::value_mapping::FileValueMappings;
+use bytes::Bytes;
 use lru::LruCache;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
@@ -31,6 +33,7 @@ pub struct AppState {
     tag_cache: Arc<Mutex<LruCache<usize, Vec<TagNode>>>>,
     semantic_cache: Arc<Mutex<LruCache<SemanticCacheKey, Arc<SemanticContextResponse>>>>,
     value_mapping_cache: Arc<Mutex<LruCache<usize, Arc<FileValueMappings>>>>,
+    overlay_cache: Arc<Mutex<OverlayCache>>,
     annotations: AnnotationStore,
     server_start_ms: u64,
     activity: RequestActivity,
@@ -45,6 +48,7 @@ impl AppState {
             tag_cache: Arc::new(Mutex::new(LruCache::new(TAG_CACHE_MAX_FILES))),
             semantic_cache: Arc::new(Mutex::new(LruCache::new(SEMANTIC_CACHE_MAX_FILES))),
             value_mapping_cache: Arc::new(Mutex::new(LruCache::new(VALUE_MAPPING_CACHE_MAX_FILES))),
+            overlay_cache: pixels::new_overlay_cache(),
             annotations,
             server_start_ms: now_unix_ms(),
             activity: RequestActivity::new(),
@@ -110,6 +114,19 @@ impl AppState {
     pub(crate) fn cache_value_mappings(&self, index: usize, mappings: Arc<FileValueMappings>) {
         if let Ok(mut cache) = self.value_mapping_cache.lock() {
             cache.put(index, mappings);
+        }
+    }
+
+    pub(crate) fn cached_overlay(&self, key: &OverlayCacheKey) -> Option<Bytes> {
+        self.overlay_cache
+            .lock()
+            .ok()
+            .and_then(|mut cache| cache.get(key))
+    }
+
+    pub(crate) fn cache_overlay(&self, key: OverlayCacheKey, png: Bytes) {
+        if let Ok(mut cache) = self.overlay_cache.lock() {
+            cache.insert(key, png);
         }
     }
 

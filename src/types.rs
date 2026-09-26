@@ -513,3 +513,12 @@ pub struct RawFrameCacheKey {
     pub file_index: usize,
     pub frame: u32,
 }
+
+/// A value-overlay PNG: one RT Dose or Parametric Map object drawn on one
+/// displayed frame.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct OverlayCacheKey {
+    pub overlay_file_index: usize,
+    pub target_file_index: usize,
+    pub target_frame: u32,
+}

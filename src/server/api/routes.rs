@@ -1,5 +1,6 @@
 use super::error;
 use super::handlers;
+use super::overlays;
 use super::state::AppState;
 use crate::api::contracts::{endpoints, API_PREFIX};
 use crate::server::web;
@@ -29,6 +30,10 @@ pub(crate) fn router(state: AppState) -> Router {
         .route(
             endpoints::FILE_SEGMENTATION_OVERLAY.path,
             get(handlers::segmentation_overlay),
+        )
+        .route(
+            endpoints::FILE_DOSE_OVERLAY.path,
+            get(overlays::dose_overlay),
         )
         .route(
             endpoints::FILE_VALUE_MAPPING.path,

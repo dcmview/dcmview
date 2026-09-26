@@ -1,5 +1,6 @@
 mod error;
 mod handlers;
+mod overlays;
 mod routes;
 mod state;
 

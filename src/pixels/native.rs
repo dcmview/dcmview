@@ -284,7 +284,7 @@ fn native_pixel_data_kind(file: &FileEntry) -> NativePixelDataKind {
         .unwrap_or(NativePixelDataKind::Integer)
 }
 
-fn decode_numeric_samples(
+pub(super) fn decode_numeric_samples(
     frame_slice: &[u8],
     bits_allocated: u32,
     signed: bool,
