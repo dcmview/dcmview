@@ -1529,7 +1529,11 @@ mod tests {
         let icon = dicom_object::InMemDicomObject::from_element_iter([
             DataElement::new(tags::ROWS, VR::US, PrimitiveValue::from(1_u16)),
             DataElement::new(tags::COLUMNS, VR::US, PrimitiveValue::from(1_u16)),
-            DataElement::new(tags::PIXEL_DATA, VR::OB, PrimitiveValue::from(vec![0_u8, 0])),
+            DataElement::new(
+                tags::PIXEL_DATA,
+                VR::OB,
+                PrimitiveValue::from(vec![0_u8, 0]),
+            ),
         ]);
         let mut object = base_object();
         object.put(DataElement::new(
