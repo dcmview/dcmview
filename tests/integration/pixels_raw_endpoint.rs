@@ -54,15 +54,16 @@ async fn raw_endpoint_returns_correct_metadata_headers_for_uncompressed() {
         Some("3000"),
     );
 
-    let mut entry = support::file_entry(path, "1.2.840.10008.1.2.1", 2);
-    entry.rows = 2;
-    entry.columns = 2;
-    entry.default_window = Some(dcmview::types::WindowPreset {
-        center: 1500.0,
-        width: 3000.0,
-    });
-
-    let app = server::router(support::app_state(vec![entry]));
+    let report = support::discover(
+        &[path],
+        dcmview::loader::DiscoverOptions {
+            recursive: false,
+            filters: Vec::new(),
+        },
+    )
+    .await
+    .expect("discover raw metadata fixture");
+    let app = server::router(support::app_state(report.files));
     let test_server = TestServer::new(app);
 
     let response = test_server.get("/api/file/0/frame/0/raw").await;
@@ -318,42 +319,6 @@ async fn raw_jpeg_transport_decodes_to_8bit_samples() {
         body.len() as u32,
         rows * cols,
         "raw JPEG body length must equal rows×columns"
-    );
-}
-
-#[tokio::test]
-async fn raw_endpoint_no_default_window_headers_when_dicom_lacks_window_tags() {
-    // Write an uncompressed DICOM with no window tags.
-    let dir = tempdir().expect("temp dir");
-    let path = dir.path().join("raw-no-window.dcm");
-    support::write_uncompressed_u16_dicom(
-        &path,
-        "1.2.840.10008.1.2.1",
-        2,
-        2,
-        vec![0, 1000, 2000, 3000],
-        None, // no window center
-        None, // no window width
-    );
-    let mut entry = support::file_entry(path, "1.2.840.10008.1.2.1", 1);
-    entry.rows = 2;
-    entry.columns = 2;
-    // No default_window on FileEntry either
-
-    let app = server::router(support::app_state(vec![entry]));
-    let test_server = TestServer::new(app);
-
-    let response = test_server.get("/api/file/0/frame/0/raw").await;
-    response.assert_status_ok();
-
-    // The X-Frame-Default-Wc and X-Frame-Default-Ww headers must be absent
-    assert!(
-        maybe_header_f64(&response, "X-Frame-Default-Wc").is_none(),
-        "X-Frame-Default-Wc must not be present when DICOM lacks window tags"
-    );
-    assert!(
-        maybe_header_f64(&response, "X-Frame-Default-Ww").is_none(),
-        "X-Frame-Default-Ww must not be present when DICOM lacks window tags"
     );
 }
 

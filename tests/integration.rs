@@ -17,5 +17,6 @@ mod integration {
     mod server_minimal;
     mod support;
     mod tags_endpoint;
+    mod windowing_oracle;
     mod wsi_context;
 }
