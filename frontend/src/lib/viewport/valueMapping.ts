@@ -1,4 +1,5 @@
 import type {
+	DisplayFrameWindowOptions,
 	FrameValueMapping,
 	ModalityValueTransform,
 	RawFrame,
@@ -326,4 +327,20 @@ export function windowToMapped(window: WindowValues, scale: MappedWindowScale): 
 
 export function windowToRender(window: WindowValues, scale: MappedWindowScale): WindowValues {
 	return { center: scale.toRender(window.center), width: window.width / Math.abs(scale.ratio) };
+}
+
+/**
+ * The display request for one frame: a real-world window converted through
+ * that frame's own mapping, or the frame's default window when it has no
+ * linear mapping in that unit. Other options pass through unchanged.
+ */
+export function frameDisplayWindowOptions(
+	options: DisplayFrameWindowOptions,
+	mapping: FrameValueMapping | null,
+): DisplayFrameWindowOptions {
+	if (!options.unit) return options;
+	const scale = mappedWindowScale(mapping);
+	if (scale?.unit !== options.unit || options.wc == null || options.ww == null) return {};
+	const window = windowToRender({ center: options.wc, width: options.ww }, scale);
+	return { wc: window.center, ww: window.width, windowMode: "default" };
 }

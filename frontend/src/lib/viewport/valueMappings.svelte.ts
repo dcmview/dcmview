@@ -72,6 +72,11 @@ export class ValueMappings {
 		void this.#resource.ensure(frameKey(fileIndex, frameIndex)).catch(() => {});
 	}
 
+	/** This frame's mapping, loading it if needed; null when it cannot load. */
+	load(fileIndex: number, frameIndex: number): Promise<FrameValueMapping | null> {
+		return this.#resource.ensure(frameKey(fileIndex, frameIndex)).catch(() => null);
+	}
+
 	/**
 	 * Loads this frame's mapping once it stays current for the settle delay,
 	 * so cine and fast scrolling skip passing frames. Returns the cleanup.

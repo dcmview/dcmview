@@ -295,6 +295,11 @@ export interface DisplayFrameWindowOptions {
 	wc?: number | null;
 	ww?: number | null;
 	windowMode?: WindowMode | null;
+	/**
+	 * Real-world unit of `wc`/`ww`. Such a window is converted through each
+	 * frame's own value mapping before a request; it is never sent as is.
+	 */
+	unit?: string | null;
 }
 
 export function displayFrameWindowCacheKey(
@@ -306,7 +311,7 @@ export function displayFrameWindowCacheKey(
 	const wc = options.wc === null || options.wc === undefined ? "none" : String(options.wc);
 	const ww = options.ww === null || options.ww === undefined ? "none" : String(options.ww);
 	const mode = options.windowMode ?? "default";
-	return `${mode}:${wc}:${ww}`;
+	return options.unit ? `${mode}:${wc}:${ww}:${options.unit}` : `${mode}:${wc}:${ww}`;
 }
 
 export function displayFrameCacheKey(
@@ -323,6 +328,7 @@ export async function fetchDisplayFrameBlob(
 	options: DisplayFrameWindowOptions = {},
 	signal?: AbortSignal,
 ): Promise<Blob> {
+	if (options.unit) throw new Error("convert a real-world window to the frame's stored scale before requesting it");
 	const url = frameUrl(fileIndex, frame, options.wc, options.ww, options.windowMode);
 	const response = await send(API_ENDPOINTS.fileFrame, url, { signal });
 	return response.blob();

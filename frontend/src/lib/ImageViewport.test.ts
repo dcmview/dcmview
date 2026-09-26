@@ -230,6 +230,31 @@ describe("ImageViewport window/level in real-world units", () => {
 		expect(screen.getByRole("figure", { name: "ADC: -10 to 90 um2/s" })).toBeTruthy();
 	});
 
+	it("converts the window through each frame's own mapping as frames change", async () => {
+		// Frame f maps stored values with slope (f + 1) / 2 um2/s.
+		fetchFrameValueMapping.mockImplementation(async (fileIndex, frameIndex) => {
+			const base = adcMapping();
+			const [map] = base.real_world;
+			return {
+				...base,
+				file_index: fileIndex,
+				frame_index: frameIndex,
+				real_world: [{ ...map, transform: { kind: "linear", slope: (frameIndex + 1) / 2, intercept: 0 } }],
+			};
+		});
+		const file = fileSummary(5, { frame_count: 3 });
+		const view = renderViewport({ file, windowCenter: 30, windowWidth: 60, windowUnit: "um2/s" });
+
+		await waitFor(() => expect(fetchDisplayFrameBlob).toHaveBeenCalledWith(
+			5, 0, { wc: 60, ww: 120, windowMode: "default" }, expect.any(AbortSignal),
+		));
+		await view.rerender({ currentFrame: 2, navigationPosition: 2 });
+		await waitFor(() => expect(fetchDisplayFrameBlob).toHaveBeenCalledWith(
+			5, 2, { wc: 20, ww: 40, windowMode: "default" }, expect.any(AbortSignal),
+		));
+		expect(fetchFrameValueMapping).toHaveBeenCalledWith(5, 2, expect.any(AbortSignal));
+	});
+
 	it("falls back to the default window on files without that unit", async () => {
 		renderViewport({ windowCenter: 40, windowWidth: 100, windowUnit: "Gy" });
 

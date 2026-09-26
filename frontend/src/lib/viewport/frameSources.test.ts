@@ -164,6 +164,27 @@ describe("DisplayFrameSource", () => {
 		expect(onScopeChange).toHaveBeenCalledTimes(3);
 	});
 
+	it("keeps one scope for a real-world window across frames with their own conversion", () => {
+		const signals: AbortSignal[] = [];
+		const load = vi.fn((_file: number, _frame: number, _options: DisplayFrameWindowOptions, signal: AbortSignal) => {
+			signals.push(signal);
+			return abortable<Blob>(signal);
+		});
+		const { source, onScopeChange } = displaySource(load);
+		const gray = { wc: 12, ww: 20, windowMode: "default" as const, unit: "Gy" };
+
+		void source.ensureBlob(1, 0, gray).catch(() => {});
+		void source.ensureBlob(1, 1, gray).catch(() => {});
+		expect(signals.map((signal) => signal.aborted)).toEqual([false, false]);
+		// The loader converts per frame, so it receives the unit.
+		expect(load.mock.calls[1].slice(0, 3)).toEqual([1, 1, gray]);
+		expect(source.key(1, 1, gray)).not.toBe(source.key(1, 1, { wc: 12, ww: 20, windowMode: "default" }));
+
+		void source.ensureBlob(1, 2, { ...gray, wc: 13 }).catch(() => {});
+		expect(signals.map((signal) => signal.aborted)).toEqual([true, true, false]);
+		expect(onScopeChange).toHaveBeenCalledTimes(2);
+	});
+
 	it("aborts overlay fetches with their scope", () => {
 		const { source } = displaySource(async () => new Blob(["png"]));
 		let maskSignal!: AbortSignal;

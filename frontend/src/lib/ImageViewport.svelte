@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { untrack } from "svelte";
 	import {
+		fetchDisplayFrameBlob,
 		isApiError,
 		type DisplayFrameWindowOptions,
 		type FileSummary,
@@ -80,6 +81,7 @@
 	import ValueLegend from "./viewport/ValueLegend.svelte";
 	import {
 		formatValue,
+		frameDisplayWindowOptions,
 		mappedWindowScale,
 		pixelAt,
 		windowToMapped,
@@ -168,6 +170,7 @@
 	const rendered = new RenderedFrames();
 	const rawFrames = new RawFrameSource({ concurrency: () => prefetchConcurrency });
 	const displayFrames = new DisplayFrameSource({
+		load: loadDisplayFrame,
 		navigationScope: () => navigationScopeKey,
 		concurrency: () => prefetchConcurrency,
 		onScopeChange: () => rendered.reset(),
@@ -432,8 +435,28 @@
 		wlRenderGeneration += 1;
 	}
 
+	/**
+	 * A display frame request. A real-world window stays in its unit in the
+	 * fetch scope and cache key, and each frame (current, prefetched, or
+	 * played by cine) is converted through its own mapping here.
+	 */
+	async function loadDisplayFrame(
+		fileIndex: number,
+		frameIndex: number,
+		options: DisplayFrameWindowOptions = {},
+		signal?: AbortSignal,
+	): Promise<Blob> {
+		if (!options.unit) return fetchDisplayFrameBlob(fileIndex, frameIndex, options, signal);
+		const mapping = await valueMappings.load(fileIndex, frameIndex);
+		signal?.throwIfAborted();
+		return fetchDisplayFrameBlob(fileIndex, frameIndex, frameDisplayWindowOptions(options, mapping), signal);
+	}
+
 	function currentDisplayWindowOptions(): DisplayFrameWindowOptions {
 		if (pipelineMode === "overlay") return {};
+		if (windowUnit !== null && windowCenter !== null && windowWidth !== null) {
+			return { wc: windowCenter, ww: windowWidth, windowMode: "default", unit: windowUnit };
+		}
 		if (renderWindowCenter !== null && renderWindowWidth !== null) {
 			return { wc: renderWindowCenter, ww: renderWindowWidth, windowMode: "default" };
 		}
@@ -788,11 +811,11 @@
 		const generation = ++requestGeneration;
 		if (mode !== "diagnostic_wl") {
 			// Server-rendered frames bake in the window, so window changes refetch.
-			void renderWindowCenter;
-			void renderWindowWidth;
+			// A real-world window is converted per frame by loadDisplayFrame.
+			void windowCenter;
+			void windowWidth;
+			void windowUnit;
 			void windowMode;
-			// A real-world window waits for the frame's mapping to convert it.
-			if (mode !== "overlay" && renderWindowPending) return;
 		}
 
 		loadError = null;

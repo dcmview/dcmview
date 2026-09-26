@@ -3,6 +3,7 @@ import type { FrameValueMapping, RawFrame, RealWorldValueMap } from "../../api";
 import {
 	describePixelValues,
 	formatValue,
+	frameDisplayWindowOptions,
 	mappedWindowScale,
 	modalityValue,
 	pixelAt,
@@ -291,5 +292,27 @@ describe("mapped-unit windows", () => {
 			real_world: [linearMap(1, 0)],
 		}))).toBeNull();
 		expect(mappedWindowScale(mapping({ real_world: [linearMap(0, 3)] }))).toBeNull();
+	});
+});
+
+describe("frameDisplayWindowOptions", () => {
+	const gray = { wc: 12, ww: 20, windowMode: "default" as const, unit: "Gy" };
+	const dose = (slope: number) => mapping({
+		real_world: [linearMap(slope, 0, { unit_label: "Gy", first_value_mapped: null, last_value_mapped: null })],
+	});
+
+	it("converts a real-world window through each frame's own mapping", () => {
+		expect(frameDisplayWindowOptions(gray, dose(0.01))).toEqual({ wc: 1200, ww: 2000, windowMode: "default" });
+		expect(frameDisplayWindowOptions(gray, dose(0.02))).toEqual({ wc: 600, ww: 1000, windowMode: "default" });
+	});
+
+	it("falls back to the frame's default window without a mapping in that unit", () => {
+		expect(frameDisplayWindowOptions(gray, null)).toEqual({});
+		expect(frameDisplayWindowOptions(gray, mapping({ real_world: [linearMap(0.5, 0)] }))).toEqual({});
+	});
+
+	it("passes stored-scale windows through", () => {
+		const stored = { wc: 40, ww: 400, windowMode: "default" as const };
+		expect(frameDisplayWindowOptions(stored, dose(0.01))).toBe(stored);
 	});
 });

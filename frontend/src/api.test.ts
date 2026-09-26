@@ -4,6 +4,7 @@ import {
 	displayFrameCacheKey,
 	displayFrameWindowCacheKey,
 	fetchDoseOverlayBlob,
+	fetchDisplayFrameBlob,
 	fetchDoseOverlayValues,
 	fetchFiles,
 	fetchRawFrame,
@@ -164,6 +165,15 @@ describe("fetch wrappers", () => {
 		);
 
 		await expect(fetchFiles()).rejects.toThrow("HTTP 502");
+	});
+
+	it("never sends a real-world window as is", async () => {
+		const fetchMock = vi.fn();
+		vi.stubGlobal("fetch", fetchMock);
+		await expect(fetchDisplayFrameBlob(1, 0, { wc: 12, ww: 20, unit: "Gy" })).rejects.toThrow("real-world window");
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(displayFrameWindowCacheKey({ wc: 12, ww: 20, windowMode: "default", unit: "Gy" }))
+			.toBe("default:12:20:Gy");
 	});
 
 	it("reads overlay values as little-endian f32 samples", async () => {
