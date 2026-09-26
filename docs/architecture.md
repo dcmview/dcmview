@@ -364,6 +364,7 @@ flowchart TD
     e2e["e2e"] --> core
     e2e --> elayers["real debug binary build<br/>Python wrapper integration<br/>HTTP binary smoke<br/>VS Code Electron integration"]
     artifact["compatibility-artifact"] --> alayers["digest-checked producer container<br/>real HTTP compatibility runner"]
+    corpus["corpus"] --> players["ignored lib and integration tests<br/>over a local generated corpus"]
     external["external"] --> xlayers["feature-gated remote fixtures<br/>network or local cache allowed"]
     marketing["marketing"] --> mlayers["capture manifest and driver checks<br/>media drift gate when published"]
     ci["CI component jobs"] -. "reuse focused profiles" .-> qlayers
@@ -383,6 +384,7 @@ The supported development baselines are Rust 1.88+, Node.js 20.19+, and Python
 | `core` | Before handing off a normal code change | Everything in the corresponding frontend/lint/unit layers, plus deterministic fixture regeneration that must leave the current fixture tree unchanged, the default-feature, non-ignored locked Rust suite, and VS Code compilation. |
 | `e2e` | Process or integration changes | `core`, then a real debug binary, Python wrapper binary integration, debug-binary HTTP smoke, and VS Code Electron integration, which opens a fixture through the extension's custom editor and terminal shim against the debug binary. |
 | `compatibility-artifact` | Stored current corpus integration | Builds only the dcmview binary, verifies an explicitly supplied producer container (`DCMVIEW_COMPAT_CORPUS_ROOT`), and runs `scripts/compatibility/run.py` against every verified DICOM payload. It never checks out or builds the generator and fails when no container is supplied. It is run locally only; no CI workflow runs it. |
+| `corpus` | Stored generated corpus, unit and integration level | Builds frontend assets and runs every ignored lib and integration test except the remote-fixture ones, with `DCMVIEW_PREPARED_CORPUS` set from `--corpus PATH` or the environment. Those tests read cases from a local dicom-test-suite corpus, either one flat `all` corpus or per-profile `core`/`extended`/`extended-deflate` roots; the ICC test's JPEG XL and JPEG 2000 re-encodings run only when their per-profile roots exist. It fails before building when the corpus is unset or not a directory, never generates one, and no CI workflow runs it. |
 | `external` | Opt-in upstream DICOM compatibility | Builds frontend assets and runs only ignored integration tests behind `remote-fixtures`; those tests may download or populate the `dicom-test-files` cache. It is separate from `e2e`. |
 | `marketing` | Capture tooling and release media | Validates tracked source/capture manifests, syntax-checks the browser and VS Code capture drivers, runs marketing-media unit tests, and—once an approved bundle is committed—verifies published hashes and the capture-input digest without ignored DICOM sources. |
 
@@ -414,6 +416,19 @@ installation and VS Code Electron integration can also use network/cache state;
   render `App.svelte` and `ImageViewport.svelte` in happy-dom with the API
   module mocked, covering per-tab view state, the keyboard guard, and the
   window/level render-path choice.
+- `tests/windowing-cases.json` is the shared windowing oracle: stored samples,
+  rescale, photometric interpretation, DICOM window, Pixel Padding, and the
+  request, with expected 8-bit output from PS3.3 C.11.2.1.2.1. The Rust
+  integration test writes each case as a DICOM file and runs it through the
+  loader, `AppState`, and the display and raw endpoints; `rawWindowing.test.ts`
+  renders the same cases client-side. Server and client windowing must agree
+  on every case.
+- The `X-Cache` MISS-then-HIT sequence is asserted once per cached endpoint
+  (display frame, raw frame) plus the display cache-key tests for window
+  override and window mode; the runtime contract test checks every cached
+  endpoint returns a valid `X-Cache` value. Codec tests assert decode results,
+  not cache state.
+- Error assertions use the JSON envelope's stable `code`, not message text.
 - Python unit tests isolate subprocess policy; `python-integration` adds the real
   binary. VS Code compile and Electron integration remain separate layers.
 - `scripts/compatibility/run.py --corpus-root` checks the real binary against
@@ -433,8 +448,8 @@ installation and VS Code Electron integration can also use network/cache state;
   Map/RT Dose context, WSI positioning, cine, windowing, viewport transforms,
   file switching, and recovery after request errors.
 - `python/tests/test_check_profiles.py` locks the documented
-  `quick`/`core`/`e2e` composition and the exact independent `external` command
-  without launching toolchains.
+  `quick`/`core`/`e2e` composition and the exact independent `external` and
+  `corpus` commands without launching toolchains.
 
 ### Intentionally External Coverage
 
@@ -445,6 +460,10 @@ installation and VS Code Electron integration can also use network/cache state;
   `external`.
 - Release workflows, not `core`, prove platform archives, bundled wheels,
   installed console scripts, VSIX packaging, and release-binary smoke behavior.
+- Eight Rust tests (six unit, two integration) are ignored in normal runs
+  because they read a locally generated dicom-test-suite corpus; the `corpus`
+  profile runs them. Resolve their case files through
+  `loader::prepared_corpus_case` or `support::prepared_corpus_case`.
 - Institution-specific DICOM corpora are not committed test dependencies;
   broader compatibility is manual or reported with de-identified data.
 - Performance targets require explicit timing and memory instrumentation. They
