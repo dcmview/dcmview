@@ -90,13 +90,13 @@ describe("WsiTileContext companions and relationships", () => {
 		const companions = await screen.findByLabelText("Slide companions");
 		const rows = [...companions.querySelectorAll(".companion-row")].map((row) => row.textContent?.replace(/\s+/g, " ").trim());
 		expect(rows).toEqual([
-			"Label Open label.dcm",
-			"Overview Open overview.dcm",
+			"Label Open label.dcm · 4 frames",
+			"Overview Open overview.dcm · 4 frames",
 			"Thumbnail local target unavailable",
-			"Pyramid levels Open level-1.dcm",
+			"Pyramid levels Open level-1.dcm · 4 frames",
 		]);
 
-		await fireEvent.click(within(companions).getByRole("button", { name: "Open level-1.dcm" }));
+		await fireEvent.click(within(companions).getByRole("button", { name: "Open level-1.dcm · 4 frames" }));
 		expect(onopenreference).toHaveBeenCalledWith(LEVEL_1.index, 0);
 	});
 

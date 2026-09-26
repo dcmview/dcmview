@@ -133,7 +133,7 @@
 									title={`${file.path}\nSOP Instance ${companion.sop_instance_uid}`}
 									onclick={() => onopenreference(file.index, 0)}
 								>
-									Open {file.label}
+									Open {file.label} · {file.frame_count} {file.frame_count === 1 ? "frame" : "frames"}
 								</button>
 							{:else}
 								<span class="unresolved" title={`SOP Instance ${companion.sop_instance_uid}`}>local target unavailable</span>
