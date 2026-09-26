@@ -190,6 +190,40 @@ export async function fetchParametricMapOverlayBlob(
 	return response.blob();
 }
 
+/** Little-endian `f32` values of a values response, one per displayed pixel. */
+async function overlayValues(response: Response): Promise<Float32Array> {
+	const buffer = await response.arrayBuffer();
+	if (buffer.byteLength % 4 !== 0) throw new Error("overlay values are not whole f32 samples");
+	const view = new DataView(buffer);
+	const values = new Float32Array(buffer.byteLength / 4);
+	for (let index = 0; index < values.length; index += 1) values[index] = view.getFloat32(index * 4, true);
+	return values;
+}
+
+/** RT Dose `doseFileIndex` resampled onto one displayed frame, in Gy (NaN outside). */
+export async function fetchDoseOverlayValues(
+	fileIndex: number,
+	frame: number,
+	doseFileIndex: number,
+	signal?: AbortSignal,
+): Promise<Float32Array> {
+	const endpoint = API_ENDPOINTS.fileDoseOverlayValues;
+	const url = endpointUrl(endpoint, { index: fileIndex, frame }, { dose: doseFileIndex });
+	return overlayValues(await send(endpoint, url, { signal }));
+}
+
+/** Parametric Map `mapFileIndex` resampled onto one displayed frame, in its unit. */
+export async function fetchParametricMapOverlayValues(
+	fileIndex: number,
+	frame: number,
+	mapFileIndex: number,
+	signal?: AbortSignal,
+): Promise<Float32Array> {
+	const endpoint = API_ENDPOINTS.fileParametricMapOverlayValues;
+	const url = endpointUrl(endpoint, { index: fileIndex, frame }, { map: mapFileIndex });
+	return overlayValues(await send(endpoint, url, { signal }));
+}
+
 export function fetchFrameValueMapping(
 	fileIndex: number,
 	frame: number,

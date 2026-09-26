@@ -1,6 +1,8 @@
 import {
 	fetchDoseOverlayBlob,
+	fetchDoseOverlayValues,
 	fetchParametricMapOverlayBlob,
+	fetchParametricMapOverlayValues,
 	fetchSegmentationOverlayBlob,
 	type FileSummary,
 	type OverlayLegend,
@@ -63,23 +65,41 @@ export function valueOverlayLayerRequest(
 	};
 }
 
+/**
+ * The values of `overlay` resampled onto one displayed frame, row-major in
+ * the legend's unit, NaN outside the volume; the readout reads them.
+ */
+export function valueOverlayValuesRequest(
+	overlay: Pick<ValueOverlay, "kind" | "volumeFileIndex">,
+	fileIndex: number,
+	frameIndex: number,
+): OverlayRequest<Float32Array> {
+	const { kind, volumeFileIndex } = overlay;
+	return {
+		key: `${kind}:${volumeFileIndex}:${fileIndex}:${frameIndex}:values`,
+		load: (signal) => kind === "rt_dose"
+			? fetchDoseOverlayValues(fileIndex, frameIndex, volumeFileIndex, signal)
+			: fetchParametricMapOverlayValues(fileIndex, frameIndex, volumeFileIndex, signal),
+	};
+}
+
 /** Encoded colorwash layers kept for revisited frames. */
 export const VALUE_OVERLAY_CACHE_BYTES = 32 * 1024 * 1024;
 
-/** Value overlay PNGs: one shared request per layer, recent layers cached. */
-export class OverlayLayerCache {
-	readonly #cache = new ByteBudgetLruCache<string, Blob>({
+/** Value overlay payloads: one shared request per key, recent ones cached. */
+export class OverlayLayerCache<Value extends Blob | Float32Array = Blob> {
+	readonly #cache = new ByteBudgetLruCache<string, Value>({
 		maxBytes: VALUE_OVERLAY_CACHE_BYTES,
-		sizeOf: (blob) => blob.size,
+		sizeOf: (value) => (value instanceof Blob ? value.size : value.byteLength),
 	});
-	readonly #requests = new SharedRequestRegistry<string, Blob>();
+	readonly #requests = new SharedRequestRegistry<string, Value>();
 
-	load({ key, load }: OverlayLayerRequest): Promise<Blob> {
+	load({ key, load }: OverlayRequest<Value>): Promise<Value> {
 		const cached = this.#cache.get(key);
 		if (cached) return Promise.resolve(cached);
-		return this.#requests.request(key, load).then((blob) => {
-			this.#cache.set(key, blob);
-			return blob;
+		return this.#requests.request(key, load).then((value) => {
+			this.#cache.set(key, value);
+			return value;
 		});
 	}
 
@@ -99,11 +119,14 @@ export function legendColors(legend: OverlayLegend): string[] {
 	return legend.color_stops.map(([red, green, blue]) => `rgb(${red}, ${green}, ${blue})`);
 }
 
-/** One overlay layer image, fetched in the display fetch scope under `key`. */
-export type OverlayLayerRequest = {
+/** One overlay payload, shared and cached under `key`. */
+export type OverlayRequest<Value> = {
 	key: string;
-	load: (signal: AbortSignal) => Promise<Blob>;
+	load: (signal: AbortSignal) => Promise<Value>;
 };
+
+/** One overlay layer image, fetched in the display fetch scope under `key`. */
+export type OverlayLayerRequest = OverlayRequest<Blob>;
 
 /** The layer images of `overlay`, bottom to top. */
 export function overlayLayerRequests(overlay: FrameOverlay): OverlayLayerRequest[] {

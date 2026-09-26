@@ -16,6 +16,7 @@ vi.mock("../api", async (importOriginal) => ({
 	fetchRawFrame: vi.fn(),
 	fetchFrameValueMapping: vi.fn(),
 	fetchDoseOverlayBlob: vi.fn(),
+	fetchDoseOverlayValues: vi.fn(),
 	updateAnnotations: vi.fn(),
 }));
 
@@ -303,6 +304,24 @@ describe("ImageViewport value overlays", () => {
 		expect(await screen.findByText("Not covering this frame")).toBeTruthy();
 		expect(drawOverlayLayer).not.toHaveBeenCalled();
 		expect(layerCanvas()?.hidden).toBe(true);
+	});
+
+	it("adds the overlaid dose under the cursor to the readout", async () => {
+		const values = new Float32Array(64 * 64).fill(Number.NaN);
+		values[20 * 64 + 10] = 16.2;
+		vi.mocked(api.fetchDoseOverlayValues).mockResolvedValue(values);
+		renderViewport({ valueOverlay: dose() });
+		const viewport = await screen.findByRole("application");
+
+		await fireEvent.pointerMove(viewport, { clientX: 10.5, clientY: 20.5 });
+
+		const readout = await screen.findByRole("status", { name: "Pixel value under cursor" });
+		await waitFor(() => expect(readout.textContent).toContain("dose 16.2 Gy"));
+		expect(api.fetchDoseOverlayValues).toHaveBeenCalledWith(5, 0, 9, expect.any(AbortSignal));
+
+		await fireEvent.pointerMove(viewport, { clientX: 3.5, clientY: 4.5 });
+		await waitFor(() => expect(readout.textContent).toContain("outside the volume"));
+		expect(api.fetchDoseOverlayValues).toHaveBeenCalledOnce();
 	});
 
 	it("says when a layer fails for another reason", async () => {

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { ApiError, type FrameValueMapping, type RawFrame } from "../../api";
 import { fileSummary, rawFrame } from "../../testing/fixtures";
-import { PixelProbe, pixelReadout, type PixelReadoutInput } from "./pixelProbe.svelte";
+import { overlayValueReadout, PixelProbe, pixelReadout, type PixelReadoutInput } from "./pixelProbe.svelte";
 import { RawFrameSource } from "./rawFrameSource";
 
 const CT = fileSummary(4, { modality: "CT" });
@@ -107,5 +107,28 @@ describe("PixelProbe", () => {
 		probe.track(CT, 1, color);
 		expect(loadTag).toHaveBeenCalledOnce();
 		expect(probe.planarConfiguration(CT, rawFrame())).toBe(0);
+	});
+});
+
+describe("overlayValueReadout", () => {
+	const pixel = { row: 1, column: 2 };
+
+	it("reads the overlaid volume's value at the pixel, row-major", () => {
+		const values = new Float32Array(12).fill(Number.NaN);
+		values[1 * 4 + 2] = 16.2;
+		expect(overlayValueReadout("dose", "Gy", pixel, 4, { status: "ready", values }))
+			.toEqual({ label: "dose", unit: "Gy", value: "16.2", note: null });
+	});
+
+	it("says when the pixel or frame lies outside the volume", () => {
+		const values = new Float32Array(12).fill(Number.NaN);
+		expect(overlayValueReadout("dose", "Gy", pixel, 4, { status: "ready", values }))
+			.toMatchObject({ value: null, note: "outside the volume" });
+		expect(overlayValueReadout("dose", "Gy", pixel, 4, { status: "not_covering" }))
+			.toMatchObject({ value: null, note: "outside the volume" });
+		expect(overlayValueReadout("map", "um2/s", pixel, 4, { status: "loading" }))
+			.toMatchObject({ value: null, note: "reading…" });
+		expect(overlayValueReadout("map", "um2/s", pixel, 4, { status: "unavailable" }))
+			.toMatchObject({ value: null, note: "unavailable" });
 	});
 });

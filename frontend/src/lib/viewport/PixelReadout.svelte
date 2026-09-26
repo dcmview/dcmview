@@ -42,6 +42,16 @@
 	{#if readout.note}
 		<span class="note">{readout.note}</span>
 	{/if}
+	{#if readout.overlay}
+		<span class="overlay-value">
+			<span class="label">{readout.overlay.label}</span>
+			{#if readout.overlay.value !== null}
+				{readout.overlay.value} {readout.overlay.unit}
+			{:else}
+				<span class="note">{readout.overlay.note}</span>
+			{/if}
+		</span>
+	{/if}
 </div>
 
 <style>
@@ -66,7 +76,8 @@
 	.note {
 		color: var(--text-muted);
 	}
-	.mapped {
+	.mapped,
+	.overlay-value {
 		color: var(--accent-text);
 	}
 </style>

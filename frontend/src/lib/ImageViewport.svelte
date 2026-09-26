@@ -44,6 +44,7 @@
 		OverlayLayerCache,
 		overlayLayerRequests,
 		valueOverlayLayerRequest,
+		valueOverlayValuesRequest,
 		type FrameOverlay,
 		type ValueOverlay,
 	} from "./viewport/frameOverlay";
@@ -53,7 +54,12 @@
 		scheduleIdle,
 	} from "./viewport/prefetchScheduling";
 	import PixelReadout from "./viewport/PixelReadout.svelte";
-	import { PixelProbe, pixelReadout } from "./viewport/pixelProbe.svelte";
+	import {
+		overlayValueReadout,
+		PixelProbe,
+		pixelReadout,
+		type OverlayValueState,
+	} from "./viewport/pixelProbe.svelte";
 	import { RawFrameSource } from "./viewport/rawFrameSource";
 	import { RenderedFrames } from "./viewport/renderedFrames.svelte";
 	import RoiList from "./viewport/RoiList.svelte";
@@ -168,6 +174,8 @@
 	});
 	const valueMappings = new ValueMappings();
 	const overlayLayers = new OverlayLayerCache();
+	const overlayValues = new OverlayLayerCache<Float32Array>();
+	let overlayValueState = $state<{ key: string; state: OverlayValueState } | null>(null);
 	let valueOverlayCanvas: HTMLCanvasElement | undefined = $state();
 	type ValueOverlayState = { key: string; status: "loading" | "shown" | "not_covering" | "error" };
 	let valueOverlayState = $state<ValueOverlayState | null>(null);
@@ -333,7 +341,7 @@
 		const pixel = probe.pixel;
 		if (!pixel) return null;
 		const { file, frameIndex } = probeTarget;
-		return pixelReadout({
+		const values = pixelReadout({
 			pixel,
 			file,
 			frameIndex,
@@ -343,6 +351,16 @@
 			planarConfiguration: (frame) => probe.planarConfiguration(file, frame),
 			paused: cinePlaying,
 		});
+		if (!shownValueOverlay || cinePlaying) return values;
+		const key = valueOverlayValuesRequest(shownValueOverlay, activeFile.index, currentFrame).key;
+		const state: OverlayValueState = !valueOverlayCovers
+			? { status: "not_covering" }
+			: overlayValueState?.key === key ? overlayValueState.state : { status: "loading" };
+		const label = shownValueOverlay.kind === "rt_dose" ? "dose" : "map";
+		return {
+			...values,
+			overlay: overlayValueReadout(label, shownValueOverlay.legend.unit_label, pixel, activeFile.columns, state),
+		};
 	});
 
 	function setSelectedRoi(index: number | null) {
@@ -877,12 +895,43 @@
 		};
 	});
 
+	// While the cursor is on the image, the shown colorwash's values for the
+	// displayed frame load once, for the readout.
+	$effect(() => {
+		const volume = valueOverlayVolume;
+		const covers = valueOverlayCovers;
+		const fileIndex = activeFile.index;
+		const frameIndex = currentFrame;
+		const shown = untrack(() => shownValueOverlay);
+		if (!probing || cinePlaying || !volume || !covers || !shown) return;
+		const request = valueOverlayValuesRequest(shown, fileIndex, frameIndex);
+		const { key } = request;
+		let current = true;
+		if (untrack(() => overlayValueState?.key) !== key) overlayValueState = { key, state: { status: "loading" } };
+		overlayValues.abortOthers(key);
+		overlayValues.load(request)
+			.then((values) => {
+				if (current) overlayValueState = { key, state: { status: "ready", values } };
+			})
+			.catch((error: unknown) => {
+				if (!current || (error as Error).name === "AbortError") return;
+				overlayValueState = {
+					key,
+					state: { status: isApiError(error, "overlay_not_covering_frame") ? "not_covering" : "unavailable" },
+				};
+			});
+		return () => {
+			current = false;
+		};
+	});
+
 	$effect(() => observePrefetchConcurrency((concurrency) => { prefetchConcurrency = concurrency; }));
 
 	$effect(() => {
 		return () => {
 			stopProbe();
 			overlayLayers.clear();
+			overlayValues.clear();
 			rawFrames.clear();
 			displayFrames.clear();
 			wlRenderer.dispose();

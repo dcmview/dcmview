@@ -4,6 +4,7 @@ import {
 	displayFrameCacheKey,
 	displayFrameWindowCacheKey,
 	fetchDoseOverlayBlob,
+	fetchDoseOverlayValues,
 	fetchFiles,
 	fetchRawFrame,
 	fetchSelectedTag,
@@ -163,6 +164,22 @@ describe("fetch wrappers", () => {
 		);
 
 		await expect(fetchFiles()).rejects.toThrow("HTTP 502");
+	});
+
+	it("reads overlay values as little-endian f32 samples", async () => {
+		const bytes = new DataView(new ArrayBuffer(12));
+		bytes.setFloat32(0, 16.2, true);
+		bytes.setFloat32(4, Number.NaN, true);
+		bytes.setFloat32(8, -1.5, true);
+		const fetchMock = vi.fn().mockResolvedValue(new Response(bytes.buffer, { status: 200 }));
+		vi.stubGlobal("fetch", fetchMock);
+
+		const values = await fetchDoseOverlayValues(5, 0, 9);
+
+		expect(fetchMock.mock.calls[0][0]).toBe("/api/file/5/frame/0/dose-overlay/values?dose=9");
+		expect(values[0]).toBeCloseTo(16.2, 5);
+		expect(Number.isNaN(values[1])).toBe(true);
+		expect(values[2]).toBe(-1.5);
 	});
 
 	it("forwards the abort signal and parses raw-frame headers", async () => {

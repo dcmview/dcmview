@@ -10,6 +10,7 @@ import { validateRenderableRawFrame } from "../rawWindowing";
 import type { RawFrameSource } from "./rawFrameSource";
 import {
 	describePixelValues,
+	formatValue,
 	rawColorNeedsPlanarConfiguration,
 	rawHeaderValueMapping,
 	type ImagePixel,
@@ -148,7 +149,49 @@ export type PixelReadoutModel = {
 	values: PixelValues | null;
 	/** Why values are missing or partial. */
 	note: string | null;
+	/** The shown dose or map colorwash's value at this pixel. */
+	overlay?: OverlayValueReadout | null;
 };
+
+/** A value overlay's resampled values for the displayed frame, as loaded. */
+export type OverlayValueState =
+	| { status: "loading" }
+	| { status: "ready"; values: Float32Array }
+	| { status: "not_covering" }
+	| { status: "unavailable" };
+
+export type OverlayValueReadout = {
+	label: string;
+	unit: string;
+	/** Null when the pixel has no value; `note` says why. */
+	value: string | null;
+	note: string | null;
+};
+
+/** The overlaid volume's value at `pixel` of a displayed frame `columns` wide. */
+export function overlayValueReadout(
+	label: string,
+	unit: string,
+	pixel: ImagePixel,
+	columns: number,
+	state: OverlayValueState,
+): OverlayValueReadout {
+	const base = { label, unit };
+	switch (state.status) {
+		case "loading":
+			return { ...base, value: null, note: "reading…" };
+		case "not_covering":
+			return { ...base, value: null, note: "outside the volume" };
+		case "unavailable":
+			return { ...base, value: null, note: "unavailable" };
+		case "ready": {
+			const value = pixel.column < columns ? state.values[pixel.row * columns + pixel.column] : undefined;
+			return value === undefined || Number.isNaN(value)
+				? { ...base, value: null, note: "outside the volume" }
+				: { ...base, value: formatValue(value), note: null };
+		}
+	}
+}
 
 export type PixelReadoutInput = {
 	pixel: ImagePixel;
