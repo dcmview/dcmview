@@ -72,11 +72,7 @@
 	} from "./rawWindowing";
 	import type { ActiveTool } from "./viewerTools";
 	import { navigationFrameAtPosition, type NavigationFrameRef } from "./seriesNavigation";
-	import type {
-		WlRendererRequest,
-		WlRendererResponse,
-		WlRendererSuccess,
-	} from "./workers/wlRendererProtocol";
+	import { WlRendererClient } from "./viewport/wlRendererClient";
 
 	type PipelineMode = "cine" | "diagnostic_wl" | "server_wl" | "segmentation_overlay";
 	type SegmentationOverlay = {
@@ -104,7 +100,6 @@
 		xmax: number;
 		frames: number[] | null;
 	};
-	type WlRenderedFrame = Pick<WlRendererSuccess, "width" | "height" | "bitmap">;
 
 	const RAW_CACHE_BYTE_BUDGET = 256 * 1024 * 1024;
 	const DISPLAY_BLOB_CACHE_BYTE_BUDGET = 320 * 1024 * 1024;
@@ -233,26 +228,11 @@
 	let frameDirection: 1 | -1 = 1;
 	let wlRenderGeneration = 0;
 
-	let wlWorker: Worker | null = null;
-	let workerInitAttempted = false;
-	let workerAvailable = false;
-	let workerMessageId = 0;
-	let pendingWorkerResponses = new Map<number, {
-		resolve: (value: WlRenderedFrame) => void;
-		reject: (error: Error) => void;
-	}>();
-	// The raw frame the worker holds; window changes send only {wc, ww}.
-	let workerFrame: RawFrame | null = null;
-	let workerFrameId = 0;
-	// At most one worker render is in flight; newer requests replace the
-	// queued one so a drag never builds a backlog.
-	let workerRenderInFlight = false;
-	let queuedWorkerRender: { frame: RawFrame; wc: number; ww: number; generation: number } | null = null;
+	const wlRenderer = new WlRendererClient();
 
 	const RAW_RING_RADIUS = 10;
 	const DISPLAY_FULL_PREFETCH_BUDGET_BYTES = 320 * 1024 * 1024;
 	const DISPLAY_NEAR_PREFETCH_DISTANCE = 48;
-	const WORKER_MIN_PIXEL_THRESHOLD = 300_000;
 	const PREFETCH_CONCURRENCY = 3;
 	const CINE_LOOKAHEAD_FRAMES = 16;
 	const PREFETCH_RESEED_DISTANCE = 6;
@@ -487,76 +467,6 @@
 		commitAnnotations(next, selectedRoiIndex);
 	}
 
-	function ensureWlWorker(): boolean {
-		if (workerInitAttempted) {
-			return workerAvailable;
-		}
-		workerInitAttempted = true;
-		try {
-			wlWorker = new Worker(new URL("./workers/wlRenderer.worker.ts", import.meta.url), { type: "module" });
-			wlWorker.onmessage = (event: MessageEvent<WlRendererResponse>) => {
-				const payload = event.data;
-				if (payload.type === "error") {
-					const pending = pendingWorkerResponses.get(payload.id);
-					if (!pending) return;
-					pendingWorkerResponses.delete(payload.id);
-					pending.reject(new Error(payload.message));
-					return;
-				}
-				const pending = pendingWorkerResponses.get(payload.id);
-				if (!pending) return;
-				pendingWorkerResponses.delete(payload.id);
-				pending.resolve({ width: payload.width, height: payload.height, bitmap: payload.bitmap });
-			};
-			wlWorker.onerror = () => {
-				workerAvailable = false;
-				workerFrame = null;
-				for (const pending of pendingWorkerResponses.values()) {
-					pending.reject(new Error("window/level worker failed"));
-				}
-				pendingWorkerResponses.clear();
-			};
-			workerAvailable = true;
-			return true;
-		} catch {
-			workerAvailable = false;
-			wlWorker = null;
-			return false;
-		}
-	}
-
-	function shouldUseWorker(frame: RawFrame): boolean {
-		const pixels = frame.metadata.rows * frame.metadata.columns;
-		return pixels >= WORKER_MIN_PIXEL_THRESHOLD && ensureWlWorker();
-	}
-
-	async function renderWithWorker(frame: RawFrame, wc: number, ww: number): Promise<ImageBitmap> {
-		if (!wlWorker || !workerAvailable) {
-			throw new Error("worker unavailable");
-		}
-		if (workerFrame !== frame) {
-			// The main thread keeps its buffer for the raw-frame cache, so the
-			// worker gets a copy, once per frame rather than once per render.
-			const buffer = frame.buffer.slice(0);
-			const load: WlRendererRequest = {
-				type: "frame",
-				frameId: ++workerFrameId,
-				metadata: frame.metadata,
-				buffer,
-			};
-			wlWorker.postMessage(load, [buffer]);
-			workerFrame = frame;
-		}
-		const id = ++workerMessageId;
-		const pending = new Promise<WlRenderedFrame>((resolve, reject) => {
-			pendingWorkerResponses.set(id, { resolve, reject });
-		});
-		const request: WlRendererRequest = { type: "render", id, frameId: workerFrameId, wc, ww };
-		wlWorker.postMessage(request);
-		const result = await pending;
-		return result.bitmap;
-	}
-
 	function clearCanvas(): void {
 		renderedFrameToken = "";
 		if (!canvasEl) return;
@@ -718,63 +628,6 @@
 			displayRenderWaiters.add(waiter);
 			return () => displayRenderWaiters.delete(waiter);
 		});
-	}
-
-	function renderRawFrameOnMainThread(
-		canvas: HTMLCanvasElement,
-		frame: RawFrame,
-		wc: number,
-		ww: number,
-	): void {
-		const { rows, columns } = frame.metadata;
-		canvas.width = columns;
-		canvas.height = rows;
-		const ctx = canvas.getContext("2d", { alpha: false });
-		if (!ctx) return;
-		const imageData = ctx.createImageData(columns, rows);
-		imageData.data.set(renderRawFrameToRgba(frame, wc, ww));
-		ctx.putImageData(imageData, 0, 0);
-	}
-
-	async function renderDiagnosticFrame(frame: RawFrame, wc: number, ww: number, generation: number): Promise<void> {
-		if (!canvasEl) return;
-		if (shouldUseWorker(frame)) {
-			queuedWorkerRender = { frame, wc, ww, generation };
-			if (workerRenderInFlight) return;
-			workerRenderInFlight = true;
-			try {
-				while (queuedWorkerRender) {
-					const next = queuedWorkerRender;
-					queuedWorkerRender = null;
-					const bitmap = await renderWithWorker(next.frame, next.wc, next.ww);
-					if (
-						next.generation !== wlRenderGeneration
-						|| next.frame !== currentRawFrame
-						|| !canvasEl
-						|| pipelineMode !== "diagnostic_wl"
-					) {
-						bitmap.close();
-						continue;
-					}
-					canvasEl.width = bitmap.width;
-					canvasEl.height = bitmap.height;
-					const ctx = canvasEl.getContext("2d", { alpha: false });
-					ctx?.drawImage(bitmap, 0, 0);
-					bitmap.close();
-				}
-				return;
-			} catch {
-				workerAvailable = false;
-				const latest = queuedWorkerRender ?? { frame, wc, ww, generation };
-				queuedWorkerRender = null;
-				if (latest.generation !== wlRenderGeneration || !canvasEl) return;
-				renderRawFrameOnMainThread(canvasEl, latest.frame, latest.wc, latest.ww);
-				return;
-			} finally {
-				workerRenderInFlight = false;
-			}
-		}
-		renderRawFrameOnMainThread(canvasEl, frame, wc, ww);
 	}
 
 	function startDisplayDecode(key: string, blob: Blob): Promise<ImageBitmap> {
@@ -1475,8 +1328,17 @@ function startDisplayPrefetch(
 		if (pipelineMode !== "diagnostic_wl" || !currentRawFrame || !canvasEl) return;
 		// displayWindow already resolved this frame's window; window changes do
 		// not invalidate in-flight renders, only frame, file, and mode changes do.
+		const frame = currentRawFrame;
 		const { wc, ww } = displayWindow;
-		void renderDiagnosticFrame(currentRawFrame, wc, ww, untrack(() => wlRenderGeneration));
+		const generation = wlRenderGeneration;
+		void wlRenderer.render(() => canvasEl, {
+			frame,
+			wc,
+			ww,
+			isCurrent: () => generation === wlRenderGeneration
+				&& frame === currentRawFrame
+				&& pipelineMode === "diagnostic_wl",
+		});
 	});
 
 	$effect(() => {
@@ -1498,14 +1360,7 @@ function startDisplayPrefetch(
 			displayPrefetchSeedFrame = null;
 			clearRawFrameCache();
 			clearDisplayCache();
-			for (const pending of pendingWorkerResponses.values()) {
-				pending.reject(new Error("viewport disposed"));
-			}
-			pendingWorkerResponses.clear();
-			wlWorker?.terminate();
-			wlWorker = null;
-			workerFrame = null;
-			queuedWorkerRender = null;
+			wlRenderer.dispose();
 		};
 	});
 
