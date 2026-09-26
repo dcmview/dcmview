@@ -979,9 +979,7 @@ def publish_media(args: argparse.Namespace) -> None:
 	repository = "https://raw.githubusercontent.com/dcmview/dcmview"
 	artifact_paths = publication_artifact_paths(lock)
 	root_media = REPO_ROOT / "media" / "marketing"
-	vscode_media = REPO_ROOT / "vscode" / "media" / "marketing"
 	copy_bundle_files(bundle, root_media, lock)
-	copy_bundle_files(bundle, vscode_media, lock)
 	root_gallery = viewer_gallery(
 		artifact_paths,
 		asset_base=f"{repository}/{tag}/media/marketing",
@@ -989,10 +987,12 @@ def publish_media(args: argparse.Namespace) -> None:
 	)
 	replace_marked_block(REPO_ROOT / "README.md", root_gallery, anchor="## Why use it?")
 	replace_marked_block(REPO_ROOT / "docs" / "index.md", root_gallery, anchor="## User Guides")
+	# The extension README loads the same tagged root copy over HTTPS, so the
+	# VSIX does not bundle the media.
 	extension_gallery = vscode_gallery(
 		artifact_paths,
-		asset_base=f"{repository}/{tag}/vscode/media/marketing",
-		attribution_url=f"{repository}/{tag}/vscode/media/marketing/ATTRIBUTION.md",
+		asset_base=f"{repository}/{tag}/media/marketing",
+		attribution_url=f"{repository}/{tag}/media/marketing/ATTRIBUTION.md",
 	)
 	replace_marked_block(
 		REPO_ROOT / "vscode" / "README.md", extension_gallery, anchor="## Supported Platforms"
