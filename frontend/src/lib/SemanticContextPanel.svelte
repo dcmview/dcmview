@@ -174,7 +174,7 @@
 	button.active { color: var(--surface-root); background: var(--surface-control-active); }
 	button:disabled { opacity: .42; cursor: not-allowed; }
 	.message, .reason, .warning { margin: 7px 0 0; }
-	.error, .warning { color: #ffb4ab; }
+	.error, .warning { color: var(--danger-text); }
 	.details { max-height: 180px; overflow: auto; }
 	.summary-grid { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 7px; }
 	.summary-grid b { color: var(--text-primary); font-family: var(--font-mono); }
@@ -182,6 +182,6 @@
 	.item strong { color: var(--text-primary); }
 	.item span { font-family: var(--font-mono); }
 	.reason { color: var(--text-muted); }
-	.reason.eligible { color: #8bd5a1; }
+	.reason.eligible { color: var(--success-text); }
 	@media (max-width: 700px) { header { align-items: flex-start; } .details { max-height: 130px; } }
 </style>

@@ -86,9 +86,9 @@
 	.labels span { font-family: var(--font-mono); }
 	.minimap-wrap { display: grid; justify-items: end; gap: 2px; color: var(--text-muted); font-family: var(--font-mono); }
 	.minimap { overflow: visible; }
-	.matrix { fill: #121316; stroke: var(--border-strong); }
-	.tile { fill: #69b7ff; stroke: #d9efff; vector-effect: non-scaling-stroke; }
-	.warning { color: #ffb4ab; }
+	.matrix { fill: var(--surface-viewport); stroke: var(--border-strong); }
+	.tile { fill: var(--accent); stroke: var(--accent-text); vector-effect: non-scaling-stroke; }
+	.warning { color: var(--danger-text); }
 	.boundary { align-self: flex-end; color: var(--text-muted); white-space: nowrap; }
 	@media (max-width: 850px) { .wsi-context { flex-wrap: wrap; } .boundary { white-space: normal; } }
 </style>

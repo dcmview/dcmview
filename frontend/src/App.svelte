@@ -377,6 +377,7 @@
 		--danger: #ff6961;
 		--accent-text: #9fcbff;
 		--danger-text: #ffb0b0;
+		--success-text: #8bd5a1;
 		--text-disabled: rgba(255, 255, 255, 0.22);
 		--surface-hud: rgba(28, 28, 30, 0.78);
 		--surface-hover-overlay: rgba(255, 255, 255, 0.08);
