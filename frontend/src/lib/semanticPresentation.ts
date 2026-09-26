@@ -67,3 +67,32 @@ export function mappingFormula(slope: number | null, intercept: number | null): 
 	const resolvedIntercept = intercept ?? 0;
 	return `mapped = stored × ${resolvedSlope} + ${resolvedIntercept}`;
 }
+
+/** A declared number rounded for display, without trailing zeros. */
+export function formatDeclaredNumber(value: number): string {
+	return String(Number(value.toFixed(4)));
+}
+
+/** A declared vector such as Image Position (Patient), or null when absent. */
+export function formatDeclaredVector(values: readonly number[] | null): string | null {
+	return values === null ? null : values.map(formatDeclaredNumber).join(" \\ ");
+}
+
+/**
+ * Summarize the Grid Frame Offset Vector: plane count, offset range, and
+ * whether the planes are evenly spaced. The full vector stays in the tag
+ * panel, since a dose grid can declare hundreds of planes.
+ */
+export function gridFrameOffsetSummary(offsets: readonly number[]): string | null {
+	if (offsets.length === 0) return null;
+	const first = offsets[0];
+	const last = offsets[offsets.length - 1];
+	const planes = `${offsets.length} ${offsets.length === 1 ? "plane" : "planes"}`;
+	if (offsets.length === 1) return `${planes} at ${formatDeclaredNumber(first)} mm`;
+	const step = offsets[1] - offsets[0];
+	const uniform = offsets.every(
+		(offset, index) => index === 0 || Math.abs(offset - offsets[index - 1] - step) <= 1e-3,
+	);
+	const spacing = uniform ? `${formatDeclaredNumber(step)} mm step` : "uneven spacing";
+	return `${planes}, ${formatDeclaredNumber(first)} to ${formatDeclaredNumber(last)} mm, ${spacing}`;
+}

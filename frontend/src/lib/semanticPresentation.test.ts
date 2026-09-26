@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { SemanticContextResponse } from "../generated/api-types";
 import {
 	codedConceptLabel,
+	formatDeclaredVector,
+	gridFrameOffsetSummary,
 	mappingFormula,
 	segmentationOverlaySelection,
 	semanticKindLabel,
@@ -80,5 +82,19 @@ describe("semantic presentation labels", () => {
 		} as unknown as SemanticContextResponse;
 
 		expect(segmentationOverlaySelection(response, 0)).toBeNull();
+	});
+});
+
+describe("RT Dose grid presentation", () => {
+	it("formats declared vectors without inventing absent ones", () => {
+		expect(formatDeclaredVector([-120.5, 30, 0.123456])).toBe("-120.5 \\ 30 \\ 0.1235");
+		expect(formatDeclaredVector(null)).toBeNull();
+	});
+
+	it("summarizes the Grid Frame Offset Vector", () => {
+		expect(gridFrameOffsetSummary([])).toBeNull();
+		expect(gridFrameOffsetSummary([0])).toBe("1 plane at 0 mm");
+		expect(gridFrameOffsetSummary([0, 2.5, 5, 7.5])).toBe("4 planes, 0 to 7.5 mm, 2.5 mm step");
+		expect(gridFrameOffsetSummary([0, 2, 5])).toBe("3 planes, 0 to 5 mm, uneven spacing");
 	});
 });

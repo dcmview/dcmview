@@ -260,6 +260,8 @@
 							<SemanticContextPanel
 								fileIndex={activeFile.index}
 								currentFrame={tabs.currentFrame}
+								files={catalog.files.files}
+								onopenreference={(fileIndex, frameIndex) => tabs.openReference(fileIndex, frameIndex)}
 								onmodechange={(mode) => { semanticMode = mode; }}
 								oncontextchange={(response) => { semanticResponse = response; }}
 							/>

@@ -1,13 +1,16 @@
 <script lang="ts">
 	import { untrack } from "svelte";
-	import { fetchSemanticContext, type SemanticContextResponse } from "../api";
+	import { fetchSemanticContext, type FileSummary, type SemanticContextResponse } from "../api";
 	import {
 		KeyedAsyncResource,
 		METADATA_CACHE_FILES,
 		type AsyncResourceSnapshot,
 	} from "./keyedAsyncResource";
+	import ReferenceEdge from "./ReferenceEdge.svelte";
 	import {
 		codedConceptLabel,
+		formatDeclaredVector,
+		gridFrameOffsetSummary,
 		mappingFormula,
 		semanticKindLabel,
 		semanticModeLabel,
@@ -17,11 +20,15 @@
 	let {
 		fileIndex,
 		currentFrame,
+		files,
+		onopenreference,
 		onmodechange,
 		oncontextchange,
 	}: {
 		fileIndex: number;
 		currentFrame: number;
+		files: FileSummary[];
+		onopenreference: (fileIndex: number, frameIndex: number) => void;
 		onmodechange?: (mode: SemanticMode) => void;
 		oncontextchange?: (response: SemanticContextResponse | null) => void;
 	} = $props();
@@ -40,7 +47,8 @@
 	const response = $derived(snapshot?.status === "ready" ? snapshot.value ?? null : null);
 	const error = $derived(snapshot?.status === "error" ? snapshot.error : null);
 	const loading = $derived(snapshot?.status === "loading");
-	const semanticAvailable = $derived(response !== null && response.context.kind !== "not_applicable");
+	const activeFile = $derived(files.find((file) => file.index === fileIndex) ?? null);
+	const semanticAvailable =$derived(response !== null && response.context.kind !== "not_applicable");
 	const currentSegmentMapping = $derived.by(() => {
 		if (response?.context.kind !== "segmentation") return null;
 		return response.context.frame_mappings.find((mapping) => mapping.frame_index === currentFrame) ?? null;
@@ -153,6 +161,32 @@
 					<span>Grid scaling <b>{display(response.context.dose_grid_scaling)}</b></span>
 				</div>
 				<p class="reason">Scaled value = stored value × {display(response.context.dose_grid_scaling)}. The pixel canvas remains the stored-value preview.</p>
+				{#if response.context.scaling_status !== "available"}
+					<p class="warning">Dose Grid Scaling is {response.context.scaling_status.replace(/_/g, " ")}; values are shown as stored.</p>
+				{/if}
+				<h3>Dose grid</h3>
+				<dl class="geometry">
+					<dt>Matrix</dt>
+					<dd>{activeFile ? `${activeFile.columns} × ${activeFile.rows} × ${activeFile.frame_count}` : "Not declared"}</dd>
+					<dt>Pixel spacing</dt>
+					<dd>{display(formatDeclaredVector(response.context.geometry.pixel_spacing))}{response.context.geometry.pixel_spacing ? " mm" : ""}</dd>
+					<dt>Frame offsets</dt>
+					<dd>{display(gridFrameOffsetSummary(response.context.geometry.grid_frame_offsets))}</dd>
+					<dt>Position</dt>
+					<dd>{display(formatDeclaredVector(response.context.geometry.image_position_patient))}</dd>
+					<dt>Orientation</dt>
+					<dd>{display(formatDeclaredVector(response.context.geometry.image_orientation_patient))}</dd>
+					<dt>Frame of reference</dt>
+					<dd>{display(response.context.geometry.frame_of_reference_uid)}</dd>
+				</dl>
+				<h3>References</h3>
+				<div class="references">
+					{#each response.context.references as reference, index (`${reference.relationship}:${index}`)}
+						<ReferenceEdge {reference} {files} {onopenreference} />
+					{:else}
+						<p class="reason">No plan, structure set, or image references are declared.</p>
+					{/each}
+				</div>
 				<p class:eligible={response.context.overlay.eligible} class="reason">
 					Overlay {response.context.overlay.eligible ? "eligible" : "unavailable"}: {response.context.overlay.reason}.
 				</p>
@@ -181,6 +215,11 @@
 	.item { display: grid; gap: 2px; margin-top: 7px; padding: 6px 8px; border-left: 2px solid var(--border-strong); background: var(--surface-panel); }
 	.item strong { color: var(--text-primary); }
 	.item span { font-family: var(--font-mono); }
+	h3 { margin: 9px 0 0; color: var(--text-primary); font-size: 11px; font-weight: 650; }
+	.geometry { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 12px; margin: 4px 0 0; }
+	.geometry dt { color: var(--text-muted); }
+	.geometry dd { margin: 0; overflow-wrap: anywhere; color: var(--text-primary); font-family: var(--font-mono); }
+	.references { display: grid; gap: 4px; margin-top: 4px; }
 	.reason { color: var(--text-muted); }
 	.reason.eligible { color: var(--success-text); }
 	@media (max-width: 700px) { header { align-items: flex-start; } .details { max-height: 130px; } }
