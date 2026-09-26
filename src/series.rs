@@ -166,13 +166,7 @@ impl Default for SeriesCatalogOptions {
 
 impl SeriesCatalog {
     pub fn build(files: impl IntoIterator<Item = SeriesFileInput>) -> Self {
-        Self::build_with_options(files, SeriesCatalogOptions::default())
-    }
-
-    pub fn build_with_options(
-        files: impl IntoIterator<Item = SeriesFileInput>,
-        options: SeriesCatalogOptions,
-    ) -> Self {
+        let options = SeriesCatalogOptions::default();
         let mut grouped = BTreeMap::<SeriesId, Vec<SeriesFileInput>>::new();
         for file in files {
             let id = file.series_id();
@@ -191,13 +185,6 @@ impl SeriesCatalog {
 
     pub fn series(&self) -> &[SeriesGroup] {
         &self.series
-    }
-
-    pub fn get(&self, id: &SeriesId) -> Option<&SeriesGroup> {
-        self.series
-            .binary_search_by(|stack| stack.id.cmp(id))
-            .ok()
-            .map(|index| &self.series[index])
     }
 }
 
