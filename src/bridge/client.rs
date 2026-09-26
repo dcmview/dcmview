@@ -85,9 +85,13 @@ pub(crate) async fn launch_in_vscode(
 
     match attempt {
         LaunchAttempt::Launched { endpoint, response } => {
+            // Listen before announcing the URL: a wrapper may interrupt as soon
+            // as it reads it, and an unhandled SIGINT would kill this process
+            // without closing the VS Code viewer.
+            let interrupt = BridgeInterrupt::listen();
             print_launched(&response.url, startup_json);
             BridgeOutcome::Routed(
-                wait_for_launched_vscode_session(&client, &endpoint, &response).await,
+                wait_for_launched_vscode_session(&client, &endpoint, &response, interrupt).await,
             )
         }
         LaunchAttempt::Failed(error) => {
@@ -233,13 +237,23 @@ async fn wait_for_launched_vscode_session(
     client: &reqwest::Client,
     endpoint: &BridgeEndpoint,
     response: &BridgeLaunchResponse,
+    interrupt: Result<BridgeInterrupt>,
 ) -> i32 {
+    let interrupt = async move {
+        match interrupt {
+            Ok(mut interrupt) => {
+                interrupt.recv().await;
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
+    };
     let result = wait_for_launched_vscode_session_with_interrupt(
         client,
         endpoint,
         response,
         BRIDGE_REQUEST_TIMEOUT,
-        wait_for_bridge_interrupt(),
+        interrupt,
     )
     .await;
     result.unwrap_or_else(|error| {
@@ -286,29 +300,50 @@ where
     }
 }
 
-async fn wait_for_bridge_interrupt() -> Result<()> {
+/// Ctrl+C (and Ctrl+Break on Windows), registered when created rather than
+/// when first awaited.
+struct BridgeInterrupt {
     #[cfg(not(windows))]
-    {
-        tokio::signal::ctrl_c()
-            .await
-            .context("failed to listen for Ctrl+C")
+    interrupt: tokio::signal::unix::Signal,
+    #[cfg(windows)]
+    ctrl_c: tokio::signal::windows::CtrlC,
+    #[cfg(windows)]
+    ctrl_break: tokio::signal::windows::CtrlBreak,
+}
+
+impl BridgeInterrupt {
+    fn listen() -> Result<Self> {
+        #[cfg(not(windows))]
+        {
+            Ok(Self {
+                interrupt:
+                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+                        .context("failed to listen for Ctrl+C")?,
+            })
+        }
+
+        #[cfg(windows)]
+        {
+            Ok(Self {
+                ctrl_c: tokio::signal::windows::ctrl_c().context("failed to listen for Ctrl+C")?,
+                ctrl_break: tokio::signal::windows::ctrl_break()
+                    .context("failed to listen for Ctrl+Break")?,
+            })
+        }
     }
 
-    #[cfg(windows)]
-    {
-        let ctrl_c = tokio::signal::ctrl_c();
-        let ctrl_break = async {
-            let mut signal =
-                tokio::signal::windows::ctrl_break().context("failed to listen for Ctrl+Break")?;
-            signal.recv().await;
-            Ok::<(), anyhow::Error>(())
-        };
+    async fn recv(&mut self) {
+        #[cfg(not(windows))]
+        {
+            self.interrupt.recv().await;
+        }
 
-        tokio::select! {
-            signal_result = ctrl_c => {
-                signal_result.context("failed to listen for Ctrl+C")
-            },
-            signal_result = ctrl_break => signal_result,
+        #[cfg(windows)]
+        {
+            tokio::select! {
+                _ = self.ctrl_c.recv() => {},
+                _ = self.ctrl_break.recv() => {},
+            }
         }
     }
 }
