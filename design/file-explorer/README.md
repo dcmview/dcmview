@@ -1,8 +1,10 @@
 # File explorer visual exploration
 
-This folder records the fixture-backed baseline used to compare experimental
-file navigator directions. The working experiments intentionally remain on
-separate `codex/explorer-*` branches until a direction is selected.
+This folder records the file navigator direction that was selected: the
+refined card rail (`refined-card-rail-*.png`, Study and Directory
+organization, full window and panel crops). The baseline and the rejected
+directions' screenshots were removed; their working experiments remain on the
+`codex/explorer-*` branches listed below.
 
 ## Evaluation frame
 
@@ -21,7 +23,7 @@ separate `codex/explorer-*` branches until a direction is selected.
 | Nested blocks | `codex/explorer-blocks` | Strong spatial containment for each medical hierarchy tier |
 | Hierarchy rail | `codex/explorer-rail` | Dense tree with guide rails and consistent node markers |
 | Drill-down browser | `codex/explorer-columns` | One level at a time with a persistent breadcrumb path |
-| Card rail | `codex/explorer-compact` | Bounded patient cards with colored study/series rails |
+| Card rail (selected, then refined) | `codex/explorer-compact` | Bounded patient cards with colored study/series rails |
 
 ## Reference patterns
 
