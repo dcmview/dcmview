@@ -14,7 +14,7 @@ import urllib.request
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Callable, Iterator, Optional
 from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -25,6 +25,7 @@ if str(PYTHON_SRC) not in sys.path:
 from dcmview_py import wrapper
 
 FIXTURE_FILE = REPO_ROOT / "tests" / "fixtures" / "golden-uncompressed-u16-multiframe.dcm"
+OTHER_PATIENT_FILE = REPO_ROOT / "tests" / "fixtures" / "golden-jpeg-lossless-u16-single-frame.dcm"
 BRIDGE_TOKEN = "integration-token"
 VSCODE_VIEWER_URL = "http://127.0.0.1:9/vscode-viewer"
 CLI_URL_PREFIXES = ("dcmview: server running at ", "dcmview: opened in VS Code at ")
@@ -282,6 +283,63 @@ class WrapperBinaryIntegrationTests(unittest.TestCase):
 			self.assertIsNotNone(url)
 			self.assertNotEqual(url, VSCODE_VIEWER_URL)
 			self.assertEqual(bridge.launches, [])
+
+	def test_every_view_keyword_reaches_the_binary_and_takes_effect(self) -> None:
+		"""Each flag view() builds must be accepted by the real clap CLI.
+
+		The launch goes through the bridge-client form (outside VS Code, so it
+		runs locally), and the served catalog shows the scan options applied.
+		"""
+		with tempfile.TemporaryDirectory() as root:
+			study = Path(root).resolve() / "study"
+			(study / "nested").mkdir(parents=True)
+			kept = study / "kept.dcm"
+			kept.write_bytes(FIXTURE_FILE.read_bytes())
+			(study / "filtered-out.dcm").write_bytes(OTHER_PATIENT_FILE.read_bytes())
+			(study / "nested" / "not-scanned.dcm").write_bytes(FIXTURE_FILE.read_bytes())
+			annotations = Path(root).resolve() / "rois.csv"
+			annotations.write_text(
+				f'anon_dicom_path,ROI_coords\n{kept},"[[0, 0, 2, 2]]"\n', encoding="utf-8"
+			)
+
+			with self.bridge_scenario(terminal_env=False, workspace_contains_cwd=False) as bridge:
+				handle = wrapper.view(
+					study,
+					port=0,
+					host="127.0.0.1",
+					browser=False,
+					block=False,
+					recursive=False,
+					timeout=30,
+					annotations=annotations,
+					filters=["patient_id=GOLDEN-UNCOMP"],
+				)
+				assert handle is not None
+				try:
+					url = self.wait_for_url(handle)
+					assert url is not None
+					self.assertTrue(url.startswith("http://127.0.0.1:"))
+					catalog = self.wait_for_json(url, "/api/files", lambda body: body["scan_complete"])
+					self.assertEqual([entry["path"] for entry in catalog["files"]], [str(kept)])
+					index = catalog["files"][0]["index"]
+					rois = self.wait_for_json(
+						url, f"/api/file/{index}/annotations", lambda body: body["num_roi"] > 0
+					)
+					self.assertEqual(rois["roi_coords"], [[0, 0, 2, 2]])
+				finally:
+					exit_code = handle.stop()
+
+				self.assertEqual(exit_code, 0)
+				self.assertEqual(bridge.launches, [])
+
+	def wait_for_json(self, url: str, path: str, ready: Callable[[dict], bool]) -> dict:
+		deadline = time.time() + 10.0
+		while True:
+			with urllib.request.urlopen(f"{url}{path}", timeout=10) as response:
+				body = json.loads(response.read())
+			if ready(body) or time.time() > deadline:
+				return body
+			time.sleep(0.1)
 
 	def test_non_blocking_launch_captures_url_and_stops_cleanly(self) -> None:
 		with mock.patch.dict(

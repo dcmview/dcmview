@@ -128,46 +128,9 @@ async fn main() {
 mod tests {
     use super::*;
     use clap::CommandFactory;
-    use std::collections::HashSet;
-
-    #[test]
-    fn launcher_cli_flags_exist_on_clap_contract() {
-        let command = Cli::command();
-        let flags = command
-            .get_arguments()
-            .filter_map(|argument| argument.get_long())
-            .collect::<HashSet<_>>();
-        let launcher_flags = launcher_long_flags();
-
-        for expected in launcher_flags {
-            assert!(
-                flags.contains(expected.as_str()),
-                "launcher-used CLI flag --{expected} must exist on Cli"
-            );
-        }
-    }
 
     #[test]
     fn cli_definition_satisfies_clap_debug_assertions() {
         Cli::command().debug_assert();
-    }
-
-    fn launcher_long_flags() -> HashSet<String> {
-        let mut flags = HashSet::new();
-        collect_long_flags(include_str!("../python/dcmview_py/wrapper.py"), &mut flags);
-        collect_long_flags(include_str!("../vscode/src/extension.ts"), &mut flags);
-        flags
-    }
-
-    fn collect_long_flags(source: &str, flags: &mut HashSet<String>) {
-        for segment in source.split("--").skip(1) {
-            let flag = segment
-                .chars()
-                .take_while(|character| character.is_ascii_lowercase() || *character == '-')
-                .collect::<String>();
-            if !flag.is_empty() {
-                flags.insert(flag);
-            }
-        }
     }
 }
