@@ -84,6 +84,19 @@ would remove behavior, raise it as a question instead of acting.
   - RLE YBR_FULL_422;
   - JPEG Lossless YBR_FULL;
   - JPEG XL YBR_FULL.
+- **No pixel-value readout.** Neither stored nor mapped values (Parametric
+  Map, RT Dose) can be read per pixel in the viewport.
+- **API data the UI never renders:**
+  - RT Dose grid geometry and references;
+  - WSI companions and relationships;
+  - the SEG recommended color, which is used for the overlay but not shown in
+    the panel.
+- **Display shutters are rectangular only.** Circular, polygonal, and bitmap
+  shutters are not applied.
+
+`docs/planned/` temporarily holds uncommitted proposals, such as the JupyterLab
+integration and the original compatibility plan. They are not specs and not
+current behavior. Do not implement them unless the owner asks.
 
 ---
 
