@@ -1,17 +1,17 @@
 //! Bound listener ownership and graceful server resource management.
 
-use super::lifecycle::{wait_for_shutdown, ExternalShutdown, ShutdownReason};
+use super::lifecycle::{wait_for_shutdown, ShutdownReason};
 use super::{is_non_loopback_bind, router, AppState, FileRegistry};
 use crate::signals::StopSignals;
 use anyhow::{Context, Result};
 use serde::Serialize;
 use std::net::SocketAddr;
 use std::pin::pin;
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
-use tokio::sync::{oneshot, Notify};
+use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
@@ -20,7 +20,8 @@ pub struct ServerConfig {
     pub timeout_seconds: Option<u64>,
     pub open_browser: bool,
     pub startup_json: bool,
-    pub shutdown: Option<Arc<Notify>>,
+    /// Cancelled by the owner to stop the server, e.g. when discovery fails.
+    pub shutdown: CancellationToken,
 }
 
 pub struct BoundServer {
@@ -70,7 +71,6 @@ impl BoundServer {
         // soon as it reads it, and an unhandled signal would skip the graceful
         // shutdown below.
         let mut stop_signals = StopSignals::listen();
-        let external_shutdown = ExternalShutdown::new(config.shutdown.clone());
         let server_url = self.url();
 
         println!(
@@ -98,14 +98,14 @@ impl BoundServer {
         );
 
         let timeout = config.timeout_seconds.map(Duration::from_secs);
+        let external = config.shutdown.clone();
         let (reason_tx, reason_rx) = oneshot::channel();
         let shutdown = async move {
-            let reason =
-                wait_for_shutdown(activity, registry, timeout, external_shutdown, async move {
-                    stop_signals.recv().await;
-                    ShutdownReason::OsSignal
-                })
-                .await;
+            let reason = wait_for_shutdown(activity, registry, timeout, external, async move {
+                stop_signals.recv().await;
+                ShutdownReason::OsSignal
+            })
+            .await;
             let _ = reason_tx.send(reason);
         };
 

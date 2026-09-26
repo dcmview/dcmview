@@ -6,8 +6,7 @@ use dcmview::loader;
 use dcmview::server::{AppState, BoundServer, FileRegistry, ServerConfig};
 use discovery::{DiscoveryHandle, DiscoveryInputs, DiscoverySpawner, LoaderDiscoverySpawner};
 use std::path::PathBuf;
-use std::sync::Arc;
-use tokio::sync::Notify;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug)]
 pub(crate) struct LocalViewerOptions {
@@ -60,14 +59,14 @@ async fn run_local_viewer_with_spawner(
         AnnotationStore::empty()
     };
     let state = AppState::new(registry.clone(), annotation_store.clone());
-    let shutdown = Arc::new(Notify::new());
+    let shutdown = CancellationToken::new();
     let config = ServerConfig {
         host: options.host,
         port: options.port,
         timeout_seconds: options.timeout_seconds,
         open_browser: options.open_browser,
         startup_json: options.startup_json,
-        shutdown: Some(shutdown.clone()),
+        shutdown: shutdown.clone(),
     };
 
     let bound = BoundServer::bind(&config)
@@ -116,6 +115,7 @@ mod tests {
     use dcmview::types::FileEntry;
     use discovery::{DiscoveryFuture, ScanRequest};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
     use tokio::net::TcpListener;
     use tokio::sync::mpsc;
 

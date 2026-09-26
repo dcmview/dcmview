@@ -306,7 +306,7 @@ the scan complete. It then streams the annotation CSV once on a cancellable
 blocking worker, matching only loaded absolute path keys and committing valid
 rows atomically without overwriting viewer edits. Annotation failures remain in
 the annotation store and do not terminate image viewing. Scan and no-files
-failures produce typed outcomes and a durable external shutdown notification.
+failures produce typed outcomes and cancel the server's shutdown token.
 Normal server exit during incomplete discovery or annotation loading requests
 cancellation and remains a successful process outcome.
 

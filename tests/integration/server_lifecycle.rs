@@ -2,21 +2,20 @@ use super::support;
 use dcmview::server::{BoundServer, RequestActivity, ServerConfig, ServerExit, ShutdownReason};
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::Notify;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
-fn server_config(shutdown: Arc<Notify>, timeout_seconds: Option<u64>) -> ServerConfig {
+fn server_config(shutdown: CancellationToken, timeout_seconds: Option<u64>) -> ServerConfig {
     ServerConfig {
         host: "127.0.0.1".to_string(),
         port: 0,
         timeout_seconds,
         open_browser: false,
         startup_json: false,
-        shutdown: Some(shutdown),
+        shutdown,
     }
 }
 
@@ -61,7 +60,7 @@ async fn await_exit(task: JoinHandle<anyhow::Result<ServerExit>>) -> ServerExit 
 
 #[tokio::test]
 async fn port_zero_serves_on_the_reported_bound_listener() {
-    let shutdown = Arc::new(Notify::new());
+    let shutdown = CancellationToken::new();
     let config = server_config(shutdown.clone(), None);
     let bound = BoundServer::bind(&config).await.expect("bind server");
     let address = bound.local_addr();
@@ -76,7 +75,7 @@ async fn port_zero_serves_on_the_reported_bound_listener() {
         .expect("health request");
     assert!(response.status().is_success());
 
-    shutdown.notify_one();
+    shutdown.cancel();
     let exit = await_exit(task).await;
     assert_eq!(exit.local_addr, address);
     assert_eq!(exit.reason, ShutdownReason::External);
@@ -84,7 +83,7 @@ async fn port_zero_serves_on_the_reported_bound_listener() {
 
 #[tokio::test]
 async fn occupied_port_keeps_the_bind_error_context_used_by_the_cli() {
-    let shutdown = Arc::new(Notify::new());
+    let shutdown = CancellationToken::new();
     let first_config = server_config(shutdown.clone(), None);
     let first = BoundServer::bind(&first_config).await.expect("first bind");
     let occupied = first.local_addr();
@@ -105,7 +104,7 @@ async fn occupied_port_keeps_the_bind_error_context_used_by_the_cli() {
 
 #[tokio::test]
 async fn external_notification_returns_from_serve_normally() {
-    let shutdown = Arc::new(Notify::new());
+    let shutdown = CancellationToken::new();
     let (url, task) = spawn_server(
         server_config(shutdown.clone(), None),
         support::app_state(Vec::new()),
@@ -117,14 +116,14 @@ async fn external_notification_returns_from_serve_normally() {
         .expect("root request")
         .status()
         .is_success());
-    shutdown.notify_one();
+    shutdown.cancel();
 
     assert_eq!(await_exit(task).await.reason, ShutdownReason::External);
 }
 
 #[tokio::test]
 async fn idle_timeout_returns_without_terminating_the_test_process() {
-    let shutdown = Arc::new(Notify::new());
+    let shutdown = CancellationToken::new();
     let config = server_config(shutdown, Some(1));
     let bound = BoundServer::bind(&config).await.expect("bind server");
     let task = tokio::spawn(bound.serve(config, support::app_state(Vec::new())));
@@ -135,7 +134,7 @@ async fn idle_timeout_returns_without_terminating_the_test_process() {
 
 #[tokio::test]
 async fn browser_route_requests_reset_the_idle_timeout() {
-    let shutdown = Arc::new(Notify::new());
+    let shutdown = CancellationToken::new();
     let (url, task) = spawn_server(
         server_config(shutdown, Some(1)),
         support::app_state(Vec::new()),
@@ -160,7 +159,7 @@ async fn browser_route_requests_reset_the_idle_timeout() {
 
 #[tokio::test]
 async fn graceful_shutdown_drains_an_in_flight_request() {
-    let shutdown = Arc::new(Notify::new());
+    let shutdown = CancellationToken::new();
     let state = support::app_state(Vec::new());
     let activity: RequestActivity = state.activity().clone();
     let config = server_config(shutdown.clone(), None);
@@ -192,7 +191,7 @@ async fn graceful_shutdown_drains_an_in_flight_request() {
     .await
     .expect("request entered middleware");
 
-    shutdown.notify_one();
+    shutdown.cancel();
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(
         !task.is_finished(),

@@ -31,6 +31,7 @@ dicom-pixeldata = { version = "0.9.1", features = ["charls", "image", "jpegxl", 
 # Web server
 axum = { version = "0.8", features = ["macros"] }
 tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 

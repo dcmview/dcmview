@@ -4,9 +4,9 @@ use dcmview::server::FileRegistry;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot, Notify};
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 const DISCOVERY_EVENT_CAPACITY: usize = 64;
 
@@ -17,7 +17,7 @@ pub(super) struct DiscoveryInputs {
     pub(super) annotation_source: Option<AnnotationSource>,
     pub(super) registry: FileRegistry,
     pub(super) annotation_store: AnnotationStore,
-    pub(super) shutdown: Arc<Notify>,
+    pub(super) shutdown: CancellationToken,
 }
 
 pub(super) struct ScanRequest {
@@ -319,7 +319,7 @@ fn finish_scan(
 struct CoordinatorGuard {
     cancellation: loader::DiscoveryCancellation,
     registry: FileRegistry,
-    shutdown: Arc<Notify>,
+    shutdown: CancellationToken,
     armed: bool,
 }
 
@@ -327,7 +327,7 @@ impl CoordinatorGuard {
     fn new(
         cancellation: loader::DiscoveryCancellation,
         registry: FileRegistry,
-        shutdown: Arc<Notify>,
+        shutdown: CancellationToken,
     ) -> Self {
         Self {
             cancellation,
@@ -340,7 +340,7 @@ impl CoordinatorGuard {
     fn finish(&mut self, outcome: DiscoveryOutcome) -> DiscoveryOutcome {
         self.registry.mark_scan_complete();
         if outcome.is_failure() {
-            self.shutdown.notify_one();
+            self.shutdown.cancel();
         }
         self.armed = false;
         outcome
@@ -352,7 +352,7 @@ impl Drop for CoordinatorGuard {
         if self.armed {
             self.cancellation.cancel();
             self.registry.mark_scan_complete();
-            self.shutdown.notify_one();
+            self.shutdown.cancel();
         }
     }
 }
@@ -410,6 +410,7 @@ mod tests {
     use dcmview::types::FileEntry;
     use std::fs;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
     use std::time::Duration;
 
     #[derive(Clone)]
@@ -538,14 +539,19 @@ mod tests {
     fn discovery_inputs(
         file_path: PathBuf,
         annotation_source: Option<AnnotationSource>,
-    ) -> (DiscoveryInputs, FileRegistry, AnnotationStore, Arc<Notify>) {
+    ) -> (
+        DiscoveryInputs,
+        FileRegistry,
+        AnnotationStore,
+        CancellationToken,
+    ) {
         let registry = FileRegistry::new();
         let annotation_store = if annotation_source.is_some() {
             AnnotationStore::loading()
         } else {
             AnnotationStore::empty()
         };
-        let shutdown = Arc::new(Notify::new());
+        let shutdown = CancellationToken::new();
         (
             DiscoveryInputs {
                 input_paths: vec![file_path],
@@ -661,7 +667,7 @@ mod tests {
             .to_string()
             .contains("contains frame 2"));
         assert!(
-            tokio::time::timeout(Duration::from_millis(20), shutdown.notified())
+            tokio::time::timeout(Duration::from_millis(20), shutdown.cancelled())
                 .await
                 .is_err()
         );
@@ -676,7 +682,7 @@ mod tests {
         let (inputs, registry, _, shutdown) = discovery_inputs(path, None);
         let handle = DiscoveryHandle::spawn(inputs, &spawner);
 
-        tokio::time::timeout(Duration::from_secs(1), shutdown.notified())
+        tokio::time::timeout(Duration::from_secs(1), shutdown.cancelled())
             .await
             .expect("scan failure should notify shutdown");
         let outcome = handle.cancel_and_wait().await;
@@ -705,7 +711,7 @@ mod tests {
         })
         .await
         .expect("empty discovery should finish");
-        tokio::time::timeout(Duration::from_millis(20), shutdown.notified())
+        tokio::time::timeout(Duration::from_millis(20), shutdown.cancelled())
             .await
             .expect("empty discovery should durably notify");
         let outcome = handle.cancel_and_wait().await;

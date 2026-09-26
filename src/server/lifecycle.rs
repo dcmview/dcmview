@@ -2,13 +2,13 @@
 
 use super::FileRegistry;
 use std::future::Future;
-use std::pin::{pin, Pin};
+use std::pin::pin;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::task::{Context, Poll};
 use std::time::Duration;
-use tokio::sync::futures::{Notified, OwnedNotified};
+use tokio::sync::futures::Notified;
 use tokio::sync::Notify;
 use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShutdownReason {
@@ -37,10 +37,6 @@ struct RequestActivityState {
 #[must_use = "the guard keeps a request marked as in flight until it is dropped"]
 pub struct RequestActivityGuard {
     activity: RequestActivity,
-}
-
-pub(crate) struct ExternalShutdown {
-    notified: Option<Pin<Box<OwnedNotified>>>,
 }
 
 impl RequestActivity {
@@ -122,55 +118,26 @@ impl Drop for RequestActivityGuard {
     }
 }
 
-impl ExternalShutdown {
-    pub(crate) fn new(notify: Option<Arc<Notify>>) -> Self {
-        let notified = notify.map(|notify| {
-            let mut notified = Box::pin(notify.notified_owned());
-            notified.as_mut().enable();
-            notified
-        });
-        Self { notified }
-    }
-}
-
-impl Future for ExternalShutdown {
-    type Output = ShutdownReason;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match self.notified.as_mut() {
-            Some(notified) => notified.as_mut().poll(cx).map(|_| ShutdownReason::External),
-            None => Poll::Pending,
-        }
-    }
-}
-
-pub(crate) async fn wait_for_shutdown<OsSignal, External>(
+pub(crate) async fn wait_for_shutdown<OsSignal>(
     activity: RequestActivity,
     registry: FileRegistry,
     timeout: Option<Duration>,
-    external: External,
+    external: CancellationToken,
     os_signal: OsSignal,
 ) -> ShutdownReason
 where
     OsSignal: Future<Output = ShutdownReason>,
-    External: Future<Output = ShutdownReason>,
 {
-    tokio::pin!(external);
-    tokio::pin!(os_signal);
-
-    if let Some(timeout) = timeout {
-        let idle = idle_timeout(activity, registry, timeout);
-        tokio::pin!(idle);
-        tokio::select! {
-            reason = &mut os_signal => reason,
-            reason = &mut external => reason,
-            reason = &mut idle => reason,
+    let idle = async move {
+        match timeout {
+            Some(timeout) => idle_timeout(activity, registry, timeout).await,
+            None => std::future::pending().await,
         }
-    } else {
-        tokio::select! {
-            reason = &mut os_signal => reason,
-            reason = &mut external => reason,
-        }
+    };
+    tokio::select! {
+        reason = os_signal => reason,
+        () = external.cancelled() => ShutdownReason::External,
+        reason = idle => reason,
     }
 }
 
@@ -225,14 +192,9 @@ async fn wait_until_registry_ready(activity: &RequestActivity, registry: &FileRe
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        idle_timeout, wait_for_shutdown, ExternalShutdown, RequestActivity, ShutdownReason,
-    };
+    use super::{idle_timeout, RequestActivity, ShutdownReason};
     use crate::server::FileRegistry;
-    use std::future::pending;
-    use std::sync::Arc;
     use std::time::Duration;
-    use tokio::sync::Notify;
 
     fn ready_registry() -> FileRegistry {
         let registry = FileRegistry::new();
@@ -336,24 +298,6 @@ mod tests {
         drop(guard);
         tokio::time::advance(Duration::from_secs(5)).await;
         assert_eq!(task.await.expect("idle task"), ShutdownReason::IdleTimeout);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn pre_wait_external_notification_is_not_lost() {
-        let notify = Arc::new(Notify::new());
-        notify.notify_one();
-
-        assert_eq!(
-            wait_for_shutdown(
-                RequestActivity::new(),
-                FileRegistry::new(),
-                None,
-                ExternalShutdown::new(Some(notify)),
-                pending(),
-            )
-            .await,
-            ShutdownReason::External
-        );
     }
 
     #[tokio::test(start_paused = true)]
