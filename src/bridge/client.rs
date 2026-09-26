@@ -596,6 +596,11 @@ mod tests {
             .into_response()
     }
 
+    /// Windows retries a refused loopback connect for about two seconds
+    /// before failing it, so a launch timeout shorter than that turns a
+    /// refused endpoint into a request timeout instead of a connect error.
+    const REFUSED_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
     #[tokio::test]
     async fn launch_errors_are_classified_by_whether_vs_code_may_have_launched() {
         let client = reqwest::Client::new();
@@ -608,7 +613,7 @@ mod tests {
             }
         };
 
-        let refused = launch(unused_loopback_url().await, Duration::from_secs(1)).await;
+        let refused = launch(unused_loopback_url().await, REFUSED_CONNECT_TIMEOUT).await;
         assert!(
             matches!(refused, LaunchError::Unreachable(_)),
             "{refused:?}"
@@ -656,7 +661,7 @@ mod tests {
                 endpoint(good.url()),
             ],
             &test_request(),
-            Duration::from_secs(1),
+            REFUSED_CONNECT_TIMEOUT,
         )
         .await;
 
