@@ -217,18 +217,9 @@ class WrapperTests(unittest.TestCase):
 
 		self.assertEqual(url, "http://127.0.0.1:51234")
 
-	def test_parse_legacy_startup_line_as_fallback(self) -> None:
-		url = wrapper._parse_startup_url("dcmview: server running at http://127.0.0.1:51234")
-
-		self.assertEqual(url, "http://127.0.0.1:51234")
-
 	def test_parse_vscode_session_startup(self) -> None:
 		self.assertEqual(
 			wrapper._parse_startup_url('{"type":"vscode_session_started","url":"http://127.0.0.1:9999"}'),
-			"http://127.0.0.1:9999",
-		)
-		self.assertEqual(
-			wrapper._parse_startup_url("dcmview: opened in VS Code at http://127.0.0.1:9999"),
 			"http://127.0.0.1:9999",
 		)
 
@@ -246,56 +237,6 @@ class WrapperTests(unittest.TestCase):
 			monitor.start()
 			self.assertIsNone(monitor.wait_for_url(0.01))
 			monitor.join()
-
-	def test_view_relaunches_without_startup_json_for_older_blocking_binary(self) -> None:
-		old_process = mock.Mock()
-		old_process.stdout = StringIO("error: unexpected argument '--startup-json' found\n")
-		old_process.wait.return_value = 2
-		old_process.returncode = 2
-		new_process = mock.Mock()
-		new_process.stdout = StringIO("dcmview: server running at http://127.0.0.1:51234\n")
-		new_process.wait.return_value = 0
-		new_process.returncode = 0
-
-		with mock.patch("dcmview_py.wrapper.shutil.which", return_value="/tmp/dcmview"):
-			with mock.patch("dcmview_py.wrapper.subprocess.Popen", side_effect=[old_process, new_process]) as popen:
-				with redirect_stdout(StringIO()):
-					result = wrapper.view(
-						["/tmp/scan.dcm"],
-						browser=False,
-						block=True,
-						vscode_bridge=False,
-					)
-
-		self.assertIsNone(result)
-		self.assertIn("--startup-json", popen.call_args_list[0].args[0])
-		self.assertNotIn("--startup-json", popen.call_args_list[1].args[0])
-
-	def test_view_relaunches_without_startup_json_for_older_nonblocking_binary(self) -> None:
-		old_process = mock.Mock()
-		old_process.stdout = StringIO("error: Found argument '--startup-json' which wasn't expected\n")
-		old_process.poll.return_value = 2
-		old_process.returncode = 2
-		new_process = mock.Mock()
-		new_process.stdout = StringIO("dcmview: server running at http://127.0.0.1:51234\n")
-		new_process.poll.return_value = None
-		new_process.returncode = None
-
-		with mock.patch("dcmview_py.wrapper.shutil.which", return_value="/tmp/dcmview"):
-			with mock.patch("dcmview_py.wrapper.subprocess.Popen", side_effect=[old_process, new_process]) as popen:
-				with redirect_stdout(StringIO()):
-					handle = wrapper.view(
-						["/tmp/scan.dcm"],
-						browser=False,
-						block=False,
-						vscode_bridge=False,
-					)
-
-		self.assertIsNotNone(handle)
-		assert handle is not None
-		self.assertEqual(handle.url, "http://127.0.0.1:51234")
-		self.assertIn("--startup-json", popen.call_args_list[0].args[0])
-		self.assertNotIn("--startup-json", popen.call_args_list[1].args[0])
 
 	def test_view_routes_through_the_binary_bridge_client_by_default(self) -> None:
 		process = mock.Mock()
@@ -321,7 +262,7 @@ class WrapperTests(unittest.TestCase):
 
 	def test_view_can_disable_vscode_bridge_per_call(self) -> None:
 		process = mock.Mock()
-		process.stdout = StringIO("dcmview: server running at http://127.0.0.1:51234\n")
+		process.stdout = StringIO('{"type":"server_started","url":"http://127.0.0.1:51234"}\n')
 		process.poll.return_value = None
 		process.returncode = None
 
@@ -333,25 +274,6 @@ class WrapperTests(unittest.TestCase):
 		self.assertIsInstance(handle, wrapper.ShutdownHandle)
 		self.assertNotIn("--vscode-bridge-client", popen_mock.call_args.args[0])
 		self.assertEqual(popen_mock.call_args.kwargs["env"]["DCMVIEW_VSCODE_BYPASS"], "1")
-
-	def test_view_relaunches_without_integration_flags_for_pre_bridge_binary(self) -> None:
-		old_process = mock.Mock()
-		old_process.stdout = StringIO("error: unexpected argument '--vscode-bridge-client' found\n")
-		old_process.wait.return_value = 2
-		old_process.returncode = 2
-		new_process = mock.Mock()
-		new_process.stdout = StringIO("dcmview: server running at http://127.0.0.1:51234\n")
-		new_process.wait.return_value = 0
-		new_process.returncode = 0
-
-		with mock.patch("dcmview_py.wrapper.shutil.which", return_value="/tmp/dcmview"):
-			with mock.patch("dcmview_py.wrapper.subprocess.Popen", side_effect=[old_process, new_process]) as popen:
-				with redirect_stdout(StringIO()):
-					wrapper.view(["/tmp/scan.dcm"], browser=False, block=True)
-
-		retried = popen.call_args_list[1].args[0]
-		self.assertNotIn("--vscode-bridge-client", retried)
-		self.assertNotIn("--startup-json", retried)
 
 	def test_cli_forwards_argv_through_the_bridge_client_form(self) -> None:
 		process = mock.Mock()

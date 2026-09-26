@@ -178,7 +178,7 @@ The wrapper may raise:
 |---|---|
 | `ValueError` | No files were provided. |
 | `TypeError` | File, annotation, or filter arguments have invalid types. |
-| `RuntimeError` | No binary can be resolved, or startup fails before a handle is available. |
+| `RuntimeError` | No binary can be resolved. |
 | `subprocess.CalledProcessError` | The underlying viewer exits with a non-zero status. |
 
 ## Binary Resolution

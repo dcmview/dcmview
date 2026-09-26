@@ -77,9 +77,8 @@ single path-like value or an iterable of path-like values.
 | `filters` | `None` | Iterable of `FIELD=VALUE` filters; each value forwards as `--filter`. |
 | `vscode_bridge` | `True` | When `True`, the viewer opens in VS Code when launched from a VS Code terminal or inside an open workspace folder. |
 
-The wrapper adds `--startup-json` when launching the binary directly so it can
-discover the server URL reliably. If the binary does not support that hidden
-flag, the wrapper retries without it.
+The wrapper adds `--startup-json` when launching the binary so it can discover
+the server URL reliably, which requires a v0.2.0 or newer binary.
 
 ## VS Code Settings
 

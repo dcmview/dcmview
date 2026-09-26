@@ -10,7 +10,6 @@ import threading
 from pathlib import Path
 from typing import Iterable, Optional, Union
 
-_STARTUP_PREFIXES = ("dcmview: server running at ", "dcmview: opened in VS Code at ")
 _STARTUP_EVENT_TYPES = ("server_started", "vscode_session_started")
 _URL_WAIT_SECONDS = 5.0
 _STOP_TIMEOUT_SECONDS = 5.0
@@ -27,8 +26,6 @@ class _OutputMonitor:
 		self._process = process
 		self._url: Optional[str] = None
 		self._url_lock = threading.Lock()
-		self._integration_flags_unsupported = False
-		self._integration_flags_unsupported_lock = threading.Lock()
 		self._url_ready = threading.Event()
 		self._thread = threading.Thread(target=self._run, name="dcmview-py-output", daemon=True)
 
@@ -47,20 +44,11 @@ class _OutputMonitor:
 		with self._url_lock:
 			return self._url
 
-	@property
-	def integration_flags_unsupported(self) -> bool:
-		with self._integration_flags_unsupported_lock:
-			return self._integration_flags_unsupported
-
 	def _set_url(self, url: str) -> None:
 		with self._url_lock:
 			if self._url is None:
 				self._url = url
 				self._url_ready.set()
-
-	def _set_integration_flags_unsupported(self) -> None:
-		with self._integration_flags_unsupported_lock:
-			self._integration_flags_unsupported = True
 
 	def _run(self) -> None:
 		stdout = self._process.stdout
@@ -75,8 +63,6 @@ class _OutputMonitor:
 				url = _parse_startup_url(line)
 				if url is not None:
 					self._set_url(url)
-				if _is_integration_flag_unsupported_line(line):
-					self._set_integration_flags_unsupported()
 		finally:
 			stdout.close()
 			self._url_ready.set()
@@ -170,7 +156,7 @@ def view(
 	Raises:
 		ValueError: If no files are provided.
 		TypeError: If file, annotation, or filter arguments have invalid types.
-		RuntimeError: If no dcmview binary can be resolved or startup fails.
+		RuntimeError: If no dcmview binary can be resolved.
 		subprocess.CalledProcessError: If the underlying viewer exits with a
 			non-zero status.
 
@@ -183,44 +169,35 @@ def view(
 	annotation_path = _normalize_optional_path(annotations, field_name="annotations")
 	filter_args = _normalize_filters(filters)
 
-	# Old binaries without the integration flags are retried with plain args.
-	for integration_flags in (True, False):
-		command = _build_command(
-			paths,
-			port=port,
-			host=host,
-			browser=browser,
-			recursive=recursive,
-			timeout=timeout,
-			annotations=annotation_path,
-			filters=filter_args,
-			include_startup_json=integration_flags,
-			vscode_bridge=vscode_bridge and integration_flags,
-		)
+	command = _build_command(
+		paths,
+		port=port,
+		host=host,
+		browser=browser,
+		recursive=recursive,
+		timeout=timeout,
+		annotations=annotation_path,
+		filters=filter_args,
+		vscode_bridge=vscode_bridge,
+	)
 
-		process = subprocess.Popen(command, **_popen_options(vscode_bridge=vscode_bridge))
-		monitor = _OutputMonitor(process)
-		monitor.start()
+	process = subprocess.Popen(command, **_popen_options(vscode_bridge=vscode_bridge))
+	monitor = _OutputMonitor(process)
+	monitor.start()
 
-		if block:
-			return_code = process.wait()
-			monitor.join()
-			if return_code != 0:
-				if integration_flags and monitor.integration_flags_unsupported:
-					continue
-				raise subprocess.CalledProcessError(return_code, command)
-			return None
+	if block:
+		return_code = process.wait()
+		monitor.join()
+		if return_code != 0:
+			raise subprocess.CalledProcessError(return_code, command)
+		return None
 
-		monitor.wait_for_url(_URL_WAIT_SECONDS)
-		if process.poll() is not None and process.returncode not in (0, None):
-			monitor.join()
-			if integration_flags and monitor.integration_flags_unsupported:
-				continue
-			raise subprocess.CalledProcessError(int(process.returncode), command)
+	monitor.wait_for_url(_URL_WAIT_SECONDS)
+	if process.poll() is not None and process.returncode not in (0, None):
+		monitor.join()
+		raise subprocess.CalledProcessError(int(process.returncode), command)
 
-		return ShutdownHandle(process, monitor)
-
-	raise RuntimeError("dcmview failed to start")
+	return ShutdownHandle(process, monitor)
 
 
 def _normalize_files(files: PathInput | Iterable[PathInput]) -> list[str]:
@@ -269,7 +246,6 @@ def _build_command(
 	timeout: Optional[int],
 	annotations: Optional[str],
 	filters: Optional[Iterable[str]] = None,
-	include_startup_json: bool = True,
 	vscode_bridge: bool = False,
 ) -> list[str]:
 	bridge_client = [_BRIDGE_CLIENT_FLAG, _BRIDGE_PROGRAM] if vscode_bridge else []
@@ -285,7 +261,6 @@ def _build_command(
 			timeout=timeout,
 			annotations=annotations,
 			filters=filters,
-			include_startup_json=include_startup_json,
 		),
 	]
 
@@ -300,11 +275,8 @@ def _build_args(
 	timeout: Optional[int],
 	annotations: Optional[str],
 	filters: Optional[Iterable[str]] = None,
-	include_startup_json: bool = True,
 ) -> list[str]:
-	command = ["--port", str(port), "--host", host]
-	if include_startup_json:
-		command.append("--startup-json")
+	command = ["--port", str(port), "--host", host, "--startup-json"]
 	if not browser:
 		command.append("--no-browser")
 	if timeout is not None:
@@ -321,40 +293,20 @@ def _build_args(
 
 def _parse_startup_url(line: str) -> Optional[str]:
 	trimmed = line.strip()
-	if trimmed.startswith("{"):
-		try:
-			event = json.loads(trimmed)
-		except json.JSONDecodeError:
-			return None
-		if (
-			isinstance(event, dict)
-			and event.get("type") in _STARTUP_EVENT_TYPES
-			and isinstance(event.get("url"), str)
-			and event["url"]
-		):
-			return event["url"]
+	if not trimmed.startswith("{"):
 		return None
-
-	for prefix in _STARTUP_PREFIXES:
-		if trimmed.startswith(prefix):
-			url = trimmed[len(prefix) :].strip()
-			return url or None
+	try:
+		event = json.loads(trimmed)
+	except json.JSONDecodeError:
+		return None
+	if (
+		isinstance(event, dict)
+		and event.get("type") in _STARTUP_EVENT_TYPES
+		and isinstance(event.get("url"), str)
+		and event["url"]
+	):
+		return event["url"]
 	return None
-
-
-def _is_integration_flag_unsupported_line(line: str) -> bool:
-	normalized = line.lower()
-	return ("--startup-json" in normalized or _BRIDGE_CLIENT_FLAG in normalized) and any(
-		marker in normalized
-		for marker in [
-			"unexpected",
-			"unrecognized",
-			"unknown",
-			"wasn't expected",
-			"was not expected",
-			"found argument",
-		]
-	)
 
 
 def _resolve_binary() -> str:

@@ -27,6 +27,7 @@ from dcmview_py import wrapper
 FIXTURE_FILE = REPO_ROOT / "tests" / "fixtures" / "golden-uncompressed-u16-multiframe.dcm"
 BRIDGE_TOKEN = "integration-token"
 VSCODE_VIEWER_URL = "http://127.0.0.1:9/vscode-viewer"
+CLI_URL_PREFIXES = ("dcmview: server running at ", "dcmview: opened in VS Code at ")
 BRIDGE_ENV_KEYS = (
 	"DCMVIEW_VSCODE_BRIDGE_URL",
 	"DCMVIEW_VSCODE_BRIDGE_TOKEN",
@@ -183,9 +184,12 @@ class WrapperBinaryIntegrationTests(unittest.TestCase):
 		deadline = time.time() + 10.0
 		while url is None and time.time() < deadline:
 			try:
-				url = wrapper._parse_startup_url(lines.get(timeout=0.1))
+				line = lines.get(timeout=0.1).strip()
 			except queue.Empty:
 				continue
+			for prefix in CLI_URL_PREFIXES:
+				if line.startswith(prefix):
+					url = line[len(prefix) :]
 
 		if url is not None and url != VSCODE_VIEWER_URL:
 			# The local viewer prints its URL before it installs its Ctrl+C
