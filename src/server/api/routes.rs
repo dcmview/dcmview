@@ -1,28 +1,48 @@
-use super::error::{self, ApiError};
+use super::error;
 use super::handlers;
 use super::state::AppState;
-use crate::api::contracts::{
-    self as api_contracts, ApiEndpointContract, ApiEndpointSpec, ApiMethod, ApiOperation,
-    EmbedRoiAnnotations, ErrorResponse, FilesResponse, FrameInfo, HealthResponse,
-    ReferenceCatalogResponse, SemanticContextResponse, SeriesCatalogResponse, TagNode,
-    WsiFrameContextResponse, API_ENDPOINTS, API_PREFIX,
-};
+use crate::api::contracts::{endpoints, API_PREFIX};
 use crate::server::web;
 use crate::server::RequestActivity;
-use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
-use axum::extract::{Path, Query, Request, State};
+use axum::extract::{Request, State};
 use axum::middleware::{self, Next};
 use axum::response::Response;
-use axum::routing::{get, put};
-use axum::{Json, Router};
+use axum::routing::get;
+use axum::Router;
 #[cfg(feature = "debug-api")]
 use tower_http::cors::CorsLayer;
 
 pub(crate) fn router(state: AppState) -> Router {
     let activity = state.activity().clone();
-    let api = API_ENDPOINTS
-        .iter()
-        .fold(Router::new(), register_api_endpoint)
+    // Methods here must match `endpoints::ALL`; tests/integration/api_contract.rs
+    // requests every declared endpoint with its declared method.
+    let api = Router::new()
+        .route(endpoints::HEALTH.path, get(handlers::health))
+        .route(endpoints::FILES.path, get(handlers::files))
+        .route(endpoints::SERIES.path, get(handlers::series))
+        .route(endpoints::FILE_INFO.path, get(handlers::info))
+        .route(endpoints::FILE_REFERENCES.path, get(handlers::references))
+        .route(
+            endpoints::FILE_SEMANTIC_CONTEXT.path,
+            get(handlers::semantic_context),
+        )
+        .route(
+            endpoints::FILE_SEGMENTATION_OVERLAY.path,
+            get(handlers::segmentation_overlay),
+        )
+        .route(endpoints::FILE_WSI_CONTEXT.path, get(handlers::wsi_context))
+        .route(endpoints::FILE_FRAME.path, get(handlers::frame))
+        .route(endpoints::FILE_RAW_FRAME.path, get(handlers::raw_frame))
+        .route(endpoints::FILE_TAGS.path, get(handlers::tags))
+        .route(endpoints::FILE_TAG_SELECT.path, get(handlers::select_tag))
+        .route(
+            endpoints::FILE_ANNOTATIONS_GET.path,
+            get(handlers::annotations).put(handlers::update_annotations),
+        )
+        .route(
+            endpoints::ANNOTATIONS_EXPORT.path,
+            get(handlers::export_annotations),
+        )
         .fallback(error::not_found_handler)
         .method_not_allowed_fallback(error::method_not_allowed_handler);
 
@@ -49,350 +69,4 @@ async fn track_request_activity(
 ) -> Response {
     let _request = activity.request_started();
     next.run(request).await
-}
-
-trait HandlerResponseContract {
-    type Output;
-}
-
-macro_rules! json_handler_response {
-    ($($response:ty),+ $(,)?) => {
-        $(
-            impl HandlerResponseContract for $response {
-                type Output = Json<$response>;
-            }
-        )+
-    };
-}
-
-json_handler_response!(
-    HealthResponse,
-    FilesResponse,
-    SeriesCatalogResponse,
-    ReferenceCatalogResponse,
-    SemanticContextResponse,
-    WsiFrameContextResponse,
-    FrameInfo,
-    Vec<TagNode>,
-    TagNode,
-    EmbedRoiAnnotations,
-);
-
-impl HandlerResponseContract for api_contracts::BlobBody {
-    type Output = Response;
-}
-
-impl HandlerResponseContract for api_contracts::ArrayBufferBody {
-    type Output = Response;
-}
-
-trait HandlerErrorContract {
-    type Output;
-}
-
-impl HandlerErrorContract for ErrorResponse {
-    type Output = ApiError;
-}
-
-macro_rules! handler_response_type {
-    ($spec:ty) => {
-        <<$spec as ApiEndpointSpec>::Response as HandlerResponseContract>::Output
-    };
-}
-
-macro_rules! handler_result_type {
-    ($spec:ty) => {
-        std::result::Result<
-            handler_response_type!($spec),
-            <<$spec as ApiEndpointSpec>::Error as HandlerErrorContract>::Output,
-        >
-    };
-}
-
-fn require_endpoint_spec<Spec>(endpoint: &ApiEndpointContract)
-where
-    Spec: ApiEndpointSpec,
-    Spec::Response: HandlerResponseContract,
-    Spec::Error: HandlerErrorContract,
-{
-    assert_eq!(
-        *endpoint,
-        Spec::CONTRACT,
-        "registered endpoint does not match its typed handler specification"
-    );
-}
-
-fn require_no_query<Spec>()
-where
-    Spec: ApiEndpointSpec<Query = api_contracts::NoQuery>,
-{
-}
-
-fn require_no_request<Spec>()
-where
-    Spec: ApiEndpointSpec<Request = api_contracts::NoRequest>,
-{
-}
-
-fn register_api_endpoint(
-    router: Router<AppState>,
-    endpoint: &ApiEndpointContract,
-) -> Router<AppState> {
-    let require_method = |expected| {
-        assert_eq!(
-            endpoint.method, expected,
-            "API endpoint {} has a method that does not match its handler",
-            endpoint.id
-        );
-    };
-
-    match endpoint.operation {
-        ApiOperation::Health => {
-            require_method(ApiMethod::Get);
-            require_endpoint_spec::<api_contracts::Health>(endpoint);
-            require_no_query::<api_contracts::Health>();
-            require_no_request::<api_contracts::Health>();
-            router.route(
-                endpoint.path,
-                get(|state: State<AppState>| async move {
-                    let response: handler_response_type!(api_contracts::Health) =
-                        handlers::health(state).await;
-                    response
-                }),
-            )
-        }
-        ApiOperation::Files => {
-            require_method(ApiMethod::Get);
-            require_endpoint_spec::<api_contracts::Files>(endpoint);
-            require_no_query::<api_contracts::Files>();
-            require_no_request::<api_contracts::Files>();
-            router.route(
-                endpoint.path,
-                get(|state: State<AppState>| async move {
-                    let response: handler_response_type!(api_contracts::Files) =
-                        handlers::files(state).await;
-                    response
-                }),
-            )
-        }
-        ApiOperation::Series => {
-            require_method(ApiMethod::Get);
-            require_endpoint_spec::<api_contracts::Series>(endpoint);
-            require_no_query::<api_contracts::Series>();
-            require_no_request::<api_contracts::Series>();
-            router.route(
-                endpoint.path,
-                get(|state: State<AppState>| async move {
-                    let response: handler_response_type!(api_contracts::Series) =
-                        handlers::series(state).await;
-                    response
-                }),
-            )
-        }
-        ApiOperation::FileInfo => {
-            require_method(ApiMethod::Get);
-            require_endpoint_spec::<api_contracts::FileInfo>(endpoint);
-            require_no_query::<api_contracts::FileInfo>();
-            require_no_request::<api_contracts::FileInfo>();
-            router.route(
-                endpoint.path,
-                get(
-                    |state: State<AppState>, path: Result<Path<usize>, PathRejection>| async move {
-                        let response: handler_result_type!(api_contracts::FileInfo) =
-                            handlers::info(state, path).await;
-                        response
-                    },
-                ),
-            )
-        }
-        ApiOperation::FileReferences => {
-            require_method(ApiMethod::Get);
-            require_endpoint_spec::<api_contracts::FileReferences>(endpoint);
-            require_no_query::<api_contracts::FileReferences>();
-            require_no_request::<api_contracts::FileReferences>();
-            router.route(
-                endpoint.path,
-                get(
-                    |state: State<AppState>, path: Result<Path<usize>, PathRejection>| async move {
-                        let response: handler_result_type!(api_contracts::FileReferences) =
-                            handlers::references(state, path).await;
-                        response
-                    },
-                ),
-            )
-        }
-        ApiOperation::FileSemanticContext => {
-            require_method(ApiMethod::Get);
-            require_endpoint_spec::<api_contracts::FileSemanticContext>(endpoint);
-            require_no_query::<api_contracts::FileSemanticContext>();
-            require_no_request::<api_contracts::FileSemanticContext>();
-            router.route(
-                endpoint.path,
-                get(
-                    |state: State<AppState>, path: Result<Path<usize>, PathRejection>| async move {
-                        let response: handler_result_type!(api_contracts::FileSemanticContext) =
-                            handlers::semantic_context(state, path).await;
-                        response
-                    },
-                ),
-            )
-        }
-        ApiOperation::FileSegmentationOverlay => {
-            require_method(ApiMethod::Get);
-            require_endpoint_spec::<api_contracts::FileSegmentationOverlay>(endpoint);
-            require_no_query::<api_contracts::FileSegmentationOverlay>();
-            require_no_request::<api_contracts::FileSegmentationOverlay>();
-            router.route(
-                endpoint.path,
-                get(
-                    |state: State<AppState>,
-                     path: Result<Path<(usize, u32)>, PathRejection>| async move {
-                        let response: handler_result_type!(api_contracts::FileSegmentationOverlay) =
-                            handlers::segmentation_overlay(state, path).await;
-                        response
-                    },
-                ),
-            )
-        }
-        ApiOperation::FileWsiContext => {
-            require_method(ApiMethod::Get);
-            require_endpoint_spec::<api_contracts::FileWsiContext>(endpoint);
-            require_no_query::<api_contracts::FileWsiContext>();
-            require_no_request::<api_contracts::FileWsiContext>();
-            router.route(
-                endpoint.path,
-                get(
-                    |state: State<AppState>,
-                     path: Result<Path<(usize, u32)>, PathRejection>| async move {
-                        let response: handler_result_type!(api_contracts::FileWsiContext) =
-                            handlers::wsi_context(state, path).await;
-                        response
-                    },
-                ),
-            )
-        }
-        ApiOperation::FileFrame => {
-            require_method(ApiMethod::Get);
-            require_endpoint_spec::<api_contracts::FileFrame>(endpoint);
-            require_no_request::<api_contracts::FileFrame>();
-            router.route(
-                endpoint.path,
-                get(
-                    |state: State<AppState>,
-                     path: Result<Path<(usize, u32)>, PathRejection>,
-                     query: Result<
-                        Query<<api_contracts::FileFrame as ApiEndpointSpec>::Query>,
-                        QueryRejection,
-                    >| async move {
-                        let response: handler_result_type!(api_contracts::FileFrame) =
-                            handlers::frame(state, path, query).await;
-                        response
-                    },
-                ),
-            )
-        }
-        ApiOperation::FileRawFrame => {
-            require_method(ApiMethod::Get);
-            require_endpoint_spec::<api_contracts::FileRawFrame>(endpoint);
-            require_no_query::<api_contracts::FileRawFrame>();
-            require_no_request::<api_contracts::FileRawFrame>();
-            router.route(
-                endpoint.path,
-                get(
-                    |state: State<AppState>,
-                     path: Result<Path<(usize, u32)>, PathRejection>| async move {
-                        let response: handler_result_type!(api_contracts::FileRawFrame) =
-                            handlers::raw_frame(state, path).await;
-                        response
-                    },
-                ),
-            )
-        }
-        ApiOperation::FileTags => {
-            require_method(ApiMethod::Get);
-            require_endpoint_spec::<api_contracts::FileTags>(endpoint);
-            require_no_query::<api_contracts::FileTags>();
-            require_no_request::<api_contracts::FileTags>();
-            router.route(
-                endpoint.path,
-                get(
-                    |state: State<AppState>, path: Result<Path<usize>, PathRejection>| async move {
-                        let response: handler_result_type!(api_contracts::FileTags) =
-                            handlers::tags(state, path).await;
-                        response
-                    },
-                ),
-            )
-        }
-        ApiOperation::FileTagSelect => {
-            require_method(ApiMethod::Get);
-            require_endpoint_spec::<api_contracts::FileTagSelect>(endpoint);
-            require_no_request::<api_contracts::FileTagSelect>();
-            router.route(
-                endpoint.path,
-                get(
-                    |state: State<AppState>,
-                     path: Result<Path<usize>, PathRejection>,
-                     query: Result<
-                        Query<<api_contracts::FileTagSelect as ApiEndpointSpec>::Query>,
-                        QueryRejection,
-                    >| async move {
-                        let response: handler_result_type!(api_contracts::FileTagSelect) =
-                            handlers::select_tag(state, path, query).await;
-                        response
-                    },
-                ),
-            )
-        }
-        ApiOperation::FileAnnotationsGet => {
-            require_method(ApiMethod::Get);
-            require_endpoint_spec::<api_contracts::FileAnnotationsGet>(endpoint);
-            require_no_query::<api_contracts::FileAnnotationsGet>();
-            require_no_request::<api_contracts::FileAnnotationsGet>();
-            router.route(
-                endpoint.path,
-                get(
-                    |state: State<AppState>, path: Result<Path<usize>, PathRejection>| async move {
-                        let response: handler_result_type!(api_contracts::FileAnnotationsGet) =
-                            handlers::annotations(state, path).await;
-                        response
-                    },
-                ),
-            )
-        }
-        ApiOperation::FileAnnotationsUpdate => {
-            require_method(ApiMethod::Put);
-            require_endpoint_spec::<api_contracts::FileAnnotationsUpdate>(endpoint);
-            require_no_query::<api_contracts::FileAnnotationsUpdate>();
-            router.route(
-                endpoint.path,
-                put(
-                    |state: State<AppState>,
-                     path: Result<Path<usize>, PathRejection>,
-                     payload: Result<
-                        Json<<api_contracts::FileAnnotationsUpdate as ApiEndpointSpec>::Request>,
-                        JsonRejection,
-                    >| async move {
-                        let response: handler_result_type!(api_contracts::FileAnnotationsUpdate) =
-                            handlers::update_annotations(state, path, payload).await;
-                        response
-                    },
-                ),
-            )
-        }
-        ApiOperation::AnnotationsExport => {
-            require_method(ApiMethod::Get);
-            require_endpoint_spec::<api_contracts::AnnotationsExport>(endpoint);
-            require_no_query::<api_contracts::AnnotationsExport>();
-            require_no_request::<api_contracts::AnnotationsExport>();
-            router.route(
-                endpoint.path,
-                get(|state: State<AppState>| async move {
-                    let response: handler_result_type!(api_contracts::AnnotationsExport) =
-                        handlers::export_annotations(state).await;
-                    response
-                }),
-            )
-        }
-    }
 }

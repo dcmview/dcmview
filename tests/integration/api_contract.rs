@@ -4,9 +4,9 @@ use axum_test::{TestResponse, TestServer};
 use bytes::Bytes;
 use dcmview::annotations::{AnnotationStore, EmbedRoiAnnotations};
 use dcmview::api::contracts::{
-    ApiEndpointContract, ApiMethod, ApiResponseHeadersKind, API_ENDPOINTS, API_PREFIX,
-    CACHE_HEADER, CACHE_HIT, CACHE_MISS, EXPORT_CONTENT_DISPOSITION_HEADER,
-    EXPORT_CONTENT_DISPOSITION_VALUE, RAW_FRAME_HEADERS,
+    endpoints, ApiMethod, Endpoint, ResponseHeaders, API_PREFIX, CACHE_HEADER, CACHE_HIT,
+    CACHE_MISS, EXPORT_CONTENT_DISPOSITION_HEADER, EXPORT_CONTENT_DISPOSITION_VALUE,
+    RAW_FRAME_HEADERS,
 };
 use dcmview::server;
 use dcmview::types::WindowPreset;
@@ -183,23 +183,30 @@ async fn every_declared_endpoint_matches_its_runtime_contract() {
     let test_server = TestServer::new(server::router(support::app_state(vec![entry])));
     let annotation_body = EmbedRoiAnnotations::empty();
 
-    for endpoint in API_ENDPOINTS {
-        // SEG overlay requires a linked segmentation/source pair and is covered
-        // by semantic_context::segmentation_overlay_returns_source_sized_transparent_png.
-        if endpoint.id == "fileSegmentationOverlay" {
-            continue;
-        }
+    let request = |endpoint: &Endpoint, index: &str| {
         let mut path = format!("{API_PREFIX}{}", endpoint.path)
-            .replace("{index}", "0")
+            .replace("{index}", index)
             .replace("{frame}", "0");
-        if endpoint.id == "fileTagSelect" {
+        if *endpoint == endpoints::FILE_TAG_SELECT {
             path.push_str("?path=%280028%2C0010%29");
         }
-        let request = match endpoint.method {
+        match endpoint.method {
             ApiMethod::Get => test_server.get(&path),
             ApiMethod::Put => test_server.put(&path).json(&annotation_body),
-        };
-        let response = request.await;
+        }
+    };
+
+    for endpoint in endpoints::ALL {
+        if endpoint.path.contains("{index}") {
+            let missing = request(endpoint, "99").await;
+            assert_json_error(endpoint.id, &missing, StatusCode::NOT_FOUND);
+        }
+        // SEG overlay requires a linked segmentation/source pair and is covered
+        // by semantic_context::segmentation_overlay_returns_source_sized_transparent_png.
+        if *endpoint == endpoints::FILE_SEGMENTATION_OVERLAY {
+            continue;
+        }
+        let response = request(endpoint, "0").await;
 
         assert_eq!(
             response.status_code().as_u16(),
@@ -313,18 +320,17 @@ async fn raw_frame_endpoint_exposes_frontend_metadata_header_contract() {
         "application/octet-stream"
     );
     assert!(response.maybe_header(CACHE_HEADER).is_some());
-    for header_contract in RAW_FRAME_HEADERS {
-        let present = response.maybe_header(header_contract.name).is_some();
-        if matches!(header_contract.field, "defaultWc" | "defaultWw") {
+    for &(field, name) in RAW_FRAME_HEADERS {
+        let present = response.maybe_header(name).is_some();
+        if matches!(field, "defaultWc" | "defaultWw") {
             assert_eq!(
                 present, has_default_window,
-                "optional raw header {} presence",
-                header_contract.name
+                "optional raw header {name} presence"
             );
-        } else if matches!(header_contract.field, "paddingLow" | "paddingHigh") {
-            assert!(!present, "{} without Pixel Padding", header_contract.name);
+        } else if matches!(field, "paddingLow" | "paddingHigh") {
+            assert!(!present, "{name} without Pixel Padding");
         } else {
-            assert!(present, "raw response missing {}", header_contract.name);
+            assert!(present, "raw response missing {name}");
         }
     }
 }
@@ -429,35 +435,34 @@ fn assert_json_error(name: &str, response: &TestResponse, expected_status: Statu
     );
 }
 
-fn assert_declared_response_headers(endpoint: &ApiEndpointContract, response: &TestResponse) {
+fn assert_declared_response_headers(endpoint: &Endpoint, response: &TestResponse) {
     match endpoint.response_headers {
-        ApiResponseHeadersKind::None => {
+        ResponseHeaders::None => {
             assert_no_cache_header(endpoint, response);
             assert_no_raw_frame_headers(endpoint, response);
             assert_no_export_header(endpoint, response);
         }
-        ApiResponseHeadersKind::Cache => {
+        ResponseHeaders::Cache => {
             assert_cache_header(endpoint, response);
             assert_no_raw_frame_headers(endpoint, response);
             assert_no_export_header(endpoint, response);
         }
-        ApiResponseHeadersKind::RawFrame => {
+        ResponseHeaders::RawFrame => {
             assert_cache_header(endpoint, response);
             // The padding pair is present only for files that declare Pixel Padding.
-            for raw_header in RAW_FRAME_HEADERS
+            for (_, name) in RAW_FRAME_HEADERS
                 .iter()
-                .filter(|header| !matches!(header.field, "paddingLow" | "paddingHigh"))
+                .filter(|(field, _)| !matches!(*field, "paddingLow" | "paddingHigh"))
             {
                 assert!(
-                    response.maybe_header(raw_header.name).is_some(),
-                    "{} is missing raw-frame header {}",
-                    endpoint.id,
-                    raw_header.name
+                    response.maybe_header(*name).is_some(),
+                    "{} is missing raw-frame header {name}",
+                    endpoint.id
                 );
             }
             assert_no_export_header(endpoint, response);
         }
-        ApiResponseHeadersKind::Export => {
+        ResponseHeaders::Export => {
             assert_no_cache_header(endpoint, response);
             assert_no_raw_frame_headers(endpoint, response);
             assert_eq!(
@@ -473,7 +478,7 @@ fn assert_declared_response_headers(endpoint: &ApiEndpointContract, response: &T
     }
 }
 
-fn assert_cache_header(endpoint: &ApiEndpointContract, response: &TestResponse) {
+fn assert_cache_header(endpoint: &Endpoint, response: &TestResponse) {
     let header = response.header(CACHE_HEADER);
     let value = header.to_str().expect("cache header");
     assert!(
@@ -483,7 +488,7 @@ fn assert_cache_header(endpoint: &ApiEndpointContract, response: &TestResponse) 
     );
 }
 
-fn assert_no_cache_header(endpoint: &ApiEndpointContract, response: &TestResponse) {
+fn assert_no_cache_header(endpoint: &Endpoint, response: &TestResponse) {
     assert!(
         response.maybe_header(CACHE_HEADER).is_none(),
         "{} unexpectedly returned {CACHE_HEADER}",
@@ -491,18 +496,17 @@ fn assert_no_cache_header(endpoint: &ApiEndpointContract, response: &TestRespons
     );
 }
 
-fn assert_no_raw_frame_headers(endpoint: &ApiEndpointContract, response: &TestResponse) {
-    for raw_header in RAW_FRAME_HEADERS {
+fn assert_no_raw_frame_headers(endpoint: &Endpoint, response: &TestResponse) {
+    for (_, name) in RAW_FRAME_HEADERS {
         assert!(
-            response.maybe_header(raw_header.name).is_none(),
-            "{} unexpectedly returned raw-frame header {}",
-            endpoint.id,
-            raw_header.name
+            response.maybe_header(*name).is_none(),
+            "{} unexpectedly returned raw-frame header {name}",
+            endpoint.id
         );
     }
 }
 
-fn assert_no_export_header(endpoint: &ApiEndpointContract, response: &TestResponse) {
+fn assert_no_export_header(endpoint: &Endpoint, response: &TestResponse) {
     assert!(
         response
             .maybe_header(EXPORT_CONTENT_DISPOSITION_HEADER)

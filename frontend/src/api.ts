@@ -1,13 +1,8 @@
 import type {
-	ApiEndpointParams,
-	ApiEndpointQuery,
-	ApiEndpointRequest,
-	ApiEndpointResponse,
 	EmbedRoiAnnotations,
 	ErrorResponse,
 	FilesResponse,
-	FrameInfo,
-	JsonApiEndpointId,
+	FrameQuery,
 	RawFrameMetadata,
 	ReferenceCatalogResponse,
 	SemanticContextResponse,
@@ -17,24 +12,10 @@ import type {
 	WindowMode,
 	WsiFrameContextResponse,
 } from "./generated/api-types";
-import {
-	API_ENDPOINTS,
-	FRAME_QUERY_KEYS,
-	RAW_FRAME_HEADERS,
-	apiEndpointPath,
-	getApiEndpointPath,
-} from "./generated/api-types";
+import { API_ENDPOINTS, RAW_FRAME_HEADERS } from "./generated/api-types";
 import type { RawFrame } from "./rawFrame";
 
 export type {
-	ApiEndpointId,
-	ApiEndpointError,
-	ApiEndpointParams,
-	ApiEndpointQuery,
-	ApiEndpointRequest,
-	ApiEndpointResponse,
-	ApiEndpointResponseHeaders,
-	ApiEndpointTypes,
 	EmbedRoiAnnotations,
 	ErrorResponse,
 	FileSummary,
@@ -68,6 +49,32 @@ export type {
 } from "./generated/api-types";
 export type { RawFrame } from "./rawFrame";
 
+type Endpoint = (typeof API_ENDPOINTS)[keyof typeof API_ENDPOINTS];
+type PathParams = { index?: number; frame?: number };
+
+/** Fills `{index}`/`{frame}` in a generated path and appends defined query values. */
+function endpointUrl(
+	endpoint: Endpoint,
+	params: PathParams = {},
+	query?: FrameQuery | TagQuery,
+): string {
+	const path = endpoint.path.replace(/\{(\w+)\}/g, (_, name: string) => {
+		const value = params[name as keyof PathParams];
+		if (value === undefined) {
+			throw new Error(`missing API path parameter ${name} for ${endpoint.path}`);
+		}
+		return encodeURIComponent(String(value));
+	});
+	const search = new URLSearchParams();
+	for (const [name, value] of Object.entries(query ?? {})) {
+		if (value !== undefined) {
+			search.set(name, String(value));
+		}
+	}
+	const encoded = search.toString();
+	return encoded.length > 0 ? `${path}?${encoded}` : path;
+}
+
 async function readServerError(response: Response): Promise<string | null> {
 	try {
 		const body = (await response.json()) as Partial<ErrorResponse>;
@@ -77,56 +84,40 @@ async function readServerError(response: Response): Promise<string | null> {
 	}
 }
 
-async function responseError(response: Response, fallback: string): Promise<Error> {
-	const serverMessage = await readServerError(response);
-	return new Error(serverMessage ?? `HTTP ${response.status}: ${fallback}`);
+/** Sends one request and turns non-2xx responses into the server's error message. */
+async function send(endpoint: Endpoint, url: string, init: RequestInit = {}): Promise<Response> {
+	const response = await fetch(url, { ...init, method: endpoint.method });
+	if (!response.ok) {
+		const serverMessage = await readServerError(response);
+		throw new Error(serverMessage ?? `HTTP ${response.status}: ${endpoint.method} ${url} failed`);
+	}
+	return response;
 }
 
-type JsonRequestInit<Id extends JsonApiEndpointId> = { signal?: AbortSignal } & (
-	[ApiEndpointRequest<Id>] extends [never]
-		? { body?: undefined }
-		: { body: ApiEndpointRequest<Id> }
-);
-
-async function requestJsonEndpoint<Id extends JsonApiEndpointId>(
-	id: Id,
-	params: ApiEndpointParams<Id>,
-	request: JsonRequestInit<Id>,
-): Promise<ApiEndpointResponse<Id>> {
-	const endpoint = API_ENDPOINTS[id];
-	const path = apiEndpointPath(id, params);
-	const init: RequestInit = { method: endpoint.method, signal: request.signal };
-	if (request.body !== undefined) {
-		if (endpoint.requestMediaType === null) {
-			throw new Error(`endpoint ${id} does not declare a request media type`);
-		}
-		init.headers = { "Content-Type": endpoint.requestMediaType };
-		init.body = JSON.stringify(request.body);
-	}
-	const response = await fetch(path, init);
-	if (response.status !== endpoint.successStatus) {
-		throw await responseError(response, `request failed: ${path}`);
-	}
-	return (await response.json()) as ApiEndpointResponse<Id>;
+async function getJson<T>(endpoint: Endpoint, url: string, signal?: AbortSignal): Promise<T> {
+	const response = await send(endpoint, url, { signal });
+	return (await response.json()) as T;
 }
 
 export function fetchFiles(): Promise<FilesResponse> {
-	return requestJsonEndpoint("files", {}, {});
+	return getJson(API_ENDPOINTS.files, endpointUrl(API_ENDPOINTS.files));
 }
 
 export function fetchSeries(): Promise<SeriesCatalogResponse> {
-	return requestJsonEndpoint("series", {}, {});
+	return getJson(API_ENDPOINTS.series, endpointUrl(API_ENDPOINTS.series));
 }
 
 export function fetchReferences(
 	fileIndex: number,
 	signal?: AbortSignal,
 ): Promise<ReferenceCatalogResponse> {
-	return requestJsonEndpoint("fileReferences", { index: fileIndex }, { signal });
+	const endpoint = API_ENDPOINTS.fileReferences;
+	return getJson(endpoint, endpointUrl(endpoint, { index: fileIndex }), signal);
 }
 
 export function fetchSemanticContext(fileIndex: number): Promise<SemanticContextResponse> {
-	return requestJsonEndpoint("fileSemanticContext", { index: fileIndex }, {});
+	const endpoint = API_ENDPOINTS.fileSemanticContext;
+	return getJson(endpoint, endpointUrl(endpoint, { index: fileIndex }));
 }
 
 export async function fetchSegmentationOverlayBlob(
@@ -134,11 +125,10 @@ export async function fetchSegmentationOverlayBlob(
 	frame: number,
 	signal?: AbortSignal,
 ): Promise<Blob> {
-	const path = apiEndpointPath("fileSegmentationOverlay", { index: fileIndex, frame });
-	const response = await fetch(path, { signal });
-	if (response.status !== API_ENDPOINTS.fileSegmentationOverlay.successStatus) {
-		throw await responseError(response, `request failed: ${path}`);
-	}
+	const endpoint = API_ENDPOINTS.fileSegmentationOverlay;
+	const response = await send(endpoint, endpointUrl(endpoint, { index: fileIndex, frame }), {
+		signal,
+	});
 	return response.blob();
 }
 
@@ -146,30 +136,43 @@ export function fetchWsiFrameContext(
 	fileIndex: number,
 	frame: number,
 ): Promise<WsiFrameContextResponse> {
-	return requestJsonEndpoint("fileWsiContext", { index: fileIndex, frame }, {});
-}
-
-export function fetchFrameInfo(fileIndex: number): Promise<FrameInfo> {
-	return requestJsonEndpoint("fileInfo", { index: fileIndex }, {});
+	const endpoint = API_ENDPOINTS.fileWsiContext;
+	return getJson(endpoint, endpointUrl(endpoint, { index: fileIndex, frame }));
 }
 
 export function fetchTags(fileIndex: number, signal?: AbortSignal): Promise<TagNode[]> {
-	return requestJsonEndpoint("fileTags", { index: fileIndex }, { signal });
+	const endpoint = API_ENDPOINTS.fileTags;
+	return getJson(endpoint, endpointUrl(endpoint, { index: fileIndex }), signal);
+}
+
+export function fetchSelectedTag(
+	fileIndex: number,
+	query: TagQuery,
+	signal?: AbortSignal,
+): Promise<TagNode> {
+	const endpoint = API_ENDPOINTS.fileTagSelect;
+	return getJson(endpoint, endpointUrl(endpoint, { index: fileIndex }, query), signal);
 }
 
 export function fetchAnnotations(fileIndex: number): Promise<EmbedRoiAnnotations> {
-	return requestJsonEndpoint("fileAnnotationsGet", { index: fileIndex }, {});
+	const endpoint = API_ENDPOINTS.fileAnnotationsGet;
+	return getJson(endpoint, endpointUrl(endpoint, { index: fileIndex }));
 }
 
-export function updateAnnotations(
+export async function updateAnnotations(
 	fileIndex: number,
 	annotations: EmbedRoiAnnotations,
 ): Promise<EmbedRoiAnnotations> {
-	return requestJsonEndpoint("fileAnnotationsUpdate", { index: fileIndex }, { body: annotations });
+	const endpoint = API_ENDPOINTS.fileAnnotationsUpdate;
+	const response = await send(endpoint, endpointUrl(endpoint, { index: fileIndex }), {
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(annotations),
+	});
+	return (await response.json()) as EmbedRoiAnnotations;
 }
 
 export function annotationsExportUrl(): string {
-	return getApiEndpointPath("annotationsExport", {});
+	return endpointUrl(API_ENDPOINTS.annotationsExport);
 }
 
 export function frameUrl(
@@ -179,23 +182,12 @@ export function frameUrl(
 	ww?: number | null,
 	windowMode?: WindowMode | null,
 ): string {
-	const path = apiEndpointPath("fileFrame", { index: fileIndex, frame });
-	const query: ApiEndpointQuery<"fileFrame"> = {};
-	if (windowMode !== "full_dynamic") {
-		if (wc !== undefined && wc !== null) {
-			query[FRAME_QUERY_KEYS.windowCenter] = wc;
-		}
-		if (ww !== undefined && ww !== null) {
-			query[FRAME_QUERY_KEYS.windowWidth] = ww;
-		}
-	}
-	if (windowMode === "full_dynamic") {
-		query[FRAME_QUERY_KEYS.mode] = "full_dynamic";
-	}
-	const encoded = new URLSearchParams(
-		Object.entries(query).map(([name, value]) => [name, String(value)]),
-	).toString();
-	return encoded.length > 0 ? `${path}?${encoded}` : path;
+	// Full-dynamic windowing ignores explicit values, so they are not sent.
+	const query: FrameQuery =
+		windowMode === "full_dynamic"
+			? { mode: "full_dynamic" }
+			: { wc: wc ?? undefined, ww: ww ?? undefined };
+	return endpointUrl(API_ENDPOINTS.fileFrame, { index: fileIndex, frame }, query);
 }
 
 export interface DisplayFrameWindowOptions {
@@ -230,15 +222,9 @@ export async function fetchDisplayFrameBlob(
 	options: DisplayFrameWindowOptions = {},
 	signal?: AbortSignal,
 ): Promise<Blob> {
-	const endpoint = API_ENDPOINTS.fileFrame;
-	const response = await fetch(
-		frameUrl(fileIndex, frame, options.wc, options.ww, options.windowMode),
-		{ method: endpoint.method, signal },
-	);
-	if (response.status !== endpoint.successStatus) {
-		throw await responseError(response, "display frame fetch failed");
-	}
-	return (await response.blob()) as ApiEndpointResponse<"fileFrame">;
+	const url = frameUrl(fileIndex, frame, options.wc, options.ww, options.windowMode);
+	const response = await send(API_ENDPOINTS.fileFrame, url, { signal });
+	return response.blob();
 }
 
 function requiredHeader(headers: Headers, name: string): string {
@@ -300,33 +286,9 @@ export async function fetchRawFrame(
 	signal?: AbortSignal,
 ): Promise<RawFrame> {
 	const endpoint = API_ENDPOINTS.fileRawFrame;
-	const response = await fetch(
-		apiEndpointPath("fileRawFrame", { index: fileIndex, frame }),
-		{ method: endpoint.method, signal },
-	);
-	if (response.status !== endpoint.successStatus) {
-		throw await responseError(response, "raw frame fetch failed");
-	}
-	const buffer = (await response.arrayBuffer()) as ApiEndpointResponse<"fileRawFrame">;
-	const metadata: RawFrameMetadata = parseRawFrameMetadata(response.headers);
-	return { metadata, buffer };
-}
-
-export async function fetchSelectedTag(
-	fileIndex: number,
-	query: TagQuery,
-	signal?: AbortSignal,
-): Promise<TagNode> {
-	const endpoint = API_ENDPOINTS.fileTagSelect;
-	const parameters = new URLSearchParams({ path: query.path });
-	if (query.offset !== undefined) parameters.set("offset", String(query.offset));
-	if (query.limit !== undefined) parameters.set("limit", String(query.limit));
-	const response = await fetch(
-		`${getApiEndpointPath("fileTagSelect", { index: fileIndex })}?${parameters}`,
-		{ method: endpoint.method, signal },
-	);
-	if (response.status !== endpoint.successStatus) {
-		throw await responseError(response, "selective tag fetch failed");
-	}
-	return (await response.json()) as TagNode;
+	const response = await send(endpoint, endpointUrl(endpoint, { index: fileIndex, frame }), {
+		signal,
+	});
+	const buffer = await response.arrayBuffer();
+	return { metadata: parseRawFrameMetadata(response.headers), buffer };
 }

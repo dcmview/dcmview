@@ -127,14 +127,16 @@ class CheckRunner:
 		run("Check package version parity", [self.python, "scripts/check_versions.py"])
 
 	def frontend(self) -> None:
-		self.install_frontend()
+		# The contract generator is a Cargo example, and Cargo builds need the
+		# embedded frontend assets first.
+		self.build_frontend()
 		run(
 			"Check generated frontend contracts",
-			[self.npm, "--prefix", "frontend", "run", "check:contracts"],
+			[self.cargo, "run", "--locked", "--example", "generate_api_types", "--", "--check"],
+			env=cargo_env(),
 		)
 		run("Typecheck Svelte and TypeScript", [self.npm, "--prefix", "frontend", "run", "typecheck"])
 		run("Run frontend behavior tests", [self.npm, "--prefix", "frontend", "run", "test"])
-		self.build_frontend()
 
 	def rust_lint(self) -> None:
 		self.build_frontend()

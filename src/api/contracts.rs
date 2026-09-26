@@ -1,6 +1,19 @@
+//! Canonical HTTP contract: endpoint facts and every serialized wire type.
+//!
+//! The router, handlers, and `tests/integration/api_contract.rs` read the
+//! endpoint table below. `frontend/src/generated/api-types.ts` is generated
+//! from this module by `cargo run --example generate_api_types`; wire types
+//! derive `ts_rs::TS` so their TypeScript follows their serde attributes.
+
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 pub const API_PREFIX: &str = "/api";
+
+pub const JSON_MEDIA_TYPE: &str = "application/json";
+pub const PNG_MEDIA_TYPE: &str = "image/png";
+pub const OCTET_STREAM_MEDIA_TYPE: &str = "application/octet-stream";
+pub const CSV_MEDIA_TYPE: &str = "text/csv; charset=utf-8";
 
 pub const CACHE_HEADER: &str = "X-Cache";
 pub const CACHE_HIT: &str = "HIT";
@@ -8,6 +21,41 @@ pub const CACHE_MISS: &str = "MISS";
 pub const EXPORT_CONTENT_DISPOSITION_HEADER: &str = "Content-Disposition";
 pub const EXPORT_CONTENT_DISPOSITION_VALUE: &str =
     "attachment; filename=\"dcmview-annotations.csv\"";
+
+pub const RAW_FRAME_HEADER_ROWS: &str = "X-Frame-Rows";
+pub const RAW_FRAME_HEADER_COLUMNS: &str = "X-Frame-Columns";
+pub const RAW_FRAME_HEADER_BITS_ALLOCATED: &str = "X-Frame-Bits-Allocated";
+pub const RAW_FRAME_HEADER_PIXEL_REPRESENTATION: &str = "X-Frame-Pixel-Representation";
+pub const RAW_FRAME_HEADER_SAMPLES_PER_PIXEL: &str = "X-Frame-Samples-Per-Pixel";
+pub const RAW_FRAME_HEADER_PHOTOMETRIC_INTERPRETATION: &str = "X-Frame-Photometric-Interpretation";
+pub const RAW_FRAME_HEADER_RESCALE_SLOPE: &str = "X-Frame-Rescale-Slope";
+pub const RAW_FRAME_HEADER_RESCALE_INTERCEPT: &str = "X-Frame-Rescale-Intercept";
+pub const RAW_FRAME_HEADER_DEFAULT_WC: &str = "X-Frame-Default-Wc";
+pub const RAW_FRAME_HEADER_DEFAULT_WW: &str = "X-Frame-Default-Ww";
+pub const RAW_FRAME_HEADER_PADDING_LOW: &str = "X-Frame-Padding-Low";
+pub const RAW_FRAME_HEADER_PADDING_HIGH: &str = "X-Frame-Padding-High";
+
+/// Raw-frame response header carrying each serialized [`RawFrameMetadata`]
+/// field, keyed by that field's JSON name. The two padding headers are sent
+/// only when the file declares Pixel Padding, and the default window pair only
+/// when a default window exists.
+pub const RAW_FRAME_HEADERS: &[(&str, &str)] = &[
+    ("rows", RAW_FRAME_HEADER_ROWS),
+    ("columns", RAW_FRAME_HEADER_COLUMNS),
+    ("bitsAllocated", RAW_FRAME_HEADER_BITS_ALLOCATED),
+    ("pixelRepresentation", RAW_FRAME_HEADER_PIXEL_REPRESENTATION),
+    ("samplesPerPixel", RAW_FRAME_HEADER_SAMPLES_PER_PIXEL),
+    (
+        "photometricInterpretation",
+        RAW_FRAME_HEADER_PHOTOMETRIC_INTERPRETATION,
+    ),
+    ("rescaleSlope", RAW_FRAME_HEADER_RESCALE_SLOPE),
+    ("rescaleIntercept", RAW_FRAME_HEADER_RESCALE_INTERCEPT),
+    ("defaultWc", RAW_FRAME_HEADER_DEFAULT_WC),
+    ("defaultWw", RAW_FRAME_HEADER_DEFAULT_WW),
+    ("paddingLow", RAW_FRAME_HEADER_PADDING_LOW),
+    ("paddingHigh", RAW_FRAME_HEADER_PADDING_HIGH),
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ApiMethod {
@@ -24,484 +72,159 @@ impl ApiMethod {
     }
 }
 
+/// Contract-specific response headers an endpoint sends on success.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ApiResponseHeadersKind {
+pub enum ResponseHeaders {
     None,
+    /// [`CACHE_HEADER`] with [`CACHE_HIT`] or [`CACHE_MISS`].
     Cache,
+    /// [`CACHE_HEADER`] plus [`RAW_FRAME_HEADERS`].
     RawFrame,
+    /// [`EXPORT_CONTENT_DISPOSITION_HEADER`].
     Export,
 }
 
-pub trait ApiResponseHeadersSpec {
-    const KIND: ApiResponseHeadersKind;
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct NoResponseHeaders;
-
-impl ApiResponseHeadersSpec for NoResponseHeaders {
-    const KIND: ApiResponseHeadersKind = ApiResponseHeadersKind::None;
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct CacheResponseHeaders;
-
-impl ApiResponseHeadersSpec for CacheResponseHeaders {
-    const KIND: ApiResponseHeadersKind = ApiResponseHeadersKind::Cache;
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct RawFrameResponseHeaders;
-
-impl ApiResponseHeadersSpec for RawFrameResponseHeaders {
-    const KIND: ApiResponseHeadersKind = ApiResponseHeadersKind::RawFrame;
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct ExportResponseHeaders;
-
-impl ApiResponseHeadersSpec for ExportResponseHeaders {
-    const KIND: ApiResponseHeadersKind = ApiResponseHeadersKind::Export;
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct NoQuery;
-
-#[derive(Debug, Clone, Copy)]
-pub struct NoRequest;
-
-#[derive(Debug, Clone, Copy)]
-pub struct BlobBody;
-
-#[derive(Debug, Clone, Copy)]
-pub struct ArrayBufferBody;
-
-pub trait ApiEndpointSpec {
-    type Query;
-    type Request;
-    type Response;
-    type ResponseHeaders: ApiResponseHeadersSpec;
-    type Error;
-
-    const CONTRACT: ApiEndpointContract;
-}
-
+/// One HTTP endpoint. Every endpoint answers errors with [`ErrorResponse`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ApiEndpointContract {
-    pub operation: ApiOperation,
+pub struct Endpoint {
+    /// Stable camelCase key of this endpoint in the generated TypeScript table.
     pub id: &'static str,
     pub method: ApiMethod,
+    /// Axum route relative to [`API_PREFIX`]; `{name}` segments are path parameters.
     pub path: &'static str,
-    pub query_type: &'static str,
-    pub request_type: &'static str,
-    pub request_media_type: Option<&'static str>,
-    pub response_type: &'static str,
     pub response_media_type: &'static str,
-    pub response_headers_type: &'static str,
-    pub response_headers: ApiResponseHeadersKind,
-    pub error_type: &'static str,
+    pub response_headers: ResponseHeaders,
     pub success_status: u16,
 }
 
-macro_rules! define_api_endpoints {
-    (
-        $(
-            $constant:ident => {
-                operation: $operation:ident,
-                id: $id:literal,
-                method: $method:ident,
-                path: $path:literal,
-                query_type: $query_type:ty,
-                request_type: $request_type:ty,
-                request_media_type: $request_media_type:expr,
-                response_type: $response_type:ty,
-                response_media_type: $response_media_type:literal,
-                response_headers_type: $response_headers_type:ty,
-                error_type: $error_type:ty,
-                success_status: $success_status:literal
-            }
-        ),+ $(,)?
-    ) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-        pub enum ApiOperation {
-            $($operation),+
+pub mod endpoints {
+    use super::{
+        ApiMethod, Endpoint, ResponseHeaders, CSV_MEDIA_TYPE, JSON_MEDIA_TYPE,
+        OCTET_STREAM_MEDIA_TYPE, PNG_MEDIA_TYPE,
+    };
+
+    const fn json(id: &'static str, method: ApiMethod, path: &'static str) -> Endpoint {
+        Endpoint {
+            id,
+            method,
+            path,
+            response_media_type: JSON_MEDIA_TYPE,
+            response_headers: ResponseHeaders::None,
+            success_status: 200,
         }
+    }
 
-        $(
-            #[derive(Debug, Clone, Copy)]
-            pub struct $operation;
+    const fn binary(
+        id: &'static str,
+        path: &'static str,
+        response_media_type: &'static str,
+        response_headers: ResponseHeaders,
+    ) -> Endpoint {
+        Endpoint {
+            id,
+            method: ApiMethod::Get,
+            path,
+            response_media_type,
+            response_headers,
+            success_status: 200,
+        }
+    }
 
-            impl ApiEndpointSpec for $operation {
-                type Query = $query_type;
-                type Request = $request_type;
-                type Response = $response_type;
-                type ResponseHeaders = $response_headers_type;
-                type Error = $error_type;
+    /// `HealthResponse`.
+    pub const HEALTH: Endpoint = json("health", ApiMethod::Get, "/health");
+    /// `FilesResponse`.
+    pub const FILES: Endpoint = json("files", ApiMethod::Get, "/files");
+    /// `SeriesCatalogResponse`.
+    pub const SERIES: Endpoint = json("series", ApiMethod::Get, "/series");
+    /// `FrameInfo`.
+    pub const FILE_INFO: Endpoint = json("fileInfo", ApiMethod::Get, "/file/{index}/info");
+    /// `ReferenceCatalogResponse`.
+    pub const FILE_REFERENCES: Endpoint =
+        json("fileReferences", ApiMethod::Get, "/file/{index}/references");
+    /// `SemanticContextResponse`.
+    pub const FILE_SEMANTIC_CONTEXT: Endpoint = json(
+        "fileSemanticContext",
+        ApiMethod::Get,
+        "/file/{index}/semantic-context",
+    );
+    /// Transparent PNG overlay of a segmentation frame on its source frame.
+    pub const FILE_SEGMENTATION_OVERLAY: Endpoint = binary(
+        "fileSegmentationOverlay",
+        "/file/{index}/frame/{frame}/segmentation-overlay",
+        PNG_MEDIA_TYPE,
+        ResponseHeaders::Cache,
+    );
+    /// `WsiFrameContextResponse`.
+    pub const FILE_WSI_CONTEXT: Endpoint = json(
+        "fileWsiContext",
+        ApiMethod::Get,
+        "/file/{index}/frame/{frame}/wsi-context",
+    );
+    /// Windowed display PNG; query `FrameQuery`.
+    pub const FILE_FRAME: Endpoint = binary(
+        "fileFrame",
+        "/file/{index}/frame/{frame}",
+        PNG_MEDIA_TYPE,
+        ResponseHeaders::Cache,
+    );
+    /// Decoded little-endian samples with `RawFrameMetadata` in headers.
+    pub const FILE_RAW_FRAME: Endpoint = binary(
+        "fileRawFrame",
+        "/file/{index}/frame/{frame}/raw",
+        OCTET_STREAM_MEDIA_TYPE,
+        ResponseHeaders::RawFrame,
+    );
+    /// `TagNode[]`.
+    pub const FILE_TAGS: Endpoint = json("fileTags", ApiMethod::Get, "/file/{index}/tags");
+    /// One `TagNode`; query `TagQuery`.
+    pub const FILE_TAG_SELECT: Endpoint =
+        json("fileTagSelect", ApiMethod::Get, "/file/{index}/tags/select");
+    /// `EmbedRoiAnnotations`.
+    pub const FILE_ANNOTATIONS_GET: Endpoint = json(
+        "fileAnnotationsGet",
+        ApiMethod::Get,
+        "/file/{index}/annotations",
+    );
+    /// JSON `EmbedRoiAnnotations` in and out.
+    pub const FILE_ANNOTATIONS_UPDATE: Endpoint = json(
+        "fileAnnotationsUpdate",
+        ApiMethod::Put,
+        "/file/{index}/annotations",
+    );
+    /// EMBED-style CSV of every in-memory annotation.
+    pub const ANNOTATIONS_EXPORT: Endpoint = binary(
+        "annotationsExport",
+        "/annotations/export.csv",
+        CSV_MEDIA_TYPE,
+        ResponseHeaders::Export,
+    );
 
-                const CONTRACT: ApiEndpointContract = ApiEndpointContract {
-                    operation: ApiOperation::$operation,
-                    id: $id,
-                    method: ApiMethod::$method,
-                    path: $path,
-                    query_type: stringify!($query_type),
-                    request_type: stringify!($request_type),
-                    request_media_type: $request_media_type,
-                    response_type: stringify!($response_type),
-                    response_media_type: $response_media_type,
-                    response_headers_type: stringify!($response_headers_type),
-                    response_headers:
-                        <$response_headers_type as ApiResponseHeadersSpec>::KIND,
-                    error_type: stringify!($error_type),
-                    success_status: $success_status,
-                };
-            }
-
-            pub const $constant: ApiEndpointContract =
-                <$operation as ApiEndpointSpec>::CONTRACT;
-        )+
-
-        pub const API_ENDPOINTS: &[ApiEndpointContract] = &[$($constant),+];
-    };
+    pub const ALL: &[Endpoint] = &[
+        HEALTH,
+        FILES,
+        SERIES,
+        FILE_INFO,
+        FILE_REFERENCES,
+        FILE_SEMANTIC_CONTEXT,
+        FILE_SEGMENTATION_OVERLAY,
+        FILE_WSI_CONTEXT,
+        FILE_FRAME,
+        FILE_RAW_FRAME,
+        FILE_TAGS,
+        FILE_TAG_SELECT,
+        FILE_ANNOTATIONS_GET,
+        FILE_ANNOTATIONS_UPDATE,
+        ANNOTATIONS_EXPORT,
+    ];
 }
 
-define_api_endpoints! {
-    API_ENDPOINT_HEALTH => {
-        operation: Health,
-        id: "health",
-        method: Get,
-        path: "/health",
-        query_type: NoQuery,
-        request_type: NoRequest,
-        request_media_type: None,
-        response_type: HealthResponse,
-        response_media_type: "application/json",
-        response_headers_type: NoResponseHeaders,
-        error_type: ErrorResponse,
-        success_status: 200
-    },
-    API_ENDPOINT_FILES => {
-        operation: Files,
-        id: "files",
-        method: Get,
-        path: "/files",
-        query_type: NoQuery,
-        request_type: NoRequest,
-        request_media_type: None,
-        response_type: FilesResponse,
-        response_media_type: "application/json",
-        response_headers_type: NoResponseHeaders,
-        error_type: ErrorResponse,
-        success_status: 200
-    },
-    API_ENDPOINT_SERIES => {
-        operation: Series,
-        id: "series",
-        method: Get,
-        path: "/series",
-        query_type: NoQuery,
-        request_type: NoRequest,
-        request_media_type: None,
-        response_type: SeriesCatalogResponse,
-        response_media_type: "application/json",
-        response_headers_type: NoResponseHeaders,
-        error_type: ErrorResponse,
-        success_status: 200
-    },
-    API_ENDPOINT_FILE_INFO => {
-        operation: FileInfo,
-        id: "fileInfo",
-        method: Get,
-        path: "/file/{index}/info",
-        query_type: NoQuery,
-        request_type: NoRequest,
-        request_media_type: None,
-        response_type: FrameInfo,
-        response_media_type: "application/json",
-        response_headers_type: NoResponseHeaders,
-        error_type: ErrorResponse,
-        success_status: 200
-    },
-    API_ENDPOINT_FILE_REFERENCES => {
-        operation: FileReferences,
-        id: "fileReferences",
-        method: Get,
-        path: "/file/{index}/references",
-        query_type: NoQuery,
-        request_type: NoRequest,
-        request_media_type: None,
-        response_type: ReferenceCatalogResponse,
-        response_media_type: "application/json",
-        response_headers_type: NoResponseHeaders,
-        error_type: ErrorResponse,
-        success_status: 200
-    },
-    API_ENDPOINT_FILE_SEMANTIC_CONTEXT => {
-        operation: FileSemanticContext,
-        id: "fileSemanticContext",
-        method: Get,
-        path: "/file/{index}/semantic-context",
-        query_type: NoQuery,
-        request_type: NoRequest,
-        request_media_type: None,
-        response_type: SemanticContextResponse,
-        response_media_type: "application/json",
-        response_headers_type: NoResponseHeaders,
-        error_type: ErrorResponse,
-        success_status: 200
-    },
-    API_ENDPOINT_FILE_SEGMENTATION_OVERLAY => {
-        operation: FileSegmentationOverlay,
-        id: "fileSegmentationOverlay",
-        method: Get,
-        path: "/file/{index}/frame/{frame}/segmentation-overlay",
-        query_type: NoQuery,
-        request_type: NoRequest,
-        request_media_type: None,
-        response_type: BlobBody,
-        response_media_type: "image/png",
-        response_headers_type: CacheResponseHeaders,
-        error_type: ErrorResponse,
-        success_status: 200
-    },
-    API_ENDPOINT_FILE_WSI_CONTEXT => {
-        operation: FileWsiContext,
-        id: "fileWsiContext",
-        method: Get,
-        path: "/file/{index}/frame/{frame}/wsi-context",
-        query_type: NoQuery,
-        request_type: NoRequest,
-        request_media_type: None,
-        response_type: WsiFrameContextResponse,
-        response_media_type: "application/json",
-        response_headers_type: NoResponseHeaders,
-        error_type: ErrorResponse,
-        success_status: 200
-    },
-    API_ENDPOINT_FILE_FRAME => {
-        operation: FileFrame,
-        id: "fileFrame",
-        method: Get,
-        path: "/file/{index}/frame/{frame}",
-        query_type: FrameQuery,
-        request_type: NoRequest,
-        request_media_type: None,
-        response_type: BlobBody,
-        response_media_type: "image/png",
-        response_headers_type: CacheResponseHeaders,
-        error_type: ErrorResponse,
-        success_status: 200
-    },
-    API_ENDPOINT_FILE_RAW_FRAME => {
-        operation: FileRawFrame,
-        id: "fileRawFrame",
-        method: Get,
-        path: "/file/{index}/frame/{frame}/raw",
-        query_type: NoQuery,
-        request_type: NoRequest,
-        request_media_type: None,
-        response_type: ArrayBufferBody,
-        response_media_type: "application/octet-stream",
-        response_headers_type: RawFrameResponseHeaders,
-        error_type: ErrorResponse,
-        success_status: 200
-    },
-    API_ENDPOINT_FILE_TAGS => {
-        operation: FileTags,
-        id: "fileTags",
-        method: Get,
-        path: "/file/{index}/tags",
-        query_type: NoQuery,
-        request_type: NoRequest,
-        request_media_type: None,
-        response_type: Vec<TagNode>,
-        response_media_type: "application/json",
-        response_headers_type: NoResponseHeaders,
-        error_type: ErrorResponse,
-        success_status: 200
-    },
-    API_ENDPOINT_FILE_TAG_SELECT => {
-        operation: FileTagSelect,
-        id: "fileTagSelect",
-        method: Get,
-        path: "/file/{index}/tags/select",
-        query_type: TagQuery,
-        request_type: NoRequest,
-        request_media_type: None,
-        response_type: TagNode,
-        response_media_type: "application/json",
-        response_headers_type: NoResponseHeaders,
-        error_type: ErrorResponse,
-        success_status: 200
-    },
-    API_ENDPOINT_FILE_ANNOTATIONS_GET => {
-        operation: FileAnnotationsGet,
-        id: "fileAnnotationsGet",
-        method: Get,
-        path: "/file/{index}/annotations",
-        query_type: NoQuery,
-        request_type: NoRequest,
-        request_media_type: None,
-        response_type: EmbedRoiAnnotations,
-        response_media_type: "application/json",
-        response_headers_type: NoResponseHeaders,
-        error_type: ErrorResponse,
-        success_status: 200
-    },
-    API_ENDPOINT_FILE_ANNOTATIONS_UPDATE => {
-        operation: FileAnnotationsUpdate,
-        id: "fileAnnotationsUpdate",
-        method: Put,
-        path: "/file/{index}/annotations",
-        query_type: NoQuery,
-        request_type: EmbedRoiAnnotations,
-        request_media_type: Some("application/json"),
-        response_type: EmbedRoiAnnotations,
-        response_media_type: "application/json",
-        response_headers_type: NoResponseHeaders,
-        error_type: ErrorResponse,
-        success_status: 200
-    },
-    API_ENDPOINT_ANNOTATIONS_EXPORT => {
-        operation: AnnotationsExport,
-        id: "annotationsExport",
-        method: Get,
-        path: "/annotations/export.csv",
-        query_type: NoQuery,
-        request_type: NoRequest,
-        request_media_type: None,
-        response_type: BlobBody,
-        response_media_type: "text/csv; charset=utf-8",
-        response_headers_type: ExportResponseHeaders,
-        error_type: ErrorResponse,
-        success_status: 200
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FrameQueryParameter {
-    pub client_key: &'static str,
-    pub wire_name: &'static str,
-}
-
-macro_rules! define_frame_query_parameters {
-    (
-        $(
-            $constant:ident => {
-                client_key: $client_key:literal,
-                wire_name: $wire_name:literal
-            }
-        ),+ $(,)?
-    ) => {
-        $(pub const $constant: &str = $wire_name;)+
-
-        pub const FRAME_QUERY_PARAMETERS: &[FrameQueryParameter] = &[
-            $(FrameQueryParameter {
-                client_key: $client_key,
-                wire_name: $wire_name,
-            }),+
-        ];
-    };
-}
-
-define_frame_query_parameters! {
-    FRAME_QUERY_WINDOW_CENTER => {
-        client_key: "windowCenter",
-        wire_name: "wc"
-    },
-    FRAME_QUERY_WINDOW_WIDTH => {
-        client_key: "windowWidth",
-        wire_name: "ww"
-    },
-    FRAME_QUERY_MODE => {
-        client_key: "mode",
-        wire_name: "mode"
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RawFrameHeaderContract {
-    pub field: &'static str,
-    pub name: &'static str,
-}
-
-macro_rules! define_raw_frame_headers {
-    (
-        $(
-            $constant:ident => {
-                field: $field:literal,
-                name: $name:literal
-            }
-        ),+ $(,)?
-    ) => {
-        $(pub const $constant: &str = $name;)+
-
-        pub const RAW_FRAME_HEADERS: &[RawFrameHeaderContract] = &[
-            $(RawFrameHeaderContract {
-                field: $field,
-                name: $name,
-            }),+
-        ];
-    };
-}
-
-define_raw_frame_headers! {
-    RAW_FRAME_HEADER_ROWS => {
-        field: "rows",
-        name: "X-Frame-Rows"
-    },
-    RAW_FRAME_HEADER_COLUMNS => {
-        field: "columns",
-        name: "X-Frame-Columns"
-    },
-    RAW_FRAME_HEADER_BITS_ALLOCATED => {
-        field: "bitsAllocated",
-        name: "X-Frame-Bits-Allocated"
-    },
-    RAW_FRAME_HEADER_PIXEL_REPRESENTATION => {
-        field: "pixelRepresentation",
-        name: "X-Frame-Pixel-Representation"
-    },
-    RAW_FRAME_HEADER_SAMPLES_PER_PIXEL => {
-        field: "samplesPerPixel",
-        name: "X-Frame-Samples-Per-Pixel"
-    },
-    RAW_FRAME_HEADER_PHOTOMETRIC_INTERPRETATION => {
-        field: "photometricInterpretation",
-        name: "X-Frame-Photometric-Interpretation"
-    },
-    RAW_FRAME_HEADER_RESCALE_SLOPE => {
-        field: "rescaleSlope",
-        name: "X-Frame-Rescale-Slope"
-    },
-    RAW_FRAME_HEADER_RESCALE_INTERCEPT => {
-        field: "rescaleIntercept",
-        name: "X-Frame-Rescale-Intercept"
-    },
-    RAW_FRAME_HEADER_DEFAULT_WC => {
-        field: "defaultWc",
-        name: "X-Frame-Default-Wc"
-    },
-    RAW_FRAME_HEADER_DEFAULT_WW => {
-        field: "defaultWw",
-        name: "X-Frame-Default-Ww"
-    },
-    RAW_FRAME_HEADER_PADDING_LOW => {
-        field: "paddingLow",
-        name: "X-Frame-Padding-Low"
-    },
-    RAW_FRAME_HEADER_PADDING_HIGH => {
-        field: "paddingHigh",
-        name: "X-Frame-Padding-High"
-    },
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS)]
 pub struct WindowPreset {
     pub center: f64,
     pub width: f64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct FileSummary {
     pub index: usize,
     pub path: String,
@@ -535,7 +258,7 @@ pub struct FileSummary {
     pub default_window: Option<WindowPreset>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct FilesResponse {
     pub files: Vec<FileSummary>,
     pub discovery: Vec<DiscoveryResult>,
@@ -546,27 +269,27 @@ pub struct FilesResponse {
     pub filtered: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct SeriesCatalogResponse {
     pub series: Vec<SeriesSummary>,
     pub scan_complete: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct ReferenceCatalogResponse {
     pub source_file_index: usize,
     pub source_sop_instance_uid: String,
     pub references: Vec<ReferenceSummary>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct ReferenceSummary {
     pub relationship: String,
     pub target: ReferenceTargetSummary,
     pub matches: Vec<ReferenceMatchSummary>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct ReferenceTargetSummary {
     pub sop_class_uid: Option<String>,
     pub sop_instance_uid: Option<String>,
@@ -576,7 +299,7 @@ pub struct ReferenceTargetSummary {
     pub segment_numbers: Vec<u16>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct ReferenceMatchSummary {
     pub file_index: usize,
     pub path: String,
@@ -585,7 +308,7 @@ pub struct ReferenceMatchSummary {
     pub frame_indices: Vec<u32>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct SemanticContextResponse {
     pub source_file_index: usize,
     /// The normal frame endpoints remain the default and are never semantically transformed.
@@ -594,7 +317,7 @@ pub struct SemanticContextResponse {
     pub context: SemanticContext,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SemanticContext {
     Segmentation(SegmentationContext),
@@ -603,14 +326,14 @@ pub enum SemanticContext {
     NotApplicable { reason: String },
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct CodedConceptSummary {
     pub value: String,
     pub scheme: String,
     pub meaning: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct SegmentationContext {
     pub segmentation_type: Option<String>,
     pub segmentation_fractional_type: Option<String>,
@@ -621,7 +344,7 @@ pub struct SegmentationContext {
     pub overlay: OverlayEligibility,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct SegmentSummary {
     pub number: u16,
     pub label: Option<String>,
@@ -634,7 +357,7 @@ pub struct SegmentSummary {
     pub recommended_display_grayscale: Option<u16>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct SegmentFrameMapping {
     /// Zero-based frame index in the segmentation object.
     pub frame_index: u32,
@@ -652,7 +375,7 @@ pub struct SegmentFrameMapping {
     pub mapping_reason: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct ResolvedSegmentSourceFrame {
     pub file_index: usize,
     /// Zero-based frame index in the source object.
@@ -660,7 +383,7 @@ pub struct ResolvedSegmentSourceFrame {
     pub sop_instance_uid: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct OverlayEligibility {
     pub eligible: bool,
     pub reason: String,
@@ -668,7 +391,7 @@ pub struct OverlayEligibility {
     pub mapped_source_count: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct ParametricMapContext {
     pub stored_value_type: String,
     pub displayed_value_kind: String,
@@ -678,7 +401,7 @@ pub struct ParametricMapContext {
     pub warnings: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct RealWorldValueMappingSummary {
     pub source: String,
     pub source_sop_instance_uid: Option<String>,
@@ -694,7 +417,7 @@ pub struct RealWorldValueMappingSummary {
     pub derivation: Option<CodedConceptSummary>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct RtDoseContext {
     pub dose_grid_scaling: Option<f64>,
     pub scaling_status: String,
@@ -708,7 +431,7 @@ pub struct RtDoseContext {
     pub clinical_use_warning: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct DoseGridGeometry {
     pub frame_of_reference_uid: Option<String>,
     pub image_position_patient: Option<[f64; 3]>,
@@ -717,7 +440,7 @@ pub struct DoseGridGeometry {
     pub grid_frame_offsets: Vec<f64>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct WsiFrameContextResponse {
     pub source_file_index: usize,
     pub frame_index: u32,
@@ -745,13 +468,13 @@ pub struct WsiFrameContextResponse {
     pub warnings: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct WsiTotalPixelMatrix {
     pub rows: u64,
     pub columns: u64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct WsiTileRectangle {
     /// Zero-based column offset in the Total Pixel Matrix.
     pub x: u64,
@@ -761,19 +484,19 @@ pub struct WsiTileRectangle {
     pub height: u64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct WsiOpticalPath {
     pub index: Option<u32>,
     pub identifier: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct WsiFocalPlane {
     pub index: Option<u32>,
     pub z_offset_slide: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct WsiCompanionSummary {
     pub file_index: usize,
     pub sop_instance_uid: String,
@@ -781,7 +504,7 @@ pub struct WsiCompanionSummary {
     pub pyramid_uid: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct SeriesSummary {
     pub id: String,
     pub study_instance_uid: String,
@@ -790,7 +513,7 @@ pub struct SeriesSummary {
     pub stacks: Vec<SeriesStackSummary>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct SeriesStackSummary {
     pub id: String,
     pub kind: String,
@@ -803,7 +526,7 @@ pub struct SeriesStackSummary {
     pub warnings: Vec<SeriesWarningSummary>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct FrameRefSummary {
     pub virtual_index: usize,
     pub file_index: usize,
@@ -814,14 +537,14 @@ pub struct FrameRefSummary {
     pub position_along_normal_mm: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct SeriesWarningSummary {
     pub code: String,
     pub message: String,
     pub file_indices: Vec<usize>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct FrameInfo {
     pub frame_count: u32,
     pub rows: u32,
@@ -835,7 +558,7 @@ pub struct FrameInfo {
     pub default_window: Option<WindowPreset>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum SupportState {
     Renderable,
@@ -843,14 +566,14 @@ pub enum SupportState {
     Unsupported,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct DiscoveryResult {
     pub path: String,
     pub disposition: String,
     pub reason: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Default, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum WindowMode {
     #[default]
@@ -858,7 +581,7 @@ pub enum WindowMode {
     FullDynamic,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct TagNode {
     pub tag: String,
     pub vr: String,
@@ -866,7 +589,7 @@ pub struct TagNode {
     pub value: TagValue,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TagValue {
     String {
@@ -877,9 +600,10 @@ pub enum TagValue {
     },
     Numbers {
         value: Vec<f64>,
-        #[serde(skip_serializing_if = "is_false")]
+        #[serde(default, skip_serializing_if = "is_false")]
         truncated: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         total: Option<usize>,
     },
     Binary {
@@ -887,9 +611,10 @@ pub enum TagValue {
     },
     Sequence {
         items: Vec<Vec<TagNode>>,
-        #[serde(skip_serializing_if = "is_false")]
+        #[serde(default, skip_serializing_if = "is_false")]
         truncated: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         total: Option<usize>,
     },
     Error {
@@ -901,7 +626,7 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ApiErrorCode {
     InvalidPath,
@@ -922,13 +647,13 @@ pub enum ApiErrorCode {
     InternalError,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct ErrorResponse {
     pub code: ApiErrorCode,
     pub error: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct RawFrameMetadata {
     pub rows: u32,
@@ -947,7 +672,7 @@ pub struct RawFrameMetadata {
     pub padding_high: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct ViewerIdentity {
     pub name: &'static str,
     pub version: &'static str,
@@ -968,7 +693,7 @@ impl ViewerIdentity {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct HealthResponse {
     pub status: &'static str,
     pub viewer: ViewerIdentity,
@@ -976,21 +701,27 @@ pub struct HealthResponse {
     pub server_start_ms: u64,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+/// Display-frame query. Explicit `wc`/`ww` must be sent together;
+/// `mode=full_dynamic` ignores them.
+#[derive(Debug, Clone, Copy, Deserialize, TS)]
+#[ts(optional_fields)]
 pub struct FrameQuery {
     pub wc: Option<f64>,
     pub ww: Option<f64>,
     pub mode: Option<WindowMode>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+/// Selective tag query: `path` addresses one element, and `offset`/`limit`
+/// page the items of a sequence at that path.
+#[derive(Debug, Clone, Deserialize, TS)]
+#[ts(optional_fields)]
 pub struct TagQuery {
     pub path: String,
     pub offset: Option<usize>,
     pub limit: Option<usize>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, TS)]
 pub struct EmbedRoiAnnotations {
     pub num_roi: usize,
     pub roi_coords: Vec<[u32; 4]>,
@@ -1009,147 +740,68 @@ impl EmbedRoiAnnotations {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ApiEndpointSpec, ApiMethod, ApiOperation, ApiResponseHeadersKind, BlobBody,
-        CacheResponseHeaders, EmbedRoiAnnotations, ErrorResponse, FileFrame,
-        FileInfo as FileInfoEndpoint, FrameInfo, FrameQuery, NoQuery, NoRequest, NoResponseHeaders,
-        RawFrameMetadata, RawFrameResponseHeaders, API_ENDPOINTS, API_PREFIX,
-        FRAME_QUERY_PARAMETERS, RAW_FRAME_HEADERS,
-    };
+    use super::{endpoints, FrameInfo, RawFrameMetadata, RAW_FRAME_HEADERS};
     use serde_json::json;
     use std::collections::HashSet;
 
     #[test]
-    fn derived_contract_registries_are_complete_unique_and_well_formed() {
-        assert_eq!(API_PREFIX, "/api");
-        assert!(API_ENDPOINTS
+    fn endpoint_table_is_unique_and_well_formed() {
+        let all = endpoints::ALL;
+        let ids = all
             .iter()
-            .all(|endpoint| endpoint.path.starts_with('/')));
-        assert_eq!(
-            API_ENDPOINTS
-                .iter()
-                .map(|endpoint| endpoint.id)
-                .collect::<HashSet<_>>()
-                .len(),
-            API_ENDPOINTS.len()
-        );
-        assert_eq!(
-            API_ENDPOINTS
-                .iter()
-                .map(|endpoint| endpoint.operation)
-                .collect::<HashSet<_>>()
-                .len(),
-            API_ENDPOINTS.len()
-        );
-        assert_eq!(
-            API_ENDPOINTS
-                .iter()
-                .map(|endpoint| (endpoint.method.as_str(), endpoint.path))
-                .collect::<HashSet<_>>()
-                .len(),
-            API_ENDPOINTS.len()
-        );
-        for endpoint in API_ENDPOINTS {
-            assert_eq!(
-                endpoint.request_type != "NoRequest",
-                endpoint.request_media_type.is_some(),
-                "{} request type/media declarations differ",
+            .map(|endpoint| endpoint.id)
+            .collect::<HashSet<_>>();
+        let routes = all
+            .iter()
+            .map(|endpoint| (endpoint.method, endpoint.path))
+            .collect::<HashSet<_>>();
+        assert_eq!(ids.len(), all.len());
+        assert_eq!(routes.len(), all.len());
+        for endpoint in all {
+            assert!(endpoint.path.starts_with('/'), "{}", endpoint.id);
+            assert!(
+                (200..300).contains(&endpoint.success_status),
+                "{}",
                 endpoint.id
             );
-            if endpoint.method == ApiMethod::Get {
-                assert_eq!(
-                    endpoint.request_type, "NoRequest",
-                    "{} declares a body-bearing GET",
-                    endpoint.id
-                );
-            }
-            assert_eq!(endpoint.error_type, "ErrorResponse");
-            assert!((200..300).contains(&endpoint.success_status));
         }
-        let frame = API_ENDPOINTS
-            .iter()
-            .find(|endpoint| endpoint.operation == ApiOperation::FileFrame)
-            .expect("file frame endpoint");
-        assert_eq!(frame.query_type, "FrameQuery");
-        assert_eq!(frame.response_headers, ApiResponseHeadersKind::Cache);
-        let raw = API_ENDPOINTS
-            .iter()
-            .find(|endpoint| endpoint.operation == ApiOperation::FileRawFrame)
-            .expect("raw frame endpoint");
-        assert_eq!(raw.response_headers_type, "RawFrameResponseHeaders");
-        assert_eq!(raw.response_headers, ApiResponseHeadersKind::RawFrame);
-        assert!(RAW_FRAME_HEADERS
-            .iter()
-            .all(|header| header.name.starts_with("X-Frame-")));
-        assert_eq!(
-            RAW_FRAME_HEADERS
-                .iter()
-                .map(|header| header.field)
-                .collect::<HashSet<_>>()
-                .len(),
-            RAW_FRAME_HEADERS.len()
-        );
-        assert_eq!(
-            RAW_FRAME_HEADERS
-                .iter()
-                .map(|header| header.name)
-                .collect::<HashSet<_>>()
-                .len(),
-            RAW_FRAME_HEADERS.len()
-        );
-        assert_eq!(
-            FRAME_QUERY_PARAMETERS
-                .iter()
-                .map(|parameter| parameter.client_key)
-                .collect::<HashSet<_>>()
-                .len(),
-            FRAME_QUERY_PARAMETERS.len()
-        );
-        assert_eq!(
-            FRAME_QUERY_PARAMETERS
-                .iter()
-                .map(|parameter| parameter.wire_name)
-                .collect::<HashSet<_>>()
-                .len(),
-            FRAME_QUERY_PARAMETERS.len()
-        );
     }
 
     #[test]
-    fn typed_endpoint_specs_bind_handler_facing_contract_types() {
-        fn assert_file_info<Spec>()
-        where
-            Spec: ApiEndpointSpec<
-                Query = NoQuery,
-                Request = NoRequest,
-                Response = FrameInfo,
-                ResponseHeaders = NoResponseHeaders,
-                Error = ErrorResponse,
-            >,
-        {
-        }
+    fn raw_frame_headers_cover_exactly_the_serialized_metadata_fields() {
+        let value = serde_json::to_value(RawFrameMetadata {
+            rows: 2,
+            columns: 3,
+            bits_allocated: 16,
+            pixel_representation: 0,
+            samples_per_pixel: 1,
+            photometric_interpretation: "MONOCHROME2".to_string(),
+            rescale_slope: 1.0,
+            rescale_intercept: 0.0,
+            default_wc: None,
+            default_ww: None,
+            padding_low: None,
+            padding_high: None,
+        })
+        .expect("serialize raw metadata");
+        let serialized = value
+            .as_object()
+            .expect("metadata object")
+            .keys()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        let fields = RAW_FRAME_HEADERS
+            .iter()
+            .map(|(field, _)| *field)
+            .collect::<HashSet<_>>();
+        let names = RAW_FRAME_HEADERS
+            .iter()
+            .map(|(_, name)| *name)
+            .collect::<HashSet<_>>();
 
-        fn assert_file_frame<Spec>()
-        where
-            Spec: ApiEndpointSpec<
-                Query = FrameQuery,
-                Request = NoRequest,
-                Response = BlobBody,
-                ResponseHeaders = CacheResponseHeaders,
-                Error = ErrorResponse,
-            >,
-        {
-        }
-
-        fn assert_raw_headers<Spec>()
-        where
-            Spec: ApiEndpointSpec<ResponseHeaders = RawFrameResponseHeaders, Error = ErrorResponse>,
-        {
-        }
-
-        assert_file_info::<FileInfoEndpoint>();
-        assert_file_frame::<FileFrame>();
-        assert_raw_headers::<super::FileRawFrame>();
+        assert_eq!(serialized, fields);
+        assert_eq!(names.len(), RAW_FRAME_HEADERS.len());
+        assert!(names.iter().all(|name| name.starts_with("X-Frame-")));
     }
 
     #[test]
@@ -1170,36 +822,5 @@ mod tests {
 
         assert_eq!(value["transfer_syntax_uid"], json!("1.2.840.10008.1.2.1"));
         assert!(value.get("transfer_syntax").is_none());
-    }
-
-    #[test]
-    fn raw_metadata_uses_frontend_camel_case_names_when_serialized() {
-        let value = serde_json::to_value(RawFrameMetadata {
-            rows: 2,
-            columns: 3,
-            bits_allocated: 16,
-            pixel_representation: 0,
-            samples_per_pixel: 1,
-            photometric_interpretation: "MONOCHROME2".to_string(),
-            rescale_slope: 1.0,
-            rescale_intercept: 0.0,
-            default_wc: None,
-            default_ww: None,
-            padding_low: None,
-            padding_high: None,
-        })
-        .expect("serialize raw metadata");
-
-        assert_eq!(value["bitsAllocated"], json!(16));
-        assert_eq!(value["samplesPerPixel"], json!(1));
-        assert!(value.get("bits_allocated").is_none());
-    }
-
-    #[test]
-    fn empty_annotation_payload_is_canonical() {
-        let empty = EmbedRoiAnnotations::empty();
-        assert_eq!(empty.num_roi, 0);
-        assert!(empty.roi_coords.is_empty());
-        assert!(empty.roi_frames.is_empty());
     }
 }

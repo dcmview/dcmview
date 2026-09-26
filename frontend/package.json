@@ -14,9 +14,8 @@
     "typecheck": "npm run check:svelte && npm run check:ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "generate:types": "python ../scripts/generate_frontend_types.py",
-    "check:types": "python ../scripts/generate_frontend_types.py --check",
-    "check:contracts": "npm run check:types && python ../scripts/test_generate_frontend_types.py",
+    "generate:types": "cargo run --locked --example generate_api_types",
+    "check:contracts": "cargo run --locked --example generate_api_types -- --check",
     "preview": "vite preview"
   },
   "devDependencies": {

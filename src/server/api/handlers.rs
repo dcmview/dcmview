@@ -4,7 +4,8 @@ use crate::api::contracts::{
     DiscoveryResult, EmbedRoiAnnotations, FileSummary, FilesResponse, FrameInfo, FrameQuery,
     HealthResponse, ReferenceCatalogResponse, SemanticContextResponse, SeriesCatalogResponse,
     TagNode, TagQuery, ViewerIdentity, WsiFrameContextResponse, CACHE_HEADER, CACHE_HIT,
-    CACHE_MISS, EXPORT_CONTENT_DISPOSITION_HEADER, EXPORT_CONTENT_DISPOSITION_VALUE,
+    CACHE_MISS, CSV_MEDIA_TYPE, EXPORT_CONTENT_DISPOSITION_HEADER,
+    EXPORT_CONTENT_DISPOSITION_VALUE, OCTET_STREAM_MEDIA_TYPE, PNG_MEDIA_TYPE,
     RAW_FRAME_HEADER_BITS_ALLOCATED, RAW_FRAME_HEADER_COLUMNS, RAW_FRAME_HEADER_DEFAULT_WC,
     RAW_FRAME_HEADER_DEFAULT_WW, RAW_FRAME_HEADER_PADDING_HIGH, RAW_FRAME_HEADER_PADDING_LOW,
     RAW_FRAME_HEADER_PHOTOMETRIC_INTERPRETATION, RAW_FRAME_HEADER_PIXEL_REPRESENTATION,
@@ -215,9 +216,10 @@ pub(super) async fn segmentation_overlay(
         CACHE_HEADER,
         HeaderValue::from_static(if overlay.1 { CACHE_HIT } else { CACHE_MISS }),
     );
-    response
-        .headers_mut()
-        .insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static(PNG_MEDIA_TYPE),
+    );
     Ok(response)
 }
 
@@ -309,7 +311,7 @@ pub(super) async fn export_annotations(
     let headers = response.headers_mut();
     headers.insert(
         header::CONTENT_TYPE,
-        HeaderValue::from_static("text/csv; charset=utf-8"),
+        HeaderValue::from_static(CSV_MEDIA_TYPE),
     );
     headers.insert(
         EXPORT_CONTENT_DISPOSITION_HEADER,
@@ -385,7 +387,7 @@ pub(super) async fn raw_frame(
     headers.insert(CACHE_HEADER, HeaderValue::from_static(cache_header));
     headers.insert(
         header::CONTENT_TYPE,
-        HeaderValue::from_static("application/octet-stream"),
+        HeaderValue::from_static(OCTET_STREAM_MEDIA_TYPE),
     );
     insert_header_if_valid(headers, RAW_FRAME_HEADER_ROWS, meta.rows.to_string());
     insert_header_if_valid(headers, RAW_FRAME_HEADER_COLUMNS, meta.columns.to_string());

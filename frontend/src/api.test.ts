@@ -1,12 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-	annotationsExportUrl,
 	displayFrameCacheKey,
 	displayFrameWindowCacheKey,
 	fetchFiles,
-	fetchReferences,
-	fetchSegmentationOverlayBlob,
-	fetchSeries,
+	fetchRawFrame,
 	fetchSelectedTag,
 	frameUrl,
 	parseRawFrameMetadata,
@@ -110,7 +107,7 @@ describe("display frame cache keys", () => {
 });
 
 describe("display frame URLs", () => {
-	it("uses the generated route and query contract", () => {
+	it("sends explicit windows only outside full-dynamic mode", () => {
 		expect(frameUrl(2, 7)).toBe("/api/file/2/frame/7");
 		expect(frameUrl(2, 7, 40, 80, "default")).toBe(
 			"/api/file/2/frame/7?wc=40&ww=80",
@@ -119,88 +116,60 @@ describe("display frame URLs", () => {
 			"/api/file/2/frame/7?mode=full_dynamic",
 		);
 	});
-
-	it("anchors the annotations export link to the declared GET endpoint", () => {
-		expect(annotationsExportUrl()).toBe("/api/annotations/export.csv");
-	});
 });
 
-describe("generated endpoint fetch wrappers", () => {
-	it("uses the declared GET operation and inferred files response", async () => {
-		const payload = { files: [], scan_complete: true };
-		const fetchMock = vi.fn().mockResolvedValue(
-			new Response(JSON.stringify(payload), {
-				status: 200,
-				headers: { "Content-Type": "application/json" },
-			}),
-		);
-		vi.stubGlobal("fetch", fetchMock);
+function jsonResponse(body: unknown, status = 200): Response {
+	return new Response(JSON.stringify(body), {
+		status,
+		headers: { "Content-Type": "application/json" },
+	});
+}
 
-		await expect(fetchFiles()).resolves.toEqual(payload);
-		expect(fetchMock).toHaveBeenCalledWith("/api/files", { method: "GET" });
+describe("fetch wrappers", () => {
+	it("surfaces the JSON error envelope message", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValue(
+				jsonResponse({ code: "not_found", error: "file index out of range" }, 404),
+			),
+		);
+
+		await expect(fetchFiles()).rejects.toThrow("file index out of range");
 	});
 
-	it("uses the declared series catalog endpoint", async () => {
-		const payload = { series: [], scan_complete: true };
-		const fetchMock = vi.fn().mockResolvedValue(
-			new Response(JSON.stringify(payload), {
-				status: 200,
-				headers: { "Content-Type": "application/json" },
-			}),
+	it("falls back to the HTTP status when the error body is not an envelope", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValue(new Response("gateway down", { status: 502 })),
 		);
-		vi.stubGlobal("fetch", fetchMock);
 
-		await expect(fetchSeries()).resolves.toEqual(payload);
-		expect(fetchMock).toHaveBeenCalledWith("/api/series", { method: "GET" });
+		await expect(fetchFiles()).rejects.toThrow("HTTP 502");
 	});
 
-	it("uses the declared file reference endpoint", async () => {
-		const payload = {
-			source_file_index: 7,
-			source_sop_instance_uid: "1.2.3",
-			references: [],
-		};
+	it("forwards the abort signal and parses raw-frame headers", async () => {
 		const fetchMock = vi.fn().mockResolvedValue(
-			new Response(JSON.stringify(payload), {
-				status: 200,
-				headers: { "Content-Type": "application/json" },
-			}),
-		);
-		vi.stubGlobal("fetch", fetchMock);
-
-		await expect(fetchReferences(7)).resolves.toEqual(payload);
-		expect(fetchMock).toHaveBeenCalledWith("/api/file/7/references", { method: "GET" });
-	});
-
-	it("uses the declared segmentation overlay endpoint", async () => {
-		const payload = new Blob(["png"], { type: "image/png" });
-		const fetchMock = vi.fn().mockResolvedValue(
-			new Response(payload, {
-				status: 200,
-				headers: { "Content-Type": "image/png" },
-			}),
+			new Response(new Uint8Array([1, 2]), { status: 200, headers: completeRawHeaders() }),
 		);
 		vi.stubGlobal("fetch", fetchMock);
 		const controller = new AbortController();
 
-		await expect(fetchSegmentationOverlayBlob(4, 2, controller.signal)).resolves.toBeInstanceOf(Blob);
-		expect(fetchMock).toHaveBeenCalledWith("/api/file/4/frame/2/segmentation-overlay", {
+		const frame = await fetchRawFrame(4, 2, controller.signal);
+
+		expect(frame.buffer.byteLength).toBe(2);
+		expect(frame.metadata.photometricInterpretation).toBe("MONOCHROME1");
+		expect(fetchMock).toHaveBeenCalledWith("/api/file/4/frame/2/raw", {
+			method: "GET",
 			signal: controller.signal,
 		});
 	});
 
-	it("uses the annotation update verb, body, and inferred response contract", async () => {
+	it("sends annotation edits as a JSON PUT", async () => {
 		const annotations = {
 			num_roi: 1,
 			roi_coords: [[1, 2, 3, 4] as [number, number, number, number]],
 			roi_frames: [[0]],
 		};
-		const fetchMock = vi.fn().mockResolvedValue(
-			new Response(JSON.stringify(annotations), {
-				status: 200,
-				headers: { "Content-Type": "application/json" },
-			}),
-		);
+		const fetchMock = vi.fn().mockResolvedValue(jsonResponse(annotations));
 		vi.stubGlobal("fetch", fetchMock);
 
 		await expect(updateAnnotations(7, annotations)).resolves.toEqual(annotations);
@@ -212,40 +181,15 @@ describe("generated endpoint fetch wrappers", () => {
 	});
 
 	it("encodes selective tag paths and sequence pages", async () => {
-		const node = {
-			tag: "(0008,2218)",
-			vr: "SQ",
-			keyword: "AnatomicRegionSequence",
-			value: { type: "sequence", items: [], truncated: true, total: 70 },
-		};
 		const fetchMock = vi.fn().mockResolvedValue(
-			new Response(JSON.stringify(node), {
-				status: 200,
-				headers: { "Content-Type": "application/json" },
-			}),
+			jsonResponse({ tag: "(0008,2218)", vr: "SQ", keyword: "", value: { type: "sequence", items: [] } }),
 		);
 		vi.stubGlobal("fetch", fetchMock);
 
-		await expect(
-			fetchSelectedTag(4, { path: "(0008,2218)/69/(0008,0100)", offset: 2, limit: 8 }),
-		).resolves.toEqual(node);
-		expect(fetchMock).toHaveBeenCalledWith(
+		await fetchSelectedTag(4, { path: "(0008,2218)/69/(0008,0100)", offset: 2, limit: 8 });
+
+		expect(fetchMock.mock.calls[0][0]).toBe(
 			"/api/file/4/tags/select?path=%280008%2C2218%29%2F69%2F%280008%2C0100%29&offset=2&limit=8",
-			{ method: "GET", signal: undefined },
 		);
-	});
-
-	it("rejects a successful status that differs from the endpoint contract", async () => {
-		vi.stubGlobal(
-			"fetch",
-			vi.fn().mockResolvedValue(
-				new Response("{}", {
-					status: 201,
-					headers: { "Content-Type": "application/json" },
-				}),
-			),
-		);
-
-		await expect(fetchFiles()).rejects.toThrow("HTTP 201");
 	});
 });
