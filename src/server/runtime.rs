@@ -2,6 +2,7 @@
 
 use super::lifecycle::{wait_for_shutdown, ExternalShutdown, ShutdownReason};
 use super::{is_non_loopback_bind, router, AppState, FileRegistry};
+use crate::signals::StopSignals;
 use anyhow::{Context, Result};
 use serde::Serialize;
 use std::net::SocketAddr;
@@ -65,6 +66,10 @@ impl BoundServer {
     }
 
     pub async fn serve(self, config: ServerConfig, state: AppState) -> Result<ServerExit> {
+        // Listen before announcing the URL: a wrapper may stop the process as
+        // soon as it reads it, and an unhandled signal would skip the graceful
+        // shutdown below.
+        let mut stop_signals = StopSignals::listen();
         let external_shutdown = ExternalShutdown::new(config.shutdown.clone());
         let server_url = self.url();
 
@@ -95,14 +100,12 @@ impl BoundServer {
         let timeout = config.timeout_seconds.map(Duration::from_secs);
         let (reason_tx, reason_rx) = oneshot::channel();
         let shutdown = async move {
-            let reason = wait_for_shutdown(
-                activity,
-                registry,
-                timeout,
-                external_shutdown,
-                os_shutdown_signal(),
-            )
-            .await;
+            let reason =
+                wait_for_shutdown(activity, registry, timeout, external_shutdown, async move {
+                    stop_signals.recv().await;
+                    ShutdownReason::OsSignal
+                })
+                .await;
             let _ = reason_tx.send(reason);
         };
 
@@ -174,54 +177,6 @@ fn spawn_browser_opener(server_url: String, registry: FileRegistry) -> JoinHandl
             changed.await;
         }
     })
-}
-
-async fn os_shutdown_signal() -> ShutdownReason {
-    let ctrl_c = async {
-        if let Err(error) = tokio::signal::ctrl_c().await {
-            eprintln!("dcmview: warning — failed to install Ctrl+C handler: {error}");
-            std::future::pending::<()>().await;
-        }
-    };
-
-    #[cfg(windows)]
-    let ctrl_break = async {
-        match tokio::signal::windows::ctrl_break() {
-            Ok(mut signal) => {
-                signal.recv().await;
-            }
-            Err(error) => {
-                eprintln!("dcmview: warning — failed to install Ctrl+Break handler: {error}");
-                std::future::pending::<()>().await;
-            }
-        }
-    };
-
-    #[cfg(not(windows))]
-    let ctrl_break = std::future::pending::<()>();
-
-    #[cfg(unix)]
-    let terminate = async {
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(mut signal) => {
-                signal.recv().await;
-            }
-            Err(error) => {
-                eprintln!("dcmview: warning — failed to install SIGTERM handler: {error}");
-                std::future::pending::<()>().await;
-            }
-        }
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        _ = ctrl_c => {}
-        _ = ctrl_break => {}
-        _ = terminate => {}
-    }
-    ShutdownReason::OsSignal
 }
 
 struct BrowserTask {

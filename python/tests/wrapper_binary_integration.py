@@ -367,7 +367,7 @@ class WrapperBinaryIntegrationTests(unittest.TestCase):
 			finally:
 				exit_code = handle.stop()
 
-			self.assertIsInstance(exit_code, int)
+			self.assertEqual(exit_code, 0)
 			self.assertIsInstance(handle.stop(), int)
 
 

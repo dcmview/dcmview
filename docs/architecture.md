@@ -293,7 +293,10 @@ Local startup follows a strict order:
 2. Construct state and configuration.
 3. Bind `BoundServer`; an occupied explicit port fails before discovery starts.
 4. Spawn the owned discovery scan and coordinator.
-5. Serve until OS signal, external failure notification, or idle timeout.
+5. Register stop-signal listeners (`signals::StopSignals`: Ctrl+C and SIGTERM
+   on Unix, Ctrl+C and Ctrl+Break on Windows) before printing the URL, then
+   serve until a stop signal, external failure notification, or idle timeout.
+   The VS Code bridge client uses the same listeners.
 6. Request discovery cancellation and await both Tokio tasks and the loader's
    `spawn_blocking`/Rayon work before returning.
 

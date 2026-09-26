@@ -4,6 +4,7 @@ use super::registry::{
     BridgeEndpoint,
 };
 use anyhow::{Context, Result};
+use dcmview::signals::StopSignals;
 use std::env;
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -86,12 +87,12 @@ pub(crate) async fn launch_in_vscode(
     match attempt {
         LaunchAttempt::Launched { endpoint, response } => {
             // Listen before announcing the URL: a wrapper may interrupt as soon
-            // as it reads it, and an unhandled SIGINT would kill this process
+            // as it reads it, and an unhandled signal would kill this process
             // without closing the VS Code viewer.
-            let interrupt = BridgeInterrupt::listen();
+            let stop_signals = StopSignals::listen();
             print_launched(&response.url, startup_json);
             BridgeOutcome::Routed(
-                wait_for_launched_vscode_session(&client, &endpoint, &response, interrupt).await,
+                wait_for_launched_vscode_session(&client, &endpoint, &response, stop_signals).await,
             )
         }
         LaunchAttempt::Failed(error) => {
@@ -237,17 +238,9 @@ async fn wait_for_launched_vscode_session(
     client: &reqwest::Client,
     endpoint: &BridgeEndpoint,
     response: &BridgeLaunchResponse,
-    interrupt: Result<BridgeInterrupt>,
+    mut stop_signals: StopSignals,
 ) -> i32 {
-    let interrupt = async move {
-        match interrupt {
-            Ok(mut interrupt) => {
-                interrupt.recv().await;
-                Ok(())
-            }
-            Err(error) => Err(error),
-        }
-    };
+    let interrupt = async move { stop_signals.recv().await };
     let result = wait_for_launched_vscode_session_with_interrupt(
         client,
         endpoint,
@@ -270,7 +263,7 @@ async fn wait_for_launched_vscode_session_with_interrupt<F>(
     interrupt: F,
 ) -> Result<i32>
 where
-    F: Future<Output = Result<()>>,
+    F: Future<Output = ()>,
 {
     let base_url = endpoint.url.trim_end_matches('/');
     let wait_url = format!("{base_url}/sessions/{}/wait", response.session_id);
@@ -278,8 +271,7 @@ where
 
     tokio::select! {
         wait_result = wait_for_vscode_session(client, &wait_url, &endpoint.token) => wait_result,
-        signal_result = interrupt => {
-            signal_result?;
+        () = interrupt => {
             let _ = client
                 .post(stop_url)
                 .bearer_auth(&endpoint.token)
@@ -296,54 +288,6 @@ where
                 Ok(Ok(exit_code)) => exit_code,
                 _ => 130,
             })
-        }
-    }
-}
-
-/// Ctrl+C (and Ctrl+Break on Windows), registered when created rather than
-/// when first awaited.
-struct BridgeInterrupt {
-    #[cfg(not(windows))]
-    interrupt: tokio::signal::unix::Signal,
-    #[cfg(windows)]
-    ctrl_c: tokio::signal::windows::CtrlC,
-    #[cfg(windows)]
-    ctrl_break: tokio::signal::windows::CtrlBreak,
-}
-
-impl BridgeInterrupt {
-    fn listen() -> Result<Self> {
-        #[cfg(not(windows))]
-        {
-            Ok(Self {
-                interrupt:
-                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
-                        .context("failed to listen for Ctrl+C")?,
-            })
-        }
-
-        #[cfg(windows)]
-        {
-            Ok(Self {
-                ctrl_c: tokio::signal::windows::ctrl_c().context("failed to listen for Ctrl+C")?,
-                ctrl_break: tokio::signal::windows::ctrl_break()
-                    .context("failed to listen for Ctrl+Break")?,
-            })
-        }
-    }
-
-    async fn recv(&mut self) {
-        #[cfg(not(windows))]
-        {
-            self.interrupt.recv().await;
-        }
-
-        #[cfg(windows)]
-        {
-            tokio::select! {
-                _ = self.ctrl_c.recv() => {},
-                _ = self.ctrl_break.recv() => {},
-            }
         }
     }
 }
@@ -553,10 +497,7 @@ mod tests {
         )
         .await;
         let wait_started = state.wait_started.clone();
-        let interrupt = async move {
-            wait_started.notified().await;
-            Ok(())
-        };
+        let interrupt = async move { wait_started.notified().await };
 
         let exit_code = tokio::time::timeout(
             Duration::from_secs(1),
@@ -623,10 +564,7 @@ mod tests {
                 url: "http://127.0.0.1:51234".to_string(),
             },
             Duration::from_secs(1),
-            async move {
-                wait_started.notified().await;
-                Ok(())
-            },
+            async move { wait_started.notified().await },
         )
         .await
         .expect("interrupt flow succeeds");

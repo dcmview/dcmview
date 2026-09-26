@@ -8,5 +8,6 @@ pub mod references;
 pub mod semantic;
 pub mod series;
 pub mod server;
+pub mod signals;
 pub mod types;
 pub mod wsi;
