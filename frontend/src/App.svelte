@@ -857,6 +857,24 @@
 		--accent: #0a84ff;
 		--accent-soft: rgba(10, 132, 255, 0.16);
 		--danger: #ff6961;
+		--accent-text: #9fcbff;
+		--danger-text: #ffb0b0;
+		--text-disabled: rgba(255, 255, 255, 0.22);
+		--surface-hud: rgba(28, 28, 30, 0.78);
+		--surface-hover-overlay: rgba(255, 255, 255, 0.08);
+		--viewport-glow: rgba(255, 255, 255, 0.025);
+		--spinner-track: rgba(142, 142, 147, 0.24);
+		--label-halo: rgba(0, 0, 0, 0.75);
+		/* ROI annotations drawn over the image. */
+		--roi-stroke: #ff7373;
+		--roi-fill: rgba(255, 115, 115, 0.12);
+		--roi-label: #ffdede;
+		--roi-selected-stroke: #4a9eff;
+		--roi-selected-fill: rgba(74, 158, 255, 0.16);
+		--roi-selected-label: #c8ddff;
+		--roi-draft-stroke: #ffd45c;
+		--roi-draft-fill: rgba(255, 212, 92, 0.14);
+		--roi-handle-outline: #101820;
 		--radius-control: 7px;
 		--radius-panel: 8px;
 		--control-height: 1.75rem;

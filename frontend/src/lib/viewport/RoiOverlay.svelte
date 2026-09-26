@@ -66,36 +66,36 @@
 		pointer-events: none;
 	}
 	.roi-rect {
-		fill: rgba(255, 115, 115, 0.12);
-		stroke: #ff7373;
+		fill: var(--roi-fill);
+		stroke: var(--roi-stroke);
 		stroke-width: 1.2;
 		vector-effect: non-scaling-stroke;
 	}
 	.roi-overlay g.selected .roi-rect {
-		fill: rgba(74, 158, 255, 0.16);
-		stroke: #4a9eff;
+		fill: var(--roi-selected-fill);
+		stroke: var(--roi-selected-stroke);
 		stroke-width: 1.6;
 	}
 	.roi-rect.draft {
-		fill: rgba(255, 212, 92, 0.14);
-		stroke: #ffd45c;
+		fill: var(--roi-draft-fill);
+		stroke: var(--roi-draft-stroke);
 		stroke-dasharray: 5 4;
 	}
 	.roi-label {
-		fill: #ffdede;
-		stroke: rgba(0, 0, 0, 0.75);
+		fill: var(--roi-label);
+		stroke: var(--label-halo);
 		stroke-width: 2.4;
 		paint-order: stroke;
 		font-size: 11px;
-		font-family: ui-monospace, monospace;
+		font-family: var(--font-mono);
 		vector-effect: non-scaling-stroke;
 	}
 	.roi-overlay g.selected .roi-label {
-		fill: #c8ddff;
+		fill: var(--roi-selected-label);
 	}
 	.roi-handle {
-		fill: #4a9eff;
-		stroke: #101820;
+		fill: var(--roi-selected-stroke);
+		stroke: var(--roi-handle-outline);
 		stroke-width: 1;
 		vector-effect: non-scaling-stroke;
 	}

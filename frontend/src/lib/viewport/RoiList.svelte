@@ -98,7 +98,7 @@
 		overflow: auto;
 		font-size: 0.72rem;
 		padding: 0.5rem 0.55rem;
-		background: rgba(28, 28, 30, 0.78);
+		background: var(--surface-hud);
 		border: 1px solid var(--border-subtle);
 		border-radius: var(--radius-panel);
 		box-shadow: var(--shadow-hud);
@@ -149,7 +149,7 @@
 		display: grid;
 		gap: 0.1rem;
 		padding: 0.18rem 0;
-		border-top: 1px solid rgba(255, 255, 255, 0.08);
+		border-top: 1px solid var(--border-subtle);
 	}
 	li.selected {
 		background: var(--accent-soft);
@@ -176,7 +176,7 @@
 	}
 	.roi-id {
 		font-weight: 600;
-		color: #9fcbff;
+		color: var(--accent-text);
 	}
 	.roi-coords,
 	.roi-frames {
@@ -207,6 +207,6 @@
 		box-shadow: var(--focus-ring);
 	}
 	.roi-actions button.danger {
-		color: #ffb0b0;
+		color: var(--danger-text);
 	}
 </style>

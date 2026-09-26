@@ -1083,7 +1083,7 @@
 		display: grid;
 		place-items: center;
 		background:
-			radial-gradient(circle at center, rgba(255, 255, 255, 0.025), transparent 58%),
+			radial-gradient(circle at center, var(--viewport-glow), transparent 58%),
 			var(--surface-viewport);
 		min-height: 0;
 		overflow: hidden;
@@ -1122,7 +1122,7 @@
 		place-items: center;
 		width: 1.8rem;
 		height: 1.8rem;
-		background: rgba(28, 28, 30, 0.72);
+		background: var(--surface-hud);
 		border: 1px solid var(--border-subtle);
 		border-radius: var(--radius-control);
 		backdrop-filter: blur(14px);
@@ -1131,7 +1131,7 @@
 		width: 0.9rem;
 		height: 0.9rem;
 		box-sizing: border-box;
-		border: 2px solid rgba(142, 142, 147, 0.24);
+		border: 2px solid var(--spinner-track);
 		border-top-color: var(--accent);
 		border-radius: 50%;
 		animation: frame-request-spin 0.78s linear infinite;
@@ -1163,7 +1163,7 @@
 		gap: 0.75rem;
 		font-size: 0.78rem;
 		padding: 0.34rem 0.55rem;
-		background: rgba(28, 28, 30, 0.74);
+		background: var(--surface-hud);
 		border: 1px solid var(--border-subtle);
 		border-radius: var(--radius-control);
 		box-shadow: var(--shadow-hud);
@@ -1177,7 +1177,7 @@
 		display: flex;
 		align-items: center;
 		gap: 0;
-		background: rgba(28, 28, 30, 0.78);
+		background: var(--surface-hud);
 		border: 1px solid var(--border-subtle);
 		border-radius: var(--radius-panel);
 		overflow: hidden;
@@ -1194,7 +1194,7 @@
 		line-height: 1;
 	}
 	.zoom-controls button:hover:not(:disabled) {
-		background: rgba(255, 255, 255, 0.08);
+		background: var(--surface-hover-overlay);
 		color: var(--text-primary);
 	}
 	.zoom-controls button:focus-visible {
@@ -1202,7 +1202,7 @@
 		box-shadow: inset var(--focus-ring);
 	}
 	.zoom-controls button:disabled {
-		color: rgba(255, 255, 255, 0.22);
+		color: var(--text-disabled);
 		cursor: default;
 	}
 	.zoom-controls .zoom-level {
