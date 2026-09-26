@@ -1,3 +1,60 @@
+/**
+ * Keyed request sharing and cancellation for every frontend fetch path.
+ *
+ * `SharedRequestRegistry` is the single in-flight mechanism: one request per
+ * key, shared by every consumer, aborted explicitly by key or scope.
+ * `KeyedAsyncResource` layers per-key loading/ready/error state and bounded
+ * retention on top of it for side-panel metadata.
+ */
+
+type PendingRequest<Value> = {
+	controller: AbortController;
+	promise: Promise<Value>;
+};
+
+/** Shares one in-flight request per key until it settles or is aborted. */
+export class SharedRequestRegistry<Key, Value> {
+	readonly #pending = new Map<Key, PendingRequest<Value>>();
+
+	get(key: Key): Promise<Value> | undefined {
+		return this.#pending.get(key)?.promise;
+	}
+
+	request(key: Key, load: (signal: AbortSignal) => Promise<Value>): Promise<Value> {
+		const existing = this.#pending.get(key);
+		if (existing) return existing.promise;
+
+		const controller = new AbortController();
+		const promise = load(controller.signal).finally(() => {
+			if (this.#pending.get(key)?.promise === promise) {
+				this.#pending.delete(key);
+			}
+		});
+		this.#pending.set(key, { controller, promise });
+		return promise;
+	}
+
+	/** Abort `key`'s request; later `request` calls start a fresh one. */
+	abort(key: Key): void {
+		this.#pending.get(key)?.controller.abort();
+		this.#pending.delete(key);
+	}
+
+	/** Abort every request except `key`'s; returns the aborted keys. */
+	abortOthers(key: Key): Key[] {
+		const aborted = [...this.#pending.keys()].filter((other) => other !== key);
+		for (const other of aborted) this.abort(other);
+		return aborted;
+	}
+
+	abortAll(): void {
+		for (const request of this.#pending.values()) {
+			request.controller.abort();
+		}
+		this.#pending.clear();
+	}
+}
+
 export type AsyncResourceStatus = "idle" | "loading" | "ready" | "error";
 
 export type AsyncResourceSnapshot<Value> = {
@@ -13,12 +70,6 @@ export type KeyedAsyncResourceOptions<Key, Value> = {
 	errorMessage?: (error: unknown) => string;
 	/** Most keys whose settled values are kept; older ones return to idle. */
 	capacity?: number;
-};
-
-type InFlight<Value> = {
-	generation: number;
-	promise: Promise<Value>;
-	controller: AbortController;
 };
 
 const IDLE = { status: "idle", value: undefined, error: null } as const;
@@ -48,7 +99,7 @@ export class KeyedAsyncResource<Key, Value> {
 	readonly #capacity: number;
 	// Insertion order doubles as recency: keys are re-inserted when used.
 	readonly #states = new Map<Key, AsyncResourceSnapshot<Value>>();
-	readonly #inFlight = new Map<Key, InFlight<Value>>();
+	readonly #requests = new SharedRequestRegistry<Key, Value>();
 
 	constructor({
 		load,
@@ -77,18 +128,17 @@ export class KeyedAsyncResource<Key, Value> {
 			this.#touch(key, state);
 			return Promise.resolve(state.value);
 		}
-		const pending = this.#inFlight.get(key);
-		if (pending) return pending.promise;
-		return this.#start(key);
+		return this.#requests.get(key) ?? this.#start(key);
 	}
 
+	/** Load `key` again, superseding any request already in flight. */
 	reload(key: Key): Promise<Value> {
+		this.#requests.abort(key);
 		return this.#start(key);
 	}
 
 	invalidate(key: Key): void {
-		this.#inFlight.get(key)?.controller.abort();
-		this.#inFlight.delete(key);
+		this.#requests.abort(key);
 		this.#setIdle(key);
 	}
 
@@ -97,12 +147,7 @@ export class KeyedAsyncResource<Key, Value> {
 	 * time call this so skipped keys stop costing server work.
 	 */
 	abortOthers(key: Key): void {
-		for (const [other, inFlight] of [...this.#inFlight]) {
-			if (other === key) continue;
-			inFlight.controller.abort();
-			this.#inFlight.delete(other);
-			this.#setIdle(other);
-		}
+		for (const other of this.#requests.abortOthers(key)) this.#setIdle(other);
 	}
 
 	#setIdle(key: Key): void {
@@ -120,7 +165,7 @@ export class KeyedAsyncResource<Key, Value> {
 	// completions of loads that were aborted or superseded.
 	#evictBeyondCapacity(settledKey: Key): void {
 		const settled = [...this.#states.keys()].filter((key) => (
-			this.get(key).status !== "idle" && (key === settledKey || !this.#inFlight.has(key))
+			this.get(key).status !== "idle" && (key === settledKey || !this.#requests.get(key))
 		));
 		for (const key of settled.slice(0, Math.max(0, settled.length - this.#capacity))) {
 			this.#setIdle(key);
@@ -139,8 +184,7 @@ export class KeyedAsyncResource<Key, Value> {
 		this.#touch(key, loading);
 		this.#onChange?.(key, loading);
 
-		const controller = new AbortController();
-		const promise = this.#load(key, controller.signal)
+		return this.#requests.request(key, (signal) => this.#load(key, signal)
 			.then((value) => {
 				if (this.get(key).generation === generation) {
 					const ready: AsyncResourceSnapshot<Value> = {
@@ -167,13 +211,25 @@ export class KeyedAsyncResource<Key, Value> {
 					this.#onChange?.(key, failed);
 				}
 				throw error;
-			})
-			.finally(() => {
-				if (this.#inFlight.get(key)?.generation === generation) {
-					this.#inFlight.delete(key);
-				}
-			});
-		this.#inFlight.set(key, { generation, promise, controller });
-		return promise;
+			}));
 	}
+}
+
+/**
+ * Loads a side panel's key once it has stayed selected for the settle delay,
+ * aborting loads for keys the panel has moved past. Ready keys are served
+ * immediately. Returns the cleanup for the calling effect.
+ */
+export function ensureWhenSettled<Key, Value>(
+	resource: KeyedAsyncResource<Key, Value>,
+	key: Key,
+	settleMs = METADATA_SETTLE_MS,
+): (() => void) | undefined {
+	resource.abortOthers(key);
+	if (resource.get(key).status === "ready") {
+		void resource.ensure(key);
+		return undefined;
+	}
+	const timer = setTimeout(() => void resource.ensure(key).catch(() => {}), settleMs);
+	return () => clearTimeout(timer);
 }

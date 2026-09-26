@@ -1,5 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
-import { KeyedAsyncResource } from "./keyedAsyncResource";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+	ensureWhenSettled,
+	KeyedAsyncResource,
+	METADATA_SETTLE_MS,
+	SharedRequestRegistry,
+} from "./keyedAsyncResource";
 
 function deferred<Value>() {
 	let resolve!: (value: Value) => void;
@@ -15,6 +20,70 @@ async function flushPromises(): Promise<void> {
 	await Promise.resolve();
 	await Promise.resolve();
 }
+
+function abortable(signal: AbortSignal): Promise<string> {
+	return new Promise<string>((_resolve, reject) => {
+		signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+	});
+}
+
+describe("SharedRequestRegistry", () => {
+	it("shares one in-flight request between consumers", async () => {
+		const request = deferred<string>();
+		const load = vi.fn(() => request.promise);
+		const registry = new SharedRequestRegistry<string, string>();
+
+		const prefetch = registry.request("4:7", load);
+		const foreground = registry.request("4:7", load);
+
+		expect(foreground).toBe(prefetch);
+		expect(registry.get("4:7")).toBe(prefetch);
+		expect(load).toHaveBeenCalledOnce();
+
+		request.resolve("frame");
+		await expect(foreground).resolves.toBe("frame");
+		expect(registry.get("4:7")).toBeUndefined();
+	});
+
+	it("aborts owned requests only when the registry scope is cleared", async () => {
+		let requestSignal!: AbortSignal;
+		const registry = new SharedRequestRegistry<string, string>();
+		const request = registry.request("2:3", (signal) => {
+			requestSignal = signal;
+			return abortable(signal);
+		});
+
+		expect(requestSignal.aborted).toBe(false);
+		registry.abortAll();
+		expect(requestSignal.aborted).toBe(true);
+		await expect(request).rejects.toMatchObject({ name: "AbortError" });
+		expect(registry.get("2:3")).toBeUndefined();
+	});
+
+	it("aborts one key or every other key and starts fresh afterwards", async () => {
+		const signals = new Map<string, AbortSignal>();
+		const registry = new SharedRequestRegistry<string, string>();
+		const load = (key: string) => (signal: AbortSignal) => {
+			signals.set(key, signal);
+			return abortable(signal);
+		};
+		const first = registry.request("a", load("a"));
+		void registry.request("b", load("b")).catch(() => {});
+		void registry.request("c", load("c")).catch(() => {});
+
+		expect(registry.abortOthers("a")).toEqual(["b", "c"]);
+		expect([signals.get("a")?.aborted, signals.get("b")?.aborted, signals.get("c")?.aborted])
+			.toEqual([false, true, true]);
+
+		registry.abort("a");
+		await expect(first).rejects.toMatchObject({ name: "AbortError" });
+		const second = registry.request("a", load("a"));
+		expect(second).not.toBe(first);
+		expect(registry.get("a")).toBe(second);
+		registry.abortAll();
+		await expect(second).rejects.toMatchObject({ name: "AbortError" });
+	});
+});
 
 describe("KeyedAsyncResource", () => {
 	it("deduplicates an in-flight request for the same key", async () => {
@@ -52,6 +121,22 @@ describe("KeyedAsyncResource", () => {
 			value: "new",
 			generation: 2,
 		});
+	});
+
+	it("aborts the superseded request when reloading", () => {
+		const signals: AbortSignal[] = [];
+		const resource = new KeyedAsyncResource<number, string>({
+			load: (_key, signal) => {
+				signals.push(signal);
+				return abortable(signal);
+			},
+		});
+
+		void resource.ensure(3).catch(() => {});
+		void resource.reload(3).catch(() => {});
+
+		expect(signals.map((signal) => signal.aborted)).toEqual([true, false]);
+		expect(resource.get(3)).toMatchObject({ status: "loading", generation: 2 });
 	});
 
 	it("keeps failures and loading state isolated by key", async () => {
@@ -125,5 +210,43 @@ describe("KeyedAsyncResource", () => {
 		expect(resource.get(1)).toMatchObject({ status: "ready", value: "value 1" });
 		expect(resource.get(2)).toMatchObject({ status: "idle", value: undefined });
 		expect(resource.get(3)).toMatchObject({ status: "ready", value: "value 3" });
+	});
+});
+
+describe("ensureWhenSettled", () => {
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it("loads a key only after it stays selected for the settle delay", async () => {
+		vi.useFakeTimers();
+		const load = vi.fn(async (key: number) => `tags ${key}`);
+		const resource = new KeyedAsyncResource<number, string>({ load });
+
+		const cancelFirst = ensureWhenSettled(resource, 1);
+		await vi.advanceTimersByTimeAsync(METADATA_SETTLE_MS - 1);
+		cancelFirst?.();
+		ensureWhenSettled(resource, 2);
+		await vi.advanceTimersByTimeAsync(METADATA_SETTLE_MS);
+
+		expect(load.mock.calls.map(([key]) => key)).toEqual([2]);
+		expect(resource.get(2)).toMatchObject({ status: "ready", value: "tags 2" });
+	});
+
+	it("serves ready keys without waiting and aborts loads for keys left behind", async () => {
+		vi.useFakeTimers();
+		const signals = new Map<number, AbortSignal>();
+		const resource = new KeyedAsyncResource<number, string>({
+			load: (key, signal) => {
+				signals.set(key, signal);
+				return key === 1 ? Promise.resolve("ready") : abortable(signal);
+			},
+		});
+		await resource.ensure(1);
+		void resource.ensure(2).catch(() => {});
+
+		expect(ensureWhenSettled(resource, 1)).toBeUndefined();
+		expect(signals.get(2)?.aborted).toBe(true);
+		expect(resource.get(2).status).toBe("idle");
 	});
 });

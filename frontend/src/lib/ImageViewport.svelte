@@ -50,7 +50,7 @@
 		type PersistenceSnapshot,
 	} from "./revisionedPersistence";
 	import { trackForegroundRequest } from "./requestIndicator";
-	import { SharedRequestRegistry } from "./sharedRequestRegistry";
+	import { SharedRequestRegistry } from "./keyedAsyncResource";
 	import {
 		renderRawFrameToRgba,
 		resolveDisplayWindow,

@@ -5,9 +5,9 @@
 		type ReferenceCatalogResponse,
 	} from "../api";
 	import {
+		ensureWhenSettled,
 		KeyedAsyncResource,
 		METADATA_CACHE_FILES,
-		METADATA_SETTLE_MS,
 		type AsyncResourceSnapshot,
 	} from "./keyedAsyncResource";
 	import {
@@ -38,16 +38,7 @@
 	const activeResource = $derived(resourcesByFile[fileIndex]);
 	const references = $derived(activeResource?.value?.references ?? []);
 
-	$effect(() => {
-		const index = fileIndex;
-		resources.abortOthers(index);
-		if (resources.get(index).status === "ready") {
-			void resources.ensure(index);
-			return;
-		}
-		const timer = setTimeout(() => void resources.ensure(index).catch(() => {}), METADATA_SETTLE_MS);
-		return () => clearTimeout(timer);
-	});
+	$effect(() => ensureWhenSettled(resources, fileIndex));
 
 	function retry() {
 		void resources.reload(fileIndex).catch(() => {});

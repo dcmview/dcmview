@@ -1,9 +1,9 @@
 <script lang="ts">
 	import { fetchTags, type TagNode } from "../api";
 	import {
+		ensureWhenSettled,
 		KeyedAsyncResource,
 		METADATA_CACHE_FILES,
-		METADATA_SETTLE_MS,
 		type AsyncResourceSnapshot,
 	} from "./keyedAsyncResource";
 	import {
@@ -62,16 +62,7 @@
 	const loading = $derived(!activeTagResource || activeTagResource.status === "loading");
 	const error = $derived(activeTagResource?.error ?? null);
 
-	$effect(() => {
-		const index = fileIndex;
-		tagResources.abortOthers(index);
-		if (tagResources.get(index).status === "ready") {
-			void tagResources.ensure(index);
-			return;
-		}
-		const timer = setTimeout(() => void tagResources.ensure(index).catch(() => {}), METADATA_SETTLE_MS);
-		return () => clearTimeout(timer);
-	});
+	$effect(() => ensureWhenSettled(tagResources, fileIndex));
 
 	function retryTags() {
 		void tagResources.reload(fileIndex).catch(() => {});

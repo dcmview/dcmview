@@ -1,26 +1,39 @@
 <script lang="ts">
+	import { untrack } from "svelte";
 	import { fetchWsiFrameContext, type WsiFrameContextResponse } from "../api";
+	import {
+		KeyedAsyncResource,
+		METADATA_CACHE_FILES,
+		type AsyncResourceSnapshot,
+	} from "./keyedAsyncResource";
 	import { wsiMinimapGeometry } from "./wsiMinimap";
 
+	type TileKey = `${number}:${number}`;
+
 	let { fileIndex, frame }: { fileIndex: number; frame: number } = $props();
-	let context = $state<WsiFrameContextResponse | null>(null);
-	let error = $state<string | null>(null);
-	let generation = 0;
+	let snapshotsByTile = $state<Record<TileKey, AsyncResourceSnapshot<WsiFrameContextResponse> | undefined>>({});
+	const tiles = new KeyedAsyncResource<TileKey, WsiFrameContextResponse>({
+		load: (key) => {
+			const [file, tileFrame] = key.split(":").map(Number);
+			return fetchWsiFrameContext(file, tileFrame);
+		},
+		capacity: METADATA_CACHE_FILES,
+		onChange: (key, snapshot) => {
+			const { [key]: _previous, ...rest } = snapshotsByTile;
+			snapshotsByTile = snapshot.status === "idle" ? rest : { ...rest, [key]: snapshot };
+		},
+	});
+	const snapshot = $derived(snapshotsByTile[`${fileIndex}:${frame}`]);
+	const context = $derived(snapshot?.status === "ready" ? snapshot.value ?? null : null);
+	const error = $derived(snapshot?.status === "error" ? snapshot.error : null);
 	const minimap = $derived(wsiMinimapGeometry(context?.total_pixel_matrix ?? null, context?.tile_rectangle ?? null));
 
 	$effect(() => {
-		const requestedFile = fileIndex;
-		const requestedFrame = frame;
-		const request = ++generation;
-		context = null;
-		error = null;
-		fetchWsiFrameContext(requestedFile, requestedFrame)
-			.then((result) => {
-				if (request === generation && requestedFile === fileIndex && requestedFrame === frame) context = result;
-			})
-			.catch((cause: unknown) => {
-				if (request === generation) error = cause instanceof Error ? cause.message : String(cause);
-			});
+		const key: TileKey = `${fileIndex}:${frame}`;
+		untrack(() => {
+			tiles.abortOthers(key);
+			void tiles.reload(key).catch(() => {});
+		});
 	});
 
 	function shown(value: string | number | null | undefined): string {

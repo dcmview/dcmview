@@ -1,5 +1,11 @@
 <script lang="ts">
+	import { untrack } from "svelte";
 	import { fetchSemanticContext, type SemanticContextResponse } from "../api";
+	import {
+		KeyedAsyncResource,
+		METADATA_CACHE_FILES,
+		type AsyncResourceSnapshot,
+	} from "./keyedAsyncResource";
 	import {
 		codedConceptLabel,
 		mappingFormula,
@@ -19,42 +25,42 @@
 		onmodechange?: (mode: SemanticMode) => void;
 		oncontextchange?: (response: SemanticContextResponse | null) => void;
 	} = $props();
-	let response = $state<SemanticContextResponse | null>(null);
-	let error = $state<string | null>(null);
-	let loading = $state(false);
+	let snapshotsByFile = $state<Record<number, AsyncResourceSnapshot<SemanticContextResponse> | undefined>>({});
 	let mode = $state<SemanticMode>("pixel_preview");
-	let requestGeneration = 0;
+	const contexts = new KeyedAsyncResource<number, SemanticContextResponse>({
+		load: (index) => fetchSemanticContext(index),
+		capacity: METADATA_CACHE_FILES,
+		onChange: (index, snapshot) => {
+			const { [index]: _previous, ...rest } = snapshotsByFile;
+			snapshotsByFile = snapshot.status === "idle" ? rest : { ...rest, [index]: snapshot };
+		},
+	});
 
+	const snapshot = $derived(snapshotsByFile[fileIndex]);
+	const response = $derived(snapshot?.status === "ready" ? snapshot.value ?? null : null);
+	const error = $derived(snapshot?.status === "error" ? snapshot.error : null);
+	const loading = $derived(snapshot?.status === "loading");
 	const semanticAvailable = $derived(response !== null && response.context.kind !== "not_applicable");
 	const currentSegmentMapping = $derived.by(() => {
 		if (response?.context.kind !== "segmentation") return null;
 		return response.context.frame_mappings.find((mapping) => mapping.frame_index === currentFrame) ?? null;
 	});
 
+	// Every visit re-reads the context, which can change while discovery is
+	// still resolving the object's references.
 	$effect(() => {
 		const requestedFile = fileIndex;
-		const generation = ++requestGeneration;
-		response = null;
-		oncontextchange?.(null);
-		error = null;
-		loading = true;
-		mode = "pixel_preview";
-		onmodechange?.("pixel_preview");
-		fetchSemanticContext(requestedFile)
-			.then((result) => {
-				if (generation === requestGeneration && requestedFile === fileIndex) {
-					response = result;
-					oncontextchange?.(result);
-				}
-			})
-			.catch((cause: unknown) => {
-				if (generation === requestGeneration && requestedFile === fileIndex) {
-					error = cause instanceof Error ? cause.message : String(cause);
-				}
-			})
-			.finally(() => {
-				if (generation === requestGeneration && requestedFile === fileIndex) loading = false;
-			});
+		untrack(() => {
+			oncontextchange?.(null);
+			mode = "pixel_preview";
+			onmodechange?.("pixel_preview");
+			contexts.abortOthers(requestedFile);
+			contexts.reload(requestedFile)
+				.then((result) => {
+					if (requestedFile === fileIndex) oncontextchange?.(result);
+				})
+				.catch(() => {});
+		});
 	});
 
 	function setMode(nextMode: SemanticMode) {
