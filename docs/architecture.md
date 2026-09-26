@@ -223,8 +223,10 @@ The contract is kept consistent by three layers:
   whose source mapping and geometry have been validated. It decodes binary or
   fractional SEG samples, maps pixel centers through patient coordinates, and
   returns a source-sized transparent PNG using nearest-neighbor mask sampling.
-  Unavailable semantic mappings return `422 semantic_mapping_unavailable`;
-  successful responses include `X-Cache` for the decoded SEG frame.
+  Unavailable semantic mappings return `422 semantic_mapping_unavailable`.
+  Like the value overlays in `server/api/overlays.rs`, the encoded PNG is
+  cached per SEG frame and resolved source frame, and `X-Cache` reports that
+  cache.
 - `/api/file/{index}/frame/{frame}/dose-overlay?dose=` and
   `.../parametric-map-overlay?map=` (`server/api/overlays.rs`) draw an RT Dose
   grid or Parametric Map on a displayed frame in its Frame of Reference. The

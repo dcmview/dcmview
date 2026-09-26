@@ -29,7 +29,7 @@ pub(crate) fn router(state: AppState) -> Router {
         )
         .route(
             endpoints::FILE_SEGMENTATION_OVERLAY.path,
-            get(handlers::segmentation_overlay),
+            get(overlays::segmentation_overlay),
         )
         .route(
             endpoints::FILE_DOSE_OVERLAY.path,

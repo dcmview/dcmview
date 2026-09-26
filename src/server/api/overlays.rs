@@ -1,10 +1,12 @@
-//! Value overlays: an RT Dose grid or Parametric Map colorized in
-//! real-world units and resampled onto a displayed image frame, and the
-//! legend that describes the colors.
+//! Overlays drawn on a displayed image frame: one SEG frame painted on its
+//! resolved source frame, and value overlays (an RT Dose grid or Parametric
+//! Map colorized in real-world units and resampled onto the frame) with the
+//! legend that describes their colors.
 //!
 //! Semantic context decides eligibility from metadata; this module decodes
 //! the overlay's frames through the raw-frame cache, applies each frame's
-//! real-world mapping, and caches the encoded PNG per displayed frame.
+//! real-world mapping, and caches the encoded PNG per overlay and displayed
+//! frame, which is what every overlay endpoint's `X-Cache` reports.
 
 use super::error::{self, ApiError};
 use super::handlers::{semantic_context_for, value_mappings_for};
@@ -29,6 +31,72 @@ use axum::response::Response;
 use bytes::Bytes;
 use dicom_dictionary_std::uids;
 use tokio::task;
+
+pub(super) async fn segmentation_overlay(
+    State(state): State<AppState>,
+    path: Result<Path<(usize, u32)>, PathRejection>,
+) -> Result<Response, ApiError> {
+    use crate::semantic::SegmentationOverlayError;
+
+    let Path((index, frame)) = path.map_err(error::path_rejection)?;
+    let segmentation = state
+        .registry()
+        .get(index)
+        .ok_or_else(|| ApiError::not_found("file index out of range"))?;
+    let files = state.registry().files_snapshot();
+    let plan = async {
+        crate::semantic::check_segmentation_frame(&segmentation, frame)?;
+        let context = semantic_context_for(&state, segmentation.clone(), files.clone())
+            .await
+            .map_err(SegmentationOverlayError::Metadata)?;
+        crate::semantic::segmentation_overlay_plan(&segmentation, frame, &context, &files)
+    }
+    .await
+    .map_err(|error| match error {
+        SegmentationOverlayError::NotSegmentation => ApiError::bad_request(error.to_string()),
+        SegmentationOverlayError::FrameOutOfRange => {
+            error::pixel_error(PixelError::FrameOutOfRange)
+        }
+        SegmentationOverlayError::Unavailable(_) => {
+            ApiError::semantic_mapping_unavailable(error.to_string())
+        }
+        SegmentationOverlayError::Metadata(_) => ApiError::internal(error.to_string()),
+    })?;
+    let target = files
+        .iter()
+        .find(|file| file.index == plan.source_file_index)
+        .cloned()
+        .ok_or_else(|| ApiError::not_found("resolved source file is unavailable"))?;
+
+    // The plan resolves the source frame against the current file set, so
+    // the key names it rather than trusting an earlier resolution.
+    let key = OverlayCacheKey {
+        overlay_file_index: segmentation.index,
+        overlay_frame: Some(frame),
+        target_file_index: plan.source_file_index,
+        target_frame: plan.source_frame_index,
+    };
+    if let Some(png) = state.cached_overlay(&key) {
+        return Ok(png_response(png, true));
+    }
+    let raw = pixels::load_raw_frame(segmentation, state.raw_cache(), RawFrameRequest { frame })
+        .await
+        .map_err(error::pixel_error)?;
+    let png = task::spawn_blocking(move || {
+        pixels::encode_segmentation_overlay_png(
+            &raw.body,
+            &raw.metadata,
+            &plan,
+            target.rows,
+            target.columns,
+        )
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("SEG overlay encoding task failed: {error}")))?
+    .map_err(error::pixel_error)?;
+    state.cache_overlay(key, png.clone());
+    Ok(png_response(png, false))
+}
 
 pub(super) async fn dose_overlay(
     State(state): State<AppState>,
@@ -109,6 +177,7 @@ async fn value_overlay(
 
     let key = OverlayCacheKey {
         overlay_file_index: overlay.index,
+        overlay_frame: None,
         target_file_index: target.index,
         target_frame: frame,
     };

@@ -359,10 +359,15 @@ async fn segmentation_overlay_returns_source_sized_transparent_png() {
     source.columns = 2;
 
     let server = TestServer::new(server::router(support::app_state(vec![seg, source])));
+    // Decoding the SEG frame first warms only the raw-frame cache: X-Cache
+    // reports the encoded overlay, as on the value-overlay endpoints.
+    server
+        .get("/api/file/0/frame/0/raw")
+        .await
+        .assert_header("X-Cache", "MISS");
     let response = server.get("/api/file/0/frame/0/segmentation-overlay").await;
     response.assert_status_ok();
     response.assert_header(header::CONTENT_TYPE, "image/png");
-    // X-Cache reports the decoded SEG frame, which the repeat reuses.
     response.assert_header("X-Cache", "MISS");
     let overlay = image::load_from_memory(response.as_bytes().as_ref())
         .expect("decode overlay PNG")

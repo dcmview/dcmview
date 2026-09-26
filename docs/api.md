@@ -195,7 +195,9 @@ outside the grid, without a mapped value, or at or below
 maximum dose of the whole grid with zero dose transparent; the Parametric Map
 legend spans the minimum to maximum mapped value of every frame with no
 floor. Both use one scale for every slice. Encoded overlays are cached per
-volume and displayed frame.
+volume and displayed frame, and SEG overlays per SEG frame and resolved
+source frame; every overlay endpoint's `X-Cache` reports that encoded-PNG
+cache, not the decoded frames beneath it.
 
 In the semantic context, RT Dose and Parametric Map carry `overlay`
 (eligibility), `overlay_source_frames` (the local image frames in the

@@ -6,9 +6,9 @@ use crate::api::contracts::{
     FrameValueMapping, HealthResponse, ReferenceCatalogResponse, SemanticContextResponse,
     SeriesCatalogResponse, TagNode, TagQuery, ViewerIdentity, WsiFrameContextResponse,
     CACHE_HEADER, CACHE_HIT, CACHE_MISS, CSV_MEDIA_TYPE, EXPORT_CONTENT_DISPOSITION_HEADER,
-    EXPORT_CONTENT_DISPOSITION_VALUE, OCTET_STREAM_MEDIA_TYPE, PNG_MEDIA_TYPE,
-    RAW_FRAME_HEADER_BITS_ALLOCATED, RAW_FRAME_HEADER_COLUMNS, RAW_FRAME_HEADER_DEFAULT_WC,
-    RAW_FRAME_HEADER_DEFAULT_WW, RAW_FRAME_HEADER_PADDING_HIGH, RAW_FRAME_HEADER_PADDING_LOW,
+    EXPORT_CONTENT_DISPOSITION_VALUE, OCTET_STREAM_MEDIA_TYPE, RAW_FRAME_HEADER_BITS_ALLOCATED,
+    RAW_FRAME_HEADER_COLUMNS, RAW_FRAME_HEADER_DEFAULT_WC, RAW_FRAME_HEADER_DEFAULT_WW,
+    RAW_FRAME_HEADER_PADDING_HIGH, RAW_FRAME_HEADER_PADDING_LOW,
     RAW_FRAME_HEADER_PHOTOMETRIC_INTERPRETATION, RAW_FRAME_HEADER_PIXEL_REPRESENTATION,
     RAW_FRAME_HEADER_RESCALE_INTERCEPT, RAW_FRAME_HEADER_RESCALE_SLOPE, RAW_FRAME_HEADER_ROWS,
     RAW_FRAME_HEADER_SAMPLES_PER_PIXEL,
@@ -158,74 +158,6 @@ pub(super) async fn semantic_context_for(
     let context = Arc::new(context);
     state.cache_semantic_context(key, context.clone());
     Ok(context)
-}
-
-pub(super) async fn segmentation_overlay(
-    State(state): State<AppState>,
-    path: Result<Path<(usize, u32)>, PathRejection>,
-) -> Result<Response, ApiError> {
-    let Path((index, frame)) = path.map_err(error::path_rejection)?;
-    let segmentation = state
-        .registry()
-        .get(index)
-        .ok_or_else(|| ApiError::not_found("file index out of range"))?;
-    let files = state.registry().files_snapshot();
-    let plan = async {
-        crate::semantic::check_segmentation_frame(&segmentation, frame)?;
-        let context = semantic_context_for(&state, segmentation.clone(), files.clone())
-            .await
-            .map_err(crate::semantic::SegmentationOverlayError::Metadata)?;
-        crate::semantic::segmentation_overlay_plan(&segmentation, frame, &context, &files)
-    }
-    .await
-    .map_err(|error| match error {
-        crate::semantic::SegmentationOverlayError::NotSegmentation => {
-            ApiError::bad_request(error.to_string())
-        }
-        crate::semantic::SegmentationOverlayError::FrameOutOfRange => {
-            error::pixel_error(crate::pixels::PixelError::FrameOutOfRange)
-        }
-        crate::semantic::SegmentationOverlayError::Unavailable(_) => {
-            ApiError::semantic_mapping_unavailable(error.to_string())
-        }
-        crate::semantic::SegmentationOverlayError::Metadata(_) => {
-            ApiError::internal(error.to_string())
-        }
-    })?;
-    let target = files
-        .iter()
-        .find(|file| file.index == plan.source_file_index)
-        .cloned()
-        .ok_or_else(|| ApiError::not_found("resolved source file is unavailable"))?;
-    let raw = pixels::load_raw_frame(segmentation, state.raw_cache(), RawFrameRequest { frame })
-        .await
-        .map_err(error::pixel_error)?;
-    let target_rows = target.rows;
-    let target_columns = target.columns;
-    let overlay = task::spawn_blocking(move || {
-        pixels::encode_segmentation_overlay_png(
-            &raw.body,
-            &raw.metadata,
-            &plan,
-            target_rows,
-            target_columns,
-        )
-        .map(|body| (body, raw.cache_hit))
-    })
-    .await
-    .map_err(|error| ApiError::internal(format!("SEG overlay encoding task failed: {error}")))?
-    .map_err(error::pixel_error)?;
-
-    let mut response = Response::new(axum::body::Body::from(overlay.0));
-    response.headers_mut().insert(
-        CACHE_HEADER,
-        HeaderValue::from_static(if overlay.1 { CACHE_HIT } else { CACHE_MISS }),
-    );
-    response.headers_mut().insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static(PNG_MEDIA_TYPE),
-    );
-    Ok(response)
 }
 
 pub(super) async fn value_mapping(

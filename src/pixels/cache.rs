@@ -18,7 +18,7 @@ pub const OVERLAY_CACHE_MAX_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
 pub type FrameCache = BudgetedLru<FrameCacheKey, Bytes>;
 /// Decoded raw samples and their metadata keyed by file and frame.
 pub type RawFrameCache = BudgetedLru<RawFrameCacheKey, (Bytes, RawFrameMetadata)>;
-/// Encoded value-overlay PNGs keyed by overlay object and displayed frame.
+/// Encoded overlay PNGs keyed by overlay object (and SEG frame) and displayed frame.
 pub type OverlayCache = BudgetedLru<OverlayCacheKey, Bytes>;
 
 /// A cached value whose memory cost is the length of its frame body.
