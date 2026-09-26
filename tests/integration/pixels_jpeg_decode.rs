@@ -1,9 +1,11 @@
 use super::support;
-use axum::http::{header, HeaderValue, StatusCode};
+use axum::http::{header, HeaderValue};
 use axum_test::TestServer;
+use dcmview::loader::{self, DiscoverOptions};
 use dcmview::pixels::{load_frame, new_cache, FrameRequest};
 use dcmview::server;
 use image::ImageFormat;
+use std::path::PathBuf;
 use tempfile::tempdir;
 
 #[tokio::test]
@@ -66,36 +68,41 @@ async fn decodes_jpeg_display_frame_to_png_and_sets_cache_hit_on_repeat() {
 }
 
 #[tokio::test]
-async fn jpeg_lossless_routes_through_server_decode() {
-    let dir = tempdir().expect("temp dir");
-    let path = dir.path().join("jpeg-lossless.dcm");
-    // Arbitrary bytes that start with a JPEG SOI marker but are not valid JPEG Lossless data.
-    // The decode path (TS 4.70) will attempt decode_frame_to_png and fail on invalid data.
-    let frame = vec![0xFF_u8, 0xD8, 0xFF, 0xDB, 0x00, 0x01];
-    support::write_encapsulated_dicom(&path, "1.2.840.10008.1.2.4.70", vec![frame.clone()]);
+async fn jpeg_lossless_decodes_server_side_to_windowed_png() {
+    // The committed fixture holds a process-14 codestream with the 4x4 raster
+    // 0, 100, ..., 1500 and a 750/1500 default window.
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/golden-jpeg-lossless-u16-single-frame.dcm");
+    let report = loader::discover(
+        &[path],
+        DiscoverOptions {
+            recursive: false,
+            filters: Vec::new(),
+        },
+    )
+    .await
+    .expect("discover JPEG Lossless fixture");
+    let test_server = TestServer::new(server::router(support::app_state(report.files)));
 
-    let app = server::router(support::app_state(vec![support::file_entry(
-        path,
-        "1.2.840.10008.1.2.4.70",
-        1,
-    )]));
-    let test_server = TestServer::new(app);
-
+    // Even a client that prefers JPEG gets a server-decoded PNG.
     let response = test_server
         .get("/api/file/0/frame/0")
         .add_header(header::ACCEPT, HeaderValue::from_static("image/jpeg"))
         .await;
-
-    // TS 4.70 must route through decode_frame_to_png instead, which fails on these invalid bytes.
-    let is_raw_jpeg_response = response.status_code() == StatusCode::OK
-        && response
-            .maybe_header("content-type")
-            .map(|v| v.to_str().unwrap_or("").starts_with("image/jpeg"))
-            .unwrap_or(false)
-        && response.as_bytes().as_ref() == frame.as_slice();
-    assert!(
-        !is_raw_jpeg_response,
-        "TS 4.70 must not return raw JPEG bytes (status={})",
-        response.status_code()
+    response.assert_status_ok();
+    assert_eq!(
+        response
+            .header("content-type")
+            .to_str()
+            .expect("content type"),
+        "image/png"
     );
+    let rendered =
+        image::load_from_memory_with_format(response.as_bytes().as_ref(), ImageFormat::Png)
+            .expect("JPEG Lossless display should be a PNG")
+            .to_luma8();
+    assert_eq!(rendered.dimensions(), (4, 4));
+    // Window 750/1500 spans 0..1500, so each 100-unit step is 17 grey levels.
+    let expected = (0_u8..16).map(|step| step * 17).collect::<Vec<_>>();
+    assert_eq!(rendered.into_raw(), expected);
 }
