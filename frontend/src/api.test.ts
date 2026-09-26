@@ -1,11 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+	ApiError,
 	displayFrameCacheKey,
 	displayFrameWindowCacheKey,
+	fetchDoseOverlayBlob,
 	fetchFiles,
 	fetchRawFrame,
 	fetchSelectedTag,
 	frameUrl,
+	isApiError,
 	parseRawFrameMetadata,
 	updateAnnotations,
 } from "./api";
@@ -135,6 +138,22 @@ describe("fetch wrappers", () => {
 		);
 
 		await expect(fetchFiles()).rejects.toThrow("file index out of range");
+	});
+
+	it("keeps the envelope's status and code for callers that branch on them", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValue(
+				jsonResponse({ code: "overlay_not_covering_frame", error: "beyond the dose grid" }, 404),
+			),
+		);
+
+		const error = await fetchDoseOverlayBlob(5, 0, 9).catch((caught: unknown) => caught);
+
+		expect(error).toBeInstanceOf(ApiError);
+		expect(error).toMatchObject({ status: 404, code: "overlay_not_covering_frame" });
+		expect(isApiError(error, "overlay_not_covering_frame")).toBe(true);
+		expect(isApiError(error, "not_found")).toBe(false);
 	});
 
 	it("falls back to the HTTP status when the error body is not an envelope", async () => {

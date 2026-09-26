@@ -1,4 +1,5 @@
 import type {
+	ApiErrorCode,
 	DoseOverlayQuery,
 	EmbedRoiAnnotations,
 	ErrorResponse,
@@ -19,6 +20,7 @@ import { API_ENDPOINTS, RAW_FRAME_HEADERS } from "./generated/api-types";
 import type { RawFrame } from "./rawFrame";
 
 export type {
+	ApiErrorCode,
 	EmbedRoiAnnotations,
 	ErrorResponse,
 	FileSummary,
@@ -84,21 +86,42 @@ function endpointUrl(
 	return encoded.length > 0 ? `${path}?${encoded}` : path;
 }
 
-async function readServerError(response: Response): Promise<string | null> {
-	try {
-		const body = (await response.json()) as Partial<ErrorResponse>;
-		return typeof body.error === "string" && body.error.length > 0 ? body.error : null;
-	} catch {
-		return null;
+/** A non-2xx API response: the server's message, status, and stable error `code`. */
+export class ApiError extends Error {
+	readonly status: number;
+	readonly code: ApiErrorCode | null;
+
+	constructor(message: string, status: number, code: ApiErrorCode | null) {
+		super(message);
+		this.name = "ApiError";
+		this.status = status;
+		this.code = code;
 	}
 }
 
-/** Sends one request and turns non-2xx responses into the server's error message. */
+/** True when `error` is an API response carrying `code`. */
+export function isApiError(error: unknown, code: ApiErrorCode): boolean {
+	return error instanceof ApiError && error.code === code;
+}
+
+async function readServerError(response: Response): Promise<Partial<ErrorResponse>> {
+	try {
+		return (await response.json()) as Partial<ErrorResponse>;
+	} catch {
+		return {};
+	}
+}
+
+/** Sends one request and turns non-2xx responses into an `ApiError`. */
 async function send(endpoint: Endpoint, url: string, init: RequestInit = {}): Promise<Response> {
 	const response = await fetch(url, { ...init, method: endpoint.method });
 	if (!response.ok) {
-		const serverMessage = await readServerError(response);
-		throw new Error(serverMessage ?? `HTTP ${response.status}: ${endpoint.method} ${url} failed`);
+		const body = await readServerError(response);
+		const message = typeof body.error === "string" && body.error.length > 0
+			? body.error
+			: `HTTP ${response.status}: ${endpoint.method} ${url} failed`;
+		const code = typeof body.code === "string" ? body.code : null;
+		throw new ApiError(message, response.status, code);
 	}
 	return response;
 }
