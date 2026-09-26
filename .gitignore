@@ -22,6 +22,7 @@ marketing-review/
 !tests/fixtures/golden-jpeg-lossless-u16-single-frame.dcm
 !tests/fixtures/golden-jpeg-lossless-ybr-full-u8-single-frame.dcm
 !tests/fixtures/golden-jpeg2000-lossless-u8-single-frame.dcm
+!tests/fixtures/golden-jpegxl-lossless-ybr-full-u8-single-frame.dcm
 !tests/fixtures/golden-image-no-pixels.dcm
 !tests/fixtures/golden-no-pixels-sr.dcm
 !tests/fixtures/golden-rle-ybr-full-422-u8-single-frame.dcm

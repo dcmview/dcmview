@@ -10,7 +10,7 @@ use super::encapsulated::open_for_frame_decode;
 use super::error::{PixelError, PixelResult};
 use super::icc::select_icc_profile;
 use super::render::{encode_windowed_luminance_png, LuminanceRenderOptions};
-use super::syntax::Codec;
+use super::syntax::{Codec, ColorSamples};
 
 struct DecodedJpegXlFrame {
     bytes: Vec<u8>,
@@ -117,8 +117,14 @@ pub(crate) async fn decode_raw_jpeg_xl(
         } else {
             file.pixel_representation
         };
+        // Three-sample frames are returned as decoded: RGB, or the stored
+        // Y, Cb, Cr channels of a YBR_FULL frame.
         metadata.photometric_interpretation = if decoded.samples_per_pixel == 3 {
-            "RGB".to_string()
+            let photometric = file.photometric_interpretation.trim().to_ascii_uppercase();
+            match Codec::JpegXl.color_samples(&photometric, decoded.bits_allocated) {
+                Some(ColorSamples::YbrFull) => "YBR_FULL".to_string(),
+                _ => "RGB".to_string(),
+            }
         } else {
             file.photometric_interpretation.clone()
         };

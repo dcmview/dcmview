@@ -197,6 +197,25 @@ async fn jpeg_lossless_ybr_full_fixture_converts_decoded_components_to_rgb() {
 }
 
 #[tokio::test]
+async fn jpeg_xl_ybr_full_fixture_converts_decoded_channels_to_rgb() {
+    let test_server = assert_color_fixture_display(
+        "golden-jpegxl-lossless-ybr-full-u8-single-frame.dcm",
+        "1.2.840.10008.1.2.4.110",
+    )
+    .await;
+
+    // Raw frames return the decoded channels, labelled as what they hold.
+    let raw = test_server.get("/api/file/0/frame/0/raw").await;
+    raw.assert_status_ok();
+    assert_eq!(header(&raw, "x-frame-samples-per-pixel"), "3");
+    assert_eq!(
+        header(&raw, "x-frame-photometric-interpretation"),
+        "YBR_FULL"
+    );
+    assert_eq!(raw.as_bytes().as_ref(), FIXTURE_YBR_4X2.concat());
+}
+
+#[tokio::test]
 async fn jpeg_lossless_fixture_satisfies_display_and_raw_contracts() {
     let samples = [
         0_u16, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100, 1200, 1300, 1400, 1500,

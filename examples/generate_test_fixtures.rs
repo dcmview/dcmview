@@ -46,6 +46,16 @@ fn main() {
         },
         jpeg_lossless_ybr_fragment_4x2(),
     );
+    write_color_fixture(
+        &fixture_dir.join("golden-jpegxl-lossless-ybr-full-u8-single-frame.dcm"),
+        ColorFixtureSpec {
+            sop_instance_uid: "2.25.2000011",
+            patient_id: "GOLDEN-JPEGXL-YBR",
+            transfer_syntax_uid: "1.2.840.10008.1.2.4.110",
+            photometric_interpretation: "YBR_FULL",
+        },
+        jpeg_xl_lossless_ybr_fragment_4x2(),
+    );
     write_sr_without_pixels(&fixture_dir.join("golden-no-pixels-sr.dcm"));
     write_image_without_pixels(&fixture_dir.join("golden-image-no-pixels.dcm"));
 }
@@ -638,6 +648,20 @@ fn jpeg_lossless_ybr_fragment_4x2() -> Vec<u8> {
         "ffd8ffc30011080002000403011100021100031100ffc4001c00000000090000",
         "00000000000000000000000102030405060708ffda000c030100020003000100",
         "0062d947fe000f29968150006422aa1ac001f1c3236a001fffd9"
+    ))
+}
+
+fn jpeg_xl_lossless_ybr_fragment_4x2() -> Vec<u8> {
+    // Lossless JPEG XL codestream (zune-jpegxl 0.4, modular, no XYB) of
+    // YBR_4X2 stored as three plain 8-bit channels.
+    decode_hex(concat!(
+        "ff0a080006804808020100dc024b189b9c71840338800338204ac03905010020",
+        "4480081001224084fff7eff9efa131e79c6bed736f922409015555555555d5ff",
+        "ffff73efebeeeeee86fff7eff9efa131e79c6bed736f922409015555555555d5",
+        "ffffff73efebeeeeee86fff7eff9efa131e79c6bed736f922409015555555555",
+        "d5ffffff73efebeeeeee86fff7eff9efa131e79c6bed736f9224090155555555",
+        "55d5ffffff73efebeeeeee3e00979e93731096f128e389864bc92388ebc37178",
+        "5ae0d10c"
     ))
 }
 
