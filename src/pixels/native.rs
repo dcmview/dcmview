@@ -66,25 +66,19 @@ fn decode_uncompressed_to_png_blocking(
         })
         .ok_or_else(|| anyhow!("frame decode failed: invalid image geometry"))?;
     let photometric = file.photometric_interpretation.trim().to_ascii_uppercase();
-    if bits_allocated == 8 {
-        let rgb = match (samples_per_pixel, photometric.as_str()) {
-            (3, "RGB") => Some(rgb8_interleaved(&frame_bytes, pixel_count, 0)?),
-            (3, "YBR_FULL" | "YBR_FULL_422") => {
-                Some(ybr_full_to_rgb8(&frame_bytes, pixel_count, 0)?)
-            }
-            (1, "PALETTE COLOR") => Some(palette_indices_to_rgb8(
-                &file.path,
-                &frame_bytes,
-                bits_allocated,
-            )?),
-            _ => None,
+    let color_layout = matches!(
+        (samples_per_pixel, photometric.as_str()),
+        (3, "RGB" | "YBR_FULL" | "YBR_FULL_422") | (1, "PALETTE COLOR")
+    );
+    if bits_allocated == 8 && color_layout {
+        let object = open_header(&file.path)?;
+        let rgb = match photometric.as_str() {
+            "RGB" => rgb8_interleaved(&frame_bytes, pixel_count, 0)?,
+            "PALETTE COLOR" => palette_indices_to_rgb8(&object, &frame_bytes, bits_allocated)?,
+            _ => ybr_full_to_rgb8(&frame_bytes, pixel_count, 0)?,
         };
-        if let Some(rgb) = rgb {
-            let object = open_header(&file.path)?;
-            let icc_profile = select_icc_profile(&object);
-            return encode_rgb8_png_with_icc(rgb, columns, rows, icc_profile)
-                .context("frame decode failed: color PNG encoding failed");
-        }
+        return encode_rgb8_png_with_icc(rgb, columns, rows, select_icc_profile(&object))
+            .context("frame decode failed: color PNG encoding failed");
     }
     if samples_per_pixel != 1 || !matches!(photometric.as_str(), "MONOCHROME1" | "MONOCHROME2") {
         return Err(anyhow!(

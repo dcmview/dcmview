@@ -10,6 +10,7 @@ use super::encapsulated::read_encapsulated_fragment_blocking;
 use super::error::{PixelError, PixelResult};
 use super::header::open_header;
 use super::icc::select_icc_profile;
+use super::palette::palette_indices_to_rgb8;
 use super::render::{encode_windowed_luminance_png, LuminanceRenderOptions};
 use super::stored_bits::canonicalize_integer_samples;
 
@@ -399,101 +400,10 @@ fn encode_palette_png(file: &FileEntry, indices: &[u8]) -> PixelResult<Bytes> {
         )));
     }
     let object = open_header(&file.path).map_err(PixelError::frame_decode)?;
-    let red = read_palette_channel(
-        &object,
-        "RedPaletteColorLookupTableDescriptor",
-        "RedPaletteColorLookupTableData",
-    )
-    .map_err(PixelError::frame_decode)?;
-    let green = read_palette_channel(
-        &object,
-        "GreenPaletteColorLookupTableDescriptor",
-        "GreenPaletteColorLookupTableData",
-    )
-    .map_err(PixelError::frame_decode)?;
-    let blue = read_palette_channel(
-        &object,
-        "BluePaletteColorLookupTableDescriptor",
-        "BluePaletteColorLookupTableData",
-    )
-    .map_err(PixelError::frame_decode)?;
-    if red.first_mapped != green.first_mapped
-        || red.first_mapped != blue.first_mapped
-        || red.values.len() != green.values.len()
-        || red.values.len() != blue.values.len()
-    {
-        return Err(PixelError::UnsupportedLayout(
-            "RLE palette channel descriptors do not match".to_string(),
-        ));
-    }
-
-    let mut rgb = Vec::with_capacity(indices.len().saturating_mul(3));
-    for index in indices {
-        let mapped = i32::from(*index) - red.first_mapped;
-        let lut_index = mapped.clamp(0, red.values.len().saturating_sub(1) as i32) as usize;
-        rgb.extend_from_slice(&[
-            red.values[lut_index],
-            green.values[lut_index],
-            blue.values[lut_index],
-        ]);
-    }
-    let icc_profile = select_icc_profile(&object);
-    encode_rgb_png(file, rgb, icc_profile)
-}
-
-struct PaletteChannel {
-    first_mapped: i32,
-    values: Vec<u8>,
-}
-
-fn read_palette_channel(
-    object: &dicom_object::DefaultDicomObject,
-    descriptor_name: &str,
-    data_name: &str,
-) -> Result<PaletteChannel> {
-    let descriptor = object
-        .element_by_name(descriptor_name)
-        .with_context(|| format!("missing {descriptor_name}"))?
-        .to_multi_int::<i32>()
-        .with_context(|| format!("invalid {descriptor_name}"))?;
-    if descriptor.len() != 3 {
-        return Err(anyhow!("{descriptor_name} must contain three values"));
-    }
-    let entry_count = if descriptor[0] == 0 {
-        65_536_usize
-    } else {
-        usize::try_from(descriptor[0]).context("negative palette entry count")?
-    };
-    let bits = descriptor[2];
-    if bits != 8 && bits != 16 {
-        return Err(anyhow!("unsupported palette bit depth {bits}"));
-    }
-    let words = object
-        .element_by_name(data_name)
-        .with_context(|| format!("missing {data_name}"))?
-        .to_multi_int::<u16>()
-        .with_context(|| format!("invalid {data_name}"))?;
-    if words.len() < entry_count {
-        return Err(anyhow!(
-            "{data_name} contains {} entries, expected {entry_count}",
-            words.len()
-        ));
-    }
-    let values = words
-        .into_iter()
-        .take(entry_count)
-        .map(|value| {
-            if bits == 16 {
-                (value >> 8) as u8
-            } else {
-                value as u8
-            }
-        })
-        .collect();
-    Ok(PaletteChannel {
-        first_mapped: descriptor[1],
-        values,
-    })
+    let rgb = palette_indices_to_rgb8(&object, indices, file.bits_allocated)
+        .context("RLE palette lookup failed")
+        .map_err(PixelError::frame_decode)?;
+    encode_rgb_png(file, rgb, select_icc_profile(&object))
 }
 
 #[cfg(test)]

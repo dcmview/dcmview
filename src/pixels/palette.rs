@@ -1,10 +1,10 @@
 use anyhow::{anyhow, Context, Result};
-use std::path::Path;
+use dicom_object::DefaultDicomObject;
 
-use super::header::open_header;
-
+/// Maps 8-bit PALETTE COLOR indices to interleaved RGB through the object's
+/// Red, Green, and Blue Palette Color Lookup Tables.
 pub(super) fn palette_indices_to_rgb8(
-    path: &Path,
+    object: &DefaultDicomObject,
     indices: &[u8],
     bits_allocated: u32,
 ) -> Result<Vec<u8>> {
@@ -13,19 +13,18 @@ pub(super) fn palette_indices_to_rgb8(
             "palette display requires 8-bit indices, found {bits_allocated}"
         ));
     }
-    let object = open_header(path)?;
     let red = read_palette_channel(
-        &object,
+        object,
         "RedPaletteColorLookupTableDescriptor",
         "RedPaletteColorLookupTableData",
     )?;
     let green = read_palette_channel(
-        &object,
+        object,
         "GreenPaletteColorLookupTableDescriptor",
         "GreenPaletteColorLookupTableData",
     )?;
     let blue = read_palette_channel(
-        &object,
+        object,
         "BluePaletteColorLookupTableDescriptor",
         "BluePaletteColorLookupTableData",
     )?;
@@ -39,7 +38,7 @@ struct PaletteChannel {
 }
 
 fn read_palette_channel(
-    object: &dicom_object::DefaultDicomObject,
+    object: &DefaultDicomObject,
     descriptor_name: &str,
     data_name: &str,
 ) -> Result<PaletteChannel> {
