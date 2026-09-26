@@ -4,7 +4,7 @@ use dicom_core::dictionary::{DataDictionary, DataDictionaryEntry};
 use dicom_core::header::HasLength;
 use dicom_core::Tag;
 use dicom_core::VR;
-use dicom_dictionary_std::StandardDataDictionary;
+use dicom_dictionary_std::{tags, StandardDataDictionary};
 use dicom_encoding::text::{SpecificCharacterSet, TextCodec};
 use dicom_encoding::TransferSyntaxIndex;
 use dicom_object::{open_file, FileMetaTable, InMemDicomObject, OpenFileOptions};
@@ -19,7 +19,7 @@ use std::path::Path;
 /// Float Pixel Data (7FE0,0008), the first standard pixel element. Tag reads
 /// parse the data set only up to here and describe what follows from element
 /// headers, so large pixel payloads are never read.
-const FIRST_PIXEL_ELEMENT: Tag = Tag(0x7FE0, 0x0008);
+const FIRST_PIXEL_ELEMENT: Tag = tags::FLOAT_PIXEL_DATA;
 
 const TAG_TEXT_PREVIEW_LIMIT: usize = 256;
 const TAG_NUMERIC_VALUE_LIMIT: usize = 128;
@@ -127,7 +127,7 @@ fn trailing_element_summaries(path: &Path) -> Option<Vec<TagNode>> {
                 depth = depth.saturating_sub(1);
                 if depth == 0 {
                     if let Some((length, _)) = fragments.take() {
-                        nodes.push(binary_summary_node(Tag(0x7FE0, 0x0010), VR::OB, length));
+                        nodes.push(binary_summary_node(tags::PIXEL_DATA, VR::OB, length));
                     }
                 }
             }
@@ -418,7 +418,7 @@ fn declared_text_codec(
     object: &InMemDicomObject<StandardDataDictionary>,
 ) -> Option<SpecificCharacterSet> {
     let declaration = object
-        .element(dicom_dictionary_std::tags::SPECIFIC_CHARACTER_SET)
+        .element(tags::SPECIFIC_CHARACTER_SET)
         .ok()?
         .to_str()
         .ok()?;
