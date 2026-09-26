@@ -57,9 +57,13 @@ would remove behavior, raise it as a question instead of acting.
   terminal interception through PATH shims, and routing into the VS Code viewer
   from the binary *and* from Python, including notebook kernels that only see
   the bridge registry. The Rust, Python, and TypeScript bridge code may be
-  consolidated, but no entry point may lose its routing. The binary and Python
-  currently use different workspace-match rules; unifying them is an open owner
-  decision, so keep both behaviors until it is made.
+  consolidated, but no entry point may lose its routing.
+- **VS Code routing rule (owner decision, 2026-09-25)** - every entry point
+  routes into VS Code when the process has the bridge environment (a VS Code
+  terminal) or its working directory is inside a registered workspace folder.
+  Otherwise it runs the local viewer. Python's `view(vscode_bridge=False)` and
+  `DCMVIEW_VSCODE_BYPASS=1` opt out. Today Python still routes to any live
+  bridge; that is a known gap until the bridge code is consolidated.
 - **Viewer** - cine playback, server- and client-side window/level, presets,
   per-tab zoom/pan/orientation, series and stack navigation, tag panel,
   reference navigation, and the codec coverage in the pixel pipeline table.
@@ -77,15 +81,19 @@ would remove behavior, raise it as a question instead of acting.
   - a check that the grid covers the displayed slice.
 - **Parametric Map values are not applied.** Real World Value Mappings are
   summarized in the panel only. The display windows stored values even though
-  `displayed_value_kind` reports `mapped`. How mapped values should appear on
-  the image is an open owner decision.
+  `displayed_value_kind` reports `mapped`. Intended, in order:
+  1. a pixel readout of stored and mapped values under the cursor, for every
+     modality;
+  2. window/level in mapped units, with a color bar or legend;
+  3. a Parametric Map overlay on its source image, like the SEG overlay. This
+     was part of the original feature and was never finished.
 - **Color layouts reported unsupported because their decoder lacks a color
   transform:**
   - RLE YBR_FULL_422;
   - JPEG Lossless YBR_FULL;
   - JPEG XL YBR_FULL.
 - **No pixel-value readout.** Neither stored nor mapped values (Parametric
-  Map, RT Dose) can be read per pixel in the viewport.
+  Map, RT Dose) can be read per pixel in the viewport; see Parametric Map above.
 - **API data the UI never renders:**
   - RT Dose grid geometry and references;
   - WSI companions and relationships;
