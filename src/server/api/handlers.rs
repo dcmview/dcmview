@@ -483,7 +483,10 @@ pub(super) async fn select_tag(
     })
     .await
     .map_err(|error| ApiError::internal(format!("tag selection task failed: {error}")))?
-    .map_err(|error| ApiError::bad_request(error.to_string()))?;
+    .map_err(|error| match error {
+        tags::TagSelectError::Invalid(_) => ApiError::bad_request(error.to_string()),
+        tags::TagSelectError::Read(_) => ApiError::internal(error.to_string()),
+    })?;
     Ok(Json(node))
 }
 

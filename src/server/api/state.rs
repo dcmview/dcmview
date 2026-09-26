@@ -2,15 +2,20 @@ use super::super::{now_unix_ms, FileRegistry, RequestActivity};
 use crate::annotations::AnnotationStore;
 use crate::api::contracts::TagNode;
 use crate::pixels::{self, FrameCache, RawFrameCache};
-use std::collections::HashMap;
+use lru::LruCache;
+use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
+
+/// Serialized tag trees kept for recently viewed files. Trees are capped in
+/// size by the tag serializer's limits, so a file count bounds the memory.
+const TAG_CACHE_MAX_FILES: NonZeroUsize = NonZeroUsize::new(64).expect("non-zero");
 
 #[derive(Clone)]
 pub struct AppState {
     registry: FileRegistry,
     pixel_cache: Arc<Mutex<FrameCache>>,
     raw_cache: Arc<Mutex<RawFrameCache>>,
-    tag_cache: Arc<Mutex<HashMap<usize, Vec<TagNode>>>>,
+    tag_cache: Arc<Mutex<LruCache<usize, Vec<TagNode>>>>,
     annotations: AnnotationStore,
     server_start_ms: u64,
     activity: RequestActivity,
@@ -22,7 +27,7 @@ impl AppState {
             registry,
             pixel_cache: pixels::new_cache(),
             raw_cache: pixels::new_raw_cache(),
-            tag_cache: Arc::new(Mutex::new(HashMap::new())),
+            tag_cache: Arc::new(Mutex::new(LruCache::new(TAG_CACHE_MAX_FILES))),
             annotations,
             server_start_ms: now_unix_ms(),
             activity: RequestActivity::new(),
@@ -49,12 +54,12 @@ impl AppState {
         self.tag_cache
             .lock()
             .ok()
-            .and_then(|cache| cache.get(&index).cloned())
+            .and_then(|mut cache| cache.get(&index).cloned())
     }
 
     pub(crate) fn cache_tags(&self, index: usize, nodes: Vec<TagNode>) {
         if let Ok(mut cache) = self.tag_cache.lock() {
-            cache.insert(index, nodes);
+            cache.put(index, nodes);
         }
     }
 

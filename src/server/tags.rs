@@ -3,10 +3,23 @@ use anyhow::{anyhow, bail, Context, Result};
 use dicom_core::dictionary::{DataDictionary, DataDictionaryEntry};
 use dicom_core::header::HasLength;
 use dicom_core::Tag;
+use dicom_core::VR;
 use dicom_dictionary_std::StandardDataDictionary;
 use dicom_encoding::text::{SpecificCharacterSet, TextCodec};
-use dicom_object::{open_file, InMemDicomObject};
+use dicom_encoding::TransferSyntaxIndex;
+use dicom_object::{open_file, FileMetaTable, InMemDicomObject, OpenFileOptions};
+use dicom_parser::dataset::lazy_read::LazyDataSetReader;
+use dicom_parser::dataset::LazyDataToken;
+use dicom_parser::StatefulDecode;
+use dicom_transfer_syntax_registry::TransferSyntaxRegistry;
+use std::fs::File;
+use std::io::{BufReader, Seek, SeekFrom};
 use std::path::Path;
+
+/// Float Pixel Data (7FE0,0008), the first standard pixel element. Tag reads
+/// parse the data set only up to here and describe what follows from element
+/// headers, so large pixel payloads are never read.
+const FIRST_PIXEL_ELEMENT: Tag = Tag(0x7FE0, 0x0008);
 
 const TAG_TEXT_PREVIEW_LIMIT: usize = 256;
 const TAG_NUMERIC_VALUE_LIMIT: usize = 128;
@@ -16,11 +29,25 @@ pub(crate) const TAG_SELECT_DEFAULT_LIMIT: usize = 64;
 pub(crate) const TAG_SELECT_MAX_LIMIT: usize = 256;
 
 pub(crate) fn build_tag_tree(path: &Path) -> Result<Vec<TagNode>> {
-    let object = open_file(path)
-        .with_context(|| format!("failed to open DICOM for tags: {}", path.display()))?
-        .into_inner();
+    if let Some(trailing) = trailing_element_summaries(path) {
+        let object = open_tag_header(path)?;
+        let text_codec = declared_text_codec(&object);
+        let mut nodes = serialize_object_tags(&object, 0, text_codec.as_ref());
+        nodes.extend(trailing);
+        return Ok(nodes);
+    }
+    let object = open_full(path)?;
     let text_codec = declared_text_codec(&object);
     Ok(serialize_object_tags(&object, 0, text_codec.as_ref()))
+}
+
+/// Why a tag selection failed: a bad request, or a file that could not be read.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum TagSelectError {
+    #[error("{0:#}")]
+    Invalid(anyhow::Error),
+    #[error("{0:#}")]
+    Read(anyhow::Error),
 }
 
 pub(crate) fn build_selected_tag(
@@ -28,16 +55,124 @@ pub(crate) fn build_selected_tag(
     selector: &str,
     offset: usize,
     limit: usize,
-) -> Result<TagNode> {
+) -> std::result::Result<TagNode, TagSelectError> {
     if limit == 0 || limit > TAG_SELECT_MAX_LIMIT {
-        bail!("tag page limit must be between 1 and {TAG_SELECT_MAX_LIMIT}");
+        return Err(TagSelectError::Invalid(anyhow!(
+            "tag page limit must be between 1 and {TAG_SELECT_MAX_LIMIT}"
+        )));
     }
-    let steps = parse_tag_selector(selector)?;
-    let object = open_file(path)
-        .with_context(|| format!("failed to open DICOM for tags: {}", path.display()))?
-        .into_inner();
+    let steps = parse_tag_selector(selector).map_err(TagSelectError::Invalid)?;
+    let selects_pixel_or_later =
+        matches!(steps.first(), Some(TagPathStep::Tag(tag)) if *tag >= FIRST_PIXEL_ELEMENT);
+    let object = if selects_pixel_or_later {
+        open_full(path)
+    } else {
+        open_tag_header(path)
+    }
+    .map_err(TagSelectError::Read)?;
     let text_codec = declared_text_codec(&object);
     select_from_object(&object, &steps, offset, limit, text_codec.as_ref())
+        .map_err(TagSelectError::Invalid)
+}
+
+fn open_full(path: &Path) -> Result<InMemDicomObject<StandardDataDictionary>> {
+    Ok(open_file(path)
+        .with_context(|| format!("failed to open DICOM for tags: {}", path.display()))?
+        .into_inner())
+}
+
+fn open_tag_header(path: &Path) -> Result<InMemDicomObject<StandardDataDictionary>> {
+    Ok(OpenFileOptions::new()
+        .read_until(FIRST_PIXEL_ELEMENT)
+        .open_file(path)
+        .with_context(|| format!("failed to open DICOM for tags: {}", path.display()))?
+        .into_inner())
+}
+
+/// Nodes for the top-level elements from Float Pixel Data onward, built from
+/// element headers alone.
+///
+/// Returns `None` when those elements cannot be described without reading
+/// them (a deflated data set, or a trailing element that is not a binary
+/// value), so the caller falls back to reading the whole file.
+fn trailing_element_summaries(path: &Path) -> Option<Vec<TagNode>> {
+    let mut reader = BufReader::new(File::open(path).ok()?);
+    reader.seek(SeekFrom::Start(128)).ok()?;
+    let meta = FileMetaTable::from_reader(&mut reader).ok()?;
+    let transfer_syntax = TransferSyntaxRegistry.get(meta.transfer_syntax())?;
+    if transfer_syntax.uid() == dicom_dictionary_std::uids::DEFLATED_EXPLICIT_VR_LITTLE_ENDIAN {
+        return None;
+    }
+    let mut parser = LazyDataSetReader::new_with_ts(reader, transfer_syntax).ok()?;
+
+    let mut nodes = Vec::new();
+    let mut depth = 0_usize;
+    // Byte total of an open top-level encapsulated pixel element, and how
+    // many of its items have started; the first is the Basic Offset Table.
+    let mut fragments: Option<(usize, usize)> = None;
+    while let Some(token) = parser.advance() {
+        match token.ok()? {
+            LazyDataToken::PixelSequenceStart if depth == 0 => {
+                fragments = Some((0, 0));
+                depth += 1;
+            }
+            LazyDataToken::SequenceStart { tag, .. } => {
+                if depth == 0 && tag >= FIRST_PIXEL_ELEMENT {
+                    return None;
+                }
+                depth += 1;
+            }
+            LazyDataToken::PixelSequenceStart => depth += 1,
+            LazyDataToken::SequenceEnd => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    if let Some((length, _)) = fragments.take() {
+                        nodes.push(binary_summary_node(Tag(0x7FE0, 0x0010), VR::OB, length));
+                    }
+                }
+            }
+            LazyDataToken::ItemStart { len } if depth == 1 => {
+                if let Some((length, items)) = fragments.as_mut() {
+                    if *items > 0 {
+                        *length += len.get()? as usize;
+                    }
+                    *items += 1;
+                }
+            }
+            LazyDataToken::LazyItemValue { len, decoder } => decoder.skip_bytes(len).ok()?,
+            LazyDataToken::LazyValue { header, decoder } => {
+                let length = header.len.get()?;
+                if depth == 0 && header.tag >= FIRST_PIXEL_ELEMENT {
+                    if !is_binary_vr(header.vr) {
+                        return None;
+                    }
+                    nodes.push(binary_summary_node(header.tag, header.vr, length as usize));
+                }
+                decoder.skip_bytes(length).ok()?;
+            }
+            _ => {}
+        }
+    }
+    Some(nodes)
+}
+
+fn is_binary_vr(vr: VR) -> bool {
+    matches!(
+        vr,
+        VR::OB | VR::OW | VR::OF | VR::OD | VR::OL | VR::OV | VR::UN
+    )
+}
+
+fn binary_summary_node(tag: Tag, vr: VR, length: usize) -> TagNode {
+    TagNode {
+        tag: format!("({:04X},{:04X})", tag.0, tag.1),
+        vr: format!("{vr}"),
+        keyword: StandardDataDictionary
+            .by_tag(tag)
+            .map(|entry| entry.alias().to_string())
+            .unwrap_or_else(|| "Unknown".to_string()),
+        value: TagValue::Binary { length },
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -348,6 +483,36 @@ fn is_numeric_vr(vr_repr: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn header_only_tag_tree_matches_a_full_read_for_every_fixture() {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let mut compared = 0;
+        for entry in std::fs::read_dir(fixtures).expect("fixture directory") {
+            let path = entry.expect("fixture entry").path();
+            if path.extension().and_then(|extension| extension.to_str()) != Some("dcm") {
+                continue;
+            }
+            let full = open_full(&path).expect("full read");
+            let expected = serialize_object_tags(&full, 0, declared_text_codec(&full).as_ref());
+            assert!(
+                trailing_element_summaries(&path).is_some(),
+                "{} should not need a full read",
+                path.display()
+            );
+            assert_eq!(
+                serde_json::to_value(build_tag_tree(&path).expect("tag tree")).unwrap(),
+                serde_json::to_value(expected).unwrap(),
+                "{}",
+                path.display()
+            );
+            compared += 1;
+        }
+        assert!(
+            compared >= 6,
+            "native, encapsulated, and no-pixel fixtures are covered"
+        );
+    }
 
     #[test]
     fn decodes_iso_2022_person_name_extension_sequences() {
