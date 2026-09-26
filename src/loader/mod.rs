@@ -19,6 +19,34 @@ pub use discovery::{
 };
 pub use filter::{ScanFilter, ScanFilterField};
 
+/// Root of the independently generated DICOM corpus that `#[ignore]` tests
+/// read, from `DCMVIEW_PREPARED_CORPUS` (`python scripts/check.py corpus`).
+#[cfg(test)]
+pub(crate) fn prepared_corpus_root() -> std::path::PathBuf {
+    let root = std::env::var_os("DCMVIEW_PREPARED_CORPUS")
+        .map(std::path::PathBuf::from)
+        .expect("set DCMVIEW_PREPARED_CORPUS to the generated corpus directory");
+    assert!(
+        root.is_dir(),
+        "prepared corpus {} is not a directory",
+        root.display()
+    );
+    root
+}
+
+/// One case file of the prepared corpus, found in a flat corpus (`all`
+/// profile) or in the per-profile `core`, `extended`, or `extended-deflate`
+/// roots of the original prepared layout.
+#[cfg(test)]
+pub(crate) fn prepared_corpus_case(relative: &str) -> std::path::PathBuf {
+    let root = prepared_corpus_root();
+    ["", "core", "extended", "extended-deflate"]
+        .into_iter()
+        .map(|profile| root.join(profile).join(relative))
+        .find(|path| path.is_file())
+        .unwrap_or_else(|| panic!("prepared corpus {} has no case {relative}", root.display()))
+}
+
 /// Inspect one Part 10 file into a `FileEntry` for unit tests that need the
 /// loader's metadata without running a discovery.
 #[cfg(test)]

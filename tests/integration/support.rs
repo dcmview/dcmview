@@ -162,6 +162,20 @@ pub async fn discover(paths: &[PathBuf], options: DiscoverOptions) -> anyhow::Re
     })
 }
 
+/// One case file of the independently generated corpus that `#[ignore]`
+/// tests read (`DCMVIEW_PREPARED_CORPUS`, run by `scripts/check.py corpus`),
+/// in a flat corpus or the per-profile `core`/`extended` prepared layout.
+pub fn prepared_corpus_case(relative: &str) -> PathBuf {
+    let root = std::env::var_os("DCMVIEW_PREPARED_CORPUS")
+        .map(PathBuf::from)
+        .expect("set DCMVIEW_PREPARED_CORPUS to the generated corpus directory");
+    ["", "core", "extended", "extended-deflate"]
+        .into_iter()
+        .map(|profile| root.join(profile).join(relative))
+        .find(|path| path.is_file())
+        .unwrap_or_else(|| panic!("prepared corpus {} has no case {relative}", root.display()))
+}
+
 pub fn app_state(files: Vec<FileEntry>) -> AppState {
     app_state_with_registry(FileRegistry::from_files(files))
 }

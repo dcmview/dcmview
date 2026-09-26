@@ -366,12 +366,9 @@ mod tests {
     #[test]
     #[ignore = "requires the independently generated prepared DICOM corpus"]
     fn recognizes_prepared_deflated_image_frame_segmentation_metadata() {
-        let root = std::env::var_os("DCMVIEW_PREPARED_CORPUS")
-            .map(std::path::PathBuf::from)
-            .expect("set DCMVIEW_PREPARED_CORPUS to the generated suite directory");
-        let path = root
-            .join("extended-deflate")
-            .join("derived/seg/binary_multiframe_deflated_image_frame/instance.dcm");
+        let path = crate::loader::prepared_corpus_case(
+            "derived/seg/binary_multiframe_deflated_image_frame/instance.dcm",
+        );
 
         let EntryInspection::Selected(file) = build_entry(&path).expect("inspect prepared SEG")
         else {

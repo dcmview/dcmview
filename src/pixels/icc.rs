@@ -184,42 +184,41 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires the independently generated prepared DICOM corpus"]
     async fn prepared_top_level_and_optical_path_profiles_are_preserved_in_display_pngs() {
-        let root = std::env::var_os("DCMVIEW_PREPARED_CORPUS")
-            .map(std::path::PathBuf::from)
-            .expect("set DCMVIEW_PREPARED_CORPUS to the generated suite directory");
+        // `None` is the case's own file; a codec root holds the same case
+        // re-encoded, and exists only in the per-profile prepared layout.
         let cases = [
             (
-                "extended",
+                None,
                 "vl/photo/rgb_icc_profile_explicit_le",
                 0_u32,
                 [255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255],
             ),
             (
-                "extended",
+                None,
                 "vl/wsi/tiled_full_small",
                 0,
                 [255, 0, 0, 255, 0, 0, 255, 0, 0, 255, 0, 0],
             ),
             (
-                "extended",
+                None,
                 "vl/wsi/tiled_sparse_small",
                 0,
                 [255, 0, 0, 255, 0, 0, 255, 0, 0, 255, 0, 0],
             ),
             (
-                "extended",
+                None,
                 "vl/wsi/multiple_optical_paths",
                 4,
                 [0, 255, 255, 0, 255, 255, 0, 255, 255, 0, 255, 255],
             ),
             (
-                "extended-jpegxl",
+                Some("extended-jpegxl"),
                 "vl/photo/rgb_icc_profile_explicit_le",
                 0,
                 [255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255],
             ),
             (
-                "extended-jpeg2000",
+                Some("extended-jpeg2000"),
                 "vl/photo/rgb_icc_profile_explicit_le",
                 0,
                 [255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255],
@@ -227,8 +226,19 @@ mod tests {
         ];
 
         let mut expected_profile = None;
-        for (variant, case, frame, expected_pixels) in cases {
-            let path = root.join(variant).join(case).join("instance.dcm");
+        for (codec_root, case, frame, expected_pixels) in cases {
+            let relative = format!("{case}/instance.dcm");
+            let path = match codec_root {
+                None => crate::loader::prepared_corpus_case(&relative),
+                Some(codec_root) => {
+                    let root = crate::loader::prepared_corpus_root().join(codec_root);
+                    if !root.is_dir() {
+                        eprintln!("{codec_root}: not in this corpus; skipping {case}");
+                        continue;
+                    }
+                    root.join(relative)
+                }
+            };
             let object = open_file(&path).expect("open prepared ICC object");
             let profile = select_icc_profile(&object).expect("unambiguous prepared ICC profile");
             assert_eq!(profile.len(), 736);

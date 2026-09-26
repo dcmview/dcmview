@@ -990,9 +990,6 @@ mod tests {
     #[test]
     #[ignore = "requires the independently generated prepared DICOM corpus"]
     fn prepared_reference_corpus_matches_locked_relationship_inventory() {
-        let root = std::env::var_os("DCMVIEW_PREPARED_CORPUS")
-            .map(std::path::PathBuf::from)
-            .expect("set DCMVIEW_PREPARED_CORPUS to the generated suite directory");
         let cases: &[(&str, &[&str])] = &[
             (
                 "derived/parametric-map/float32_ct_derived_explicit_le/parametric-map.dcm",
@@ -1108,17 +1105,7 @@ mod tests {
 
         let mut total = 0;
         for (relative_path, expected) in cases {
-            let path = ["", "extended", "extended-deflate"]
-                .into_iter()
-                .map(|profile| {
-                    if profile.is_empty() {
-                        root.join(relative_path)
-                    } else {
-                        root.join(profile).join(relative_path)
-                    }
-                })
-                .find(|path| path.is_file())
-                .unwrap_or_else(|| root.join("extended").join(relative_path));
+            let path = crate::loader::prepared_corpus_case(relative_path);
             let edges = super::extract_reference_edges(&path)
                 .unwrap_or_else(|error| panic!("{relative_path}: {error:#}"));
             let actual = edges

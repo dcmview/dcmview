@@ -932,15 +932,12 @@ mod tests {
     #[test]
     #[ignore = "requires the independently generated prepared DICOM corpus"]
     fn prepared_overlay_and_shutter_metadata_match_locked_cases() {
-        let root = std::env::var_os("DCMVIEW_PREPARED_CORPUS")
-            .map(std::path::PathBuf::from)
-            .expect("set DCMVIEW_PREPARED_CORPUS to the generated suite directory");
-        let overlay_path = root
-            .join("core")
-            .join("classic/cr/overlay_modality_voi_explicit_le/instance.dcm");
-        let shutter_path = root
-            .join("core")
-            .join("classic/dx/display_shutter_mono2_u16_explicit_le/instance.dcm");
+        let overlay_path = crate::loader::prepared_corpus_case(
+            "classic/cr/overlay_modality_voi_explicit_le/instance.dcm",
+        );
+        let shutter_path = crate::loader::prepared_corpus_case(
+            "classic/dx/display_shutter_mono2_u16_explicit_le/instance.dcm",
+        );
 
         let EntryInspection::Selected(overlay_file) =
             build_entry(&overlay_path).expect("inspect prepared CR")

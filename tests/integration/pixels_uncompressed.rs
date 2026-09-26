@@ -148,12 +148,8 @@ async fn native_overlay_composites_after_windowing_without_changing_raw_samples(
 #[tokio::test]
 #[ignore = "requires the independently generated prepared DICOM corpus"]
 async fn prepared_native_overlay_composites_after_luts_and_preserves_raw_frame() {
-    let root = std::env::var_os("DCMVIEW_PREPARED_CORPUS")
-        .map(std::path::PathBuf::from)
-        .expect("set DCMVIEW_PREPARED_CORPUS to the generated suite directory");
-    let path = root
-        .join("core")
-        .join("classic/cr/overlay_modality_voi_explicit_le/instance.dcm");
+    let path =
+        support::prepared_corpus_case("classic/cr/overlay_modality_voi_explicit_le/instance.dcm");
     let report = support::discover(
         &[path],
         dcmview::loader::DiscoverOptions {
@@ -249,12 +245,9 @@ async fn native_rectangular_shutter_applies_after_monochrome1_and_preserves_raw_
 #[tokio::test]
 #[ignore = "requires the independently generated prepared DICOM corpus"]
 async fn prepared_native_full_frame_shutter_preserves_windowed_pixels_and_raw_frame() {
-    let root = std::env::var_os("DCMVIEW_PREPARED_CORPUS")
-        .map(std::path::PathBuf::from)
-        .expect("set DCMVIEW_PREPARED_CORPUS to the generated suite directory");
-    let path = root
-        .join("core")
-        .join("classic/dx/display_shutter_mono2_u16_explicit_le/instance.dcm");
+    let path = support::prepared_corpus_case(
+        "classic/dx/display_shutter_mono2_u16_explicit_le/instance.dcm",
+    );
     let report = support::discover(
         &[path],
         dcmview::loader::DiscoverOptions {

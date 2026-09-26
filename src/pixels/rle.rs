@@ -425,14 +425,9 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires the independently generated prepared DICOM corpus"]
     async fn prepared_rle_overlay_applies_modality_voi_and_overlay_pipeline() {
-        let root = std::env::var_os("DCMVIEW_PREPARED_CORPUS")
-            .map(std::path::PathBuf::from)
-            .expect("set DCMVIEW_PREPARED_CORPUS to the generated suite directory");
-        let relative = "classic/cr/overlay_modality_voi_rle_lossless/instance.dcm";
-        let path = [root.join(relative), root.join("core").join(relative)]
-            .into_iter()
-            .find(|path| path.is_file())
-            .expect("prepared RLE CR fixture");
+        let path = crate::loader::prepared_corpus_case(
+            "classic/cr/overlay_modality_voi_rle_lossless/instance.dcm",
+        );
         let file = crate::loader::test_entry(&path);
 
         let display = super::decode_rle_to_png(file, 0, None, None, WindowMode::Default)

@@ -177,12 +177,9 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires the independently generated prepared DICOM corpus"]
     async fn prepared_two_frame_seg_matches_packed_hash_inputs_and_display_masks() {
-        let root = std::env::var_os("DCMVIEW_PREPARED_CORPUS")
-            .map(std::path::PathBuf::from)
-            .expect("set DCMVIEW_PREPARED_CORPUS to the generated suite directory");
-        let path = root
-            .join("extended-deflate")
-            .join("derived/seg/binary_multiframe_deflated_image_frame/instance.dcm");
+        let path = crate::loader::prepared_corpus_case(
+            "derived/seg/binary_multiframe_deflated_image_frame/instance.dcm",
+        );
         let file = test_entry(&path);
 
         let raw_cache = new_raw_cache();
