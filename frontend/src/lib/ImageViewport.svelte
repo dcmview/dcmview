@@ -1,11 +1,8 @@
 <script lang="ts">
 	import { untrack } from "svelte";
 	import {
-		fetchAnnotations,
 		fetchSegmentationOverlayBlob,
-		updateAnnotations,
 		type DisplayFrameWindowOptions,
-		type EmbedRoiAnnotations,
 		type FileSummary,
 		type RawFrame,
 		type WindowMode,
@@ -14,7 +11,6 @@
 		addRoi,
 		canonicalRect,
 		deleteRoi,
-		isAllFrames,
 		moveCoord,
 		normalizeAnnotationsForEdit,
 		resizeCoord,
@@ -45,10 +41,6 @@
 		type CineDirection,
 		type CineMode,
 	} from "./cinePlayback";
-	import {
-		RevisionedPersistenceController,
-		type PersistenceSnapshot,
-	} from "./revisionedPersistence";
 	import { trackForegroundRequest } from "./requestIndicator";
 	import {
 		resolveDisplayWindow,
@@ -57,6 +49,7 @@
 	} from "./rawWindowing";
 	import type { ActiveTool } from "./viewerTools";
 	import { navigationFrameAtPosition, type NavigationFrameRef } from "./seriesNavigation";
+	import { AnnotationStore } from "./viewport/annotationStore.svelte";
 	import { DisplayFrameSource } from "./viewport/displayFrameSource";
 	import {
 		observePrefetchConcurrency,
@@ -65,6 +58,9 @@
 	} from "./viewport/prefetchScheduling";
 	import { RawFrameSource } from "./viewport/rawFrameSource";
 	import { RenderedFrames } from "./viewport/renderedFrames.svelte";
+	import RoiList from "./viewport/RoiList.svelte";
+	import RoiOverlay from "./viewport/RoiOverlay.svelte";
+	import { hitTestRoi, roiCoord, visibleRois as roisOnFrame } from "./viewport/roiEditing";
 	import { WlRendererClient } from "./viewport/wlRendererClient";
 
 	type PipelineMode = "cine" | "diagnostic_wl" | "server_wl" | "segmentation_overlay";
@@ -84,15 +80,6 @@
 		| { mode: "move_roi"; roiIndex: number; start: ImagePoint; original: RoiCoord }
 		| { mode: "resize_roi"; roiIndex: number; handle: RoiHandle; original: RoiCoord }
 		| null;
-
-	type VisibleRoi = {
-		index: number;
-		ymin: number;
-		xmin: number;
-		ymax: number;
-		xmax: number;
-		frames: number[] | null;
-	};
 
 	let {
 		activeFile,
@@ -150,37 +137,7 @@
 	let canvasEl: HTMLCanvasElement | undefined = $state();
 	let currentRawFrame = $state<RawFrame | null>(null);
 	let rawWindowLevelFallbackByFile = $state<Record<number, boolean>>({});
-	let annotationsByFile = $state<Record<number, EmbedRoiAnnotations | undefined>>({});
-	let annotationErrorsByFile = $state<Record<number, string | null | undefined>>({});
-	let annotationLoadingByFile = $state<Record<number, boolean | undefined>>({});
-	let annotationPersistenceByFile = $state<
-		Record<number, PersistenceSnapshot<EmbedRoiAnnotations> | undefined>
-	>({});
-	let selectedRoiByFile = $state<Record<number, number | null | undefined>>({});
-	let annotationRequestedByFile: Record<number, boolean> = {};
-	const annotationPersistence = new RevisionedPersistenceController<number, EmbedRoiAnnotations>({
-		save: updateAnnotations,
-		errorMessage: (error) =>
-			error instanceof Error && error.message ? error.message : "Failed to save annotations",
-		onChange: (fileIndex, snapshot) => {
-			const editingRoi = activeFile?.index === fileIndex
-				&& (dragState?.mode === "move_roi" || dragState?.mode === "resize_roi");
-			if (!editingRoi) {
-				annotationsByFile = {
-					...annotationsByFile,
-					[fileIndex]: snapshot.value,
-				};
-			}
-			annotationErrorsByFile = {
-				...annotationErrorsByFile,
-				[fileIndex]: snapshot.error,
-			};
-			annotationPersistenceByFile = {
-				...annotationPersistenceByFile,
-				[fileIndex]: snapshot,
-			};
-		},
-	});
+	const annotations = new AnnotationStore();
 
 	let prefetchConcurrency = $state(PREFETCH_CONCURRENCY);
 	const rendered = new RenderedFrames();
@@ -242,17 +199,9 @@
 					? { wc: activeFile.default_window.center, ww: activeFile.default_window.width }
 					: { wc: 0, ww: 1 },
 	);
-	const activeAnnotations = $derived(activeFile ? annotationsByFile[activeFile.index] ?? null : null);
-	const activeAnnotationError = $derived(activeFile ? annotationErrorsByFile[activeFile.index] ?? null : null);
-	const activeAnnotationLoading = $derived(activeFile ? annotationLoadingByFile[activeFile.index] ?? false : false);
-	const activeAnnotationPersistence = $derived(
-		activeFile ? annotationPersistenceByFile[activeFile.index] ?? null : null,
-	);
-	// Persistence state exists only once the file's server-side annotations
-	// have loaded. Editing before then would save a set built from nothing and
-	// replace the file's stored ROIs.
-	const annotationsReady = $derived(activeAnnotationPersistence !== null);
-	const selectedRoiIndex = $derived(activeFile ? selectedRoiByFile[activeFile.index] ?? null : null);
+	const activeAnnotations = $derived(annotations.annotations(activeFile.index));
+	const annotationsReady = $derived(annotations.ready(activeFile.index));
+	const selectedRoiIndex = $derived(annotations.selected(activeFile.index));
 	const imageRows = $derived(
 		pipelineMode === "segmentation_overlay" && segmentationOverlay
 			? segmentationOverlay.sourceFile.rows
@@ -276,78 +225,16 @@
 	);
 	const transformCss = $derived(layerTransformCss(activeTransform, orientation, displayGeometry));
 	const visibleRois = $derived(
-		segmentationOverlay ? [] : deriveVisibleRois(activeAnnotations, currentFrame),
+		segmentationOverlay ? [] : roisOnFrame(activeAnnotations, currentFrame),
 	);
 	const draftRoi = $derived(
 		dragState?.mode === "draw_roi"
 			? canonicalRect(dragState.start, dragState.current, imageRows, imageColumns)
 			: null,
 	);
-	const roiListCountLabel = $derived(
-		activeAnnotations ? `${visibleRois.length} / ${activeAnnotations.num_roi}` : String(visibleRois.length),
-	);
-
-	function deriveVisibleRois(annotations: EmbedRoiAnnotations | null, frameIndex: number): VisibleRoi[] {
-		if (!annotations || annotations.roi_coords.length === 0) return [];
-		const appliesToAllFrames = annotations.roi_frames.length === 0;
-		const visible: VisibleRoi[] = [];
-		for (let idx = 0; idx < annotations.roi_coords.length; idx += 1) {
-			const [ymin, xmin, ymax, xmax] = annotations.roi_coords[idx];
-			const frames = appliesToAllFrames ? null : annotations.roi_frames[idx] ?? [];
-			if (frames !== null && !frames.includes(frameIndex)) continue;
-			visible.push({ index: idx, ymin, xmin, ymax, xmax, frames });
-		}
-		return visible;
-	}
-
-	function formatRoiFrames(frames: number[] | null): string {
-		if (frames === null || isAllFrames(frames, activeFile?.frame_count ?? 0)) return "all frames";
-		if (frames.length === 0) return "no frame mapping";
-		const preview = frames.slice(0, 6).join(", ");
-		return frames.length > 6 ? `frames ${preview}, …` : `frames ${preview}`;
-	}
 
 	function setSelectedRoi(index: number | null) {
-		if (!activeFile) return;
-		if ((selectedRoiByFile[activeFile.index] ?? null) === index) return;
-		selectedRoiByFile = {
-			...selectedRoiByFile,
-			[activeFile.index]: index,
-		};
-	}
-
-	function setAnnotationsForFile(fileIndex: number, annotations: EmbedRoiAnnotations) {
-		annotationsByFile = {
-			...annotationsByFile,
-			[fileIndex]: annotations,
-		};
-	}
-
-	function currentEditableAnnotations(): EmbedRoiAnnotations {
-		return normalizeAnnotationsForEdit(activeAnnotations, activeFile?.frame_count ?? 0);
-	}
-
-	function commitAnnotations(annotations: EmbedRoiAnnotations, selectedIndex: number | null = selectedRoiIndex) {
-		if (!activeFile || !annotationPersistence.get(activeFile.index)) return;
-		setAnnotationsForFile(activeFile.index, annotations);
-		setSelectedRoi(selectedIndex);
-		annotationPersistence.edit(activeFile.index, annotations);
-	}
-
-	function retryAnnotationLoad() {
-		if (!activeFile || annotationPersistence.get(activeFile.index)) return;
-		loadAnnotations(activeFile.index);
-	}
-
-	function retryAnnotationSave() {
-		if (!activeFile || !annotationPersistence.get(activeFile.index)) return;
-		annotationPersistence.retry(activeFile.index);
-	}
-
-	function rollbackAnnotationSave() {
-		if (!activeFile || !annotationPersistence.get(activeFile.index)) return;
-		annotationPersistence.rollback(activeFile.index);
-		setSelectedRoi(null);
+		annotations.select(activeFile.index, index);
 	}
 
 	/** Image coordinates under a client point; the seam for cursor-driven tools. */
@@ -372,61 +259,16 @@
 		};
 	}
 
-	function hitTestRoi(point: ImagePoint): { roi: VisibleRoi; handle: RoiHandle | null } | null {
-		const tolerance = Math.max(3, 8 / Math.max(activeTransform.scale, 0.2));
-		for (let idx = visibleRois.length - 1; idx >= 0; idx -= 1) {
-			const roi = visibleRois[idx];
-			const handle = hitTestHandle(roi, point, tolerance);
-			if (handle) return { roi, handle };
-			const x0 = Math.min(roi.xmin, roi.xmax);
-			const x1 = Math.max(roi.xmin, roi.xmax);
-			const y0 = Math.min(roi.ymin, roi.ymax);
-			const y1 = Math.max(roi.ymin, roi.ymax);
-			if (point.x >= x0 && point.x <= x1 && point.y >= y0 && point.y <= y1) {
-				return { roi, handle: null };
-			}
-		}
-		return null;
-	}
-
-	function hitTestHandle(roi: VisibleRoi, point: ImagePoint, tolerance: number): RoiHandle | null {
-		for (const handle of roiHandles(roi)) {
-			if (Math.abs(point.x - handle.x) <= tolerance && Math.abs(point.y - handle.y) <= tolerance) {
-				return handle.handle;
-			}
-		}
-		return null;
-	}
-
-	function roiHandles(roi: VisibleRoi): Array<{ handle: RoiHandle; x: number; y: number }> {
-		const x0 = Math.min(roi.xmin, roi.xmax);
-		const x1 = Math.max(roi.xmin, roi.xmax);
-		const y0 = Math.min(roi.ymin, roi.ymax);
-		const y1 = Math.max(roi.ymin, roi.ymax);
-		const cx = (x0 + x1) / 2;
-		const cy = (y0 + y1) / 2;
-		return [
-			{ handle: "nw", x: x0, y: y0 },
-			{ handle: "n", x: cx, y: y0 },
-			{ handle: "ne", x: x1, y: y0 },
-			{ handle: "e", x: x1, y: cy },
-			{ handle: "se", x: x1, y: y1 },
-			{ handle: "s", x: cx, y: y1 },
-			{ handle: "sw", x: x0, y: y1 },
-			{ handle: "w", x: x0, y: cy },
-		];
-	}
-
-	function deleteSelectedRoi() {
-		if (!activeFile || selectedRoiIndex === null || !activeAnnotations) return;
+	export function deleteSelectedRoi() {
+		if (selectedRoiIndex === null || !activeAnnotations) return;
 		const next = deleteRoi(activeAnnotations, selectedRoiIndex, activeFile.frame_count);
-		commitAnnotations(next, null);
+		annotations.commit(activeFile.index, next, null);
 	}
 
 	function setSelectedScope(scope: "current" | "all") {
-		if (!activeFile || selectedRoiIndex === null || !activeAnnotations) return;
+		if (selectedRoiIndex === null || !activeAnnotations) return;
 		const next = setRoiFrameScope(activeAnnotations, selectedRoiIndex, scope, currentFrame, activeFile.frame_count);
-		commitAnnotations(next, selectedRoiIndex);
+		annotations.commit(activeFile.index, next, selectedRoiIndex);
 	}
 
 	function clearCanvas(): void {
@@ -757,44 +599,9 @@
 	});
 
 	$effect(() => {
-		if (!activeFile) return;
 		const fileIndex = activeFile.index;
-		if (annotationsByFile[fileIndex] !== undefined || annotationRequestedByFile[fileIndex]) {
-			return;
-		}
-		loadAnnotations(fileIndex);
+		untrack(() => annotations.ensureLoaded(fileIndex));
 	});
-
-	function loadAnnotations(fileIndex: number) {
-		// Direct mutation — annotationRequestedByFile is not $state, so this
-		// does not trigger an effect re-run and will not fire the cleanup.
-		annotationRequestedByFile[fileIndex] = true;
-		annotationLoadingByFile = {
-			...annotationLoadingByFile,
-			[fileIndex]: true,
-		};
-		annotationErrorsByFile = {
-			...annotationErrorsByFile,
-			[fileIndex]: null,
-		};
-
-		void fetchAnnotations(fileIndex)
-			.then((annotations) => {
-				annotationPersistence.initialize(fileIndex, annotations);
-			})
-			.catch((error) => {
-				annotationErrorsByFile = {
-					...annotationErrorsByFile,
-					[fileIndex]: (error as Error).message || "Failed to load annotations",
-				};
-			})
-			.finally(() => {
-				annotationLoadingByFile = {
-					...annotationLoadingByFile,
-					[fileIndex]: false,
-				};
-			});
-	}
 
 	$effect(() => {
 		const nextScope = navigationScopeKey;
@@ -985,7 +792,7 @@
 		fitActiveImageToViewport();
 		liveWindowCenter = null;
 		liveWindowWidth = null;
-		dragState = null;
+		endDrag();
 	});
 
 	function zoomAnchorFromClient(clientX: number, clientY: number): ZoomAnchor | null {
@@ -1152,10 +959,11 @@
 					const point = pointFromPointer(event);
 					if (!point) break;
 					event.preventDefault();
-					const hit = hitTestRoi(point);
+					const hit = hitTestRoi(visibleRois, point, activeTransform.scale);
 					if (hit) {
 						setSelectedRoi(hit.roi.index);
-						const original: RoiCoord = [hit.roi.ymin, hit.roi.xmin, hit.roi.ymax, hit.roi.xmax];
+						annotations.beginLiveEdit(activeFile.index);
+						const original = roiCoord(hit.roi);
 						nextDragState = hit.handle
 							? { mode: "resize_roi", roiIndex: hit.roi.index, handle: hit.handle, original }
 							: { mode: "move_roi", roiIndex: hit.roi.index, start: point, original };
@@ -1231,7 +1039,7 @@
 				imageColumns,
 			);
 			const next = updateRoiCoord(activeAnnotations, dragState.roiIndex, moved, activeFile.frame_count);
-			setAnnotationsForFile(activeFile.index, next);
+			annotations.showDraft(activeFile.index, next);
 			return;
 		}
 
@@ -1241,7 +1049,7 @@
 			const resized = resizeCoord(dragState.original, dragState.handle, point, imageRows, imageColumns);
 			if (!resized) return;
 			const next = updateRoiCoord(activeAnnotations, dragState.roiIndex, resized, activeFile.frame_count);
-			setAnnotationsForFile(activeFile.index, next);
+			annotations.showDraft(activeFile.index, next);
 		}
 	}
 
@@ -1257,23 +1065,29 @@
 		}
 		if (dragState?.mode === "draw_roi") {
 			const coord = canonicalRect(dragState.start, dragState.current, imageRows, imageColumns);
-			if (coord && activeFile) {
+			if (coord) {
 				const next = addRoi(activeAnnotations, coord, currentFrame, activeFile.frame_count);
-				commitAnnotations(next, next.num_roi - 1);
+				annotations.commit(activeFile.index, next, next.num_roi - 1);
 			}
 		}
 		if ((dragState?.mode === "move_roi" || dragState?.mode === "resize_roi") && activeAnnotations) {
-			commitAnnotations(activeAnnotations, selectedRoiIndex);
+			annotations.commit(activeFile.index, activeAnnotations, selectedRoiIndex);
 		}
-		dragState = null;
+		endDrag();
 	}
 
 	function onPointerCancel() {
-		if ((dragState?.mode === "move_roi" || dragState?.mode === "resize_roi") && activeFile) {
-			const next = updateRoiCoord(currentEditableAnnotations(), dragState.roiIndex, dragState.original, activeFile.frame_count);
-			setAnnotationsForFile(activeFile.index, next);
+		if (dragState?.mode === "move_roi" || dragState?.mode === "resize_roi") {
+			const editable = normalizeAnnotationsForEdit(activeAnnotations, activeFile.frame_count);
+			const next = updateRoiCoord(editable, dragState.roiIndex, dragState.original, activeFile.frame_count);
+			annotations.showDraft(activeFile.index, next);
 		}
+		endDrag();
+	}
+
+	function endDrag() {
 		dragState = null;
+		annotations.endLiveEdit();
 	}
 
 	function onContextMenu(event: MouseEvent) {
@@ -1341,43 +1155,13 @@
 				data-capture-rendered={rendered.token}
 			></canvas>
 			{#if !segmentationOverlay && imageColumns > 0 && imageRows > 0}
-				<svg
-					class="roi-overlay"
-					viewBox={`0 0 ${imageColumns} ${imageRows}`}
-					preserveAspectRatio="none"
-					aria-hidden="true"
-				>
-					{#each visibleRois as roi (roi.index)}
-						<g class:selected={selectedRoiIndex === roi.index}>
-							<rect
-								class="roi-rect"
-								x={Math.min(roi.xmin, roi.xmax)}
-								y={Math.min(roi.ymin, roi.ymax)}
-								width={Math.max(1, Math.abs(roi.xmax - roi.xmin))}
-								height={Math.max(1, Math.abs(roi.ymax - roi.ymin))}
-							></rect>
-							<text
-								class="roi-label"
-								x={Math.min(roi.xmin, roi.xmax) + 3}
-								y={Math.max(10, Math.min(roi.ymin, roi.ymax) - 4)}
-							>#{roi.index + 1}</text>
-							{#if selectedRoiIndex === roi.index}
-								{#each roiHandles(roi) as handle}
-									<circle class="roi-handle" cx={handle.x} cy={handle.y} r={4}></circle>
-								{/each}
-							{/if}
-						</g>
-					{/each}
-					{#if draftRoi}
-						<rect
-							class="roi-rect draft"
-							x={draftRoi[1]}
-							y={draftRoi[0]}
-							width={Math.max(1, draftRoi[3] - draftRoi[1])}
-							height={Math.max(1, draftRoi[2] - draftRoi[0])}
-						></rect>
-					{/if}
-				</svg>
+				<RoiOverlay
+					rois={visibleRois}
+					selectedIndex={selectedRoiIndex}
+					draft={draftRoi}
+					rows={imageRows}
+					columns={imageColumns}
+				/>
 			{/if}
 		</div>
 		<div class="overlay">
@@ -1393,54 +1177,24 @@
 				<span class="presentation-path" title={activeFile.raw_windowing_reason ?? undefined}>server presentation retained</span>
 			{/if}
 		</div>
-		{#if !segmentationOverlay}<div class="roi-list">
-			<div class="roi-list-title">
-				<span>ROIs {roiListCountLabel}</span>
-				{#if activeAnnotationPersistence?.status === "saving"}
-					<span class="roi-save-status">saving…</span>
-				{:else if activeAnnotationPersistence?.status === "dirty"}
-					<span class="roi-save-status">unsaved</span>
-				{/if}
-			</div>
-			{#if activeAnnotationLoading}
-				<div class="roi-list-status">Loading annotations…</div>
-			{:else if activeAnnotationError}
-				<div class="roi-list-status error">
-					<span>{activeAnnotationError}</span>
-					{#if activeAnnotationPersistence?.status === "error"}
-						<div class="roi-error-actions">
-							<button type="button" onclick={retryAnnotationSave}>Retry</button>
-							<button type="button" onclick={rollbackAnnotationSave}>Revert</button>
-						</div>
-					{:else if !annotationsReady}
-						<div class="roi-error-actions">
-							<button type="button" onclick={retryAnnotationLoad}>Retry</button>
-						</div>
-					{/if}
-				</div>
-			{:else if visibleRois.length === 0}
-				<div class="roi-list-status">No ROIs for this frame</div>
-			{:else}
-				<ul>
-					{#each visibleRois as roi (roi.index)}
-						<li class:selected={selectedRoiIndex === roi.index}>
-							<button type="button" class="roi-select" onclick={() => setSelectedRoi(roi.index)}>
-								<span class="roi-id">#{roi.index + 1}</span>
-							</button>
-							<span class="roi-coords">[{roi.ymin}, {roi.xmin}, {roi.ymax}, {roi.xmax}]</span>
-							<span class="roi-frames">{formatRoiFrames(roi.frames)}</span>
-							{#if selectedRoiIndex === roi.index}
-								<div class="roi-actions">
-									<button type="button" onclick={() => setSelectedScope("current")}>Current</button>
-									<button type="button" onclick={() => setSelectedScope("all")}>All</button>
-									<button type="button" class="danger" onclick={deleteSelectedRoi}>Delete</button>
-								</div>
-							{/if}
-						</li>
-					{/each}
-				</ul>
-			{/if}
-		</div>{/if}
+		{#if !segmentationOverlay}
+			<RoiList
+				rois={visibleRois}
+				totalCount={activeAnnotations?.num_roi ?? null}
+				frameCount={activeFile.frame_count}
+				selectedIndex={selectedRoiIndex}
+				loading={annotations.loading(activeFile.index)}
+				error={annotations.error(activeFile.index)}
+				ready={annotationsReady}
+				saveStatus={annotations.saveStatus(activeFile.index)}
+				onselect={setSelectedRoi}
+				onscope={setSelectedScope}
+				ondelete={deleteSelectedRoi}
+				onretryload={() => annotations.retryLoad(activeFile.index)}
+				onretrysave={() => annotations.retrySave(activeFile.index)}
+				onrevert={() => annotations.rollback(activeFile.index)}
+			/>
+		{/if}
 		<div class="zoom-controls">
 			<button type="button" onclick={() => stepZoom(-1)} disabled={activeTransform.scale <= MIN_ZOOM}>−</button>
 			<button type="button" class="zoom-level" onclick={fitActiveImageToViewport} title="Fit to height">{zoomPercent}%</button>
@@ -1481,47 +1235,6 @@
 		width: 100%;
 		height: 100%;
 		image-rendering: pixelated;
-	}
-	.roi-overlay {
-		position: absolute;
-		inset: 0;
-		width: 100%;
-		height: 100%;
-		pointer-events: none;
-	}
-	.roi-rect {
-		fill: rgba(255, 115, 115, 0.12);
-		stroke: #ff7373;
-		stroke-width: 1.2;
-		vector-effect: non-scaling-stroke;
-	}
-	.roi-overlay g.selected .roi-rect {
-		fill: rgba(74, 158, 255, 0.16);
-		stroke: #4a9eff;
-		stroke-width: 1.6;
-	}
-	.roi-rect.draft {
-		fill: rgba(255, 212, 92, 0.14);
-		stroke: #ffd45c;
-		stroke-dasharray: 5 4;
-	}
-	.roi-label {
-		fill: #ffdede;
-		stroke: rgba(0, 0, 0, 0.75);
-		stroke-width: 2.4;
-		paint-order: stroke;
-		font-size: 11px;
-		font-family: ui-monospace, monospace;
-		vector-effect: non-scaling-stroke;
-	}
-	.roi-overlay g.selected .roi-label {
-		fill: #c8ddff;
-	}
-	.roi-handle {
-		fill: #4a9eff;
-		stroke: #101820;
-		stroke-width: 1;
-		vector-effect: non-scaling-stroke;
 	}
 	.placeholder {
 		color: var(--text-muted);
@@ -1582,126 +1295,6 @@
 		box-shadow: var(--shadow-hud);
 		backdrop-filter: blur(16px);
 		color: var(--text-secondary);
-	}
-	.roi-list {
-		position: absolute;
-		right: 0.75rem;
-		top: 0.75rem;
-		max-width: min(48ch, 46%);
-		max-height: 38%;
-		overflow: auto;
-		font-size: 0.72rem;
-		padding: 0.5rem 0.55rem;
-		background: rgba(28, 28, 30, 0.78);
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-panel);
-		box-shadow: var(--shadow-hud);
-		backdrop-filter: blur(16px);
-		z-index: 2;
-		scrollbar-width: thin;
-	}
-	.roi-list-title {
-		display: flex;
-		justify-content: space-between;
-		gap: 0.75rem;
-		font-weight: 600;
-		margin-bottom: 0.25rem;
-		color: var(--text-primary);
-	}
-	.roi-save-status {
-		color: var(--text-muted);
-		font-weight: 400;
-	}
-	.roi-list-status {
-		color: var(--text-muted);
-	}
-	.roi-list-status.error {
-		color: var(--danger);
-	}
-	.roi-error-actions {
-		display: flex;
-		gap: 0.25rem;
-		margin-top: 0.35rem;
-	}
-	.roi-error-actions button {
-		background: var(--surface-control);
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-control);
-		color: var(--text-secondary);
-		cursor: pointer;
-		font-size: 0.68rem;
-		padding: 0.15rem 0.35rem;
-	}
-	.roi-list ul {
-		margin: 0;
-		padding: 0;
-		list-style: none;
-		display: grid;
-		gap: 0.2rem;
-	}
-	.roi-list li {
-		display: grid;
-		gap: 0.1rem;
-		padding: 0.18rem 0;
-		border-top: 1px solid rgba(255, 255, 255, 0.08);
-	}
-	.roi-list li.selected {
-		background: var(--accent-soft);
-		margin-inline: -0.25rem;
-		padding-inline: 0.25rem;
-		border-radius: 4px;
-	}
-	.roi-list li:first-child {
-		border-top: none;
-		padding-top: 0;
-	}
-	.roi-select {
-		width: fit-content;
-		background: none;
-		border: none;
-		color: inherit;
-		padding: 0;
-		cursor: pointer;
-	}
-	.roi-select:focus-visible {
-		outline: none;
-		box-shadow: var(--focus-ring);
-		border-radius: 3px;
-	}
-	.roi-id {
-		font-weight: 600;
-		color: #9fcbff;
-	}
-	.roi-coords,
-	.roi-frames {
-		font-family: var(--font-mono);
-		line-height: 1.25;
-		color: var(--text-secondary);
-	}
-	.roi-actions {
-		display: flex;
-		gap: 0.25rem;
-		margin-top: 0.15rem;
-	}
-	.roi-actions button {
-		background: var(--surface-control);
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-control);
-		color: var(--text-secondary);
-		cursor: pointer;
-		font-size: 0.68rem;
-		padding: 0.15rem 0.35rem;
-	}
-	.roi-actions button:hover {
-		background: var(--surface-control-hover);
-		color: var(--text-primary);
-	}
-	.roi-actions button:focus-visible {
-		outline: none;
-		box-shadow: var(--focus-ring);
-	}
-	.roi-actions button.danger {
-		color: #ffb0b0;
 	}
 	.zoom-controls {
 		position: absolute;
