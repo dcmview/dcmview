@@ -260,7 +260,9 @@ The contract is kept consistent by three layers:
   converted with `value_mapping`, and `pixels/colorwash.rs` encodes viridis
   over the context legend's range. A frame with no pixel inside the volume
   is `404 overlay_not_covering_frame`. Encoded PNGs are cached per volume and
-  displayed frame, and `X-Cache` reports that cache. Semantic context lists
+  displayed frame, and `X-Cache` reports that cache. The `/values` form
+  sends the same resampled values as little-endian `f32`s for readouts,
+  cached beside the PNG (`OverlayEncoding`). Semantic context lists
   covered source frames; the server completes its legend from the decoded
   frames' value range.
 - `/api/file/{index}/frame/{frame}/value-mapping` reports the frame's

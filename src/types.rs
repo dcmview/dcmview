@@ -538,7 +538,7 @@ pub struct RawFrameCacheKey {
     pub frame: u32,
 }
 
-/// An encoded overlay PNG drawn on one displayed frame: a whole RT Dose or
+/// An encoded overlay drawn on one displayed frame: a whole RT Dose or
 /// Parametric Map volume, or one SEG frame on its resolved source frame.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct OverlayCacheKey {
@@ -548,4 +548,13 @@ pub struct OverlayCacheKey {
     pub overlay_frame: Option<u32>,
     pub target_file_index: usize,
     pub target_frame: u32,
+    pub encoding: OverlayEncoding,
+}
+
+/// How an overlay is sent: a colored PNG, or a value overlay's resampled
+/// values as little-endian `f32`s.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OverlayEncoding {
+    Png,
+    Values,
 }

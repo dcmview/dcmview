@@ -48,7 +48,9 @@ All paths are under `/api`; `{index}` is a file index from `/api/files` and
 | GET | `/file/{index}/frame/{frame}/raw` | Decoded samples as `application/octet-stream`, with `X-Cache` and `X-Frame-*` metadata headers. |
 | GET | `/file/{index}/frame/{frame}/segmentation-overlay` | Transparent source-sized SEG mask as `image/png`, with `X-Cache`. |
 | GET | `/file/{index}/frame/{frame}/dose-overlay` | RT Dose colorwash sized to this frame as `image/png`, with `X-Cache`. Query: `dose` (RT Dose file index). |
+| GET | `/file/{index}/frame/{frame}/dose-overlay/values` | The same resampled dose as little-endian `f32` values, `application/octet-stream`, with `X-Cache`. Query: `dose`. |
 | GET | `/file/{index}/frame/{frame}/parametric-map-overlay` | Parametric Map colorwash sized to this frame as `image/png`, with `X-Cache`. Query: `map` (Parametric Map file index). |
+| GET | `/file/{index}/frame/{frame}/parametric-map-overlay/values` | The same resampled mapped values as little-endian `f32` values, `application/octet-stream`, with `X-Cache`. Query: `map`. |
 | GET | `/file/{index}/frame/{frame}/value-mapping` | `FrameValueMapping`: how this frame's stored samples convert to modality and real-world values. |
 | GET | `/file/{index}/frame/{frame}/wsi-context` | `WsiFrameContextResponse`: position of one Whole Slide Microscopy tile. |
 | GET | `/file/{index}/tags` | `TagNode[]`: preview tag tree. |
@@ -209,6 +211,14 @@ floor. Both use one scale for every slice. Encoded overlays are cached per
 volume and displayed frame, and SEG overlays per SEG frame and resolved
 source frame; every overlay endpoint's `X-Cache` reports that encoded-PNG
 cache, not the decoded frames beneath it.
+
+The `/values` form of each value overlay sends the resampled values instead
+of colors, so a viewer can read the volume's value under the cursor: one
+little-endian `f32` per pixel of the displayed frame, row-major, in the
+legend's unit (Gy for RT Dose, the map's unit for a Parametric Map). Pixels
+outside the volume or without a mapped value are NaN; no legend floor
+applies. It answers the same errors as the colorwash, including `404
+overlay_not_covering_frame`, and is cached and reported the same way.
 
 In the semantic context, RT Dose and Parametric Map carry `overlay`
 (eligibility), `overlay_source_frames` (the local image frames in the

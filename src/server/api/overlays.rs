@@ -6,7 +6,8 @@
 //! Semantic context decides eligibility from metadata; this module decodes
 //! the overlay's frames through the raw-frame cache, applies each frame's
 //! real-world mapping, and caches the encoded PNG per overlay and displayed
-//! frame, which is what every overlay endpoint's `X-Cache` reports.
+//! frame, which is what every overlay endpoint's `X-Cache` reports. A value
+//! overlay can also be sent as its resampled values, for readouts.
 
 use super::error::{self, ApiError};
 use super::handlers::{semantic_context_for, value_mappings_for};
@@ -14,7 +15,7 @@ use super::state::AppState;
 use crate::api::contracts::{
     DoseOverlayQuery, OverlayEligibility, OverlayLegend, ParametricMapOverlayQuery,
     ResolvedSegmentSourceFrame, SemanticContext, SemanticContextResponse, CACHE_HEADER, CACHE_HIT,
-    CACHE_MISS, PNG_MEDIA_TYPE,
+    CACHE_MISS, OCTET_STREAM_MEDIA_TYPE, PNG_MEDIA_TYPE,
 };
 use crate::geometry::frame_geometry;
 use crate::pixels::{
@@ -22,7 +23,7 @@ use crate::pixels::{
     COLORMAP_STOPS,
 };
 use crate::plane_stack::{PlaneStack, StackSampleError};
-use crate::types::{FileEntry, NativePixelDataKind, OverlayCacheKey};
+use crate::types::{FileEntry, NativePixelDataKind, OverlayCacheKey, OverlayEncoding};
 use crate::value_mapping::{map_value, FileValueMappings};
 use axum::extract::rejection::{PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
@@ -75,9 +76,10 @@ pub(super) async fn segmentation_overlay(
         overlay_frame: Some(frame),
         target_file_index: plan.source_file_index,
         target_frame: plan.source_frame_index,
+        encoding: OverlayEncoding::Png,
     };
     if let Some(png) = state.cached_overlay(&key) {
-        return Ok(png_response(png, true));
+        return Ok(overlay_response(png, true, OverlayEncoding::Png));
     }
     let raw = pixels::load_raw_frame(segmentation, state.raw_cache(), RawFrameRequest { frame })
         .await
@@ -95,13 +97,46 @@ pub(super) async fn segmentation_overlay(
     .map_err(|error| ApiError::internal(format!("SEG overlay encoding task failed: {error}")))?
     .map_err(error::pixel_error)?;
     state.cache_overlay(key, png.clone());
-    Ok(png_response(png, false))
+    Ok(overlay_response(png, false, OverlayEncoding::Png))
 }
 
 pub(super) async fn dose_overlay(
     State(state): State<AppState>,
     path: Result<Path<(usize, u32)>, PathRejection>,
     query: Result<Query<DoseOverlayQuery>, QueryRejection>,
+) -> Result<Response, ApiError> {
+    dose_value_overlay(state, path, query, OverlayEncoding::Png).await
+}
+
+pub(super) async fn dose_overlay_values(
+    State(state): State<AppState>,
+    path: Result<Path<(usize, u32)>, PathRejection>,
+    query: Result<Query<DoseOverlayQuery>, QueryRejection>,
+) -> Result<Response, ApiError> {
+    dose_value_overlay(state, path, query, OverlayEncoding::Values).await
+}
+
+pub(super) async fn parametric_map_overlay(
+    State(state): State<AppState>,
+    path: Result<Path<(usize, u32)>, PathRejection>,
+    query: Result<Query<ParametricMapOverlayQuery>, QueryRejection>,
+) -> Result<Response, ApiError> {
+    parametric_map_value_overlay(state, path, query, OverlayEncoding::Png).await
+}
+
+pub(super) async fn parametric_map_overlay_values(
+    State(state): State<AppState>,
+    path: Result<Path<(usize, u32)>, PathRejection>,
+    query: Result<Query<ParametricMapOverlayQuery>, QueryRejection>,
+) -> Result<Response, ApiError> {
+    parametric_map_value_overlay(state, path, query, OverlayEncoding::Values).await
+}
+
+async fn dose_value_overlay(
+    state: AppState,
+    path: Result<Path<(usize, u32)>, PathRejection>,
+    query: Result<Query<DoseOverlayQuery>, QueryRejection>,
+    encoding: OverlayEncoding,
 ) -> Result<Response, ApiError> {
     let Path((index, frame)) = path.map_err(error::path_rejection)?;
     let target = state
@@ -116,13 +151,14 @@ pub(super) async fn dose_overlay(
     if dose.sop_class_uid != uids::RT_DOSE_STORAGE {
         return Err(ApiError::bad_request("dose must select an RT Dose object"));
     }
-    value_overlay(&state, dose, target, frame).await
+    value_overlay(&state, dose, target, frame, encoding).await
 }
 
-pub(super) async fn parametric_map_overlay(
-    State(state): State<AppState>,
+async fn parametric_map_value_overlay(
+    state: AppState,
     path: Result<Path<(usize, u32)>, PathRejection>,
     query: Result<Query<ParametricMapOverlayQuery>, QueryRejection>,
+    encoding: OverlayEncoding,
 ) -> Result<Response, ApiError> {
     let Path((index, frame)) = path.map_err(error::path_rejection)?;
     let target = state
@@ -139,15 +175,17 @@ pub(super) async fn parametric_map_overlay(
             "map must select a Parametric Map object",
         ));
     }
-    value_overlay(&state, map, target, frame).await
+    value_overlay(&state, map, target, frame, encoding).await
 }
 
-/// Colorize `overlay`'s planes onto one displayed frame of `target`.
+/// Resample `overlay`'s planes onto one displayed frame of `target`, sent
+/// as a colorwash PNG or as the values themselves.
 async fn value_overlay(
     state: &AppState,
     overlay: FileEntry,
     target: FileEntry,
     frame: u32,
+    encoding: OverlayEncoding,
 ) -> Result<Response, ApiError> {
     if frame >= target.frame_count {
         return Err(error::pixel_error(PixelError::FrameOutOfRange));
@@ -182,9 +220,10 @@ async fn value_overlay(
         overlay_frame: None,
         target_file_index: target.index,
         target_frame: frame,
+        encoding,
     };
-    if let Some(png) = state.cached_overlay(&key) {
-        return Ok(png_response(png, true));
+    if let Some(body) = state.cached_overlay(&key) {
+        return Ok(overlay_response(body, true, encoding));
     }
     let mappings = value_mappings_for(state, overlay.clone())
         .await
@@ -203,22 +242,34 @@ async fn value_overlay(
         max: legend.max_value,
         transparent_at_or_below: legend.transparent_at_or_below,
     };
-    let png = task::spawn_blocking(move || {
+    let body = task::spawn_blocking(move || {
         let values = sample.resample(&planes).ok_or_else(|| {
             PixelError::UnsupportedLayout("overlay plane values do not match the plane grid".into())
         })?;
-        pixels::encode_colorwash_png(ColorwashRequest {
-            values: &values,
-            target_rows: target.rows,
-            target_columns: target.columns,
-            scale,
-        })
+        match encoding {
+            OverlayEncoding::Png => pixels::encode_colorwash_png(ColorwashRequest {
+                values: &values,
+                target_rows: target.rows,
+                target_columns: target.columns,
+                scale,
+            }),
+            OverlayEncoding::Values => Ok(encode_f32_values(&values)),
+        }
     })
     .await
     .map_err(|error| ApiError::internal(format!("overlay encoding task failed: {error}")))?
     .map_err(error::pixel_error)?;
-    state.cache_overlay(key, png.clone());
-    Ok(png_response(png, false))
+    state.cache_overlay(key, body.clone());
+    Ok(overlay_response(body, false, encoding))
+}
+
+/// Resampled values as little-endian `f32`s; NaN stays NaN.
+fn encode_f32_values(values: &[f64]) -> Bytes {
+    values
+        .iter()
+        .flat_map(|value| (*value as f32).to_le_bytes())
+        .collect::<Vec<u8>>()
+        .into()
 }
 
 /// The overlay's plane stack and legend, when its context is eligible.
@@ -379,15 +430,18 @@ async fn mapped_frame_values(
     })?
 }
 
-fn png_response(png: Bytes, cache_hit: bool) -> Response {
-    let mut response = Response::new(axum::body::Body::from(png));
+fn overlay_response(body: Bytes, cache_hit: bool, encoding: OverlayEncoding) -> Response {
+    let mut response = Response::new(axum::body::Body::from(body));
     response.headers_mut().insert(
         CACHE_HEADER,
         HeaderValue::from_static(if cache_hit { CACHE_HIT } else { CACHE_MISS }),
     );
-    response.headers_mut().insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static(PNG_MEDIA_TYPE),
-    );
+    let media_type = match encoding {
+        OverlayEncoding::Png => PNG_MEDIA_TYPE,
+        OverlayEncoding::Values => OCTET_STREAM_MEDIA_TYPE,
+    };
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static(media_type));
     response
 }

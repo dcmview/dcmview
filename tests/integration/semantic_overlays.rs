@@ -88,6 +88,25 @@ fn overlay_image(response: &TestResponse) -> RgbaImage {
         .to_rgba8()
 }
 
+/// The little-endian `f32` values of a value-overlay values response.
+fn overlay_values(response: &TestResponse) -> Vec<f32> {
+    response.assert_status_ok();
+    response.assert_header(header::CONTENT_TYPE, "application/octet-stream");
+    response
+        .as_bytes()
+        .chunks_exact(4)
+        .map(|bytes| f32::from_le_bytes(bytes.try_into().expect("four bytes")))
+        .collect()
+}
+
+fn assert_value(values: &[f32], columns: usize, row: usize, column: usize, expected: f64) {
+    let value = f64::from(values[row * columns + column]);
+    assert!(
+        (value - expected).abs() < 1e-4,
+        "value at ({row}, {column}) is {value}, expected {expected}"
+    );
+}
+
 fn assert_error(response: &TestResponse, status: StatusCode, code: &str) {
     assert_eq!(response.status_code(), status);
     assert_eq!(response.json::<Value>()["code"], code);
@@ -158,6 +177,20 @@ async fn rt_dose_overlay_resamples_the_grid_onto_covered_slices() {
     repeat.assert_header("X-Cache", "HIT");
     assert_eq!(repeat.as_bytes(), first.as_bytes());
 
+    // The same resampling, sent as values for the readout.
+    let values_url = format!("/api/file/{z6}/frame/0/dose-overlay/values?dose={dose}");
+    let first_values = server.get(&values_url).await;
+    first_values.assert_header("X-Cache", "MISS");
+    let values = overlay_values(&first_values);
+    assert_eq!(values.len(), 100);
+    assert_value(&values, 10, 2, 4, 16.2);
+    assert_value(&values, 10, 3, 1, 16.55);
+    assert!(values[8].is_nan(), "column 8 lies beyond the grid");
+    server
+        .get(&values_url)
+        .await
+        .assert_header("X-Cache", "HIT");
+
     let on_plane = overlay_image(
         &server
             .get(&format!("/api/file/{z0}/frame/0/dose-overlay?dose={dose}"))
@@ -176,7 +209,25 @@ async fn rt_dose_overlay_resamples_the_grid_onto_covered_slices() {
     );
     assert_error(
         &server
+            .get(&format!(
+                "/api/file/{z20}/frame/0/dose-overlay/values?dose={dose}"
+            ))
+            .await,
+        StatusCode::NOT_FOUND,
+        "overlay_not_covering_frame",
+    );
+    assert_error(
+        &server
             .get(&format!("/api/file/{z6}/frame/0/dose-overlay?dose={z0}"))
+            .await,
+        StatusCode::BAD_REQUEST,
+        "bad_request",
+    );
+    assert_error(
+        &server
+            .get(&format!(
+                "/api/file/{z6}/frame/0/dose-overlay/values?dose={z0}"
+            ))
             .await,
         StatusCode::BAD_REQUEST,
         "bad_request",
@@ -342,6 +393,17 @@ async fn parametric_map_overlay_colors_mapped_values_on_its_sources() {
     assert_color(&overlay, 0, 0, legend_color(legend, 250.0));
     assert_color(&overlay, 3, 2, legend_color(legend, 365.0));
     server.get(&url).await.assert_header("X-Cache", "HIT");
+
+    let values = overlay_values(
+        &server
+            .get(&format!(
+                "/api/file/{z1}/frame/0/parametric-map-overlay/values?map={map}"
+            ))
+            .await,
+    );
+    assert_eq!(values.len(), 16);
+    assert_value(&values, 4, 0, 0, 250.0);
+    assert_value(&values, 4, 2, 3, 365.0);
 
     let on_frame = overlay_image(
         &server

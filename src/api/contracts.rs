@@ -162,12 +162,29 @@ pub mod endpoints {
         PNG_MEDIA_TYPE,
         ResponseHeaders::Cache,
     );
+    /// The dose-overlay's values: one little-endian `f32` per pixel of the
+    /// path's frame, row-major, in the dose's unit (NaN outside the grid);
+    /// query `DoseOverlayQuery`.
+    pub const FILE_DOSE_OVERLAY_VALUES: Endpoint = binary(
+        "fileDoseOverlayValues",
+        "/file/{index}/frame/{frame}/dose-overlay/values",
+        OCTET_STREAM_MEDIA_TYPE,
+        ResponseHeaders::Cache,
+    );
     /// PNG colorwash of a Parametric Map's mapped values resampled onto the
     /// path's frame; query `ParametricMapOverlayQuery`.
     pub const FILE_PARAMETRIC_MAP_OVERLAY: Endpoint = binary(
         "fileParametricMapOverlay",
         "/file/{index}/frame/{frame}/parametric-map-overlay",
         PNG_MEDIA_TYPE,
+        ResponseHeaders::Cache,
+    );
+    /// The parametric-map-overlay's mapped values, laid out like
+    /// [`FILE_DOSE_OVERLAY_VALUES`]; query `ParametricMapOverlayQuery`.
+    pub const FILE_PARAMETRIC_MAP_OVERLAY_VALUES: Endpoint = binary(
+        "fileParametricMapOverlayValues",
+        "/file/{index}/frame/{frame}/parametric-map-overlay/values",
+        OCTET_STREAM_MEDIA_TYPE,
         ResponseHeaders::Cache,
     );
     /// `FrameValueMapping`.
@@ -230,7 +247,9 @@ pub mod endpoints {
         FILE_SEMANTIC_CONTEXT,
         FILE_SEGMENTATION_OVERLAY,
         FILE_DOSE_OVERLAY,
+        FILE_DOSE_OVERLAY_VALUES,
         FILE_PARAMETRIC_MAP_OVERLAY,
+        FILE_PARAMETRIC_MAP_OVERLAY_VALUES,
         FILE_VALUE_MAPPING,
         FILE_WSI_CONTEXT,
         FILE_FRAME,
