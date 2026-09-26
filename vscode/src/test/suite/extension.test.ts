@@ -4,31 +4,30 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { binaryCandidates } from '../../binary';
 import {
   BRIDGE_REGISTRY_MAX_AGE_MS,
   BRIDGE_REGISTRY_PRESENCE_CHECK_MS,
   BRIDGE_REGISTRY_REFRESH_MS,
-  DICOM_CUSTOM_EDITOR_VIEW_TYPE,
-  binaryCandidates,
   bridgeRegistryDirectory,
   bridgeRegistryEntry,
+  ensureBridgeRegistryPresent,
+  isExpiredRegistryEntry,
+  orderBridgeRegistryEndpoints,
+  registryDirectoryIsTrusted,
+  writeBridgeRegistry,
+} from '../../bridgeRegistry';
+import {
   bridgeStopResponse,
   bridgeWaitResponse,
   clientBinaryPathIsTrusted,
-  collectFileSystemPaths,
-  ensureBridgeRegistryPresent,
   isAuthorizedBridgeRequest,
-  isExpiredRegistryEntry,
-  orderBridgeRegistryEndpoints,
   normalizeInterceptedArgs,
-  parseStartupLine,
-  posixShim,
-  registryDirectoryIsTrusted,
-  waitForStartup,
-  waitForStartupOrTerminate,
-  writeBridgeRegistry,
-  windowsShim,
-} from '../../extension';
+} from '../../bridgeServer';
+import { collectFileSystemPaths } from '../../commands';
+import { DICOM_CUSTOM_EDITOR_VIEW_TYPE } from '../../customEditor';
+import { posixShim, windowsShim } from '../../terminalInterception';
+import { parseStartupLine, waitForStartup, waitForStartupOrTerminate } from '../../viewerSessions';
 
 class FakeChild extends EventEmitter {
   readonly stdout = new EventEmitter();
