@@ -141,7 +141,7 @@ Likely cause: the file uses a transfer syntax that `dcmview` intentionally does
 not decode yet. JPEG-LS Lossless (`.80`) grayscale and JPEG XL Lossless (`.110`)
 RGB are supported; JPEG-LS Near-Lossless (`.81`) and JPEG XL `.111`/`.112`
 remain unsupported. RLE Lossless is supported for 8/16-bit monochrome and the
-common 8-bit RGB, YBR_FULL, and palette-color layouts. Its 16-bit byte planes
+common 8-bit RGB, YBR_FULL, YBR_FULL_422, and palette-color layouts. Its 16-bit byte planes
 must follow DICOM Annex G most-significant-byte-first ordering; reversed-plane
 encodings are not silently guessed.
 

@@ -347,11 +347,11 @@ Transfer syntax behavior:
 | Transfer syntax | Display behavior |
 |---|---|
 | JPEG Baseline (`.50`) | Decoded server-side and PNG-encoded. |
-| JPEG Lossless / Lossless SV1 | Decoded server-side and PNG-encoded. |
+| JPEG Lossless / Lossless SV1 | Decoded server-side and PNG-encoded; 8-bit RGB and YBR_FULL color, with YBR_FULL converted to RGB. |
 | JPEG 2000 Lossless (`.90`) | Decoded server-side and PNG-encoded. |
 | JPEG-LS Lossless (`.80`) | Grayscale decoded server-side through statically linked CharLS and PNG-encoded. |
-| JPEG XL Lossless (`.110`) | RGB decoded server-side and PNG-encoded without discarding channels. |
-| RLE Lossless | Decoded server-side and PNG-encoded for 8/16-bit monochrome plus 8-bit RGB, YBR_FULL, and palette-color layouts. YBR_FULL_422 is unsupported. |
+| JPEG XL Lossless (`.110`) | Decoded server-side and PNG-encoded without discarding channels; 8-bit RGB, and YBR_FULL converted to RGB. |
+| RLE Lossless | Decoded server-side and PNG-encoded for 8/16-bit monochrome plus 8-bit RGB, YBR_FULL, YBR_FULL_422, and palette-color layouts. RLE segments are full resolution, so YBR_FULL_422 is displayed as YBR_FULL. |
 | Implicit LE / Explicit LE / Explicit BE / Deflated Explicit LE | Windowed server-side and PNG-encoded for 1/8/16/32-bit monochrome integer, float, double-float, RGB planar 0/1, YBR_FULL, YBR_FULL_422, and palette-color layouts. |
 | JPEG Extended (`.51`), JPEG 2000 lossy (`.91`), JPEG-LS Near-Lossless (`.81`), JPEG XL `.111`/`.112`, other | `422 {"code":"unsupported_transfer_syntax","error":"unsupported transfer syntax: ..."}`. |
 
@@ -374,8 +374,8 @@ Supported raw paths:
 | JPEG Lossless | Decoded to 8-bit or 16-bit grayscale samples when supported by the codec stack. |
 | Grayscale JPEG 2000 | Decoded to 8-bit or 16-bit samples. |
 | JPEG-LS Lossless (`.80`) | Decoded to unsigned 8-bit grayscale samples. |
-| JPEG XL Lossless (`.110`) | Decoded to unsigned, interleaved 8-bit RGB samples. |
-| RLE Lossless | Decoded to interleaved, little-endian native sample bytes for supported layouts. |
+| JPEG XL Lossless (`.110`) | Decoded to unsigned, interleaved 8-bit samples: RGB, or the stored channels of a YBR_FULL frame labelled `YBR_FULL`. |
+| RLE Lossless | Decoded to interleaved, little-endian native sample bytes for supported layouts. A `YBR_FULL_422` frame is labelled `YBR_FULL` because its decoded bytes are full resolution. |
 | JPEG-LS Near-Lossless (`.81`), JPEG XL `.111`/`.112`, unsupported | `422` or a decode error. |
 | Multi-component JPEG 2000 raw decode | `422` or a decode error. |
 

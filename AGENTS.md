@@ -88,11 +88,6 @@ would remove behavior, raise it as a question instead of acting.
   2. window/level in mapped units, with a color bar or legend;
   3. a Parametric Map overlay on its source image, like the SEG overlay. This
      was part of the original feature and was never finished.
-- **Color layouts reported unsupported because their decoder lacks a color
-  transform:**
-  - RLE YBR_FULL_422;
-  - JPEG Lossless YBR_FULL;
-  - JPEG XL YBR_FULL.
 - **No pixel-value readout.** Neither stored nor mapped values (Parametric
   Map, RT Dose) can be read per pixel in the viewport; see Parametric Map above.
 - **API data the UI never renders:**
@@ -187,21 +182,28 @@ Frontend (Svelte 5, compiled into the binary via rust-embed):
 Display-frame endpoints return PNG for every supported image transfer syntax.
 Do not rely on browser-native DICOM fragment decoding for viewer correctness.
 
+`pixels/syntax.rs` owns the codec table. `codec_for_syntax` picks the decoder
+that both frame endpoints dispatch to and that support classification reads;
+`Codec::color_samples` states, per codec and photometric interpretation,
+whether decoded three-sample frames are RGB or full-resolution YCbCr still to
+be converted with the PS3.3 C.7.6.3.1.2 YBR_FULL equations. Add a color layout
+there, not in a decoder, so what is advertised is what is converted.
+
 | Class | Transfer syntaxes | Display action |
 |---|---|---|
 | JPEG Baseline | `1.2.840.10008.1.2.4.50` | Decode the requested frame server-side with `dicom-pixeldata`; PNG encode |
-| JPEG Lossless | `1.2.840.10008.1.2.4.57`, `.70` | Decode server-side with `dicom-pixeldata`; PNG encode |
+| JPEG Lossless | `1.2.840.10008.1.2.4.57`, `.70` | Decode server-side with `dicom-pixeldata`; convert YBR_FULL components to RGB (the lossless process has no color transform); PNG encode |
 | JPEG 2000 Lossless | `1.2.840.10008.1.2.4.90` | Read encapsulated fragment with `DicomCollector`; decode via `jpeg2k`; PNG encode |
 | JPEG-LS Lossless | `1.2.840.10008.1.2.4.80` | Decode grayscale server-side with statically linked CharLS; PNG encode |
-| JPEG XL Lossless | `1.2.840.10008.1.2.4.110` | Decode RGB server-side with `dicom-pixeldata`; PNG encode |
-| RLE Lossless | `1.2.840.10008.1.2.5` | Decode Annex G header/PackBits byte planes server-side; PNG encode |
+| JPEG XL Lossless | `1.2.840.10008.1.2.4.110` | Decode server-side with `dicom-pixeldata`; RGB as decoded, YBR_FULL channels converted to RGB; PNG encode |
+| RLE Lossless | `1.2.840.10008.1.2.5` | Decode Annex G header/PackBits byte planes server-side; RGB, YBR_FULL, and full-resolution YBR_FULL_422 color; PNG encode |
 | Native dataset | Implicit LE, Explicit LE, Explicit BE, Deflated Explicit LE | Read decoded/native samples, rescale/window, PNG encode |
 | JPEG Extended, JPEG 2000 lossy, JPEG-LS Near-Lossless, JPEG XL variants | `.51`, `.91`, `.81`, `.111`, `.112` | HTTP 422 unsupported transfer syntax |
 | Other | anything else | HTTP 422 unsupported transfer syntax |
 
 Raw-frame endpoints return decoded sample bytes plus metadata headers for
-native datasets, JPEG Baseline, JPEG Lossless, JPEG-LS Lossless,
-JPEG XL Lossless RGB, RLE Lossless, and grayscale JPEG 2000 paths. Unsupported
+native datasets, JPEG Baseline, grayscale JPEG Lossless, JPEG-LS Lossless,
+JPEG XL Lossless, RLE Lossless, and grayscale JPEG 2000 paths. Unsupported
 syntaxes and unsupported raw component layouts return 422 or a decode error.
 
 Both display and raw frame endpoints must include `X-Cache: HIT` or
