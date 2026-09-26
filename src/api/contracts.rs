@@ -394,6 +394,8 @@ pub struct OverlayEligibility {
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct ParametricMapContext {
     pub stored_value_type: String,
+    /// What the display and raw frames carry: `stored` values (after any
+    /// Modality rescale). Mapped units are converted client-side.
     pub displayed_value_kind: String,
     pub mappings: Vec<RealWorldValueMappingSummary>,
     pub mapping_status: String,
@@ -421,6 +423,8 @@ pub struct RealWorldValueMappingSummary {
 pub struct RtDoseContext {
     pub dose_grid_scaling: Option<f64>,
     pub scaling_status: String,
+    /// What the display and raw frames carry: `stored` values (after any
+    /// Modality rescale). Mapped units are converted client-side.
     pub displayed_value_kind: String,
     pub dose_units: Option<String>,
     pub dose_type: Option<String>,

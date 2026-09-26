@@ -76,7 +76,12 @@ export type HealthResponse = { status: string, viewer: ViewerIdentity, file_coun
 
 export type OverlayEligibility = { eligible: boolean, reason: string, source_file_index: number | null, mapped_source_count: number, };
 
-export type ParametricMapContext = { stored_value_type: string, displayed_value_kind: string, mappings: Array<RealWorldValueMappingSummary>, mapping_status: string, source_references: Array<ReferenceSummary>, warnings: Array<string>, };
+export type ParametricMapContext = { stored_value_type: string, 
+/**
+ * What the display and raw frames carry: `stored` values (after any
+ * Modality rescale). Mapped units are converted client-side.
+ */
+displayed_value_kind: string, mappings: Array<RealWorldValueMappingSummary>, mapping_status: string, source_references: Array<ReferenceSummary>, warnings: Array<string>, };
 
 export type RawFrameMetadata = { rows: number, columns: number, bitsAllocated: number, pixelRepresentation: number, samplesPerPixel: number, photometricInterpretation: string, rescaleSlope: number, rescaleIntercept: number, defaultWc: number | null, defaultWw: number | null, 
 /**
@@ -109,7 +114,12 @@ export type ResolvedSegmentSourceFrame = { file_index: number,
  */
 frame_index: number, sop_instance_uid: string, };
 
-export type RtDoseContext = { dose_grid_scaling: number | null, scaling_status: string, displayed_value_kind: string, dose_units: string | null, dose_type: string | null, dose_summation_type: string | null, geometry: DoseGridGeometry, references: Array<ReferenceSummary>, overlay: OverlayEligibility, clinical_use_warning: string, };
+export type RtDoseContext = { dose_grid_scaling: number | null, scaling_status: string, 
+/**
+ * What the display and raw frames carry: `stored` values (after any
+ * Modality rescale). Mapped units are converted client-side.
+ */
+displayed_value_kind: string, dose_units: string | null, dose_type: string | null, dose_summation_type: string | null, geometry: DoseGridGeometry, references: Array<ReferenceSummary>, overlay: OverlayEligibility, clinical_use_warning: string, };
 
 export type SegmentFrameMapping = { 
 /**

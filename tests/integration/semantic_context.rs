@@ -421,7 +421,7 @@ async fn parametric_map_context_exposes_explicit_mapping_without_applying_it() {
     let context = &response["context"];
     assert_eq!(context["kind"], "parametric_map");
     assert_eq!(context["stored_value_type"], "float32");
-    assert_eq!(context["displayed_value_kind"], "mapped");
+    assert_eq!(context["displayed_value_kind"], "stored");
     assert_eq!(context["mapping_status"], "mapping_available");
     assert_eq!(context["mappings"][0]["slope"], 0.5);
     assert_eq!(context["mappings"][0]["intercept"], -1.0);
@@ -473,7 +473,7 @@ async fn rt_dose_context_reports_scaling_geometry_and_refuses_incompatible_overl
     assert_eq!(context["kind"], "rt_dose");
     assert_eq!(context["dose_grid_scaling"], 0.0025);
     assert_eq!(context["scaling_status"], "available");
-    assert_eq!(context["displayed_value_kind"], "mapped");
+    assert_eq!(context["displayed_value_kind"], "stored");
     assert_eq!(context["dose_units"], "GY");
     assert_eq!(
         context["geometry"]["grid_frame_offsets"],

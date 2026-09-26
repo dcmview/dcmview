@@ -26,6 +26,11 @@ use std::sync::Arc;
 const MAX_SEQUENCE_ITEMS: usize = 4_096;
 const MAX_LUT_VALUES: usize = 4_096;
 
+/// The frame endpoints window stored values (after any Modality rescale):
+/// neither Real World Value Mapping nor Dose Grid Scaling is applied to the
+/// displayed pixels, so the value kind they show is `stored` for every object.
+const DISPLAYED_VALUE_KIND: &str = "stored";
+
 #[derive(Debug, thiserror::Error)]
 pub enum SegmentationOverlayError {
     #[error("semantic overlay is only available for segmentation objects")]
@@ -615,12 +620,7 @@ fn parametric_map_context(
     };
     ParametricMapContext {
         stored_value_type: stored_value_type.to_string(),
-        displayed_value_kind: if mapping_status == "mapping_available" {
-            "mapped"
-        } else {
-            "stored"
-        }
-        .to_string(),
+        displayed_value_kind: DISPLAYED_VALUE_KIND.to_string(),
         mappings,
         mapping_status: mapping_status.to_string(),
         source_references: resolved
@@ -651,7 +651,7 @@ fn rt_dose_context(
         dose_grid_scaling: scaling,
         scaling_status: if scaling.is_some() { "available" } else { "missing_or_malformed" }
             .to_string(),
-        displayed_value_kind: if scaling.is_some() { "mapped" } else { "stored" }.to_string(),
+        displayed_value_kind: DISPLAYED_VALUE_KIND.to_string(),
         dose_units: read_string(object, tags::DOSE_UNITS),
         dose_type: read_string(object, tags::DOSE_TYPE),
         dose_summation_type: read_string(object, tags::DOSE_SUMMATION_TYPE),
