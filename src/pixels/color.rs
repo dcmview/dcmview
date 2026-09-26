@@ -104,13 +104,52 @@ fn convert_interleaved_ybr(ybr: &[u8]) -> Vec<u8> {
         .collect()
 }
 
+/// Converts DICOM CIELab PCS-values (PS3.3 C.10.7.1.1: L* 0-100 and a*, b*
+/// -128-127 scaled to 0-FFFFH, relative to the D50 PCS white) to 8-bit sRGB,
+/// adapting D50 to sRGB's D65 white with the Bradford transform.
+pub(super) fn cielab_to_srgb8([l, a, b]: [u16; 3]) -> [u8; 3] {
+    let lightness = f64::from(l) * 100.0 / 65_535.0;
+    let a = f64::from(a) * 255.0 / 65_535.0 - 128.0;
+    let b = f64::from(b) * 255.0 / 65_535.0 - 128.0;
+
+    let fy = (lightness + 16.0) / 116.0;
+    let inverse = |t: f64| {
+        const DELTA: f64 = 6.0 / 29.0;
+        if t > DELTA {
+            t * t * t
+        } else {
+            3.0 * DELTA * DELTA * (t - 4.0 / 29.0)
+        }
+    };
+    // D50 reference white.
+    let x = 0.964_22 * inverse(fy + a / 500.0);
+    let y = inverse(fy);
+    let z = 0.825_21 * inverse(fy - b / 200.0);
+
+    // Bradford-adapted D50 XYZ to linear sRGB.
+    let linear = [
+        3.133_856_1 * x - 1.616_866_7 * y - 0.490_614_6 * z,
+        -0.978_768_4 * x + 1.916_141_5 * y + 0.033_454_0 * z,
+        0.071_945_3 * x - 0.228_991_1 * y + 1.405_242_7 * z,
+    ];
+    linear.map(|channel| {
+        let channel = channel.clamp(0.0, 1.0);
+        let encoded = if channel <= 0.003_130_8 {
+            12.92 * channel
+        } else {
+            1.055 * channel.powf(1.0 / 2.4) - 0.055
+        };
+        clamp_u8(encoded * 255.0)
+    })
+}
+
 fn clamp_u8(value: f64) -> u8 {
     value.round().clamp(0.0, 255.0) as u8
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{encode_rgb8_png_with_icc, rgb8_interleaved, ybr_full_to_rgb8};
+    use super::{cielab_to_srgb8, encode_rgb8_png_with_icc, rgb8_interleaved, ybr_full_to_rgb8};
     use image::{codecs::png::PngDecoder, ImageDecoder};
     use std::io::Cursor;
 
@@ -165,5 +204,32 @@ mod tests {
             .to_rgb8()
             .into_raw();
         assert_eq!(pixels, RGB_QUADRANTS);
+    }
+
+    /// Encodes L*, a*, b* as DICOM PCS-values.
+    fn pcs([lightness, a, b]: [f64; 3]) -> [u16; 3] {
+        [
+            (lightness * 65_535.0 / 100.0).round() as u16,
+            ((a + 128.0) * 65_535.0 / 255.0).round() as u16,
+            ((b + 128.0) * 65_535.0 / 255.0).round() as u16,
+        ]
+    }
+
+    #[test]
+    fn converts_cielab_pcs_values_to_srgb() {
+        // 0x8080 is a* = b* = 0: the neutral axis.
+        assert_eq!(cielab_to_srgb8([0xFFFF, 0x8080, 0x8080]), [255, 255, 255]);
+        assert_eq!(cielab_to_srgb8([0x0000, 0x8080, 0x8080]), [0, 0, 0]);
+        // D50 Lab of the sRGB primaries (Bradford adaptation).
+        for (lab, rgb) in [
+            ([54.2905, 80.8049, 69.8910], [255, 0, 0]),
+            ([87.8185, -79.2711, 80.9946], [0, 255, 0]),
+            ([29.5683, 68.2874, -112.0297], [0, 0, 255]),
+        ] {
+            let converted = cielab_to_srgb8(pcs(lab));
+            for (channel, expected) in converted.iter().zip(rgb) {
+                assert!(channel.abs_diff(expected) <= 1, "{lab:?} -> {converted:?}");
+            }
+        }
     }
 }

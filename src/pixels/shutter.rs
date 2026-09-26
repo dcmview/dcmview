@@ -1,5 +1,6 @@
+use super::color::cielab_to_srgb8;
 use super::overlay::for_each_set_pixel;
-use crate::types::{DisplayShutter, ShutterShape};
+use crate::types::{DisplayShutter, FileEntry, ShutterShape};
 
 /// Where the display shutter is drawn: one rendered frame and the physical
 /// shape of its pixels.
@@ -12,21 +13,91 @@ pub(crate) struct ShutterFrame {
     pub(crate) pixel_aspect_ratio: f64,
 }
 
-/// Replaces every display sample outside the shutter opening with the
-/// shutter's presentation value. The opening is the intersection of every
-/// shape's opening (PS3.3 C.7.6.11.1.1).
-pub(crate) fn apply_display_shutter(
-    samples: &mut [u8],
-    target: ShutterFrame,
-    shutter: Option<&DisplayShutter>,
-) {
-    let Some(shutter) = shutter else {
-        return;
+/// A file's shutter for one rendered frame, if it declares one.
+fn file_shutter(
+    file: &FileEntry,
+    frame: u32,
+    rows: u32,
+    columns: u32,
+) -> Option<(&DisplayShutter, ShutterFrame)> {
+    let shutter = file.series_metadata.presentation.display_shutter.as_ref()?;
+    let target = ShutterFrame {
+        rows,
+        columns,
+        frame,
+        pixel_aspect_ratio: file
+            .series_metadata
+            .native_pixel
+            .effective_pixel_aspect_ratio()
+            .unwrap_or(1.0),
     };
+    Some((shutter, target))
+}
+
+/// Applies the file's shutter to an 8-bit grayscale display frame with the
+/// Shutter Presentation Value.
+pub(crate) fn apply_to_luminance(
+    samples: &mut [u8],
+    file: &FileEntry,
+    frame: u32,
+    rows: u32,
+    columns: u32,
+) {
+    if let Some((shutter, target)) = file_shutter(file, frame, rows, columns) {
+        fill_outside_opening(samples, &[luminance_fill(shutter)], target, shutter);
+    }
+}
+
+/// Applies the file's shutter to an interleaved 8-bit RGB display frame.
+pub(crate) fn apply_to_rgb8(rgb: &mut [u8], file: &FileEntry, frame: u32, rows: u32, columns: u32) {
+    if let Some((shutter, target)) = file_shutter(file, frame, rows, columns) {
+        fill_outside_opening(rgb, &color_fill(shutter), target, shutter);
+    }
+}
+
+/// Applies the file's shutter to interleaved RGB samples whose full scale
+/// is `max`.
+pub(crate) fn apply_to_rgb16(
+    rgb: &mut [u16],
+    max: u16,
+    file: &FileEntry,
+    frame: u32,
+    rows: u32,
+    columns: u32,
+) {
+    if let Some((shutter, target)) = file_shutter(file, frame, rows, columns) {
+        let fill = color_fill(shutter)
+            .map(|channel| ((u32::from(channel) * u32::from(max) + 127) / 255) as u16);
+        fill_outside_opening(rgb, &fill, target, shutter);
+    }
+}
+
+fn luminance_fill(shutter: &DisplayShutter) -> u8 {
+    p_value_to_u8(shutter.presentation_value)
+}
+
+/// Shutter Presentation Color CIELab Value as sRGB, else the gray
+/// presentation value.
+fn color_fill(shutter: &DisplayShutter) -> [u8; 3] {
+    shutter
+        .presentation_color_cielab
+        .map(cielab_to_srgb8)
+        .unwrap_or([luminance_fill(shutter); 3])
+}
+
+/// Replaces every pixel (`fill.len()` interleaved samples) outside the
+/// shutter opening with `fill`. The opening is the intersection of every
+/// shape's opening (PS3.3 C.7.6.11.1.1).
+fn fill_outside_opening<T: Copy>(
+    samples: &mut [T],
+    fill: &[T],
+    target: ShutterFrame,
+    shutter: &DisplayShutter,
+) {
     let columns = target.columns as usize;
     let pixel_count = (target.rows as usize)
         .saturating_mul(columns)
-        .min(samples.len());
+        .min(samples.len() / fill.len().max(1));
     if pixel_count == 0 {
         return;
     }
@@ -50,10 +121,9 @@ pub(crate) fn apply_display_shutter(
         }
     }
 
-    let presentation_value = p_value_to_u8(shutter.presentation_value);
-    for (sample, visible) in samples.iter_mut().zip(visible) {
+    for (pixel, visible) in samples.chunks_exact_mut(fill.len()).zip(visible) {
         if !visible {
-            *sample = presentation_value;
+            pixel.copy_from_slice(fill);
         }
     }
 }
@@ -126,7 +196,7 @@ fn p_value_to_u8(value: u16) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_display_shutter, p_value_to_u8, ShutterFrame};
+    use super::{color_fill, fill_outside_opening, p_value_to_u8, ShutterFrame};
     use crate::types::{DisplayShutter, OverlayPlane, ShutterShape};
 
     fn frame(rows: u32, columns: u32) -> ShutterFrame {
@@ -142,6 +212,7 @@ mod tests {
         DisplayShutter {
             shapes,
             presentation_value: 0,
+            presentation_color_cielab: None,
         }
     }
 
@@ -159,7 +230,7 @@ mod tests {
     fn visibility(target: ShutterFrame, shutter: &DisplayShutter) -> Vec<Vec<u8>> {
         let columns = target.columns as usize;
         let mut samples = vec![255_u8; target.rows as usize * columns];
-        apply_display_shutter(&mut samples, target, Some(shutter));
+        fill_outside_opening(&mut samples, &[0], target, shutter);
         samples
             .chunks(columns)
             .map(|row| row.iter().map(|value| u8::from(*value == 255)).collect())
@@ -169,10 +240,11 @@ mod tests {
     #[test]
     fn prepared_full_frame_rectangle_preserves_display_pixels() {
         let mut samples = vec![0, 64, 128, 255];
-        apply_display_shutter(
+        fill_outside_opening(
             &mut samples,
+            &[0],
             frame(2, 2),
-            Some(&shutter(vec![rectangle(1, 2, 1, 2)])),
+            &shutter(vec![rectangle(1, 2, 1, 2)]),
         );
         assert_eq!(samples, [0, 64, 128, 255]);
     }
@@ -180,10 +252,11 @@ mod tests {
     #[test]
     fn non_degenerate_rectangle_replaces_every_pixel_outside_inclusive_edges() {
         let mut samples = (1_u8..=9).collect::<Vec<_>>();
-        apply_display_shutter(
+        fill_outside_opening(
             &mut samples,
+            &[0],
             frame(3, 3),
-            Some(&shutter(vec![rectangle(2, 2, 2, 2)])),
+            &shutter(vec![rectangle(2, 2, 2, 2)]),
         );
         assert_eq!(samples, [0, 0, 0, 0, 5, 0, 0, 0, 0]);
     }
@@ -354,5 +427,28 @@ mod tests {
         assert_eq!(p_value_to_u8(0), 0);
         assert_eq!(p_value_to_u8(32_768), 128);
         assert_eq!(p_value_to_u8(65_535), 255);
+    }
+
+    #[test]
+    fn interleaved_color_pixels_take_the_whole_fill() {
+        let mut rgb = vec![9_u8; 3 * 3];
+        fill_outside_opening(
+            &mut rgb,
+            &[10, 20, 30],
+            frame(1, 3),
+            &shutter(vec![rectangle(2, 2, 1, 1)]),
+        );
+        assert_eq!(rgb, [10, 20, 30, 9, 9, 9, 10, 20, 30]);
+    }
+
+    #[test]
+    fn color_fill_prefers_the_cielab_color_over_the_gray_value() {
+        let mut gray = shutter(Vec::new());
+        gray.presentation_value = 0xFFFF;
+        assert_eq!(color_fill(&gray), [255, 255, 255]);
+
+        let mut colored = gray.clone();
+        colored.presentation_color_cielab = Some([0, 0x8080, 0x8080]);
+        assert_eq!(color_fill(&colored), [0, 0, 0]);
     }
 }

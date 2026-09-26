@@ -5,11 +5,13 @@ use bytes::Bytes;
 use dicom_pixeldata::PixelDecoder;
 use tokio::task;
 
-use super::color::{color_samples_to_rgb8, encode_rgb8_png_with_icc};
+use super::color::color_samples_to_rgb8;
 use super::encapsulated::open_for_frame_decode;
 use super::error::{PixelError, PixelResult};
 use super::icc::select_icc_profile;
-use super::render::{encode_windowed_luminance_png, LuminanceRenderOptions};
+use super::render::{
+    encode_rgb8_display_png, encode_windowed_luminance_png, LuminanceRenderOptions,
+};
 use super::syntax::{Codec, ColorSamples};
 
 struct DecodedJpegXlFrame {
@@ -42,7 +44,14 @@ pub(crate) async fn decode_jpeg_xl_to_png(
                 let pixel_count = decoded.bytes.len() / 3;
                 let rgb = color_samples_to_rgb8(samples, &decoded.bytes, pixel_count, 0)
                     .map_err(PixelError::frame_decode)?;
-                encode_rgb8_png_with_icc(rgb, decoded.columns, decoded.rows, decoded.icc_profile)
+                encode_rgb8_display_png(
+                    &file,
+                    frame,
+                    rgb,
+                    decoded.columns,
+                    decoded.rows,
+                    decoded.icc_profile,
+                )
                     .map_err(PixelError::frame_decode)
             }
             (8, 1) => {

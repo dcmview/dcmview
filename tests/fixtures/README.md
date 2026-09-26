@@ -15,7 +15,9 @@ The committed corpus is intentionally small and synthetic:
 - `golden-jpegxl-lossless-ybr-rct-u8-single-frame.dcm`
 - `golden-rle-ybr-full-422-u8-single-frame.dcm`
 - `golden-shutter-bitmap-u8.dcm`
+- `golden-shutter-circular-cielab-rgb-u8.dcm`
 - `golden-shutter-circular-u8.dcm`
+- `golden-shutter-polygonal-rle-rgb-u8.dcm`
 - `golden-shutter-polygonal-u8.dcm`
 - `golden-shutter-rectangular-circular-u8.dcm`
 - `golden-image-no-pixels.dcm`
@@ -38,7 +40,9 @@ color transform, so it must display and return exactly the same RGB.
 The display shutter fixtures are 8x8 mid-gray native DX images, one per shape
 (circular, polygonal, rectangular combined with circular, and a bitmap mask
 from overlay group 6000 beside a visible overlay in group 6002), so their
-tests can assert exactly which pixels the shutter replaces.
+tests can assert exactly which pixels the shutter replaces. Two solid RGB
+images repeat the circle (native, with a CIELab shutter color) and the
+triangle (RLE Lossless, with only a gray shutter value) on color frames.
 
 The semantic-overlay fixtures pair a value volume with images in its Frame
 of Reference. The RT Dose grid has three 4x4 planes of 4 mm voxels at

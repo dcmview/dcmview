@@ -67,8 +67,12 @@ pub enum ShutterShape {
 pub struct DisplayShutter {
     /// A pixel stays visible only inside every shape's opening.
     pub shapes: Vec<ShutterShape>,
-    /// Unsigned 16-bit P-value used outside the opening.
+    /// Unsigned 16-bit P-value used outside the opening on grayscale frames,
+    /// and on color frames without `presentation_color_cielab`.
     pub presentation_value: u16,
+    /// Shutter Presentation Color CIELab Value as DICOM PCS-values (L*, a*,
+    /// b* scaled to 0-FFFFH), used outside the opening on color frames.
+    pub presentation_color_cielab: Option<[u16; 3]>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -318,6 +322,7 @@ mod raw_windowing_tests {
                 radius: 1,
             }],
             presentation_value: 0,
+            presentation_color_cielab: None,
         });
         assert!(raw_windowing_incompatibility(&metadata)
             .expect("shutter reason")

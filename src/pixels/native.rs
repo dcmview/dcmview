@@ -13,12 +13,14 @@ use std::fs::File;
 use std::io::{BufReader, Seek, SeekFrom};
 use tokio::task;
 
-use super::color::{color_samples_to_rgb8, encode_rgb8_png_with_icc};
+use super::color::color_samples_to_rgb8;
 use super::header::open_header;
 use super::icc::select_icc_profile;
 use super::native_layout::{native_pixel_element_tag, NativeByteOrder, NativeFrameLayout};
 use super::palette::palette_indices_to_rgb8;
-use super::render::{encode_windowed_luminance_png, LuminanceRenderOptions};
+use super::render::{
+    encode_rgb8_display_png, encode_windowed_luminance_png, LuminanceRenderOptions,
+};
 use super::stored_bits::canonicalize_integer_samples;
 use super::syntax::Codec;
 
@@ -81,8 +83,15 @@ fn decode_uncompressed_to_png_blocking(
             Some(samples) => color_samples_to_rgb8(samples, &frame_bytes, pixel_count, 0)?,
             None => palette_indices_to_rgb8(&object, &frame_bytes, bits_allocated)?,
         };
-        return encode_rgb8_png_with_icc(rgb, columns, rows, select_icc_profile(&object))
-            .context("frame decode failed: color PNG encoding failed");
+        return encode_rgb8_display_png(
+            file,
+            frame,
+            rgb,
+            columns,
+            rows,
+            select_icc_profile(&object),
+        )
+        .context("frame decode failed: color PNG encoding failed");
     }
     if samples_per_pixel != 1 || !matches!(photometric.as_str(), "MONOCHROME1" | "MONOCHROME2") {
         return Err(anyhow!(

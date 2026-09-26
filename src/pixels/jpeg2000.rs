@@ -6,12 +6,14 @@ use image::{ImageBuffer, ImageFormat, Rgb};
 use std::io::Cursor;
 use tokio::task;
 
-use super::color::encode_rgb8_png_with_icc;
 use super::encapsulated::read_encapsulated_fragment_blocking;
 use super::error::{PixelError, PixelResult};
 use super::header::open_header;
 use super::icc::select_icc_profile;
-use super::render::{encode_windowed_luminance_png, LuminanceRenderOptions};
+use super::render::{
+    encode_rgb8_display_png, encode_windowed_luminance_png, LuminanceRenderOptions,
+};
+use super::shutter;
 
 pub(crate) async fn decode_jp2_fragment_to_png(
     file: FileEntry,
@@ -80,17 +82,19 @@ fn decode_jp2_fragment_to_png_blocking(
                 .zip(b)
                 .flat_map(|((rv, gv), bv)| [rv, gv, bv])
                 .collect();
-            return encode_rgb8_png_with_icc(interleaved, width, height, icc_profile)
+            return encode_rgb8_display_png(file, frame, interleaved, width, height, icc_profile)
                 .context("JP2 decode failed: png encoding failed");
         } else if precision <= 16 {
             let r = comps[0].data_u16();
             let g = comps[1].data_u16();
             let b = comps[2].data_u16();
-            let interleaved: Vec<u16> = r
+            let mut interleaved: Vec<u16> = r
                 .zip(g)
                 .zip(b)
                 .flat_map(|((rv, gv), bv)| [rv, gv, bv])
                 .collect();
+            let full_scale = u16::try_from((1_u32 << precision) - 1).unwrap_or(u16::MAX);
+            shutter::apply_to_rgb16(&mut interleaved, full_scale, file, frame, height, width);
             let image = ImageBuffer::<Rgb<u16>, Vec<u16>>::from_raw(width, height, interleaved)
                 .ok_or_else(|| anyhow!("JP2 decoded buffer size mismatch"))?;
             image::DynamicImage::ImageRgb16(image)

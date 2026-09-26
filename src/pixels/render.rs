@@ -5,9 +5,10 @@ use bytes::Bytes;
 use image::{ImageBuffer, ImageFormat, Luma};
 use std::io::Cursor;
 
+use super::color::encode_rgb8_png_with_icc;
 use super::header::open_header;
 use super::overlay::apply_overlay_planes;
-use super::shutter::{apply_display_shutter, ShutterFrame};
+use super::shutter;
 use super::window::{
     apply_modality_transform, apply_padding_background, apply_voi_lut_if_selected, apply_window,
     exclude_padding_samples, read_pixel_padding_range, resolve_window_with_mode,
@@ -91,20 +92,7 @@ pub(crate) fn encode_windowed_luminance_png(
     if let Some(mask) = padding_mask.as_deref() {
         apply_padding_background(&mut windowed, mask);
     }
-    apply_display_shutter(
-        &mut windowed,
-        ShutterFrame {
-            rows,
-            columns,
-            frame,
-            pixel_aspect_ratio: file
-                .series_metadata
-                .native_pixel
-                .effective_pixel_aspect_ratio()
-                .unwrap_or(1.0),
-        },
-        file.series_metadata.presentation.display_shutter.as_ref(),
-    );
+    shutter::apply_to_luminance(&mut windowed, file, frame, rows, columns);
     apply_overlay_planes(
         &mut windowed,
         rows,
@@ -120,6 +108,21 @@ pub(crate) fn encode_windowed_luminance_png(
         .write_to(&mut buffer, ImageFormat::Png)
         .context("frame decode failed: png encoding failed")?;
     Ok(Bytes::from(buffer.into_inner()))
+}
+
+/// Encodes one interleaved 8-bit RGB display frame as PNG. Every color
+/// decode path ends here after converting its samples to RGB, so the display
+/// shutter is applied once for all of them.
+pub(crate) fn encode_rgb8_display_png(
+    file: &FileEntry,
+    frame: u32,
+    mut rgb: Vec<u8>,
+    columns: u32,
+    rows: u32,
+    icc_profile: Option<Vec<u8>>,
+) -> Result<Bytes> {
+    shutter::apply_to_rgb8(&mut rgb, file, frame, rows, columns);
+    encode_rgb8_png_with_icc(rgb, columns, rows, icc_profile)
 }
 
 fn is_monochrome1(photometric_interpretation: &str) -> bool {

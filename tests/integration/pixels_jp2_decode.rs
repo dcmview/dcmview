@@ -81,6 +81,7 @@ async fn jp2_grayscale_display_applies_the_shared_presentation_pipeline() {
             lower_horizontal_edge: 1,
         }],
         presentation_value: u16::MAX,
+        presentation_color_cielab: None,
     });
 
     let frame = load_frame(

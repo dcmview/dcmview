@@ -742,6 +742,7 @@ fn write_display_shutter_fixtures(fixture_dir: &Path) {
     write_display_shutter_fixture(
         &fixture_dir.join("golden-shutter-circular-u8.dcm"),
         "2.25.2000012",
+        ShutterFixtureImage::GRAY,
         vec![
             DataElement::new(tags::SHUTTER_SHAPE, VR::CS, "CIRCULAR"),
             // Row 4, column 5: off the diagonal so a row/column swap shows.
@@ -753,6 +754,7 @@ fn write_display_shutter_fixtures(fixture_dir: &Path) {
     write_display_shutter_fixture(
         &fixture_dir.join("golden-shutter-polygonal-u8.dcm"),
         "2.25.2000013",
+        ShutterFixtureImage::GRAY,
         vec![
             DataElement::new(tags::SHUTTER_SHAPE, VR::CS, "POLYGONAL"),
             DataElement::new(
@@ -766,6 +768,7 @@ fn write_display_shutter_fixtures(fixture_dir: &Path) {
     write_display_shutter_fixture(
         &fixture_dir.join("golden-shutter-rectangular-circular-u8.dcm"),
         "2.25.2000014",
+        ShutterFixtureImage::GRAY,
         vec![
             DataElement::new(tags::SHUTTER_SHAPE, VR::CS, "RECTANGULAR\\CIRCULAR"),
             DataElement::new(tags::SHUTTER_LEFT_VERTICAL_EDGE, VR::IS, "2"),
@@ -794,9 +797,68 @@ fn write_display_shutter_fixtures(fixture_dir: &Path) {
     write_display_shutter_fixture(
         &fixture_dir.join("golden-shutter-bitmap-u8.dcm"),
         "2.25.2000015",
+        ShutterFixtureImage::GRAY,
         bitmap,
     );
+    // Color frames: the circle again, filled with the sRGB of the CIELab
+    // color rather than the (black) gray value.
+    write_display_shutter_fixture(
+        &fixture_dir.join("golden-shutter-circular-cielab-rgb-u8.dcm"),
+        "2.25.2000017",
+        ShutterFixtureImage::Rgb {
+            transfer_syntax_uid: uids::EXPLICIT_VR_LITTLE_ENDIAN,
+        },
+        vec![
+            DataElement::new(tags::SHUTTER_SHAPE, VR::CS, "CIRCULAR"),
+            DataElement::new(tags::CENTER_OF_CIRCULAR_SHUTTER, VR::IS, "4\\5"),
+            DataElement::new(tags::RADIUS_OF_CIRCULAR_SHUTTER, VR::IS, "3"),
+            shutter_value(0),
+            // D50 CIELab of sRGB red as PCS-values.
+            DataElement::new(
+                tags::SHUTTER_PRESENTATION_COLOR_CIE_LAB_VALUE,
+                VR::US,
+                PrimitiveValue::U16(vec![35_579, 53_663, 50_858].into()),
+            ),
+        ],
+    );
+    // A compressed color path with only a gray value: white fill.
+    write_display_shutter_fixture(
+        &fixture_dir.join("golden-shutter-polygonal-rle-rgb-u8.dcm"),
+        "2.25.2000018",
+        ShutterFixtureImage::Rgb {
+            transfer_syntax_uid: uids::RLE_LOSSLESS,
+        },
+        vec![
+            DataElement::new(tags::SHUTTER_SHAPE, VR::CS, "POLYGONAL"),
+            DataElement::new(
+                tags::VERTICES_OF_THE_POLYGONAL_SHUTTER,
+                VR::IS,
+                "1\\1\\1\\8\\6\\1",
+            ),
+            shutter_value(0xFFFF),
+        ],
+    );
 }
+
+/// Pixels of an 8x8 display shutter fixture.
+enum ShutterFixtureImage {
+    /// Native MONOCHROME2 samples of 128 under a 128/256 window.
+    Gray {
+        sop_class_uid: &'static str,
+        frames: u16,
+    },
+    /// Every pixel RGB `SHUTTER_FIXTURE_RGB`, native or RLE Lossless.
+    Rgb { transfer_syntax_uid: &'static str },
+}
+
+impl ShutterFixtureImage {
+    const GRAY: Self = Self::Gray {
+        sop_class_uid: uids::DIGITAL_X_RAY_IMAGE_STORAGE_FOR_PRESENTATION,
+        frames: 1,
+    };
+}
+
+const SHUTTER_FIXTURE_RGB: [u8; 3] = [40, 80, 160];
 
 fn overlay_plane_elements(
     group: u16,
@@ -826,9 +888,17 @@ fn overlay_plane_elements(
 fn write_display_shutter_fixture(
     path: &Path,
     sop_instance_uid: &str,
+    image: ShutterFixtureImage,
     shutter: Vec<DataElement<InMemDicomObject>>,
 ) {
-    let sop_class_uid = uids::DIGITAL_X_RAY_IMAGE_STORAGE_FOR_PRESENTATION;
+    let (sop_class_uid, transfer_syntax_uid) = match image {
+        ShutterFixtureImage::Gray { sop_class_uid, .. } => {
+            (sop_class_uid, uids::EXPLICIT_VR_LITTLE_ENDIAN)
+        }
+        ShutterFixtureImage::Rgb {
+            transfer_syntax_uid,
+        } => (uids::SECONDARY_CAPTURE_IMAGE_STORAGE, transfer_syntax_uid),
+    };
     let mut obj = InMemDicomObject::from_element_iter([
         DataElement::new(tags::SOP_CLASS_UID, VR::UI, sop_class_uid),
         DataElement::new(tags::SOP_INSTANCE_UID, VR::UI, sop_instance_uid),
@@ -837,7 +907,6 @@ fn write_display_shutter_fixture(
             VR::LO,
             PrimitiveValue::from("GOLDEN-SHUTTER"),
         ),
-        DataElement::new(tags::MODALITY, VR::CS, PrimitiveValue::from("DX")),
         DataElement::new(tags::STUDY_DATE, VR::DA, PrimitiveValue::from("20260926")),
         DataElement::new(tags::ROWS, VR::US, PrimitiveValue::from(8_u16)),
         DataElement::new(tags::COLUMNS, VR::US, PrimitiveValue::from(8_u16)),
@@ -849,20 +918,68 @@ fn write_display_shutter_fixture(
             VR::US,
             PrimitiveValue::from(0_u16),
         ),
-        DataElement::new(tags::SAMPLES_PER_PIXEL, VR::US, PrimitiveValue::from(1_u16)),
-        DataElement::new(
-            tags::PHOTOMETRIC_INTERPRETATION,
-            VR::CS,
-            PrimitiveValue::from("MONOCHROME2"),
-        ),
-        DataElement::new(tags::WINDOW_CENTER, VR::DS, PrimitiveValue::from("128")),
-        DataElement::new(tags::WINDOW_WIDTH, VR::DS, PrimitiveValue::from("256")),
-        DataElement::new(
-            tags::PIXEL_DATA,
-            VR::OB,
-            PrimitiveValue::from(vec![128_u8; 64]),
-        ),
     ]);
+    match image {
+        ShutterFixtureImage::Gray { frames, .. } => {
+            for element in [
+                DataElement::new(tags::MODALITY, VR::CS, PrimitiveValue::from("DX")),
+                DataElement::new(tags::SAMPLES_PER_PIXEL, VR::US, PrimitiveValue::from(1_u16)),
+                DataElement::new(
+                    tags::PHOTOMETRIC_INTERPRETATION,
+                    VR::CS,
+                    PrimitiveValue::from("MONOCHROME2"),
+                ),
+                DataElement::new(tags::WINDOW_CENTER, VR::DS, PrimitiveValue::from("128")),
+                DataElement::new(tags::WINDOW_WIDTH, VR::DS, PrimitiveValue::from("256")),
+                DataElement::new(
+                    tags::PIXEL_DATA,
+                    VR::OB,
+                    PrimitiveValue::from(vec![128_u8; 64 * usize::from(frames)]),
+                ),
+            ] {
+                obj.put(element);
+            }
+            if frames > 1 {
+                obj.put(DataElement::new(
+                    tags::NUMBER_OF_FRAMES,
+                    VR::IS,
+                    PrimitiveValue::from(frames.to_string()),
+                ));
+            }
+        }
+        ShutterFixtureImage::Rgb {
+            transfer_syntax_uid,
+        } => {
+            for element in [
+                DataElement::new(tags::MODALITY, VR::CS, PrimitiveValue::from("OT")),
+                DataElement::new(tags::SAMPLES_PER_PIXEL, VR::US, PrimitiveValue::from(3_u16)),
+                DataElement::new(
+                    tags::PHOTOMETRIC_INTERPRETATION,
+                    VR::CS,
+                    PrimitiveValue::from("RGB"),
+                ),
+                DataElement::new(
+                    tags::PLANAR_CONFIGURATION,
+                    VR::US,
+                    PrimitiveValue::from(0_u16),
+                ),
+            ] {
+                obj.put(element);
+            }
+            if transfer_syntax_uid == uids::RLE_LOSSLESS {
+                let planes = SHUTTER_FIXTURE_RGB.map(|sample| vec![sample; 64]);
+                let pixel_sequence: PixelFragmentSequence<Vec<u8>> =
+                    vec![Fragments::new(rle_literal_fragment(&planes), 0)].into();
+                obj.put(DataElement::new(tags::PIXEL_DATA, VR::OB, pixel_sequence));
+            } else {
+                obj.put(DataElement::new(
+                    tags::PIXEL_DATA,
+                    VR::OB,
+                    PrimitiveValue::from(SHUTTER_FIXTURE_RGB.repeat(64)),
+                ));
+            }
+        }
+    }
     for element in shutter {
         obj.put(element);
     }
@@ -871,7 +988,7 @@ fn write_display_shutter_fixture(
         FileMetaTableBuilder::new()
             .implementation_class_uid(FIXTURE_IMPLEMENTATION_CLASS_UID)
             .implementation_version_name(FIXTURE_IMPLEMENTATION_VERSION_NAME)
-            .transfer_syntax(uids::EXPLICIT_VR_LITTLE_ENDIAN)
+            .transfer_syntax(transfer_syntax_uid)
             .media_storage_sop_class_uid(sop_class_uid)
             .media_storage_sop_instance_uid(sop_instance_uid),
     )
@@ -880,17 +997,16 @@ fn write_display_shutter_fixture(
     .expect("write display shutter golden fixture");
 }
 
-/// PS3.5 Annex G frame: a 64-byte header, then one PackBits literal-run
-/// segment per sample plane (Y, Cb, Cr), each at full resolution.
 fn rle_ybr_fragment_4x2() -> Vec<u8> {
     let planes = (0..3)
-        .map(|sample| {
-            YBR_4X2
-                .iter()
-                .map(|pixel| pixel[sample])
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
+        .map(|sample| YBR_4X2.iter().map(|pixel| pixel[sample]).collect())
+        .collect::<Vec<Vec<u8>>>();
+    rle_literal_fragment(&planes)
+}
+
+/// PS3.5 Annex G frame: a 64-byte header, then one PackBits literal-run
+/// segment per sample plane, each at most 128 bytes.
+fn rle_literal_fragment(planes: &[Vec<u8>]) -> Vec<u8> {
     let mut fragment = vec![0_u8; 64];
     fragment[0..4].copy_from_slice(&(planes.len() as u32).to_le_bytes());
     for (index, plane) in planes.iter().enumerate() {

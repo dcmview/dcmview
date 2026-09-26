@@ -5,11 +5,13 @@ use bytes::Bytes;
 use dicom_pixeldata::PixelDecoder;
 use tokio::task;
 
-use super::color::{color_samples_to_rgb8, encode_rgb8_png_with_icc};
+use super::color::color_samples_to_rgb8;
 use super::encapsulated::open_for_frame_decode;
 use super::error::{PixelError, PixelResult};
 use super::icc::select_icc_profile;
-use super::render::{encode_windowed_luminance_png, LuminanceRenderOptions};
+use super::render::{
+    encode_rgb8_display_png, encode_windowed_luminance_png, LuminanceRenderOptions,
+};
 use super::syntax::{Codec, ColorSamples};
 
 /// Displays one JPEG Baseline or JPEG Lossless frame decoded by dicom-pixeldata.
@@ -71,7 +73,9 @@ fn decode_compressed_frame_to_png_blocking(
             }
             Some(ColorSamples::Rgb) | None => decoded_frame.to_vec(),
         };
-        return encode_rgb8_png_with_icc(
+        return encode_rgb8_display_png(
+            file,
+            frame,
             rgb,
             decoded.columns(),
             decoded.rows(),

@@ -4,6 +4,7 @@ use crate::types::{
     PresentationMetadata, ShutterShape,
 };
 use dicom_dictionary_std::tags;
+use dicom_object::InMemDicomObject;
 
 pub(super) fn read_positive_f64_pair(
     obj: &dicom_object::DefaultDicomObject,
@@ -158,7 +159,7 @@ fn read_overlay_plane(obj: &dicom_object::DefaultDicomObject, group: u16) -> Opt
 /// shutter's overlay plane moves out of `overlay_planes`: it masks the image
 /// and is not drawn as an overlay.
 fn read_display_shutter(
-    obj: &dicom_object::DefaultDicomObject,
+    obj: &InMemDicomObject,
     overlay_planes: &mut Vec<OverlayPlane>,
 ) -> Option<DisplayShutter> {
     let mut shapes = Vec::new();
@@ -172,13 +173,26 @@ fn read_display_shutter(
         };
         shapes.extend(shape);
     }
-    (!shapes.is_empty()).then(|| DisplayShutter {
+    if shapes.is_empty() {
+        return None;
+    }
+    let presentation_color_cielab =
+        read_exact_u16s::<3>(obj, tags::SHUTTER_PRESENTATION_COLOR_CIE_LAB_VALUE);
+    Some(DisplayShutter {
         shapes,
-        presentation_value: read_shutter_presentation_value(obj),
+        // Grayscale falls back to the color's L*: both are perceptual
+        // 0-FFFFH scales. Without either the shutter is black.
+        presentation_value: obj
+            .element(tags::SHUTTER_PRESENTATION_VALUE)
+            .ok()
+            .and_then(|element| element.to_int::<u16>().ok())
+            .or(presentation_color_cielab.map(|[lightness, _, _]| lightness))
+            .unwrap_or(0),
+        presentation_color_cielab,
     })
 }
 
-fn read_rectangular_shutter(obj: &dicom_object::DefaultDicomObject) -> Option<ShutterShape> {
+fn read_rectangular_shutter(obj: &InMemDicomObject) -> Option<ShutterShape> {
     let left_vertical_edge = read_number::<i32>(obj, tags::SHUTTER_LEFT_VERTICAL_EDGE)?;
     let right_vertical_edge = read_number::<i32>(obj, tags::SHUTTER_RIGHT_VERTICAL_EDGE)?;
     let upper_horizontal_edge = read_number::<i32>(obj, tags::SHUTTER_UPPER_HORIZONTAL_EDGE)?;
@@ -192,13 +206,13 @@ fn read_rectangular_shutter(obj: &dicom_object::DefaultDicomObject) -> Option<Sh
         })
 }
 
-fn read_circular_shutter(obj: &dicom_object::DefaultDicomObject) -> Option<ShutterShape> {
+fn read_circular_shutter(obj: &InMemDicomObject) -> Option<ShutterShape> {
     let center = read_exact_i32s::<2>(obj, tags::CENTER_OF_CIRCULAR_SHUTTER)?;
     let radius = read_number::<i32>(obj, tags::RADIUS_OF_CIRCULAR_SHUTTER)?;
     (radius >= 0).then_some(ShutterShape::Circular { center, radius })
 }
 
-fn read_polygonal_shutter(obj: &dicom_object::DefaultDicomObject) -> Option<ShutterShape> {
+fn read_polygonal_shutter(obj: &InMemDicomObject) -> Option<ShutterShape> {
     let values = read_strings(obj, tags::VERTICES_OF_THE_POLYGONAL_SHUTTER)
         .into_iter()
         .map(|value| value.parse::<i32>().ok())
@@ -216,7 +230,7 @@ fn read_polygonal_shutter(obj: &dicom_object::DefaultDicomObject) -> Option<Shut
 }
 
 fn take_bitmap_shutter(
-    obj: &dicom_object::DefaultDicomObject,
+    obj: &InMemDicomObject,
     overlay_planes: &mut Vec<OverlayPlane>,
 ) -> Option<ShutterShape> {
     let group = read_u32_tag(obj, tags::SHUTTER_OVERLAY_GROUP)?;
@@ -226,25 +240,20 @@ fn take_bitmap_shutter(
     Some(ShutterShape::Bitmap(overlay_planes.remove(index)))
 }
 
-/// Shutter Presentation Value, else the L* of Shutter Presentation Color
-/// CIELab Value (both perceptual 0-FFFFH scales), else black.
-fn read_shutter_presentation_value(obj: &dicom_object::DefaultDicomObject) -> u16 {
-    obj.element(tags::SHUTTER_PRESENTATION_VALUE)
+fn read_exact_u16s<const N: usize>(
+    obj: &InMemDicomObject,
+    tag: dicom_core::Tag,
+) -> Option<[u16; N]> {
+    obj.element(tag)
+        .ok()?
+        .to_multi_int::<u16>()
+        .ok()?
+        .try_into()
         .ok()
-        .and_then(|element| element.to_int::<u16>().ok())
-        .or_else(|| {
-            obj.element(tags::SHUTTER_PRESENTATION_COLOR_CIE_LAB_VALUE)
-                .ok()?
-                .to_multi_int::<u16>()
-                .ok()?
-                .first()
-                .copied()
-        })
-        .unwrap_or(0)
 }
 
 fn read_exact_i32s<const N: usize>(
-    obj: &dicom_object::DefaultDicomObject,
+    obj: &InMemDicomObject,
     tag: dicom_core::Tag,
 ) -> Option<[i32; N]> {
     read_strings(obj, tag)
@@ -255,7 +264,7 @@ fn read_exact_i32s<const N: usize>(
         .ok()
 }
 
-fn read_u32_tag(obj: &dicom_object::DefaultDicomObject, tag: dicom_core::Tag) -> Option<u32> {
+fn read_u32_tag(obj: &InMemDicomObject, tag: dicom_core::Tag) -> Option<u32> {
     obj.element(tag).ok()?.to_int::<u32>().ok()
 }
 
@@ -768,6 +777,7 @@ mod tests {
                 lower_horizontal_edge: 2,
             }],
             presentation_value: 0,
+            presentation_color_cielab: None,
         }
     }
 
@@ -837,6 +847,7 @@ mod tests {
                     },
                 ],
                 presentation_value: 0xFFFF,
+                presentation_color_cielab: None,
             })
         );
     }
@@ -871,7 +882,7 @@ mod tests {
     }
 
     #[test]
-    fn falls_back_to_the_cielab_lightness_for_the_presentation_value() {
+    fn keeps_the_cielab_color_and_falls_back_to_its_lightness_for_gray() {
         let presentation = presentation_of(vec![
             DataElement::new(tags::SHUTTER_SHAPE, VR::CS, "CIRCULAR"),
             DataElement::new(tags::CENTER_OF_CIRCULAR_SHUTTER, VR::IS, "1\\1"),
@@ -882,12 +893,11 @@ mod tests {
                 PrimitiveValue::U16(vec![0x8000, 0x8080, 0x8080].into()),
             ),
         ]);
+        let shutter = presentation.display_shutter.expect("circular shutter");
+        assert_eq!(shutter.presentation_value, 0x8000);
         assert_eq!(
-            presentation
-                .display_shutter
-                .expect("circular shutter")
-                .presentation_value,
-            0x8000
+            shutter.presentation_color_cielab,
+            Some([0x8000, 0x8080, 0x8080])
         );
     }
 

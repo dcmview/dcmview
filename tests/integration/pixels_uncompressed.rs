@@ -215,6 +215,7 @@ async fn native_rectangular_shutter_applies_after_monochrome1_and_preserves_raw_
             lower_horizontal_edge: 2,
         }],
         presentation_value: 0,
+        presentation_color_cielab: None,
     });
 
     let display = load_frame(
