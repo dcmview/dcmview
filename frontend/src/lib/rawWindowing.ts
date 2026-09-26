@@ -264,8 +264,9 @@ function buildWindowLut(
 		} else {
 			value = (modal - center) / (width - 1) + 0.5;
 		}
-		if (invert) value = 1 - value;
-		lut[index] = Math.round(value * 255);
+		// MONOCHROME1 inverts the quantized VOI output, like the server.
+		const gray = Math.round(value * 255);
+		lut[index] = invert ? 255 - gray : gray;
 	}
 
 	return lut;

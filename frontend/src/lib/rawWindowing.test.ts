@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import type { WindowMode } from "../generated/api-types";
 import type { RawFrame, RawFrameMetadata } from "../rawFrame";
+import oracle from "../../../tests/windowing-cases.json";
 import {
 	computeFullDynamicWindow,
 	computePercentileWindow,
@@ -100,15 +102,6 @@ describe("renderRawFrameToRgba", () => {
 		expect(grayValues(renderRawFrameToRgba(frame, wc, ww))).toEqual(expected);
 	});
 
-	it("applies rescale metadata before windowing", () => {
-		const frame = frameFromSamples([0, 100], 8, 0, {
-			rescaleSlope: 2,
-			rescaleIntercept: -100,
-		});
-
-		expect(grayValues(renderRawFrameToRgba(frame, 0, 200))).toEqual([0, 255]);
-	});
-
 	it("inverts MONOCHROME1 output using normalized photometric metadata", () => {
 		const frame = frameFromSamples([0, 255], 8, 0, {
 			photometricInterpretation: " monochrome1 ",
@@ -116,34 +109,48 @@ describe("renderRawFrameToRgba", () => {
 
 		expect(grayValues(renderRawFrameToRgba(frame, 127.5, 256))).toEqual([255, 0]);
 	});
+});
 
-	it("uses the DICOM LINEAR half-unit boundaries", () => {
-		const frame = frameFromSamples([0, 1, 49, 50, 99, 100], 8, 0);
+type OracleCase = {
+	name: string;
+	stored: number[];
+	rescale_slope: number;
+	rescale_intercept: number;
+	photometric_interpretation: string;
+	dicom_window: { center: number; width: number } | null;
+	padding: { value: number; range_limit: number | null } | null;
+	mode: WindowMode;
+	wc: number | null;
+	ww: number | null;
+	expected: number[];
+};
 
-		expect(grayValues(renderRawFrameToRgba(frame, 50, 100))).toEqual([
-			0,
-			3,
-			126,
-			129,
-			255,
-			255,
-		]);
-	});
-
-	it("draws Pixel Padding black even for MONOCHROME1", () => {
-		const frame = frameFromSamples([0, 10, 100, 200], 8, 0, {
-			photometricInterpretation: "MONOCHROME1",
-			paddingLow: 0,
-			paddingHigh: 10,
+// The server runs the same cases through the loader and display endpoint in
+// tests/integration/windowing_oracle.rs, which also checks that the raw
+// endpoint sends exactly this metadata.
+describe("shared windowing oracle", () => {
+	it.each(oracle.cases as OracleCase[])("$name", (oracleCase) => {
+		const { padding } = oracleCase;
+		const limit = padding?.range_limit ?? padding?.value ?? null;
+		const frame = frameFromSamples(oracleCase.stored, 16, 0, {
+			photometricInterpretation: oracleCase.photometric_interpretation,
+			rescaleSlope: oracleCase.rescale_slope,
+			rescaleIntercept: oracleCase.rescale_intercept,
+			defaultWc: oracleCase.dicom_window?.center ?? null,
+			defaultWw: oracleCase.dicom_window?.width ?? null,
+			paddingLow: padding && limit !== null ? Math.min(padding.value, limit) : null,
+			paddingHigh: padding && limit !== null ? Math.max(padding.value, limit) : null,
 		});
+		const { wc, ww } = resolveDisplayWindow(
+			frame,
+			null,
+			null,
+			oracleCase.wc,
+			oracleCase.ww,
+			oracleCase.mode,
+		);
 
-		expect(grayValues(renderRawFrameToRgba(frame, 150, 100))).toEqual([0, 0, 255, 0]);
-	});
-
-	it("treats width one as a threshold at center minus one half", () => {
-		const frame = frameFromSamples([49, 50], 8, 0);
-
-		expect(grayValues(renderRawFrameToRgba(frame, 50, 1))).toEqual([0, 255]);
+		expect(grayValues(renderRawFrameToRgba(frame, wc, ww))).toEqual(oracleCase.expected);
 	});
 });
 
