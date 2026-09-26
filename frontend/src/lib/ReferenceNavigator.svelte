@@ -10,11 +10,7 @@
 		METADATA_CACHE_FILES,
 		type AsyncResourceSnapshot,
 	} from "./keyedAsyncResource";
-	import {
-		referenceDestination,
-		referenceDetails,
-		referenceIdentity,
-	} from "./referenceNavigation";
+	import ReferenceEdge from "./ReferenceEdge.svelte";
 
 	let {
 		fileIndex,
@@ -63,34 +59,7 @@
 	{:else if references.length > 0}
 		<div class="edges">
 			{#each references as reference, referenceIndex (`${reference.relationship}:${referenceIndex}`)}
-				<div class="edge">
-					<code>{reference.relationship}</code>
-					<span class="identity" title={referenceIdentity(reference.target)}>
-						{referenceIdentity(reference.target)}
-					</span>
-					{#each referenceDetails(reference.target) as detail}
-						<span class="detail">{detail}</span>
-					{/each}
-					{#if reference.matches.length === 0}
-						<span class="unresolved">unresolved</span>
-					{:else}
-						{#each reference.matches as match, matchIndex (`${match.file_index}:${matchIndex}`)}
-							{@const destination = referenceDestination(match, files)}
-							{#if destination}
-								<button
-									class="target"
-									type="button"
-									title={match.path}
-									onclick={() => onopenreference(destination.file.index, destination.frameIndex)}
-								>
-									Open {destination.file.label} · frame {destination.frameIndex + 1}
-								</button>
-							{:else}
-								<span class="unresolved" title={match.path}>local target unavailable</span>
-							{/if}
-						{/each}
-					{/if}
-				</div>
+				<ReferenceEdge {reference} {files} {onopenreference} inline />
 			{/each}
 		</div>
 	{/if}
@@ -110,15 +79,11 @@
 		font-size: 0.72rem;
 	}
 
-	header,
-	.edge {
+	header {
 		display: flex;
+		flex: 0 0 auto;
 		align-items: center;
 		gap: 0.35rem;
-	}
-
-	header {
-		flex: 0 0 auto;
 	}
 
 	.title {
@@ -126,13 +91,8 @@
 		color: var(--text-primary);
 	}
 
-	.count,
-	.detail,
-	.unresolved {
-		color: var(--text-muted);
-	}
-
 	.count {
+		color: var(--text-muted);
 		font-variant-numeric: tabular-nums;
 	}
 
@@ -144,58 +104,16 @@
 		overflow-x: auto;
 	}
 
-	.edge {
-		flex: 0 0 auto;
-		max-width: min(38rem, 70vw);
-		padding-left: 0.45rem;
-		border-left: 1px solid var(--border-subtle);
-	}
-
-	code {
-		color: var(--accent);
-		font-family: var(--font-mono);
-		font-size: 0.68rem;
-	}
-
-	.identity {
-		max-width: 17rem;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		font-family: var(--font-mono);
-	}
-
-	.detail,
-	.unresolved {
-		white-space: nowrap;
-	}
-
-	.unresolved {
-		font-style: italic;
-	}
-
-	button {
-		font: inherit;
-	}
-
-	.target,
 	.retry {
+		padding: 0.1rem 0.3rem;
 		border: 1px solid var(--border-strong);
 		border-radius: 3px;
 		background: var(--surface-panel);
 		color: var(--text-primary);
+		font: inherit;
 		cursor: pointer;
 	}
 
-	.target {
-		padding: 0.15rem 0.4rem;
-	}
-
-	.retry {
-		padding: 0.1rem 0.3rem;
-	}
-
-	.target:hover,
 	.retry:hover {
 		border-color: var(--accent);
 	}
@@ -214,10 +132,6 @@
 		.reference-navigator {
 			gap: 0.35rem;
 			padding-inline: 0.4rem;
-		}
-
-		.identity {
-			max-width: 9rem;
 		}
 	}
 </style>
