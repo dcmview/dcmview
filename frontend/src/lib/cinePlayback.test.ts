@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	buildCineLookahead,
 	canRunCinePlayback,
@@ -11,6 +11,10 @@ import {
 import { navigationFrameAtPosition, type NavigationFrameRef } from "./seriesNavigation";
 
 describe("cine playback policy", () => {
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
 	it("allows playback only in the display pipeline with multiple pixel frames", () => {
 		expect(canRunCinePlayback("cine", true, 2)).toBe(true);
 		expect(canRunCinePlayback("diagnostic_wl", true, 2)).toBe(false);
@@ -81,38 +85,66 @@ describe("cine playback policy", () => {
 
 		await expect(result).resolves.toBe(true);
 		expect(removeListener).toHaveBeenCalledOnce();
-		vi.useRealTimers();
 	});
 
 	it("waits for slow frame preparation instead of issuing catch-up frames", async () => {
+		vi.useFakeTimers();
 		const ctrl = new AbortController();
 		const presentedAt: number[] = [];
-		await runRenderPacedCine({
+		const playback = runRenderPacedCine({
 			initialFrame: 0,
 			totalFrames: 4,
 			mode: "loop",
 			direction: 1,
 			fps: 100,
 			signal: ctrl.signal,
-			now: () => performance.now(),
-			waitForDelay: (delay, signal) => new Promise((resolve) => {
-				const timer = setTimeout(() => resolve(true), Math.max(0, delay));
-				signal.addEventListener("abort", () => {
-					clearTimeout(timer);
-					resolve(false);
-				}, { once: true });
-			}),
+			now: () => Date.now(),
+			waitForDelay: waitForCineDeadline,
 			prepareFrame: () => new Promise((resolve) => setTimeout(resolve, 25)),
 			presentFrame: async () => {
-				presentedAt.push(performance.now());
+				presentedAt.push(Date.now());
 				if (presentedAt.length === 3) ctrl.abort();
 				return true;
 			},
 		});
 
+		await vi.advanceTimersByTimeAsync(200);
+		await playback;
+
+		// A 10 ms frame interval cannot outrun 25 ms preparation, and late
+		// frames are not presented back to back to catch up.
 		expect(presentedAt).toHaveLength(3);
-		expect(presentedAt[1] - presentedAt[0]).toBeGreaterThanOrEqual(20);
-		expect(presentedAt[2] - presentedAt[1]).toBeGreaterThanOrEqual(20);
+		expect(presentedAt[1] - presentedAt[0]).toBe(25);
+		expect(presentedAt[2] - presentedAt[1]).toBe(25);
+	});
+
+	it("paces fast preparation to the configured frame interval", async () => {
+		vi.useFakeTimers();
+		const ctrl = new AbortController();
+		const presentedAt: number[] = [];
+		const playback = runRenderPacedCine({
+			initialFrame: 0,
+			totalFrames: 4,
+			mode: "loop",
+			direction: 1,
+			fps: 10,
+			signal: ctrl.signal,
+			now: () => Date.now(),
+			waitForDelay: waitForCineDeadline,
+			prepareFrame: async () => {},
+			presentFrame: async () => {
+				presentedAt.push(Date.now());
+				if (presentedAt.length === 3) ctrl.abort();
+				return true;
+			},
+		});
+
+		await vi.advanceTimersByTimeAsync(500);
+		await playback;
+
+		expect(presentedAt).toHaveLength(3);
+		expect(presentedAt[1] - presentedAt[0]).toBe(100);
+		expect(presentedAt[2] - presentedAt[1]).toBe(100);
 	});
 
 	it("prepares logical cine positions across source-file boundaries", async () => {
