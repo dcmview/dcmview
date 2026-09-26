@@ -87,8 +87,9 @@ def check_fixture_snapshot(before: dict[str, str], after: dict[str, str]) -> Non
 
 
 class CheckRunner:
-	def __init__(self, *, install: bool) -> None:
+	def __init__(self, *, install: bool, corpus: str | None = None) -> None:
 		self.install = install
+		self.corpus = corpus
 		self._frontend_built = False
 		self._frontend_installed = False
 		self._vscode_installed = False
@@ -251,6 +252,37 @@ class CheckRunner:
 			],
 		)
 
+	def prepared_corpus(self) -> None:
+		"""Run the ignored Rust tests that read a local generated DICOM corpus."""
+		root = self.corpus or os.environ.get("DCMVIEW_PREPARED_CORPUS")
+		if not root:
+			raise CheckError(
+				"pass --corpus PATH or set DCMVIEW_PREPARED_CORPUS to a generated "
+				"dicom-test-suite corpus; this profile never generates one"
+			)
+		corpus = Path(root).expanduser().resolve()
+		if not corpus.is_dir():
+			raise CheckError(f"prepared corpus is not a directory: {corpus}")
+		self.build_frontend()
+		env = cargo_env()
+		env["DCMVIEW_PREPARED_CORPUS"] = str(corpus)
+		run(
+			f"Run prepared-corpus tests against {corpus}",
+			[
+				self.cargo,
+				"test",
+				"--locked",
+				"--lib",
+				"--test",
+				"integration",
+				"--",
+				"--ignored",
+				"--skip",
+				"remote_fixtures",
+			],
+			env=env,
+		)
+
 	def quick(self) -> None:
 		self.versions()
 		self.frontend()
@@ -327,6 +359,7 @@ def parse_args() -> argparse.Namespace:
 			"vscode-integration",
 			"smoke",
 			"compatibility-artifact",
+			"corpus",
 			"core",
 			"e2e",
 			"external",
@@ -339,12 +372,17 @@ def parse_args() -> argparse.Namespace:
 		action="store_true",
 		help="run npm ci for profiles which use frontend or VS Code dependencies",
 	)
+	parser.add_argument(
+		"--corpus",
+		metavar="PATH",
+		help="generated DICOM corpus for the corpus profile (default: $DCMVIEW_PREPARED_CORPUS)",
+	)
 	return parser.parse_args()
 
 
 def main() -> int:
 	args = parse_args()
-	runner = CheckRunner(install=args.install)
+	runner = CheckRunner(install=args.install, corpus=args.corpus)
 	profiles: dict[str, Callable[[], None]] = {
 		"quick": runner.quick,
 		"frontend": runner.frontend,
@@ -358,6 +396,7 @@ def main() -> int:
 		"vscode-integration": runner.vscode_integration,
 		"smoke": runner.smoke,
 		"compatibility-artifact": runner.compatibility_artifact,
+		"corpus": runner.prepared_corpus,
 		"core": runner.core,
 		"e2e": runner.e2e,
 		"external": runner.external,

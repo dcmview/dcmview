@@ -129,6 +129,41 @@ class CheckProfileCompositionTests(unittest.TestCase):
 			with self.assertRaises(check.CheckError):
 				runner.compatibility_artifact()
 
+	def test_corpus_runs_every_ignored_non_remote_test_with_the_corpus(self) -> None:
+		runner = RecordingRunner()
+		runner.corpus = os.path.dirname(os.path.abspath(__file__))
+		with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(check, "run") as run:
+			runner.prepared_corpus()
+
+		self.assertEqual(runner.calls, ["frontend-assets"])
+		_label, command = run.call_args.args
+		self.assertEqual(
+			command,
+			[
+				"cargo",
+				"test",
+				"--locked",
+				"--lib",
+				"--test",
+				"integration",
+				"--",
+				"--ignored",
+				"--skip",
+				"remote_fixtures",
+			],
+		)
+		self.assertEqual(run.call_args.kwargs["env"]["DCMVIEW_PREPARED_CORPUS"], runner.corpus)
+
+	def test_corpus_requires_an_existing_directory(self) -> None:
+		for corpus in (None, "/nonexistent/dcmview-prepared-corpus"):
+			with self.subTest(corpus=corpus):
+				runner = RecordingRunner()
+				runner.corpus = corpus
+				with mock.patch.dict(os.environ, {}, clear=True):
+					with self.assertRaises(check.CheckError):
+						runner.prepared_corpus()
+				self.assertEqual(runner.calls, [])
+
 
 if __name__ == "__main__":
 	unittest.main()
