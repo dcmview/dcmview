@@ -339,7 +339,7 @@ The supported development baselines are Rust 1.88+, Node.js 20.19+, and Python
 | `quick` | Normal development loop | Version parity; generated frontend contract check; Svelte/TypeScript checks; Vitest; frontend build; Rust format and strict all-target Clippy; Python unit, packaging-helper, and compatibility-runner unit tests. It does not run Rust tests or VS Code tests. |
 | `core` | Before handing off a normal code change | Everything in the corresponding frontend/lint/unit layers, plus deterministic fixture regeneration that must leave the current fixture tree unchanged, the default-feature, non-ignored locked Rust suite, and VS Code compilation. |
 | `e2e` | Process or integration changes | `core`, then a real debug binary, Python wrapper binary integration, debug-binary HTTP smoke, and VS Code Electron integration. |
-| `compatibility-artifact` | Stored current corpus integration | Builds only the dcmview binary, verifies an explicitly supplied producer container (`DCMVIEW_COMPAT_CORPUS_ROOT`), and runs `scripts/compatibility/run.py` against every verified DICOM payload. It never checks out or builds the generator and fails when no container is supplied. It runs only from the manually dispatched `compatibility.yml` workflow, not from push/PR CI. |
+| `compatibility-artifact` | Stored current corpus integration | Builds only the dcmview binary, verifies an explicitly supplied producer container (`DCMVIEW_COMPAT_CORPUS_ROOT`), and runs `scripts/compatibility/run.py` against every verified DICOM payload. It never checks out or builds the generator and fails when no container is supplied. It is run locally only; no CI workflow runs it. |
 | `external` | Opt-in upstream DICOM compatibility | Builds frontend assets and runs only ignored integration tests behind `remote-fixtures`; those tests may download or populate the `dicom-test-files` cache. It is separate from `e2e`. |
 | `marketing` | Capture tooling and release media | Validates tracked source/capture manifests, syntax-checks the browser and VS Code capture drivers, runs marketing-media unit tests, and—once an approved bundle is committed—verifies published hashes and the capture-input digest without ignored DICOM sources. |
 
@@ -377,11 +377,9 @@ installation and VS Code Electron integration can also use network/cache state;
   display frame computed from the recipe samples, rescale, LINEAR window, and
   photometric interpretation. Layouts the manifest cannot describe (LUT and
   palette tables, YBR color, overlays, shutters) are reported as not
-  computable. Which container is tested is fixed by the Actions ZIP digest
-  committed in `scripts/compatibility/corpus-artifact.json`; the manually
-  dispatched `compatibility.yml` workflow downloads that artifact, checks the
-  digest, and never regenerates corpus data. See
-  `scripts/compatibility/README.md`.
+  computable. The corpus is handled locally only; no CI workflow runs it. For
+  codec or display changes, every check that passed on the base commit must
+  still pass. See `scripts/compatibility/README.md`.
 - Real-browser acceptance uses the actual Svelte app and fixture server to
   exercise canvas/network behavior: metadata-only and unsupported states,
   pixel-preview/semantic-context switching, typed references, SEG/Parametric
@@ -447,6 +445,5 @@ extension points, not current correctness blockers:
 - Use generated synthetic fixtures for integration coverage; never commit PHI.
 - Run the narrow profile while iterating, then the profile required by the
   highest boundary changed.
-- Keep the stored external-corpus consumer out of push/PR CI: the manual
-  `compatibility.yml` workflow may consume a digest-pinned downloaded
-  artifact, but it must not acquire, build, or invoke `synth-dicom-gen`.
+- Keep the stored external-corpus consumer local: no CI workflow runs it, and
+  it must not acquire, build, or invoke `synth-dicom-gen`.

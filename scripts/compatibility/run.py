@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check dcmview against a stored synth-dicom-gen smoke corpus.
 
-The corpus container is the unzipped producer artifact: ``smoke.tar.gz`` plus
+The corpus container is a local producer container: ``smoke.tar.gz`` plus
 ``artifact-index.json``. The archive must match the index digest, and every
 payload must match the SHA-256 and size its manifest entry declares, before the
 viewer starts. The runner then launches the real binary on every payload and

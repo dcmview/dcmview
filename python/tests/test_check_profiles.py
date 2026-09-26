@@ -105,7 +105,7 @@ class CheckProfileCompositionTests(unittest.TestCase):
 			],
 		)
 
-	def test_compatibility_artifact_runs_the_downloaded_container(self) -> None:
+	def test_compatibility_artifact_runs_the_local_container(self) -> None:
 		runner = RecordingRunner()
 		with (
 			mock.patch.dict(
@@ -125,7 +125,7 @@ class CheckProfileCompositionTests(unittest.TestCase):
 		self.assertEqual(command[command.index("--corpus-root") + 1], "/tmp/current-smoke")
 		self.assertEqual(command[-2:], ["--output", "/tmp/compatibility-output"])
 
-	def test_compatibility_artifact_requires_a_downloaded_container(self) -> None:
+	def test_compatibility_artifact_requires_a_local_container(self) -> None:
 		runner = RecordingRunner()
 		with mock.patch.dict(os.environ, {}, clear=True):
 			with self.assertRaisesRegex(check.CheckError, "DCMVIEW_COMPAT_CORPUS_ROOT"):

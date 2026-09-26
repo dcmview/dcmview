@@ -220,11 +220,11 @@ class CheckRunner:
 		)
 
 	def compatibility_artifact(self) -> None:
-		"""Run the viewer-owned consumer against a downloaded producer container."""
+		"""Run the viewer-owned consumer against a local producer container."""
 		corpus_root = os.environ.get("DCMVIEW_COMPAT_CORPUS_ROOT")
 		if not corpus_root:
 			raise CheckError(
-				"DCMVIEW_COMPAT_CORPUS_ROOT must name a downloaded producer container; "
+				"DCMVIEW_COMPAT_CORPUS_ROOT must name a local producer container; "
 				"this profile never generates a corpus"
 			)
 		self.build_binary()

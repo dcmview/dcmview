@@ -1,7 +1,7 @@
 # DICOM compatibility runner
 
 `run.py` checks a real `dcmview` binary against a stored `synth-dicom-gen`
-smoke corpus. It is an occasional validation tool, not part of push or PR CI.
+smoke corpus. It is a local validation tool and is not run by any CI workflow.
 It measures viewer behavior for research inspection; it does not grade DICOM
 conformance or clinical suitability.
 
@@ -12,7 +12,7 @@ python scripts/compatibility/run.py \
   --output /path/to/empty-output-dir
 ```
 
-`--corpus-root` is the unzipped producer artifact: `smoke.tar.gz` plus
+`--corpus-root` is a local producer container: `smoke.tar.gz` plus
 `artifact-index.json`. Before the viewer starts, the runner checks the archive
 against the index digest, extracts it (regular files only, no paths outside
 the corpus), and checks every payload against the SHA-256 and size in
@@ -44,26 +44,19 @@ The runner writes `report.json` (per-file checks and a per-check tally) plus
 the viewer's stdout/stderr logs, prints a summary, and exits 1 if any check
 failed or 2 if the corpus or viewer could not be prepared.
 
-## Manual CI workflow
+## Local use
 
-`.github/workflows/compatibility.yml` is dispatched manually. It downloads the
-producer artifact named in `corpus-artifact.json` with the
-`DCMVIEW_COMPAT_CORPUS_TOKEN` secret, checks the ZIP against `zip_sha256`,
-unzips it, and runs `python scripts/check.py compatibility-artifact`, which
-builds the debug binary and invokes `run.py`. The committed ZIP digest is what
-fixes which corpus is tested.
+The corpus is handled locally only. Assemble a container from the local
+`synth-dicom-gen` corpus: pack its `corpus/` directory (with `manifest.json`)
+as `smoke.tar.gz`, and write `artifact-index.json` with `archive_sha256` and
+`archive_size_bytes`. Then run:
 
-| Field | Meaning |
-|---|---|
-| `repository` | Producer repository (`owner/name`) |
-| `run_id` | Producer workflow run that uploaded the artifact (provenance record) |
-| `artifact_id` | Numeric Actions artifact ID to download |
-| `zip_sha256` | SHA-256 of the downloaded artifact ZIP (`sha256:` prefix allowed) |
+```bash
+DCMVIEW_COMPAT_CORPUS_ROOT=/path/to/container python scripts/check.py compatibility-artifact
+```
 
-To adopt a new producer artifact, pick a successful default-branch run of the
-producer's publish workflow, read the artifact's `id` and `digest` from
-`gh api repos/<repository>/actions/runs/<run_id>/artifacts`, commit them to the
-pin file on a branch, and dispatch the workflow on that branch.
+For changes to codecs or the display pipeline, run it on the base commit and
+again on the change. Every check that passed on the base must still pass.
 
 The runner's own unit tests (`test_run.py`) run in the `python-unit` check
 layer.
