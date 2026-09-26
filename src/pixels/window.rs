@@ -17,6 +17,10 @@ impl PixelPaddingRange {
         }
     }
 
+    pub(crate) fn bounds(self) -> (f64, f64) {
+        (self.low, self.high)
+    }
+
     pub(crate) fn mask(self, stored_samples: &[f64]) -> Vec<bool> {
         stored_samples
             .iter()

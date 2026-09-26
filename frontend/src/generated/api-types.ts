@@ -479,6 +479,8 @@ export const RAW_FRAME_HEADERS = {
 	rescaleIntercept: "X-Frame-Rescale-Intercept",
 	defaultWc: "X-Frame-Default-Wc",
 	defaultWw: "X-Frame-Default-Ww",
+	paddingLow: "X-Frame-Padding-Low",
+	paddingHigh: "X-Frame-Padding-High",
 } as const;
 
 export type TagValue =
@@ -743,6 +745,8 @@ export interface RawFrameMetadata {
 	rescaleIntercept: number;
 	defaultWc: number | null;
 	defaultWw: number | null;
+	paddingLow: number | null;
+	paddingHigh: number | null;
 }
 
 export interface TagNode {

@@ -485,6 +485,14 @@ define_raw_frame_headers! {
         field: "defaultWw",
         name: "X-Frame-Default-Ww"
     },
+    RAW_FRAME_HEADER_PADDING_LOW => {
+        field: "paddingLow",
+        name: "X-Frame-Padding-Low"
+    },
+    RAW_FRAME_HEADER_PADDING_HIGH => {
+        field: "paddingHigh",
+        name: "X-Frame-Padding-High"
+    },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -933,6 +941,10 @@ pub struct RawFrameMetadata {
     pub rescale_intercept: f64,
     pub default_wc: Option<f64>,
     pub default_ww: Option<f64>,
+    /// Inclusive stored-value range of Pixel Padding, which the client must
+    /// exclude from automatic windows and draw as black background.
+    pub padding_low: Option<f64>,
+    pub padding_high: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1173,6 +1185,8 @@ mod tests {
             rescale_intercept: 0.0,
             default_wc: None,
             default_ww: None,
+            padding_low: None,
+            padding_high: None,
         })
         .expect("serialize raw metadata");
 

@@ -109,6 +109,8 @@ mod tests {
             rescale_intercept: 0.0,
             default_wc: None,
             default_ww: None,
+            padding_low: None,
+            padding_high: None,
         }
     }
 

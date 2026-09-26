@@ -190,6 +190,11 @@ async fn pixel_padding_range_is_excluded_from_auto_window_and_drawn_as_backgroun
         &[0, 0, 0xE8, 0x03, 0xD0, 0x07, 0xB8, 0x0B],
         "padding presentation must not alter raw stored samples"
     );
+    assert_eq!(
+        (raw.metadata.padding_low, raw.metadata.padding_high),
+        (Some(0.0), Some(1000.0)),
+        "raw frames carry the padding range for client-side windowing"
+    );
     let pixels = image::load_from_memory_with_format(display.body.as_ref(), ImageFormat::Png)
         .expect("valid pixel-padded PNG")
         .to_luma8()

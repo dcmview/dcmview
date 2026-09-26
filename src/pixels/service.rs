@@ -1,6 +1,7 @@
 use crate::api::contracts::{RawFrameMetadata, WindowMode};
 use crate::types::{
-    FileEntry, FrameCacheKey, RawFrameCacheKey, TransferSyntaxClass, WindowRequest,
+    FileEntry, FrameCacheKey, NativePixelDataKind, RawFrameCacheKey, TransferSyntaxClass,
+    WindowRequest,
 };
 use bytes::Bytes;
 use std::sync::{Arc, Mutex};
@@ -10,6 +11,7 @@ use super::deflated_frame::{
     decode_deflated_binary_frame_to_png, decode_raw_deflated_binary_frame, DEFLATED_IMAGE_FRAME_UID,
 };
 use super::error::{PixelError, PixelResult};
+use super::header::open_header;
 use super::jpeg::{
     decode_compressed_frame_to_png, decode_raw_jpeg_lossless, read_raw_jpeg_samples,
 };
@@ -19,6 +21,7 @@ use super::jpegxl::{decode_jpeg_xl_to_png, decode_raw_jpeg_xl};
 use super::native::{decode_uncompressed_to_png, read_raw_uncompressed};
 use super::rle::{decode_raw_rle, decode_rle_to_png};
 use super::syntax::classify_transfer_syntax;
+use super::window::read_pixel_padding_range;
 
 #[derive(Debug, Clone)]
 pub struct RawFrameRequest {
@@ -67,7 +70,7 @@ pub async fn load_raw_frame(
         }
     }
 
-    let (body, metadata) = if is_deflated_image_frame {
+    let (body, mut metadata) = if is_deflated_image_frame {
         decode_raw_deflated_binary_frame(file.clone(), request.frame).await?
     } else {
         match syntax_class {
@@ -89,6 +92,10 @@ pub async fn load_raw_frame(
             _ => unreachable!("non-raw syntaxes filtered above"),
         }
     };
+    if let Some((low, high)) = raw_padding_bounds(&file, &metadata).await {
+        metadata.padding_low = Some(low);
+        metadata.padding_high = Some(high);
+    }
 
     if let Ok(mut lock) = cache.lock() {
         lock.insert_with_budget(key, body.clone(), metadata.clone(), RAW_CACHE_MAX_BYTES);
@@ -99,6 +106,26 @@ pub async fn load_raw_frame(
         metadata,
         cache_hit: false,
     })
+}
+
+/// Pixel Padding bounds for a grayscale integer raw frame, so client-side
+/// windowing can exclude padding exactly as the display path does.
+async fn raw_padding_bounds(file: &FileEntry, metadata: &RawFrameMetadata) -> Option<(f64, f64)> {
+    let integer_pixels = matches!(
+        file.series_metadata.native_pixel.pixel_data_kind,
+        None | Some(NativePixelDataKind::Integer)
+    );
+    if metadata.samples_per_pixel != 1 || !integer_pixels {
+        return None;
+    }
+    let path = file.path.clone();
+    tokio::task::spawn_blocking(move || {
+        let object = open_header(&path).ok()?;
+        read_pixel_padding_range(&object, NativePixelDataKind::Integer).map(|range| range.bounds())
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 #[derive(Debug, Clone)]

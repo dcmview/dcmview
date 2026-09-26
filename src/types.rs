@@ -185,6 +185,8 @@ impl FileEntry {
             rescale_intercept: self.rescale_intercept,
             default_wc: self.default_window.map(|window| window.center),
             default_ww: self.default_window.map(|window| window.width),
+            padding_low: None,
+            padding_high: None,
         }
     }
 
@@ -200,6 +202,8 @@ impl FileEntry {
             rescale_intercept: self.rescale_intercept,
             default_wc: self.default_window.map(|window| window.center),
             default_ww: self.default_window.map(|window| window.width),
+            padding_low: None,
+            padding_high: None,
         }
     }
 }

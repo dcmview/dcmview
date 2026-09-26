@@ -408,6 +408,8 @@ Optional metadata headers:
 |---|---|
 | `X-Frame-Default-Wc` | DICOM default window center, when available. |
 | `X-Frame-Default-Ww` | DICOM default window width, when available. |
+| `X-Frame-Padding-Low` | Lower bound of the inclusive stored-value Pixel Padding range, for grayscale integer frames that declare Pixel Padding Value. |
+| `X-Frame-Padding-High` | Upper bound of that range (the padding value itself when no range limit is declared). Clients exclude padding from automatic windows and draw it black. |
 
 ## Tags
 

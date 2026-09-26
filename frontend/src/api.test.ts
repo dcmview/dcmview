@@ -26,6 +26,8 @@ function completeRawHeaders(): Headers {
 		[RAW_FRAME_HEADERS.rescaleIntercept]: "-1024",
 		[RAW_FRAME_HEADERS.defaultWc]: "40",
 		[RAW_FRAME_HEADERS.defaultWw]: "80",
+		[RAW_FRAME_HEADERS.paddingLow]: "-2000",
+		[RAW_FRAME_HEADERS.paddingHigh]: "-1000",
 	});
 }
 
@@ -46,17 +48,23 @@ describe("parseRawFrameMetadata", () => {
 			rescaleIntercept: -1024,
 			defaultWc: 40,
 			defaultWw: 80,
+			paddingLow: -2000,
+			paddingHigh: -1000,
 		});
 	});
 
-	it("represents absent optional window headers as null", () => {
+	it("represents absent optional window and padding headers as null", () => {
 		const headers = completeRawHeaders();
 		headers.delete(RAW_FRAME_HEADERS.defaultWc);
 		headers.delete(RAW_FRAME_HEADERS.defaultWw);
+		headers.delete(RAW_FRAME_HEADERS.paddingLow);
+		headers.delete(RAW_FRAME_HEADERS.paddingHigh);
 
 		expect(parseRawFrameMetadata(headers)).toMatchObject({
 			defaultWc: null,
 			defaultWw: null,
+			paddingLow: null,
+			paddingHigh: null,
 		});
 	});
 

@@ -45,6 +45,8 @@ function frameFromSamples(
 			rescaleIntercept: 0,
 			defaultWc: null,
 			defaultWw: null,
+			paddingLow: null,
+			paddingHigh: null,
 			...overrides,
 		},
 	};
@@ -128,6 +130,16 @@ describe("renderRawFrameToRgba", () => {
 		]);
 	});
 
+	it("draws Pixel Padding black even for MONOCHROME1", () => {
+		const frame = frameFromSamples([0, 10, 100, 200], 8, 0, {
+			photometricInterpretation: "MONOCHROME1",
+			paddingLow: 0,
+			paddingHigh: 10,
+		});
+
+		expect(grayValues(renderRawFrameToRgba(frame, 150, 100))).toEqual([0, 0, 255, 0]);
+	});
+
 	it("treats width one as a threshold at center minus one half", () => {
 		const frame = frameFromSamples([49, 50], 8, 0);
 
@@ -136,6 +148,18 @@ describe("renderRawFrameToRgba", () => {
 });
 
 describe("raw window resolution", () => {
+	it("excludes Pixel Padding from automatic windows like the server", () => {
+		const padded = { paddingLow: 0, paddingHigh: 1000 };
+		const frame = frameFromSamples([0, 1000, 2000, 3000], 16, 0, padded);
+
+		expect(computeFullDynamicWindow(frame)).toEqual({ wc: 2500, ww: 1000 });
+		expect(computePercentileWindow(frame)).toEqual({ wc: 2500, ww: 1000 });
+
+		const allPadding = frameFromSamples([0, 1000], 16, 0, padded);
+		expect(computeFullDynamicWindow(allPadding)).toEqual({ wc: 500, ww: 1000 });
+	});
+
+
 	it("computes full dynamic range from signed 8-bit samples", () => {
 		const frame = frameFromSamples([-128, 0, 127], 8, 1, {
 			defaultWc: 40,

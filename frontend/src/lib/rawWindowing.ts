@@ -70,6 +70,13 @@ export function renderRawFrameToRgba(
 
 	const reader = createSampleReader(frame);
 	const lut = buildWindowLut(frame.metadata, reader, wc, Math.max(ww, 1));
+	const isPadding = paddingPredicate(frame.metadata);
+	if (isPadding) {
+		// Padding is background: black after any MONOCHROME1 inversion.
+		for (let index = 0; index < reader.size; index += 1) {
+			if (isPadding(index + reader.minRaw)) lut[index] = 0;
+		}
+	}
 	const numPixels = frame.metadata.rows * frame.metadata.columns;
 	const output = new Uint8ClampedArray(new ArrayBuffer(numPixels * 4));
 
@@ -110,14 +117,11 @@ export function resolveDisplayWindow(
 }
 
 export function computeFullDynamicWindow(frame: RawFrame): ResolvedWindow {
-	const reader = validatedSampleReader(frame);
-	const { rescaleSlope, rescaleIntercept, rows, columns } = frame.metadata;
-	const numPixels = rows * columns;
+	const values = windowSourceValues(frame);
 	let min = Infinity;
 	let max = -Infinity;
 
-	for (let index = 0; index < numPixels; index += 1) {
-		const value = reader.read(index) * rescaleSlope + rescaleIntercept;
+	for (const value of values) {
 		if (value < min) min = value;
 		if (value > max) max = value;
 	}
@@ -130,20 +134,44 @@ export function computeFullDynamicWindow(frame: RawFrame): ResolvedWindow {
 }
 
 export function computePercentileWindow(frame: RawFrame): ResolvedWindow {
-	const reader = validatedSampleReader(frame);
-	const { rescaleSlope, rescaleIntercept, rows, columns } = frame.metadata;
-	const numPixels = rows * columns;
-	const values = new Float64Array(numPixels);
-
-	for (let index = 0; index < numPixels; index += 1) {
-		values[index] = reader.read(index) * rescaleSlope + rescaleIntercept;
-	}
+	const values = windowSourceValues(frame);
+	const numPixels = values.length;
 
 	values.sort();
 	const p1 = values[Math.floor(numPixels * 0.01)];
 	const p99 = values[Math.min(Math.ceil(numPixels * 0.99), numPixels - 1)];
 	const width = Math.max(p99 - p1, 1);
 	return { wc: p1 + width / 2, ww: width };
+}
+
+/** Rescaled samples for automatic windows, excluding Pixel Padding like the server. */
+function windowSourceValues(frame: RawFrame): Float64Array {
+	const reader = validatedSampleReader(frame);
+	const { rescaleSlope, rescaleIntercept, rows, columns } = frame.metadata;
+	const numPixels = rows * columns;
+	const isPadding = paddingPredicate(frame.metadata);
+	const values = new Float64Array(numPixels);
+	let count = 0;
+
+	for (let index = 0; index < numPixels; index += 1) {
+		const raw = reader.read(index);
+		if (isPadding?.(raw)) continue;
+		values[count] = raw * rescaleSlope + rescaleIntercept;
+		count += 1;
+	}
+	if (count > 0 || !isPadding) return values.subarray(0, count);
+
+	// An all-padding frame falls back to every sample, as the server does.
+	for (let index = 0; index < numPixels; index += 1) {
+		values[index] = reader.read(index) * rescaleSlope + rescaleIntercept;
+	}
+	return values;
+}
+
+function paddingPredicate(metadata: RawFrameMetadata): ((raw: number) => boolean) | null {
+	const { paddingLow, paddingHigh } = metadata;
+	if (paddingLow === null || paddingHigh === null) return null;
+	return (raw) => raw >= paddingLow && raw <= paddingHigh;
 }
 
 function validatedSampleReader(frame: RawFrame): SampleReader {

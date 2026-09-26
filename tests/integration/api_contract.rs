@@ -321,6 +321,8 @@ async fn raw_frame_endpoint_exposes_frontend_metadata_header_contract() {
                 "optional raw header {} presence",
                 header_contract.name
             );
+        } else if matches!(header_contract.field, "paddingLow" | "paddingHigh") {
+            assert!(!present, "{} without Pixel Padding", header_contract.name);
         } else {
             assert!(present, "raw response missing {}", header_contract.name);
         }
@@ -441,7 +443,11 @@ fn assert_declared_response_headers(endpoint: &ApiEndpointContract, response: &T
         }
         ApiResponseHeadersKind::RawFrame => {
             assert_cache_header(endpoint, response);
-            for raw_header in RAW_FRAME_HEADERS {
+            // The padding pair is present only for files that declare Pixel Padding.
+            for raw_header in RAW_FRAME_HEADERS
+                .iter()
+                .filter(|header| !matches!(header.field, "paddingLow" | "paddingHigh"))
+            {
                 assert!(
                     response.maybe_header(raw_header.name).is_some(),
                     "{} is missing raw-frame header {}",
