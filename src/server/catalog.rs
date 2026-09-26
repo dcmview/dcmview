@@ -8,9 +8,8 @@ use crate::series::{
     SeriesFileInput, SeriesGroup, SeriesStack, SeriesWarning,
 };
 use crate::types::FileEntry;
-use std::collections::BTreeSet;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, RwLock};
+use std::collections::{BTreeSet, VecDeque};
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use tokio::sync::{futures::Notified, Notify};
 
 pub const DISCOVERY_RESPONSE_MAX_RECORDS: usize = 256;
@@ -18,18 +17,21 @@ pub const DISCOVERY_RESPONSE_MAX_RECORDS: usize = 256;
 #[derive(Clone)]
 pub struct FileRegistry {
     inner: Arc<RwLock<FileRegistryInner>>,
-    scanned: Arc<AtomicUsize>,
-    skipped: Arc<AtomicUsize>,
-    filtered: Arc<AtomicUsize>,
-    scan_complete: Arc<AtomicBool>,
     notify: Arc<Notify>,
 }
 
+/// Files and scan counters share one lock so every status read is a
+/// consistent snapshot (never "0 files, scan complete" mid-update).
 #[derive(Default)]
 struct FileRegistryInner {
     files: Vec<FileEntry>,
     summaries: Vec<FileSummary>,
-    discovery_ledger: Vec<DiscoveryRecord>,
+    /// The most recent discovery records, bounded to what the API returns.
+    recent_discovery: VecDeque<DiscoveryRecord>,
+    scanned: usize,
+    skipped: usize,
+    filtered: usize,
+    scan_complete: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -45,12 +47,16 @@ impl FileRegistry {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(RwLock::new(FileRegistryInner::default())),
-            scanned: Arc::new(AtomicUsize::new(0)),
-            skipped: Arc::new(AtomicUsize::new(0)),
-            filtered: Arc::new(AtomicUsize::new(0)),
-            scan_complete: Arc::new(AtomicBool::new(false)),
             notify: Arc::new(Notify::new()),
         }
+    }
+
+    fn read(&self) -> RwLockReadGuard<'_, FileRegistryInner> {
+        self.inner.read().expect("file registry lock poisoned")
+    }
+
+    fn write(&self) -> RwLockWriteGuard<'_, FileRegistryInner> {
+        self.inner.write().expect("file registry lock poisoned")
     }
 
     pub fn from_files(files: Vec<FileEntry>) -> Self {
@@ -64,7 +70,7 @@ impl FileRegistry {
     }
 
     pub fn insert(&self, mut file: FileEntry) -> usize {
-        let mut inner = self.inner.write().expect("file registry lock poisoned");
+        let mut inner = self.write();
         let index = inner.files.len();
         file.index = index;
         let summary = FileSummary::from(&file);
@@ -76,33 +82,34 @@ impl FileRegistry {
     }
 
     pub fn record_scanned(&self) {
-        self.scanned.fetch_add(1, Ordering::Relaxed);
+        self.write().scanned += 1;
     }
 
     pub fn record_skipped(&self) {
-        self.skipped.fetch_add(1, Ordering::Relaxed);
+        self.write().skipped += 1;
     }
 
     pub fn record_filtered(&self) {
-        self.filtered.fetch_add(1, Ordering::Relaxed);
+        self.write().filtered += 1;
     }
 
     pub fn record_discovery(&self, record: DiscoveryRecord) {
+        let mut inner = self.write();
         match record.disposition {
-            DiscoveryDisposition::Selected => self.record_scanned(),
-            DiscoveryDisposition::Skipped => self.record_skipped(),
-            DiscoveryDisposition::Filtered => self.record_filtered(),
+            DiscoveryDisposition::Selected => inner.scanned += 1,
+            DiscoveryDisposition::Skipped => inner.skipped += 1,
+            DiscoveryDisposition::Filtered => inner.filtered += 1,
         }
-        self.inner
-            .write()
-            .expect("file registry lock poisoned")
-            .discovery_ledger
-            .push(record);
+        if inner.recent_discovery.len() == DISCOVERY_RESPONSE_MAX_RECORDS {
+            inner.recent_discovery.pop_front();
+        }
+        inner.recent_discovery.push_back(record);
+        drop(inner);
         self.notify.notify_waiters();
     }
 
     pub fn mark_scan_complete(&self) {
-        self.scan_complete.store(true, Ordering::Relaxed);
+        self.write().scan_complete = true;
         self.notify.notify_waiters();
     }
 
@@ -111,28 +118,15 @@ impl FileRegistry {
     }
 
     pub fn get(&self, index: usize) -> Option<FileEntry> {
-        self.inner
-            .read()
-            .expect("file registry lock poisoned")
-            .files
-            .get(index)
-            .cloned()
+        self.read().files.get(index).cloned()
     }
 
     pub fn files_snapshot(&self) -> Vec<FileEntry> {
-        self.inner
-            .read()
-            .expect("file registry lock poisoned")
-            .files
-            .clone()
+        self.read().files.clone()
     }
 
     pub fn summaries_snapshot(&self) -> Vec<FileSummary> {
-        self.inner
-            .read()
-            .expect("file registry lock poisoned")
-            .summaries
-            .clone()
+        self.read().summaries.clone()
     }
 
     pub fn series_catalog_snapshot(&self) -> SeriesCatalogResponse {
@@ -144,49 +138,25 @@ impl FileRegistry {
                 .iter()
                 .map(|group| series_summary(group, &files))
                 .collect(),
-            scan_complete: self.scan_complete.load(Ordering::Relaxed),
+            scan_complete: self.read().scan_complete,
         }
     }
 
-    pub fn discovery_ledger_snapshot(&self) -> Vec<DiscoveryRecord> {
-        let mut records = self
-            .inner
-            .read()
-            .expect("file registry lock poisoned")
-            .discovery_ledger
-            .clone();
-        records.sort();
-        records
-    }
-
+    /// The most recent discovery records, sorted by path.
     pub fn discovery_response_snapshot(&self) -> Vec<DiscoveryRecord> {
-        let mut records = self
-            .inner
-            .read()
-            .expect("file registry lock poisoned")
-            .discovery_ledger
-            .iter()
-            .rev()
-            .take(DISCOVERY_RESPONSE_MAX_RECORDS)
-            .cloned()
-            .collect::<Vec<_>>();
+        let mut records = Vec::from(self.read().recent_discovery.clone());
         records.sort();
         records
     }
 
     pub fn status(&self) -> RegistryStatus {
-        let file_count = self
-            .inner
-            .read()
-            .expect("file registry lock poisoned")
-            .files
-            .len();
+        let inner = self.read();
         RegistryStatus {
-            file_count,
-            scanned: self.scanned.load(Ordering::Relaxed),
-            skipped: self.skipped.load(Ordering::Relaxed),
-            filtered: self.filtered.load(Ordering::Relaxed),
-            scan_complete: self.scan_complete.load(Ordering::Relaxed),
+            file_count: inner.files.len(),
+            scanned: inner.scanned,
+            skipped: inner.skipped,
+            filtered: inner.filtered,
+            scan_complete: inner.scan_complete,
         }
     }
 }
@@ -452,7 +422,7 @@ mod tests {
             reason: DiscoveryReason::FilterMismatch,
         });
 
-        let records = registry.discovery_ledger_snapshot();
+        let records = registry.discovery_response_snapshot();
         assert_eq!(
             records
                 .iter()
@@ -474,8 +444,8 @@ mod tests {
         assert_eq!(status.filtered, 1);
 
         let clone = registry.clone();
-        assert_eq!(clone.discovery_ledger_snapshot(), records);
-        assert!(FileRegistry::new().discovery_ledger_snapshot().is_empty());
+        assert_eq!(clone.discovery_response_snapshot(), records);
+        assert!(FileRegistry::new().discovery_response_snapshot().is_empty());
     }
 
     #[test]
@@ -500,8 +470,9 @@ mod tests {
             ))
         );
         assert_eq!(
-            registry.discovery_ledger_snapshot().len(),
-            DISCOVERY_RESPONSE_MAX_RECORDS + 2
+            registry.status().scanned,
+            DISCOVERY_RESPONSE_MAX_RECORDS + 2,
+            "counts cover every record even though only recent ones are kept"
         );
     }
 }

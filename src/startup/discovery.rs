@@ -612,7 +612,7 @@ mod tests {
         assert!(spawner.finished.load(Ordering::Acquire));
         assert_eq!(registry.status().file_count, 1);
         assert_eq!(
-            registry.discovery_ledger_snapshot(),
+            registry.discovery_response_snapshot(),
             vec![loader::DiscoveryRecord {
                 path: PathBuf::from("/synthetic/scan.dcm"),
                 disposition: loader::DiscoveryDisposition::Selected,
