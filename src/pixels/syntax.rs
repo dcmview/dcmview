@@ -1,13 +1,109 @@
 use crate::api::contracts::SupportState;
-use crate::types::{FileEntry, TransferSyntaxClass};
+use crate::types::{FileEntry, NativePixelDataKind};
+
+/// The decoder that handles one transfer syntax's pixel data.
+///
+/// This table is the single source for both frame dispatch (`service.rs`) and
+/// the support state reported to clients (`classify_pixel_support`), so a
+/// syntax cannot be advertised under one decoder and routed to another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Codec {
+    /// Implicit/Explicit VR Little Endian, Explicit VR Big Endian, and
+    /// Deflated Explicit VR Little Endian.
+    Native,
+    /// Deflated Image Frame Compression, limited to one-bit monochrome frames.
+    DeflatedImageFrame,
+    JpegBaseline,
+    JpegLossless,
+    /// Only the lossless JPEG 2000 process.
+    Jpeg2000,
+    /// Only the lossless JPEG-LS process.
+    JpegLs,
+    /// Only JPEG XL Lossless.
+    JpegXl,
+    Rle,
+}
+
+/// What a codec's decoded three-sample frame holds for a photometric
+/// interpretation, which fixes the conversion to display RGB.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ColorSamples {
+    /// Red, green, and blue samples; any YCbCr in the codestream has already
+    /// been converted by the codec library.
+    Rgb,
+    /// Full-resolution Y, Cb, Cr samples still to be converted with the
+    /// YBR_FULL equations of PS3.3 C.7.6.3.1.2.
+    YbrFull,
+}
+
+pub fn codec_for_syntax(uid: &str) -> Option<Codec> {
+    match uid {
+        "1.2.840.10008.1.2"
+        | "1.2.840.10008.1.2.1"
+        | "1.2.840.10008.1.2.2"
+        | "1.2.840.10008.1.2.1.99" => Some(Codec::Native),
+        super::deflated_frame::DEFLATED_IMAGE_FRAME_UID => Some(Codec::DeflatedImageFrame),
+        // Extended 12-bit (.51) stays a controlled unsupported syntax.
+        "1.2.840.10008.1.2.4.50" => Some(Codec::JpegBaseline),
+        "1.2.840.10008.1.2.4.57" | "1.2.840.10008.1.2.4.70" => Some(Codec::JpegLossless),
+        "1.2.840.10008.1.2.4.90" => Some(Codec::Jpeg2000),
+        "1.2.840.10008.1.2.4.80" => Some(Codec::JpegLs),
+        "1.2.840.10008.1.2.4.110" => Some(Codec::JpegXl),
+        "1.2.840.10008.1.2.5" => Some(Codec::Rle),
+        _ => None,
+    }
+}
+
+impl Codec {
+    /// The three-sample layouts this codec displays, and what its decoder
+    /// yields for each. Display decoders convert color through this table, so
+    /// every layout it lists renders; a layout it omits is reported
+    /// unsupported.
+    pub(crate) fn color_samples(
+        self,
+        photometric: &str,
+        bits_allocated: u32,
+    ) -> Option<ColorSamples> {
+        use ColorSamples::{Rgb, YbrFull};
+        match (self, bits_allocated, photometric) {
+            (Self::Native, 8, "RGB") => Some(Rgb),
+            // native_layout.rs expands 4:2:2 chroma to full resolution first.
+            (Self::Native, 8, "YBR_FULL" | "YBR_FULL_422") => Some(YbrFull),
+            // The JPEG decoder applies the codestream's YCbCr transform itself.
+            (Self::JpegBaseline, 8, "RGB" | "YBR_FULL" | "YBR_FULL_422") => Some(Rgb),
+            (Self::JpegLossless, 8, "RGB") => Some(Rgb),
+            // OpenJPEG applies the inverse RCT/ICT itself.
+            (Self::Jpeg2000, 8 | 16, "RGB" | "YBR_RCT" | "YBR_ICT") => Some(Rgb),
+            (Self::JpegXl, 8, "RGB") => Some(Rgb),
+            (Self::Rle, 8, "RGB") => Some(Rgb),
+            (Self::Rle, 8, "YBR_FULL") => Some(YbrFull),
+            _ => None,
+        }
+    }
+
+    /// Whether this codec displays PALETTE COLOR indices through the lookup tables.
+    pub(crate) fn displays_palette(self, bits_allocated: u32) -> bool {
+        matches!(self, Self::Native | Self::Rle) && bits_allocated == 8
+    }
+
+    fn supports_precision(self, kind: NativePixelDataKind, bits_allocated: u32) -> bool {
+        match (self, kind) {
+            (Self::Native, NativePixelDataKind::Integer) => {
+                matches!(bits_allocated, 1 | 8 | 16 | 32)
+            }
+            (Self::Native, NativePixelDataKind::Float32) => bits_allocated == 32,
+            (Self::Native, NativePixelDataKind::Float64) => bits_allocated == 64,
+            (_, NativePixelDataKind::Integer) => matches!(bits_allocated, 8 | 16),
+            _ => false,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PixelSupportReason {
     PixelDataAbsentOrUnrecognized,
-    RleLosslessNotSupported,
     JpegLsNotSupported,
     JpegXlNotSupported,
-    DeflatedImageFrameNotSupported,
     TransferSyntaxNotSupported,
     InvalidGeometry,
     BitPackedPixelsNotSupported,
@@ -23,12 +119,8 @@ impl PixelSupportReason {
     pub const fn id(self) -> &'static str {
         match self {
             Self::PixelDataAbsentOrUnrecognized => "pixel_data.absent_or_unrecognized",
-            Self::RleLosslessNotSupported => "transfer_syntax.rle_lossless_not_supported",
             Self::JpegLsNotSupported => "transfer_syntax.jpeg_ls_not_supported",
             Self::JpegXlNotSupported => "transfer_syntax.jpeg_xl_not_supported",
-            Self::DeflatedImageFrameNotSupported => {
-                "transfer_syntax.deflated_image_frame_not_supported"
-            }
             Self::TransferSyntaxNotSupported => "transfer_syntax.not_supported",
             Self::InvalidGeometry => "pixel_layout.invalid_geometry",
             Self::BitPackedPixelsNotSupported => "pixel_layout.bit_packed_not_supported",
@@ -79,35 +171,21 @@ impl PixelSupport {
     }
 }
 
-pub fn classify_transfer_syntax(uid: &str) -> TransferSyntaxClass {
-    match uid {
-        // JPEG Baseline is qualified; Extended 12-bit remains controlled unsupported.
-        "1.2.840.10008.1.2.4.50" => TransferSyntaxClass::Jpeg,
-        // JPEG Lossless: browsers cannot decode — must be decoded server-side
-        "1.2.840.10008.1.2.4.57" | "1.2.840.10008.1.2.4.70" => TransferSyntaxClass::JpegLossless,
-        // Only the lossless JPEG 2000 process is qualified.
-        "1.2.840.10008.1.2.4.90" => TransferSyntaxClass::Jpeg2000,
-        "1.2.840.10008.1.2.4.110" => TransferSyntaxClass::JpegXl,
-        "1.2.840.10008.1.2"
-        | "1.2.840.10008.1.2.1"
-        | "1.2.840.10008.1.2.2"
-        | "1.2.840.10008.1.2.1.99" => TransferSyntaxClass::Uncompressed,
-        "1.2.840.10008.1.2.4.80" => TransferSyntaxClass::JpegLs,
-        "1.2.840.10008.1.2.5" => TransferSyntaxClass::Rle,
-        _ => TransferSyntaxClass::Unsupported,
-    }
-}
-
-/// Describe the viewer's current display capability without changing decode routing.
+/// Describe the viewer's display capability for a file from the codec table.
 ///
-/// This classifier describes the layouts that the active display pipeline handles;
-/// semantic interpretation such as segmentation or parametric mapping is separate.
+/// Semantic interpretation such as segmentation or parametric mapping is
+/// separate.
 pub fn classify_pixel_support(file: &FileEntry) -> PixelSupport {
     if !file.has_pixels {
         return PixelSupport::metadata_only(PixelSupportReason::PixelDataAbsentOrUnrecognized);
     }
+    let Some(codec) = codec_for_syntax(&file.transfer_syntax_uid) else {
+        return PixelSupport::unsupported(unsupported_transfer_syntax_reason(
+            &file.transfer_syntax_uid,
+        ));
+    };
 
-    if file.transfer_syntax_uid == super::deflated_frame::DEFLATED_IMAGE_FRAME_UID {
+    if codec == Codec::DeflatedImageFrame {
         return if file.rows > 0
             && file.columns > 0
             && file.bits_allocated == 1
@@ -123,26 +201,9 @@ pub fn classify_pixel_support(file: &FileEntry) -> PixelSupport {
         };
     }
 
-    let syntax_class = classify_transfer_syntax(&file.transfer_syntax_uid);
-    match syntax_class {
-        TransferSyntaxClass::Unsupported => {
-            return PixelSupport::unsupported(unsupported_transfer_syntax_reason(
-                &file.transfer_syntax_uid,
-            ));
-        }
-        TransferSyntaxClass::Rle
-        | TransferSyntaxClass::JpegLs
-        | TransferSyntaxClass::Jpeg
-        | TransferSyntaxClass::JpegLossless
-        | TransferSyntaxClass::Jpeg2000
-        | TransferSyntaxClass::JpegXl
-        | TransferSyntaxClass::Uncompressed => {}
-    }
-
     if file.rows == 0 || file.columns == 0 {
         return PixelSupport::unsupported(PixelSupportReason::InvalidGeometry);
     }
-
     if file.samples_per_pixel == 0 {
         return PixelSupport::unsupported(PixelSupportReason::SamplesPerPixelNotSupported);
     }
@@ -151,21 +212,8 @@ pub fn classify_pixel_support(file: &FileEntry) -> PixelSupport {
         .series_metadata
         .native_pixel
         .pixel_data_kind
-        .unwrap_or(crate::types::NativePixelDataKind::Integer);
-    let supported_precision = match syntax_class {
-        TransferSyntaxClass::Uncompressed => match pixel_kind {
-            crate::types::NativePixelDataKind::Integer => {
-                matches!(file.bits_allocated, 1 | 8 | 16 | 32)
-            }
-            crate::types::NativePixelDataKind::Float32 => file.bits_allocated == 32,
-            crate::types::NativePixelDataKind::Float64 => file.bits_allocated == 64,
-        },
-        _ => {
-            pixel_kind == crate::types::NativePixelDataKind::Integer
-                && matches!(file.bits_allocated, 8 | 16)
-        }
-    };
-    if !supported_precision {
+        .unwrap_or(NativePixelDataKind::Integer);
+    if !codec.supports_precision(pixel_kind, file.bits_allocated) {
         return PixelSupport::unsupported(if file.bits_allocated == 1 {
             PixelSupportReason::BitPackedPixelsNotSupported
         } else {
@@ -176,18 +224,13 @@ pub fn classify_pixel_support(file: &FileEntry) -> PixelSupport {
     let photometric = file.photometric_interpretation.trim().to_ascii_uppercase();
     match (file.samples_per_pixel, photometric.as_str()) {
         (1, "MONOCHROME1" | "MONOCHROME2") => PixelSupport::renderable(),
-        (1, "PALETTE COLOR")
-            if matches!(
-                syntax_class,
-                TransferSyntaxClass::Rle | TransferSyntaxClass::Uncompressed
-            ) && file.bits_allocated == 8 =>
-        {
+        (1, "PALETTE COLOR") if codec.displays_palette(file.bits_allocated) => {
             PixelSupport::renderable()
         }
         (1, "PALETTE COLOR") => {
             PixelSupport::unsupported(PixelSupportReason::PaletteColorNotSupported)
         }
-        (3, color) if renders_color(syntax_class, color, file.bits_allocated) => {
+        (3, color) if codec.color_samples(color, file.bits_allocated).is_some() => {
             PixelSupport::renderable()
         }
         (3, "RGB" | "YBR_FULL" | "YBR_FULL_422" | "YBR_ICT" | "YBR_RCT") => {
@@ -200,39 +243,12 @@ pub fn classify_pixel_support(file: &FileEntry) -> PixelSupport {
     }
 }
 
-/// Three-sample layouts each display decoder actually converts to RGB.
-///
-/// This must stay in step with the color arms of the codec modules; a layout
-/// listed here but rejected by its decoder would be advertised as renderable
-/// and then fail on every frame request.
-fn renders_color(syntax_class: TransferSyntaxClass, photometric: &str, bits: u32) -> bool {
-    match syntax_class {
-        // dicom-pixeldata converts baseline YBR to RGB; native.rs expands 4:2:2.
-        TransferSyntaxClass::Jpeg | TransferSyntaxClass::Uncompressed => {
-            bits == 8 && matches!(photometric, "RGB" | "YBR_FULL" | "YBR_FULL_422")
-        }
-        // rle.rs normalizes RGB and YBR_FULL byte planes only.
-        TransferSyntaxClass::Rle => bits == 8 && matches!(photometric, "RGB" | "YBR_FULL"),
-        // Lossless JPEG and JPEG XL decode without a color transform.
-        TransferSyntaxClass::JpegLossless | TransferSyntaxClass::JpegXl => {
-            bits == 8 && photometric == "RGB"
-        }
-        // OpenJPEG applies the inverse RCT/ICT, so every JPEG 2000 color
-        // photometric decodes to RGB components.
-        TransferSyntaxClass::Jpeg2000 => {
-            matches!(bits, 8 | 16) && matches!(photometric, "RGB" | "YBR_RCT" | "YBR_ICT")
-        }
-        TransferSyntaxClass::JpegLs | TransferSyntaxClass::Unsupported => false,
-    }
-}
-
 fn unsupported_transfer_syntax_reason(uid: &str) -> PixelSupportReason {
     match uid {
         "1.2.840.10008.1.2.4.81" => PixelSupportReason::JpegLsNotSupported,
         "1.2.840.10008.1.2.4.111" | "1.2.840.10008.1.2.4.112" => {
             PixelSupportReason::JpegXlNotSupported
         }
-        "1.2.840.10008.1.2.8.1" => PixelSupportReason::DeflatedImageFrameNotSupported,
         _ => PixelSupportReason::TransferSyntaxNotSupported,
     }
 }

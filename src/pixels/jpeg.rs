@@ -5,13 +5,16 @@ use bytes::Bytes;
 use dicom_pixeldata::PixelDecoder;
 use tokio::task;
 
-use super::color::encode_rgb8_png_with_icc;
+use super::color::{color_samples_to_rgb8, encode_rgb8_png_with_icc};
 use super::encapsulated::open_for_frame_decode;
 use super::error::{PixelError, PixelResult};
 use super::icc::select_icc_profile;
 use super::render::{encode_windowed_luminance_png, LuminanceRenderOptions};
+use super::syntax::{Codec, ColorSamples};
 
+/// Displays one JPEG Baseline or JPEG Lossless frame decoded by dicom-pixeldata.
 pub(crate) async fn decode_compressed_frame_to_png(
+    codec: Codec,
     file: FileEntry,
     frame: u32,
     requested_wc: Option<f64>,
@@ -20,6 +23,7 @@ pub(crate) async fn decode_compressed_frame_to_png(
 ) -> Result<Bytes> {
     task::spawn_blocking(move || {
         decode_compressed_frame_to_png_blocking(
+            codec,
             &file,
             frame,
             requested_wc,
@@ -32,6 +36,7 @@ pub(crate) async fn decode_compressed_frame_to_png(
 }
 
 fn decode_compressed_frame_to_png_blocking(
+    codec: Codec,
     file: &FileEntry,
     frame: u32,
     requested_wc: Option<f64>,
@@ -55,7 +60,17 @@ fn decode_compressed_frame_to_png_blocking(
                 decoded.bits_allocated()
             ));
         }
-        let rgb = decoded.frame_data(0)?.to_vec();
+        let decoded_frame = decoded.frame_data(0)?;
+        let photometric = file.photometric_interpretation.trim().to_ascii_uppercase();
+        // The table names the layouts whose samples still need converting;
+        // any other three-sample frame is displayed as the decoder produced it.
+        let rgb = match codec.color_samples(&photometric, 8) {
+            Some(samples @ ColorSamples::YbrFull) => {
+                let pixel_count = decoded_frame.len() / 3;
+                color_samples_to_rgb8(samples, decoded_frame, pixel_count, 0)?
+            }
+            Some(ColorSamples::Rgb) | None => decoded_frame.to_vec(),
+        };
         return encode_rgb8_png_with_icc(
             rgb,
             decoded.columns(),
@@ -251,6 +266,7 @@ fn decode_raw_jpeg_lossless_blocking(
 mod tests {
     use super::{decode_compressed_frame_to_png_blocking, read_raw_jpeg_samples_blocking};
     use crate::api::contracts::WindowMode;
+    use crate::pixels::Codec;
     use crate::types::FileEntry;
     use dicom_core::{value::PixelFragmentSequence, DataElement, PrimitiveValue, VR};
     use dicom_dictionary_std::{tags, uids};
@@ -375,9 +391,15 @@ mod tests {
         assert!(pixels[2][2] > pixels[2][0] && pixels[2][2] > pixels[2][1]);
         assert!(pixels[3].iter().all(|value| *value > 200));
 
-        let png =
-            decode_compressed_frame_to_png_blocking(&file, 0, None, None, WindowMode::Default)
-                .unwrap();
+        let png = decode_compressed_frame_to_png_blocking(
+            Codec::JpegBaseline,
+            &file,
+            0,
+            None,
+            None,
+            WindowMode::Default,
+        )
+        .unwrap();
         let display = image::load_from_memory(&png).unwrap().to_rgb8();
         assert_eq!(display.dimensions(), (2, 2));
         let display_pixels = display.into_raw();

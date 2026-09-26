@@ -1,14 +1,13 @@
 use crate::api::contracts::{RawFrameMetadata, WindowMode};
 use crate::types::{
-    FileEntry, FrameCacheKey, NativePixelDataKind, RawFrameCacheKey, TransferSyntaxClass,
-    WindowRequest,
+    FileEntry, FrameCacheKey, NativePixelDataKind, RawFrameCacheKey, WindowRequest,
 };
 use bytes::Bytes;
 use std::sync::{Arc, Mutex};
 
 use super::cache::{FrameCache, RawFrameCache};
 use super::deflated_frame::{
-    decode_deflated_binary_frame_to_png, decode_raw_deflated_binary_frame, DEFLATED_IMAGE_FRAME_UID,
+    decode_deflated_binary_frame_to_png, decode_raw_deflated_binary_frame,
 };
 use super::error::{PixelError, PixelResult};
 use super::header::open_header;
@@ -20,7 +19,7 @@ use super::jpegls::{decode_jpeg_ls_to_png, decode_raw_jpeg_ls};
 use super::jpegxl::{decode_jpeg_xl_to_png, decode_raw_jpeg_xl};
 use super::native::{decode_uncompressed_to_png, read_raw_uncompressed};
 use super::rle::{decode_raw_rle, decode_rle_to_png};
-use super::syntax::classify_transfer_syntax;
+use super::syntax::{codec_for_syntax, Codec};
 use super::window::read_pixel_padding_range;
 
 #[derive(Debug, Clone)]
@@ -47,13 +46,7 @@ pub async fn load_raw_frame(
         return Err(PixelError::FrameOutOfRange);
     }
 
-    let is_deflated_image_frame = file.transfer_syntax_uid == DEFLATED_IMAGE_FRAME_UID;
-    let syntax_class = classify_transfer_syntax(&file.transfer_syntax_uid);
-    if !is_deflated_image_frame && syntax_class == TransferSyntaxClass::Unsupported {
-        return Err(PixelError::UnsupportedTransferSyntax(
-            file.transfer_syntax_uid.clone(),
-        ));
-    }
+    let codec = codec_or_unsupported(&file)?;
 
     let key = RawFrameCacheKey {
         file_index: file.index,
@@ -70,27 +63,21 @@ pub async fn load_raw_frame(
         }
     }
 
-    let (body, mut metadata) = if is_deflated_image_frame {
-        decode_raw_deflated_binary_frame(file.clone(), request.frame).await?
-    } else {
-        match syntax_class {
-            TransferSyntaxClass::Jpeg => read_raw_jpeg_samples(file.clone(), request.frame)
-                .await
-                .map_err(PixelError::raw_decode)?,
-            TransferSyntaxClass::JpegLossless => {
-                decode_raw_jpeg_lossless(file.clone(), request.frame).await?
-            }
-            TransferSyntaxClass::Jpeg2000 => {
-                decode_raw_jp2_samples(file.clone(), request.frame).await?
-            }
-            TransferSyntaxClass::JpegXl => decode_raw_jpeg_xl(file.clone(), request.frame).await?,
-            TransferSyntaxClass::JpegLs => decode_raw_jpeg_ls(file.clone(), request.frame).await?,
-            TransferSyntaxClass::Uncompressed => read_raw_uncompressed(file.clone(), request.frame)
-                .await
-                .map_err(PixelError::raw_decode)?,
-            TransferSyntaxClass::Rle => decode_raw_rle(file.clone(), request.frame).await?,
-            _ => unreachable!("non-raw syntaxes filtered above"),
+    let (body, mut metadata) = match codec {
+        Codec::DeflatedImageFrame => {
+            decode_raw_deflated_binary_frame(file.clone(), request.frame).await?
         }
+        Codec::JpegBaseline => read_raw_jpeg_samples(file.clone(), request.frame)
+            .await
+            .map_err(PixelError::raw_decode)?,
+        Codec::JpegLossless => decode_raw_jpeg_lossless(file.clone(), request.frame).await?,
+        Codec::Jpeg2000 => decode_raw_jp2_samples(file.clone(), request.frame).await?,
+        Codec::JpegXl => decode_raw_jpeg_xl(file.clone(), request.frame).await?,
+        Codec::JpegLs => decode_raw_jpeg_ls(file.clone(), request.frame).await?,
+        Codec::Native => read_raw_uncompressed(file.clone(), request.frame)
+            .await
+            .map_err(PixelError::raw_decode)?,
+        Codec::Rle => decode_raw_rle(file.clone(), request.frame).await?,
     };
     if let Some((low, high)) = raw_padding_bounds(&file, &metadata).await {
         metadata.padding_low = Some(low);
@@ -161,8 +148,7 @@ pub async fn load_frame(
         request.window_mode,
     )
     .map_err(|error| PixelError::InvalidWindow(error.to_string()))?;
-    let syntax_class = classify_transfer_syntax(&file.transfer_syntax_uid);
-    let is_deflated_image_frame = file.transfer_syntax_uid == DEFLATED_IMAGE_FRAME_UID;
+    let codec = codec_or_unsupported(&file)?;
     let key = FrameCacheKey::new(
         file.index,
         request.frame,
@@ -181,107 +167,30 @@ pub async fn load_frame(
         }
     }
 
-    let (body, content_type) = if is_deflated_image_frame {
-        (
-            decode_deflated_binary_frame_to_png(
-                file.clone(),
-                request.frame,
-                window.center(),
-                window.width(),
-                window.mode(),
-            )
-            .await?,
-            "image/png",
-        )
-    } else {
-        match syntax_class {
-            TransferSyntaxClass::Jpeg => (
-                decode_compressed_frame_to_png(
-                    file.clone(),
-                    request.frame,
-                    window.center(),
-                    window.width(),
-                    window.mode(),
-                )
-                .await
-                .map_err(PixelError::frame_decode)?,
-                "image/png",
-            ),
-            TransferSyntaxClass::JpegLossless => (
-                decode_compressed_frame_to_png(
-                    file.clone(),
-                    request.frame,
-                    window.center(),
-                    window.width(),
-                    window.mode(),
-                )
-                .await
-                .map_err(PixelError::frame_decode)?,
-                "image/png",
-            ),
-            TransferSyntaxClass::Jpeg2000 => (
-                decode_jp2_fragment_to_png(
-                    file.clone(),
-                    request.frame,
-                    window.center(),
-                    window.width(),
-                    window.mode(),
-                )
-                .await
-                .map_err(PixelError::frame_decode)?,
-                "image/png",
-            ),
-            TransferSyntaxClass::JpegXl => (
-                decode_jpeg_xl_to_png(
-                    file.clone(),
-                    request.frame,
-                    window.center(),
-                    window.width(),
-                    window.mode(),
-                )
-                .await?,
-                "image/png",
-            ),
-            TransferSyntaxClass::JpegLs => (
-                decode_jpeg_ls_to_png(
-                    file.clone(),
-                    request.frame,
-                    window.center(),
-                    window.width(),
-                    window.mode(),
-                )
-                .await?,
-                "image/png",
-            ),
-            TransferSyntaxClass::Uncompressed => (
-                decode_uncompressed_to_png(
-                    file.clone(),
-                    request.frame,
-                    window.center(),
-                    window.width(),
-                    window.mode(),
-                )
-                .await
-                .map_err(PixelError::frame_decode)?,
-                "image/png",
-            ),
-            TransferSyntaxClass::Rle => (
-                decode_rle_to_png(
-                    file.clone(),
-                    request.frame,
-                    window.center(),
-                    window.width(),
-                    window.mode(),
-                )
-                .await?,
-                "image/png",
-            ),
-            TransferSyntaxClass::Unsupported => {
-                return Err(PixelError::UnsupportedTransferSyntax(
-                    file.transfer_syntax_uid.clone(),
-                ));
-            }
+    let (frame, center, width, mode) = (
+        request.frame,
+        window.center(),
+        window.width(),
+        window.mode(),
+    );
+    let body = match codec {
+        Codec::DeflatedImageFrame => {
+            decode_deflated_binary_frame_to_png(file.clone(), frame, center, width, mode).await?
         }
+        Codec::JpegBaseline | Codec::JpegLossless => {
+            decode_compressed_frame_to_png(codec, file.clone(), frame, center, width, mode)
+                .await
+                .map_err(PixelError::frame_decode)?
+        }
+        Codec::Jpeg2000 => decode_jp2_fragment_to_png(file.clone(), frame, center, width, mode)
+            .await
+            .map_err(PixelError::frame_decode)?,
+        Codec::JpegXl => decode_jpeg_xl_to_png(file.clone(), frame, center, width, mode).await?,
+        Codec::JpegLs => decode_jpeg_ls_to_png(file.clone(), frame, center, width, mode).await?,
+        Codec::Native => decode_uncompressed_to_png(file.clone(), frame, center, width, mode)
+            .await
+            .map_err(PixelError::frame_decode)?,
+        Codec::Rle => decode_rle_to_png(file.clone(), frame, center, width, mode).await?,
     };
 
     if let Ok(mut lock) = cache.lock() {
@@ -290,7 +199,12 @@ pub async fn load_frame(
 
     Ok(FrameResponse {
         body,
-        content_type,
+        content_type: "image/png",
         cache_hit: false,
     })
+}
+
+fn codec_or_unsupported(file: &FileEntry) -> PixelResult<Codec> {
+    codec_for_syntax(&file.transfer_syntax_uid)
+        .ok_or_else(|| PixelError::UnsupportedTransferSyntax(file.transfer_syntax_uid.clone()))
 }

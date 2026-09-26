@@ -13,13 +13,14 @@ use std::fs::File;
 use std::io::{BufReader, Seek, SeekFrom};
 use tokio::task;
 
-use super::color::{encode_rgb8_png_with_icc, rgb8_interleaved, ybr_full_to_rgb8};
+use super::color::{color_samples_to_rgb8, encode_rgb8_png_with_icc};
 use super::header::open_header;
 use super::icc::select_icc_profile;
 use super::native_layout::{native_pixel_element_tag, NativeByteOrder, NativeFrameLayout};
 use super::palette::palette_indices_to_rgb8;
 use super::render::{encode_windowed_luminance_png, LuminanceRenderOptions};
 use super::stored_bits::canonicalize_integer_samples;
+use super::syntax::Codec;
 
 pub(crate) async fn decode_uncompressed_to_png(
     file: FileEntry,
@@ -66,16 +67,19 @@ fn decode_uncompressed_to_png_blocking(
         })
         .ok_or_else(|| anyhow!("frame decode failed: invalid image geometry"))?;
     let photometric = file.photometric_interpretation.trim().to_ascii_uppercase();
-    let color_layout = matches!(
-        (samples_per_pixel, photometric.as_str()),
-        (3, "RGB" | "YBR_FULL" | "YBR_FULL_422") | (1, "PALETTE COLOR")
-    );
-    if bits_allocated == 8 && color_layout {
+    let color_samples = match samples_per_pixel {
+        3 => Codec::Native.color_samples(&photometric, bits_allocated),
+        _ => None,
+    };
+    let palette = samples_per_pixel == 1
+        && photometric == "PALETTE COLOR"
+        && Codec::Native.displays_palette(bits_allocated);
+    if color_samples.is_some() || palette {
         let object = open_header(&file.path)?;
-        let rgb = match photometric.as_str() {
-            "RGB" => rgb8_interleaved(&frame_bytes, pixel_count, 0)?,
-            "PALETTE COLOR" => palette_indices_to_rgb8(&object, &frame_bytes, bits_allocated)?,
-            _ => ybr_full_to_rgb8(&frame_bytes, pixel_count, 0)?,
+        // The display frame is already color-by-pixel with 4:2:2 chroma expanded.
+        let rgb = match color_samples {
+            Some(samples) => color_samples_to_rgb8(samples, &frame_bytes, pixel_count, 0)?,
+            None => palette_indices_to_rgb8(&object, &frame_bytes, bits_allocated)?,
         };
         return encode_rgb8_png_with_icc(rgb, columns, rows, select_icc_profile(&object))
             .context("frame decode failed: color PNG encoding failed");

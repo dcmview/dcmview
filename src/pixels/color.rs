@@ -3,6 +3,21 @@ use bytes::Bytes;
 use image::{codecs::png::PngEncoder, ExtendedColorType, ImageEncoder};
 use std::io::Cursor;
 
+use super::syntax::ColorSamples;
+
+/// Converts a decoded three-sample frame to interleaved display RGB.
+pub(super) fn color_samples_to_rgb8(
+    samples: ColorSamples,
+    stored: &[u8],
+    pixel_count: usize,
+    planar_configuration: u32,
+) -> Result<Vec<u8>> {
+    match samples {
+        ColorSamples::Rgb => rgb8_interleaved(stored, pixel_count, planar_configuration),
+        ColorSamples::YbrFull => ybr_full_to_rgb8(stored, pixel_count, planar_configuration),
+    }
+}
+
 pub(super) fn rgb8_interleaved(
     stored: &[u8],
     pixel_count: usize,

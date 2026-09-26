@@ -5,11 +5,12 @@ use bytes::Bytes;
 use dicom_pixeldata::PixelDecoder;
 use tokio::task;
 
-use super::color::encode_rgb8_png_with_icc;
+use super::color::{color_samples_to_rgb8, encode_rgb8_png_with_icc};
 use super::encapsulated::open_for_frame_decode;
 use super::error::{PixelError, PixelResult};
 use super::icc::select_icc_profile;
 use super::render::{encode_windowed_luminance_png, LuminanceRenderOptions};
+use super::syntax::Codec;
 
 struct DecodedJpegXlFrame {
     bytes: Vec<u8>,
@@ -30,14 +31,19 @@ pub(crate) async fn decode_jpeg_xl_to_png(
     task::spawn_blocking(move || {
         let decoded = decode_frame(&file, frame).map_err(PixelError::frame_decode)?;
         match (decoded.bits_allocated, decoded.samples_per_pixel) {
-            (8, 3) if file.photometric_interpretation.trim().eq_ignore_ascii_case("RGB") => {
-                encode_rgb8_png_with_icc(
-                    decoded.bytes,
-                    decoded.columns,
-                    decoded.rows,
-                    decoded.icc_profile,
-                )
-                .map_err(PixelError::frame_decode)
+            (8, 3) => {
+                let photometric = file.photometric_interpretation.trim().to_ascii_uppercase();
+                let samples = Codec::JpegXl.color_samples(&photometric, 8).ok_or_else(|| {
+                    PixelError::UnsupportedLayout(format!(
+                        "JPEG XL Lossless display does not support PhotometricInterpretation {}",
+                        file.photometric_interpretation
+                    ))
+                })?;
+                let pixel_count = decoded.bytes.len() / 3;
+                let rgb = color_samples_to_rgb8(samples, &decoded.bytes, pixel_count, 0)
+                    .map_err(PixelError::frame_decode)?;
+                encode_rgb8_png_with_icc(rgb, decoded.columns, decoded.rows, decoded.icc_profile)
+                    .map_err(PixelError::frame_decode)
             }
             (8, 1) => {
                 let samples = decoded.bytes.into_iter().map(f64::from).collect::<Vec<_>>();

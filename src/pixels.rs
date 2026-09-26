@@ -32,6 +32,6 @@ pub use service::{
     load_frame, load_raw_frame, FrameRequest, FrameResponse, RawFrameRequest, RawFrameResponse,
 };
 pub use syntax::{
-    classify_pixel_support, classify_transfer_syntax, PixelSupport, PixelSupportReason,
+    classify_pixel_support, codec_for_syntax, Codec, PixelSupport, PixelSupportReason,
 };
 pub use window::{apply_window, resolve_window, resolve_window_with_mode};

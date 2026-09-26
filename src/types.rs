@@ -476,18 +476,6 @@ pub struct LoadReport {
     pub searched_recursive: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TransferSyntaxClass {
-    Jpeg,
-    JpegLossless,
-    Jpeg2000,
-    JpegXl,
-    Uncompressed,
-    JpegLs,
-    Rle,
-    Unsupported,
-}
-
 #[derive(Debug, Clone)]
 pub struct ResolvedWindow {
     pub center: f64,

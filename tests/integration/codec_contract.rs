@@ -3,8 +3,9 @@ use axum::http::StatusCode;
 use axum_test::{TestResponse, TestServer};
 use dcmview::loader::{self, DiscoverOptions};
 use dcmview::pixels;
+use dcmview::pixels::Codec;
 use dcmview::server;
-use dcmview::types::{TransferSyntaxClass, WindowMode, WindowPreset};
+use dcmview::types::{WindowMode, WindowPreset};
 use image::ImageFormat;
 use std::path::PathBuf;
 use tempfile::tempdir;
@@ -167,10 +168,7 @@ async fn deflated_explicit_vr_little_endian_satisfies_display_and_raw_contracts(
     .expect("discover deflated fixture");
     assert_eq!(report.files.len(), 1);
     assert_eq!(report.files[0].transfer_syntax_uid, UID);
-    assert_eq!(
-        pixels::classify_transfer_syntax(UID),
-        TransferSyntaxClass::Uncompressed
-    );
+    assert_eq!(pixels::codec_for_syntax(UID), Some(Codec::Native));
     assert_eq!(
         pixels::classify_pixel_support(&report.files[0]).state,
         dcmview::api::contracts::SupportState::Renderable
@@ -321,28 +319,29 @@ async fn jpeg2000_display_applies_rescale_before_every_window_mode() {
 }
 
 #[test]
-fn transfer_syntax_classification_table_covers_every_supported_status() {
+fn codec_table_routes_every_supported_transfer_syntax() {
     let cases = [
-        ("1.2.840.10008.1.2.4.50", TransferSyntaxClass::Jpeg),
-        ("1.2.840.10008.1.2.4.51", TransferSyntaxClass::Unsupported),
-        ("1.2.840.10008.1.2.4.57", TransferSyntaxClass::JpegLossless),
-        ("1.2.840.10008.1.2.4.70", TransferSyntaxClass::JpegLossless),
-        ("1.2.840.10008.1.2.4.90", TransferSyntaxClass::Jpeg2000),
-        ("1.2.840.10008.1.2.4.91", TransferSyntaxClass::Unsupported),
-        ("1.2.840.10008.1.2.4.110", TransferSyntaxClass::JpegXl),
-        ("1.2.840.10008.1.2", TransferSyntaxClass::Uncompressed),
-        ("1.2.840.10008.1.2.1", TransferSyntaxClass::Uncompressed),
-        ("1.2.840.10008.1.2.2", TransferSyntaxClass::Uncompressed),
-        ("1.2.840.10008.1.2.1.99", TransferSyntaxClass::Uncompressed),
-        ("1.2.840.10008.1.2.4.80", TransferSyntaxClass::JpegLs),
-        ("1.2.840.10008.1.2.4.81", TransferSyntaxClass::Unsupported),
-        ("1.2.840.10008.1.2.5", TransferSyntaxClass::Rle),
-        ("9.9.9", TransferSyntaxClass::Unsupported),
+        ("1.2.840.10008.1.2.4.50", Some(Codec::JpegBaseline)),
+        ("1.2.840.10008.1.2.4.51", None),
+        ("1.2.840.10008.1.2.4.57", Some(Codec::JpegLossless)),
+        ("1.2.840.10008.1.2.4.70", Some(Codec::JpegLossless)),
+        ("1.2.840.10008.1.2.4.90", Some(Codec::Jpeg2000)),
+        ("1.2.840.10008.1.2.4.91", None),
+        ("1.2.840.10008.1.2.4.110", Some(Codec::JpegXl)),
+        ("1.2.840.10008.1.2", Some(Codec::Native)),
+        ("1.2.840.10008.1.2.1", Some(Codec::Native)),
+        ("1.2.840.10008.1.2.2", Some(Codec::Native)),
+        ("1.2.840.10008.1.2.1.99", Some(Codec::Native)),
+        ("1.2.840.10008.1.2.4.80", Some(Codec::JpegLs)),
+        ("1.2.840.10008.1.2.4.81", None),
+        ("1.2.840.10008.1.2.5", Some(Codec::Rle)),
+        ("1.2.840.10008.1.2.8.1", Some(Codec::DeflatedImageFrame)),
+        ("9.9.9", None),
     ];
 
     for (uid, expected) in cases {
         assert_eq!(
-            pixels::classify_transfer_syntax(uid),
+            pixels::codec_for_syntax(uid),
             expected,
             "classification mismatch for transfer syntax {uid}"
         );

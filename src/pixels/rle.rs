@@ -5,7 +5,7 @@ use bytes::Bytes;
 use thiserror::Error;
 use tokio::task;
 
-use super::color::{encode_rgb8_png_with_icc, rgb8_interleaved, ybr_full_to_rgb8};
+use super::color::{color_samples_to_rgb8, encode_rgb8_png_with_icc};
 use super::encapsulated::read_encapsulated_fragment_blocking;
 use super::error::{PixelError, PixelResult};
 use super::header::open_header;
@@ -13,6 +13,7 @@ use super::icc::select_icc_profile;
 use super::palette::palette_indices_to_rgb8;
 use super::render::{encode_windowed_luminance_png, LuminanceRenderOptions};
 use super::stored_bits::canonicalize_integer_samples;
+use super::syntax::{Codec, ColorSamples};
 
 const RLE_HEADER_LEN: usize = 64;
 const RLE_MAX_SEGMENTS: usize = 15;
@@ -96,26 +97,35 @@ fn decode_rle_to_png_blocking(
             )
             .map_err(PixelError::frame_decode)
         }
-        (3, "RGB" | "YBR_FULL") => encode_rgb_png(
-            file,
-            normalize_color_for_display(
-                &decoded,
-                file.rows,
-                file.columns,
-                file.series_metadata
-                    .native_pixel
-                    .planar_configuration
-                    .unwrap_or(0),
-                &photometric,
-            )?,
-            read_icc_profile(file)?,
-        ),
-        (1, "PALETTE COLOR") => encode_palette_png(file, &decoded),
-        _ => Err(PixelError::UnsupportedLayout(format!(
-            "RLE display does not support SamplesPerPixel {} with PhotometricInterpretation {}",
-            file.samples_per_pixel, file.photometric_interpretation
-        ))),
+        (3, color) => match Codec::Rle.color_samples(color, file.bits_allocated) {
+            Some(samples) => encode_rgb_png(
+                file,
+                normalize_color_for_display(
+                    &decoded,
+                    file.rows,
+                    file.columns,
+                    file.series_metadata
+                        .native_pixel
+                        .planar_configuration
+                        .unwrap_or(0),
+                    samples,
+                )?,
+                read_icc_profile(file)?,
+            ),
+            None => Err(unsupported_display_layout(file)),
+        },
+        (1, "PALETTE COLOR") if Codec::Rle.displays_palette(file.bits_allocated) => {
+            encode_palette_png(file, &decoded)
+        }
+        _ => Err(unsupported_display_layout(file)),
     }
+}
+
+fn unsupported_display_layout(file: &FileEntry) -> PixelError {
+    PixelError::UnsupportedLayout(format!(
+        "RLE display does not support SamplesPerPixel {} with PhotometricInterpretation {} at BitsAllocated {}",
+        file.samples_per_pixel, file.photometric_interpretation, file.bits_allocated
+    ))
 }
 
 pub(crate) async fn decode_raw_rle(
@@ -354,12 +364,6 @@ fn encode_rgb_png(
     rgb: Vec<u8>,
     icc_profile: Option<Vec<u8>>,
 ) -> PixelResult<Bytes> {
-    if file.bits_allocated != 8 {
-        return Err(PixelError::UnsupportedLayout(format!(
-            "RLE color display requires 8-bit samples, found {}",
-            file.bits_allocated
-        )));
-    }
     encode_rgb8_png_with_icc(rgb, file.columns, file.rows, icc_profile)
         .context("RLE RGB PNG encoding failed")
         .map_err(PixelError::frame_decode)
@@ -370,7 +374,7 @@ fn normalize_color_for_display(
     rows: u32,
     columns: u32,
     planar_configuration: u32,
-    photometric: &str,
+    samples: ColorSamples,
 ) -> PixelResult<Vec<u8>> {
     let pixel_count = usize::try_from(rows)
         .ok()
@@ -382,23 +386,12 @@ fn normalize_color_for_display(
         .ok_or_else(|| {
             PixelError::UnsupportedLayout("RLE color geometry overflowed".to_string())
         })?;
-    let normalized = match photometric {
-        "RGB" => rgb8_interleaved(decoded, pixel_count, planar_configuration),
-        "YBR_FULL" => ybr_full_to_rgb8(decoded, pixel_count, planar_configuration),
-        _ => unreachable!("color normalization called for unsupported photometric interpretation"),
-    };
-    normalized
+    color_samples_to_rgb8(samples, decoded, pixel_count, planar_configuration)
         .context("RLE color sample normalization failed")
         .map_err(PixelError::frame_decode)
 }
 
 fn encode_palette_png(file: &FileEntry, indices: &[u8]) -> PixelResult<Bytes> {
-    if file.bits_allocated != 8 {
-        return Err(PixelError::UnsupportedLayout(format!(
-            "RLE palette display requires 8-bit indices, found {}",
-            file.bits_allocated
-        )));
-    }
     let object = open_header(&file.path).map_err(PixelError::frame_decode)?;
     let rgb = palette_indices_to_rgb8(&object, indices, file.bits_allocated)
         .context("RLE palette lookup failed")
@@ -413,6 +406,7 @@ mod tests {
         normalize_color_for_display, RleDecodeError, RLE_HEADER_LEN,
     };
     use crate::api::contracts::WindowMode;
+    use crate::pixels::syntax::ColorSamples;
     use crate::types::FileEntry;
     use dicom_core::{value::PixelFragmentSequence, DataElement, PrimitiveValue, VR};
     use dicom_dictionary_std::{tags, uids};
@@ -581,13 +575,13 @@ mod tests {
     fn normalizes_planar_rgb_and_ybr_for_display() {
         let planar_rgb = [255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255];
         assert_eq!(
-            normalize_color_for_display(&planar_rgb, 2, 2, 1, "RGB").unwrap(),
+            normalize_color_for_display(&planar_rgb, 2, 2, 1, ColorSamples::Rgb).unwrap(),
             [255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255]
         );
 
         let planar_ybr = [76, 150, 29, 255, 85, 44, 255, 128, 255, 21, 107, 128];
         assert_eq!(
-            normalize_color_for_display(&planar_ybr, 2, 2, 1, "YBR_FULL").unwrap(),
+            normalize_color_for_display(&planar_ybr, 2, 2, 1, ColorSamples::YbrFull).unwrap(),
             [254, 0, 0, 0, 255, 1, 0, 0, 254, 255, 255, 255]
         );
     }
