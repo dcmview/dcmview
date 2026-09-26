@@ -239,7 +239,9 @@ The contract is kept consistent by three layers:
   covered source frames; the server completes its legend from the decoded
   frames' value range.
 - `/api/file/{index}/frame/{frame}/value-mapping` reports the frame's
-  Modality transform and real-world mappings for client-side readouts.
+  Modality transform and real-world mappings for client-side readouts: the
+  file's own, then those of loaded RWVM instances that reference the frame.
+  Parsed mappings are cached per file and file set, like semantic context.
 - `/api/file/{index}/wsi/frame/{frame}` returns bounded placement metadata for
   one selected tile. TILED_FULL uses deterministic raster placement;
   TILED_SPARSE uses per-frame plane positions. The contract exposes matrix,

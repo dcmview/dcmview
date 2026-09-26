@@ -169,10 +169,16 @@ paddingLow: number | null, paddingHigh: number | null, };
  */
 export type RealWorldValueMap = { 
 /**
- * `real_world_value_mapping` (a declared RWVM item) or
- * `dose_grid_scaling` (RT Dose: `mapped = stored * DoseGridScaling`).
+ * `real_world_value_mapping` (an RWVM item declared in the file),
+ * `dose_grid_scaling` (RT Dose: `mapped = stored * DoseGridScaling`), or
+ * `rwvm_instance` (an item of a separate Real World Value Mapping
+ * instance that references this frame's image).
  */
-source: string, label: string | null, 
+source: string, 
+/**
+ * File index of the RWVM instance when `source` is `rwvm_instance`.
+ */
+source_file_index: number | null, label: string | null, 
 /**
  * Inclusive stored-value range; an absent bound is unbounded.
  */

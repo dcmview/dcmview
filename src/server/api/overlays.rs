@@ -314,7 +314,7 @@ async fn value_legend(
         .map_err(|error| format!("overlay metadata could not be read: {error:#}"))?;
     let map = mappings
         .real_world(0)
-        .first()
+        .next()
         .ok_or("the overlay has no real-world value mapping")?
         .clone();
     let (mut min, mut max) = (f64::INFINITY, f64::NEG_INFINITY);
@@ -352,7 +352,7 @@ async fn mapped_frame_values(
     mappings: &FileValueMappings,
     frame: u32,
 ) -> PixelResult<Vec<f64>> {
-    let map = mappings.real_world(frame).first().cloned().ok_or_else(|| {
+    let map = mappings.real_world(frame).next().cloned().ok_or_else(|| {
         PixelError::UnsupportedLayout(format!("frame {frame} has no real-world value mapping"))
     })?;
     let kind = file

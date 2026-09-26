@@ -26,6 +26,7 @@ The committed corpus is intentionally small and synthetic:
 - `golden-rtdose-u16-grid.dcm` with `golden-rtdose-ct-source-z{0,6,20}.dcm`
 - `golden-parametric-map-u16-linear.dcm` with
   `golden-parametric-map-mr-source-z{0,1}.dcm`
+- `golden-rwvm-ct-hounsfield.dcm`
 
 The goal is stable decoding and contract coverage. The large single-frame JPEG
 fixture keeps file size small while exercising realistic viewport geometry.
@@ -54,3 +55,8 @@ halfway between two planes, and one beyond the grid. The Parametric Map has
 two 4x4 frames at z = 0 and 2 mm with a linear Real World Value Mapping, and
 its MR sources share its grid at z = 0 and 1 mm. Stored values are simple
 functions of plane, row, and column so tests can assert resampled values.
+
+The Real World Value Mapping instance has no pixel data. Its one Referenced
+Image Real World Value Mapping item maps the z = 0 RT Dose CT slice, without
+Referenced Frame Number, to Hounsfield units (`stored - 1024`), so the
+value-mapping endpoint must report it for that slice and not the others.

@@ -496,9 +496,13 @@ pub struct ValueLookupTable {
 /// `first_value_mapped..=last_value_mapped` have no mapped value.
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct RealWorldValueMap {
-    /// `real_world_value_mapping` (a declared RWVM item) or
-    /// `dose_grid_scaling` (RT Dose: `mapped = stored * DoseGridScaling`).
+    /// `real_world_value_mapping` (an RWVM item declared in the file),
+    /// `dose_grid_scaling` (RT Dose: `mapped = stored * DoseGridScaling`), or
+    /// `rwvm_instance` (an item of a separate Real World Value Mapping
+    /// instance that references this frame's image).
     pub source: String,
+    /// File index of the RWVM instance when `source` is `rwvm_instance`.
+    pub source_file_index: Option<usize>,
     pub label: Option<String>,
     /// Inclusive stored-value range; an absent bound is unbounded.
     pub first_value_mapped: Option<f64>,

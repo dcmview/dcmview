@@ -320,3 +320,40 @@ async fn parametric_map_overlay_colors_mapped_values_on_its_sources() {
         serde_json::json!({"kind": "linear", "slope": 0.5, "intercept": -10.0})
     );
 }
+
+#[tokio::test]
+async fn rwvm_instance_mappings_apply_to_the_images_they_reference() {
+    let (server, indices) = serve(&[
+        "golden-rtdose-ct-source-z0.dcm",
+        "golden-rtdose-ct-source-z6.dcm",
+        "golden-rwvm-ct-hounsfield.dcm",
+    ])
+    .await;
+    let [z0, z6, rwvm] = indices[..] else {
+        unreachable!()
+    };
+
+    let mapping: Value = server
+        .get(&format!("/api/file/{z0}/frame/0/value-mapping"))
+        .await
+        .json();
+    let real_world = mapping["real_world"].as_array().expect("mappings");
+    assert_eq!(real_world.len(), 1);
+    let hounsfield = &real_world[0];
+    assert_eq!(hounsfield["source"], "rwvm_instance");
+    assert_eq!(hounsfield["source_file_index"], rwvm);
+    assert_eq!(hounsfield["label"], "HU");
+    assert_eq!(hounsfield["unit_label"], "[hnsf'U]");
+    assert_eq!(hounsfield["units"]["meaning"], "Hounsfield unit");
+    assert_eq!(
+        hounsfield["transform"],
+        serde_json::json!({"kind": "linear", "slope": 1.0, "intercept": -1024.0})
+    );
+
+    // The instance does not reference the other slice.
+    let unmapped: Value = server
+        .get(&format!("/api/file/{z6}/frame/0/value-mapping"))
+        .await
+        .json();
+    assert_eq!(unmapped["real_world"], serde_json::json!([]));
+}

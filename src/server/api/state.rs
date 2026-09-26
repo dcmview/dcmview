@@ -17,12 +17,14 @@ const TAG_CACHE_MAX_FILES: NonZeroUsize = NonZeroUsize::new(64).expect("non-zero
 /// needs its context for every frame, and building it reads the object.
 const SEMANTIC_CACHE_MAX_FILES: NonZeroUsize = NonZeroUsize::new(16).expect("non-zero");
 
-/// A semantic context is valid for the file set it was resolved against;
-/// the registry only grows, so its length identifies that set.
-type SemanticCacheKey = (usize, usize);
+/// A semantic context or value mapping is valid for the file set it was
+/// resolved against; the registry only grows, so its length identifies that
+/// set.
+type FileSetCacheKey = (usize, usize);
 
 /// Parsed value mappings of recently viewed files. A value readout asks for
-/// them on every frame change, and reading them parses the whole header.
+/// them on every frame change, and reading them parses the whole header and
+/// every RWVM instance in the file set.
 const VALUE_MAPPING_CACHE_MAX_FILES: NonZeroUsize = NonZeroUsize::new(16).expect("non-zero");
 
 #[derive(Clone)]
@@ -31,8 +33,8 @@ pub struct AppState {
     pixel_cache: Arc<Mutex<FrameCache>>,
     raw_cache: Arc<Mutex<RawFrameCache>>,
     tag_cache: Arc<Mutex<LruCache<usize, Vec<TagNode>>>>,
-    semantic_cache: Arc<Mutex<LruCache<SemanticCacheKey, Arc<SemanticContextResponse>>>>,
-    value_mapping_cache: Arc<Mutex<LruCache<usize, Arc<FileValueMappings>>>>,
+    semantic_cache: Arc<Mutex<LruCache<FileSetCacheKey, Arc<SemanticContextResponse>>>>,
+    value_mapping_cache: Arc<Mutex<LruCache<FileSetCacheKey, Arc<FileValueMappings>>>>,
     overlay_cache: Arc<Mutex<OverlayCache>>,
     annotations: AnnotationStore,
     server_start_ms: u64,
@@ -86,7 +88,7 @@ impl AppState {
 
     pub(crate) fn cached_semantic_context(
         &self,
-        key: SemanticCacheKey,
+        key: FileSetCacheKey,
     ) -> Option<Arc<SemanticContextResponse>> {
         self.semantic_cache
             .lock()
@@ -96,7 +98,7 @@ impl AppState {
 
     pub(crate) fn cache_semantic_context(
         &self,
-        key: SemanticCacheKey,
+        key: FileSetCacheKey,
         context: Arc<SemanticContextResponse>,
     ) {
         if let Ok(mut cache) = self.semantic_cache.lock() {
@@ -104,16 +106,23 @@ impl AppState {
         }
     }
 
-    pub(crate) fn cached_value_mappings(&self, index: usize) -> Option<Arc<FileValueMappings>> {
+    pub(crate) fn cached_value_mappings(
+        &self,
+        key: FileSetCacheKey,
+    ) -> Option<Arc<FileValueMappings>> {
         self.value_mapping_cache
             .lock()
             .ok()
-            .and_then(|mut cache| cache.get(&index).cloned())
+            .and_then(|mut cache| cache.get(&key).cloned())
     }
 
-    pub(crate) fn cache_value_mappings(&self, index: usize, mappings: Arc<FileValueMappings>) {
+    pub(crate) fn cache_value_mappings(
+        &self,
+        key: FileSetCacheKey,
+        mappings: Arc<FileValueMappings>,
+    ) {
         if let Ok(mut cache) = self.value_mapping_cache.lock() {
-            cache.put(index, mappings);
+            cache.put(key, mappings);
         }
     }
 

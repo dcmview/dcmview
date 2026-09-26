@@ -511,9 +511,48 @@ async fn value_mapping_reports_each_frames_conversions() {
     write_object(&path, uids::ENHANCED_MR_IMAGE_STORAGE, "2.25.8150", object);
     let mut entry = support::file_entry(path, uids::EXPLICIT_VR_LITTLE_ENDIAN, 2);
     entry.sop_class_uid = uids::ENHANCED_MR_IMAGE_STORAGE.to_string();
+    entry.sop_instance_uid = "2.25.8150".to_string();
     entry.rescale_slope = 2.0;
     entry.rescale_intercept = -5.0;
-    let server = TestServer::new(server::router(support::app_state(vec![entry])));
+
+    // A separate RWVM instance maps frame 2 of this image, and all of
+    // another image.
+    let rwvm_path = dir.path().join("rwvm.dcm");
+    let rwvm_item = |uid: &str, frame: Option<&str>, mapping: InMemDicomObject| {
+        InMemDicomObject::from_element_iter([
+            sequence(
+                tags::REFERENCED_IMAGE_SEQUENCE,
+                vec![reference_item(uids::ENHANCED_MR_IMAGE_STORAGE, uid, frame)],
+            ),
+            sequence(tags::REAL_WORLD_VALUE_MAPPING_SEQUENCE, vec![mapping]),
+        ])
+    };
+    let rwvm = InMemDicomObject::from_element_iter([
+        DataElement::new(
+            tags::SOP_CLASS_UID,
+            VR::UI,
+            uids::REAL_WORLD_VALUE_MAPPING_STORAGE,
+        ),
+        DataElement::new(tags::SOP_INSTANCE_UID, VR::UI, "2.25.8151"),
+        sequence(
+            tags::REFERENCED_IMAGE_REAL_WORLD_VALUE_MAPPING_SEQUENCE,
+            vec![
+                rwvm_item("2.25.8150", Some("2"), mapping(4.0, "us")),
+                rwvm_item("2.25.other", None, mapping(8.0, "min")),
+            ],
+        ),
+    ]);
+    write_object(
+        &rwvm_path,
+        uids::REAL_WORLD_VALUE_MAPPING_STORAGE,
+        "2.25.8151",
+        rwvm,
+    );
+    let mut rwvm_entry = support::file_entry(rwvm_path, uids::EXPLICIT_VR_LITTLE_ENDIAN, 0);
+    rwvm_entry.sop_class_uid = uids::REAL_WORLD_VALUE_MAPPING_STORAGE.to_string();
+    rwvm_entry.sop_instance_uid = "2.25.8151".to_string();
+    rwvm_entry.has_pixels = false;
+    let server = TestServer::new(server::router(support::app_state(vec![entry, rwvm_entry])));
 
     let shared: Value = server.get("/api/file/0/frame/0/value-mapping").await.json();
     assert_eq!(shared["frame_index"], 0);
@@ -522,8 +561,11 @@ async fn value_mapping_reports_each_frames_conversions() {
     assert_eq!(shared["modality"]["rescale_intercept"], -5.0);
     assert_eq!(shared["modality"]["rescale_type"], "US");
     assert!(shared["modality"]["lut"].is_null());
+    // The instance maps frame 2 only.
+    assert_eq!(shared["real_world"].as_array().expect("mappings").len(), 1);
     let map = &shared["real_world"][0];
     assert_eq!(map["source"], "real_world_value_mapping");
+    assert!(map["source_file_index"].is_null());
     assert_eq!(map["unit_label"], "ms");
     assert_eq!(map["first_value_mapped"], 0.0);
     assert_eq!(map["last_value_mapped"], 4095.0);
@@ -534,6 +576,16 @@ async fn value_mapping_reports_each_frames_conversions() {
 
     let own: Value = server.get("/api/file/0/frame/1/value-mapping").await.json();
     assert_eq!(own["real_world"][0]["unit_label"], "s");
+    // The file's own mapping stays preferred; the instance's follows it.
+    let instance = &own["real_world"][1];
+    assert_eq!(instance["source"], "rwvm_instance");
+    assert_eq!(instance["source_file_index"], 1);
+    assert_eq!(instance["unit_label"], "us");
+    assert_eq!(
+        instance["transform"],
+        serde_json::json!({"kind": "linear", "slope": 4.0, "intercept": 0.0})
+    );
+    assert_eq!(own["real_world"].as_array().expect("mappings").len(), 2);
 
     let out_of_range = server.get("/api/file/0/frame/2/value-mapping").await;
     out_of_range.assert_status_not_found();

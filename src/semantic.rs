@@ -670,7 +670,7 @@ fn parametric_map_overlay(
         );
     }
     let mappings = FileValueMappings::from_object(map, object);
-    let Some(units) = mappings.real_world(0).first().map(|map| &map.unit_label) else {
+    let Some(units) = mappings.real_world(0).next().map(|map| &map.unit_label) else {
         return (
             ineligible("the first frame has no usable Real World Value Mapping"),
             Vec::new(),
@@ -679,7 +679,7 @@ fn parametric_map_overlay(
     if (1..map.frame_count).any(|frame| {
         mappings
             .real_world(frame)
-            .first()
+            .next()
             .is_none_or(|mapping| mapping.unit_label != *units)
     }) {
         return (

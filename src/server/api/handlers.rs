@@ -180,20 +180,22 @@ pub(super) async fn value_mapping(
     Ok(Json(mappings.frame(index, frame)))
 }
 
-/// The file's parsed value mappings, read at most once while cached.
+/// The file's parsed value mappings, with those of the RWVM instances that
+/// reference it, read at most once per file set while cached.
 pub(super) async fn value_mappings_for(
     state: &AppState,
     file: FileEntry,
 ) -> anyhow::Result<Arc<FileValueMappings>> {
-    if let Some(mappings) = state.cached_value_mappings(file.index) {
+    let files = state.registry().files_snapshot();
+    let key = (file.index, files.len());
+    if let Some(mappings) = state.cached_value_mappings(key) {
         return Ok(mappings);
     }
-    let index = file.index;
-    let mappings = task::spawn_blocking(move || FileValueMappings::read(&file))
+    let mappings = task::spawn_blocking(move || FileValueMappings::read(&file, &files))
         .await
         .map_err(|error| anyhow::anyhow!("value mapping task failed: {error}"))??;
     let mappings = Arc::new(mappings);
-    state.cache_value_mappings(index, mappings.clone());
+    state.cache_value_mappings(key, mappings.clone());
     Ok(mappings)
 }
 

@@ -71,6 +71,7 @@ fn main() {
     write_image_without_pixels(&fixture_dir.join("golden-image-no-pixels.dcm"));
     write_rt_dose_overlay_fixtures(&fixture_dir);
     write_parametric_map_overlay_fixtures(&fixture_dir);
+    write_real_world_value_mapping_instance(&fixture_dir.join("golden-rwvm-ct-hounsfield.dcm"));
 }
 
 // Semantic-overlay fixtures share one patient and study; each overlay pair
@@ -230,6 +231,80 @@ fn write_rt_dose_overlay_fixtures(fixture_dir: &Path) {
             ],
         );
     }
+}
+
+/// A Real World Value Mapping instance (no pixel data) whose one Referenced
+/// Image Real World Value Mapping item maps the stored values of the z = 0
+/// RT Dose CT slice to Hounsfield units, `stored - 1024`, for every frame.
+fn write_real_world_value_mapping_instance(path: &Path) {
+    const SOP_INSTANCE_UID: &str = "2.25.2000105";
+    let mapping = InMemDicomObject::from_element_iter([
+        DataElement::new(tags::LUT_LABEL, VR::SH, "HU"),
+        DataElement::new(
+            tags::REAL_WORLD_VALUE_FIRST_VALUE_MAPPED,
+            VR::US,
+            PrimitiveValue::from(0_u16),
+        ),
+        DataElement::new(
+            tags::REAL_WORLD_VALUE_LAST_VALUE_MAPPED,
+            VR::US,
+            PrimitiveValue::from(u16::MAX),
+        ),
+        DataElement::new(
+            tags::REAL_WORLD_VALUE_SLOPE,
+            VR::FD,
+            PrimitiveValue::from(1.0_f64),
+        ),
+        DataElement::new(
+            tags::REAL_WORLD_VALUE_INTERCEPT,
+            VR::FD,
+            PrimitiveValue::from(-1024.0_f64),
+        ),
+        fixture_sequence(
+            tags::MEASUREMENT_UNITS_CODE_SEQUENCE,
+            vec![fixture_code("[hnsf'U]", "UCUM", "Hounsfield unit")],
+        ),
+    ]);
+    let referenced_image = InMemDicomObject::from_element_iter([
+        DataElement::new(
+            tags::REFERENCED_SOP_CLASS_UID,
+            VR::UI,
+            uids::CT_IMAGE_STORAGE,
+        ),
+        DataElement::new(tags::REFERENCED_SOP_INSTANCE_UID, VR::UI, "2.25.2000102"),
+    ]);
+    let obj = InMemDicomObject::from_element_iter([
+        DataElement::new(
+            tags::SOP_CLASS_UID,
+            VR::UI,
+            uids::REAL_WORLD_VALUE_MAPPING_STORAGE,
+        ),
+        DataElement::new(tags::SOP_INSTANCE_UID, VR::UI, SOP_INSTANCE_UID),
+        DataElement::new(tags::PATIENT_ID, VR::LO, OVERLAY_PATIENT_ID),
+        DataElement::new(tags::STUDY_DATE, VR::DA, "20260926"),
+        DataElement::new(tags::STUDY_INSTANCE_UID, VR::UI, OVERLAY_STUDY_UID),
+        DataElement::new(tags::MODALITY, VR::CS, "RWV"),
+        DataElement::new(tags::SERIES_INSTANCE_UID, VR::UI, "2.25.2000112"),
+        DataElement::new(tags::INSTANCE_NUMBER, VR::IS, "1"),
+        fixture_sequence(
+            tags::REFERENCED_IMAGE_REAL_WORLD_VALUE_MAPPING_SEQUENCE,
+            vec![InMemDicomObject::from_element_iter([
+                fixture_sequence(tags::REFERENCED_IMAGE_SEQUENCE, vec![referenced_image]),
+                fixture_sequence(tags::REAL_WORLD_VALUE_MAPPING_SEQUENCE, vec![mapping]),
+            ])],
+        ),
+    ]);
+    obj.with_meta(
+        FileMetaTableBuilder::new()
+            .implementation_class_uid(FIXTURE_IMPLEMENTATION_CLASS_UID)
+            .implementation_version_name(FIXTURE_IMPLEMENTATION_VERSION_NAME)
+            .transfer_syntax(uids::EXPLICIT_VR_LITTLE_ENDIAN)
+            .media_storage_sop_class_uid(uids::REAL_WORLD_VALUE_MAPPING_STORAGE)
+            .media_storage_sop_instance_uid(SOP_INSTANCE_UID),
+    )
+    .expect("build RWVM fixture meta")
+    .write_to_file(path)
+    .expect("write RWVM fixture");
 }
 
 /// A 2-frame Parametric Map (4x4 pixels of 2 mm at z = 0 and 2 mm) with a

@@ -144,8 +144,14 @@ stored, modality, and real-world values out of a raw frame:
   have no mapped value), `unit_label` (a UCUM code or unit text), and the
   coded `units` and `quantity`. RT Dose reports its Dose Grid Scaling as
   `source: "dose_grid_scaling"`, a linear map with `unit_label` `Gy` or the
-  declared Dose Units. RWVM instances referenced from another object are
-  listed in the Parametric Map context only.
+  declared Dose Units. After the file's own mappings come those of separate
+  Real World Value Mapping instances in the loaded file set whose Referenced
+  Image Real World Value Mapping items name this image in their Referenced
+  Image Sequence, for every frame or only the listed Referenced Frame
+  Numbers: `source: "rwvm_instance"` with the instance's
+  `source_file_index`. The file's own mappings stay preferred. RWVM
+  instances that a Parametric Map references itself are also summarized in
+  its semantic context.
 
 ## Semantic Context, Overlays, And WSI
 

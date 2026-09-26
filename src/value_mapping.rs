@@ -2,6 +2,10 @@
 //! pipeline applies, and the Real World Value Mappings (or RT Dose scaling)
 //! that give stored samples their physical units.
 //!
+//! A frame's mappings come from the file itself and, after those, from
+//! separate Real World Value Mapping instances whose Referenced Image Real
+//! World Value Mapping Sequence (PS3.3 C.26.1) names the frame's image.
+//!
 //! Nothing here changes frame bytes. The viewer uses these conversions for
 //! value readouts and mapped-unit windowing, and the semantic overlays use
 //! them to colorize values in real-world units.
@@ -16,13 +20,17 @@ use crate::types::{FileEntry, NativePixelDataKind};
 use anyhow::Result;
 use dicom_dictionary_std::{tags, uids};
 use dicom_object::InMemDicomObject;
+use std::collections::BTreeSet;
+use std::sync::Arc;
 
 /// A LUT-based mapping covers at most a 16-bit stored range.
 const MAX_REAL_WORLD_LUT_VALUES: usize = 65_536;
 const MAX_MAPPINGS_PER_FRAME: usize = 16;
+const MAX_SEQUENCE_ITEMS: usize = 4_096;
 
 pub const REAL_WORLD_VALUE_MAPPING_SOURCE: &str = "real_world_value_mapping";
 pub const DOSE_GRID_SCALING_SOURCE: &str = "dose_grid_scaling";
+pub const RWVM_INSTANCE_SOURCE: &str = "rwvm_instance";
 
 /// Every frame's conversions, read once per file.
 #[derive(Debug, Clone)]
@@ -33,13 +41,34 @@ pub struct FileValueMappings {
     default: Vec<RealWorldValueMap>,
     /// Per-frame functional group mappings; empty when no frame declares any.
     per_frame: Vec<Option<Vec<RealWorldValueMap>>>,
+    /// Mappings separate RWVM instances declare for frames of this file.
+    instances: Vec<InstanceMappings>,
+}
+
+/// One Referenced Image Real World Value Mapping item of a separate RWVM
+/// instance that names this file.
+#[derive(Debug, Clone)]
+struct InstanceMappings {
+    /// Zero-based frames the item references; `None` for every frame.
+    frames: Option<BTreeSet<u32>>,
+    maps: Vec<RealWorldValueMap>,
 }
 
 impl FileValueMappings {
-    /// Reads the header of `file`, stopping before any pixel data.
-    pub fn read(file: &FileEntry) -> Result<Self> {
+    /// Reads the header of `file`, stopping before any pixel data, and every
+    /// RWVM instance among `files` that references it.
+    pub fn read(file: &FileEntry, files: &[Arc<FileEntry>]) -> Result<Self> {
         let object = crate::pixels::open_header(&file.path)?;
-        Ok(Self::from_object(file, &object))
+        let mut mappings = Self::from_object(file, &object);
+        mappings.instances = files
+            .iter()
+            .filter(|rwvm| {
+                rwvm.sop_class_uid == uids::REAL_WORLD_VALUE_MAPPING_STORAGE
+                    && rwvm.index != file.index
+            })
+            .flat_map(|rwvm| instance_mappings(file, rwvm))
+            .collect();
+        Ok(mappings)
     }
 
     /// Mappings follow functional-group precedence: a frame's own Real World
@@ -85,15 +114,29 @@ impl FileValueMappings {
             },
             default,
             per_frame,
+            instances: Vec::new(),
         }
     }
 
-    /// The real-world conversions that apply to `frame`, preferred first.
-    pub fn real_world(&self, frame: u32) -> &[RealWorldValueMap] {
-        self.per_frame
+    /// The real-world conversions that apply to `frame`, preferred first:
+    /// the file's own, then those of RWVM instances that reference it.
+    pub fn real_world(&self, frame: u32) -> impl Iterator<Item = &RealWorldValueMap> {
+        let own = self
+            .per_frame
             .get(frame as usize)
             .and_then(Option::as_deref)
-            .unwrap_or(&self.default)
+            .unwrap_or(&self.default);
+        let instances = self
+            .instances
+            .iter()
+            .filter(move |instance| {
+                instance
+                    .frames
+                    .as_ref()
+                    .is_none_or(|frames| frames.contains(&frame))
+            })
+            .flat_map(|instance| &instance.maps);
+        own.iter().chain(instances).take(MAX_MAPPINGS_PER_FRAME)
     }
 
     pub fn frame(&self, file_index: usize, frame: u32) -> FrameValueMapping {
@@ -102,7 +145,7 @@ impl FileValueMappings {
             frame_index: frame,
             stored_value_type: self.stored_value_type.to_string(),
             modality: self.modality.clone(),
-            real_world: self.real_world(frame).to_vec(),
+            real_world: self.real_world(frame).cloned().collect(),
         }
     }
 }
@@ -133,6 +176,64 @@ pub fn map_value(map: &RealWorldValueMap, stored: f64) -> Option<f64> {
                 .flatten()
         }
     }
+}
+
+/// The mappings `rwvm`, a Real World Value Mapping instance, declares for
+/// frames of `file`: one entry per Referenced Image Real World Value Mapping
+/// item whose Referenced Image Sequence names `file`. An item that names the
+/// image without Referenced Frame Number applies to every frame.
+fn instance_mappings(file: &FileEntry, rwvm: &FileEntry) -> Vec<InstanceMappings> {
+    let object = match crate::pixels::open_header(&rwvm.path) {
+        Ok(object) => object,
+        Err(error) => {
+            tracing::debug!(path = %rwvm.path.display(), "RWVM instance unreadable: {error:#}");
+            return Vec::new();
+        }
+    };
+    sequence_items(
+        &object,
+        tags::REFERENCED_IMAGE_REAL_WORLD_VALUE_MAPPING_SEQUENCE,
+    )
+    .iter()
+    .take(MAX_SEQUENCE_ITEMS)
+    .filter_map(|item| {
+        let references = sequence_items(item, tags::REFERENCED_IMAGE_SEQUENCE)
+            .iter()
+            .take(MAX_SEQUENCE_ITEMS)
+            .filter(|reference| {
+                read_string(reference, tags::REFERENCED_SOP_INSTANCE_UID).as_deref()
+                    == Some(file.sop_instance_uid.as_str())
+            })
+            .map(|reference| read_numbers::<u32>(reference, tags::REFERENCED_FRAME_NUMBER))
+            .collect::<Vec<_>>();
+        if references.is_empty() {
+            return None;
+        }
+        let frames = if references.iter().any(Vec::is_empty) {
+            None
+        } else {
+            let frames = references
+                .iter()
+                .flatten()
+                .filter_map(|number| number.checked_sub(1))
+                .filter(|frame| *frame < file.frame_count)
+                .collect::<BTreeSet<_>>();
+            if frames.is_empty() {
+                return None;
+            }
+            Some(frames)
+        };
+        let maps = declared_mappings(item)?
+            .into_iter()
+            .map(|map| RealWorldValueMap {
+                source: RWVM_INSTANCE_SOURCE.to_string(),
+                source_file_index: Some(rwvm.index),
+                ..map
+            })
+            .collect::<Vec<_>>();
+        (!maps.is_empty()).then_some(InstanceMappings { frames, maps })
+    })
+    .collect()
 }
 
 /// The mappings of one Real World Value Mapping Sequence, or `None` when
@@ -177,6 +278,7 @@ fn real_world_value_map(item: &InMemDicomObject) -> Option<RealWorldValueMap> {
     };
     Some(RealWorldValueMap {
         source: REAL_WORLD_VALUE_MAPPING_SOURCE.to_string(),
+        source_file_index: None,
         label: summary.label,
         first_value_mapped: summary.first_value_mapped,
         last_value_mapped: summary.last_value_mapped,
@@ -197,6 +299,7 @@ fn dose_grid_scaling_map(object: &InMemDicomObject) -> Option<RealWorldValueMap>
     };
     Some(RealWorldValueMap {
         source: DOSE_GRID_SCALING_SOURCE.to_string(),
+        source_file_index: None,
         label: Some("Dose".to_string()),
         first_value_mapped: None,
         last_value_mapped: None,
@@ -288,10 +391,16 @@ mod tests {
         ]);
         let mappings = FileValueMappings::from_object(&entry(2), &object);
 
-        assert_eq!(mappings.real_world(0)[0].unit_label, "s");
-        assert_eq!(mappings.real_world(1)[0].unit_label, "ms");
-        assert_eq!(map_value(&mappings.real_world(1)[0], 10.0), Some(31.0));
-        assert_eq!(map_value(&mappings.real_world(1)[0], 101.0), None);
+        assert_eq!(mappings.real_world(0).next().unwrap().unit_label, "s");
+        assert_eq!(mappings.real_world(1).next().unwrap().unit_label, "ms");
+        assert_eq!(
+            map_value(mappings.real_world(1).next().unwrap(), 10.0),
+            Some(31.0)
+        );
+        assert_eq!(
+            map_value(mappings.real_world(1).next().unwrap(), 101.0),
+            None
+        );
         let frame = mappings.frame(4, 1);
         assert_eq!(frame.file_index, 4);
         assert_eq!(frame.stored_value_type, "integer");
@@ -314,7 +423,7 @@ mod tests {
         ));
         let object = group(vec![lut]);
         let mappings = FileValueMappings::from_object(&entry(1), &object);
-        let map = &mappings.real_world(0)[0];
+        let map = mappings.real_world(0).next().unwrap();
 
         assert_eq!(map_value(map, 11.0), Some(1.5));
         assert_eq!(map_value(map, 9.0), None);
@@ -329,7 +438,7 @@ mod tests {
             DataElement::new(tags::DOSE_UNITS, VR::CS, "GY"),
         ]);
         let mappings = FileValueMappings::from_object(&file, &object);
-        let dose = &mappings.real_world(0)[0];
+        let dose = mappings.real_world(0).next().unwrap();
 
         assert_eq!(dose.source, DOSE_GRID_SCALING_SOURCE);
         assert_eq!(dose.unit_label, "Gy");
