@@ -1,7 +1,6 @@
 <script lang="ts">
 	import { untrack } from "svelte";
 	import {
-		fetchSegmentationOverlayBlob,
 		type DisplayFrameWindowOptions,
 		type FileSummary,
 		type RawFrame,
@@ -52,6 +51,12 @@
 	import { AnnotationStore } from "./viewport/annotationStore.svelte";
 	import { DisplayFrameSource } from "./viewport/displayFrameSource";
 	import {
+		composeOverlayFrame,
+		decodeCanvasImage,
+		overlayLayerRequests,
+		type FrameOverlay,
+	} from "./viewport/frameOverlay";
+	import {
 		observePrefetchConcurrency,
 		PREFETCH_CONCURRENCY,
 		scheduleIdle,
@@ -63,14 +68,7 @@
 	import { hitTestRoi, roiCoord, visibleRois as roisOnFrame } from "./viewport/roiEditing";
 	import { WlRendererClient } from "./viewport/wlRendererClient";
 
-	type PipelineMode = "cine" | "diagnostic_wl" | "server_wl" | "segmentation_overlay";
-	type SegmentationOverlay = {
-		segmentationFileIndex: number;
-		segmentationFrameIndex: number;
-		sourceFileIndex: number;
-		sourceFrameIndex: number;
-		sourceFile: FileSummary;
-	};
+	type PipelineMode = "cine" | "diagnostic_wl" | "server_wl" | "overlay";
 	type DragState =
 		| { mode: "pan"; startX: number; startY: number; baseTx: number; baseTy: number }
 		| { mode: "wl"; startX: number; startY: number; baseCenter: number; baseWidth: number }
@@ -102,7 +100,7 @@
 		navigationScopeKey,
 		navigationPosition,
 		onnavigationchange,
-		segmentationOverlay = null,
+		overlay = null,
 	}: {
 		activeFile: FileSummary;
 		currentFrame: number;
@@ -124,7 +122,7 @@
 		navigationScopeKey: string;
 		navigationPosition: number;
 		onnavigationchange: (position: number) => void;
-		segmentationOverlay?: SegmentationOverlay | null;
+		overlay?: FrameOverlay | null;
 	} = $props();
 
 	let dragState = $state<DragState>(null);
@@ -166,8 +164,8 @@
 	const orientation = $derived(viewStates.orientation(navigationScopeKey));
 	const zoomPercent = $derived(Math.round(activeTransform.scale * 100));
 	const isDragging = $derived(dragState !== null);
-	const pipelineMode = $derived.by<PipelineMode>(() => segmentationOverlay
-		? "segmentation_overlay"
+	const pipelineMode = $derived.by<PipelineMode>(() => overlay
+		? "overlay"
 		: selectWindowingPipeline(
 			activeTool === "window_level",
 			rawWindowLevelFallbackByFile[activeFile.index] ?? false,
@@ -175,11 +173,11 @@
 		));
 
 	const displayWindow = $derived(
-		pipelineMode === "segmentation_overlay"
-			? segmentationOverlay?.sourceFile.default_window
+		pipelineMode === "overlay"
+			? overlay?.sourceFile.default_window
 				? {
-					wc: segmentationOverlay.sourceFile.default_window.center,
-					ww: segmentationOverlay.sourceFile.default_window.width,
+					wc: overlay.sourceFile.default_window.center,
+					ww: overlay.sourceFile.default_window.width,
 				}
 				: { wc: 0, ww: 1 }
 			: pipelineMode === "diagnostic_wl" && currentRawFrame
@@ -203,15 +201,15 @@
 	const annotationsReady = $derived(annotations.ready(activeFile.index));
 	const selectedRoiIndex = $derived(annotations.selected(activeFile.index));
 	const imageRows = $derived(
-		pipelineMode === "segmentation_overlay" && segmentationOverlay
-			? segmentationOverlay.sourceFile.rows
+		pipelineMode === "overlay" && overlay
+			? overlay.sourceFile.rows
 			: pipelineMode === "diagnostic_wl" && currentRawFrame
 			? currentRawFrame.metadata.rows
 			: activeFile?.rows ?? 0,
 	);
 	const imageColumns = $derived(
-		pipelineMode === "segmentation_overlay" && segmentationOverlay
-			? segmentationOverlay.sourceFile.columns
+		pipelineMode === "overlay" && overlay
+			? overlay.sourceFile.columns
 			: pipelineMode === "diagnostic_wl" && currentRawFrame
 			? currentRawFrame.metadata.columns
 			: activeFile?.columns ?? 0,
@@ -220,12 +218,12 @@
 		imageDisplayGeometry(
 			imageRows,
 			imageColumns,
-			segmentationOverlay?.sourceFile.pixel_aspect_ratio ?? activeFile?.pixel_aspect_ratio,
+			overlay?.sourceFile.pixel_aspect_ratio ?? activeFile?.pixel_aspect_ratio,
 		),
 	);
 	const transformCss = $derived(layerTransformCss(activeTransform, orientation, displayGeometry));
 	const visibleRois = $derived(
-		segmentationOverlay ? [] : roisOnFrame(activeAnnotations, currentFrame),
+		overlay ? [] : roisOnFrame(activeAnnotations, currentFrame),
 	);
 	const draftRoi = $derived(
 		dragState?.mode === "draw_roi"
@@ -284,7 +282,7 @@
 	}
 
 	function currentDisplayWindowOptions(): DisplayFrameWindowOptions {
-		if (pipelineMode === "segmentation_overlay") return {};
+		if (pipelineMode === "overlay") return {};
 		if (windowCenter !== null && windowWidth !== null) {
 			return { wc: windowCenter, ww: windowWidth, windowMode: "default" };
 		}
@@ -435,95 +433,31 @@
 		}
 	}
 
-	type DecodedCanvasImage = {
-		source: CanvasImageSource;
-		width: number;
-		height: number;
-		dispose: () => void;
-	};
-
-	async function decodeCanvasImage(blob: Blob): Promise<DecodedCanvasImage> {
-		if (typeof createImageBitmap === "function") {
-			const bitmap = await createImageBitmap(blob);
-			return {
-				source: bitmap,
-				width: bitmap.width,
-				height: bitmap.height,
-				dispose: () => bitmap.close(),
-			};
-		}
-
-		const url = URL.createObjectURL(blob);
-		const image = new Image();
-		image.decoding = "async";
-		try {
-			await new Promise<void>((resolve, reject) => {
-				image.onload = () => resolve();
-				image.onerror = () => reject(new Error("overlay image decode failed"));
-				image.src = url;
-			});
-			return {
-				source: image,
-				width: image.naturalWidth,
-				height: image.naturalHeight,
-				dispose: () => URL.revokeObjectURL(url),
-			};
-		} catch (error) {
-			URL.revokeObjectURL(url);
-			throw error;
-		}
-	}
-
-	async function loadSegmentationOverlayAndRender(
-		overlay: SegmentationOverlay,
-		generation: number,
-	): Promise<void> {
+	/** Composes an overlay's layers over its source frame's display image. */
+	async function loadOverlayAndRender(overlay: FrameOverlay, generation: number): Promise<void> {
+		// Overlays sit on the source's default presentation.
 		const windowOptions: DisplayFrameWindowOptions = {};
 		displayFrames.enterScope(windowOptions);
 		loading = true;
 		try {
-			const [sourceBlob, maskBlob] = await Promise.all([
-				displayFrames.ensureBlob(
-					overlay.sourceFileIndex,
-					overlay.sourceFrameIndex,
-					windowOptions,
-				),
-				displayFrames.fetchInScope(
-					`seg:${overlay.segmentationFileIndex}:${overlay.segmentationFrameIndex}`,
-					windowOptions,
-					(signal) => fetchSegmentationOverlayBlob(
-						overlay.segmentationFileIndex,
-						overlay.segmentationFrameIndex,
-						signal,
-					),
-				),
+			const blobs = await Promise.all([
+				displayFrames.ensureBlob(overlay.sourceFileIndex, overlay.sourceFrameIndex, windowOptions),
+				...overlayLayerRequests(overlay).map(({ key, load }) => displayFrames.fetchInScope(key, windowOptions, load)),
 			]);
-			const [sourceImage, maskImage] = await Promise.all([
-				decodeCanvasImage(sourceBlob),
-				decodeCanvasImage(maskBlob),
-			]);
+			const [base, ...layers] = await Promise.all(blobs.map(decodeCanvasImage));
 			try {
-				if (
-					generation !== requestGeneration
-					|| pipelineMode !== "segmentation_overlay"
-					|| !canvasEl
-				) return;
-				canvasEl.width = sourceImage.width;
-				canvasEl.height = sourceImage.height;
-				const ctx = canvasEl.getContext("2d", { alpha: false });
-				if (!ctx) throw new Error("2D canvas is unavailable");
-				ctx.drawImage(sourceImage.source, 0, 0);
-				ctx.drawImage(maskImage.source, 0, 0, sourceImage.width, sourceImage.height);
+				if (generation !== requestGeneration || pipelineMode !== "overlay" || !canvasEl) return;
+				composeOverlayFrame(canvasEl, base, layers);
 				loading = false;
 				loadError = null;
 				rendered.mark(activeFile.index, currentFrame);
 			} finally {
-				sourceImage.dispose();
-				maskImage.dispose();
+				base.dispose();
+				for (const layer of layers) layer.dispose();
 			}
 		} catch (error) {
 			if ((error as Error).name === "AbortError") return;
-			if (generation !== requestGeneration || pipelineMode !== "segmentation_overlay") return;
+			if (generation !== requestGeneration || pipelineMode !== "overlay") return;
 			loading = false;
 			loadError = (error as Error).message || "Failed to load segmentation overlay";
 			cinePlaying = false;
@@ -659,7 +593,7 @@
 		const scopeKey = navigationScopeKey;
 		const windowOptions = currentDisplayWindowOptions();
 		if (!scopeKey) return;
-		if (mode === "segmentation_overlay") {
+		if (mode === "overlay") {
 			if (playing) cinePlaying = false;
 			return;
 		}
@@ -734,7 +668,7 @@
 		}
 
 		const mode = pipelineMode;
-		const overlay = segmentationOverlay;
+		const activeOverlay = overlay;
 		const fileIndex = activeFile.index;
 		const frameIndex = currentFrame;
 		const generation = ++requestGeneration;
@@ -748,8 +682,8 @@
 		void modeWindowMode;
 
 		loadError = null;
-		if (mode === "segmentation_overlay" && overlay) {
-			void loadSegmentationOverlayAndRender(overlay, generation);
+		if (mode === "overlay" && activeOverlay) {
+			void loadOverlayAndRender(activeOverlay, generation);
 		} else if (mode === "diagnostic_wl") {
 			void loadRawFrameAndRender(fileIndex, frameIndex, generation, frameDirection);
 		} else {
@@ -905,7 +839,7 @@
 		}
 
 		if (event.button === 0) {
-			if (segmentationOverlay && (activeTool === "window_level" || activeTool === "annotate_rect")) {
+			if (overlay && (activeTool === "window_level" || activeTool === "annotate_rect")) {
 				return;
 			}
 			let nextDragState: DragState = null;
@@ -1154,7 +1088,7 @@
 				class="dicom-canvas"
 				data-capture-rendered={rendered.token}
 			></canvas>
-			{#if !segmentationOverlay && imageColumns > 0 && imageRows > 0}
+			{#if !overlay && imageColumns > 0 && imageRows > 0}
 				<RoiOverlay
 					rois={visibleRois}
 					selectedIndex={selectedRoiIndex}
@@ -1165,9 +1099,9 @@
 			{/if}
 		</div>
 		<div class="overlay">
-			{#if segmentationOverlay}
-				<span>SEG overlay {segmentationOverlay.segmentationFrameIndex + 1} / {activeFile.frame_count}</span>
-				<span>source frame {segmentationOverlay.sourceFrameIndex + 1}</span>
+			{#if overlay?.kind === "segmentation"}
+				<span>SEG overlay {overlay.segmentationFrameIndex + 1} / {activeFile.frame_count}</span>
+				<span>source frame {overlay.sourceFrameIndex + 1}</span>
 			{:else}
 				<span>image {navigationPosition + 1} / {navigationFrameCount}</span>
 				<span>source frame {currentFrame + 1} / {activeFile.frame_count}</span>
@@ -1177,7 +1111,7 @@
 				<span class="presentation-path" title={activeFile.raw_windowing_reason ?? undefined}>server presentation retained</span>
 			{/if}
 		</div>
-		{#if !segmentationOverlay}
+		{#if !overlay}
 			<RoiList
 				rois={visibleRois}
 				totalCount={activeAnnotations?.num_roi ?? null}

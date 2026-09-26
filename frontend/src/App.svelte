@@ -40,6 +40,7 @@
 		type NavigationFrameRef,
 	} from "./lib/seriesNavigation";
 	import { WL_PRESETS, type ActiveTool } from "./lib/viewerTools";
+	import type { FrameOverlay } from "./lib/viewport/frameOverlay";
 	import { ViewStates } from "./lib/viewport/viewStates.svelte";
 	import {
 		flipHorizontal,
@@ -139,14 +140,14 @@
 	});
 	const navigationFrameCount = $derived(navigationFrames.length);
 	const navigationScopeKey = $derived(activeTabId ?? (activeFile ? `file:${activeFile.index}` : ""));
-	const segmentationOverlay = $derived.by(() => {
+	const frameOverlay = $derived.by<FrameOverlay | null>(() => {
 		if (semanticMode !== "semantic_context") return null;
 		if (!semanticResponse || semanticResponse.source_file_index !== activeFileIndex) return null;
 		const selection = segmentationOverlaySelection(semanticResponse, currentFrame);
 		if (!selection) return null;
 		const sourceFile = filesById.get(selection.sourceFileIndex);
 		if (!sourceFile) return null;
-		return { ...selection, sourceFile };
+		return { kind: "segmentation", ...selection, sourceFile };
 	});
 	const openTabFiles = $derived(resolveFilesById(filesById, openTabs.map((tab) => tab.fileIndex)));
 	const openTabFrameCounts = $derived(new Map(
@@ -761,7 +762,7 @@
 						resetCount={resetCount}
 						selectedPresetId={selectedPresetId}
 						{viewStates}
-						{segmentationOverlay}
+						overlay={frameOverlay}
 						bind:cinePlaying
 						{cineFps}
 						{cineMode}
