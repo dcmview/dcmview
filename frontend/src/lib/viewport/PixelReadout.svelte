@@ -25,6 +25,12 @@
 		{:else if readout.values.mappedOutOfRange}
 			<span class="note">outside mapped range</span>
 		{/if}
+		{#if readout.values.mappingSource}
+			{@const source = readout.values.mappingSource}
+			<span class="note" title={source.detail}>
+				via {source.label}{source.count > 1 ? ` (1 of ${source.count})` : ""}
+			</span>
+		{/if}
 	{:else if readout.values?.kind === "color"}
 		<span>
 			<span class="label">stored</span>

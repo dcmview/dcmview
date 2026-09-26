@@ -41,6 +41,7 @@ describe("pixelReadout", () => {
 				modality: { value: "-1024", unit: "HU" },
 				mapped: null,
 				mappedOutOfRange: false,
+				mappingSource: null,
 			},
 			note: null,
 		});

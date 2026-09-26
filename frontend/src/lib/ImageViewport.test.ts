@@ -36,6 +36,7 @@ function adcMapping(): api.FrameValueMapping {
 		...identityMapping(),
 		real_world: [{
 			source: "real_world_value_mapping",
+			source_file_index: null,
 			label: "ADC",
 			first_value_mapped: 0,
 			last_value_mapped: 4095,

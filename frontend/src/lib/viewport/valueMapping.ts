@@ -179,9 +179,39 @@ export function formatValue(value: number): string {
 
 export type ValueWithUnit = { value: string; unit: string | null; label?: string | null };
 
+/** Which real-world mapping a readout used, out of how many the frame has. */
+export type MappingSource = { label: string; detail: string; count: number };
+
+/** A short name for where a real-world mapping comes from, and a longer one. */
+export function mappingSource(map: RealWorldValueMap): { label: string; detail: string } {
+	switch (map.source) {
+		case "dose_grid_scaling":
+			return { label: "Dose Grid Scaling", detail: "RT Dose Grid Scaling" };
+		case "real_world_value_mapping":
+			return { label: "RWVM", detail: "Real World Value Mapping declared in this file" };
+		case "rwvm_instance":
+			return {
+				label: "RWVM instance",
+				detail: map.source_file_index === null
+					? "Real World Value Mapping instance"
+					: `Real World Value Mapping instance, file index ${map.source_file_index}`,
+			};
+		default:
+			return { label: map.source, detail: map.source };
+	}
+}
+
 /** What the readout shows for one pixel. */
 export type PixelValues =
-	| { kind: "grayscale"; stored: string; modality: ValueWithUnit | null; mapped: ValueWithUnit | null; mappedOutOfRange: boolean }
+	| {
+		kind: "grayscale";
+		stored: string;
+		modality: ValueWithUnit | null;
+		mapped: ValueWithUnit | null;
+		mappedOutOfRange: boolean;
+		/** The preferred mapping's source; null without a mapping. */
+		mappingSource: MappingSource | null;
+	}
 	| { kind: "color"; components: { label: string; value: string }[] }
 	| { kind: "palette"; index: string };
 
@@ -189,7 +219,8 @@ export type PixelValues =
  * Stored, Modality, and preferred real-world values of one pixel. Modality
  * values are omitted when the transform is the identity and has no unit; a
  * real-world mapping whose stored range excludes the pixel reports
- * `mappedOutOfRange`.
+ * `mappedOutOfRange`. The preferred (first) mapping is used, and
+ * `mappingSource` says which one it is.
  */
 export function describePixelValues(
 	frame: RawFrame,
@@ -229,6 +260,7 @@ export function describePixelValues(
 			? { value: formatValue(mappedValue), unit: map.unit_label || null, label: map.label }
 			: null,
 		mappedOutOfRange: map !== null && mappedValue === null,
+		mappingSource: map ? { ...mappingSource(map), count: mapping.real_world.length } : null,
 	};
 }
 

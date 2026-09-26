@@ -57,6 +57,7 @@ function mapping(overrides: Partial<FrameValueMapping> = {}): FrameValueMapping 
 function linearMap(slope: number, intercept: number, overrides: Partial<RealWorldValueMap> = {}): RealWorldValueMap {
 	return {
 		source: "real_world_value_mapping",
+		source_file_index: null,
 		label: "ADC",
 		first_value_mapped: 0,
 		last_value_mapped: 4095,
@@ -165,6 +166,7 @@ describe("describePixelValues", () => {
 			modality: { value: "10", unit: "HU" },
 			mapped: null,
 			mappedOutOfRange: false,
+			mappingSource: null,
 		});
 		expect(describePixelValues(raw, pixel, mapping(), "MR")).toMatchObject({ modality: null, mapped: null });
 		expect(describePixelValues(raw, pixel, mapping(), "CT")).toMatchObject({ modality: { value: "1034", unit: "HU" } });
@@ -176,6 +178,7 @@ describe("describePixelValues", () => {
 		expect(describePixelValues(raw, pixel, pm, "MR")).toMatchObject({
 			mapped: { value: "40", unit: "um2/s", label: "ADC" },
 			mappedOutOfRange: false,
+			mappingSource: { label: "RWVM", count: 2 },
 		});
 		expect(describePixelValues(raw, { row: 0, column: 1 }, pm, "MR")).toMatchObject({
 			mapped: null,
@@ -197,6 +200,20 @@ describe("describePixelValues", () => {
 		expect(describePixelValues(raw, pixel, dose, "RTDOSE")).toMatchObject({
 			stored: "2330",
 			mapped: { value: "23.3", unit: "Gy", label: "Dose" },
+			mappingSource: { label: "Dose Grid Scaling", count: 1 },
+		});
+	});
+
+	it("names a mapping taken from a separate RWVM instance", () => {
+		const raw = frame(new Uint16Array([100, 0, 0, 0]).buffer);
+		const referenced = mapping({ real_world: [linearMap(2, 0, { source: "rwvm_instance", source_file_index: 7, label: "T1", unit_label: "ms" })] });
+		expect(describePixelValues(raw, pixel, referenced, "MR")).toMatchObject({
+			mapped: { value: "200", unit: "ms", label: "T1" },
+			mappingSource: {
+				label: "RWVM instance",
+				detail: "Real World Value Mapping instance, file index 7",
+				count: 1,
+			},
 		});
 	});
 
