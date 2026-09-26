@@ -7,7 +7,7 @@
 use crate::dicom_values::{read_numbers, read_string};
 use anyhow::{Context, Result};
 use dicom_core::Tag;
-use dicom_dictionary_std::{tags, StandardDataDictionary};
+use dicom_dictionary_std::{tags, uids, StandardDataDictionary};
 use dicom_object::{InMemDicomObject, OpenFileOptions};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -15,42 +15,6 @@ use std::path::{Path, PathBuf};
 const MAX_SEQUENCE_DEPTH: usize = 16;
 const MAX_SEQUENCE_ITEMS: usize = 4_096;
 const MAX_CANDIDATES: usize = 4_096;
-
-const REFERENCED_SERIES_SEQUENCE: Tag = Tag(0x0008, 0x1115);
-const REFERENCED_IMAGE_SEQUENCE: Tag = Tag(0x0008, 0x1140);
-const SOURCE_IMAGE_SEQUENCE: Tag = Tag(0x0008, 0x2112);
-const DEFINITION_SOURCE_SEQUENCE: Tag = Tag(0x0008, 0x1156);
-const CONTENT_SEQUENCE: Tag = Tag(0x0040, 0xA730);
-const REAL_WORLD_VALUE_MAPPING_SEQUENCE: Tag = Tag(0x0040, 0x9096);
-const DEFORMABLE_REGISTRATION_SEQUENCE: Tag = Tag(0x0064, 0x0002);
-const REGISTRATION_SEQUENCE: Tag = Tag(0x0070, 0x0308);
-const CONTOUR_IMAGE_SEQUENCE: Tag = Tag(0x3006, 0x0016);
-const REFERENCED_RT_PLAN_SEQUENCE: Tag = Tag(0x300C, 0x0002);
-const REFERENCED_STRUCTURE_SET_SEQUENCE: Tag = Tag(0x300C, 0x0060);
-const REFERENCED_DOSE_SEQUENCE: Tag = Tag(0x300C, 0x0080);
-const REFERENCED_RT_RADIATION_SEQUENCE: Tag = Tag(0x300A, 0x0630);
-
-const SEGMENTATION_STORAGE: &str = "1.2.840.10008.5.1.4.1.1.66.4";
-const LABEL_MAP_SEGMENTATION_STORAGE: &str = "1.2.840.10008.5.1.4.1.1.66.7";
-const PARAMETRIC_MAP_STORAGE: &str = "1.2.840.10008.5.1.4.1.1.30";
-const RWVM_STORAGE: &str = "1.2.840.10008.5.1.4.1.1.67";
-const GRAYSCALE_PR_STORAGE: &str = "1.2.840.10008.5.1.4.1.1.11.1";
-const COLOR_PR_STORAGE: &str = "1.2.840.10008.5.1.4.1.1.11.2";
-const BLENDING_PR_STORAGE: &str = "1.2.840.10008.5.1.4.1.1.11.4";
-const ADVANCED_BLENDING_PR_STORAGE: &str = "1.2.840.10008.5.1.4.1.1.11.8";
-const SPATIAL_REGISTRATION_STORAGE: &str = "1.2.840.10008.5.1.4.1.1.66.1";
-const DEFORMABLE_REGISTRATION_STORAGE: &str = "1.2.840.10008.5.1.4.1.1.66.3";
-const BASIC_TEXT_SR_STORAGE: &str = "1.2.840.10008.5.1.4.1.1.88.11";
-const COMPREHENSIVE_SR_STORAGE: &str = "1.2.840.10008.5.1.4.1.1.88.33";
-const COMPREHENSIVE_3D_SR_STORAGE: &str = "1.2.840.10008.5.1.4.1.1.88.34";
-const KEY_OBJECT_SELECTION_STORAGE: &str = "1.2.840.10008.5.1.4.1.1.88.59";
-const RT_IMAGE_STORAGE: &str = "1.2.840.10008.5.1.4.1.1.481.1";
-const RT_DOSE_STORAGE: &str = "1.2.840.10008.5.1.4.1.1.481.2";
-const RT_STRUCTURE_SET_STORAGE: &str = "1.2.840.10008.5.1.4.1.1.481.3";
-const RT_PLAN_STORAGE: &str = "1.2.840.10008.5.1.4.1.1.481.5";
-const RT_RADIATION_STORAGE: &str = "1.2.840.10008.5.1.4.1.1.481.12";
-const RT_RADIATION_SET_STORAGE: &str = "1.2.840.10008.5.1.4.1.1.481.13";
-const WSI_STORAGE: &str = "1.2.840.10008.5.1.4.1.1.77.1.6";
 
 /// Stable relationship names used by internal evidence and future resolution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -354,7 +318,7 @@ fn collect_candidates(
     if depth > MAX_SEQUENCE_DEPTH || output.len() >= MAX_CANDIDATES {
         return;
     }
-    let local_series_uid = if path.last() == Some(&REFERENCED_SERIES_SEQUENCE) {
+    let local_series_uid = if path.last() == Some(&tags::REFERENCED_SERIES_SEQUENCE) {
         read_string(object, tags::SERIES_INSTANCE_UID).or(inherited_series_uid)
     } else {
         inherited_series_uid
@@ -368,7 +332,7 @@ fn collect_candidates(
             sop_instance_uid,
             series_instance_uid: local_series_uid.clone(),
             frame_numbers: read_numbers::<u32>(object, tags::REFERENCED_FRAME_NUMBER),
-            segment_numbers: read_numbers::<u16>(object, Tag(0x0062, 0x000B)),
+            segment_numbers: read_numbers::<u16>(object, tags::REFERENCED_SEGMENT_NUMBER),
         });
     }
 
@@ -398,52 +362,60 @@ fn select_candidates<'a>(
             .collect::<Vec<_>>()
     };
     match sop_class {
-        PARAMETRIC_MAP_STORAGE => {
-            matching(&|candidate| candidate.path.as_slice() == [SOURCE_IMAGE_SEQUENCE])
+        uids::PARAMETRIC_MAP_STORAGE => {
+            matching(&|candidate| candidate.path.as_slice() == [tags::SOURCE_IMAGE_SEQUENCE])
                 .into_iter()
                 .map(|candidate| (ReferenceRelationship::SourceImage, candidate))
                 .collect()
         }
-        RWVM_STORAGE => matching(&|candidate| candidate.under(REAL_WORLD_VALUE_MAPPING_SEQUENCE))
+        uids::REAL_WORLD_VALUE_MAPPING_STORAGE => {
+            matching(&|candidate| candidate.under(tags::REAL_WORLD_VALUE_MAPPING_SEQUENCE))
+                .into_iter()
+                .map(|candidate| (ReferenceRelationship::SourceImage, candidate))
+                .collect()
+        }
+        uids::SEGMENTATION_STORAGE | uids::LABEL_MAP_SEGMENTATION_STORAGE => {
+            matching(&|candidate| {
+                candidate.starts_with(tags::REFERENCED_SERIES_SEQUENCE)
+                    || candidate.path.as_slice() == [tags::SOURCE_IMAGE_SEQUENCE]
+            })
             .into_iter()
-            .map(|candidate| (ReferenceRelationship::SourceImage, candidate))
-            .collect(),
-        SEGMENTATION_STORAGE | LABEL_MAP_SEGMENTATION_STORAGE => matching(&|candidate| {
-            candidate.starts_with(REFERENCED_SERIES_SEQUENCE)
-                || candidate.path.as_slice() == [SOURCE_IMAGE_SEQUENCE]
-        })
-        .into_iter()
-        .map(|candidate| {
-            let relationship = if candidate.sop_class_uid.as_deref() == Some(WSI_STORAGE) {
-                ReferenceRelationship::SourceImageForSegmentation
-            } else {
-                ReferenceRelationship::SourceImage
-            };
-            (relationship, candidate)
-        })
-        .collect(),
-        GRAYSCALE_PR_STORAGE | COLOR_PR_STORAGE => {
-            matching(&|candidate| candidate.starts_with(REFERENCED_SERIES_SEQUENCE))
+            .map(|candidate| {
+                let relationship = if candidate.sop_class_uid.as_deref()
+                    == Some(uids::VL_WHOLE_SLIDE_MICROSCOPY_IMAGE_STORAGE)
+                {
+                    ReferenceRelationship::SourceImageForSegmentation
+                } else {
+                    ReferenceRelationship::SourceImage
+                };
+                (relationship, candidate)
+            })
+            .collect()
+        }
+        uids::GRAYSCALE_SOFTCOPY_PRESENTATION_STATE_STORAGE
+        | uids::COLOR_SOFTCOPY_PRESENTATION_STATE_STORAGE => {
+            matching(&|candidate| candidate.starts_with(tags::REFERENCED_SERIES_SEQUENCE))
                 .into_iter()
                 .map(|candidate| (ReferenceRelationship::SourceImage, candidate))
                 .collect()
         }
-        BLENDING_PR_STORAGE => matching(&|candidate| {
-            candidate.under(REFERENCED_IMAGE_SEQUENCE)
-                && !candidate.starts_with(REFERENCED_SERIES_SEQUENCE)
+        uids::BLENDING_SOFTCOPY_PRESENTATION_STATE_STORAGE => matching(&|candidate| {
+            candidate.under(tags::REFERENCED_IMAGE_SEQUENCE)
+                && !candidate.starts_with(tags::REFERENCED_SERIES_SEQUENCE)
         })
         .into_iter()
         .map(|candidate| (ReferenceRelationship::BlendingSource, candidate))
         .collect(),
-        ADVANCED_BLENDING_PR_STORAGE => matching(&|candidate| {
-            candidate.under(REFERENCED_IMAGE_SEQUENCE)
-                && !candidate.starts_with(REFERENCED_SERIES_SEQUENCE)
+        uids::ADVANCED_BLENDING_PRESENTATION_STATE_STORAGE => matching(&|candidate| {
+            candidate.under(tags::REFERENCED_IMAGE_SEQUENCE)
+                && !candidate.starts_with(tags::REFERENCED_SERIES_SEQUENCE)
         })
         .into_iter()
         .map(|candidate| (ReferenceRelationship::BlendingInput, candidate))
         .collect(),
-        SPATIAL_REGISTRATION_STORAGE => matching(&|candidate| {
-            candidate.under(REGISTRATION_SEQUENCE) && candidate.under(REFERENCED_IMAGE_SEQUENCE)
+        uids::SPATIAL_REGISTRATION_STORAGE => matching(&|candidate| {
+            candidate.under(tags::REGISTRATION_SEQUENCE)
+                && candidate.under(tags::REFERENCED_IMAGE_SEQUENCE)
         })
         .into_iter()
         .enumerate()
@@ -458,29 +430,33 @@ fn select_candidates<'a>(
             )
         })
         .collect(),
-        DEFORMABLE_REGISTRATION_STORAGE => {
+        uids::DEFORMABLE_SPATIAL_REGISTRATION_STORAGE => {
             let mut output =
-                matching(&|candidate| candidate.starts_with(REFERENCED_SERIES_SEQUENCE))
+                matching(&|candidate| candidate.starts_with(tags::REFERENCED_SERIES_SEQUENCE))
                     .into_iter()
                     .map(|candidate| (ReferenceRelationship::RegisteredTarget, candidate))
                     .collect::<Vec<_>>();
             output.extend(
-                matching(&|candidate| candidate.under(DEFORMABLE_REGISTRATION_SEQUENCE))
+                matching(&|candidate| candidate.under(tags::DEFORMABLE_REGISTRATION_SEQUENCE))
                     .into_iter()
                     .map(|candidate| (ReferenceRelationship::DeformationSource, candidate)),
             );
             output
         }
-        BASIC_TEXT_SR_STORAGE
-        | COMPREHENSIVE_SR_STORAGE
-        | COMPREHENSIVE_3D_SR_STORAGE
-        | KEY_OBJECT_SELECTION_STORAGE => select_sr_candidates(sop_class, candidates),
-        RT_IMAGE_STORAGE
-        | RT_DOSE_STORAGE
-        | RT_STRUCTURE_SET_STORAGE
-        | RT_PLAN_STORAGE
-        | RT_RADIATION_STORAGE
-        | RT_RADIATION_SET_STORAGE => select_rt_candidates(sop_class, candidates),
+        uids::BASIC_TEXT_SR_STORAGE
+        | uids::COMPREHENSIVE_SR_STORAGE
+        | uids::COMPREHENSIVE3_DSR_STORAGE
+        | uids::KEY_OBJECT_SELECTION_DOCUMENT_STORAGE => {
+            select_sr_candidates(sop_class, candidates)
+        }
+        uids::RT_IMAGE_STORAGE
+        | uids::RT_DOSE_STORAGE
+        | uids::RT_STRUCTURE_SET_STORAGE
+        | uids::RT_PLAN_STORAGE
+        | uids::RT_RADIATION_SET_STORAGE
+        | uids::C_ARM_PHOTON_ELECTRON_RADIATION_STORAGE => {
+            select_rt_candidates(sop_class, candidates)
+        }
         _ => matching(&|_| true)
             .into_iter()
             .map(|candidate| (ReferenceRelationship::Unknown, candidate))
@@ -494,37 +470,39 @@ fn select_sr_candidates<'a>(
 ) -> Vec<(ReferenceRelationship, &'a Candidate)> {
     let content = candidates
         .iter()
-        .filter(|candidate| candidate.under(CONTENT_SEQUENCE))
+        .filter(|candidate| candidate.under(tags::CONTENT_SEQUENCE))
         .collect::<Vec<_>>();
     let selected = if content.is_empty() {
         candidates
             .iter()
-            .filter(|candidate| candidate.starts_with(Tag(0x0040, 0xA375)))
+            .filter(|candidate| {
+                candidate.starts_with(tags::CURRENT_REQUESTED_PROCEDURE_EVIDENCE_SEQUENCE)
+            })
             .collect::<Vec<_>>()
     } else {
         content
     };
-    let tid1500 = sop_class == COMPREHENSIVE_3D_SR_STORAGE
+    let tid1500 = sop_class == uids::COMPREHENSIVE3_DSR_STORAGE
         && selected.iter().any(|candidate| {
-            candidate.sop_class_uid.as_deref() == Some(SEGMENTATION_STORAGE)
+            candidate.sop_class_uid.as_deref() == Some(uids::SEGMENTATION_STORAGE)
                 || !candidate.segment_numbers.is_empty()
         });
     selected
         .into_iter()
         .map(|candidate| {
-            let relationship = if sop_class == KEY_OBJECT_SELECTION_STORAGE {
-                if candidate.sop_class_uid.as_deref() == Some(SEGMENTATION_STORAGE) {
+            let relationship = if sop_class == uids::KEY_OBJECT_SELECTION_DOCUMENT_STORAGE {
+                if candidate.sop_class_uid.as_deref() == Some(uids::SEGMENTATION_STORAGE) {
                     ReferenceRelationship::KeyObjectSegmentation
                 } else {
                     ReferenceRelationship::SourceImage
                 }
             } else if tid1500 {
-                if candidate.sop_class_uid.as_deref() == Some(SEGMENTATION_STORAGE) {
+                if candidate.sop_class_uid.as_deref() == Some(uids::SEGMENTATION_STORAGE) {
                     ReferenceRelationship::ReferencedSegment
                 } else {
                     ReferenceRelationship::SourceImageForSegmentation
                 }
-            } else if sop_class == COMPREHENSIVE_3D_SR_STORAGE {
+            } else if sop_class == uids::COMPREHENSIVE3_DSR_STORAGE {
                 ReferenceRelationship::SourceOfMeasurement
             } else {
                 ReferenceRelationship::SourceImage
@@ -541,22 +519,22 @@ fn select_rt_candidates<'a>(
     candidates
         .iter()
         .filter_map(|candidate| {
-            let relationship = if candidate.under(DEFINITION_SOURCE_SEQUENCE) {
+            let relationship = if candidate.under(tags::DEFINITION_SOURCE_SEQUENCE) {
                 ReferenceRelationship::DefinitionSource
-            } else if candidate.under(REFERENCED_RT_RADIATION_SEQUENCE) {
+            } else if candidate.under(tags::REFERENCED_RT_RADIATION_SEQUENCE) {
                 ReferenceRelationship::ReferencedRtRadiation
-            } else if candidate.under(REFERENCED_RT_PLAN_SEQUENCE) {
+            } else if candidate.under(tags::REFERENCED_RT_PLAN_SEQUENCE) {
                 ReferenceRelationship::ReferencedRtPlan
-            } else if candidate.under(REFERENCED_STRUCTURE_SET_SEQUENCE) {
-                if sop_class == RT_DOSE_STORAGE {
+            } else if candidate.under(tags::REFERENCED_STRUCTURE_SET_SEQUENCE) {
+                if sop_class == uids::RT_DOSE_STORAGE {
                     ReferenceRelationship::SourceStructureSet
                 } else {
                     ReferenceRelationship::ReferencedStructureSet
                 }
-            } else if candidate.under(REFERENCED_DOSE_SEQUENCE) {
+            } else if candidate.under(tags::REFERENCED_DOSE_SEQUENCE) {
                 ReferenceRelationship::ReferencedDose
-            } else if candidate.under(CONTOUR_IMAGE_SEQUENCE)
-                || candidate.path.as_slice() == [REFERENCED_IMAGE_SEQUENCE]
+            } else if candidate.under(tags::CONTOUR_IMAGE_SEQUENCE)
+                || candidate.path.as_slice() == [tags::REFERENCED_IMAGE_SEQUENCE]
             {
                 ReferenceRelationship::SourceImage
             } else {
@@ -569,12 +547,9 @@ fn select_rt_candidates<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        extract_reference_edges_from_object, ReferenceRelationship, CONTENT_SEQUENCE,
-        SEGMENTATION_STORAGE,
-    };
-    use dicom_core::{value::DataSetSequence, DataElement, PrimitiveValue, Tag, VR};
-    use dicom_dictionary_std::tags;
+    use super::{extract_reference_edges_from_object, ReferenceRelationship};
+    use dicom_core::{value::DataSetSequence, DataElement, PrimitiveValue, VR};
+    use dicom_dictionary_std::{tags, uids};
     use dicom_object::InMemDicomObject;
 
     fn item(elements: impl IntoIterator<Item = DataElement<InMemDicomObject>>) -> InMemDicomObject {
@@ -599,23 +574,23 @@ mod tests {
         let duplicate = first.clone();
         let second = referenced("1.2.3.2", &["1"]);
         let object = item([
-            DataElement::new(tags::SOP_CLASS_UID, VR::UI, "1.2.840.10008.5.1.4.1.1.88.33"),
+            DataElement::new(tags::SOP_CLASS_UID, VR::UI, uids::COMPREHENSIVE_SR_STORAGE),
             DataElement::new(
-                CONTENT_SEQUENCE,
+                tags::CONTENT_SEQUENCE,
                 VR::SQ,
                 DataSetSequence::from(vec![
                     item([DataElement::new(
-                        Tag(0x0008, 0x1199),
+                        tags::REFERENCED_SOP_SEQUENCE,
                         VR::SQ,
                         DataSetSequence::from(vec![first]),
                     )]),
                     item([DataElement::new(
-                        Tag(0x0008, 0x1199),
+                        tags::REFERENCED_SOP_SEQUENCE,
                         VR::SQ,
                         DataSetSequence::from(vec![duplicate]),
                     )]),
                     item([DataElement::new(
-                        Tag(0x0008, 0x1199),
+                        tags::REFERENCED_SOP_SEQUENCE,
                         VR::SQ,
                         DataSetSequence::from(vec![second]),
                     )]),
@@ -640,7 +615,7 @@ mod tests {
         let object = item([
             DataElement::new(tags::SOP_CLASS_UID, VR::UI, "9.9.9"),
             DataElement::new(
-                Tag(0x0008, 0x1199),
+                tags::REFERENCED_SOP_SEQUENCE,
                 VR::SQ,
                 DataSetSequence::from(vec![partial]),
             ),
@@ -658,31 +633,31 @@ mod tests {
         let evidence = item([
             DataElement::new(tags::SERIES_INSTANCE_UID, VR::UI, "1.2.3.series"),
             DataElement::new(
-                Tag(0x0008, 0x114A),
+                tags::REFERENCED_INSTANCE_SEQUENCE,
                 VR::SQ,
                 DataSetSequence::from(vec![referenced(uid, &[])]),
             ),
         ]);
         let per_frame = |frame: &str| {
             item([DataElement::new(
-                Tag(0x0008, 0x9124),
+                tags::DERIVATION_IMAGE_SEQUENCE,
                 VR::SQ,
                 DataSetSequence::from(vec![item([DataElement::new(
-                    Tag(0x0008, 0x2112),
+                    tags::SOURCE_IMAGE_SEQUENCE,
                     VR::SQ,
                     DataSetSequence::from(vec![referenced(uid, &[frame])]),
                 )])]),
             )])
         };
         let object = item([
-            DataElement::new(tags::SOP_CLASS_UID, VR::UI, SEGMENTATION_STORAGE),
+            DataElement::new(tags::SOP_CLASS_UID, VR::UI, uids::SEGMENTATION_STORAGE),
             DataElement::new(
-                Tag(0x0008, 0x1115),
+                tags::REFERENCED_SERIES_SEQUENCE,
                 VR::SQ,
                 DataSetSequence::from(vec![evidence]),
             ),
             DataElement::new(
-                Tag(0x5200, 0x9230),
+                tags::PER_FRAME_FUNCTIONAL_GROUPS_SEQUENCE,
                 VR::SQ,
                 DataSetSequence::from(vec![per_frame("1"), per_frame("2")]),
             ),
@@ -701,7 +676,7 @@ mod tests {
         let first = "1.2.3.10";
         let second = "1.2.3.11";
         let object = item([
-            DataElement::new(tags::SOP_CLASS_UID, VR::UI, SEGMENTATION_STORAGE),
+            DataElement::new(tags::SOP_CLASS_UID, VR::UI, uids::SEGMENTATION_STORAGE),
             DataElement::new(
                 tags::SOURCE_IMAGE_SEQUENCE,
                 VR::SQ,
@@ -729,15 +704,19 @@ mod tests {
         let referenced_series = item([
             DataElement::new(tags::SERIES_INSTANCE_UID, VR::UI, "1.2.3.series"),
             DataElement::new(
-                Tag(0x0008, 0x1140),
+                tags::REFERENCED_IMAGE_SEQUENCE,
                 VR::SQ,
                 DataSetSequence::from(vec![referenced(uid, &["1", "2"])]),
             ),
         ]);
         let object = item([
-            DataElement::new(tags::SOP_CLASS_UID, VR::UI, "1.2.840.10008.5.1.4.1.1.11.1"),
             DataElement::new(
-                Tag(0x0008, 0x1115),
+                tags::SOP_CLASS_UID,
+                VR::UI,
+                uids::GRAYSCALE_SOFTCOPY_PRESENTATION_STATE_STORAGE,
+            ),
+            DataElement::new(
+                tags::REFERENCED_SERIES_SEQUENCE,
                 VR::SQ,
                 DataSetSequence::from(vec![referenced_series]),
             ),
