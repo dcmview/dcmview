@@ -120,7 +120,7 @@ The viewer-internal HTTP API represents annotations as:
 }
 ```
 
-`PUT /api/file/:index/annotations` replaces one file's in-memory annotations and
+`PUT /api/file/{index}/annotations` replaces one file's in-memory annotations and
 returns the canonicalized payload. Invalid coordinates or frame mappings return
-`400 {"error": "..."}`. See the [internal API reference](api.md) for endpoint
+`400 {"code": "bad_request", "error": "..."}`. See the [internal API reference](api.md) for endpoint
 details.

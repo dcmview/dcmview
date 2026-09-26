@@ -135,7 +135,7 @@ over SSH instead of exposing the server publicly.
 ### Image frame returns unsupported transfer syntax
 
 Symptom: the viewer cannot display a file and the API returns
-`422 {"error": "unsupported transfer syntax: ..."}`.
+`422 {"code": "unsupported_transfer_syntax", "error": "unsupported transfer syntax: ..."}`.
 
 Likely cause: the file uses a transfer syntax that `dcmview` intentionally does
 not decode yet. JPEG-LS Lossless (`.80`) grayscale and JPEG XL Lossless (`.110`)
