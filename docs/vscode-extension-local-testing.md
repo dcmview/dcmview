@@ -130,11 +130,17 @@ Python wrapper path without extension interception.
 
 ```bash
 npm --prefix vscode run compile
+cargo build --locked --bin dcmview
 npm --prefix vscode test
 ```
 
 `npm --prefix vscode test` uses `@vscode/test-electron` and may download a VS
-Code test build into `vscode/.vscode-test/`.
+Code test build into `vscode/.vscode-test/`. Its viewer tests open
+`tests/fixtures/golden-uncompressed-u16-multiframe.dcm` through the custom
+editor and through a terminal shim routed over the bridge, against the debug
+binary in `target/debug/`, so build that first (`python scripts/check.py
+vscode-integration` does). The run publishes its bridge into a temporary
+registry directory, never the user's real one.
 
 ## Target-specific VSIX packaging
 

@@ -8,6 +8,7 @@ export function run(): Promise<void> {
   });
 
   mocha.addFile(path.resolve(__dirname, 'extension.test.js'));
+  mocha.addFile(path.resolve(__dirname, 'viewer.test.js'));
 
   return new Promise((resolve, reject) => {
     mocha.run((failures: number) => {

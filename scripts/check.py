@@ -186,6 +186,8 @@ class CheckRunner:
 		run("Compile the VS Code extension", [self.npm, "--prefix", "vscode", "run", "compile"])
 
 	def vscode_integration(self) -> None:
+		# The Electron suite launches the real debug binary through the extension.
+		self.build_binary()
 		self.install_vscode()
 		env = os.environ.copy()
 		env.setdefault("DCMVIEW_VSCODE_TEST_VERSION", VSCODE_TEST_VERSION)
