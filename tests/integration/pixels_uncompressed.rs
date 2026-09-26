@@ -167,9 +167,7 @@ async fn pixel_padding_range_is_excluded_from_auto_window_and_drawn_as_backgroun
     ));
     object.write_to_file(&path).expect("write padding tags");
 
-    let mut entry = support::file_entry(path, "1.2.840.10008.1.2.1", 1);
-    entry.rows = 2;
-    entry.columns = 2;
+    let entry = entry_for_padding_test(&path);
 
     let display = load_frame(
         entry.clone(),
@@ -197,6 +195,37 @@ async fn pixel_padding_range_is_excluded_from_auto_window_and_drawn_as_backgroun
         .to_luma8()
         .into_raw();
     assert_eq!(pixels, [0, 0, 0, 255]);
+
+    let mut monochrome1 = entry_for_padding_test(&path);
+    monochrome1.photometric_interpretation = "MONOCHROME1".to_string();
+    let display = load_frame(
+        monochrome1,
+        new_cache(),
+        FrameRequest {
+            frame: 0,
+            window_center: None,
+            window_width: None,
+            window_mode: dcmview::types::WindowMode::Default,
+        },
+    )
+    .await
+    .expect("MONOCHROME1 pixel-padded display frame");
+    let pixels = image::load_from_memory_with_format(display.body.as_ref(), ImageFormat::Png)
+        .expect("valid MONOCHROME1 pixel-padded PNG")
+        .to_luma8()
+        .into_raw();
+    assert_eq!(
+        pixels,
+        [0, 0, 255, 0],
+        "MONOCHROME1 inverts the image but padding stays black background"
+    );
+}
+
+fn entry_for_padding_test(path: &std::path::Path) -> dcmview::types::FileEntry {
+    let mut entry = support::file_entry(path.to_path_buf(), "1.2.840.10008.1.2.1", 1);
+    entry.rows = 2;
+    entry.columns = 2;
+    entry
 }
 
 #[tokio::test]

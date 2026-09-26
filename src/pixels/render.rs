@@ -76,10 +76,11 @@ pub(crate) fn encode_windowed_luminance_png(
             resolved_window.width.max(1.0),
         )
     };
+    apply_monochrome1_inversion(&mut windowed, &file.photometric_interpretation);
+    // Padding is background: black whatever the photometric interpretation.
     if let Some(mask) = padding_mask.as_deref() {
         apply_padding_background(&mut windowed, mask);
     }
-    apply_monochrome1_inversion(&mut windowed, &file.photometric_interpretation);
     apply_rectangular_shutter(
         &mut windowed,
         rows,
