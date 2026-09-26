@@ -105,6 +105,17 @@ semantic rendering of the referencing object. Components use
 `frontend/src/api.ts`; new endpoint fetches should not be introduced directly
 inside components.
 
+`App.svelte` owns the shared root state through controllers in
+`frontend/src/lib/app/` (catalog polling, tab and stack navigation, window
+settings, sidebar layout) and the per-tab `ViewStates` store (zoom, pan,
+orientation). One `svelte:window` keydown handler dispatches every global
+shortcut through `lib/keyboardShortcuts.ts`. Keyed fetches share and abort
+in-flight requests through `lib/keyedAsyncResource.ts`. `ImageViewport`
+composes units in `frontend/src/lib/viewport/`: raw and display frame sources,
+the window/level worker client, rendered-frame tracking for cine pacing,
+per-frame overlay layers, the ROI annotation store and components, and the
+view transform math, including the client-to-image-pixel mapping.
+
 For SEG objects, `SemanticContextPanel` keeps Pixel Preview as the initial mode
 and publishes an explicit Semantic Context selection to `App.svelte`.
 `ImageViewport` composes the referenced display PNG with the transparent SEG
@@ -390,8 +401,11 @@ installation and VS Code Electron integration can also use network/cache state;
   own top-level pixel element. Pixel elements nested in sequences, such as an
   Icon Image Sequence, do not count. It
   does not retain integer, float, or double-float pixel values in the catalog.
-- Frontend state helpers, cache policy, windowing, registry shaping, and API
-  wrappers are tested as TypeScript modules.
+- Frontend state helpers, controllers, cache policy, windowing, registry
+  shaping, and API wrappers are tested as TypeScript modules. Component tests
+  render `App.svelte` and `ImageViewport.svelte` in happy-dom with the API
+  module mocked, covering per-tab view state, the keyboard guard, and the
+  window/level render-path choice.
 - Python unit tests isolate subprocess policy; `python-integration` adds the real
   binary. VS Code compile and Electron integration remain separate layers.
 - `scripts/compatibility/run.py --corpus-root` checks the real binary against

@@ -235,7 +235,12 @@ dcmview/
 |   |   |-- App.svelte
 |   |   |-- api.ts                    typed fetch boundary
 |   |   |-- generated/api-types.ts    generated Rust wire contract
+|   |   |-- testing/fixtures.ts       component-test catalog and frame builders
 |   |   `-- lib/
+|   |       |-- app/                  App-owned controllers: catalog, tabs,
+|   |       |                         window settings, sidebar layout
+|   |       |-- viewport/             ImageViewport units: frame sources, W/L
+|   |       |                         worker client, view state, overlays, ROIs
 |   |       |-- FileNavigator.svelte
 |   |       |-- OpenImageTabs.svelte
 |   |       |-- ViewerToolbar.svelte
@@ -244,6 +249,8 @@ dcmview/
 |   |       |-- FrameSlider.svelte
 |   |       |-- StatusBar.svelte
 |   |       |-- annotationGeometry.ts
+|   |       |-- keyboardShortcuts.ts
+|   |       |-- keyedAsyncResource.ts
 |   |       |-- viewerTools.ts
 |   |       `-- workers/wlRenderer.worker.ts
 |   |-- dist/           Build output consumed by rust-embed
@@ -381,9 +388,21 @@ unless one is actually implemented.
 - `src/api/contracts.rs` is the HTTP source of truth. Regenerate
   `frontend/src/generated/api-types.ts` with `npm run generate:types`; never
   hand-edit it.
-- Shared root state lives in `App.svelte`: active file/frame, window settings,
-  open tabs, active tool, selected preset, orientation, reset count, navigator,
-  and tag panel layout.
+- Shared root state is owned by `App.svelte`, which instantiates its
+  controllers and passes their state down: `lib/app/` `Catalog` (file and
+  series catalogs), `TabNavigation` (open tabs, active file/frame/stack
+  position), `WindowSettings` (window, mode, preset, manual adjustment), and
+  `SidebarLayout` (navigator and tag panel layout, compact drawers), plus
+  `lib/viewport/` `ViewStates` (per-tab zoom, pan, and orientation). Active
+  tool, cine settings, and semantic mode are plain `App.svelte` state.
+- Global keyboard shortcuts go through the single dispatcher in
+  `lib/keyboardShortcuts.ts` and App's `svelte:window` handler; do not add
+  per-component window keydown listeners.
+- Keyed fetches share and cancel requests through `lib/keyedAsyncResource.ts`
+  (`SharedRequestRegistry`, and `KeyedAsyncResource` for per-key status).
+- Use `$effect` for genuine reactive synchronization and subscriptions; when a
+  parent wants a child to act, call an exported function or a callback prop
+  instead of bumping a counter prop for an effect to notice.
 - All backend calls go through `frontend/src/api.ts`; do not add raw `fetch`
   calls in components when a typed wrapper belongs there.
 - The viewport supports two render paths: display PNG blobs for cine mode and
@@ -396,9 +415,13 @@ unless one is actually implemented.
   transform; opening a different tab starts from a fitted view.
 - Orientation state is also per open tab and supports horizontal flip, vertical
   flip, and 90-degree rotation.
-- ROI editing lives in `ImageViewport.svelte` with geometry helpers in
-  `annotationGeometry.ts`; keep frame-scoping semantics consistent with backend
-  validation.
+- ROI pointer editing lives in `ImageViewport.svelte`; annotation state in
+  `viewport/annotationStore.svelte.ts`, hit testing in `viewport/roiEditing.ts`,
+  and geometry helpers in `annotationGeometry.ts`. Keep frame-scoping semantics
+  consistent with backend validation.
+- Map cursor positions to image pixels with `clientToImagePoint` in
+  `viewport/viewTransform.ts`; per-frame layers over a source image go through
+  `viewport/frameOverlay.ts`.
 - No external CSS frameworks. Use scoped Svelte styles.
 - Theme tokens live as CSS variables in `App.svelte`; reuse them instead of
   introducing component-local chrome palettes.
@@ -468,7 +491,7 @@ the warning path in `server/runtime.rs`.
 | `frontend/src/api.ts` | Typed frontend fetch wrappers |
 | `frontend/src/generated/api-types.ts` | Generated TypeScript HTTP contract |
 | `frontend/src/App.svelte` | Root frontend state and layout |
-| `frontend/src/lib/ImageViewport.svelte` | Viewer rendering, tools, ROI editing |
+| `frontend/src/lib/ImageViewport.svelte` | Viewport composition, render pipelines, pointer tools |
 | `python/dcmview_py/wrapper.py` | Python subprocess wrapper |
 | `examples/generate_test_fixtures.rs` | Synthetic fixture generator |
 | `examples/generate_api_types.rs` | TypeScript contract generator and drift check |
@@ -503,8 +526,10 @@ Use the `scripts/check.py` profiles above; their exact composition and test
 seams are normative in `docs/architecture.md`.
 
 Rust uses unit tests plus `axum-test` HTTP integration tests. Frontend behavior
-uses Vitest, Python separates mock/unit coverage from real-binary integration,
-and VS Code separates compilation from Electron-hosted integration.
+uses Vitest (Node module tests, plus happy-dom component tests that opt in with
+a `@vitest-environment happy-dom` docblock), Python separates mock/unit
+coverage from real-binary integration, and VS Code separates compilation from
+Electron-hosted integration.
 
 Committed synthetic fixtures cover native, JPEG Baseline, JPEG Lossless, JPEG
 2000, multiframe, and no-pixel objects. They are generated by:
