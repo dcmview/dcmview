@@ -12,6 +12,7 @@ The committed corpus is intentionally small and synthetic:
 - `golden-jpeg-lossless-ybr-full-u8-single-frame.dcm`
 - `golden-jpeg2000-lossless-u8-single-frame.dcm`
 - `golden-jpegxl-lossless-ybr-full-u8-single-frame.dcm`
+- `golden-jpegxl-lossless-ybr-rct-u8-single-frame.dcm`
 - `golden-rle-ybr-full-422-u8-single-frame.dcm`
 - `golden-shutter-bitmap-u8.dcm`
 - `golden-shutter-circular-u8.dcm`
@@ -27,7 +28,9 @@ grayscale codestreams so successful server-side display and raw-sample paths
 remain covered without network access or external codecs during regeneration.
 The color fixtures share one 4x2 set of Y, Cb, Cr samples (red, green, blue,
 and a muted orange, with chroma shared by horizontal pairs) so each asserts
-the same YBR_FULL to RGB conversion through a different decoder.
+the same YBR_FULL to RGB conversion through a different decoder. The JPEG XL
+YBR_RCT fixture codes that expected RGB through the codestream's reversible
+color transform, so it must display and return exactly the same RGB.
 
 The display shutter fixtures are 8x8 mid-gray native DX images, one per shape
 (circular, polygonal, rectangular combined with circular, and a bitmap mask

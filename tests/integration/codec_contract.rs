@@ -216,6 +216,23 @@ async fn jpeg_xl_ybr_full_fixture_converts_decoded_channels_to_rgb() {
 }
 
 #[tokio::test]
+async fn jpeg_xl_ybr_rct_fixture_displays_the_decoded_rgb() {
+    // The codestream's reversible color transform is inverted by the decoder,
+    // so YBR_RCT frames already hold RGB for display and raw.
+    let test_server = assert_color_fixture_display(
+        "golden-jpegxl-lossless-ybr-rct-u8-single-frame.dcm",
+        "1.2.840.10008.1.2.4.110",
+    )
+    .await;
+
+    let raw = test_server.get("/api/file/0/frame/0/raw").await;
+    raw.assert_status_ok();
+    assert_eq!(header(&raw, "x-frame-samples-per-pixel"), "3");
+    assert_eq!(header(&raw, "x-frame-photometric-interpretation"), "RGB");
+    assert_eq!(raw.as_bytes().as_ref(), FIXTURE_RGB_4X2.concat());
+}
+
+#[tokio::test]
 async fn jpeg_lossless_fixture_satisfies_display_and_raw_contracts() {
     let samples = [
         0_u16, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100, 1200, 1300, 1400, 1500,

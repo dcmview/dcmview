@@ -56,6 +56,16 @@ fn main() {
         },
         jpeg_xl_lossless_ybr_fragment_4x2(),
     );
+    write_color_fixture(
+        &fixture_dir.join("golden-jpegxl-lossless-ybr-rct-u8-single-frame.dcm"),
+        ColorFixtureSpec {
+            sop_instance_uid: "2.25.2000016",
+            patient_id: "GOLDEN-JPEGXL-RCT",
+            transfer_syntax_uid: "1.2.840.10008.1.2.4.110",
+            photometric_interpretation: "YBR_RCT",
+        },
+        jpeg_xl_lossless_rct_fragment_4x2(),
+    );
     write_display_shutter_fixtures(&fixture_dir);
     write_sr_without_pixels(&fixture_dir.join("golden-no-pixels-sr.dcm"));
     write_image_without_pixels(&fixture_dir.join("golden-image-no-pixels.dcm"));
@@ -815,6 +825,22 @@ fn jpeg_xl_lossless_ybr_fragment_4x2() -> Vec<u8> {
         "d5ffffff73efebeeeeee86fff7eff9efa131e79c6bed736f9224090155555555",
         "55d5ffffff73efebeeeeee3e00979e93731096f128e389864bc92388ebc37178",
         "5ae0d10c"
+    ))
+}
+
+fn jpeg_xl_lossless_rct_fragment_4x2() -> Vec<u8> {
+    // Lossless JPEG XL codestream (zune-jpegxl 0.4, modular, no XYB) of the
+    // rounded RGB that YBR_4X2 converts to under YBR_FULL. The encoder
+    // codes three channels through the YCoCg reversible color transform, the
+    // RCT that PhotometricInterpretation YBR_RCT declares; decoders invert it.
+    decode_hex(concat!(
+        "ff0a080006804808020100d4024b189b9c71840338800338204ac03905010020",
+        "4480081001224084fff7eff9efa131e79c6bed736f922409015555555555d5ff",
+        "ffff73efebeeeeee86fff7eff9efa131e79c6bed736f922409015555555555d5",
+        "ffffff73efebeeeeee86fff7eff9efa131e79c6bed736f922409015555555555",
+        "d5ffffff73efebeeeeee86fff7eff9efa131e79c6bed736f9224090155555555",
+        "55d5ffffff73efebeeeeee3e00c7e702002d0f7e1efd3ceff3d4c5d5e7c90f78",
+        "4600"
     ))
 }
 

@@ -78,9 +78,11 @@ impl Codec {
             // OpenJPEG applies the inverse RCT/ICT itself.
             (Self::Jpeg2000, 8 | 16, "RGB" | "YBR_RCT" | "YBR_ICT") => Some(Rgb),
             // PS3.5 Table 8.2.15-1 lists XYB, YBR_RCT, and RGB for JPEG XL
-            // Lossless, not YBR_FULL. Files that carry YBR_FULL anyway store
-            // Y, Cb, Cr as three plain channels, which jxl-oxide returns as-is.
-            (Self::JpegXl, 8, "RGB") => Some(Rgb),
+            // Lossless, not YBR_FULL. YBR_RCT marks RGB coded through the
+            // codestream's reversible color transform, which jxl-oxide
+            // inverts. Files that carry YBR_FULL anyway store Y, Cb, Cr as
+            // three plain channels, which jxl-oxide returns as-is.
+            (Self::JpegXl, 8, "RGB" | "YBR_RCT") => Some(Rgb),
             (Self::JpegXl, 8, "YBR_FULL") => Some(YbrFull),
             (Self::Rle, 8, "RGB") => Some(Rgb),
             // PS3.5 Table 8.2.2-1 does not pair RLE with YBR_FULL_422, but files
@@ -449,14 +451,16 @@ mod tests {
             color("1.2.840.10008.1.2.4.110", 8, "YBR_FULL"),
             SupportState::Renderable
         );
-        // jpegxl.rs has no conversion for these, so they must not be advertised.
-        for photometric in ["YBR_FULL_422", "YBR_RCT"] {
-            assert_eq!(
-                color("1.2.840.10008.1.2.4.110", 8, photometric),
-                SupportState::Unsupported,
-                "{photometric}"
-            );
-        }
+        assert_eq!(
+            color("1.2.840.10008.1.2.4.110", 8, "YBR_RCT"),
+            SupportState::Renderable
+        );
+        // jpegxl.rs has no conversion for subsampled chroma, so it must not
+        // be advertised.
+        assert_eq!(
+            color("1.2.840.10008.1.2.4.110", 8, "YBR_FULL_422"),
+            SupportState::Unsupported
+        );
         // jpeg2000.rs renders three-component codestreams as RGB.
         for photometric in ["RGB", "YBR_RCT", "YBR_ICT"] {
             assert_eq!(
