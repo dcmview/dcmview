@@ -176,7 +176,7 @@ impl AnnotationStore {
         Ok(canonical)
     }
 
-    pub fn export_embed_csv(&self, files: &[FileEntry]) -> Result<String> {
+    pub fn export_embed_csv(&self, files: &[Arc<FileEntry>]) -> Result<String> {
         let store = self
             .inner
             .lock()
@@ -225,14 +225,14 @@ impl AnnotationSource {
         })
     }
 
-    pub fn load_for_files(&self, files: &[FileEntry]) -> Result<AnnotationIndexMap> {
+    pub fn load_for_files(&self, files: &[Arc<FileEntry>]) -> Result<AnnotationIndexMap> {
         self.load_for_files_with_check(files, || Ok(()))
             .map(|(map, _)| map)
     }
 
     pub fn load_for_files_with_check<F>(
         &self,
-        files: &[FileEntry],
+        files: &[Arc<FileEntry>],
         mut check_active: F,
     ) -> Result<(AnnotationIndexMap, AnnotationLoadReport)>
     where
@@ -291,7 +291,7 @@ impl AnnotationSource {
 
 pub fn load_annotations_for_files(
     csv_path: &Path,
-    files: &[FileEntry],
+    files: &[Arc<FileEntry>],
 ) -> Result<AnnotationIndexMap> {
     AnnotationSource::from_path(csv_path)?.load_for_files(files)
 }
@@ -430,7 +430,7 @@ fn parse_roi_frames(raw: &str, row_number: usize) -> Result<Vec<Vec<u32>>> {
 }
 
 fn build_file_lookup(
-    files: &[FileEntry],
+    files: &[Arc<FileEntry>],
     working_directory: &Path,
 ) -> Result<HashMap<PathKey, Vec<(usize, u32)>>> {
     let mut lookup = HashMap::<PathKey, Vec<(usize, u32)>>::new();
@@ -576,6 +576,8 @@ fn normalize_path(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::{
         canonicalize_annotations, load_annotations_for_files, AnnotationSource, AnnotationStore,
         EmbedRoiAnnotations,
@@ -970,7 +972,7 @@ mod tests {
 
     #[test]
     fn csv_insert_does_not_overwrite_user_edit() {
-        let mut file = file_entry(0, PathBuf::from("/tmp/edited.dcm"), 3);
+        let mut file = Arc::unwrap_or_clone(file_entry(0, PathBuf::from("/tmp/edited.dcm"), 3));
         file.rows = 100;
         file.columns = 100;
         let store = AnnotationStore::empty();
@@ -1000,8 +1002,8 @@ mod tests {
         assert_eq!(store.get(file.index).expect("read annotations"), edited);
     }
 
-    fn file_entry(index: usize, path: PathBuf, frame_count: u32) -> FileEntry {
-        FileEntry {
+    fn file_entry(index: usize, path: PathBuf, frame_count: u32) -> Arc<FileEntry> {
+        Arc::new(FileEntry {
             index,
             path,
             label: "fixture".to_string(),
@@ -1030,7 +1032,7 @@ mod tests {
             rescale_intercept: 0.0,
             transfer_syntax_uid: "1.2.840.10008.1.2.1".to_string(),
             default_window: None,
-        }
+        })
     }
 
     fn write_csv(path: &Path, content: &str) {

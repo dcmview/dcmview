@@ -1,6 +1,6 @@
 use super::super::{now_unix_ms, FileRegistry, RequestActivity};
 use crate::annotations::AnnotationStore;
-use crate::api::contracts::TagNode;
+use crate::api::contracts::{SemanticContextResponse, TagNode};
 use crate::pixels::{self, FrameCache, RawFrameCache};
 use lru::LruCache;
 use std::num::NonZeroUsize;
@@ -10,12 +10,21 @@ use std::sync::{Arc, Mutex};
 /// size by the tag serializer's limits, so a file count bounds the memory.
 const TAG_CACHE_MAX_FILES: NonZeroUsize = NonZeroUsize::new(64).expect("non-zero");
 
+/// Semantic contexts of recently viewed objects. A segmentation overlay
+/// needs its context for every frame, and building it reads the object.
+const SEMANTIC_CACHE_MAX_FILES: NonZeroUsize = NonZeroUsize::new(16).expect("non-zero");
+
+/// A semantic context is valid for the file set it was resolved against;
+/// the registry only grows, so its length identifies that set.
+type SemanticCacheKey = (usize, usize);
+
 #[derive(Clone)]
 pub struct AppState {
     registry: FileRegistry,
     pixel_cache: Arc<Mutex<FrameCache>>,
     raw_cache: Arc<Mutex<RawFrameCache>>,
     tag_cache: Arc<Mutex<LruCache<usize, Vec<TagNode>>>>,
+    semantic_cache: Arc<Mutex<LruCache<SemanticCacheKey, Arc<SemanticContextResponse>>>>,
     annotations: AnnotationStore,
     server_start_ms: u64,
     activity: RequestActivity,
@@ -28,6 +37,7 @@ impl AppState {
             pixel_cache: pixels::new_cache(),
             raw_cache: pixels::new_raw_cache(),
             tag_cache: Arc::new(Mutex::new(LruCache::new(TAG_CACHE_MAX_FILES))),
+            semantic_cache: Arc::new(Mutex::new(LruCache::new(SEMANTIC_CACHE_MAX_FILES))),
             annotations,
             server_start_ms: now_unix_ms(),
             activity: RequestActivity::new(),
@@ -60,6 +70,26 @@ impl AppState {
     pub(crate) fn cache_tags(&self, index: usize, nodes: Vec<TagNode>) {
         if let Ok(mut cache) = self.tag_cache.lock() {
             cache.put(index, nodes);
+        }
+    }
+
+    pub(crate) fn cached_semantic_context(
+        &self,
+        key: SemanticCacheKey,
+    ) -> Option<Arc<SemanticContextResponse>> {
+        self.semantic_cache
+            .lock()
+            .ok()
+            .and_then(|mut cache| cache.get(&key).cloned())
+    }
+
+    pub(crate) fn cache_semantic_context(
+        &self,
+        key: SemanticCacheKey,
+        context: Arc<SemanticContextResponse>,
+    ) {
+        if let Ok(mut cache) = self.semantic_cache.lock() {
+            cache.put(key, context);
         }
     }
 

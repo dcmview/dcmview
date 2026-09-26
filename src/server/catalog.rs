@@ -9,7 +9,7 @@ use crate::series::{
 };
 use crate::types::FileEntry;
 use std::collections::{BTreeSet, VecDeque};
-use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use tokio::sync::{futures::Notified, Notify};
 
 pub const DISCOVERY_RESPONSE_MAX_RECORDS: usize = 256;
@@ -18,13 +18,16 @@ pub const DISCOVERY_RESPONSE_MAX_RECORDS: usize = 256;
 pub struct FileRegistry {
     inner: Arc<RwLock<FileRegistryInner>>,
     notify: Arc<Notify>,
+    /// The last series catalog, keyed by the file count and scan state it
+    /// was built from; the viewer polls it every 500 ms during a scan.
+    catalog: Arc<Mutex<Option<(usize, bool, SeriesCatalogResponse)>>>,
 }
 
 /// Files and scan counters share one lock so every status read is a
 /// consistent snapshot (never "0 files, scan complete" mid-update).
 #[derive(Default)]
 struct FileRegistryInner {
-    files: Vec<FileEntry>,
+    files: Vec<Arc<FileEntry>>,
     summaries: Vec<FileSummary>,
     /// The most recent discovery records, bounded to what the API returns.
     recent_discovery: VecDeque<DiscoveryRecord>,
@@ -48,6 +51,7 @@ impl FileRegistry {
         Self {
             inner: Arc::new(RwLock::new(FileRegistryInner::default())),
             notify: Arc::new(Notify::new()),
+            catalog: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -74,7 +78,7 @@ impl FileRegistry {
         let index = inner.files.len();
         file.index = index;
         let summary = FileSummary::from(&file);
-        inner.files.push(file);
+        inner.files.push(Arc::new(file));
         inner.summaries.push(summary);
         drop(inner);
         self.notify.notify_waiters();
@@ -118,10 +122,14 @@ impl FileRegistry {
     }
 
     pub fn get(&self, index: usize) -> Option<FileEntry> {
-        self.read().files.get(index).cloned()
+        self.read()
+            .files
+            .get(index)
+            .map(|file| FileEntry::clone(file))
     }
 
-    pub fn files_snapshot(&self) -> Vec<FileEntry> {
+    /// Shared handles to every registered file; cheap to take on each request.
+    pub fn files_snapshot(&self) -> Vec<Arc<FileEntry>> {
         self.read().files.clone()
     }
 
@@ -130,16 +138,32 @@ impl FileRegistry {
     }
 
     pub fn series_catalog_snapshot(&self) -> SeriesCatalogResponse {
-        let files = self.files_snapshot();
-        let catalog = SeriesCatalog::build(files.iter().map(series_file_input));
-        SeriesCatalogResponse {
+        let (files, scan_complete) = {
+            let inner = self.read();
+            (inner.files.clone(), inner.scan_complete)
+        };
+        let key = (files.len(), scan_complete);
+        if let Ok(cached) = self.catalog.lock() {
+            if let Some((count, complete, catalog)) = cached.as_ref() {
+                if (*count, *complete) == key {
+                    return catalog.clone();
+                }
+            }
+        }
+
+        let catalog = SeriesCatalog::build(files.iter().map(|file| series_file_input(file)));
+        let response = SeriesCatalogResponse {
             series: catalog
                 .series()
                 .iter()
                 .map(|group| series_summary(group, &files))
                 .collect(),
-            scan_complete: self.read().scan_complete,
+            scan_complete,
+        };
+        if let Ok(mut cached) = self.catalog.lock() {
+            *cached = Some((key.0, key.1, response.clone()));
         }
+        response
     }
 
     /// The most recent discovery records, sorted by path.
@@ -223,7 +247,7 @@ fn series_file_input(file: &FileEntry) -> SeriesFileInput {
     }
 }
 
-fn series_summary(group: &SeriesGroup, files: &[FileEntry]) -> SeriesSummary {
+fn series_summary(group: &SeriesGroup, files: &[Arc<FileEntry>]) -> SeriesSummary {
     let frame_of_reference_uids = files
         .iter()
         .filter(|file| {

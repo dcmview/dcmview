@@ -15,11 +15,13 @@ use crate::api::contracts::{
 use crate::pixels::{self, FrameRequest, RawFrameRequest};
 use crate::references::{self, ReferenceCandidate};
 use crate::server::tags;
+use crate::types::FileEntry;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue};
 use axum::response::Response;
 use axum::Json;
+use std::sync::Arc;
 use tokio::task;
 
 pub(super) async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
@@ -107,10 +109,10 @@ pub(super) async fn references(
         .into_iter()
         .map(|file| ReferenceCandidate {
             file_index: file.index,
-            path: file.path,
-            sop_class_uid: file.sop_class_uid,
-            sop_instance_uid: file.sop_instance_uid,
-            series_instance_uid: file.series_instance_uid,
+            path: file.path.clone(),
+            sop_class_uid: file.sop_class_uid.clone(),
+            sop_instance_uid: file.sop_instance_uid.clone(),
+            series_instance_uid: file.series_instance_uid.clone(),
             frame_count: file.frame_count,
         })
         .collect::<Vec<_>>();
@@ -154,11 +156,29 @@ pub(super) async fn semantic_context(
         .get(index)
         .ok_or_else(|| ApiError::not_found("file index out of range"))?;
     let files = state.registry().files_snapshot();
+    let context = semantic_context_for(&state, source, files)
+        .await
+        .map_err(|error| ApiError::internal(format!("{error:#}")))?;
+    Ok(Json(SemanticContextResponse::clone(&context)))
+}
+
+/// The source's semantic context against `files`, built at most once per
+/// file set and kept in a small LRU.
+async fn semantic_context_for(
+    state: &AppState,
+    source: FileEntry,
+    files: Vec<Arc<FileEntry>>,
+) -> anyhow::Result<Arc<SemanticContextResponse>> {
+    let key = (source.index, files.len());
+    if let Some(context) = state.cached_semantic_context(key) {
+        return Ok(context);
+    }
     let context = task::spawn_blocking(move || crate::semantic::semantic_context(&source, &files))
         .await
-        .map_err(|error| ApiError::internal(format!("semantic context task failed: {error}")))?
-        .map_err(|error| ApiError::internal(error.to_string()))?;
-    Ok(Json(context))
+        .map_err(|error| anyhow::anyhow!("semantic context task failed: {error}"))??;
+    let context = Arc::new(context);
+    state.cache_semantic_context(key, context.clone());
+    Ok(context)
 }
 
 pub(super) async fn segmentation_overlay(
@@ -171,13 +191,14 @@ pub(super) async fn segmentation_overlay(
         .get(index)
         .ok_or_else(|| ApiError::not_found("file index out of range"))?;
     let files = state.registry().files_snapshot();
-    let plan = task::spawn_blocking({
-        let segmentation = segmentation.clone();
-        let files = files.clone();
-        move || crate::semantic::segmentation_overlay_plan(&segmentation, frame, &files)
-    })
+    let plan = async {
+        crate::semantic::check_segmentation_frame(&segmentation, frame)?;
+        let context = semantic_context_for(&state, segmentation.clone(), files.clone())
+            .await
+            .map_err(crate::semantic::SegmentationOverlayError::Metadata)?;
+        crate::semantic::segmentation_overlay_plan(&segmentation, frame, &context, &files)
+    }
     .await
-    .map_err(|error| ApiError::internal(format!("SEG overlay planning task failed: {error}")))?
     .map_err(|error| match error {
         crate::semantic::SegmentationOverlayError::NotSegmentation => {
             ApiError::bad_request(error.to_string())

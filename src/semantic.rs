@@ -21,6 +21,7 @@ use dicom_core::Tag;
 use dicom_dictionary_std::{tags, StandardDataDictionary};
 use dicom_object::{InMemDicomObject, OpenFileOptions};
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 const MAX_SEQUENCE_ITEMS: usize = 4_096;
 const MAX_LUT_VALUES: usize = 4_096;
@@ -49,19 +50,31 @@ pub struct SegmentationOverlayPlan {
     pub color: [u8; 3],
 }
 
-pub fn segmentation_overlay_plan(
+/// Reject a non-segmentation object or an out-of-range frame before any
+/// metadata is read.
+pub fn check_segmentation_frame(
     source: &FileEntry,
     frame: u32,
-    files: &[FileEntry],
-) -> Result<SegmentationOverlayPlan, SegmentationOverlayError> {
+) -> Result<(), SegmentationOverlayError> {
     if classify_sop_class(&source.sop_class_uid) != ObjectKind::Segmentation {
         return Err(SegmentationOverlayError::NotSegmentation);
     }
     if frame >= source.frame_count {
         return Err(SegmentationOverlayError::FrameOutOfRange);
     }
-    let response = semantic_context(source, files)?;
-    let SemanticContext::Segmentation(context) = response.context else {
+    Ok(())
+}
+
+/// Plan one frame's overlay from the segmentation's semantic context, which
+/// callers compute once per segmentation rather than once per frame.
+pub fn segmentation_overlay_plan(
+    source: &FileEntry,
+    frame: u32,
+    response: &SemanticContextResponse,
+    files: &[Arc<FileEntry>],
+) -> Result<SegmentationOverlayPlan, SegmentationOverlayError> {
+    check_segmentation_frame(source, frame)?;
+    let SemanticContext::Segmentation(context) = &response.context else {
         return Err(SegmentationOverlayError::NotSegmentation);
     };
     let mapping = context
@@ -106,6 +119,7 @@ pub fn segmentation_overlay_plan(
     })?;
     let segmentation_type = context
         .segmentation_type
+        .clone()
         .unwrap_or_else(|| "UNKNOWN".to_string());
     if !matches!(segmentation_type.as_str(), "BINARY" | "FRACTIONAL") {
         return Err(SegmentationOverlayError::Unavailable(format!(
@@ -148,7 +162,7 @@ fn fallback_segment_color(segment_number: u16) -> [u8; 3] {
 
 pub fn semantic_context(
     source: &FileEntry,
-    files: &[FileEntry],
+    files: &[Arc<FileEntry>],
 ) -> Result<SemanticContextResponse> {
     let object = OpenFileOptions::new()
         .read_until(tags::PIXEL_DATA)
@@ -199,7 +213,7 @@ pub fn semantic_context(
 fn segmentation_context(
     source: &FileEntry,
     object: &InMemDicomObject<StandardDataDictionary>,
-    files: &[FileEntry],
+    files: &[Arc<FileEntry>],
     resolved: &[ResolvedReferenceEdge],
 ) -> SegmentationContext {
     let segments = sequence_items(object, tags::SEGMENT_SEQUENCE)
@@ -323,7 +337,7 @@ fn referenced_segment_number(
 
 fn segmentation_overlay(
     source: &FileEntry,
-    files: &[FileEntry],
+    files: &[Arc<FileEntry>],
     resolved: &[ResolvedReferenceEdge],
     frame_mappings: &[SegmentFrameMapping],
     segment_closure_valid: bool,
@@ -391,7 +405,7 @@ fn segmentation_overlay(
 fn resolve_explicit_sources(
     segmentation: &FileEntry,
     segmentation_frame: u32,
-    files: &[FileEntry],
+    files: &[Arc<FileEntry>],
     source_items: &[&InMemDicomObject<StandardDataDictionary>],
 ) -> (
     Vec<ResolvedSegmentSourceFrame>,
@@ -449,7 +463,7 @@ fn resolve_explicit_sources(
 fn resolve_geometry_sources(
     segmentation: &FileEntry,
     segmentation_frame: u32,
-    files: &[FileEntry],
+    files: &[Arc<FileEntry>],
     source_items: &[&InMemDicomObject<StandardDataDictionary>],
 ) -> (
     Vec<ResolvedSegmentSourceFrame>,
@@ -555,7 +569,7 @@ fn frame_geometrically_compatible(
 
 fn parametric_map_context(
     object: &InMemDicomObject<StandardDataDictionary>,
-    files: &[FileEntry],
+    files: &[Arc<FileEntry>],
     resolved: &[ResolvedReferenceEdge],
 ) -> ParametricMapContext {
     let mut mappings = Vec::new();
@@ -623,7 +637,7 @@ fn parametric_map_context(
 fn rt_dose_context(
     source: &FileEntry,
     object: &InMemDicomObject<StandardDataDictionary>,
-    files: &[FileEntry],
+    files: &[Arc<FileEntry>],
     resolved: &[ResolvedReferenceEdge],
 ) -> RtDoseContext {
     let scaling = read_number::<f64>(object, tags::DOSE_GRID_SCALING)
@@ -655,7 +669,7 @@ fn rt_dose_context(
 
 fn rt_dose_overlay(
     source: &FileEntry,
-    files: &[FileEntry],
+    files: &[Arc<FileEntry>],
     resolved: &[ResolvedReferenceEdge],
 ) -> OverlayEligibility {
     let matches = resolved

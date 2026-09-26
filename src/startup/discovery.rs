@@ -227,7 +227,7 @@ fn process_event(event: loader::DiscoveryEvent, registry: &FileRegistry) {
 
 async fn load_annotations(
     source: AnnotationSource,
-    files: Vec<dcmview::types::FileEntry>,
+    files: Vec<std::sync::Arc<dcmview::types::FileEntry>>,
     store: AnnotationStore,
     cancellation: loader::DiscoveryCancellation,
 ) {

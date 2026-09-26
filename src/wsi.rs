@@ -15,6 +15,7 @@ use dicom_core::Tag;
 use dicom_dictionary_std::{tags, StandardDataDictionary};
 use dicom_object::{InMemDicomObject, OpenFileOptions};
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 const MAX_COMPANIONS: usize = 64;
 const MAX_RELATIONSHIPS: usize = 128;
@@ -23,7 +24,7 @@ const MAX_FOCAL_METADATA_SCAN: usize = 4_096;
 pub fn frame_context(
     source: &FileEntry,
     frame: u32,
-    files: &[FileEntry],
+    files: &[Arc<FileEntry>],
 ) -> Result<WsiFrameContextResponse> {
     let object = OpenFileOptions::new()
         .read_until(tags::PIXEL_DATA)
@@ -35,7 +36,7 @@ pub fn frame_context(
 fn frame_context_from_object(
     source: &FileEntry,
     frame: u32,
-    files: &[FileEntry],
+    files: &[Arc<FileEntry>],
     object: &InMemDicomObject<StandardDataDictionary>,
 ) -> WsiFrameContextResponse {
     let metadata = &source.series_metadata;
@@ -330,7 +331,7 @@ fn unavailable(source: &'static str) -> Placement {
     }
 }
 
-fn pyramid_level(source: &FileEntry, files: &[FileEntry]) -> Option<u32> {
+fn pyramid_level(source: &FileEntry, files: &[Arc<FileEntry>]) -> Option<u32> {
     let pyramid_uid = source.series_metadata.pyramid_uid.as_ref()?;
     let dimensions = (
         source.series_metadata.total_pixel_matrix_rows?,
@@ -355,7 +356,7 @@ fn pyramid_level(source: &FileEntry, files: &[FileEntry]) -> Option<u32> {
         .and_then(|level| level.try_into().ok())
 }
 
-fn companions(source: &FileEntry, files: &[FileEntry]) -> (Vec<WsiCompanionSummary>, bool) {
+fn companions(source: &FileEntry, files: &[Arc<FileEntry>]) -> (Vec<WsiCompanionSummary>, bool) {
     let mut matches = Vec::new();
     for file in files
         .iter()
@@ -390,7 +391,7 @@ fn companions(source: &FileEntry, files: &[FileEntry]) -> (Vec<WsiCompanionSumma
 fn relationships(
     source: &FileEntry,
     object: &InMemDicomObject<StandardDataDictionary>,
-    files: &[FileEntry],
+    files: &[Arc<FileEntry>],
 ) -> (Vec<ReferenceSummary>, bool) {
     let candidates = files
         .iter()

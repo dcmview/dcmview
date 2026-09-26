@@ -164,7 +164,7 @@ async fn serves_annotations_loaded_from_csv_for_matching_file() {
 
     let entry = support::file_entry(dcm_path, "1.2.840.10008.1.2.4.50", 1);
     let annotation_map =
-        annotations::load_annotations_for_files(&csv_path, std::slice::from_ref(&entry))
+        annotations::load_annotations_for_files(&csv_path, &[std::sync::Arc::new(entry.clone())])
             .expect("load_annotations_for_files should succeed");
 
     assert!(
