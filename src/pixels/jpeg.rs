@@ -2,11 +2,11 @@ use crate::api::contracts::{RawFrameMetadata, WindowMode};
 use crate::types::FileEntry;
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
-use dicom_object::open_file;
 use dicom_pixeldata::PixelDecoder;
 use tokio::task;
 
 use super::color::encode_rgb8_png_with_icc;
+use super::encapsulated::open_for_frame_decode;
 use super::error::{PixelError, PixelResult};
 use super::icc::select_icc_profile;
 use super::render::{encode_windowed_luminance_png, LuminanceRenderOptions};
@@ -38,19 +38,16 @@ fn decode_compressed_frame_to_png_blocking(
     requested_ww: Option<f64>,
     window_mode: WindowMode,
 ) -> Result<Bytes> {
-    let obj = open_file(&file.path).with_context(|| {
-        format!(
-            "failed to open DICOM for decode fallback: {}",
-            file.path.display()
-        )
-    })?;
+    let (obj, frame_in_object) = open_for_frame_decode(file, frame)?;
     // Decode only the requested frame; the result holds that frame at index 0.
-    let decoded = obj.decode_pixel_data_frame(frame).with_context(|| {
-        format!(
-            "unsupported transfer syntax: {}",
-            obj.meta().transfer_syntax()
-        )
-    })?;
+    let decoded = obj
+        .decode_pixel_data_frame(frame_in_object)
+        .with_context(|| {
+            format!(
+                "unsupported transfer syntax: {}",
+                obj.meta().transfer_syntax()
+            )
+        })?;
     if decoded.samples_per_pixel() == 3 {
         if decoded.bits_allocated() != 8 {
             return Err(anyhow!(
@@ -141,17 +138,12 @@ fn read_raw_jpeg_samples_blocking(
     file: &FileEntry,
     frame: u32,
 ) -> Result<(Bytes, RawFrameMetadata)> {
-    let obj = open_file(&file.path).with_context(|| {
-        format!(
-            "failed to open DICOM for raw JPEG decode: {}",
-            file.path.display()
-        )
-    })?;
+    let (obj, frame_in_object) = open_for_frame_decode(file, frame)?;
     // The transfer-syntax adapter assembles every fragment belonging to the
     // requested frame using the Basic Offset Table before decoding. A frame is
     // not required to have a one-to-one relationship with a fragment.
     let decoded = obj
-        .decode_pixel_data_frame(frame)
+        .decode_pixel_data_frame(frame_in_object)
         .context("JPEG decode failed for raw samples")?;
     let bits_allocated = decoded.bits_allocated() as u32;
     let samples_per_pixel = decoded.samples_per_pixel() as u32;
@@ -207,17 +199,11 @@ fn decode_raw_jpeg_lossless_blocking(
     file: &FileEntry,
     frame: u32,
 ) -> PixelResult<(Bytes, RawFrameMetadata)> {
-    let obj = open_file(&file.path)
-        .with_context(|| {
-            format!(
-                "failed to open DICOM for raw JPEG Lossless decode: {}",
-                file.path.display()
-            )
-        })
-        .map_err(PixelError::raw_decode)?;
+    let (obj, frame_in_object) =
+        open_for_frame_decode(file, frame).map_err(PixelError::raw_decode)?;
 
     let decoded = obj
-        .decode_pixel_data_frame(frame)
+        .decode_pixel_data_frame(frame_in_object)
         .with_context(|| {
             format!(
                 "unsupported transfer syntax: {}",

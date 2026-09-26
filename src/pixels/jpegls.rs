@@ -2,10 +2,10 @@ use crate::api::contracts::{RawFrameMetadata, WindowMode};
 use crate::types::FileEntry;
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
-use dicom_object::open_file;
 use dicom_pixeldata::PixelDecoder;
 use tokio::task;
 
+use super::encapsulated::open_for_frame_decode;
 use super::error::{PixelError, PixelResult};
 use super::render::{encode_windowed_luminance_png, LuminanceRenderOptions};
 
@@ -104,10 +104,9 @@ fn decode_frame(file: &FileEntry, frame: u32) -> Result<DecodedJpegLsFrame> {
         ));
     }
 
-    let object = open_file(&file.path)
-        .with_context(|| format!("failed to open JPEG-LS DICOM: {}", file.path.display()))?;
+    let (object, frame_in_object) = open_for_frame_decode(file, frame)?;
     let decoded = object
-        .decode_pixel_data_frame(frame)
+        .decode_pixel_data_frame(frame_in_object)
         .context("JPEG-LS Lossless frame decode failed")?;
     let bits_allocated = decoded.bits_allocated() as u32;
     if !matches!(bits_allocated, 8 | 16) {

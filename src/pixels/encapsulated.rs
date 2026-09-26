@@ -1,10 +1,47 @@
+use crate::types::FileEntry;
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
+use dicom_core::value::PixelFragmentSequence;
+use dicom_core::{DataElement, PrimitiveValue, VR};
 use dicom_dictionary_std::tags;
-use dicom_object::{collector::DicomCollector, InMemDicomObject};
+use dicom_object::{collector::DicomCollector, open_file, DefaultDicomObject, InMemDicomObject};
+
+use super::header::open_header;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::PathBuf;
+
+/// The file's data set, ready to decode `frame`, and the index to decode.
+///
+/// For a multi-frame object this keeps the header plus only the requested
+/// frame's encoded bytes as a one-frame pixel sequence, so an uncached frame
+/// request reads one frame from disk rather than every frame in the file.
+/// Single-frame objects are opened whole, which reads the same bytes.
+pub(crate) fn open_for_frame_decode(
+    file: &FileEntry,
+    frame: u32,
+) -> Result<(DefaultDicomObject, u32)> {
+    if file.frame_count <= 1 {
+        let object = open_file(&file.path)
+            .with_context(|| format!("failed to open DICOM: {}", file.path.display()))?;
+        return Ok((object, frame));
+    }
+    let mut object = open_header(&file.path)?;
+    let encoded = read_encapsulated_fragment_blocking(&file.path, frame)?;
+    object.put(DataElement::new(
+        tags::NUMBER_OF_FRAMES,
+        VR::IS,
+        PrimitiveValue::from("1"),
+    ));
+    object.remove_element(tags::EXTENDED_OFFSET_TABLE);
+    object.remove_element(tags::EXTENDED_OFFSET_TABLE_LENGTHS);
+    object.put(DataElement::new(
+        tags::PIXEL_DATA,
+        VR::OB,
+        PixelFragmentSequence::new(Vec::<u32>::new(), vec![encoded.to_vec()]),
+    ));
+    Ok((object, 0))
+}
 
 pub(crate) fn read_encapsulated_fragment_blocking(path: &PathBuf, frame: u32) -> Result<Bytes> {
     let mut collector = DicomCollector::open_file(path).with_context(|| {

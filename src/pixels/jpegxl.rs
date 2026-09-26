@@ -2,11 +2,11 @@ use crate::api::contracts::{RawFrameMetadata, WindowMode};
 use crate::types::FileEntry;
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
-use dicom_object::open_file;
 use dicom_pixeldata::PixelDecoder;
 use tokio::task;
 
 use super::color::encode_rgb8_png_with_icc;
+use super::encapsulated::open_for_frame_decode;
 use super::error::{PixelError, PixelResult};
 use super::icc::select_icc_profile;
 use super::render::{encode_windowed_luminance_png, LuminanceRenderOptions};
@@ -123,10 +123,9 @@ pub(crate) async fn decode_raw_jpeg_xl(
 }
 
 fn decode_frame(file: &FileEntry, frame: u32) -> Result<DecodedJpegXlFrame> {
-    let object = open_file(&file.path)
-        .with_context(|| format!("failed to open JPEG XL DICOM: {}", file.path.display()))?;
+    let (object, frame_in_object) = open_for_frame_decode(file, frame)?;
     let decoded = object
-        .decode_pixel_data_frame(frame)
+        .decode_pixel_data_frame(frame_in_object)
         .context("JPEG XL Lossless frame decode failed")?;
     let bits_allocated = decoded.bits_allocated() as u32;
     let samples_per_pixel = decoded.samples_per_pixel() as u32;
