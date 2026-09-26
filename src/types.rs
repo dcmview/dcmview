@@ -189,23 +189,6 @@ impl FileEntry {
             padding_high: None,
         }
     }
-
-    pub fn normalized_grayscale_u8_metadata(&self, rows: u32, columns: u32) -> RawFrameMetadata {
-        RawFrameMetadata {
-            rows,
-            columns,
-            bits_allocated: 8,
-            pixel_representation: 0,
-            samples_per_pixel: 1,
-            photometric_interpretation: "MONOCHROME2".to_string(),
-            rescale_slope: self.rescale_slope,
-            rescale_intercept: self.rescale_intercept,
-            default_wc: self.default_window.map(|window| window.center),
-            default_ww: self.default_window.map(|window| window.width),
-            padding_low: None,
-            padding_high: None,
-        }
-    }
 }
 
 fn frame_geometry_value<const N: usize>(
