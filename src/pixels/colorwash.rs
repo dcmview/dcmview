@@ -84,13 +84,11 @@ pub fn colormap(position: f64) -> [u8; 3] {
     let low = (scaled.floor() as usize).min(last);
     let high = (low + 1).min(last);
     let fraction = scaled - low as f64;
-    let mut color = [0_u8; 3];
-    for channel in 0..3 {
+    std::array::from_fn(|channel| {
         let from = f64::from(COLORMAP_STOPS[low][channel]);
         let to = f64::from(COLORMAP_STOPS[high][channel]);
-        color[channel] = (from + (to - from) * fraction).round() as u8;
-    }
-    color
+        (from + (to - from) * fraction).round() as u8
+    })
 }
 
 pub fn encode_colorwash_png(request: ColorwashRequest<'_>) -> PixelResult<Bytes> {
