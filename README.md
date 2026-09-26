@@ -236,9 +236,10 @@ The embedded browser viewer includes:
 - A pixel readout under the cursor: row, column, and frame, the stored
   sample (or color components), the Modality value (such as HU), and the
   real-world value with its unit (such as a Parametric Map's mapped value or
-  an RT Dose in Gy), naming the mapping it used.
+  an RT Dose in Gy), naming the mapping it used, plus the value of a dose or
+  map overlay shown on the image.
 - Window/level in real-world units, with a legend, for frames that carry a
-  linear Real World Value Mapping or Dose Grid Scaling.
+  Real World Value Mapping (linear or LUT) or Dose Grid Scaling.
 - RT Dose and Parametric Map colorwash overlays on the images they cover,
   with an opacity control and a color bar in Gy or the map's unit. Slices the
   volume does not reach say so instead of showing a layer.

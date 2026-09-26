@@ -124,11 +124,20 @@ transform math, including the client-to-image-pixel mapping.
 The pixel readout reads the frame on screen: the samples the window/level
 renderer already holds, or a raw frame fetched through the shared raw-frame
 source once the cursor rests, converted with that frame's `value-mapping`.
-A linear real-world mapping also switches the window to its unit:
-`WindowSettings` records a drag in that unit and the viewport converts it
-through each frame's mapping to the Modality scale that the display query
-and the raw renderer window, so a mapped value looks the same on every
-frame. Files without such a mapping keep the stored-unit path unchanged.
+With a value overlay shown it adds the overlay's value from the frame's
+`/values` grid, fetched once per frame while the cursor is on the image.
+
+A real-world mapping also switches the window to its unit, and
+`WindowSettings` records a drag in that unit. Display requests keep the
+window in its unit (it is part of the fetch scope and cache key), and the
+viewport's display loader converts each frame, including prefetched and
+cine frames, through that frame's own mapping: exactly for a linear
+mapping, by the spanned stored range for a non-decreasing LUT. On the raw
+path a linear mapping converts to the Modality scale the renderer windows,
+and a mapping with no linear window (a LUT, or one behind a Modality LUT)
+is windowed directly: the renderer's window LUT maps each stored value
+through it, and stills with such a window stay on that path in every tool.
+Files without a mapping keep the stored-unit path unchanged.
 
 For SEG objects, `SemanticContextPanel` keeps Pixel Preview as the initial mode
 and publishes an explicit Semantic Context selection to `App.svelte`.

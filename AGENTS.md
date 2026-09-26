@@ -77,17 +77,14 @@ would remove behavior, raise it as a question instead of acting.
 
 **Known gaps (intended work, not settled scope):**
 
-- **Real-world window/level is linear only.** Window/level switches to
-  mapped units only when the frame's preferred real-world mapping is linear
-  and its Modality transform has no LUT; a LUT mapping keeps stored units
-  (the readout still converts it). During cine, a real-world window is
-  converted through the last mapping loaded for the file, so frames with
-  their own per-frame mapping are windowed with that conversion until
-  playback stops.
-- **The readout does not report overlay values.** Under a dose or Parametric
-  Map colorwash the readout shows the displayed image's samples, not the
-  overlaid volume's value at that pixel; the overlay endpoints return colors,
-  not values.
+- **Cine approximates non-linear real-world windows.** A window in the unit
+  of a LUT mapping (or of a mapping behind a Modality LUT) is exact on the
+  raw path, which still frames use. Cine plays server display frames, which
+  window stored values only: a non-decreasing LUT behind a linear Modality
+  transform is windowed by the stored range its window spans (black and
+  white exact, grays between linear in stored values), and any other such
+  mapping plays with each frame's default window. The raw path, and so the
+  exact result, covers 8- and 16-bit single-sample frames only.
 
 `docs/planned/` temporarily holds uncommitted proposals, such as the JupyterLab
 integration and the original compatibility plan. They are not specs and not

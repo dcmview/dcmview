@@ -31,10 +31,17 @@ diagnostic viewer.
   unit and the mapping it came from, including RT Dose Grid Scaling in Gy.
   Files whose raw samples the server cannot serve keep the coordinates and
   say the value is unavailable.
-- Window/level on a frame with a linear Real World Value Mapping or Dose
-  Grid Scaling now works in that unit: the HUD shows center and width in it,
-  a legend shows the window's range, and a dragged window is kept in mapped
-  units across frames and files.
+- Window/level on a frame with a Real World Value Mapping or Dose Grid
+  Scaling now works in that unit: the HUD shows center and width in it, a
+  legend shows the window's range, and a dragged window is kept in mapped
+  units across frames and files. Each frame, including those cine plays and
+  prefetches, converts the window through its own mapping. LUT mappings are
+  windowed exactly on the client-side raw path; during cine their window is
+  applied by its ends.
+- With a dose or map overlay shown, the pixel readout also reports the
+  overlaid value under the cursor ("dose 16.2 Gy"), from the new
+  `dose-overlay/values` and `parametric-map-overlay/values` endpoints, which
+  send a value overlay's resampled values as little-endian `f32`s.
 - RT Dose and Parametric Map colorwash overlays can be drawn on the images
   they cover. An Overlay bar above the viewport turns one on and sets its
   opacity, a color bar shows Gy or the map's unit, and a slice outside the
