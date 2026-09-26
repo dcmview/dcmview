@@ -19,29 +19,16 @@
 		type RoiCoord,
 		type RoiHandle,
 	} from "./annotationGeometry";
-	import { fitImageToViewportHeight, imageDisplayGeometry } from "./imageGeometry";
-	import type { ViewStates } from "./viewport/viewStates.svelte";
-	import {
-		clientToImagePoint,
-		layerTransformCss,
-		MAX_ZOOM,
-		MIN_ZOOM,
-		nextZoomStep,
-		zoomAnchor,
-		zoomAroundAnchor,
-		type LayerOrigin,
-		type ViewTransform,
-		type ZoomAnchor,
-	} from "./viewport/viewTransform";
 	import { canRunCinePlayback, type CineDirection, type CineMode } from "./cinePlayback";
-	import { trackForegroundRequest } from "./requestIndicator";
+	import { fitImageToViewportHeight, imageDisplayGeometry } from "./imageGeometry";
 	import {
 		resolveDisplayWindow,
 		selectWindowingPipeline,
 		validateRenderableRawFrame,
 	} from "./rawWindowing";
-	import type { ActiveTool } from "./viewerTools";
+	import { trackForegroundRequest } from "./requestIndicator";
 	import type { NavigationFrameRef } from "./seriesNavigation";
+	import type { ActiveTool } from "./viewerTools";
 	import { AnnotationStore } from "./viewport/annotationStore.svelte";
 	import { playDisplayCine } from "./viewport/displayCine";
 	import { DisplayFrameSource } from "./viewport/displayFrameSource";
@@ -61,7 +48,20 @@
 	import RoiList from "./viewport/RoiList.svelte";
 	import RoiOverlay from "./viewport/RoiOverlay.svelte";
 	import { hitTestRoi, roiCoord, visibleRois as roisOnFrame } from "./viewport/roiEditing";
+	import type { ViewStates } from "./viewport/viewStates.svelte";
+	import {
+		clientToImagePoint,
+		layerTransformCss,
+		MIN_ZOOM,
+		nextZoomStep,
+		zoomAnchor,
+		zoomAroundAnchor,
+		type LayerOrigin,
+		type ViewTransform,
+		type ZoomAnchor,
+	} from "./viewport/viewTransform";
 	import { WlRendererClient } from "./viewport/wlRendererClient";
+	import ZoomControls from "./viewport/ZoomControls.svelte";
 
 	type PipelineMode = "cine" | "diagnostic_wl" | "server_wl" | "overlay";
 	type DragState =
@@ -153,7 +153,6 @@
 	// Zoom, pan, and orientation belong to the open tab (navigation scope).
 	const activeTransform = $derived(viewStates.transform(activeFile ? navigationScopeKey : ""));
 	const orientation = $derived(viewStates.orientation(navigationScopeKey));
-	const zoomPercent = $derived(Math.round(activeTransform.scale * 100));
 	const isDragging = $derived(dragState !== null);
 	const pipelineMode = $derived.by<PipelineMode>(() => overlay
 		? "overlay"
@@ -1069,11 +1068,7 @@
 				onrevert={() => annotations.rollback(activeFile.index)}
 			/>
 		{/if}
-		<div class="zoom-controls">
-			<button type="button" onclick={() => stepZoom(-1)} disabled={activeTransform.scale <= MIN_ZOOM}>−</button>
-			<button type="button" class="zoom-level" onclick={fitActiveImageToViewport} title="Fit to height">{zoomPercent}%</button>
-			<button type="button" onclick={() => stepZoom(1)} disabled={activeTransform.scale >= MAX_ZOOM}>+</button>
-		</div>
+		<ZoomControls scale={activeTransform.scale} onstep={stepZoom} onfit={fitActiveImageToViewport} />
 	{/if}
 </section>
 
@@ -1169,54 +1164,5 @@
 		box-shadow: var(--shadow-hud);
 		backdrop-filter: blur(16px);
 		color: var(--text-secondary);
-	}
-	.zoom-controls {
-		position: absolute;
-		right: 0.75rem;
-		bottom: 0.75rem;
-		display: flex;
-		align-items: center;
-		gap: 0;
-		background: var(--surface-hud);
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-panel);
-		overflow: hidden;
-		box-shadow: var(--shadow-hud);
-		backdrop-filter: blur(16px);
-	}
-	.zoom-controls button {
-		background: none;
-		border: none;
-		color: var(--text-secondary);
-		padding: 0.3rem 0.55rem;
-		font-size: 0.95rem;
-		cursor: pointer;
-		line-height: 1;
-	}
-	.zoom-controls button:hover:not(:disabled) {
-		background: var(--surface-hover-overlay);
-		color: var(--text-primary);
-	}
-	.zoom-controls button:focus-visible {
-		outline: none;
-		box-shadow: inset var(--focus-ring);
-	}
-	.zoom-controls button:disabled {
-		color: var(--text-disabled);
-		cursor: default;
-	}
-	.zoom-controls .zoom-level {
-		padding: 0.3rem 0.4rem;
-		font-size: 0.78rem;
-		font-family: var(--font-mono);
-		color: var(--text-secondary);
-		min-width: 3.2rem;
-		text-align: center;
-		cursor: pointer;
-		border-left: 1px solid var(--border-subtle);
-		border-right: 1px solid var(--border-subtle);
-	}
-	.zoom-controls .zoom-level:hover {
-		color: var(--text-primary);
 	}
 </style>
