@@ -1,10 +1,8 @@
 use dcmview::annotations::{AnnotationSource, AnnotationStore};
 use dcmview::loader;
 use dcmview::server::FileRegistry;
-use std::future::Future;
 use std::path::PathBuf;
-use std::pin::Pin;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -20,134 +18,41 @@ pub(super) struct DiscoveryInputs {
     pub(super) shutdown: CancellationToken,
 }
 
-pub(super) struct ScanRequest {
-    input_paths: Vec<PathBuf>,
-    options: loader::DiscoverOptions,
-}
-
-pub(super) type DiscoveryFuture =
-    Pin<Box<dyn Future<Output = anyhow::Result<loader::DiscoveryReport>> + Send + 'static>>;
-
-pub(super) trait DiscoverySpawner: Send + Sync {
-    fn spawn(
-        &self,
-        request: ScanRequest,
-        events: mpsc::Sender<loader::DiscoveryEvent>,
-        cancellation: loader::DiscoveryCancellation,
-    ) -> DiscoveryFuture;
-}
-
-pub(super) struct LoaderDiscoverySpawner;
-
-impl DiscoverySpawner for LoaderDiscoverySpawner {
-    fn spawn(
-        &self,
-        request: ScanRequest,
-        events: mpsc::Sender<loader::DiscoveryEvent>,
-        cancellation: loader::DiscoveryCancellation,
-    ) -> DiscoveryFuture {
-        Box::pin(async move {
-            loader::discover_progressive_with_cancellation(
-                &request.input_paths,
-                request.options,
-                events,
-                cancellation,
-            )
-            .await
-        })
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum DiscoveryFailure {
-    Scan,
-    NoFiles,
-    Coordinator,
-    Worker,
-}
-
+/// How discovery ended. Only `Failed` makes the process exit non-zero.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum DiscoveryOutcome {
     Completed,
-    Cancelled(loader::DiscoveryCancellationReason),
-    Failed(DiscoveryFailure),
+    /// The server stopped first and requested cancellation.
+    Cancelled,
+    /// The scan failed or found no files, and the server was told to stop.
+    Failed,
 }
 
-impl DiscoveryOutcome {
-    pub(super) fn is_failure(self) -> bool {
-        matches!(self, Self::Failed(_))
-    }
-}
-
-enum ScanCompletion {
-    Completed(loader::DiscoveryReport),
-    Cancelled(loader::DiscoveryCancellationReason),
-    Failed(String),
-}
-
+/// The owned discovery task: the loader scan, registry updates, and then
+/// annotation loading.
 pub(super) struct DiscoveryHandle {
     cancellation: loader::DiscoveryCancellation,
-    coordinator: Option<JoinHandle<DiscoveryOutcome>>,
-    scan: Option<JoinHandle<()>>,
+    task: JoinHandle<DiscoveryOutcome>,
 }
 
 impl DiscoveryHandle {
-    pub(super) fn spawn(inputs: DiscoveryInputs, spawner: &dyn DiscoverySpawner) -> Self {
-        let (events_tx, events_rx) = mpsc::channel(DISCOVERY_EVENT_CAPACITY);
-        let (completion_tx, completion_rx) = oneshot::channel();
+    pub(super) fn spawn(inputs: DiscoveryInputs) -> Self {
         let cancellation = loader::DiscoveryCancellation::new();
-        let scan_request = ScanRequest {
-            input_paths: inputs.input_paths.clone(),
-            options: loader::DiscoverOptions {
-                recursive: inputs.recursive,
-                filters: inputs.filters.clone(),
-            },
-        };
-        let scan_future = spawner.spawn(scan_request, events_tx, cancellation.clone());
-        let scan = tokio::spawn(async move {
-            let completion = classify_scan_result(scan_future.await);
-            let _ = completion_tx.send(completion);
-        });
-        let coordinator_cancellation = cancellation.clone();
-        let coordinator = tokio::spawn(run_coordinator(
-            inputs,
-            events_rx,
-            completion_rx,
-            coordinator_cancellation,
-        ));
-
-        Self {
-            cancellation,
-            coordinator: Some(coordinator),
-            scan: Some(scan),
-        }
+        let task = tokio::spawn(run_discovery(inputs, cancellation.clone()));
+        Self { cancellation, task }
     }
 
+    /// Request cancellation, then wait for the task, including the loader's
+    /// blocking workers and any annotation loading.
     pub(super) async fn cancel_and_wait(mut self) -> DiscoveryOutcome {
         self.cancellation.cancel();
-        let coordinator_result = self
-            .coordinator
-            .take()
-            .expect("discovery coordinator handle missing")
-            .await;
-        let scan_result = self
-            .scan
-            .take()
-            .expect("discovery scan handle missing")
-            .await;
-
-        let mut outcome = match coordinator_result {
+        match (&mut self.task).await {
             Ok(outcome) => outcome,
             Err(error) => {
-                eprintln!("dcmview: discovery coordinator failed: {error}");
-                DiscoveryOutcome::Failed(DiscoveryFailure::Coordinator)
+                eprintln!("dcmview: discovery task failed: {error}");
+                DiscoveryOutcome::Failed
             }
-        };
-        if let Err(error) = scan_result {
-            eprintln!("dcmview: loader worker panicked: {error}");
-            outcome = DiscoveryOutcome::Failed(DiscoveryFailure::Worker);
         }
-        outcome
     }
 }
 
@@ -157,65 +62,81 @@ impl Drop for DiscoveryHandle {
     }
 }
 
-fn classify_scan_result(result: anyhow::Result<loader::DiscoveryReport>) -> ScanCompletion {
-    match result {
-        Ok(report) => ScanCompletion::Completed(report),
-        Err(error) => match loader::discovery_cancellation_reason(&error) {
-            Some(reason) => ScanCompletion::Cancelled(reason),
-            None => ScanCompletion::Failed(format!("{error:#}")),
-        },
-    }
-}
-
-async fn run_coordinator(
+async fn run_discovery(
     inputs: DiscoveryInputs,
-    mut events: mpsc::Receiver<loader::DiscoveryEvent>,
-    completion: oneshot::Receiver<ScanCompletion>,
     cancellation: loader::DiscoveryCancellation,
 ) -> DiscoveryOutcome {
-    let mut guard = CoordinatorGuard::new(
-        cancellation.clone(),
-        inputs.registry.clone(),
-        inputs.shutdown.clone(),
-    );
-    while let Some(event) = events.recv().await {
-        process_event(event, &inputs.registry);
-    }
-
-    let scan_completion = match completion.await {
-        Ok(completion) => completion,
-        Err(_) => ScanCompletion::Failed("loader worker ended without a result".to_string()),
+    let outcome = {
+        let mut finish = ScanFinish {
+            registry: inputs.registry.clone(),
+            shutdown: inputs.shutdown.clone(),
+            failed: true,
+        };
+        let outcome = scan(&inputs, cancellation.clone()).await;
+        finish.failed = outcome == DiscoveryOutcome::Failed;
+        outcome
     };
 
-    let outcome = finish_scan(
-        scan_completion,
-        &inputs.registry,
-        &inputs.filters,
-        &inputs.input_paths,
-    );
     if outcome == DiscoveryOutcome::Completed {
-        inputs.registry.mark_scan_complete();
         if let Some(source) = inputs.annotation_source {
             load_annotations(
                 source,
                 inputs.registry.files_snapshot(),
                 inputs.annotation_store,
-                cancellation.clone(),
+                cancellation,
             )
             .await;
         }
     }
-    guard.finish(outcome)
+    outcome
 }
 
-fn process_event(event: loader::DiscoveryEvent, registry: &FileRegistry) {
-    match event {
-        loader::DiscoveryEvent::File(file) => {
-            registry.record_scanned();
-            registry.insert(*file);
+/// Marks the scan complete when dropped, and stops the server if the scan
+/// failed, so both happen on every exit path, including a panic.
+struct ScanFinish {
+    registry: FileRegistry,
+    shutdown: CancellationToken,
+    failed: bool,
+}
+
+impl Drop for ScanFinish {
+    fn drop(&mut self) {
+        self.registry.mark_scan_complete();
+        if self.failed {
+            self.shutdown.cancel();
         }
-        loader::DiscoveryEvent::Skipped => registry.record_skipped(),
-        loader::DiscoveryEvent::Filtered => registry.record_filtered(),
+    }
+}
+
+/// Run the loader while recording its events; the recorder ends when the
+/// loader's workers drop their senders.
+async fn scan(
+    inputs: &DiscoveryInputs,
+    cancellation: loader::DiscoveryCancellation,
+) -> DiscoveryOutcome {
+    let (events_tx, mut events_rx) = mpsc::channel(DISCOVERY_EVENT_CAPACITY);
+    let options = loader::DiscoverOptions {
+        recursive: inputs.recursive,
+        filters: inputs.filters.clone(),
+    };
+    let discover =
+        loader::discover_progressive(&inputs.input_paths, options, events_tx, cancellation);
+    let record = async {
+        while let Some(event) = events_rx.recv().await {
+            record_event(event, &inputs.registry);
+        }
+    };
+    let (result, ()) = tokio::join!(discover, record);
+    finish_scan(
+        result,
+        &inputs.registry,
+        &inputs.filters,
+        &inputs.input_paths,
+    )
+}
+
+fn record_event(event: loader::DiscoveryEvent, registry: &FileRegistry) {
+    match event {
         loader::DiscoveryEvent::Selected { file, record } => {
             registry.record_discovery(record);
             registry.insert(*file);
@@ -270,91 +191,46 @@ async fn load_annotations(
 }
 
 fn finish_scan(
-    completion: ScanCompletion,
+    result: anyhow::Result<loader::DiscoveryReport>,
     registry: &FileRegistry,
     filters: &[loader::ScanFilter],
     input_paths: &[PathBuf],
 ) -> DiscoveryOutcome {
-    match completion {
-        ScanCompletion::Completed(report) => {
-            let files = registry.files_snapshot();
-            if files.is_empty() {
-                if report.filtered > 0 {
-                    eprintln!(
-                        "dcmview: no DICOM files matched active filters ({})",
-                        format_scan_filters(filters)
-                    );
-                } else {
-                    eprintln!("dcmview: no valid DICOM files found");
-                }
-                return DiscoveryOutcome::Failed(DiscoveryFailure::NoFiles);
+    let report = match result {
+        Ok(report) => report,
+        Err(error) => {
+            if loader::discovery_cancellation_reason(&error)
+                == Some(loader::DiscoveryCancellationReason::Requested)
+            {
+                return DiscoveryOutcome::Cancelled;
             }
+            eprintln!("failed to discover DICOM files: {error:#}");
+            return DiscoveryOutcome::Failed;
+        }
+    };
 
-            print_progressive_load_summary(
-                files.len(),
-                report.skipped,
-                report.filtered,
-                report.searched_recursive,
-                filters,
-                input_paths,
+    let file_count = registry.status().file_count;
+    if file_count == 0 {
+        if report.filtered > 0 {
+            eprintln!(
+                "dcmview: no DICOM files matched active filters ({})",
+                format_scan_filters(filters)
             );
-            DiscoveryOutcome::Completed
+        } else {
+            eprintln!("dcmview: no valid DICOM files found");
         }
-        ScanCompletion::Cancelled(loader::DiscoveryCancellationReason::Requested) => {
-            DiscoveryOutcome::Cancelled(loader::DiscoveryCancellationReason::Requested)
-        }
-        ScanCompletion::Cancelled(
-            reason @ loader::DiscoveryCancellationReason::EventReceiverClosed,
-        ) => {
-            eprintln!("failed to discover DICOM files: DICOM discovery cancelled: {reason}");
-            DiscoveryOutcome::Failed(DiscoveryFailure::Scan)
-        }
-        ScanCompletion::Failed(error) => {
-            eprintln!("failed to discover DICOM files: {error}");
-            DiscoveryOutcome::Failed(DiscoveryFailure::Scan)
-        }
-    }
-}
-
-struct CoordinatorGuard {
-    cancellation: loader::DiscoveryCancellation,
-    registry: FileRegistry,
-    shutdown: CancellationToken,
-    armed: bool,
-}
-
-impl CoordinatorGuard {
-    fn new(
-        cancellation: loader::DiscoveryCancellation,
-        registry: FileRegistry,
-        shutdown: CancellationToken,
-    ) -> Self {
-        Self {
-            cancellation,
-            registry,
-            shutdown,
-            armed: true,
-        }
+        return DiscoveryOutcome::Failed;
     }
 
-    fn finish(&mut self, outcome: DiscoveryOutcome) -> DiscoveryOutcome {
-        self.registry.mark_scan_complete();
-        if outcome.is_failure() {
-            self.shutdown.cancel();
-        }
-        self.armed = false;
-        outcome
-    }
-}
-
-impl Drop for CoordinatorGuard {
-    fn drop(&mut self) {
-        if self.armed {
-            self.cancellation.cancel();
-            self.registry.mark_scan_complete();
-            self.shutdown.cancel();
-        }
-    }
+    print_progressive_load_summary(
+        file_count,
+        report.skipped,
+        report.filtered,
+        report.searched_recursive,
+        filters,
+        input_paths,
+    );
+    DiscoveryOutcome::Completed
 }
 
 fn print_progressive_load_summary(
@@ -407,137 +283,25 @@ fn format_scan_filters(filters: &[loader::ScanFilter]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dcmview::types::FileEntry;
     use std::fs;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use std::sync::Arc;
+    use std::path::Path;
     use std::time::Duration;
 
-    #[derive(Clone)]
-    enum TestBehavior {
-        Complete(FileEntry),
-        CompleteEmpty,
-        WaitForCancellation(FileEntry),
-        Fail,
-    }
-
-    struct TestSpawner {
-        behavior: TestBehavior,
-        spawn_count: Arc<AtomicUsize>,
-        finished: Arc<AtomicBool>,
-    }
-
-    impl TestSpawner {
-        fn new(behavior: TestBehavior) -> Self {
-            Self {
-                behavior,
-                spawn_count: Arc::new(AtomicUsize::new(0)),
-                finished: Arc::new(AtomicBool::new(false)),
-            }
-        }
-    }
-
-    impl DiscoverySpawner for TestSpawner {
-        fn spawn(
-            &self,
-            request: ScanRequest,
-            events: mpsc::Sender<loader::DiscoveryEvent>,
-            cancellation: loader::DiscoveryCancellation,
-        ) -> DiscoveryFuture {
-            self.spawn_count.fetch_add(1, Ordering::Relaxed);
-            let behavior = self.behavior.clone();
-            let finished = self.finished.clone();
-            Box::pin(async move {
-                let result = match behavior {
-                    TestBehavior::Complete(file) => {
-                        events
-                            .send(selected_event(file))
-                            .await
-                            .map_err(|_| anyhow::anyhow!("synthetic event receiver closed"))?;
-                        Ok(loader::DiscoveryReport {
-                            files_found: 1,
-                            skipped: 0,
-                            filtered: 0,
-                            searched_recursive: request.options.recursive,
-                        })
-                    }
-                    TestBehavior::CompleteEmpty => Ok(loader::DiscoveryReport {
-                        files_found: 0,
-                        skipped: 0,
-                        filtered: 0,
-                        searched_recursive: request.options.recursive,
-                    }),
-                    TestBehavior::WaitForCancellation(file) => {
-                        events
-                            .send(selected_event(file))
-                            .await
-                            .map_err(|_| anyhow::anyhow!("synthetic event receiver closed"))?;
-                        while !cancellation.is_cancelled() {
-                            tokio::task::yield_now().await;
-                        }
-                        loader::discover_progressive_with_cancellation(
-                            &[],
-                            request.options,
-                            events,
-                            cancellation,
-                        )
-                        .await
-                    }
-                    TestBehavior::Fail => Err(anyhow::anyhow!("synthetic scan failure")),
-                };
-                finished.store(true, Ordering::Release);
-                result
-            })
-        }
-    }
-
-    fn synthetic_file(path: PathBuf) -> FileEntry {
-        FileEntry {
-            index: 0,
-            path,
-            label: "synthetic".to_string(),
-            patient_id: "PATIENT".to_string(),
-            patient_name: "Test^Patient".to_string(),
-            study_instance_uid: "1.2.3".to_string(),
-            study_date: "20260101".to_string(),
-            study_description: "Study".to_string(),
-            series_instance_uid: "1.2.3.4".to_string(),
-            series_number: "1".to_string(),
-            series_description: "Series".to_string(),
-            modality: "CT".to_string(),
-            instance_number: "1".to_string(),
-            sop_instance_uid: "1.2.3.4.5".to_string(),
-            sop_class_uid: "1.2.840.10008.5.1.4.1.1.2".to_string(),
-            series_metadata: Default::default(),
-            has_pixels: true,
-            frame_count: 1,
-            rows: 16,
-            columns: 16,
-            bits_allocated: 16,
-            pixel_representation: 0,
-            samples_per_pixel: 1,
-            photometric_interpretation: "MONOCHROME2".to_string(),
-            rescale_slope: 1.0,
-            rescale_intercept: 0.0,
-            transfer_syntax_uid: "1.2.840.10008.1.2.1".to_string(),
-            default_window: None,
-        }
-    }
-
-    fn selected_event(file: FileEntry) -> loader::DiscoveryEvent {
-        let path = file.path.clone();
-        loader::DiscoveryEvent::Selected {
-            file: Box::new(file),
-            record: loader::DiscoveryRecord {
-                path,
-                disposition: loader::DiscoveryDisposition::Selected,
-                reason: loader::DiscoveryReason::ValidDicom,
-            },
-        }
+    /// Copy a committed single-frame fixture into `dir` for the real loader.
+    fn fixture_copy(dir: &Path) -> PathBuf {
+        let path = dir.join("scan.dcm");
+        fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/golden-jpeg-baseline-single-frame.dcm"),
+            &path,
+        )
+        .expect("copy fixture");
+        path
     }
 
     fn discovery_inputs(
-        file_path: PathBuf,
+        input_path: PathBuf,
+        filters: Vec<loader::ScanFilter>,
         annotation_source: Option<AnnotationSource>,
     ) -> (
         DiscoveryInputs,
@@ -554,9 +318,9 @@ mod tests {
         let shutdown = CancellationToken::new();
         (
             DiscoveryInputs {
-                input_paths: vec![file_path],
+                input_paths: vec![input_path],
                 recursive: true,
-                filters: Vec::new(),
+                filters,
                 annotation_source,
                 registry: registry.clone(),
                 annotation_store: annotation_store.clone(),
@@ -568,69 +332,62 @@ mod tests {
         )
     }
 
-    async fn wait_for_registry_file(registry: &FileRegistry) {
-        tokio::time::timeout(Duration::from_secs(1), async {
-            while registry.status().file_count == 0 {
+    async fn wait_for_task(handle: &DiscoveryHandle) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !handle.task.is_finished() {
                 tokio::task::yield_now().await;
             }
         })
         .await
-        .expect("synthetic file should be inserted");
+        .expect("discovery task should finish");
     }
 
     #[tokio::test]
-    async fn cancellation_awaits_the_owned_scan_worker() {
-        let path = PathBuf::from("/synthetic/scan.dcm");
-        let spawner = TestSpawner::new(TestBehavior::WaitForCancellation(synthetic_file(
-            path.clone(),
-        )));
-        let (inputs, registry, _, _) = discovery_inputs(path, None);
-        let handle = DiscoveryHandle::spawn(inputs, &spawner);
-        wait_for_registry_file(&registry).await;
+    async fn cancellation_awaits_the_scan_and_completes_the_registry() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (inputs, registry, _, shutdown) =
+            discovery_inputs(fixture_copy(temp.path()), Vec::new(), None);
+        let handle = DiscoveryHandle::spawn(inputs);
 
+        // The current-thread test runtime has not polled the task yet, so the
+        // loader observes the cancellation before inspecting any file.
         let outcome = handle.cancel_and_wait().await;
 
-        assert_eq!(
-            outcome,
-            DiscoveryOutcome::Cancelled(loader::DiscoveryCancellationReason::Requested)
-        );
-        assert!(spawner.finished.load(Ordering::Acquire));
+        assert_eq!(outcome, DiscoveryOutcome::Cancelled);
         assert!(registry.status().scan_complete);
+        assert_eq!(registry.status().file_count, 0);
+        assert!(!shutdown.is_cancelled());
     }
 
     #[tokio::test]
     async fn completed_scan_returns_normal_outcome_and_marks_registry_complete() {
-        let path = PathBuf::from("/synthetic/scan.dcm");
-        let spawner = TestSpawner::new(TestBehavior::Complete(synthetic_file(path.clone())));
-        let (inputs, registry, _, _) = discovery_inputs(path, None);
-        let handle = DiscoveryHandle::spawn(inputs, &spawner);
-        tokio::time::timeout(Duration::from_secs(1), async {
-            while !registry.status().scan_complete {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("synthetic scan should complete");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (inputs, registry, _, shutdown) =
+            discovery_inputs(fixture_copy(temp.path()), Vec::new(), None);
+        let handle = DiscoveryHandle::spawn(inputs);
+        wait_for_task(&handle).await;
 
         let outcome = handle.cancel_and_wait().await;
 
         assert_eq!(outcome, DiscoveryOutcome::Completed);
-        assert!(spawner.finished.load(Ordering::Acquire));
+        assert!(registry.status().scan_complete);
         assert_eq!(registry.status().file_count, 1);
+        assert_eq!(registry.status().scanned, 1);
+        let records = registry.discovery_response_snapshot();
+        assert_eq!(records.len(), 1);
+        assert!(records[0].path.ends_with("scan.dcm"));
         assert_eq!(
-            registry.discovery_response_snapshot(),
-            vec![loader::DiscoveryRecord {
-                path: PathBuf::from("/synthetic/scan.dcm"),
-                disposition: loader::DiscoveryDisposition::Selected,
-                reason: loader::DiscoveryReason::ValidDicom,
-            }]
+            records[0].disposition,
+            loader::DiscoveryDisposition::Selected
         );
+        assert_eq!(records[0].reason, loader::DiscoveryReason::ValidDicom);
+        assert!(!shutdown.is_cancelled());
     }
 
     #[tokio::test]
     async fn annotation_failure_keeps_viewer_running_and_marks_store_failed() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let file_path = temp.path().join("scan.dcm");
+        let file_path = fixture_copy(temp.path());
         let csv_path = temp.path().join("annotations.csv");
         fs::write(
             &csv_path,
@@ -641,22 +398,11 @@ mod tests {
         )
         .expect("annotation CSV");
         let source = AnnotationSource::from_path(&csv_path).expect("annotation source");
-        let spawner = TestSpawner::new(TestBehavior::Complete(synthetic_file(file_path.clone())));
-        let (inputs, registry, store, shutdown) = discovery_inputs(file_path, Some(source));
-        let handle = DiscoveryHandle::spawn(inputs, &spawner);
+        let (inputs, registry, store, shutdown) =
+            discovery_inputs(file_path, Vec::new(), Some(source));
+        let handle = DiscoveryHandle::spawn(inputs);
+        wait_for_task(&handle).await;
 
-        tokio::time::timeout(Duration::from_secs(1), async {
-            while !handle
-                .coordinator
-                .as_ref()
-                .expect("coordinator handle")
-                .is_finished()
-            {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("annotation failure coordinator should finish");
         let outcome = handle.cancel_and_wait().await;
 
         assert_eq!(outcome, DiscoveryOutcome::Completed);
@@ -666,59 +412,49 @@ mod tests {
             .expect_err("invalid matched annotations should fail")
             .to_string()
             .contains("contains frame 2"));
-        assert!(
-            tokio::time::timeout(Duration::from_millis(20), shutdown.cancelled())
-                .await
-                .is_err()
-        );
-        assert!(spawner.finished.load(Ordering::Acquire));
+        assert!(!shutdown.is_cancelled());
         assert!(registry.status().scan_complete);
     }
 
     #[tokio::test]
-    async fn scan_failure_marks_failure_and_notifies_shutdown() {
-        let path = PathBuf::from("/synthetic/scan.dcm");
-        let spawner = TestSpawner::new(TestBehavior::Fail);
-        let (inputs, registry, _, shutdown) = discovery_inputs(path, None);
-        let handle = DiscoveryHandle::spawn(inputs, &spawner);
+    async fn zero_files_fails_and_stops_the_server() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        fs::write(temp.path().join("not-dicom.bin"), b"not a dicom file").expect("invalid file");
+        let (inputs, registry, _, shutdown) =
+            discovery_inputs(temp.path().to_path_buf(), Vec::new(), None);
+        let handle = DiscoveryHandle::spawn(inputs);
 
-        tokio::time::timeout(Duration::from_secs(1), shutdown.cancelled())
+        tokio::time::timeout(Duration::from_secs(5), shutdown.cancelled())
             .await
-            .expect("scan failure should notify shutdown");
+            .expect("empty discovery should stop the server");
         let outcome = handle.cancel_and_wait().await;
 
-        assert_eq!(outcome, DiscoveryOutcome::Failed(DiscoveryFailure::Scan));
-        assert!(spawner.finished.load(Ordering::Acquire));
-        assert!(registry.status().scan_complete);
+        assert_eq!(outcome, DiscoveryOutcome::Failed);
+        let status = registry.status();
+        assert!(status.scan_complete);
+        assert_eq!(status.file_count, 0);
+        assert_eq!(status.skipped, 1);
     }
 
     #[tokio::test]
-    async fn zero_files_returns_failure_after_worker_completion() {
-        let path = PathBuf::from("/synthetic/scan.dcm");
-        let spawner = TestSpawner::new(TestBehavior::CompleteEmpty);
-        let (inputs, registry, _, shutdown) = discovery_inputs(path, None);
-        let handle = DiscoveryHandle::spawn(inputs, &spawner);
+    async fn all_files_filtered_fails_and_counts_the_filtered_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        fixture_copy(temp.path());
+        let filters = vec!["modality=NOT-A-MODALITY".parse().expect("filter parses")];
+        let (inputs, registry, _, shutdown) =
+            discovery_inputs(temp.path().to_path_buf(), filters, None);
+        let handle = DiscoveryHandle::spawn(inputs);
 
-        tokio::time::timeout(Duration::from_secs(1), async {
-            while !handle
-                .coordinator
-                .as_ref()
-                .expect("coordinator handle")
-                .is_finished()
-            {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("empty discovery should finish");
-        tokio::time::timeout(Duration::from_millis(20), shutdown.cancelled())
+        tokio::time::timeout(Duration::from_secs(5), shutdown.cancelled())
             .await
-            .expect("empty discovery should durably notify");
+            .expect("fully filtered discovery should stop the server");
         let outcome = handle.cancel_and_wait().await;
 
-        assert_eq!(outcome, DiscoveryOutcome::Failed(DiscoveryFailure::NoFiles));
-        assert!(spawner.finished.load(Ordering::Acquire));
-        assert!(registry.status().scan_complete);
+        assert_eq!(outcome, DiscoveryOutcome::Failed);
+        let status = registry.status();
+        assert!(status.scan_complete);
+        assert_eq!(status.file_count, 0);
+        assert_eq!(status.filtered, 1);
     }
 
     #[test]

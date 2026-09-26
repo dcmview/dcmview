@@ -16,7 +16,7 @@ module:
 | Boundary | Owner | Stable contract or seam |
 |---|---|---|
 | Process dispatch | `src/application.rs` | Routes a launch into VS Code through `bridge::launch_in_vscode` when the routing rule selects a bridge, otherwise runs the local viewer in-process. |
-| Local startup | `src/startup/` | `LocalViewerOptions`, `LocalViewerOutcome`, `DiscoveryHandle`, and `DiscoverySpawner`. |
+| Local startup | `src/startup/` | `LocalViewerOptions`, `LocalViewerOutcome`, and `DiscoveryHandle`. |
 | HTTP wire model | `src/api/contracts.rs` | Typed endpoint registry, wire structs, query names, response header names, and error envelope. |
 | HTTP runtime | `src/server/` | Listener/runtime, route registration, handlers, state, registry, activity tracking, tags, and embedded assets. |
 | Pixel service | `src/pixels/` | Typed display/raw requests, cache behavior, transfer-syntax classification, decoding, rendering, and `PixelError`. |
@@ -42,7 +42,7 @@ flowchart TD
     app --> bridge["bridge/<br/>protocol, registry, client"]
     app --> startup["startup/<br/>local viewer assembly"]
     startup --> bind["server/runtime.rs<br/>bind listener first"]
-    startup --> discovery["startup/discovery.rs<br/>owned coordinator and scan"]
+    startup --> discovery["startup/discovery.rs<br/>owned discovery task"]
     discovery --> loader["loader.rs<br/>spawn_blocking and Rayon"]
     discovery --> registry["server/catalog.rs<br/>FileRegistry"]
     discovery --> annotations["annotations.rs<br/>in-memory ROI store"]
@@ -292,17 +292,18 @@ Local startup follows a strict order:
 1. Validate the optional annotation CSV header.
 2. Construct state and configuration.
 3. Bind `BoundServer`; an occupied explicit port fails before discovery starts.
-4. Spawn the owned discovery scan and coordinator.
+4. Spawn the owned discovery task.
 5. Register stop-signal listeners (`signals::StopSignals`: Ctrl+C and SIGTERM
    on Unix, Ctrl+C and Ctrl+Break on Windows) before printing the URL, then
    serve until a stop signal, external failure notification, or idle timeout.
    The VS Code bridge client uses the same listeners.
-6. Request discovery cancellation and await both Tokio tasks and the loader's
-   `spawn_blocking`/Rayon work before returning.
+6. Request discovery cancellation and await the discovery task, which includes
+   the loader's `spawn_blocking`/Rayon work, before returning.
 
-The loader sends events through a bounded channel. The coordinator drains that
-channel, updates `FileRegistry`, records skipped and filtered counts, and marks
-the scan complete. It then streams the annotation CSV once on a cancellable
+The loader sends one event per inspected candidate through a bounded channel.
+The discovery task drains that channel while awaiting the loader, updates
+`FileRegistry` (files, counts, and the bounded discovery ledger), and marks the
+scan complete on every exit path, including a panic. It then streams the annotation CSV once on a cancellable
 blocking worker, matching only loaded absolute path keys and committing valid
 rows atomically without overwriting viewer edits. Annotation failures remain in
 the annotation store and do not terminate image viewing. Scan and no-files
@@ -362,8 +363,9 @@ installation and VS Code Electron integration can also use network/cache state;
 
 ### Test Seams
 
-- `DiscoverySpawner` drives completion, cancellation, annotation failure,
-  scan failure, and no-files cases without filesystem timing.
+- Discovery lifecycle tests drive the real loader over copies of committed
+  fixtures for completion, cancellation, annotation failure, no-files, and
+  all-filtered cases.
 - `BoundServer::bind` is separate from `serve`, so bind ordering and occupied
   ports are deterministic.
 - `server::router(AppState)` supports in-process `axum-test` coverage for the

@@ -73,6 +73,7 @@ async fn progressive_discovery_applies_backpressure_and_reports_each_disposition
                 filters: vec!["modality=CT".parse().expect("filter parses")],
             },
             events_tx,
+            loader::DiscoveryCancellation::new(),
         )
         .await
     });
@@ -83,12 +84,6 @@ async fn progressive_discovery_applies_backpressure_and_reports_each_disposition
     let expected_root = dir.path().canonicalize().expect("canonical temp path");
     while let Some(event) = events_rx.recv().await {
         match event {
-            loader::DiscoveryEvent::File(file) => {
-                accepted_events += 1;
-                assert_eq!(file.modality, "CT");
-            }
-            loader::DiscoveryEvent::Skipped => skipped_events += 1,
-            loader::DiscoveryEvent::Filtered => filtered_events += 1,
             loader::DiscoveryEvent::Selected { file, record } => {
                 accepted_events += 1;
                 assert_eq!(file.modality, "CT");
@@ -138,6 +133,7 @@ async fn progressive_discovery_records_normalized_unavailable_input() {
         std::slice::from_ref(&unavailable),
         discover_options(true),
         events_tx,
+        loader::DiscoveryCancellation::new(),
     )
     .await
     .expect("unavailable input should produce a completed discovery report");
@@ -169,6 +165,7 @@ async fn skips_dicomdir_with_stable_reason_and_keeps_neighbor_instances() {
         &[dir.path().to_path_buf()],
         discover_options(true),
         events_tx,
+        loader::DiscoveryCancellation::new(),
     )
     .await
     .expect("mixed media directory should complete");
@@ -208,7 +205,7 @@ async fn progressive_discovery_stops_before_work_when_pre_cancelled() {
 
     let result = timeout(
         DISCOVERY_TEST_TIMEOUT,
-        loader::discover_progressive_with_cancellation(
+        loader::discover_progressive(
             &[dir.path().to_path_buf()],
             discover_options(true),
             events_tx,
@@ -238,7 +235,7 @@ async fn progressive_discovery_stops_when_event_receiver_is_closed() {
 
     let result = timeout(
         DISCOVERY_TEST_TIMEOUT,
-        loader::discover_progressive_with_cancellation(
+        loader::discover_progressive(
             &[dir.path().to_path_buf()],
             discover_options(true),
             events_tx,
@@ -264,7 +261,7 @@ async fn progressive_discovery_cancels_while_bounded_channel_is_full() {
     let scan_path = dir.path().to_path_buf();
     let (events_tx, mut events_rx) = mpsc::channel(1);
     let scan = tokio::spawn(async move {
-        loader::discover_progressive_with_cancellation(
+        loader::discover_progressive(
             &[scan_path],
             discover_options(true),
             events_tx,
@@ -318,19 +315,18 @@ async fn respects_no_recursive_for_directory_inputs() {
 }
 
 #[tokio::test]
-async fn errors_when_no_valid_files_found() {
+async fn reports_no_files_and_the_skip_when_nothing_is_dicom() {
     let dir = tempdir().expect("temp dir");
     let invalid = dir.path().join("invalid.txt");
     fs::write(&invalid, b"plain text").expect("invalid file");
 
-    let error = loader::discover(&[dir.path().to_path_buf()], discover_options(true))
+    let report = loader::discover(&[dir.path().to_path_buf()], discover_options(true))
         .await
-        .expect_err("loader should fail when no DICOM files exist");
+        .expect("discovery without DICOM files still completes");
 
-    assert!(
-        error.to_string().contains("no valid DICOM files"),
-        "error should explain why startup fails"
-    );
+    assert!(report.files.is_empty());
+    assert_eq!(report.skipped, 1);
+    assert_eq!(report.filtered, 0);
 }
 
 #[tokio::test]
@@ -405,12 +401,12 @@ async fn filters_and_multiple_terms_together() {
 }
 
 #[tokio::test]
-async fn filters_matching_nothing_error_after_valid_files_are_filtered() {
+async fn filters_matching_nothing_report_the_filtered_files() {
     let dir = tempdir().expect("temp dir");
     let path = dir.path().join("ct.dcm");
     write_test_dicom(&path, "PAT-CT", "CT", "20260101", 1, true);
 
-    let error = loader::discover(
+    let report = loader::discover(
         &[dir.path().to_path_buf()],
         DiscoverOptions {
             recursive: true,
@@ -418,9 +414,10 @@ async fn filters_matching_nothing_error_after_valid_files_are_filtered() {
         },
     )
     .await
-    .expect_err("all-filtered discovery should fail");
+    .expect("all-filtered discovery still completes");
 
-    assert!(error.to_string().contains("no valid DICOM files"));
+    assert!(report.files.is_empty());
+    assert_eq!(report.filtered, 1);
 }
 
 #[tokio::test]
@@ -461,10 +458,6 @@ fn assert_discovery_cancelled(
     error: anyhow::Error,
     expected_reason: loader::DiscoveryCancellationReason,
 ) {
-    assert!(
-        loader::is_discovery_cancelled(&error),
-        "cancellation helper should recognize typed error: {error:#}"
-    );
     assert_eq!(
         loader::discovery_cancellation_reason(&error),
         Some(expected_reason)

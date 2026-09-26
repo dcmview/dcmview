@@ -67,7 +67,7 @@ impl FileRegistry {
         let registry = Self::new();
         for file in files {
             registry.insert(file);
-            registry.record_scanned();
+            registry.write().scanned += 1;
         }
         registry.mark_scan_complete();
         registry
@@ -83,18 +83,6 @@ impl FileRegistry {
         drop(inner);
         self.notify.notify_waiters();
         index
-    }
-
-    pub fn record_scanned(&self) {
-        self.write().scanned += 1;
-    }
-
-    pub fn record_skipped(&self) {
-        self.write().skipped += 1;
-    }
-
-    pub fn record_filtered(&self) {
-        self.write().filtered += 1;
     }
 
     pub fn record_discovery(&self, record: DiscoveryRecord) {

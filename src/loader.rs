@@ -4,7 +4,7 @@ use crate::types::{
     PatientOrientation, PatientPosition, PresentationMetadata, RectangularDisplayShutter,
     SeriesMetadata,
 };
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use dicom_core::header::HasLength;
 use dicom_dictionary_std::{tags, uids};
 use dicom_encoding::text::SpecificCharacterSet;
@@ -29,6 +29,7 @@ use tokio::task;
 use walkdir::WalkDir;
 
 const DISCOVERY_SEND_RETRY_INTERVAL: Duration = Duration::from_millis(1);
+const DISCOVERY_COLLECT_CAPACITY: usize = 64;
 
 #[derive(Debug, Clone)]
 pub struct DiscoverOptions {
@@ -145,11 +146,9 @@ fn scan_filter_parse_error(raw: &str) -> String {
     )
 }
 
+/// The outcome of inspecting one discovery candidate.
 #[derive(Debug)]
 pub enum DiscoveryEvent {
-    File(Box<FileEntry>),
-    Skipped,
-    Filtered,
     Selected {
         file: Box<FileEntry>,
         record: DiscoveryRecord,
@@ -272,33 +271,49 @@ impl DiscoveryCancelled {
     }
 }
 
-pub fn is_discovery_cancelled(error: &anyhow::Error) -> bool {
-    discovery_cancellation_reason(error).is_some()
-}
-
 pub fn discovery_cancellation_reason(error: &anyhow::Error) -> Option<DiscoveryCancellationReason> {
     error
         .downcast_ref::<DiscoveryCancelled>()
         .map(DiscoveryCancelled::reason)
 }
 
+/// Discover `paths` to completion and return the selected files sorted by
+/// path, indexed in that order.
+///
+/// A collecting adapter over [`discover_progressive`] for callers that need
+/// the whole result at once rather than the startup event stream.
 pub async fn discover(paths: &[PathBuf], options: DiscoverOptions) -> Result<LoadReport> {
-    let paths = paths.to_vec();
-    task::spawn_blocking(move || discover_blocking(&paths, &options))
-        .await
-        .context("loader worker panicked")?
+    let (events_tx, mut events_rx) = mpsc::channel(DISCOVERY_COLLECT_CAPACITY);
+    let scan = discover_progressive(paths, options, events_tx, DiscoveryCancellation::new());
+    let collect = async {
+        let mut files = Vec::new();
+        while let Some(event) = events_rx.recv().await {
+            if let DiscoveryEvent::Selected { file, .. } = event {
+                files.push(*file);
+            }
+        }
+        files
+    };
+    let (report, mut files) = tokio::join!(scan, collect);
+    let report = report?;
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+    for (index, file) in files.iter_mut().enumerate() {
+        file.index = index;
+    }
+    Ok(LoadReport {
+        files,
+        skipped: report.skipped,
+        filtered: report.filtered,
+        searched_recursive: report.searched_recursive,
+    })
 }
 
+/// Inspect `paths` on blocking workers, streaming each outcome as an event.
+///
+/// Returns a [`DiscoveryCancelled`] error when `cancellation` is requested or
+/// the event receiver closes; a full channel applies backpressure without
+/// blocking cancellation.
 pub async fn discover_progressive(
-    paths: &[PathBuf],
-    options: DiscoverOptions,
-    events: mpsc::Sender<DiscoveryEvent>,
-) -> Result<DiscoveryReport> {
-    discover_progressive_with_cancellation(paths, options, events, DiscoveryCancellation::new())
-        .await
-}
-
-pub async fn discover_progressive_with_cancellation(
     paths: &[PathBuf],
     options: DiscoverOptions,
     events: mpsc::Sender<DiscoveryEvent>,
@@ -315,30 +330,10 @@ pub async fn discover_progressive_with_cancellation(
 fn collect_candidates(
     paths: &[PathBuf],
     options: &DiscoverOptions,
-) -> (Vec<PathBuf>, Vec<DiscoveryRecord>) {
-    collect_candidates_with_check(paths, options, || Ok(()))
-        .expect("infallible candidate collection check failed")
-}
-
-fn collect_progressive_candidates(
-    paths: &[PathBuf],
-    options: &DiscoverOptions,
     events: &mpsc::Sender<DiscoveryEvent>,
     cancellation: &DiscoveryCancellation,
 ) -> std::result::Result<(Vec<PathBuf>, Vec<DiscoveryRecord>), DiscoveryCancelled> {
-    collect_candidates_with_check(paths, options, || {
-        ensure_discovery_active(events, cancellation)
-    })
-}
-
-fn collect_candidates_with_check<F>(
-    paths: &[PathBuf],
-    options: &DiscoverOptions,
-    mut check_active: F,
-) -> std::result::Result<(Vec<PathBuf>, Vec<DiscoveryRecord>), DiscoveryCancelled>
-where
-    F: FnMut() -> std::result::Result<(), DiscoveryCancelled>,
-{
+    let check_active = || ensure_discovery_active(events, cancellation);
     let mut candidates = Vec::new();
     let mut skipped = Vec::new();
 
@@ -396,57 +391,13 @@ where
     Ok((candidates, skipped))
 }
 
-fn discover_blocking(paths: &[PathBuf], options: &DiscoverOptions) -> Result<LoadReport> {
-    let (candidates, initial_skipped) = collect_candidates(paths, options);
-    let mut skipped = initial_skipped.len();
-
-    let processed: Vec<_> = candidates
-        .par_iter()
-        .map(|candidate| build_entry(candidate))
-        .collect();
-
-    let mut files = Vec::new();
-    let mut filtered = 0_usize;
-
-    for item in processed {
-        match item {
-            Ok(EntryInspection::Selected(entry)) if matches_filters(&entry, &options.filters) => {
-                files.push(*entry)
-            }
-            Ok(EntryInspection::Selected(_)) => filtered += 1,
-            Ok(EntryInspection::Skipped(_)) => skipped += 1,
-            Err(error) => {
-                skipped += 1;
-                eprintln!("dcmview: warning — failed to inspect DICOM: {error}");
-            }
-        }
-    }
-
-    if files.is_empty() {
-        return Err(anyhow!("dcmview: no valid DICOM files found"));
-    }
-
-    files.sort_by(|left, right| left.path.cmp(&right.path));
-    for (idx, file) in files.iter_mut().enumerate() {
-        file.index = idx;
-    }
-
-    Ok(LoadReport {
-        files,
-        skipped,
-        filtered,
-        searched_recursive: options.recursive,
-    })
-}
-
 fn discover_progressive_blocking(
     paths: &[PathBuf],
     options: &DiscoverOptions,
     events: mpsc::Sender<DiscoveryEvent>,
     cancellation: &DiscoveryCancellation,
 ) -> Result<DiscoveryReport> {
-    let (candidates, initial_skipped) =
-        collect_progressive_candidates(paths, options, &events, cancellation)?;
+    let (candidates, initial_skipped) = collect_candidates(paths, options, &events, cancellation)?;
     for record in initial_skipped.iter().cloned() {
         send_discovery_event(&events, cancellation, DiscoveryEvent::SkippedInput(record))?;
     }
