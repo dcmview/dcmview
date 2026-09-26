@@ -281,11 +281,18 @@ frame responses.
 For native monochrome display, Modality LUT or rescale precedes VOI LUT or
 windowing, followed by MONOCHROME1 presentation inversion. Modality and VOI
 LUT sequences accept the standard 8-bit and 16-bit entry depths, including
-byte-packed 8-bit LUT Data. A validated rectangular shutter then replaces
-pixels outside its one-based inclusive
-opening with the encoded P-value, and standalone one-bit overlay planes are
-composited last in DICOM LSB-first order. These presentation operations affect
-PNG display frames only; raw-frame bytes remain the decoded source samples.
+byte-packed 8-bit LUT Data. The display shutter then replaces every pixel
+outside its opening with the encoded P-value (Shutter Presentation Value, else
+the L* of Shutter Presentation Color CIELab Value, else black). The opening is
+the intersection of every declared shape: rectangular, circular, polygonal,
+and bitmap. Shape coordinates are one-based image rows and columns with edges
+inside, and a circle's radius counts pixels along a row, so non-square pixels
+keep it physically round. A bitmap shutter's overlay plane is taken out of the
+overlay list at load time, so it masks the image and is never drawn.
+Standalone one-bit overlay planes are composited last in DICOM LSB-first
+order. These presentation operations affect PNG display frames only; raw-frame
+bytes remain the decoded source samples, and any overlay or shutter marks the
+file incompatible with client raw windowing.
 
 RLE Lossless decoding validates the 64-byte Annex G header, segment offsets,
 PackBits runs, byte-plane counts, and decoded sizes before assembling a frame.

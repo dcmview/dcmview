@@ -16,6 +16,10 @@ diagnostic viewer.
   Lossless frames labelled YBR_FULL, now display in color. They were
   previously reported unsupported; a JPEG Lossless YBR_FULL frame requested
   anyway showed its Y, Cb, Cr components as red, green, and blue.
+- Circular, polygonal, and bitmap display shutters, alone or combined with a
+  rectangular one, now mask grayscale display frames. Previously only a
+  rectangular shutter was applied, and only when Shutter Presentation Value
+  was present; a shutter without it now defaults to black.
 
 ### Changed
 
