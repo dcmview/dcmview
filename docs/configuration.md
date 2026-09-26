@@ -39,25 +39,16 @@ interface.
 
 ## Python Module CLI
 
-The module CLI mirrors the Rust CLI and forwards options to the resolved
-`dcmview` binary:
+`python -m dcmview_py` and the `dcmview`/`dcmview-py` console scripts forward
+their arguments unchanged to the resolved `dcmview` binary, so they accept
+exactly the Rust CLI options above:
 
 ```text
 python -m dcmview_py [OPTIONS] <PATH> [PATH ...]
 ```
 
-| Python CLI option | Forwarded Rust option |
-|---|---|
-| `<PATH>...` | `<PATH>...` |
-| `-p, --port <PORT>` | `--port <PORT>` |
-| `--host <ADDR>` | `--host <ADDR>` |
-| `--no-browser` | `--no-browser` |
-| `--timeout <SECONDS>` | `--timeout <SECONDS>` |
-| `--no-recursive` | `--no-recursive` |
-| `--annotations <CSV>` | `--annotations <CSV>` |
-| `--filter <FIELD=VALUE>` | `--filter <FIELD=VALUE>` |
-
-The module CLI runs in blocking mode and returns the binary exit code.
+They launch through `--vscode-bridge-client dcmview_py`, so the VS Code routing
+rule applies, wait for the binary to exit, and return its exit code.
 
 ## Python `view()` Parameters
 
