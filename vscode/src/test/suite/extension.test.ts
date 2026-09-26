@@ -12,8 +12,6 @@ import {
   bridgeRegistryDirectory,
   bridgeRegistryEntry,
   ensureBridgeRegistryPresent,
-  isExpiredRegistryEntry,
-  orderBridgeRegistryEndpoints,
   registryDirectoryIsTrusted,
   writeBridgeRegistry,
 } from '../../bridgeRegistry';
@@ -183,34 +181,6 @@ suite('dcmview extension', () => {
     for (const testCase of registryContract.registryDirs) {
       assert.strictEqual(bridgeRegistryDirectory(testCase.env), testCase.expected);
     }
-    for (const testCase of registryContract.expiry.cases) {
-      assert.strictEqual(
-        isExpiredRegistryEntry(testCase.createdAtMs, registryContract.expiry.nowMs),
-        testCase.expired,
-      );
-    }
-
-    const entries = registryContract.ordering.entries.map((item: { entry: unknown }) => item.entry) as Parameters<
-      typeof orderBridgeRegistryEndpoints
-    >[1];
-    assert.deepStrictEqual(
-      orderBridgeRegistryEndpoints(
-        registryContract.ordering.cwd,
-        entries,
-        false,
-        registryContract.ordering.nowMs,
-      ),
-      registryContract.ordering.expectedAllowAny,
-    );
-    assert.deepStrictEqual(
-      orderBridgeRegistryEndpoints(
-        registryContract.ordering.cwd,
-        entries,
-        true,
-        registryContract.ordering.nowMs,
-      ),
-      registryContract.ordering.expectedRequireWorkspace,
-    );
   });
 
   test('serializes bridge registry entries for out-of-band discovery', () => {

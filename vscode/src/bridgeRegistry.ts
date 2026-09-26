@@ -102,55 +102,6 @@ export function bridgeRegistryDirectory(env: NodeJS.ProcessEnv = process.env): s
   return path.join(homePath, '.local', 'state', 'dcmview', 'vscode-bridges');
 }
 
-export function isExpiredRegistryEntry(createdAtMs: number, nowMs: number): boolean {
-  return (
-    createdAtMs <= 0 ||
-    createdAtMs > nowMs + BRIDGE_REGISTRY_MAX_AGE_MS ||
-    nowMs - createdAtMs > BRIDGE_REGISTRY_MAX_AGE_MS
-  );
-}
-
-export function orderBridgeRegistryEndpoints(
-  cwd: string,
-  entries: BridgeRegistryEntry[],
-  requireWorkspace: boolean,
-  nowMs = Date.now(),
-): string[][] {
-  const normalizedCwd = path.resolve(cwd);
-  const candidates = entries
-    .filter((entry) => !isExpiredRegistryEntry(entry.createdAtMs, nowMs))
-    .map((entry) => ({
-      score: workspaceMatchScore(normalizedCwd, entry.workspaceRoots),
-      createdAtMs: entry.createdAtMs,
-      endpoint: [entry.bridgeUrl, entry.token],
-    }))
-    .filter((candidate) => !requireWorkspace || candidate.score > 0)
-    .sort((left, right) => right.score - left.score || right.createdAtMs - left.createdAtMs);
-
-  const seen = new Set<string>();
-  const endpoints: string[][] = [];
-  for (const candidate of candidates) {
-    const key = `${candidate.endpoint[0]}\0${candidate.endpoint[1]}`;
-    if (!seen.has(key)) {
-      seen.add(key);
-      endpoints.push(candidate.endpoint);
-    }
-  }
-  return endpoints;
-}
-
-function workspaceMatchScore(cwd: string, workspaceRoots: readonly string[]): number {
-  let best = 0;
-  for (const root of workspaceRoots) {
-    const normalizedRoot = path.resolve(root);
-    const relative = path.relative(normalizedRoot, cwd);
-    if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) {
-      best = Math.max(best, normalizedRoot.length);
-    }
-  }
-  return best;
-}
-
 export async function writeBridgeRegistry(
   bridge: WritableBridgeRegistry,
   registryDir: string,
