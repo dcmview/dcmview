@@ -24,7 +24,7 @@ function rawFrameKey(fileIndex: number, frameIndex: number): string {
  * Decoded raw samples for client-side windowing, keyed by source file/frame.
  * Foreground and prefetch consumers share one in-flight request per frame;
  * only frames the browser renderer accepts are cached, within a byte budget.
- * This is also where a future pixel-value readout gets the current samples.
+ * The pixel readout reads the samples under the cursor from here too.
  */
 export class RawFrameSource {
 	readonly #load: (fileIndex: number, frameIndex: number, signal: AbortSignal) => Promise<RawFrame>;

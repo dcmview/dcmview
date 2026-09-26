@@ -43,6 +43,8 @@
 		PREFETCH_CONCURRENCY,
 		scheduleIdle,
 	} from "./viewport/prefetchScheduling";
+	import PixelReadout from "./viewport/PixelReadout.svelte";
+	import { PixelProbe, pixelReadout } from "./viewport/pixelProbe.svelte";
 	import { RawFrameSource } from "./viewport/rawFrameSource";
 	import { RenderedFrames } from "./viewport/renderedFrames.svelte";
 	import RoiList from "./viewport/RoiList.svelte";
@@ -60,6 +62,8 @@
 		type ViewTransform,
 		type ZoomAnchor,
 	} from "./viewport/viewTransform";
+	import { pixelAt } from "./viewport/valueMapping";
+	import { ValueMappings } from "./viewport/valueMappings.svelte";
 	import { WlRendererClient } from "./viewport/wlRendererClient";
 	import ZoomControls from "./viewport/ZoomControls.svelte";
 
@@ -137,6 +141,10 @@
 		concurrency: () => prefetchConcurrency,
 		onScopeChange: () => rendered.reset(),
 	});
+	const valueMappings = new ValueMappings();
+	const probe = new PixelProbe(rawFrames);
+	let probeClientPoint: { x: number; y: number } | null = null;
+	let probeAnimationFrame = 0;
 	let retainedScopeKey = "";
 	let requestGeneration = 0;
 	let lastFrameForDirection = 0;
@@ -221,6 +229,30 @@
 			: null,
 	);
 
+	// The readout reads the image on screen: a SEG overlay's source frame,
+	// otherwise the active file's frame.
+	const probeTarget = $derived(
+		overlay
+			? { file: overlay.sourceFile, frameIndex: overlay.sourceFrameIndex }
+			: { file: activeFile, frameIndex: currentFrame },
+	);
+	const probing = $derived(probe.pixel !== null);
+	const readout = $derived.by(() => {
+		const pixel = probe.pixel;
+		if (!pixel) return null;
+		const { file, frameIndex } = probeTarget;
+		return pixelReadout({
+			pixel,
+			file,
+			frameIndex,
+			samples: probe.samples(file.index, frameIndex),
+			mapping: valueMappings.get(file.index, frameIndex),
+			mappingFailed: valueMappings.failed(file.index, frameIndex),
+			planarConfiguration: (frame) => probe.planarConfiguration(file, frame),
+			paused: cinePlaying,
+		});
+	});
+
 	function setSelectedRoi(index: number | null) {
 		annotations.select(activeFile.index, index);
 	}
@@ -236,6 +268,24 @@
 			orientation,
 			displayGeometry,
 		);
+	}
+
+	/** Moves the readout to a client point on the next animation frame. */
+	function scheduleProbe(clientX: number, clientY: number): void {
+		probeClientPoint = { x: clientX, y: clientY };
+		if (probeAnimationFrame !== 0) return;
+		probeAnimationFrame = requestAnimationFrame(() => {
+			probeAnimationFrame = 0;
+			const point = probeClientPoint ? imagePointAt(probeClientPoint.x, probeClientPoint.y) : null;
+			probe.pixel = pixelAt(point, imageRows, imageColumns);
+		});
+	}
+
+	function stopProbe(): void {
+		probeClientPoint = null;
+		if (probeAnimationFrame !== 0) cancelAnimationFrame(probeAnimationFrame);
+		probeAnimationFrame = 0;
+		probe.pixel = null;
 	}
 
 	function pointFromPointer(event: PointerEvent): ImagePoint | null {
@@ -660,10 +710,23 @@
 		});
 	});
 
+	// Samples and the value mapping load once the cursor rests on a frame;
+	// cine playback skips them.
+	$effect(() => {
+		if (!probing || cinePlaying || !activeFile.has_pixels) return;
+		const { file, frameIndex } = probeTarget;
+		const displayed = pipelineMode === "diagnostic_wl" ? currentRawFrame : null;
+		return untrack(() => {
+			valueMappings.ensure(file.index, frameIndex);
+			return probe.track(file, frameIndex, displayed);
+		});
+	});
+
 	$effect(() => observePrefetchConcurrency((concurrency) => { prefetchConcurrency = concurrency; }));
 
 	$effect(() => {
 		return () => {
+			stopProbe();
 			rawFrames.clear();
 			displayFrames.clear();
 			wlRenderer.dispose();
@@ -764,6 +827,7 @@
 		}
 
 		zoomByWheelDelta(dy, event.clientX, event.clientY, MOUSE_WHEEL_ZOOM_SENSITIVITY);
+		scheduleProbe(event.clientX, event.clientY);
 	}
 
 	function onPointerDown(event: PointerEvent) {
@@ -867,6 +931,11 @@
 	}
 
 	function onPointerMove(event: PointerEvent) {
+		if (activeFile?.has_pixels && !isViewportChromeTarget(event.target)) {
+			scheduleProbe(event.clientX, event.clientY);
+		} else if (!dragState) {
+			stopProbe();
+		}
 		if (!activeFile || !dragState) return;
 
 		if (dragState.mode === "pan") {
@@ -1002,6 +1071,7 @@
 	onpointermove={onPointerMove}
 	onpointerup={onPointerUp}
 	onpointercancel={onPointerCancel}
+	onpointerleave={stopProbe}
 	oncontextmenu={onContextMenu}
 	ondblclick={onreset}
 >
@@ -1037,18 +1107,23 @@
 				/>
 			{/if}
 		</div>
-		<div class="overlay">
-			{#if overlay?.kind === "segmentation"}
-				<span>SEG overlay {overlay.segmentationFrameIndex + 1} / {activeFile.frame_count}</span>
-				<span>source frame {overlay.sourceFrameIndex + 1}</span>
-			{:else}
-				<span>image {navigationPosition + 1} / {navigationFrameCount}</span>
-				<span>source frame {currentFrame + 1} / {activeFile.frame_count}</span>
+		<div class="hud">
+			{#if readout}
+				<PixelReadout {readout} />
 			{/if}
-			<span>W: {Math.round(displayWindow.ww)} · C: {Math.round(displayWindow.wc)}</span>
-			{#if activeTool === "window_level" && !activeFile.raw_windowing_compatible}
-				<span class="presentation-path" title={activeFile.raw_windowing_reason ?? undefined}>server presentation retained</span>
-			{/if}
+			<div class="overlay">
+				{#if overlay?.kind === "segmentation"}
+					<span>SEG overlay {overlay.segmentationFrameIndex + 1} / {activeFile.frame_count}</span>
+					<span>source frame {overlay.sourceFrameIndex + 1}</span>
+				{:else}
+					<span>image {navigationPosition + 1} / {navigationFrameCount}</span>
+					<span>source frame {currentFrame + 1} / {activeFile.frame_count}</span>
+				{/if}
+				<span>W: {Math.round(displayWindow.ww)} · C: {Math.round(displayWindow.wc)}</span>
+				{#if activeTool === "window_level" && !activeFile.raw_windowing_compatible}
+					<span class="presentation-path" title={activeFile.raw_windowing_reason ?? undefined}>server presentation retained</span>
+				{/if}
+			</div>
 		</div>
 		{#if !overlay}
 			<RoiList
@@ -1150,11 +1225,21 @@
 			animation-duration: 1.8s;
 		}
 	}
-	.overlay {
+	.hud {
 		position: absolute;
 		left: 0.75rem;
 		bottom: 0.75rem;
 		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 0.4rem;
+		max-width: calc(100% - 9.5rem);
+		pointer-events: none;
+	}
+	.overlay {
+		display: flex;
+		flex-wrap: wrap;
+		pointer-events: auto;
 		gap: 0.75rem;
 		font-size: 0.78rem;
 		padding: 0.34rem 0.55rem;
