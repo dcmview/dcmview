@@ -62,8 +62,9 @@ would remove behavior, raise it as a question instead of acting.
   routes into VS Code when the process has the bridge environment (a VS Code
   terminal) or its working directory is inside a registered workspace folder.
   Otherwise it runs the local viewer. Python's `view(vscode_bridge=False)` and
-  `DCMVIEW_VSCODE_BYPASS=1` opt out. Today Python still routes to any live
-  bridge; that is a known gap until the bridge code is consolidated.
+  `DCMVIEW_VSCODE_BYPASS=1` opt out. The rule lives only in
+  `src/bridge/registry.rs`; the Python wrapper and terminal shims go through the
+  binary's hidden `--vscode-bridge-client` form.
 - **Viewer** - cine playback, server- and client-side window/level, presets,
   per-tab zoom/pan/orientation, series and stack navigation, tag panel,
   reference navigation, and the codec coverage in the pixel pipeline table.

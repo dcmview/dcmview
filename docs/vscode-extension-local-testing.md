@@ -45,8 +45,8 @@ Support matrix:
 | New integrated terminal `dcmview` / `dcmview-py` | PATH shim plus bridge env | Requires a fresh terminal after extension activation. |
 | Existing integrated terminal | Bridge env if already present, then registry fallback | Long-lived shells heal stale env endpoints by trying the registry next. |
 | tmux/screen started from an old terminal | Stale inherited env, then registry fallback | Restart the tmux server if you need refreshed PATH shims. |
-| Plain SSH shell outside VS Code | Registry fallback | Direct Rust CLI discovery requires cwd inside a VS Code workspace root. |
-| VS Code Jupyter kernel | Registry fallback | `dcmview_py.view(...)` accepts any live bridge for the same user. |
+| Plain SSH shell outside VS Code | Registry fallback | Routes only when cwd is inside a VS Code workspace root. |
+| VS Code Jupyter kernel | Registry fallback | Routes only when the kernel's cwd is inside a VS Code workspace root. |
 
 Pass `vscode_bridge=False` to `dcmview_py.view(...)` or set
 `DCMVIEW_VSCODE_BYPASS=1` to opt out. Set

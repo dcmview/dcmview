@@ -51,9 +51,8 @@ print(handle.url)
 exit_code = handle.stop()
 ```
 
-For local subprocess launches, the handle is a `ShutdownHandle`. For launches
-captured by the VS Code bridge, the handle is a `BridgeShutdownHandle`. Both
-provide:
+The handle is a `ShutdownHandle` whether the viewer runs locally or in VS Code.
+It provides:
 
 | Attribute or method | Behavior |
 |---|---|
@@ -110,7 +109,7 @@ view(
 | `timeout` | `None` | Exit after this many seconds without API or browser requests. |
 | `annotations` | `None` | Load an EMBED-style ROI annotation CSV into memory without modifying the file. |
 | `filters` | `None` | Iterable of `FIELD=VALUE` metadata filters. Values are forwarded as repeatable `--filter` flags and combined with AND semantics. |
-| `vscode_bridge` | `True` | Route launches into an active dcmview VS Code bridge when available. |
+| `vscode_bridge` | `True` | Open the viewer in VS Code when run from a VS Code terminal or inside an open workspace folder. |
 
 Filter fields are the same as the Rust CLI: `patient_id`, `patient_name`,
 `study_description`, `study_date`, `study_uid`, `series_description`,
@@ -179,7 +178,7 @@ The wrapper may raise:
 |---|---|
 | `ValueError` | No files were provided. |
 | `TypeError` | File, annotation, or filter arguments have invalid types. |
-| `RuntimeError` | No binary can be resolved, the VS Code bridge fails after capturing a session, or startup fails before a handle is available. |
+| `RuntimeError` | No binary can be resolved, or startup fails before a handle is available. |
 | `subprocess.CalledProcessError` | The underlying viewer exits with a non-zero status. |
 
 ## Binary Resolution
@@ -197,10 +196,14 @@ back into VS Code interception.
 
 ## VS Code Bridge
 
-When Python runs inside a VS Code environment with the dcmview extension active,
-`view()` may route through the extension bridge. In that mode, the extension
-opens the viewer in a VS Code webview panel and the Python call controls the
-extension-managed session.
+With the dcmview VS Code extension active, `view()` opens the viewer in a VS
+Code webview panel in two cases: when Python runs in a VS Code integrated
+terminal, or when its working directory is inside an open workspace folder.
+The second case covers notebooks started from the workspace. Anywhere else, it
+launches the local viewer. The wrapper hands this to the `dcmview` binary, so
+Python, terminal, and shell launches follow the same rule. `url`, `stop()`,
+and blocking calls behave the same for a VS Code-managed viewer; `stop()`
+closes the VS Code viewer.
 
 Set `vscode_bridge=False` for one call:
 

@@ -10,6 +10,25 @@ diagnostic viewer.
 
 ## Unreleased
 
+### Changed
+
+- VS Code routing now follows one rule for `dcmview`, `dcmview-py`, and
+  `dcmview_py.view()`: open in VS Code from a VS Code terminal, or when the
+  working directory is inside an open workspace folder. Otherwise the local
+  viewer starts. Python previously routed to any open VS Code window, so a
+  `view()` call from outside every workspace folder and outside a VS Code
+  terminal now launches locally.
+- The Python wrapper routes through the `dcmview` binary rather than its own
+  bridge client. Non-blocking VS Code launches return a `ShutdownHandle`; the
+  separate `BridgeShutdownHandle` type is gone.
+
+### Fixed
+
+- A VS Code viewer that took more than 5 seconds to start was treated as a dead
+  bridge: its registry entry was deleted and a second, local viewer opened.
+  Slow launches now wait up to 120 seconds, and a launch VS Code did not
+  confirm exits instead of opening a second viewer.
+
 ### Removed
 
 - Removed the `--tunnel`, `--tunnel-host`, and `--tunnel-port` options, the

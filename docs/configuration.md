@@ -75,7 +75,7 @@ single path-like value or an iterable of path-like values.
 | `timeout` | `None` | Forwards to `--timeout` when set. |
 | `annotations` | `None` | Path to an EMBED-style ROI CSV; forwards `--annotations` when set. |
 | `filters` | `None` | Iterable of `FIELD=VALUE` filters; each value forwards as `--filter`. |
-| `vscode_bridge` | `True` | When `True`, the wrapper may route launches into an active VS Code dcmview bridge. |
+| `vscode_bridge` | `True` | When `True`, the viewer opens in VS Code when launched from a VS Code terminal or inside an open workspace folder. |
 
 The wrapper adds `--startup-json` when launching the binary directly so it can
 discover the server URL reliably. If the binary does not support that hidden
@@ -135,13 +135,13 @@ These variables affect viewer launch and VS Code bridge routing at runtime.
 | Variable | Used by | Behavior |
 |---|---|---|
 | `DCMVIEW_BINARY` | Python wrapper | Absolute or user-expanded path to the Rust binary. Overrides bundled wheels and `PATH`. |
-| `DCMVIEW_VSCODE_BYPASS` | Rust binary, Python wrapper, VS Code shims | Set to `1` to bypass VS Code bridge discovery and launch a normal local process. |
-| `DCMVIEW_VSCODE_BRIDGE_URL` | Rust binary, Python wrapper, VS Code extension | Explicit VS Code bridge URL for terminal interception. Usually managed by the extension. |
-| `DCMVIEW_VSCODE_BRIDGE_TOKEN` | Rust binary, Python wrapper, VS Code extension | Bearer token for the explicit bridge URL. Usually managed by the extension. |
-| `DCMVIEW_VSCODE_BRIDGE_REGISTRY_DIR` | Rust binary, Python wrapper, VS Code extension | Override the bridge registry directory used for out-of-band discovery. |
-| `DCMVIEW_VSCODE_BRIDGE_DEBUG` | Rust binary, Python wrapper | Set to `1` to print bridge discovery diagnostics to stderr. |
-| `XDG_STATE_HOME` | Rust binary, Python wrapper | Preferred base directory for bridge registry files on Unix-like systems when absolute. |
-| `XDG_RUNTIME_DIR` | Rust binary, Python wrapper | Legacy bridge registry fallback when absolute. |
+| `DCMVIEW_VSCODE_BYPASS` | Rust binary (including Python launches), VS Code shims | Set to `1` to bypass VS Code bridge discovery and launch a normal local process. |
+| `DCMVIEW_VSCODE_BRIDGE_URL` | Rust binary (including Python launches), VS Code extension | Explicit VS Code bridge URL for terminal interception. Usually managed by the extension. |
+| `DCMVIEW_VSCODE_BRIDGE_TOKEN` | Rust binary (including Python launches), VS Code extension | Bearer token for the explicit bridge URL. Usually managed by the extension. |
+| `DCMVIEW_VSCODE_BRIDGE_REGISTRY_DIR` | Rust binary (including Python launches), VS Code extension | Override the bridge registry directory used for out-of-band discovery. |
+| `DCMVIEW_VSCODE_BRIDGE_DEBUG` | Rust binary (including Python launches) | Set to `1` to print bridge discovery diagnostics to stderr. |
+| `XDG_STATE_HOME` | Rust binary (including Python launches) | Preferred base directory for bridge registry files on Unix-like systems when absolute. |
+| `XDG_RUNTIME_DIR` | Rust binary (including Python launches) | Legacy bridge registry fallback when absolute. |
 
 Bridge registry entries expire after three hours. Registry directories must be
 trusted on Unix: owned by the current user and not group- or world-writable.
