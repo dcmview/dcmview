@@ -5,9 +5,8 @@
 
 use crate::api::contracts::{
     CodedConceptSummary, DoseGridGeometry, OverlayEligibility, ParametricMapContext,
-    RealWorldValueMappingSummary, ReferenceMatchSummary, ReferenceSummary, ReferenceTargetSummary,
-    ResolvedSegmentSourceFrame, RtDoseContext, SegmentFrameMapping, SegmentSummary,
-    SegmentationContext, SemanticContext, SemanticContextResponse,
+    RealWorldValueMappingSummary, ResolvedSegmentSourceFrame, RtDoseContext, SegmentFrameMapping,
+    SegmentSummary, SegmentationContext, SemanticContext, SemanticContextResponse,
 };
 use crate::dicom_values::{read_number, read_numbers, read_string, sequence_items};
 use crate::geometry::{
@@ -308,7 +307,10 @@ fn segmentation_context(
         maximum_fractional_value: read_number(object, tags::MAXIMUM_FRACTIONAL_VALUE),
         segments,
         frame_mappings,
-        references: resolved.iter().map(reference_summary).collect(),
+        references: resolved
+            .iter()
+            .map(ResolvedReferenceEdge::summary)
+            .collect(),
         overlay,
     }
 }
@@ -621,7 +623,10 @@ fn parametric_map_context(
         .to_string(),
         mappings,
         mapping_status: mapping_status.to_string(),
-        source_references: resolved.iter().map(reference_summary).collect(),
+        source_references: resolved
+            .iter()
+            .map(ResolvedReferenceEdge::summary)
+            .collect(),
         warnings,
     }
 }
@@ -651,7 +656,7 @@ fn rt_dose_context(
         dose_type: read_string(object, tags::DOSE_TYPE),
         dose_summation_type: read_string(object, tags::DOSE_SUMMATION_TYPE),
         geometry,
-        references: resolved.iter().map(reference_summary).collect(),
+        references: resolved.iter().map(ResolvedReferenceEdge::summary).collect(),
         overlay,
         clinical_use_warning:
             "Semantic context does not establish prescription correctness or clinical acceptability."
@@ -800,29 +805,6 @@ fn referenced_rwvm_instances(object: &InMemDicomObject<StandardDataDictionary>) 
     .iter()
     .filter_map(|item| read_string(item, tags::REFERENCED_SOP_INSTANCE_UID))
     .collect()
-}
-
-fn reference_summary(edge: &ResolvedReferenceEdge) -> ReferenceSummary {
-    ReferenceSummary {
-        relationship: edge.relationship.as_str().to_string(),
-        target: ReferenceTargetSummary {
-            sop_class_uid: edge.target.sop_class_uid.clone(),
-            sop_instance_uid: edge.target.sop_instance_uid.clone(),
-            series_instance_uid: edge.target.series_instance_uid.clone(),
-            frame_numbers: edge.target.frame_numbers.clone(),
-            segment_numbers: edge.target.segment_numbers.clone(),
-        },
-        matches: edge
-            .matches
-            .iter()
-            .map(|target| ReferenceMatchSummary {
-                file_index: target.file_index,
-                path: target.path.display().to_string(),
-                sop_instance_uid: target.sop_instance_uid.clone(),
-                frame_indices: target.frame_indices.clone(),
-            })
-            .collect(),
-    }
 }
 
 fn ineligible(reason: &str) -> OverlayEligibility {

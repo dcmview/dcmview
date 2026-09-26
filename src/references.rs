@@ -4,6 +4,7 @@
 //! imply that the referenced object is present or that either object has a
 //! semantic renderer.
 
+use crate::api::contracts::{ReferenceMatchSummary, ReferenceSummary, ReferenceTargetSummary};
 use crate::dicom_values::{read_numbers, read_string};
 use crate::types::FileEntry;
 use anyhow::{Context, Result};
@@ -118,6 +119,33 @@ pub struct ResolvedReferenceEdge {
     pub relationship: ReferenceRelationship,
     pub target: ReferenceIdentity,
     pub matches: Vec<ReferenceMatch>,
+}
+
+impl ResolvedReferenceEdge {
+    /// The wire form reported by the references, semantic-context, and WSI
+    /// endpoints.
+    pub fn summary(&self) -> ReferenceSummary {
+        ReferenceSummary {
+            relationship: self.relationship.as_str().to_string(),
+            target: ReferenceTargetSummary {
+                sop_class_uid: self.target.sop_class_uid.clone(),
+                sop_instance_uid: self.target.sop_instance_uid.clone(),
+                series_instance_uid: self.target.series_instance_uid.clone(),
+                frame_numbers: self.target.frame_numbers.clone(),
+                segment_numbers: self.target.segment_numbers.clone(),
+            },
+            matches: self
+                .matches
+                .iter()
+                .map(|target| ReferenceMatchSummary {
+                    file_index: target.file_index,
+                    path: target.path.display().to_string(),
+                    sop_instance_uid: target.sop_instance_uid.clone(),
+                    frame_indices: target.frame_indices.clone(),
+                })
+                .collect(),
+        }
+    }
 }
 
 /// Resolve edges against the current ephemeral registry snapshot.

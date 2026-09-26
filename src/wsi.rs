@@ -4,8 +4,8 @@
 //! stitches a mosaic, or represents metadata as reconstructed slide pixels.
 
 use crate::api::contracts::{
-    ReferenceMatchSummary, ReferenceSummary, ReferenceTargetSummary, WsiCompanionSummary,
-    WsiFocalPlane, WsiFrameContextResponse, WsiOpticalPath, WsiTileRectangle, WsiTotalPixelMatrix,
+    ReferenceSummary, WsiCompanionSummary, WsiFocalPlane, WsiFrameContextResponse, WsiOpticalPath,
+    WsiTileRectangle, WsiTotalPixelMatrix,
 };
 use crate::dicom_values::{read_number, read_string, sequence_item, sequence_items};
 use crate::object_kind::{classify_sop_class, ObjectKind};
@@ -397,28 +397,11 @@ fn relationships(
     let truncated = resolved.len() > MAX_RELATIONSHIPS;
     resolved.truncate(MAX_RELATIONSHIPS);
     let _ = source;
-    (resolved.iter().map(reference_summary).collect(), truncated)
-}
-
-fn reference_summary(edge: &ResolvedReferenceEdge) -> ReferenceSummary {
-    ReferenceSummary {
-        relationship: edge.relationship.as_str().to_string(),
-        target: ReferenceTargetSummary {
-            sop_class_uid: edge.target.sop_class_uid.clone(),
-            sop_instance_uid: edge.target.sop_instance_uid.clone(),
-            series_instance_uid: edge.target.series_instance_uid.clone(),
-            frame_numbers: edge.target.frame_numbers.clone(),
-            segment_numbers: edge.target.segment_numbers.clone(),
-        },
-        matches: edge
-            .matches
+    (
+        resolved
             .iter()
-            .map(|target| ReferenceMatchSummary {
-                file_index: target.file_index,
-                path: target.path.display().to_string(),
-                sop_instance_uid: target.sop_instance_uid.clone(),
-                frame_indices: target.frame_indices.clone(),
-            })
+            .map(ResolvedReferenceEdge::summary)
             .collect(),
-    }
+        truncated,
+    )
 }

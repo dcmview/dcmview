@@ -2,10 +2,9 @@ use super::error::{self, ApiError};
 use super::state::AppState;
 use crate::api::contracts::{
     DiscoveryResult, EmbedRoiAnnotations, FileSummary, FilesResponse, FrameInfo, FrameQuery,
-    HealthResponse, ReferenceCatalogResponse, ReferenceMatchSummary, ReferenceSummary,
-    ReferenceTargetSummary, SemanticContextResponse, SeriesCatalogResponse, TagNode, TagQuery,
-    ViewerIdentity, WsiFrameContextResponse, CACHE_HEADER, CACHE_HIT, CACHE_MISS,
-    EXPORT_CONTENT_DISPOSITION_HEADER, EXPORT_CONTENT_DISPOSITION_VALUE,
+    HealthResponse, ReferenceCatalogResponse, SemanticContextResponse, SeriesCatalogResponse,
+    TagNode, TagQuery, ViewerIdentity, WsiFrameContextResponse, CACHE_HEADER, CACHE_HIT,
+    CACHE_MISS, EXPORT_CONTENT_DISPOSITION_HEADER, EXPORT_CONTENT_DISPOSITION_VALUE,
     RAW_FRAME_HEADER_BITS_ALLOCATED, RAW_FRAME_HEADER_COLUMNS, RAW_FRAME_HEADER_DEFAULT_WC,
     RAW_FRAME_HEADER_DEFAULT_WW, RAW_FRAME_HEADER_PADDING_HIGH, RAW_FRAME_HEADER_PADDING_LOW,
     RAW_FRAME_HEADER_PHOTOMETRIC_INTERPRETATION, RAW_FRAME_HEADER_PIXEL_REPRESENTATION,
@@ -110,27 +109,8 @@ pub(super) async fn references(
         .map(|file| ReferenceCandidate::from_file(&file))
         .collect::<Vec<_>>();
     let resolved = references::resolve_reference_edges(&edges, &candidates)
-        .into_iter()
-        .map(|edge| ReferenceSummary {
-            relationship: edge.relationship.as_str().to_string(),
-            target: ReferenceTargetSummary {
-                sop_class_uid: edge.target.sop_class_uid,
-                sop_instance_uid: edge.target.sop_instance_uid,
-                series_instance_uid: edge.target.series_instance_uid,
-                frame_numbers: edge.target.frame_numbers,
-                segment_numbers: edge.target.segment_numbers,
-            },
-            matches: edge
-                .matches
-                .into_iter()
-                .map(|target| ReferenceMatchSummary {
-                    file_index: target.file_index,
-                    path: target.path.display().to_string(),
-                    sop_instance_uid: target.sop_instance_uid,
-                    frame_indices: target.frame_indices,
-                })
-                .collect(),
-        })
+        .iter()
+        .map(references::ResolvedReferenceEdge::summary)
         .collect();
     Ok(Json(ReferenceCatalogResponse {
         source_file_index: index,
