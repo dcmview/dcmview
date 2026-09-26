@@ -20,6 +20,9 @@ The committed corpus is intentionally small and synthetic:
 - `golden-shutter-rectangular-circular-u8.dcm`
 - `golden-image-no-pixels.dcm`
 - `golden-no-pixels-sr.dcm`
+- `golden-rtdose-u16-grid.dcm` with `golden-rtdose-ct-source-z{0,6,20}.dcm`
+- `golden-parametric-map-u16-linear.dcm` with
+  `golden-parametric-map-mr-source-z{0,1}.dcm`
 
 The goal is stable decoding and contract coverage. The large single-frame JPEG
 fixture keeps file size small while exercising realistic viewport geometry.
@@ -36,3 +39,11 @@ The display shutter fixtures are 8x8 mid-gray native DX images, one per shape
 (circular, polygonal, rectangular combined with circular, and a bitmap mask
 from overlay group 6000 beside a visible overlay in group 6002), so their
 tests can assert exactly which pixels the shutter replaces.
+
+The semantic-overlay fixtures pair a value volume with images in its Frame
+of Reference. The RT Dose grid has three 4x4 planes of 4 mm voxels at
+z = 0, 4, and 8 mm; its CT slices are 10x10 at 2 mm, one on a plane, one
+halfway between two planes, and one beyond the grid. The Parametric Map has
+two 4x4 frames at z = 0 and 2 mm with a linear Real World Value Mapping, and
+its MR sources share its grid at z = 0 and 1 mm. Stored values are simple
+functions of plane, row, and column so tests can assert resampled values.

@@ -26,7 +26,14 @@ marketing-review/
 !tests/fixtures/golden-jpegxl-lossless-ybr-rct-u8-single-frame.dcm
 !tests/fixtures/golden-image-no-pixels.dcm
 !tests/fixtures/golden-no-pixels-sr.dcm
+!tests/fixtures/golden-parametric-map-mr-source-z0.dcm
+!tests/fixtures/golden-parametric-map-mr-source-z1.dcm
+!tests/fixtures/golden-parametric-map-u16-linear.dcm
 !tests/fixtures/golden-rle-ybr-full-422-u8-single-frame.dcm
+!tests/fixtures/golden-rtdose-ct-source-z0.dcm
+!tests/fixtures/golden-rtdose-ct-source-z6.dcm
+!tests/fixtures/golden-rtdose-ct-source-z20.dcm
+!tests/fixtures/golden-rtdose-u16-grid.dcm
 !tests/fixtures/golden-shutter-bitmap-u8.dcm
 !tests/fixtures/golden-shutter-circular-u8.dcm
 !tests/fixtures/golden-shutter-polygonal-u8.dcm

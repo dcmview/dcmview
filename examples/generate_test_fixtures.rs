@@ -1,5 +1,5 @@
 use dicom_core::value::fragments::Fragments;
-use dicom_core::value::PixelFragmentSequence;
+use dicom_core::value::{DataSetSequence, PixelFragmentSequence};
 use dicom_core::{DataElement, PrimitiveValue, Tag, VR};
 use dicom_dictionary_std::{tags, uids};
 use dicom_object::{meta::FileMetaTableBuilder, InMemDicomObject};
@@ -69,6 +69,303 @@ fn main() {
     write_display_shutter_fixtures(&fixture_dir);
     write_sr_without_pixels(&fixture_dir.join("golden-no-pixels-sr.dcm"));
     write_image_without_pixels(&fixture_dir.join("golden-image-no-pixels.dcm"));
+    write_rt_dose_overlay_fixtures(&fixture_dir);
+    write_parametric_map_overlay_fixtures(&fixture_dir);
+}
+
+// Semantic-overlay fixtures share one patient and study; each overlay pair
+// shares its own Frame of Reference with its image series.
+const OVERLAY_PATIENT_ID: &str = "GOLDEN-OVERLAY";
+const OVERLAY_STUDY_UID: &str = "2.25.2000100";
+const AXIAL: &str = "1\\0\\0\\0\\1\\0";
+
+struct NativeU16Spec<'a> {
+    sop_class_uid: &'a str,
+    sop_instance_uid: &'a str,
+    modality: &'a str,
+    series_instance_uid: &'a str,
+    frame_of_reference_uid: &'a str,
+    rows: u16,
+    columns: u16,
+    /// Every frame's samples in frame, row, column order.
+    samples: Vec<u16>,
+}
+
+/// An uncompressed 16-bit unsigned monochrome object with `elements` added.
+fn write_native_u16(
+    path: &Path,
+    spec: NativeU16Spec<'_>,
+    elements: Vec<DataElement<InMemDicomObject>>,
+) {
+    let pixel_bytes = spec
+        .samples
+        .iter()
+        .flat_map(|sample| sample.to_le_bytes())
+        .collect::<Vec<_>>();
+    let mut obj = InMemDicomObject::from_element_iter([
+        DataElement::new(tags::SOP_CLASS_UID, VR::UI, spec.sop_class_uid),
+        DataElement::new(tags::SOP_INSTANCE_UID, VR::UI, spec.sop_instance_uid),
+        DataElement::new(tags::PATIENT_ID, VR::LO, OVERLAY_PATIENT_ID),
+        DataElement::new(tags::STUDY_DATE, VR::DA, "20260926"),
+        DataElement::new(tags::STUDY_INSTANCE_UID, VR::UI, OVERLAY_STUDY_UID),
+        DataElement::new(tags::MODALITY, VR::CS, spec.modality),
+        DataElement::new(tags::SERIES_INSTANCE_UID, VR::UI, spec.series_instance_uid),
+        DataElement::new(
+            tags::FRAME_OF_REFERENCE_UID,
+            VR::UI,
+            spec.frame_of_reference_uid,
+        ),
+        DataElement::new(tags::ROWS, VR::US, PrimitiveValue::from(spec.rows)),
+        DataElement::new(tags::COLUMNS, VR::US, PrimitiveValue::from(spec.columns)),
+        DataElement::new(tags::BITS_ALLOCATED, VR::US, PrimitiveValue::from(16_u16)),
+        DataElement::new(tags::BITS_STORED, VR::US, PrimitiveValue::from(16_u16)),
+        DataElement::new(tags::HIGH_BIT, VR::US, PrimitiveValue::from(15_u16)),
+        DataElement::new(
+            tags::PIXEL_REPRESENTATION,
+            VR::US,
+            PrimitiveValue::from(0_u16),
+        ),
+        DataElement::new(tags::SAMPLES_PER_PIXEL, VR::US, PrimitiveValue::from(1_u16)),
+        DataElement::new(tags::PHOTOMETRIC_INTERPRETATION, VR::CS, "MONOCHROME2"),
+        DataElement::new(tags::PIXEL_DATA, VR::OW, PrimitiveValue::from(pixel_bytes)),
+    ]);
+    for element in elements {
+        obj.put(element);
+    }
+    obj.with_meta(
+        FileMetaTableBuilder::new()
+            .implementation_class_uid(FIXTURE_IMPLEMENTATION_CLASS_UID)
+            .implementation_version_name(FIXTURE_IMPLEMENTATION_VERSION_NAME)
+            .transfer_syntax(uids::EXPLICIT_VR_LITTLE_ENDIAN)
+            .media_storage_sop_class_uid(spec.sop_class_uid)
+            .media_storage_sop_instance_uid(spec.sop_instance_uid),
+    )
+    .expect("build semantic overlay fixture meta")
+    .write_to_file(path)
+    .expect("write semantic overlay fixture");
+}
+
+fn fixture_sequence(tag: Tag, items: Vec<InMemDicomObject>) -> DataElement<InMemDicomObject> {
+    DataElement::new(tag, VR::SQ, DataSetSequence::from(items))
+}
+
+fn fixture_code(value: &str, scheme: &str, meaning: &str) -> InMemDicomObject {
+    InMemDicomObject::from_element_iter([
+        DataElement::new(tags::CODE_VALUE, VR::SH, value),
+        DataElement::new(tags::CODING_SCHEME_DESIGNATOR, VR::SH, scheme),
+        DataElement::new(tags::CODE_MEANING, VR::LO, meaning),
+    ])
+}
+
+/// A 3-plane RT Dose grid (4x4 voxels of 4 mm at z = 0, 4, 8 mm) and three
+/// 10x10 CT slices of 2 mm pixels at z = 0, 6, and 20 mm in its Frame of
+/// Reference. The z = 6 slice lies halfway between the last two planes and
+/// the z = 20 slice beyond the grid. Stored dose is
+/// `1000 * plane + 100 * row + 10 * column`, scaled by 0.01 Gy.
+fn write_rt_dose_overlay_fixtures(fixture_dir: &Path) {
+    const FRAME_OF_REFERENCE: &str = "2.25.2000120";
+    let dose_samples = (0..3_u16)
+        .flat_map(|plane| {
+            (0..4_u16).flat_map(move |row| {
+                (0..4_u16).map(move |column| 1000 * plane + 100 * row + 10 * column)
+            })
+        })
+        .collect();
+    write_native_u16(
+        &fixture_dir.join("golden-rtdose-u16-grid.dcm"),
+        NativeU16Spec {
+            sop_class_uid: uids::RT_DOSE_STORAGE,
+            sop_instance_uid: "2.25.2000101",
+            modality: "RTDOSE",
+            series_instance_uid: "2.25.2000111",
+            frame_of_reference_uid: FRAME_OF_REFERENCE,
+            rows: 4,
+            columns: 4,
+            samples: dose_samples,
+        },
+        vec![
+            DataElement::new(tags::NUMBER_OF_FRAMES, VR::IS, "3"),
+            DataElement::new(
+                tags::FRAME_INCREMENT_POINTER,
+                VR::AT,
+                PrimitiveValue::Tags(vec![tags::GRID_FRAME_OFFSET_VECTOR].into()),
+            ),
+            DataElement::new(tags::IMAGE_POSITION_PATIENT, VR::DS, "0\\0\\0"),
+            DataElement::new(tags::IMAGE_ORIENTATION_PATIENT, VR::DS, AXIAL),
+            DataElement::new(tags::PIXEL_SPACING, VR::DS, "4\\4"),
+            DataElement::new(tags::DOSE_UNITS, VR::CS, "GY"),
+            DataElement::new(tags::DOSE_TYPE, VR::CS, "PHYSICAL"),
+            DataElement::new(tags::DOSE_SUMMATION_TYPE, VR::CS, "PLAN"),
+            DataElement::new(tags::GRID_FRAME_OFFSET_VECTOR, VR::DS, "0\\4\\8"),
+            DataElement::new(tags::DOSE_GRID_SCALING, VR::DS, "0.01"),
+        ],
+    );
+    for (slice, (sop_instance_uid, z)) in [
+        ("2.25.2000102", 0),
+        ("2.25.2000103", 6),
+        ("2.25.2000104", 20),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        write_native_u16(
+            &fixture_dir.join(format!("golden-rtdose-ct-source-z{z}.dcm")),
+            NativeU16Spec {
+                sop_class_uid: uids::CT_IMAGE_STORAGE,
+                sop_instance_uid,
+                modality: "CT",
+                series_instance_uid: "2.25.2000110",
+                frame_of_reference_uid: FRAME_OF_REFERENCE,
+                rows: 10,
+                columns: 10,
+                samples: (0..100).map(|index| 1000 + 10 * index).collect(),
+            },
+            vec![
+                DataElement::new(tags::INSTANCE_NUMBER, VR::IS, (slice + 1).to_string()),
+                DataElement::new(tags::IMAGE_POSITION_PATIENT, VR::DS, format!("0\\0\\{z}")),
+                DataElement::new(tags::IMAGE_ORIENTATION_PATIENT, VR::DS, AXIAL),
+                DataElement::new(tags::PIXEL_SPACING, VR::DS, "2\\2"),
+                DataElement::new(tags::RESCALE_INTERCEPT, VR::DS, "-1024"),
+                DataElement::new(tags::RESCALE_SLOPE, VR::DS, "1"),
+            ],
+        );
+    }
+}
+
+/// A 2-frame Parametric Map (4x4 pixels of 2 mm at z = 0 and 2 mm) with a
+/// shared linear Real World Value Mapping `0.5 * stored - 10` in um2/s, and
+/// two MR source slices on the same grid at z = 0 and 1 mm. Stored values
+/// are `20 + 1000 * frame + 100 * row + 10 * column`.
+fn write_parametric_map_overlay_fixtures(fixture_dir: &Path) {
+    const FRAME_OF_REFERENCE: &str = "2.25.2000220";
+    let sources = [("2.25.2000202", 0), ("2.25.2000203", 1)];
+    let mapping = InMemDicomObject::from_element_iter([
+        DataElement::new(tags::LUT_LABEL, VR::SH, "ADC"),
+        DataElement::new(
+            tags::REAL_WORLD_VALUE_FIRST_VALUE_MAPPED,
+            VR::US,
+            PrimitiveValue::from(0_u16),
+        ),
+        DataElement::new(
+            tags::REAL_WORLD_VALUE_LAST_VALUE_MAPPED,
+            VR::US,
+            PrimitiveValue::from(4095_u16),
+        ),
+        DataElement::new(
+            tags::REAL_WORLD_VALUE_SLOPE,
+            VR::FD,
+            PrimitiveValue::from(0.5_f64),
+        ),
+        DataElement::new(
+            tags::REAL_WORLD_VALUE_INTERCEPT,
+            VR::FD,
+            PrimitiveValue::from(-10.0_f64),
+        ),
+        fixture_sequence(
+            tags::MEASUREMENT_UNITS_CODE_SEQUENCE,
+            vec![fixture_code("um2/s", "UCUM", "um2/s")],
+        ),
+        fixture_sequence(
+            tags::QUANTITY_DEFINITION_SEQUENCE,
+            vec![InMemDicomObject::from_element_iter([fixture_sequence(
+                tags::CONCEPT_CODE_SEQUENCE,
+                vec![fixture_code(
+                    "113041",
+                    "DCM",
+                    "Apparent Diffusion Coefficient",
+                )],
+            )])],
+        ),
+    ]);
+    let shared = InMemDicomObject::from_element_iter([
+        fixture_sequence(
+            tags::PLANE_ORIENTATION_SEQUENCE,
+            vec![InMemDicomObject::from_element_iter([DataElement::new(
+                tags::IMAGE_ORIENTATION_PATIENT,
+                VR::DS,
+                AXIAL,
+            )])],
+        ),
+        fixture_sequence(
+            tags::PIXEL_MEASURES_SEQUENCE,
+            vec![InMemDicomObject::from_element_iter([
+                DataElement::new(tags::PIXEL_SPACING, VR::DS, "2\\2"),
+                DataElement::new(tags::SLICE_THICKNESS, VR::DS, "2"),
+            ])],
+        ),
+        fixture_sequence(tags::REAL_WORLD_VALUE_MAPPING_SEQUENCE, vec![mapping]),
+    ]);
+    let per_frame = [0, 2]
+        .map(|z| {
+            InMemDicomObject::from_element_iter([fixture_sequence(
+                tags::PLANE_POSITION_SEQUENCE,
+                vec![InMemDicomObject::from_element_iter([DataElement::new(
+                    tags::IMAGE_POSITION_PATIENT,
+                    VR::DS,
+                    format!("0\\0\\{z}"),
+                )])],
+            )])
+        })
+        .to_vec();
+    let source_references = sources
+        .map(|(uid, _)| {
+            InMemDicomObject::from_element_iter([
+                DataElement::new(
+                    tags::REFERENCED_SOP_CLASS_UID,
+                    VR::UI,
+                    uids::MR_IMAGE_STORAGE,
+                ),
+                DataElement::new(tags::REFERENCED_SOP_INSTANCE_UID, VR::UI, uid),
+            ])
+        })
+        .to_vec();
+    let map_samples = (0..2_u16)
+        .flat_map(|frame| {
+            (0..4_u16).flat_map(move |row| {
+                (0..4_u16).map(move |column| 20 + 1000 * frame + 100 * row + 10 * column)
+            })
+        })
+        .collect();
+    write_native_u16(
+        &fixture_dir.join("golden-parametric-map-u16-linear.dcm"),
+        NativeU16Spec {
+            sop_class_uid: uids::PARAMETRIC_MAP_STORAGE,
+            sop_instance_uid: "2.25.2000201",
+            modality: "MR",
+            series_instance_uid: "2.25.2000211",
+            frame_of_reference_uid: FRAME_OF_REFERENCE,
+            rows: 4,
+            columns: 4,
+            samples: map_samples,
+        },
+        vec![
+            DataElement::new(tags::NUMBER_OF_FRAMES, VR::IS, "2"),
+            fixture_sequence(tags::SHARED_FUNCTIONAL_GROUPS_SEQUENCE, vec![shared]),
+            fixture_sequence(tags::PER_FRAME_FUNCTIONAL_GROUPS_SEQUENCE, per_frame),
+            fixture_sequence(tags::SOURCE_IMAGE_SEQUENCE, source_references),
+        ],
+    );
+    for (slice, (sop_instance_uid, z)) in sources.into_iter().enumerate() {
+        write_native_u16(
+            &fixture_dir.join(format!("golden-parametric-map-mr-source-z{z}.dcm")),
+            NativeU16Spec {
+                sop_class_uid: uids::MR_IMAGE_STORAGE,
+                sop_instance_uid,
+                modality: "MR",
+                series_instance_uid: "2.25.2000210",
+                frame_of_reference_uid: FRAME_OF_REFERENCE,
+                rows: 4,
+                columns: 4,
+                samples: (0..16).map(|index| 200 + 10 * index).collect(),
+            },
+            vec![
+                DataElement::new(tags::INSTANCE_NUMBER, VR::IS, (slice + 1).to_string()),
+                DataElement::new(tags::IMAGE_POSITION_PATIENT, VR::DS, format!("0\\0\\{z}")),
+                DataElement::new(tags::IMAGE_ORIENTATION_PATIENT, VR::DS, AXIAL),
+                DataElement::new(tags::PIXEL_SPACING, VR::DS, "2\\2"),
+            ],
+        );
+    }
 }
 
 fn write_uncompressed_multiframe(path: &Path) {

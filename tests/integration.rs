@@ -12,6 +12,7 @@ mod integration {
     mod pixels_uncompressed;
     mod remote_fixtures;
     mod semantic_context;
+    mod semantic_overlays;
     mod series_catalog;
     mod server_lifecycle;
     mod server_minimal;
