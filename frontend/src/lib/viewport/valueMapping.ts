@@ -252,3 +252,46 @@ export function rawHeaderValueMapping(
 		real_world: [],
 	};
 }
+
+/**
+ * A linear conversion between the units the renderer windows (Modality
+ * values: stored × slope + intercept) and a real-world unit. Only linear
+ * Modality and real-world transforms convert a window exactly; a LUT on
+ * either side has no single linear window, so it yields no scale.
+ */
+export type MappedWindowScale = {
+	unit: string;
+	label: string | null;
+	toMapped: (render: number) => number;
+	toRender: (mapped: number) => number;
+	/** Mapped units per render unit; negative when the mapping inverts the scale. */
+	ratio: number;
+};
+
+export function mappedWindowScale(mapping: FrameValueMapping | null): MappedWindowScale | null {
+	const map = preferredRealWorldMap(mapping);
+	if (!mapping || !map || map.transform.kind !== "linear" || mapping.modality.lut) return null;
+	const { rescale_slope: slope, rescale_intercept: intercept } = mapping.modality;
+	const { slope: mappedSlope, intercept: mappedIntercept } = map.transform;
+	if (!Number.isFinite(slope) || slope === 0 || !Number.isFinite(mappedSlope) || mappedSlope === 0) {
+		return null;
+	}
+	const ratio = mappedSlope / slope;
+	return {
+		unit: map.unit_label,
+		label: map.label,
+		ratio,
+		toMapped: (render) => ratio * (render - intercept) + mappedIntercept,
+		toRender: (mapped) => (mapped - mappedIntercept) / ratio + intercept,
+	};
+}
+
+export type WindowValues = { center: number; width: number };
+
+export function windowToMapped(window: WindowValues, scale: MappedWindowScale): WindowValues {
+	return { center: scale.toMapped(window.center), width: window.width * Math.abs(scale.ratio) };
+}
+
+export function windowToRender(window: WindowValues, scale: MappedWindowScale): WindowValues {
+	return { center: scale.toRender(window.center), width: window.width / Math.abs(scale.ratio) };
+}

@@ -19,10 +19,17 @@ function usableWindow(window: WindowPreset | null | undefined): WindowPreset | n
  * drag), a window mode, and the selected preset. A manual drag is also kept
  * relative to the file's default window, so moving to another file (such
  * as the next slice of a stack) carries the same adjustment over.
+ *
+ * A drag on a file with a real-world value mapping is recorded in that
+ * mapping's `unit` (such as Gy): the viewport converts it to each frame's
+ * stored scale, so it already means the same values on every frame and
+ * file and is carried over unchanged.
  */
 export class WindowSettings {
 	center = $state<number | null>(null);
 	width = $state<number | null>(null);
+	/** Real-world unit of `center`/`width`; null for the rendered (Modality) scale. */
+	unit = $state<string | null>(null);
 	mode = $state<WindowMode>("default");
 	presetId = $state("default");
 	#manual: ManualWindowAdjustment | null = null;
@@ -38,6 +45,7 @@ export class WindowSettings {
 		this.#manual = null;
 		const preset = WL_PRESETS.find((candidate) => candidate.id === presetId);
 		if (!preset) return;
+		this.unit = null;
 		if (preset.wc !== undefined && preset.ww !== undefined) {
 			this.center = preset.wc;
 			this.width = preset.ww;
@@ -49,10 +57,17 @@ export class WindowSettings {
 		}
 	}
 
-	/** Records a window/level drag on `fileIndex`. */
-	recordManual(fileIndex: number | null, center: number, width: number): void {
+	/** Records a window/level drag on `fileIndex`, in real-world `unit` when given. */
+	recordManual(fileIndex: number | null, center: number, width: number, unit: string | null = null): void {
 		this.center = center;
 		this.width = width;
+		this.unit = unit;
+		if (unit !== null) {
+			this.#manual = null;
+			this.mode = "default";
+			this.presetId = "default";
+			return;
+		}
 		if (fileIndex === null || !Number.isFinite(center) || !Number.isFinite(width) || width <= 0) return;
 		const base = usableWindow(this.#defaultWindow(fileIndex));
 		if (!base) {
@@ -82,6 +97,7 @@ export class WindowSettings {
 		this.#manual = null;
 		this.center = null;
 		this.width = null;
+		this.unit = null;
 		this.mode = "default";
 		this.presetId = "default";
 	}

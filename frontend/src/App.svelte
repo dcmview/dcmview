@@ -281,6 +281,7 @@
 						currentFrame={tabs.currentFrame}
 						windowCenter={windowSettings.center}
 						windowWidth={windowSettings.width}
+						windowUnit={windowSettings.unit}
 						windowMode={windowSettings.mode}
 						{activeTool}
 						{viewStates}
@@ -295,7 +296,7 @@
 						navigationPosition={tabs.stackPosition}
 						onnavigationchange={(position) => tabs.setStackPosition(position)}
 						onreset={resetViewport}
-						onmanualwindowlevel={(center, width) => windowSettings.recordManual(tabs.activeFileIndex, center, width)}
+						onmanualwindowlevel={(center, width, unit) => windowSettings.recordManual(tabs.activeFileIndex, center, width, unit)}
 					/>
 					<FrameSlider
 						bind:this={frameSlider}

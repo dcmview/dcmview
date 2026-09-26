@@ -21,17 +21,46 @@ const fetchDisplayFrameBlob = vi.mocked(api.fetchDisplayFrameBlob);
 const fetchRawFrame = vi.mocked(api.fetchRawFrame);
 const fetchFrameValueMapping = vi.mocked(api.fetchFrameValueMapping);
 
+function identityMapping(fileIndex = 5): api.FrameValueMapping {
+	return {
+		file_index: fileIndex,
+		frame_index: 0,
+		stored_value_type: "integer",
+		modality: { rescale_slope: 1, rescale_intercept: 0, rescale_type: null, lut: null },
+		real_world: [],
+	};
+}
+
+function adcMapping(): api.FrameValueMapping {
+	return {
+		...identityMapping(),
+		real_world: [{
+			source: "real_world_value_mapping",
+			label: "ADC",
+			first_value_mapped: 0,
+			last_value_mapped: 4095,
+			transform: { kind: "linear", slope: 0.5, intercept: -10 },
+			unit_label: "um2/s",
+			units: null,
+			quantity: null,
+		}],
+	};
+}
+
 function renderViewport({
 	activeTool = "pan" as ActiveTool,
 	file = fileSummary(5),
 	windowCenter = null as number | null,
 	windowWidth = null as number | null,
+	windowUnit = null as string | null,
+	onmanualwindowlevel = vi.fn(),
 } = {}) {
 	return render(ImageViewport, {
 		activeFile: file,
 		currentFrame: 0,
 		windowCenter,
 		windowWidth,
+		windowUnit,
 		activeTool,
 		windowMode: "default",
 		viewStates: new ViewStates(),
@@ -45,7 +74,7 @@ function renderViewport({
 		navigationPosition: 0,
 		onnavigationchange: vi.fn(),
 		onreset: vi.fn(),
-		onmanualwindowlevel: vi.fn(),
+		onmanualwindowlevel,
 	});
 }
 
@@ -54,6 +83,7 @@ beforeEach(() => {
 	fetchRawFrame.mockReset();
 	fetchRawFrame.mockResolvedValue(rawFrame());
 	fetchFrameValueMapping.mockReset();
+	fetchFrameValueMapping.mockResolvedValue(identityMapping());
 });
 
 describe("ImageViewport window/level path", () => {
@@ -162,5 +192,47 @@ describe("ImageViewport pixel readout", () => {
 		const readout = await screen.findByRole("status", { name: "Pixel value under cursor" });
 		await waitFor(() => expect(readout.textContent).toContain("value unavailable (display only)"));
 		expect(readout.textContent).toContain("row 4 · col 3");
+	});
+});
+
+describe("ImageViewport window/level in real-world units", () => {
+	it("converts a real-world window to stored units before requesting the frame", async () => {
+		fetchFrameValueMapping.mockResolvedValue(adcMapping());
+		renderViewport({ windowCenter: 40, windowWidth: 100, windowUnit: "um2/s" });
+
+		// mapped = 0.5 × stored − 10, so C 40 / W 100 um2/s is C 100 / W 200 stored.
+		await waitFor(() => expect(fetchDisplayFrameBlob).toHaveBeenCalledWith(
+			5,
+			0,
+			{ wc: 100, ww: 200, windowMode: "default" },
+			expect.any(AbortSignal),
+		));
+		expect(fetchDisplayFrameBlob).toHaveBeenCalledOnce();
+		expect(screen.getByText(/W: 100 · C: 40 um2\/s/)).toBeTruthy();
+		expect(screen.getByRole("figure", { name: "ADC: -10 to 90 um2/s" })).toBeTruthy();
+	});
+
+	it("falls back to the default window on files without that unit", async () => {
+		renderViewport({ windowCenter: 40, windowWidth: 100, windowUnit: "Gy" });
+
+		await waitFor(() => expect(fetchDisplayFrameBlob).toHaveBeenCalledWith(5, 0, {}, expect.any(AbortSignal)));
+		expect(screen.getByText("W: 400 · C: 40")).toBeTruthy();
+		expect(screen.queryByRole("figure")).toBeNull();
+	});
+
+	it("reports a window/level drag in the mapping's unit", async () => {
+		fetchFrameValueMapping.mockResolvedValue(adcMapping());
+		const onmanualwindowlevel = vi.fn();
+		renderViewport({ activeTool: "window_level", onmanualwindowlevel });
+		const viewport = await screen.findByRole("application");
+		// The all-zero raw frame's automatic window, C 0.5 / W 1 stored, in um2/s.
+		await screen.findByText(/W: 0.5 · C: -9.75 um2\/s/);
+
+		await fireEvent.pointerDown(viewport, { button: 0, clientX: 10, clientY: 10, pointerId: 1 });
+		await fireEvent.pointerMove(viewport, { clientX: 20, clientY: 10, pointerId: 1 });
+		await fireEvent.pointerUp(viewport, { clientX: 20, clientY: 10, pointerId: 1 });
+
+		// Stored W 1 + 10 px × 4 = 41 → 20.5 um2/s; C 0.5 stored → -9.75 um2/s.
+		expect(onmanualwindowlevel).toHaveBeenCalledWith(-9.75, 20.5, "um2/s");
 	});
 });

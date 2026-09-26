@@ -22,9 +22,12 @@
 	import { canRunCinePlayback, type CineDirection, type CineMode } from "./cinePlayback";
 	import { fitImageToViewportHeight, imageDisplayGeometry } from "./imageGeometry";
 	import {
+		computeFullDynamicWindow,
+		computePercentileWindow,
 		resolveDisplayWindow,
 		selectWindowingPipeline,
 		validateRenderableRawFrame,
+		type ResolvedWindow,
 	} from "./rawWindowing";
 	import { trackForegroundRequest } from "./requestIndicator";
 	import type { NavigationFrameRef } from "./seriesNavigation";
@@ -62,7 +65,14 @@
 		type ViewTransform,
 		type ZoomAnchor,
 	} from "./viewport/viewTransform";
-	import { pixelAt } from "./viewport/valueMapping";
+	import ValueLegend from "./viewport/ValueLegend.svelte";
+	import {
+		formatValue,
+		mappedWindowScale,
+		pixelAt,
+		windowToMapped,
+		windowToRender,
+	} from "./viewport/valueMapping";
 	import { ValueMappings } from "./viewport/valueMappings.svelte";
 	import { WlRendererClient } from "./viewport/wlRendererClient";
 	import ZoomControls from "./viewport/ZoomControls.svelte";
@@ -83,6 +93,7 @@
 		currentFrame,
 		windowCenter,
 		windowWidth,
+		windowUnit = null,
 		activeTool,
 		windowMode,
 		viewStates,
@@ -103,12 +114,17 @@
 		currentFrame: number;
 		windowCenter: number | null;
 		windowWidth: number | null;
+		/** Real-world unit of the window; null for the rendered (Modality) scale. */
+		windowUnit?: string | null;
 		activeTool: ActiveTool;
 		windowMode: WindowMode;
 		viewStates: ViewStates;
 		onreset: () => void;
-		/** A window/level drag ended at this window. */
-		onmanualwindowlevel: (center: number, width: number) => void;
+		/**
+		 * A window/level drag ended at this window: in the frame's real-world
+		 * `unit` when it has a linear mapping, else on the rendered scale.
+		 */
+		onmanualwindowlevel: (center: number, width: number, unit: string | null) => void;
 		cinePlaying: boolean;
 		cineFps: number;
 		cineMode: CineMode;
@@ -170,6 +186,26 @@
 			activeFile.raw_windowing_compatible,
 		));
 
+	// A window in real-world units converts through the displayed frame's
+	// mapping (or the file's latest while that frame's loads) to the
+	// Modality scale that both render paths window.
+	const frameMapping = $derived(valueMappings.forFrame(activeFile.index, currentFrame));
+	const mappedScale = $derived(overlay ? null : mappedWindowScale(frameMapping));
+	const renderWindow = $derived.by(() => {
+		if (overlay || windowCenter === null || windowWidth === null || windowUnit === null) {
+			return { center: windowCenter, width: windowWidth, pending: false };
+		}
+		if (mappedScale?.unit === windowUnit) {
+			return { ...windowToRender({ center: windowCenter, width: windowWidth }, mappedScale), pending: false };
+		}
+		// A frame without that unit falls back to its own default window.
+		const known = frameMapping !== null || valueMappings.failed(activeFile.index, currentFrame);
+		return { center: null, width: null, pending: !known };
+	});
+	const renderWindowCenter = $derived(renderWindow.center);
+	const renderWindowWidth = $derived(renderWindow.width);
+	const renderWindowPending = $derived(renderWindow.pending);
+
 	const displayWindow = $derived(
 		pipelineMode === "overlay"
 			? overlay?.sourceFile.default_window
@@ -183,18 +219,44 @@
 				currentRawFrame,
 				liveWindowCenter,
 				liveWindowWidth,
-				windowCenter,
-				windowWidth,
+				renderWindowCenter,
+				renderWindowWidth,
 				windowMode,
 			)
 			: liveWindowCenter !== null && liveWindowWidth !== null
 				? { wc: liveWindowCenter, ww: liveWindowWidth }
-				: windowCenter !== null && windowWidth !== null
-				? { wc: windowCenter, ww: windowWidth }
+				: renderWindowCenter !== null && renderWindowWidth !== null
+				? { wc: renderWindowCenter, ww: renderWindowWidth }
 				: activeFile?.default_window
 					? { wc: activeFile.default_window.center, ww: activeFile.default_window.width }
 					: { wc: 0, ww: 1 },
 	);
+	// The window a mapped file is actually shown with, for its HUD and
+	// legend: the server's automatic window is recomputed from the samples.
+	const needsWindowSamples = $derived(
+		mappedScale !== null
+		&& pipelineMode !== "diagnostic_wl"
+		&& liveWindowCenter === null
+		&& renderWindowCenter === null
+		&& (windowMode === "full_dynamic" || !activeFile.default_window),
+	);
+	const mappedWindow = $derived.by<ResolvedWindow | null>(() => {
+		if (!mappedScale) return null;
+		if (!needsWindowSamples) return displayWindow;
+		const samples = probe.samples(activeFile.index, currentFrame);
+		if (samples?.status !== "ready" || validateRenderableRawFrame(samples.frame) !== null) return null;
+		return windowMode === "full_dynamic"
+			? computeFullDynamicWindow(samples.frame)
+			: computePercentileWindow(samples.frame);
+	});
+	const mappedLegend = $derived.by(() => {
+		if (!mappedScale || !mappedWindow) return null;
+		const low = mappedScale.toMapped(mappedWindow.wc - mappedWindow.ww / 2);
+		const high = mappedScale.toMapped(mappedWindow.wc + mappedWindow.ww / 2);
+		const mapped = windowToMapped({ center: mappedWindow.wc, width: mappedWindow.ww }, mappedScale);
+		return { low, high, ...mapped };
+	});
+
 	const activeAnnotations = $derived(annotations.annotations(activeFile.index));
 	const annotationsReady = $derived(annotations.ready(activeFile.index));
 	const selectedRoiIndex = $derived(annotations.selected(activeFile.index));
@@ -324,8 +386,8 @@
 
 	function currentDisplayWindowOptions(): DisplayFrameWindowOptions {
 		if (pipelineMode === "overlay") return {};
-		if (windowCenter !== null && windowWidth !== null) {
-			return { wc: windowCenter, ww: windowWidth, windowMode: "default" };
+		if (renderWindowCenter !== null && renderWindowWidth !== null) {
+			return { wc: renderWindowCenter, ww: renderWindowWidth, windowMode: "default" };
 		}
 		if (windowMode === "full_dynamic") {
 			return { windowMode: "full_dynamic" };
@@ -678,9 +740,11 @@
 		const generation = ++requestGeneration;
 		if (mode !== "diagnostic_wl") {
 			// Server-rendered frames bake in the window, so window changes refetch.
-			void windowCenter;
-			void windowWidth;
+			void renderWindowCenter;
+			void renderWindowWidth;
 			void windowMode;
+			// A real-world window waits for the frame's mapping to convert it.
+			if (mode !== "overlay" && renderWindowPending) return;
 		}
 
 		loadError = null;
@@ -694,7 +758,7 @@
 	});
 
 	$effect(() => {
-		if (pipelineMode !== "diagnostic_wl" || !currentRawFrame || !canvasEl) return;
+		if (pipelineMode !== "diagnostic_wl" || !currentRawFrame || !canvasEl || renderWindowPending) return;
 		// displayWindow already resolved this frame's window; window changes do
 		// not invalidate in-flight renders, only frame, file, and mode changes do.
 		const frame = currentRawFrame;
@@ -710,10 +774,25 @@
 		});
 	});
 
-	// Samples and the value mapping load once the cursor rests on a frame;
-	// cine playback skips them.
+	// The displayed frame's value mapping decides whether the window is shown
+	// in real-world units. It loads once the frame settles, or at once when a
+	// real-world window is waiting to be converted.
 	$effect(() => {
-		if (!probing || cinePlaying || !activeFile.has_pixels) return;
+		if (!activeFile.has_pixels || overlay) return;
+		const fileIndex = activeFile.index;
+		const frameIndex = currentFrame;
+		if (renderWindowPending) {
+			untrack(() => valueMappings.ensure(fileIndex, frameIndex));
+			return;
+		}
+		return untrack(() => valueMappings.ensureWhenSettled(fileIndex, frameIndex));
+	});
+
+	// Samples and the value mapping load once the cursor rests on a frame,
+	// or when a mapped file's automatic window must be recomputed; cine
+	// playback skips them.
+	$effect(() => {
+		if (!(probing || needsWindowSamples) || cinePlaying || !activeFile.has_pixels) return;
 		const { file, frameIndex } = probeTarget;
 		const displayed = pipelineMode === "diagnostic_wl" ? currentRawFrame : null;
 		return untrack(() => {
@@ -865,11 +944,11 @@
 							currentRawFrame,
 							liveWindowCenter,
 							liveWindowWidth,
-							windowCenter,
-							windowWidth,
+							renderWindowCenter,
+							renderWindowWidth,
 							windowMode,
 						)
-						: displayWindow;
+						: mappedWindow ?? displayWindow;
 					nextDragState = {
 						mode: "wl",
 						startX: event.clientX,
@@ -1012,7 +1091,12 @@
 			target.releasePointerCapture(event.pointerId);
 		}
 		if (dragState?.mode === "wl" && liveWindowCenter !== null && liveWindowWidth !== null) {
-			onmanualwindowlevel(liveWindowCenter, liveWindowWidth);
+			if (mappedScale) {
+				const mapped = windowToMapped({ center: liveWindowCenter, width: liveWindowWidth }, mappedScale);
+				onmanualwindowlevel(mapped.center, mapped.width, mappedScale.unit);
+			} else {
+				onmanualwindowlevel(liveWindowCenter, liveWindowWidth, null);
+			}
 		}
 		if (dragState?.mode === "draw_roi") {
 			const coord = canonicalRect(dragState.start, dragState.current, imageRows, imageColumns);
@@ -1119,7 +1203,17 @@
 					<span>image {navigationPosition + 1} / {navigationFrameCount}</span>
 					<span>source frame {currentFrame + 1} / {activeFile.frame_count}</span>
 				{/if}
-				<span>W: {Math.round(displayWindow.ww)} · C: {Math.round(displayWindow.wc)}</span>
+				{#if mappedScale}
+					<span class="mapped-window">
+						{#if mappedLegend}
+							W: {formatValue(mappedLegend.width)} · C: {formatValue(mappedLegend.center)} {mappedScale.unit}
+						{:else}
+							W/L auto · {mappedScale.unit}
+						{/if}
+					</span>
+				{:else}
+					<span>W: {Math.round(displayWindow.ww)} · C: {Math.round(displayWindow.wc)}</span>
+				{/if}
 				{#if activeTool === "window_level" && !activeFile.raw_windowing_compatible}
 					<span class="presentation-path" title={activeFile.raw_windowing_reason ?? undefined}>server presentation retained</span>
 				{/if}
@@ -1142,6 +1236,17 @@
 				onretrysave={() => annotations.retrySave(activeFile.index)}
 				onrevert={() => annotations.rollback(activeFile.index)}
 			/>
+		{/if}
+		{#if mappedScale && mappedLegend}
+			<div class="legends">
+				<ValueLegend
+					title={mappedScale.label ?? "Window"}
+					unit={mappedScale.unit}
+					low={mappedLegend.low}
+					high={mappedLegend.high}
+					colors={["#000", "#fff"]}
+				/>
+			</div>
 		{/if}
 		<ZoomControls scale={activeTransform.scale} onstep={stepZoom} onfit={fitActiveImageToViewport} />
 	{/if}
@@ -1224,6 +1329,18 @@
 		.loading-wheel {
 			animation-duration: 1.8s;
 		}
+	}
+	.legends {
+		position: absolute;
+		right: 0.75rem;
+		bottom: 3.1rem;
+		display: flex;
+		flex-direction: column;
+		align-items: flex-end;
+		gap: 0.4rem;
+	}
+	.mapped-window {
+		font-family: var(--font-mono);
 	}
 	.hud {
 		position: absolute;

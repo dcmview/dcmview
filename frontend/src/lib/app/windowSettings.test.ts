@@ -59,4 +59,21 @@ describe("WindowSettings", () => {
 		window.followFile(2);
 		expect(state(window)).toEqual({ center: null, width: null, mode: "default", presetId: "default" });
 	});
+
+	it("carries a real-world window to the next file unchanged", () => {
+		const window = settings();
+		window.selectPreset("full_dynamic");
+		window.recordManual(1, 12.5, 20, "Gy");
+		expect({ ...state(window), unit: window.unit })
+			.toEqual({ center: 12.5, width: 20, mode: "default", presetId: "default", unit: "Gy" });
+
+		window.followFile(2);
+		expect({ ...state(window), unit: window.unit }).toMatchObject({ center: 12.5, width: 20, unit: "Gy" });
+
+		window.selectPreset("brain");
+		expect(window.unit).toBeNull();
+		window.recordManual(1, 3, 4, "Gy");
+		window.reset();
+		expect(window.unit).toBeNull();
+	});
 });

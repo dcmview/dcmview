@@ -3,11 +3,14 @@ import type { FrameValueMapping, RawFrame, RealWorldValueMap } from "../../api";
 import {
 	describePixelValues,
 	formatValue,
+	mappedWindowScale,
 	modalityValue,
 	pixelAt,
 	rawHeaderValueMapping,
 	realWorldValue,
 	storedSamplesAt,
+	windowToMapped,
+	windowToRender,
 } from "./valueMapping";
 
 function frame(
@@ -229,5 +232,47 @@ describe("pixel lookup helpers", () => {
 			real_world: [],
 		});
 		expect(rawHeaderValueMapping(2, 1, frame(new Float32Array(4).buffer, { bitsAllocated: 32 }))).toBeNull();
+	});
+});
+
+describe("mapped-unit windows", () => {
+	it("converts windows between the rendered Modality scale and real-world units", () => {
+		// Rendered = 2 × stored − 1024; mapped = 0.01 × stored (Dose Grid Scaling).
+		const scale = mappedWindowScale(mapping({
+			modality: { rescale_slope: 2, rescale_intercept: -1024, rescale_type: null, lut: null },
+			real_world: [linearMap(0.01, 0, { unit_label: "Gy", label: "Dose" })],
+		}));
+		expect(scale).toMatchObject({ unit: "Gy", label: "Dose", ratio: 0.005 });
+		if (!scale) throw new Error("expected a scale");
+
+		expect(scale.toMapped(-1024)).toBe(0);
+		expect(scale.toMapped(976)).toBe(10);
+		expect(windowToMapped({ center: 976, width: 400 }, scale)).toEqual({ center: 10, width: 2 });
+		expect(windowToRender({ center: 10, width: 2 }, scale)).toEqual({ center: 976, width: 400 });
+
+		for (const window of [{ center: -3.25, width: 0.5 }, { center: 1e4, width: 7777 }]) {
+			const back = windowToMapped(windowToRender(window, scale), scale);
+			expect(back.center).toBeCloseTo(window.center, 9);
+			expect(back.width).toBeCloseTo(window.width, 9);
+		}
+	});
+
+	it("keeps widths positive when the mapping inverts the scale", () => {
+		const scale = mappedWindowScale(mapping({ real_world: [linearMap(-0.5, 100)] }));
+		if (!scale) throw new Error("expected a scale");
+		expect(windowToMapped({ center: 20, width: 40 }, scale)).toEqual({ center: 90, width: 20 });
+		expect(windowToRender({ center: 90, width: 20 }, scale)).toEqual({ center: 20, width: 40 });
+	});
+
+	it("has no window scale without a linear mapping on both sides", () => {
+		expect(mappedWindowScale(null)).toBeNull();
+		expect(mappedWindowScale(mapping())).toBeNull();
+		const lutMap: RealWorldValueMap = { ...linearMap(1, 0), transform: { kind: "lut", values: [1, 2] } };
+		expect(mappedWindowScale(mapping({ real_world: [lutMap] }))).toBeNull();
+		expect(mappedWindowScale(mapping({
+			modality: { rescale_slope: 1, rescale_intercept: 0, rescale_type: null, lut: { first_value_mapped: 0, values: [0, 5] } },
+			real_world: [linearMap(1, 0)],
+		}))).toBeNull();
+		expect(mappedWindowScale(mapping({ real_world: [linearMap(0, 3)] }))).toBeNull();
 	});
 });
