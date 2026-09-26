@@ -249,6 +249,18 @@ describe("ImageViewport window/level in real-world units", () => {
 		expect(onmanualwindowlevel).toHaveBeenCalledWith(15, 1230, "ms");
 	});
 
+	it("windows a linear mapping behind a Modality LUT directly on the raw path", async () => {
+		fetchFrameValueMapping.mockResolvedValue({
+			...adcMapping(),
+			modality: { rescale_slope: 1, rescale_intercept: 0, rescale_type: null, lut: { first_value_mapped: 0, values: [0, 7] } },
+		});
+		renderViewport({ activeTool: "window_level" });
+
+		// mapped = 0.5 × stored − 10: the all-zero frame is −10 um2/s everywhere,
+		// so its automatic window is one stored unit (0.5 um2/s) wide.
+		await screen.findByText("W: 0.5 · C: -9.75 um2/s");
+	});
+
 	it("keeps a still frame with a LUT-unit window on the raw path in any tool", async () => {
 		fetchFrameValueMapping.mockResolvedValue(lutMapping());
 		renderViewport({ activeTool: "pan", windowCenter: 40, windowWidth: 80, windowUnit: "ms" });

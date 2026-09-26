@@ -207,22 +207,23 @@
 	// The displayed frame's value mapping (or the file's latest while that
 	// frame's loads) decides whether the window is in real-world units.
 	const frameMapping = $derived(valueMappings.forFrame(activeFile.index, currentFrame));
-	// A LUT real-world mapping has no linear stored window: the raw renderer
-	// windows its values directly, from its automatic window or one set in
-	// its unit. A window set on the stored scale (a preset) stays stored.
-	const lutMap = $derived.by(() => {
+	// A real-world mapping with no linear stored window (a LUT mapping, or
+	// any mapping behind a Modality LUT) is windowed directly by the raw
+	// renderer, from its automatic window or one set in its unit. A window
+	// set on the stored scale (a preset) stays stored.
+	const directMap = $derived.by(() => {
 		const map = overlay ? null : frameMapping?.real_world[0];
-		return map?.transform.kind === "lut" ? map : null;
+		return map && mappedWindowScale(frameMapping) === null ? map : null;
 	});
-	const lutWindowing = $derived(
-		lutMap !== null && (windowUnit === lutMap.unit_label || (windowUnit === null && windowCenter === null)),
+	const directWindowing = $derived(
+		directMap !== null && (windowUnit === directMap.unit_label || (windowUnit === null && windowCenter === null)),
 	);
 	const pipelineMode = $derived.by<PipelineMode>(() => {
 		if (overlay) return "overlay";
 		const rawFallback = rawWindowLevelFallbackByFile[activeFile.index] ?? false;
-		// Stills keep a window set in LUT units on the raw path, whatever the
-		// tool; cine plays display frames windowed by the LUT's ends.
-		if (lutWindowing && windowUnit !== null && !cinePlaying && !rawFallback && activeFile.raw_windowing_compatible) {
+		// Stills keep a window set in such a unit on the raw path, whatever
+		// the tool; cine plays display frames (see frameDisplayWindowOptions).
+		if (directWindowing && windowUnit !== null && !cinePlaying && !rawFallback && activeFile.raw_windowing_compatible) {
 			return "diagnostic_wl";
 		}
 		return selectWindowingPipeline(activeTool === "window_level", rawFallback, activeFile.raw_windowing_compatible);
@@ -254,10 +255,10 @@
 					ww: overlay.sourceFile.default_window.width,
 				}
 				: { wc: 0, ww: 1 }
-			: pipelineMode === "diagnostic_wl" && currentRawFrame && lutWindowing && lutMap
+			: pipelineMode === "diagnostic_wl" && currentRawFrame && directWindowing && directMap
 			? resolveMappedDisplayWindow(
 				currentRawFrame,
-				lutMap,
+				directMap,
 				liveWindowCenter,
 				liveWindowWidth,
 				windowUnit === null ? null : windowCenter,
@@ -307,8 +308,8 @@
 		return { low, high, ...mapped, unit: mappedScale.unit, label: mappedScale.label };
 	});
 	// A LUT-unit window: the raw renderer's, or the one set while cine plays.
-	const lutLegend = $derived.by(() => {
-		if (!lutMap || !lutWindowing) return null;
+	const directLegend = $derived.by(() => {
+		if (!directMap || !directWindowing) return null;
 		const window = pipelineMode === "diagnostic_wl" && currentRawFrame
 			? displayWindow
 			: windowUnit !== null && windowCenter !== null && windowWidth !== null
@@ -320,11 +321,11 @@
 			width: window.ww,
 			low: window.wc - window.ww / 2,
 			high: window.wc + window.ww / 2,
-			unit: lutMap.unit_label,
-			label: lutMap.label,
+			unit: directMap.unit_label,
+			label: directMap.label,
 		};
 	});
-	const windowLegend = $derived(mappedLegend ?? lutLegend);
+	const windowLegend = $derived(mappedLegend ?? directLegend);
 
 	// The colorwash layer depends only on which volume is shown and whether
 	// it covers the frame; opacity is applied to the drawn layer.
@@ -879,7 +880,7 @@
 		// not invalidate in-flight renders, only frame, file, and mode changes do.
 		const frame = currentRawFrame;
 		const { wc, ww } = displayWindow;
-		const valueMap = lutWindowing ? lutMap : null;
+		const valueMap = directWindowing ? directMap : null;
 		const generation = wlRenderGeneration;
 		void wlRenderer.render(() => canvasEl, {
 			frame,
@@ -1146,8 +1147,8 @@
 						baseCenter: baseWindow.wc,
 						baseWidth: baseWindow.ww,
 						// A LUT window drags in mapped units, scaled to move like a stored one.
-						step: pipelineMode === "diagnostic_wl" && lutWindowing && lutMap
-							? mappedUnitsPerStoredUnit(lutMap)
+						step: pipelineMode === "diagnostic_wl" && directWindowing && directMap
+							? mappedUnitsPerStoredUnit(directMap)
 							: 1,
 					};
 					liveWindowCenter = baseWindow.wc;
@@ -1285,8 +1286,8 @@
 			target.releasePointerCapture(event.pointerId);
 		}
 		if (dragState?.mode === "wl" && liveWindowCenter !== null && liveWindowWidth !== null) {
-			if (pipelineMode === "diagnostic_wl" && lutWindowing && lutMap) {
-				onmanualwindowlevel(liveWindowCenter, liveWindowWidth, lutMap.unit_label);
+			if (pipelineMode === "diagnostic_wl" && directWindowing && directMap) {
+				onmanualwindowlevel(liveWindowCenter, liveWindowWidth, directMap.unit_label);
 			} else if (mappedScale) {
 				const mapped = windowToMapped({ center: liveWindowCenter, width: liveWindowWidth }, mappedScale);
 				onmanualwindowlevel(mapped.center, mapped.width, mappedScale.unit);
