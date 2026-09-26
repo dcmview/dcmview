@@ -1,7 +1,7 @@
 use super::support;
 use axum::http::{header, HeaderValue};
 use axum_test::TestServer;
-use dcmview::loader::{self, DiscoverOptions};
+use dcmview::loader::DiscoverOptions;
 use dcmview::pixels::{load_frame, new_cache, FrameRequest};
 use dcmview::server;
 use image::ImageFormat;
@@ -73,7 +73,7 @@ async fn jpeg_lossless_decodes_server_side_to_windowed_png() {
     // 0, 100, ..., 1500 and a 750/1500 default window.
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/golden-jpeg-lossless-u16-single-frame.dcm");
-    let report = loader::discover(
+    let report = support::discover(
         &[path],
         DiscoverOptions {
             recursive: false,

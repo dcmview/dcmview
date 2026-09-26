@@ -469,14 +469,6 @@ mod tests {
 }
 
 #[derive(Debug, Clone)]
-pub struct LoadReport {
-    pub files: Vec<FileEntry>,
-    pub skipped: usize,
-    pub filtered: usize,
-    pub searched_recursive: bool,
-}
-
-#[derive(Debug, Clone)]
 pub struct ResolvedWindow {
     pub center: f64,
     pub width: f64,

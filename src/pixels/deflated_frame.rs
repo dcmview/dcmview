@@ -161,7 +161,7 @@ fn unpack_one_bit_frame(packed: &[u8], pixel_count: usize) -> Result<Vec<u8>> {
 mod tests {
     use super::unpack_one_bit_frame;
     use crate::api::contracts::WindowMode;
-    use crate::loader::{discover, DiscoverOptions};
+    use crate::loader::test_entry;
     use crate::pixels::{
         load_frame, load_raw_frame, new_cache, new_raw_cache, FrameRequest, RawFrameRequest,
     };
@@ -183,16 +183,7 @@ mod tests {
         let path = root
             .join("extended-deflate")
             .join("derived/seg/binary_multiframe_deflated_image_frame/instance.dcm");
-        let mut report = discover(
-            &[path],
-            DiscoverOptions {
-                recursive: false,
-                filters: Vec::new(),
-            },
-        )
-        .await
-        .expect("discover prepared SEG");
-        let file = report.files.pop().expect("prepared SEG file entry");
+        let file = test_entry(&path);
 
         let raw_cache = new_raw_cache();
         let display_cache = new_cache();

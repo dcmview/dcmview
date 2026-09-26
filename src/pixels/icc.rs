@@ -239,16 +239,7 @@ mod tests {
                 expected_profile = Some(profile.clone());
             }
 
-            let report = crate::loader::discover(
-                &[path],
-                crate::loader::DiscoverOptions {
-                    recursive: false,
-                    filters: Vec::new(),
-                },
-            )
-            .await
-            .expect("discover prepared ICC object");
-            let entry = report.files.into_iter().next().expect("prepared entry");
+            let entry = crate::loader::test_entry(&path);
             let response = super::super::service::load_frame(
                 entry,
                 super::super::cache::new_cache(),

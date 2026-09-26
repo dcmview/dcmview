@@ -1,4 +1,5 @@
 use dcmview::annotations::AnnotationStore;
+use dcmview::loader::{self, DiscoverOptions};
 use dcmview::server::{AppState, FileRegistry};
 use dcmview::types::FileEntry;
 use dicom_core::value::{DataSetSequence, PixelFragmentSequence};
@@ -7,6 +8,7 @@ use dicom_dictionary_std::{tags, uids};
 use dicom_object::{meta::FileMetaTableBuilder, InMemDicomObject};
 use image::{GrayImage, Luma};
 use std::path::{Path, PathBuf};
+use tokio::sync::mpsc;
 
 pub fn write_encapsulated_dicom(path: &Path, transfer_syntax_uid: &str, fragments: Vec<Vec<u8>>) {
     let frame_count = fragments.len().max(1) as u32;
@@ -116,6 +118,48 @@ pub fn grayscale_jpeg_fragment_16x16(seed: u8) -> Vec<u8> {
         .encode_image(&image)
         .expect("encode grayscale jpeg fixture");
     encoded
+}
+
+/// The selected files of one completed discovery, sorted by path and indexed
+/// in that order, with the run's skip and filter counts.
+pub struct LoadReport {
+    pub files: Vec<FileEntry>,
+    pub skipped: usize,
+    pub filtered: usize,
+    pub searched_recursive: bool,
+}
+
+/// Run the production progressive loader to completion and collect its
+/// selected files, for tests that assert on the whole result at once.
+pub async fn discover(paths: &[PathBuf], options: DiscoverOptions) -> anyhow::Result<LoadReport> {
+    let (events_tx, mut events_rx) = mpsc::channel(64);
+    let scan = loader::discover_progressive(
+        paths,
+        options,
+        events_tx,
+        loader::DiscoveryCancellation::new(),
+    );
+    let collect = async {
+        let mut files = Vec::new();
+        while let Some(event) = events_rx.recv().await {
+            if let loader::DiscoveryEvent::Selected { file, .. } = event {
+                files.push(*file);
+            }
+        }
+        files
+    };
+    let (report, mut files) = tokio::join!(scan, collect);
+    let report = report?;
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+    for (index, file) in files.iter_mut().enumerate() {
+        file.index = index;
+    }
+    Ok(LoadReport {
+        files,
+        skipped: report.skipped,
+        filtered: report.filtered,
+        searched_recursive: report.searched_recursive,
+    })
 }
 
 pub fn app_state(files: Vec<FileEntry>) -> AppState {

@@ -2,7 +2,7 @@ use super::support;
 use axum::http::StatusCode;
 use axum_test::{TestResponse, TestServer};
 use dcmview::api::contracts::SupportState;
-use dcmview::loader::{self, DiscoverOptions};
+use dcmview::loader::DiscoverOptions;
 use dcmview::pixels;
 use dcmview::pixels::Codec;
 use dcmview::server;
@@ -34,7 +34,7 @@ async fn assert_compressed_fixture_contract(
     default_window: (f64, f64),
     expected_raw: Vec<u8>,
 ) {
-    let report = loader::discover(
+    let report = support::discover(
         &[fixture_path(name)],
         DiscoverOptions {
             recursive: false,
@@ -136,7 +136,7 @@ const FIXTURE_RGB_4X2: [[u8; 3]; 8] = [
 /// Asserts a color fixture is advertised renderable and displays as the
 /// expected RGB, returning the server for further endpoint checks.
 async fn assert_color_fixture_display(name: &str, transfer_syntax_uid: &str) -> TestServer {
-    let report = loader::discover(
+    let report = support::discover(
         &[fixture_path(name)],
         DiscoverOptions {
             recursive: false,
@@ -264,7 +264,7 @@ async fn deflated_explicit_vr_little_endian_satisfies_display_and_raw_contracts(
     let samples = [0_u16, 85, 170, 255];
     support::write_uncompressed_u16_dicom(&path, UID, 2, 2, samples.to_vec(), None, None);
 
-    let report = loader::discover(
+    let report = support::discover(
         &[path],
         DiscoverOptions {
             recursive: false,
@@ -345,7 +345,7 @@ async fn rle_lossless_reconstructs_standard_most_significant_byte_planes() {
 
 #[tokio::test]
 async fn jpeg2000_display_applies_rescale_before_every_window_mode() {
-    let report = loader::discover(
+    let report = support::discover(
         &[fixture_path("golden-jpeg2000-lossless-u8-single-frame.dcm")],
         DiscoverOptions {
             recursive: false,

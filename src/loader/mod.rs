@@ -13,8 +13,20 @@ mod metadata;
 mod test_fixtures;
 
 pub use discovery::{
-    discover, discover_progressive, discovery_cancellation_reason, DiscoverOptions,
-    DiscoveryCancellation, DiscoveryCancellationReason, DiscoveryCancelled, DiscoveryDisposition,
-    DiscoveryEvent, DiscoveryReason, DiscoveryRecord, DiscoveryReport,
+    discover_progressive, discovery_cancellation_reason, DiscoverOptions, DiscoveryCancellation,
+    DiscoveryCancellationReason, DiscoveryCancelled, DiscoveryDisposition, DiscoveryEvent,
+    DiscoveryReason, DiscoveryRecord, DiscoveryReport,
 };
 pub use filter::{ScanFilter, ScanFilterField};
+
+/// Inspect one Part 10 file into a `FileEntry` for unit tests that need the
+/// loader's metadata without running a discovery.
+#[cfg(test)]
+pub(crate) fn test_entry(path: &std::path::Path) -> crate::types::FileEntry {
+    match entry::build_entry(path).expect("inspect DICOM file") {
+        entry::EntryInspection::Selected(file) => *file,
+        entry::EntryInspection::Skipped(reason) => {
+            panic!("{} was skipped: {}", path.display(), reason.code())
+        }
+    }
+}

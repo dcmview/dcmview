@@ -433,16 +433,7 @@ mod tests {
             .into_iter()
             .find(|path| path.is_file())
             .expect("prepared RLE CR fixture");
-        let mut report = crate::loader::discover(
-            &[path],
-            crate::loader::DiscoverOptions {
-                recursive: false,
-                filters: Vec::new(),
-            },
-        )
-        .await
-        .expect("discover prepared RLE CR");
-        let file = report.files.pop().expect("prepared RLE CR file entry");
+        let file = crate::loader::test_entry(&path);
 
         let display = super::decode_rle_to_png(file, 0, None, None, WindowMode::Default)
             .await

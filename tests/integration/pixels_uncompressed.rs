@@ -306,7 +306,7 @@ async fn prepared_native_overlay_composites_after_luts_and_preserves_raw_frame()
     let path = root
         .join("core")
         .join("classic/cr/overlay_modality_voi_explicit_le/instance.dcm");
-    let report = dcmview::loader::discover(
+    let report = support::discover(
         &[path],
         dcmview::loader::DiscoverOptions {
             recursive: false,
@@ -406,7 +406,7 @@ async fn prepared_native_full_frame_shutter_preserves_windowed_pixels_and_raw_fr
     let path = root
         .join("core")
         .join("classic/dx/display_shutter_mono2_u16_explicit_le/instance.dcm");
-    let report = dcmview::loader::discover(
+    let report = support::discover(
         &[path],
         dcmview::loader::DiscoverOptions {
             recursive: false,

@@ -3,7 +3,7 @@
 
 use super::support;
 use axum_test::TestServer;
-use dcmview::loader::{self, DiscoverOptions};
+use dcmview::loader::DiscoverOptions;
 use dcmview::server;
 use dicom_core::{DataElement, PrimitiveValue, VR};
 use dicom_dictionary_std::tags;
@@ -13,8 +13,8 @@ use tempfile::tempdir;
 
 const EXPLICIT_LE: &str = "1.2.840.10008.1.2.1";
 
-async fn discover(dir: &Path) -> dcmview::types::LoadReport {
-    loader::discover(
+async fn discover(dir: &Path) -> support::LoadReport {
+    support::discover(
         &[dir.to_path_buf()],
         DiscoverOptions {
             recursive: true,

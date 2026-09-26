@@ -1,6 +1,6 @@
 use super::entry::{build_entry, EntryInspection};
 use super::filter::{matches_filters, ScanFilter};
-use crate::types::{FileEntry, LoadReport};
+use crate::types::FileEntry;
 use anyhow::{Context, Result};
 use rayon::prelude::*;
 use std::path::{Component, Path, PathBuf};
@@ -15,7 +15,6 @@ use tokio::task;
 use walkdir::WalkDir;
 
 const DISCOVERY_SEND_RETRY_INTERVAL: Duration = Duration::from_millis(1);
-const DISCOVERY_COLLECT_CAPACITY: usize = 64;
 
 #[derive(Debug, Clone)]
 pub struct DiscoverOptions {
@@ -147,37 +146,6 @@ pub fn discovery_cancellation_reason(error: &anyhow::Error) -> Option<DiscoveryC
     error
         .downcast_ref::<DiscoveryCancelled>()
         .map(DiscoveryCancelled::reason)
-}
-
-/// Discover `paths` to completion and return the selected files sorted by
-/// path, indexed in that order.
-///
-/// A collecting adapter over [`discover_progressive`] for callers that need
-/// the whole result at once rather than the startup event stream.
-pub async fn discover(paths: &[PathBuf], options: DiscoverOptions) -> Result<LoadReport> {
-    let (events_tx, mut events_rx) = mpsc::channel(DISCOVERY_COLLECT_CAPACITY);
-    let scan = discover_progressive(paths, options, events_tx, DiscoveryCancellation::new());
-    let collect = async {
-        let mut files = Vec::new();
-        while let Some(event) = events_rx.recv().await {
-            if let DiscoveryEvent::Selected { file, .. } = event {
-                files.push(*file);
-            }
-        }
-        files
-    };
-    let (report, mut files) = tokio::join!(scan, collect);
-    let report = report?;
-    files.sort_by(|left, right| left.path.cmp(&right.path));
-    for (index, file) in files.iter_mut().enumerate() {
-        file.index = index;
-    }
-    Ok(LoadReport {
-        files,
-        skipped: report.skipped,
-        filtered: report.filtered,
-        searched_recursive: report.searched_recursive,
-    })
 }
 
 /// Inspect `paths` on blocking workers, streaming each outcome as an event.

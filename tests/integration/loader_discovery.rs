@@ -1,3 +1,4 @@
+use super::support;
 use dcmview::loader::{self, DiscoverOptions};
 use dicom_core::{DataElement, PrimitiveValue, VR};
 use dicom_dictionary_std::{tags, uids};
@@ -33,7 +34,7 @@ async fn discovers_valid_files_and_tracks_skips() {
     write_test_dicom(&second, "P2", "MR", "20260102", 4, false);
     fs::write(&invalid, b"not a dicom file").expect("invalid file");
 
-    let report = loader::discover(&[dir.path().to_path_buf()], discover_options(true))
+    let report = support::discover(&[dir.path().to_path_buf()], discover_options(true))
         .await
         .expect("discovery should succeed");
 
@@ -305,7 +306,7 @@ async fn respects_no_recursive_for_directory_inputs() {
     write_test_dicom(&top, "TOP", "CT", "20260101", 2, true);
     write_test_dicom(&nested_file, "NESTED", "CT", "20260101", 2, true);
 
-    let report = loader::discover(&[dir.path().to_path_buf()], discover_options(false))
+    let report = support::discover(&[dir.path().to_path_buf()], discover_options(false))
         .await
         .expect("discovery should succeed");
 
@@ -320,7 +321,7 @@ async fn reports_no_files_and_the_skip_when_nothing_is_dicom() {
     let invalid = dir.path().join("invalid.txt");
     fs::write(&invalid, b"plain text").expect("invalid file");
 
-    let report = loader::discover(&[dir.path().to_path_buf()], discover_options(true))
+    let report = support::discover(&[dir.path().to_path_buf()], discover_options(true))
         .await
         .expect("discovery without DICOM files still completes");
 
@@ -337,7 +338,7 @@ async fn filters_matching_subset_by_metadata_field() {
     write_test_dicom(&ct, "PAT-CT", "CT", "20260101", 1, true);
     write_test_dicom(&mr, "PAT-MR", "MR", "20260102", 1, true);
 
-    let report = loader::discover(
+    let report = support::discover(
         &[dir.path().to_path_buf()],
         DiscoverOptions {
             recursive: true,
@@ -360,7 +361,7 @@ async fn accepts_case_insensitive_filter_field_names() {
     write_test_dicom(&ct, "PAT-CT", "CT", "20260101", 1, true);
     write_test_dicom(&mr, "PAT-MR", "MR", "20260102", 1, true);
 
-    let report = loader::discover(
+    let report = support::discover(
         &[dir.path().to_path_buf()],
         DiscoverOptions {
             recursive: true,
@@ -382,7 +383,7 @@ async fn filters_and_multiple_terms_together() {
     write_test_dicom(&first, "PAT-001", "MR", "20260101", 1, true);
     write_test_dicom(&second, "PAT-002", "MR", "20260102", 1, true);
 
-    let report = loader::discover(
+    let report = support::discover(
         &[dir.path().to_path_buf()],
         DiscoverOptions {
             recursive: true,
@@ -406,7 +407,7 @@ async fn filters_matching_nothing_report_the_filtered_files() {
     let path = dir.path().join("ct.dcm");
     write_test_dicom(&path, "PAT-CT", "CT", "20260101", 1, true);
 
-    let report = loader::discover(
+    let report = support::discover(
         &[dir.path().to_path_buf()],
         DiscoverOptions {
             recursive: true,
@@ -435,7 +436,7 @@ async fn ignores_pixel_data_byte_pattern_in_file_preamble() {
     file.write_all(&[0xe0, 0x7f, 0x10, 0x00])
         .expect("write preamble pattern");
 
-    let report = loader::discover(&[path], discover_options(true))
+    let report = support::discover(&[path], discover_options(true))
         .await
         .expect("discovery should succeed");
 

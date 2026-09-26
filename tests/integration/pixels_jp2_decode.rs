@@ -61,7 +61,7 @@ async fn invalid_jp2_codestream_surfaces_decode_context() {
 async fn jp2_grayscale_display_applies_the_shared_presentation_pipeline() {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/golden-jpeg2000-lossless-u8-single-frame.dcm");
-    let report = dcmview::loader::discover(
+    let report = support::discover(
         &[path],
         dcmview::loader::DiscoverOptions {
             recursive: false,

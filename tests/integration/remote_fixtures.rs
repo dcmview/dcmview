@@ -3,7 +3,7 @@ use axum::http::{header, HeaderValue};
 #[cfg(feature = "remote-fixtures")]
 use axum_test::TestServer;
 #[cfg(feature = "remote-fixtures")]
-use dcmview::loader::{self, DiscoverOptions};
+use dcmview::loader::DiscoverOptions;
 #[cfg(feature = "remote-fixtures")]
 use dcmview::server;
 #[cfg(feature = "remote-fixtures")]
@@ -17,7 +17,7 @@ use super::support;
 #[ignore = "downloads and caches data with dicom-test-files; run explicitly when network or cache is available"]
 async fn loads_remote_dicom_test_file_through_loader_and_http_contracts() {
     let path = dicom_test_files::path("pydicom/liver.dcm").expect("fetch dicom-test-files fixture");
-    let report = loader::discover(
+    let report = support::discover(
         &[path],
         DiscoverOptions {
             recursive: false,
@@ -61,7 +61,7 @@ async fn loads_remote_dicom_test_file_through_loader_and_http_contracts() {
 async fn decodes_remote_jpeg2000_fixture_through_display_endpoint() {
     let path = dicom_test_files::path("pydicom/MR_small_jp2klossless.dcm")
         .expect("fetch dicom-test-files jpeg2000 fixture");
-    let report = loader::discover(
+    let report = support::discover(
         &[path],
         DiscoverOptions {
             recursive: false,
