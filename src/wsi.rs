@@ -65,7 +65,7 @@ fn frame_context_from_object(
         sparse_placement(source, frame, object, matrix.as_ref(), &mut warnings)
     };
     let (companions, companions_truncated) = companions(source, files);
-    let (relationships, relationships_truncated) = relationships(source, object, files);
+    let (relationships, relationships_truncated) = relationships(object, files);
 
     WsiFrameContextResponse {
         source_file_index: source.index,
@@ -384,7 +384,6 @@ fn companions(source: &FileEntry, files: &[Arc<FileEntry>]) -> (Vec<WsiCompanion
 }
 
 fn relationships(
-    source: &FileEntry,
     object: &InMemDicomObject<StandardDataDictionary>,
     files: &[Arc<FileEntry>],
 ) -> (Vec<ReferenceSummary>, bool) {
@@ -396,7 +395,6 @@ fn relationships(
     let mut resolved = references::resolve_reference_edges(&edges, &candidates);
     let truncated = resolved.len() > MAX_RELATIONSHIPS;
     resolved.truncate(MAX_RELATIONSHIPS);
-    let _ = source;
     (
         resolved
             .iter()
