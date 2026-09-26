@@ -10,16 +10,23 @@ pub(crate) fn apply_overlay_planes(
     planes: &[OverlayPlane],
 ) {
     for plane in planes {
-        apply_overlay_plane(samples, image_rows, image_columns, frame, plane);
+        for_each_set_pixel(plane, image_rows, image_columns, frame, |index| {
+            if let Some(sample) = samples.get_mut(index) {
+                *sample = DEFAULT_OVERLAY_PRESENTATION_VALUE;
+            }
+        });
     }
 }
 
-fn apply_overlay_plane(
-    samples: &mut [u8],
+/// Calls `visit` with the row-major image sample index of every set bit of
+/// `plane`'s overlay frame for zero-based image `frame` that lands inside the
+/// image. Nothing is visited when the plane has no frame for this image frame.
+pub(crate) fn for_each_set_pixel(
+    plane: &OverlayPlane,
     image_rows: u32,
     image_columns: u32,
     frame: u32,
-    plane: &OverlayPlane,
+    mut visit: impl FnMut(usize),
 ) {
     let Some(source_frame) = frame.checked_add(1) else {
         return;
@@ -60,10 +67,7 @@ fn apply_overlay_plane(
             {
                 continue;
             }
-            let sample_index = image_row as usize * image_columns as usize + image_column as usize;
-            if let Some(sample) = samples.get_mut(sample_index) {
-                *sample = DEFAULT_OVERLAY_PRESENTATION_VALUE;
-            }
+            visit(image_row as usize * image_columns as usize + image_column as usize);
         }
     }
 }

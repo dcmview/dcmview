@@ -6,11 +6,12 @@ use image::{ImageBuffer, ImageFormat, Luma};
 use std::io::Cursor;
 
 use super::header::open_header;
+use super::overlay::apply_overlay_planes;
+use super::shutter::{apply_display_shutter, ShutterFrame};
 use super::window::{
     apply_modality_transform, apply_padding_background, apply_voi_lut_if_selected, apply_window,
     exclude_padding_samples, read_pixel_padding_range, resolve_window_with_mode,
 };
-use super::{overlay::apply_overlay_planes, shutter::apply_rectangular_shutter};
 
 pub(crate) struct LuminanceRenderOptions {
     pub(crate) frame: u32,
@@ -25,7 +26,7 @@ pub(crate) struct LuminanceRenderOptions {
 ///
 /// Every grayscale decode path shares this presentation pipeline: Modality
 /// LUT or rescale, VOI LUT or window, MONOCHROME1 inversion, Pixel Padding as
-/// black background, rectangular shutter, and overlay planes.
+/// black background, display shutter, and overlay planes.
 pub(crate) fn encode_windowed_luminance_png(
     file: &FileEntry,
     stored: &[f64],
@@ -90,11 +91,19 @@ pub(crate) fn encode_windowed_luminance_png(
     if let Some(mask) = padding_mask.as_deref() {
         apply_padding_background(&mut windowed, mask);
     }
-    apply_rectangular_shutter(
+    apply_display_shutter(
         &mut windowed,
-        rows,
-        columns,
-        file.series_metadata.presentation.rectangular_shutter,
+        ShutterFrame {
+            rows,
+            columns,
+            frame,
+            pixel_aspect_ratio: file
+                .series_metadata
+                .native_pixel
+                .effective_pixel_aspect_ratio()
+                .unwrap_or(1.0),
+        },
+        file.series_metadata.presentation.display_shutter.as_ref(),
     );
     apply_overlay_planes(
         &mut windowed,

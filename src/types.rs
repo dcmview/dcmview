@@ -40,22 +40,41 @@ pub struct OverlayPlane {
     pub data: Vec<u16>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RectangularDisplayShutter {
-    /// One-based inclusive image column bounds.
-    pub left_vertical_edge: i32,
-    pub right_vertical_edge: i32,
-    /// One-based inclusive image row bounds.
-    pub upper_horizontal_edge: i32,
-    pub lower_horizontal_edge: i32,
-    /// Unsigned 16-bit P-value used outside the shutter opening.
+/// One Shutter Shape (0018,1600) of a display shutter, as its opening: the
+/// part of the image the shape leaves visible. Coordinates are one-based image
+/// `[row, column]` pixel positions, and a pixel on an edge is inside.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShutterShape {
+    /// Inclusive column (vertical edge) and row (horizontal edge) bounds.
+    Rectangular {
+        left_vertical_edge: i32,
+        right_vertical_edge: i32,
+        upper_horizontal_edge: i32,
+        lower_horizontal_edge: i32,
+    },
+    /// Radius counted in pixels along the row direction, so non-square pixels
+    /// still give a physically circular opening.
+    Circular { center: [i32; 2], radius: i32 },
+    /// Implicitly closed polygon of at least three vertices.
+    Polygonal { vertices: Vec<[i32; 2]> },
+    /// The overlay plane named by Shutter Overlay Group; its set bits are
+    /// occluded. The plane is not also drawn as a visible overlay.
+    Bitmap(OverlayPlane),
+}
+
+/// Display Shutter (PS3.3 C.7.6.11) and Bitmap Display Shutter (C.7.6.15).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DisplayShutter {
+    /// A pixel stays visible only inside every shape's opening.
+    pub shapes: Vec<ShutterShape>,
+    /// Unsigned 16-bit P-value used outside the opening.
     pub presentation_value: u16,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct PresentationMetadata {
     pub overlay_planes: Vec<OverlayPlane>,
-    pub rectangular_shutter: Option<RectangularDisplayShutter>,
+    pub display_shutter: Option<DisplayShutter>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -249,7 +268,7 @@ fn raw_windowing_incompatibility(metadata: &SeriesMetadata) -> Option<&'static s
         Some("client raw windowing is disabled because a VOI LUT is declared")
     } else if !metadata.presentation.overlay_planes.is_empty() {
         Some("client raw windowing is disabled because an overlay plane is declared")
-    } else if metadata.presentation.rectangular_shutter.is_some() {
+    } else if metadata.presentation.display_shutter.is_some() {
         Some("client raw windowing is disabled because a display shutter is declared")
     } else {
         None
@@ -258,7 +277,10 @@ fn raw_windowing_incompatibility(metadata: &SeriesMetadata) -> Option<&'static s
 
 #[cfg(test)]
 mod raw_windowing_tests {
-    use super::{raw_windowing_incompatibility, DicomLut, OverlayPlane, SeriesMetadata};
+    use super::{
+        raw_windowing_incompatibility, DicomLut, DisplayShutter, OverlayPlane, SeriesMetadata,
+        ShutterShape,
+    };
 
     #[test]
     fn disables_raw_windowing_for_unrepresented_presentation_semantics() {
@@ -288,6 +310,18 @@ mod raw_windowing_tests {
         assert!(raw_windowing_incompatibility(&metadata)
             .expect("overlay reason")
             .contains("overlay"));
+
+        metadata.presentation.overlay_planes.clear();
+        metadata.presentation.display_shutter = Some(DisplayShutter {
+            shapes: vec![ShutterShape::Circular {
+                center: [1, 1],
+                radius: 1,
+            }],
+            presentation_value: 0,
+        });
+        assert!(raw_windowing_incompatibility(&metadata)
+            .expect("shutter reason")
+            .contains("display shutter"));
     }
 }
 

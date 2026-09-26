@@ -1,36 +1,123 @@
-use crate::types::RectangularDisplayShutter;
+use super::overlay::for_each_set_pixel;
+use crate::types::{DisplayShutter, ShutterShape};
 
-pub(crate) fn apply_rectangular_shutter(
+/// Where the display shutter is drawn: one rendered frame and the physical
+/// shape of its pixels.
+pub(crate) struct ShutterFrame {
+    pub(crate) rows: u32,
+    pub(crate) columns: u32,
+    /// Zero-based image frame, which selects a bitmap shutter's overlay frame.
+    pub(crate) frame: u32,
+    /// Row spacing over column spacing; 1.0 for square pixels.
+    pub(crate) pixel_aspect_ratio: f64,
+}
+
+/// Replaces every display sample outside the shutter opening with the
+/// shutter's presentation value. The opening is the intersection of every
+/// shape's opening (PS3.3 C.7.6.11.1.1).
+pub(crate) fn apply_display_shutter(
     samples: &mut [u8],
-    image_rows: u32,
-    image_columns: u32,
-    shutter: Option<RectangularDisplayShutter>,
+    target: ShutterFrame,
+    shutter: Option<&DisplayShutter>,
 ) {
     let Some(shutter) = shutter else {
         return;
     };
-    let presentation_value = p_value_to_u8(shutter.presentation_value);
-    let columns = image_columns as usize;
-    if columns == 0 {
+    let columns = target.columns as usize;
+    let pixel_count = (target.rows as usize)
+        .saturating_mul(columns)
+        .min(samples.len());
+    if pixel_count == 0 {
         return;
     }
 
-    for (index, sample) in samples.iter_mut().enumerate() {
-        let row = index / columns;
-        let column = index % columns;
-        if row >= image_rows as usize {
-            break;
+    let mut visible = vec![true; pixel_count];
+    for shape in &shutter.shapes {
+        if let ShutterShape::Bitmap(plane) = shape {
+            for_each_set_pixel(plane, target.rows, target.columns, target.frame, |index| {
+                if let Some(visible) = visible.get_mut(index) {
+                    *visible = false;
+                }
+            });
+            continue;
         }
-        let row = row as i64 + 1;
-        let column = column as i64 + 1;
-        let inside = column >= i64::from(shutter.left_vertical_edge)
-            && column <= i64::from(shutter.right_vertical_edge)
-            && row >= i64::from(shutter.upper_horizontal_edge)
-            && row <= i64::from(shutter.lower_horizontal_edge);
-        if !inside {
+        for (index, visible) in visible.iter_mut().enumerate() {
+            if *visible {
+                let row = (index / columns) as i64 + 1;
+                let column = (index % columns) as i64 + 1;
+                *visible = opening_contains(shape, row, column, target.pixel_aspect_ratio);
+            }
+        }
+    }
+
+    let presentation_value = p_value_to_u8(shutter.presentation_value);
+    for (sample, visible) in samples.iter_mut().zip(visible) {
+        if !visible {
             *sample = presentation_value;
         }
     }
+}
+
+/// Whether the one-based pixel `(row, column)` lies in a geometric shape's
+/// opening, edges included.
+fn opening_contains(shape: &ShutterShape, row: i64, column: i64, pixel_aspect_ratio: f64) -> bool {
+    match shape {
+        ShutterShape::Rectangular {
+            left_vertical_edge,
+            right_vertical_edge,
+            upper_horizontal_edge,
+            lower_horizontal_edge,
+        } => {
+            (i64::from(*left_vertical_edge)..=i64::from(*right_vertical_edge)).contains(&column)
+                && (i64::from(*upper_horizontal_edge)..=i64::from(*lower_horizontal_edge))
+                    .contains(&row)
+        }
+        ShutterShape::Circular { center, radius } => {
+            // The radius counts pixels along a row, so scale row offsets into
+            // column-pixel units.
+            let row_offset = (row - i64::from(center[0])) as f64 * pixel_aspect_ratio;
+            let column_offset = (column - i64::from(center[1])) as f64;
+            let radius = f64::from(*radius);
+            row_offset * row_offset + column_offset * column_offset <= radius * radius
+        }
+        ShutterShape::Polygonal { vertices } => polygon_contains(vertices, row, column),
+        ShutterShape::Bitmap(_) => true,
+    }
+}
+
+/// Even-odd point-in-polygon test in exact integer arithmetic; a point on an
+/// edge or vertex is inside.
+fn polygon_contains(vertices: &[[i32; 2]], row: i64, column: i64) -> bool {
+    let mut inside = false;
+    for (index, start) in vertices.iter().enumerate() {
+        let end = vertices[(index + 1) % vertices.len()];
+        let (start_row, start_column) = (i64::from(start[0]), i64::from(start[1]));
+        let (end_row, end_column) = (i64::from(end[0]), i64::from(end[1]));
+
+        let cross = (end_row - start_row) * (column - start_column)
+            - (end_column - start_column) * (row - start_row);
+        if cross == 0
+            && row >= start_row.min(end_row)
+            && row <= start_row.max(end_row)
+            && column >= start_column.min(end_column)
+            && column <= start_column.max(end_column)
+        {
+            return true;
+        }
+
+        if (start_row > row) != (end_row > row) {
+            // The edge crosses this row; toggle when the crossing lies to the
+            // right of the point: column < start_column + t * (end_column -
+            // start_column) with t = (row - start_row) / (end_row - start_row).
+            let row_span = end_row - start_row;
+            let lhs = (column - start_column) * row_span;
+            let rhs = (row - start_row) * (end_column - start_column);
+            if (row_span > 0 && lhs < rhs) || (row_span < 0 && lhs > rhs) {
+                inside = !inside;
+            }
+        }
+    }
+    inside
 }
 
 fn p_value_to_u8(value: u16) -> u8 {
@@ -39,23 +126,53 @@ fn p_value_to_u8(value: u16) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_rectangular_shutter, p_value_to_u8};
-    use crate::types::RectangularDisplayShutter;
+    use super::{apply_display_shutter, p_value_to_u8, ShutterFrame};
+    use crate::types::{DisplayShutter, OverlayPlane, ShutterShape};
+
+    fn frame(rows: u32, columns: u32) -> ShutterFrame {
+        ShutterFrame {
+            rows,
+            columns,
+            frame: 0,
+            pixel_aspect_ratio: 1.0,
+        }
+    }
+
+    fn shutter(shapes: Vec<ShutterShape>) -> DisplayShutter {
+        DisplayShutter {
+            shapes,
+            presentation_value: 0,
+        }
+    }
+
+    fn rectangle(left: i32, right: i32, upper: i32, lower: i32) -> ShutterShape {
+        ShutterShape::Rectangular {
+            left_vertical_edge: left,
+            right_vertical_edge: right,
+            upper_horizontal_edge: upper,
+            lower_horizontal_edge: lower,
+        }
+    }
+
+    /// Renders a 255-filled frame through the shutter as rows of 0/1 flags,
+    /// 1 marking a visible pixel.
+    fn visibility(target: ShutterFrame, shutter: &DisplayShutter) -> Vec<Vec<u8>> {
+        let columns = target.columns as usize;
+        let mut samples = vec![255_u8; target.rows as usize * columns];
+        apply_display_shutter(&mut samples, target, Some(shutter));
+        samples
+            .chunks(columns)
+            .map(|row| row.iter().map(|value| u8::from(*value == 255)).collect())
+            .collect()
+    }
 
     #[test]
     fn prepared_full_frame_rectangle_preserves_display_pixels() {
         let mut samples = vec![0, 64, 128, 255];
-        apply_rectangular_shutter(
+        apply_display_shutter(
             &mut samples,
-            2,
-            2,
-            Some(RectangularDisplayShutter {
-                left_vertical_edge: 1,
-                right_vertical_edge: 2,
-                upper_horizontal_edge: 1,
-                lower_horizontal_edge: 2,
-                presentation_value: 0,
-            }),
+            frame(2, 2),
+            Some(&shutter(vec![rectangle(1, 2, 1, 2)])),
         );
         assert_eq!(samples, [0, 64, 128, 255]);
     }
@@ -63,19 +180,173 @@ mod tests {
     #[test]
     fn non_degenerate_rectangle_replaces_every_pixel_outside_inclusive_edges() {
         let mut samples = (1_u8..=9).collect::<Vec<_>>();
-        apply_rectangular_shutter(
+        apply_display_shutter(
             &mut samples,
-            3,
-            3,
-            Some(RectangularDisplayShutter {
-                left_vertical_edge: 2,
-                right_vertical_edge: 2,
-                upper_horizontal_edge: 2,
-                lower_horizontal_edge: 2,
-                presentation_value: 0,
-            }),
+            frame(3, 3),
+            Some(&shutter(vec![rectangle(2, 2, 2, 2)])),
         );
         assert_eq!(samples, [0, 0, 0, 0, 5, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn rectangle_edges_are_columns_then_rows() {
+        // Columns 2-3, row 1 only: a wide opening, not a tall one.
+        assert_eq!(
+            visibility(frame(3, 4), &shutter(vec![rectangle(2, 3, 1, 1)])),
+            [[0, 1, 1, 0], [0, 0, 0, 0], [0, 0, 0, 0]]
+        );
+    }
+
+    #[test]
+    fn circle_keeps_pixels_within_the_radius_edge_included() {
+        let circle = ShutterShape::Circular {
+            center: [3, 3],
+            radius: 2,
+        };
+        assert_eq!(
+            visibility(frame(5, 5), &shutter(vec![circle])),
+            [
+                [0, 0, 1, 0, 0],
+                [0, 1, 1, 1, 0],
+                [1, 1, 1, 1, 1],
+                [0, 1, 1, 1, 0],
+                [0, 0, 1, 0, 0],
+            ]
+        );
+    }
+
+    #[test]
+    fn circle_center_is_row_then_column() {
+        let circle = ShutterShape::Circular {
+            center: [1, 3],
+            radius: 0,
+        };
+        assert_eq!(
+            visibility(frame(2, 4), &shutter(vec![circle])),
+            [[0, 0, 1, 0], [0, 0, 0, 0]]
+        );
+    }
+
+    #[test]
+    fn circle_radius_counts_pixels_along_a_row() {
+        // Rows twice as tall as columns are wide: a radius of two columns
+        // spans only one row above and below the center.
+        let circle = ShutterShape::Circular {
+            center: [3, 3],
+            radius: 2,
+        };
+        let target = ShutterFrame {
+            pixel_aspect_ratio: 2.0,
+            ..frame(5, 5)
+        };
+        assert_eq!(
+            visibility(target, &shutter(vec![circle])),
+            [
+                [0, 0, 0, 0, 0],
+                [0, 0, 1, 0, 0],
+                [1, 1, 1, 1, 1],
+                [0, 0, 1, 0, 0],
+                [0, 0, 0, 0, 0],
+            ]
+        );
+    }
+
+    #[test]
+    fn polygon_keeps_interior_and_boundary_pixels() {
+        // Triangle with vertices (row, column) (1,1), (1,5), (5,1).
+        let triangle = ShutterShape::Polygonal {
+            vertices: vec![[1, 1], [1, 5], [5, 1]],
+        };
+        assert_eq!(
+            visibility(frame(5, 5), &shutter(vec![triangle])),
+            [
+                [1, 1, 1, 1, 1],
+                [1, 1, 1, 1, 0],
+                [1, 1, 1, 0, 0],
+                [1, 1, 0, 0, 0],
+                [1, 0, 0, 0, 0],
+            ]
+        );
+    }
+
+    #[test]
+    fn rectangular_polygon_matches_the_rectangle_shape() {
+        let polygon = ShutterShape::Polygonal {
+            vertices: vec![[2, 2], [2, 4], [3, 4], [3, 2]],
+        };
+        assert_eq!(
+            visibility(frame(4, 5), &shutter(vec![polygon])),
+            visibility(frame(4, 5), &shutter(vec![rectangle(2, 4, 2, 3)]))
+        );
+    }
+
+    #[test]
+    fn concave_polygon_excludes_its_notch() {
+        // A "U": the notch at rows 1-2, column 3 is outside.
+        let u_shape = ShutterShape::Polygonal {
+            vertices: vec![
+                [1, 1],
+                [1, 2],
+                [2, 2],
+                [2, 4],
+                [1, 4],
+                [1, 5],
+                [3, 5],
+                [3, 1],
+            ],
+        };
+        assert_eq!(
+            visibility(frame(3, 5), &shutter(vec![u_shape])),
+            [[1, 1, 0, 1, 1], [1, 1, 1, 1, 1], [1, 1, 1, 1, 1]]
+        );
+    }
+
+    #[test]
+    fn combined_shapes_keep_only_the_intersection_of_their_openings() {
+        let shapes = vec![
+            rectangle(1, 3, 1, 5),
+            ShutterShape::Circular {
+                center: [3, 3],
+                radius: 2,
+            },
+        ];
+        assert_eq!(
+            visibility(frame(5, 5), &shutter(shapes)),
+            [
+                [0, 0, 1, 0, 0],
+                [0, 1, 1, 0, 0],
+                [1, 1, 1, 0, 0],
+                [0, 1, 1, 0, 0],
+                [0, 0, 1, 0, 0],
+            ]
+        );
+    }
+
+    #[test]
+    fn bitmap_occludes_set_overlay_bits_for_the_matching_frame() {
+        // 2x2 plane at image row 2, column 2 with bits 0 and 3 set.
+        let plane = OverlayPlane {
+            group: 0x6000,
+            rows: 2,
+            columns: 2,
+            origin: [2, 2],
+            overlay_type: "G".to_string(),
+            number_of_frames: 1,
+            image_frame_origin: 2,
+            data: vec![0b1001],
+        };
+        let bitmap = shutter(vec![ShutterShape::Bitmap(plane)]);
+        assert_eq!(visibility(frame(3, 3), &bitmap), [[1, 1, 1]; 3]);
+        assert_eq!(
+            visibility(
+                ShutterFrame {
+                    frame: 1,
+                    ..frame(3, 3)
+                },
+                &bitmap
+            ),
+            [[1, 1, 1], [1, 0, 1], [1, 1, 0]]
+        );
     }
 
     #[test]

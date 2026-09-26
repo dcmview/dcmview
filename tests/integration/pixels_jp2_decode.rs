@@ -73,14 +73,15 @@ async fn jp2_grayscale_display_applies_the_shared_presentation_pipeline() {
     let mut file = report.files.into_iter().next().expect("one JPEG 2000 file");
     // Open only the top-left pixel; everything else must take the shutter's
     // white P-value, as it would for native, RLE, or JPEG sources.
-    file.series_metadata.presentation.rectangular_shutter =
-        Some(dcmview::types::RectangularDisplayShutter {
+    file.series_metadata.presentation.display_shutter = Some(dcmview::types::DisplayShutter {
+        shapes: vec![dcmview::types::ShutterShape::Rectangular {
             left_vertical_edge: 1,
             right_vertical_edge: 1,
             upper_horizontal_edge: 1,
             lower_horizontal_edge: 1,
-            presentation_value: u16::MAX,
-        });
+        }],
+        presentation_value: u16::MAX,
+    });
 
     let frame = load_frame(
         file,

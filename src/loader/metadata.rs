@@ -1,7 +1,7 @@
 use crate::dicom_values::{read_number, read_string, read_strings, sequence_item, sequence_items};
 use crate::types::{
-    DicomLut, OverlayPlane, PatientOrientation, PatientPosition, PresentationMetadata,
-    RectangularDisplayShutter,
+    DicomLut, DisplayShutter, OverlayPlane, PatientOrientation, PatientPosition,
+    PresentationMetadata, ShutterShape,
 };
 use dicom_dictionary_std::tags;
 
@@ -87,9 +87,11 @@ pub(super) fn read_lut_sequence(
 pub(super) fn read_presentation_metadata(
     obj: &dicom_object::DefaultDicomObject,
 ) -> PresentationMetadata {
+    let mut overlay_planes = read_overlay_planes(obj);
+    let display_shutter = read_display_shutter(obj, &mut overlay_planes);
     PresentationMetadata {
-        overlay_planes: read_overlay_planes(obj),
-        rectangular_shutter: read_rectangular_display_shutter(obj),
+        overlay_planes,
+        display_shutter,
     }
 }
 
@@ -150,29 +152,107 @@ fn read_overlay_plane(obj: &dicom_object::DefaultDicomObject, group: u16) -> Opt
     })
 }
 
-fn read_rectangular_display_shutter(
+/// Reads the Display Shutter and Bitmap Display Shutter modules. A declared
+/// shape whose attributes are missing or invalid is skipped, so a malformed
+/// shape never hides more of the image than the valid ones. A bitmap
+/// shutter's overlay plane moves out of `overlay_planes`: it masks the image
+/// and is not drawn as an overlay.
+fn read_display_shutter(
     obj: &dicom_object::DefaultDicomObject,
-) -> Option<RectangularDisplayShutter> {
-    if !read_strings(obj, tags::SHUTTER_SHAPE)
-        .iter()
-        .any(|shape| shape.eq_ignore_ascii_case("RECTANGULAR"))
-    {
+    overlay_planes: &mut Vec<OverlayPlane>,
+) -> Option<DisplayShutter> {
+    let mut shapes = Vec::new();
+    for shape in read_strings(obj, tags::SHUTTER_SHAPE) {
+        let shape = match shape.to_ascii_uppercase().as_str() {
+            "RECTANGULAR" => read_rectangular_shutter(obj),
+            "CIRCULAR" => read_circular_shutter(obj),
+            "POLYGONAL" => read_polygonal_shutter(obj),
+            "BITMAP" => take_bitmap_shutter(obj, overlay_planes),
+            _ => None,
+        };
+        shapes.extend(shape);
+    }
+    (!shapes.is_empty()).then(|| DisplayShutter {
+        shapes,
+        presentation_value: read_shutter_presentation_value(obj),
+    })
+}
+
+fn read_rectangular_shutter(obj: &dicom_object::DefaultDicomObject) -> Option<ShutterShape> {
+    let left_vertical_edge = read_number::<i32>(obj, tags::SHUTTER_LEFT_VERTICAL_EDGE)?;
+    let right_vertical_edge = read_number::<i32>(obj, tags::SHUTTER_RIGHT_VERTICAL_EDGE)?;
+    let upper_horizontal_edge = read_number::<i32>(obj, tags::SHUTTER_UPPER_HORIZONTAL_EDGE)?;
+    let lower_horizontal_edge = read_number::<i32>(obj, tags::SHUTTER_LOWER_HORIZONTAL_EDGE)?;
+    (left_vertical_edge <= right_vertical_edge && upper_horizontal_edge <= lower_horizontal_edge)
+        .then_some(ShutterShape::Rectangular {
+            left_vertical_edge,
+            right_vertical_edge,
+            upper_horizontal_edge,
+            lower_horizontal_edge,
+        })
+}
+
+fn read_circular_shutter(obj: &dicom_object::DefaultDicomObject) -> Option<ShutterShape> {
+    let center = read_exact_i32s::<2>(obj, tags::CENTER_OF_CIRCULAR_SHUTTER)?;
+    let radius = read_number::<i32>(obj, tags::RADIUS_OF_CIRCULAR_SHUTTER)?;
+    (radius >= 0).then_some(ShutterShape::Circular { center, radius })
+}
+
+fn read_polygonal_shutter(obj: &dicom_object::DefaultDicomObject) -> Option<ShutterShape> {
+    let values = read_strings(obj, tags::VERTICES_OF_THE_POLYGONAL_SHUTTER)
+        .into_iter()
+        .map(|value| value.parse::<i32>().ok())
+        .collect::<Option<Vec<_>>>()?;
+    // Row/column pairs: an origin vertex and at least two more.
+    if values.len() < 6 || values.len() % 2 != 0 {
         return None;
     }
-    let shutter = RectangularDisplayShutter {
-        left_vertical_edge: read_number::<i32>(obj, tags::SHUTTER_LEFT_VERTICAL_EDGE)?,
-        right_vertical_edge: read_number::<i32>(obj, tags::SHUTTER_RIGHT_VERTICAL_EDGE)?,
-        upper_horizontal_edge: read_number::<i32>(obj, tags::SHUTTER_UPPER_HORIZONTAL_EDGE)?,
-        lower_horizontal_edge: read_number::<i32>(obj, tags::SHUTTER_LOWER_HORIZONTAL_EDGE)?,
-        presentation_value: u16::try_from(read_number::<u32>(
-            obj,
-            tags::SHUTTER_PRESENTATION_VALUE,
-        )?)
-        .ok()?,
-    };
-    (shutter.left_vertical_edge <= shutter.right_vertical_edge
-        && shutter.upper_horizontal_edge <= shutter.lower_horizontal_edge)
-        .then_some(shutter)
+    Some(ShutterShape::Polygonal {
+        vertices: values
+            .chunks_exact(2)
+            .map(|pair| [pair[0], pair[1]])
+            .collect(),
+    })
+}
+
+fn take_bitmap_shutter(
+    obj: &dicom_object::DefaultDicomObject,
+    overlay_planes: &mut Vec<OverlayPlane>,
+) -> Option<ShutterShape> {
+    let group = read_u32_tag(obj, tags::SHUTTER_OVERLAY_GROUP)?;
+    let index = overlay_planes
+        .iter()
+        .position(|plane| u32::from(plane.group) == group)?;
+    Some(ShutterShape::Bitmap(overlay_planes.remove(index)))
+}
+
+/// Shutter Presentation Value, else the L* of Shutter Presentation Color
+/// CIELab Value (both perceptual 0-FFFFH scales), else black.
+fn read_shutter_presentation_value(obj: &dicom_object::DefaultDicomObject) -> u16 {
+    obj.element(tags::SHUTTER_PRESENTATION_VALUE)
+        .ok()
+        .and_then(|element| element.to_int::<u16>().ok())
+        .or_else(|| {
+            obj.element(tags::SHUTTER_PRESENTATION_COLOR_CIE_LAB_VALUE)
+                .ok()?
+                .to_multi_int::<u16>()
+                .ok()?
+                .first()
+                .copied()
+        })
+        .unwrap_or(0)
+}
+
+fn read_exact_i32s<const N: usize>(
+    obj: &dicom_object::DefaultDicomObject,
+    tag: dicom_core::Tag,
+) -> Option<[i32; N]> {
+    read_strings(obj, tag)
+        .into_iter()
+        .map(|value| value.parse::<i32>().ok())
+        .collect::<Option<Vec<_>>>()?
+        .try_into()
+        .ok()
 }
 
 fn read_u32_tag(obj: &dicom_object::DefaultDicomObject, tag: dicom_core::Tag) -> Option<u32> {
@@ -309,7 +389,10 @@ mod tests {
     use dicom_object::{meta::FileMetaTableBuilder, InMemDicomObject};
     use tempfile::tempdir;
 
-    use crate::types::NativePixelDataKind;
+    use super::read_presentation_metadata;
+    use crate::types::{
+        DisplayShutter, NativePixelDataKind, OverlayPlane, PresentationMetadata, ShutterShape,
+    };
 
     #[test]
     fn extracts_classic_enhanced_concatenation_and_wsi_identity() {
@@ -671,15 +754,179 @@ mod tests {
         assert_eq!(overlay.image_frame_origin, 1);
         assert_eq!(overlay.data, [0x0009]);
         assert_eq!(
-            presentation.rectangular_shutter,
-            Some(crate::types::RectangularDisplayShutter {
+            presentation.display_shutter,
+            Some(full_frame_rectangular_shutter())
+        );
+    }
+
+    fn full_frame_rectangular_shutter() -> DisplayShutter {
+        DisplayShutter {
+            shapes: vec![ShutterShape::Rectangular {
                 left_vertical_edge: 1,
                 right_vertical_edge: 2,
                 upper_horizontal_edge: 1,
                 lower_horizontal_edge: 2,
-                presentation_value: 0,
+            }],
+            presentation_value: 0,
+        }
+    }
+
+    fn presentation_of(elements: Vec<DataElement<InMemDicomObject>>) -> PresentationMetadata {
+        let mut object = base_object();
+        for element in elements {
+            object.put(element);
+        }
+        let object = object
+            .with_meta(
+                FileMetaTableBuilder::new()
+                    .transfer_syntax(uids::EXPLICIT_VR_LITTLE_ENDIAN)
+                    .media_storage_sop_class_uid(uids::ENHANCED_CT_IMAGE_STORAGE)
+                    .media_storage_sop_instance_uid("2.25.300"),
+            )
+            .expect("file meta");
+        read_presentation_metadata(&object)
+    }
+
+    fn overlay_plane_elements(group: u16) -> Vec<DataElement<InMemDicomObject>> {
+        vec![
+            DataElement::new(Tag(group, 0x0010), VR::US, PrimitiveValue::from(2_u16)),
+            DataElement::new(Tag(group, 0x0011), VR::US, PrimitiveValue::from(2_u16)),
+            DataElement::new(Tag(group, 0x0040), VR::CS, "G"),
+            DataElement::new(
+                Tag(group, 0x0050),
+                VR::SS,
+                PrimitiveValue::I16(vec![1, 1].into()),
+            ),
+            DataElement::new(Tag(group, 0x0100), VR::US, PrimitiveValue::from(1_u16)),
+            DataElement::new(Tag(group, 0x0102), VR::US, PrimitiveValue::from(0_u16)),
+            DataElement::new(
+                Tag(group, 0x3000),
+                VR::OW,
+                PrimitiveValue::U16(vec![0x0009].into()),
+            ),
+        ]
+    }
+
+    #[test]
+    fn extracts_combined_circular_and_polygonal_shutter_shapes() {
+        let presentation = presentation_of(vec![
+            DataElement::new(tags::SHUTTER_SHAPE, VR::CS, "CIRCULAR\\POLYGONAL"),
+            DataElement::new(tags::CENTER_OF_CIRCULAR_SHUTTER, VR::IS, "3\\4"),
+            DataElement::new(tags::RADIUS_OF_CIRCULAR_SHUTTER, VR::IS, "2"),
+            DataElement::new(
+                tags::VERTICES_OF_THE_POLYGONAL_SHUTTER,
+                VR::IS,
+                "1\\1\\1\\5\\5\\1",
+            ),
+            DataElement::new(
+                tags::SHUTTER_PRESENTATION_VALUE,
+                VR::US,
+                PrimitiveValue::from(0xFFFF_u16),
+            ),
+        ]);
+        assert_eq!(
+            presentation.display_shutter,
+            Some(DisplayShutter {
+                shapes: vec![
+                    ShutterShape::Circular {
+                        center: [3, 4],
+                        radius: 2,
+                    },
+                    ShutterShape::Polygonal {
+                        vertices: vec![[1, 1], [1, 5], [5, 1]],
+                    },
+                ],
+                presentation_value: 0xFFFF,
             })
         );
+    }
+
+    #[test]
+    fn skips_invalid_shapes_and_keeps_the_valid_ones() {
+        // Two vertices do not make a polygon; the rectangle still applies,
+        // and without a Shutter Presentation Value the shutter is black.
+        let presentation = presentation_of(vec![
+            DataElement::new(tags::SHUTTER_SHAPE, VR::CS, "POLYGONAL\\RECTANGULAR"),
+            DataElement::new(
+                tags::VERTICES_OF_THE_POLYGONAL_SHUTTER,
+                VR::IS,
+                "1\\1\\2\\2",
+            ),
+            DataElement::new(tags::SHUTTER_LEFT_VERTICAL_EDGE, VR::IS, "1"),
+            DataElement::new(tags::SHUTTER_RIGHT_VERTICAL_EDGE, VR::IS, "2"),
+            DataElement::new(tags::SHUTTER_UPPER_HORIZONTAL_EDGE, VR::IS, "1"),
+            DataElement::new(tags::SHUTTER_LOWER_HORIZONTAL_EDGE, VR::IS, "2"),
+        ]);
+        assert_eq!(
+            presentation.display_shutter,
+            Some(full_frame_rectangular_shutter())
+        );
+
+        let invalid_only = presentation_of(vec![
+            DataElement::new(tags::SHUTTER_SHAPE, VR::CS, "CIRCULAR"),
+            DataElement::new(tags::CENTER_OF_CIRCULAR_SHUTTER, VR::IS, "3\\4"),
+            DataElement::new(tags::RADIUS_OF_CIRCULAR_SHUTTER, VR::IS, "-1"),
+        ]);
+        assert_eq!(invalid_only.display_shutter, None);
+    }
+
+    #[test]
+    fn falls_back_to_the_cielab_lightness_for_the_presentation_value() {
+        let presentation = presentation_of(vec![
+            DataElement::new(tags::SHUTTER_SHAPE, VR::CS, "CIRCULAR"),
+            DataElement::new(tags::CENTER_OF_CIRCULAR_SHUTTER, VR::IS, "1\\1"),
+            DataElement::new(tags::RADIUS_OF_CIRCULAR_SHUTTER, VR::IS, "1"),
+            DataElement::new(
+                tags::SHUTTER_PRESENTATION_COLOR_CIE_LAB_VALUE,
+                VR::US,
+                PrimitiveValue::U16(vec![0x8000, 0x8080, 0x8080].into()),
+            ),
+        ]);
+        assert_eq!(
+            presentation
+                .display_shutter
+                .expect("circular shutter")
+                .presentation_value,
+            0x8000
+        );
+    }
+
+    #[test]
+    fn bitmap_shutter_takes_its_overlay_plane_out_of_the_visible_overlays() {
+        let mut elements = overlay_plane_elements(0x6000);
+        elements.extend(overlay_plane_elements(0x6002));
+        elements.extend([
+            DataElement::new(tags::SHUTTER_SHAPE, VR::CS, "BITMAP"),
+            DataElement::new(
+                tags::SHUTTER_OVERLAY_GROUP,
+                VR::US,
+                PrimitiveValue::from(0x6002_u16),
+            ),
+        ]);
+        let presentation = presentation_of(elements);
+
+        let groups = |planes: &[OverlayPlane]| planes.iter().map(|p| p.group).collect::<Vec<_>>();
+        assert_eq!(groups(&presentation.overlay_planes), [0x6000]);
+        let shutter = presentation.display_shutter.expect("bitmap shutter");
+        let [ShutterShape::Bitmap(plane)] = shutter.shapes.as_slice() else {
+            panic!("expected one bitmap shape: {:?}", shutter.shapes);
+        };
+        assert_eq!(plane.group, 0x6002);
+        assert_eq!(plane.data, [0x0009]);
+
+        // A Shutter Overlay Group naming no overlay plane declares nothing.
+        let mut elements = overlay_plane_elements(0x6000);
+        elements.extend([
+            DataElement::new(tags::SHUTTER_SHAPE, VR::CS, "BITMAP"),
+            DataElement::new(
+                tags::SHUTTER_OVERLAY_GROUP,
+                VR::US,
+                PrimitiveValue::from(0x6004_u16),
+            ),
+        ]);
+        let unmatched = presentation_of(elements);
+        assert_eq!(groups(&unmatched.overlay_planes), [0x6000]);
+        assert_eq!(unmatched.display_shutter, None);
     }
 
     #[test]
@@ -711,17 +958,8 @@ mod tests {
             panic!("prepared DX should be selected");
         };
         assert_eq!(
-            shutter_file
-                .series_metadata
-                .presentation
-                .rectangular_shutter,
-            Some(crate::types::RectangularDisplayShutter {
-                left_vertical_edge: 1,
-                right_vertical_edge: 2,
-                upper_horizontal_edge: 1,
-                lower_horizontal_edge: 2,
-                presentation_value: 0,
-            })
+            shutter_file.series_metadata.presentation.display_shutter,
+            Some(full_frame_rectangular_shutter())
         );
     }
 

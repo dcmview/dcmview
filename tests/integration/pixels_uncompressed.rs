@@ -363,14 +363,15 @@ async fn native_rectangular_shutter_applies_after_monochrome1_and_preserves_raw_
         center: 2048.0,
         width: 4096.0,
     });
-    entry.series_metadata.presentation.rectangular_shutter =
-        Some(dcmview::types::RectangularDisplayShutter {
+    entry.series_metadata.presentation.display_shutter = Some(dcmview::types::DisplayShutter {
+        shapes: vec![dcmview::types::ShutterShape::Rectangular {
             left_vertical_edge: 2,
             right_vertical_edge: 2,
             upper_horizontal_edge: 2,
             lower_horizontal_edge: 2,
-            presentation_value: 0,
-        });
+        }],
+        presentation_value: 0,
+    });
 
     let display = load_frame(
         entry.clone(),
