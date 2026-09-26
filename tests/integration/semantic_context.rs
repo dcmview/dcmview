@@ -413,6 +413,8 @@ async fn parametric_map_context_exposes_explicit_mapping_without_applying_it() {
     write_object(&path, uids::PARAMETRIC_MAP_STORAGE, "2.25.8100", object);
     let mut entry = support::file_entry(path, uids::EXPLICIT_VR_LITTLE_ENDIAN, 1);
     entry.sop_class_uid = uids::PARAMETRIC_MAP_STORAGE.to_string();
+    entry.series_metadata.native_pixel.pixel_data_kind =
+        Some(dcmview::types::NativePixelDataKind::Float32);
 
     let response: Value = TestServer::new(server::router(support::app_state(vec![entry])))
         .get("/api/file/0/semantic-context")

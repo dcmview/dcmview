@@ -14,13 +14,15 @@ use crate::geometry::{
     PixelAffineTransform,
 };
 use crate::object_kind::{classify_sop_class, ObjectKind};
+use crate::pixels::open_header;
 use crate::plane_stack::PlaneStack;
 use crate::references::{self, ReferenceCandidate, ReferenceRelationship, ResolvedReferenceEdge};
 use crate::types::FileEntry;
+use crate::value_mapping::stored_value_type;
 use anyhow::{Context, Result};
 use dicom_core::Tag;
 use dicom_dictionary_std::{tags, uids, StandardDataDictionary};
-use dicom_object::{InMemDicomObject, OpenFileOptions};
+use dicom_object::InMemDicomObject;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -171,15 +173,9 @@ pub fn semantic_context(
     source: &FileEntry,
     files: &[Arc<FileEntry>],
 ) -> Result<SemanticContextResponse> {
-    let object = OpenFileOptions::new()
-        .read_until(tags::PIXEL_DATA)
-        .open_file(&source.path)
-        .with_context(|| {
-            format!(
-                "failed to open semantic metadata: {}",
-                source.path.display()
-            )
-        })?;
+    // Float Pixel Data precedes Pixel Data, so stopping at the first pixel
+    // element keeps a float Parametric Map's samples out of memory.
+    let object = open_header(&source.path).context("failed to open semantic metadata")?;
     let candidates = files
         .iter()
         .map(|file| ReferenceCandidate::from_file(file))
@@ -191,9 +187,9 @@ pub fn semantic_context(
         ObjectKind::Segmentation => {
             SemanticContext::Segmentation(segmentation_context(source, &object, files, &resolved))
         }
-        ObjectKind::ParametricMap => {
-            SemanticContext::ParametricMap(parametric_map_context(&object, files, &resolved))
-        }
+        ObjectKind::ParametricMap => SemanticContext::ParametricMap(parametric_map_context(
+            source, &object, files, &resolved,
+        )),
         ObjectKind::RadiationTherapy if source.sop_class_uid == uids::RT_DOSE_STORAGE => {
             SemanticContext::RtDose(Box::new(rt_dose_context(source, &object, files, &resolved)))
         }
@@ -569,6 +565,7 @@ fn frame_geometrically_compatible(
 }
 
 fn parametric_map_context(
+    source: &FileEntry,
     object: &InMemDicomObject<StandardDataDictionary>,
     files: &[Arc<FileEntry>],
     resolved: &[ResolvedReferenceEdge],
@@ -582,10 +579,7 @@ fn parametric_map_context(
             .filter(|file| file.sop_instance_uid == reference)
             .collect::<Vec<_>>();
         match matches.as_slice() {
-            [file] => match OpenFileOptions::new()
-                .read_until(tags::PIXEL_DATA)
-                .open_file(&file.path)
-            {
+            [file] => match open_header(&file.path) {
                 Ok(mapping_object) => {
                     let before = mappings.len();
                     collect_rwvm_mappings(
@@ -613,15 +607,8 @@ fn parametric_map_context(
     } else {
         "incompatible_mapping"
     };
-    let stored_value_type = if object.element(tags::FLOAT_PIXEL_DATA).is_ok() {
-        "float32"
-    } else if object.element(tags::DOUBLE_FLOAT_PIXEL_DATA).is_ok() {
-        "float64"
-    } else {
-        "integer"
-    };
     ParametricMapContext {
-        stored_value_type: stored_value_type.to_string(),
+        stored_value_type: stored_value_type(source).to_string(),
         displayed_value_kind: DISPLAYED_VALUE_KIND.to_string(),
         mappings,
         mapping_status: mapping_status.to_string(),

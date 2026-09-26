@@ -69,11 +69,7 @@ impl FileValueMappings {
         };
         let native = &file.series_metadata.native_pixel;
         Self {
-            stored_value_type: match native.pixel_data_kind {
-                Some(NativePixelDataKind::Float32) => "float32",
-                Some(NativePixelDataKind::Float64) => "float64",
-                _ => "integer",
-            },
+            stored_value_type: stored_value_type(file),
             modality: ModalityValueTransform {
                 rescale_slope: file.rescale_slope,
                 rescale_intercept: file.rescale_intercept,
@@ -108,6 +104,15 @@ impl FileValueMappings {
             modality: self.modality.clone(),
             real_world: self.real_world(frame).to_vec(),
         }
+    }
+}
+
+/// `integer`, `float32`, or `float64`, from the file's native pixel element.
+pub fn stored_value_type(file: &FileEntry) -> &'static str {
+    match file.series_metadata.native_pixel.pixel_data_kind {
+        Some(NativePixelDataKind::Float32) => "float32",
+        Some(NativePixelDataKind::Float64) => "float64",
+        _ => "integer",
     }
 }
 
