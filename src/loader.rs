@@ -8,7 +8,11 @@ use anyhow::{anyhow, Context, Result};
 use dicom_core::header::HasLength;
 use dicom_dictionary_std::{tags, uids};
 use dicom_encoding::text::SpecificCharacterSet;
-use dicom_object::OpenFileOptions;
+use dicom_encoding::{TransferSyntax, TransferSyntaxIndex};
+use dicom_object::{FileMetaTable, OpenFileOptions};
+use dicom_parser::dataset::read::DataSetReader;
+use dicom_parser::dataset::DataToken;
+use dicom_transfer_syntax_registry::TransferSyntaxRegistry;
 use rayon::prelude::*;
 use std::fs::File;
 use std::io::{self, Read, Seek};
@@ -835,102 +839,61 @@ fn has_dicm_preamble(path: &Path) -> Result<bool> {
     }
 }
 
+/// The kind of the data set's own pixel data element, if it has one.
+///
+/// Walks element headers without reading pixel values and counts only
+/// top-level elements, so a pixel element nested in a sequence (an Icon Image
+/// Sequence, for example) or pixel-tag bytes inside another value never make
+/// a no-pixel object look like an image.
 fn find_native_pixel_data_kind(
     path: &Path,
     transfer_syntax_uid: &str,
 ) -> Result<Option<NativePixelDataKind>> {
-    let needles: [(&[u8], NativePixelDataKind); 3] = if transfer_syntax_uid == "1.2.840.10008.1.2.2"
-    {
-        [
-            (&[0x7f, 0xe0, 0x00, 0x10], NativePixelDataKind::Integer),
-            (&[0x7f, 0xe0, 0x00, 0x08], NativePixelDataKind::Float32),
-            (&[0x7f, 0xe0, 0x00, 0x09], NativePixelDataKind::Float64),
-        ]
-    } else {
-        [
-            (&[0xe0, 0x7f, 0x10, 0x00], NativePixelDataKind::Integer),
-            (&[0xe0, 0x7f, 0x08, 0x00], NativePixelDataKind::Float32),
-            (&[0xe0, 0x7f, 0x09, 0x00], NativePixelDataKind::Float64),
-        ]
-    };
-    let mut file =
-        File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
-    if transfer_syntax_uid == uids::DEFLATED_EXPLICIT_VR_LITTLE_ENDIAN {
-        let dataset_offset = part10_dataset_offset(&mut file, path)?;
-        file.seek(io::SeekFrom::Start(dataset_offset))
-            .with_context(|| format!("failed to seek {}", path.display()))?;
-        return scan_native_pixel_data_kind(
-            flate2::read::DeflateDecoder::new(file),
-            &needles,
-            path,
-        );
-    }
-
-    file.seek(io::SeekFrom::Start(132))
-        .with_context(|| format!("failed to seek {}", path.display()))?;
-    scan_native_pixel_data_kind(file, &needles, path)
-}
-
-fn part10_dataset_offset(file: &mut File, path: &Path) -> Result<u64> {
-    file.seek(io::SeekFrom::Start(132))
-        .with_context(|| format!("failed to seek {}", path.display()))?;
-    let mut group_length_element = [0_u8; 12];
-    file.read_exact(&mut group_length_element)
-        .with_context(|| {
-            format!(
-                "failed to read file meta group length from {}",
-                path.display()
-            )
-        })?;
-    if group_length_element[..8] != [0x02, 0x00, 0x00, 0x00, b'U', b'L', 0x04, 0x00] {
-        return Err(anyhow!(
-            "DICOM file meta for {} does not begin with (0002,0000) UL",
-            path.display()
-        ));
-    }
-    let group_length = u32::from_le_bytes(
-        group_length_element[8..12]
-            .try_into()
-            .expect("fixed four-byte group length"),
+    let mut reader = io::BufReader::new(
+        File::open(path).with_context(|| format!("failed to open {}", path.display()))?,
     );
-    Ok(144 + u64::from(group_length))
+    reader
+        .seek(io::SeekFrom::Start(128))
+        .with_context(|| format!("failed to seek {}", path.display()))?;
+    FileMetaTable::from_reader(&mut reader)
+        .with_context(|| format!("failed to read file meta: {}", path.display()))?;
+    let transfer_syntax = TransferSyntaxRegistry
+        .get(transfer_syntax_uid)
+        .with_context(|| format!("unknown transfer syntax {transfer_syntax_uid}"))?;
+    let kind = if transfer_syntax_uid == uids::DEFLATED_EXPLICIT_VR_LITTLE_ENDIAN {
+        top_level_pixel_data_kind(flate2::read::DeflateDecoder::new(reader), transfer_syntax)
+    } else {
+        top_level_pixel_data_kind(reader, transfer_syntax)
+    };
+    kind.with_context(|| format!("failed to parse {}", path.display()))
 }
 
-fn scan_native_pixel_data_kind(
-    mut reader: impl Read,
-    needles: &[(&[u8], NativePixelDataKind); 3],
-    path: &Path,
+fn top_level_pixel_data_kind(
+    source: impl Read,
+    transfer_syntax: &TransferSyntax,
 ) -> Result<Option<NativePixelDataKind>> {
-    let mut carried = Vec::<u8>::new();
-    let mut chunk = [0_u8; 8192];
-
-    loop {
-        let read = reader
-            .read(&mut chunk)
-            .with_context(|| format!("failed to read {}", path.display()))?;
-        if read == 0 {
-            return Ok(None);
+    let tokens = DataSetReader::new_with_ts(source, transfer_syntax)?;
+    let mut depth = 0_usize;
+    for token in tokens {
+        match token? {
+            DataToken::PixelSequenceStart if depth == 0 => {
+                return Ok(Some(NativePixelDataKind::Integer));
+            }
+            DataToken::SequenceStart { .. } | DataToken::PixelSequenceStart => depth += 1,
+            DataToken::SequenceEnd => depth = depth.saturating_sub(1),
+            DataToken::ElementHeader(header) if depth == 0 => {
+                let kind = match header.tag {
+                    tags::PIXEL_DATA => NativePixelDataKind::Integer,
+                    tags::FLOAT_PIXEL_DATA => NativePixelDataKind::Float32,
+                    tags::DOUBLE_FLOAT_PIXEL_DATA => NativePixelDataKind::Float64,
+                    _ => continue,
+                };
+                return Ok(Some(kind));
+            }
+            _ => {}
         }
-
-        let carry_len = carried.len();
-        carried.extend_from_slice(&chunk[..read]);
-        let earliest = needles
-            .iter()
-            .filter_map(|(needle, kind)| {
-                carried
-                    .windows(needle.len())
-                    .position(|window| window == *needle)
-                    .map(|offset| (offset, *kind))
-            })
-            .min_by_key(|(offset, _)| *offset);
-        if let Some((_, kind)) = earliest {
-            return Ok(Some(kind));
-        }
-
-        let keep = 3.min(carried.len());
-        carried.drain(..carried.len().saturating_sub(keep));
-        debug_assert!(carried.len() <= carry_len.max(3));
     }
+    Ok(None)
 }
 
 fn read_str(obj: &dicom_object::DefaultDicomObject, name: &str) -> Option<String> {
@@ -1557,6 +1520,45 @@ mod tests {
                 Some(expected_kind)
             );
         }
+    }
+
+    #[test]
+    fn nested_icon_pixels_and_tag_bytes_do_not_count_as_pixel_data() {
+        let directory = tempdir().expect("temp directory");
+        let path = directory.path().join("icon-only.dcm");
+        let icon = dicom_object::InMemDicomObject::from_element_iter([
+            DataElement::new(tags::ROWS, VR::US, PrimitiveValue::from(1_u16)),
+            DataElement::new(tags::COLUMNS, VR::US, PrimitiveValue::from(1_u16)),
+            DataElement::new(tags::PIXEL_DATA, VR::OB, PrimitiveValue::from(vec![0_u8, 0])),
+        ]);
+        let mut object = base_object();
+        object.put(DataElement::new(
+            tags::ICON_IMAGE_SEQUENCE,
+            VR::SQ,
+            dicom_core::value::DataSetSequence::from(vec![icon]),
+        ));
+        // Little-endian (7FE0,0010) bytes inside an unrelated value.
+        object.put(DataElement::new(
+            Tag(0x0009, 0x1010),
+            VR::OB,
+            PrimitiveValue::from(vec![0xe0_u8, 0x7f, 0x10, 0x00]),
+        ));
+        object
+            .with_meta(
+                FileMetaTableBuilder::new()
+                    .transfer_syntax(uids::EXPLICIT_VR_LITTLE_ENDIAN)
+                    .media_storage_sop_class_uid(uids::SECONDARY_CAPTURE_IMAGE_STORAGE)
+                    .media_storage_sop_instance_uid("2.25.301"),
+            )
+            .expect("file meta")
+            .write_to_file(&path)
+            .expect("write fixture");
+
+        let EntryInspection::Selected(file) = build_entry(&path).expect("inspect fixture") else {
+            panic!("fixture should be selected");
+        };
+        assert!(!file.has_pixels);
+        assert_eq!(file.series_metadata.native_pixel.pixel_data_kind, None);
     }
 
     #[test]
