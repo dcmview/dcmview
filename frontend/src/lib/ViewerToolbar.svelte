@@ -4,7 +4,8 @@
 
 	let {
 		activeTool = $bindable(),
-		selectedPresetId = $bindable(),
+		selectedPresetId,
+		onpresetchange,
 		onreset,
 		onflipH,
 		onflipV,
@@ -14,6 +15,7 @@
 	}: {
 		activeTool: ActiveTool;
 		selectedPresetId: string;
+		onpresetchange: (presetId: string) => void;
 		onreset: () => void;
 		onflipH: () => void;
 		onflipV: () => void;
@@ -39,7 +41,7 @@
 		{/each}
 	</div>
 	<span class="sep"></span>
-	<select bind:value={selectedPresetId}>
+	<select value={selectedPresetId} onchange={(event) => onpresetchange(event.currentTarget.value)}>
 		{#each WL_PRESETS as preset}
 			<option value={preset.id}>{preset.label}</option>
 		{/each}

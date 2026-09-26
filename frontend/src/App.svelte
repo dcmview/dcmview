@@ -1,16 +1,6 @@
 <script lang="ts">
-	import { onMount, tick } from "svelte";
-	import {
-		annotationsExportUrl,
-		fetchFiles,
-		fetchSeries,
-		type FilesResponse,
-		type SeriesCatalogResponse,
-		type SeriesStackSummary,
-		type SemanticContextResponse,
-		type WindowMode,
-		type WindowPreset,
-	} from "./api";
+	import { onMount } from "svelte";
+	import { annotationsExportUrl, type SemanticContextResponse } from "./api";
 	import FileNavigator from "./lib/FileNavigator.svelte";
 	import FrameSlider from "./lib/FrameSlider.svelte";
 	import ImageViewport from "./lib/ImageViewport.svelte";
@@ -26,21 +16,19 @@
 	import TagPanel from "./lib/TagPanel.svelte";
 	import ViewerToolbar from "./lib/ViewerToolbar.svelte";
 	import WsiTileContext from "./lib/WsiTileContext.svelte";
+	import { Catalog } from "./lib/app/catalog.svelte";
+	import {
+		SidebarLayout,
+		TAG_PANEL_MAX_WIDTH_PX,
+		TAG_PANEL_MIN_WIDTH_PX,
+	} from "./lib/app/sidebarLayout.svelte";
+	import { TabNavigation } from "./lib/app/tabNavigation.svelte";
+	import { WindowSettings } from "./lib/app/windowSettings.svelte";
 	import type { CineDirection, CineMode } from "./lib/cinePlayback";
-	import { indexFilesById, resolveFilesById, reuseUnchangedEntries } from "./lib/fileRegistry";
-	import { focusTrapTarget } from "./lib/focusTrap";
+	import { resolveFilesById } from "./lib/fileRegistry";
 	import { adjacentFileIndex } from "./lib/fileTree";
 	import { shortcutFor } from "./lib/keyboardShortcuts";
-	import {
-		findSeriesStackForFile,
-		frameAtPosition,
-		framePosition,
-		navigationFrameAtPosition,
-		navigationFramesForFile,
-		navigationTabId,
-		type NavigationFrameRef,
-	} from "./lib/seriesNavigation";
-	import { WL_PRESETS, type ActiveTool } from "./lib/viewerTools";
+	import type { ActiveTool } from "./lib/viewerTools";
 	import type { FrameOverlay } from "./lib/viewport/frameOverlay";
 	import { ViewStates } from "./lib/viewport/viewStates.svelte";
 	import {
@@ -50,221 +38,54 @@
 		rotateCounterClockwise,
 	} from "./lib/viewport/viewTransform";
 
-	const TAG_PANEL_DEFAULT_WIDTH_PX = 360;
-	const TAG_PANEL_MIN_WIDTH_PX = 260;
-	const TAG_PANEL_MAX_WIDTH_PX = 720;
-	const TAG_PANEL_COLLAPSED_WIDTH_PX = 44;
-	const FILE_NAV_WIDTH_PX = 300;
-	const FILE_NAV_COLLAPSED_WIDTH_PX = 44;
-	const DRAWER_FOCUSABLE_SELECTOR = [
-		'a[href]',
-		'button:not([disabled])',
-		'input:not([disabled])',
-		'select:not([disabled])',
-		'textarea:not([disabled])',
-		'[tabindex]:not([tabindex="-1"])',
-	].join(',');
+	// App owns the shared root state; the controllers below hold its parts
+	// and the components receive what they need as props.
+	const catalog = new Catalog();
+	const windowSettings = new WindowSettings((fileIndex) => catalog.filesById.get(fileIndex)?.default_window);
+	const tabs = new TabNavigation({
+		series: () => catalog.series?.series ?? [],
+		files: () => catalog.filesById,
+		ontabchange: resetCine,
+		// A manual window follows the user onto the next file of a stack.
+		onfilechange: (fileIndex) => windowSettings.followFile(fileIndex),
+	});
+	const layout = new SidebarLayout();
+	// Zoom, pan, and orientation per open tab: the viewport zooms and pans,
+	// the toolbar reorients.
+	const viewStates = new ViewStates();
 
-	type SidebarResizeState = {
-		pointerId: number;
-		startX: number;
-		startWidth: number;
-	};
-
-	type OpenTabState = {
-		id: string;
-		fileIndex: number;
-		currentFrame: number;
-		stackPosition: number;
-	};
-
-	type ManualWindowAdjustment = {
-		centerOffsetRatio: number;
-		widthRatio: number;
-	};
-
-	type CompactDrawer = "explorer" | "tags";
-
-	let filesResponse = $state<FilesResponse | null>(null);
-	let seriesResponse = $state<SeriesCatalogResponse | null>(null);
-	let loadError = $state<string | null>(null);
-
-	let openTabs = $state<OpenTabState[]>([]);
-	let activeTabId = $state<string | null>(null);
-	let activeFileIndex = $state<number | null>(null);
-	let currentFrame = $state(0);
-	let stackPosition = $state(0);
+	let activeTool = $state<ActiveTool>("pan");
 	let cinePlaying = $state(false);
 	let cineFps = $state(10);
 	let cineMode = $state<CineMode>("loop");
 	let cineDirection = $state<CineDirection>(1);
-	let lastCineStackId = $state<string | null>(null);
-	let windowCenter = $state<number | null>(null);
-	let windowWidth = $state<number | null>(null);
-	let activeTool = $state<ActiveTool>('pan');
-	let windowMode = $state<WindowMode>('default');
-	let selectedPresetId = $state('default');
-	let lastAppliedPresetId = 'default';
-	let manualWindowAdjustment = $state<ManualWindowAdjustment | null>(null);
-	let lastWindowFileIndex = $state<number | null>(null);
-	let viewport = $state<ReturnType<typeof ImageViewport>>();
-	let frameSlider = $state<ReturnType<typeof FrameSlider>>();
-	// Zoom, pan, and orientation per open tab; ImageViewport reads and zooms,
-	// the toolbar reorients.
-	const viewStates = new ViewStates();
-	let fileNavigatorCollapsed = $state(false);
-	let tagPanelWidthPx = $state(clampTagPanelWidth(TAG_PANEL_DEFAULT_WIDTH_PX));
-	let tagPanelCollapsed = $state(false);
-	let sidebarResizeState = $state<SidebarResizeState | null>(null);
-	let compactDrawer = $state<CompactDrawer | null>(null);
-	let explorerDrawerButton = $state<HTMLButtonElement | null>(null);
-	let tagsDrawerButton = $state<HTMLButtonElement | null>(null);
-	let explorerDrawerElement = $state<HTMLDivElement | null>(null);
-	let tagsDrawerElement = $state<HTMLElement | null>(null);
 	let fileNavigationOrder = $state<number[]>([]);
 	let semanticMode = $state<SemanticMode>("pixel_preview");
 	let semanticResponse = $state<SemanticContextResponse | null>(null);
+	let viewport = $state<ReturnType<typeof ImageViewport>>();
+	let frameSlider = $state<ReturnType<typeof FrameSlider>>();
 
-	const filesById = $derived(indexFilesById(filesResponse?.files ?? []));
-	const activeFile = $derived(
-		activeFileIndex === null ? null : filesById.get(activeFileIndex) ?? null,
-	);
-	const activeLocatedStack = $derived(
-		activeFileIndex === null
-			? null
-			: findSeriesStackForFile(seriesResponse?.series ?? [], activeFileIndex),
-	);
-	const activeStack = $derived(activeLocatedStack?.stack ?? null);
-	const navigationFrames = $derived.by<readonly NavigationFrameRef[]>(() => {
-		if (activeStack) return activeStack.frames;
-		if (activeFile) return navigationFramesForFile(activeFile.index, activeFile.frame_count);
-		return [];
-	});
-	const navigationFrameCount = $derived(navigationFrames.length);
-	const navigationScopeKey = $derived(activeTabId ?? (activeFile ? `file:${activeFile.index}` : ""));
+	const activeFile = $derived(tabs.activeFile);
 	const frameOverlay = $derived.by<FrameOverlay | null>(() => {
 		if (semanticMode !== "semantic_context") return null;
-		if (!semanticResponse || semanticResponse.source_file_index !== activeFileIndex) return null;
-		const selection = segmentationOverlaySelection(semanticResponse, currentFrame);
+		if (!semanticResponse || semanticResponse.source_file_index !== tabs.activeFileIndex) return null;
+		const selection = segmentationOverlaySelection(semanticResponse, tabs.currentFrame);
 		if (!selection) return null;
-		const sourceFile = filesById.get(selection.sourceFileIndex);
+		const sourceFile = catalog.filesById.get(selection.sourceFileIndex);
 		if (!sourceFile) return null;
 		return { kind: "segmentation", ...selection, sourceFile };
 	});
-	const openTabFiles = $derived(resolveFilesById(filesById, openTabs.map((tab) => tab.fileIndex)));
-	const openTabFrameCounts = $derived(new Map(
-		openTabs.map((tab) => [
-			tab.fileIndex,
-			stackById(tab.id)?.frames.length ?? filesById.get(tab.fileIndex)?.frame_count ?? 0,
-		]),
-	));
-	const fileNavigatorWidthPx = $derived(fileNavigatorCollapsed ? FILE_NAV_COLLAPSED_WIDTH_PX : FILE_NAV_WIDTH_PX);
-	const tagPanelWidth = $derived(tagPanelCollapsed ? TAG_PANEL_COLLAPSED_WIDTH_PX : tagPanelWidthPx);
+	const openTabFiles = $derived(resolveFilesById(catalog.filesById, tabs.tabs.map((tab) => tab.fileIndex)));
 
-	function clampTagPanelWidth(width: number): number {
-		return Math.min(TAG_PANEL_MAX_WIDTH_PX, Math.max(TAG_PANEL_MIN_WIDTH_PX, width));
-	}
-
-	function defaultTabState(fileIndex: number): OpenTabState {
-		const located = findSeriesStackForFile(seriesResponse?.series ?? [], fileIndex);
-		const position = located ? framePosition(located.stack, fileIndex, 0) ?? 0 : 0;
-		const frame = located ? frameAtPosition(located.stack, position) : null;
-		return {
-			id: navigationTabId(seriesResponse?.series ?? [], fileIndex),
-			fileIndex: frame?.file_index ?? fileIndex,
-			currentFrame: frame?.frame_index ?? 0,
-			stackPosition: position,
-		};
-	}
-
-	function saveActiveTabState() {
-		if (activeTabId === null || activeFileIndex === null) return;
-		const tabId = activeTabId;
-		const fileIndex = activeFileIndex;
-		openTabs = openTabs.map((tab) => tab.id === tabId
-			? {
-				...tab,
-				fileIndex,
-				currentFrame,
-				stackPosition,
-			}
-			: tab);
-	}
-
-	function loadTabState(tab: OpenTabState | null) {
-		if (!tab) {
-			activeTabId = null;
-			activeFileIndex = null;
-			currentFrame = 0;
-			stackPosition = 0;
-			return;
-		}
-
-		activeTabId = tab.id;
-		activeFileIndex = tab.fileIndex;
-		currentFrame = tab.currentFrame;
-		stackPosition = tab.stackPosition;
-	}
-
-	function activateOpenTab(fileIndex: number) {
-		const target = openTabs.find((tab) => tab.fileIndex === fileIndex);
-		if (!target) return;
-		if (activeTabId !== target.id) {
-			saveActiveTabState();
-		}
-		loadTabState(target);
-	}
-
-	function stackById(id: string | null): SeriesStackSummary | null {
-		if (id === null) return null;
-		for (const series of seriesResponse?.series ?? []) {
-			const stack = series.stacks.find((candidate) => candidate.id === id);
-			if (stack) return stack;
-		}
-		return null;
-	}
-
-	function setStackPosition(position: number) {
-		const frame = navigationFrameAtPosition(navigationFrames, position);
-		if (!frame) return;
-		stackPosition = frame.virtual_index;
-		activeFileIndex = frame.file_index;
-		currentFrame = frame.frame_index;
-		if (activeTabId !== null) {
-			openTabs = openTabs.map((tab) => tab.id === activeTabId
-				? {
-					...tab,
-					fileIndex: frame.file_index,
-					currentFrame: frame.frame_index,
-					stackPosition: frame.virtual_index,
-				}
-				: tab);
-		}
-	}
-
-	function openOrActivateFile(fileIndex: number) {
-		const id = navigationTabId(seriesResponse?.series ?? [], fileIndex);
-		const existing = openTabs.find((tab) => tab.id === id);
-		if (existing) {
-			if (activeTabId !== existing.id) saveActiveTabState();
-			loadTabState(existing);
-			const stack = stackById(id);
-			const position = stack ? framePosition(stack, fileIndex, 0) : null;
-			if (position !== null) setStackPosition(position);
-			return;
-		}
-
-		saveActiveTabState();
-		const next = defaultTabState(fileIndex);
-		openTabs = [...openTabs, next];
-		loadTabState(next);
+	/** A different tab starts paused and playing forward. */
+	function resetCine() {
+		cinePlaying = false;
+		cineDirection = 1;
 	}
 
 	function openFileFromNavigator(fileIndex: number) {
-		openOrActivateFile(fileIndex);
-		if (window.matchMedia("(max-width: 519px)").matches) {
-			closeCompactDrawer();
-		}
+		tabs.open(fileIndex);
+		layout.fileOpenedFromExplorer();
 	}
 
 	function updateFileNavigationOrder(order: number[]) {
@@ -275,312 +96,46 @@
 		fileNavigationOrder = order;
 	}
 
-	function openReferenceTarget(fileIndex: number, frameIndex: number) {
-		const file = filesById.get(fileIndex);
-		if (
-			!file
-			|| !Number.isInteger(frameIndex)
-			|| frameIndex < 0
-			|| frameIndex >= file.frame_count
-		) return;
-
-		openOrActivateFile(fileIndex);
-		const stack = stackById(activeTabId);
-		const position = stack ? framePosition(stack, fileIndex, frameIndex) : null;
-		if (position !== null) {
-			setStackPosition(position);
-			return;
-		}
-
-		activeFileIndex = fileIndex;
-		currentFrame = frameIndex;
-		stackPosition = frameIndex;
-		if (activeTabId !== null) {
-			openTabs = openTabs.map((tab) => tab.id === activeTabId
-				? { ...tab, fileIndex, currentFrame: frameIndex, stackPosition: frameIndex }
-				: tab);
-		}
-	}
-
-	function compactDrawerTrigger(drawer: CompactDrawer): HTMLButtonElement | null {
-		return drawer === "explorer" ? explorerDrawerButton : tagsDrawerButton;
-	}
-
-	function handleSemanticModeChange(mode: SemanticMode) {
-		semanticMode = mode;
-	}
-
-	function handleSemanticContextChange(response: SemanticContextResponse | null) {
-		semanticResponse = response;
-	}
-
-	function compactDrawerElement(drawer: CompactDrawer): HTMLElement | null {
-		return drawer === "explorer" ? explorerDrawerElement : tagsDrawerElement;
-	}
-
-	function closeCompactDrawer(restoreFocus = true) {
-		const closingDrawer = compactDrawer;
-		if (closingDrawer === null) return;
-		compactDrawer = null;
-		if (restoreFocus) {
-			void tick().then(() => compactDrawerTrigger(closingDrawer)?.focus());
-		}
-	}
-
-	function toggleCompactDrawer(drawer: CompactDrawer) {
-		if (compactDrawer === drawer) {
-			closeCompactDrawer(false);
-			return;
-		}
-		if (drawer === "explorer") {
-			fileNavigatorCollapsed = false;
-		} else {
-			tagPanelCollapsed = false;
-		}
-		compactDrawer = drawer;
-		void tick().then(() => compactDrawerElement(drawer)?.focus());
-	}
-
-	function handleCompactDrawerKeydown(event: KeyboardEvent) {
-		if (event.key !== "Tab" || compactDrawer === null) return;
-		const container = compactDrawerElement(compactDrawer);
-		if (!container) return;
-		const focusable = Array.from(
-			container.querySelectorAll<HTMLElement>(DRAWER_FOCUSABLE_SELECTOR),
-		).filter((element) => element.getClientRects().length > 0 && getComputedStyle(element).visibility !== "hidden");
-		const activeIndex = focusable.indexOf(document.activeElement as HTMLElement);
-		const target = focusTrapTarget(activeIndex, focusable.length, event.shiftKey);
-		if (target === null) return;
-		event.preventDefault();
-		if (target === "container") {
-			container.focus();
-		} else if (target === "first") {
-			focusable[0]?.focus();
-		} else {
-			focusable[focusable.length - 1]?.focus();
-		}
-	}
-
-	function closeOpenTab(fileIndex: number) {
-		const closingIndex = openTabs.findIndex((tab) => tab.fileIndex === fileIndex);
-		if (closingIndex === -1) return;
-		const closingId = openTabs[closingIndex]?.id;
-
-		const wasActive = activeTabId === closingId;
-		const remaining = openTabs.filter((tab) => tab.id !== closingId);
-		openTabs = remaining;
-
-		if (!wasActive) return;
-
-		const replacement = remaining[Math.min(closingIndex, remaining.length - 1)] ?? null;
-		loadTabState(replacement);
-	}
-
 	function resetViewport() {
-		if (activeFileIndex === null) return;
-		manualWindowAdjustment = null;
-		windowCenter = null;
-		windowWidth = null;
-		windowMode = 'default';
-		selectedPresetId = 'default';
+		if (tabs.activeFileIndex === null) return;
+		windowSettings.reset();
 		viewport?.resetView();
-		viewStates.resetOrientation(navigationScopeKey);
+		viewStates.resetOrientation(tabs.scopeKey);
 	}
 
 	function reorient(change: typeof flipHorizontal) {
-		if (activeFileIndex === null) return;
-		viewStates.updateOrientation(navigationScopeKey, change);
+		if (tabs.activeFileIndex === null) return;
+		viewStates.updateOrientation(tabs.scopeKey, change);
 	}
 
 	function exportAnnotations() {
-		const link = document.createElement('a');
+		const link = document.createElement("a");
 		link.href = annotationsExportUrl();
-		link.download = 'dcmview-annotations.csv';
+		link.download = "dcmview-annotations.csv";
 		document.body.appendChild(link);
 		link.click();
 		link.remove();
 	}
 
-	function toggleTagPanel() {
-		tagPanelCollapsed = !tagPanelCollapsed;
-	}
-
-	function startTagPanelResize(event: PointerEvent) {
-		if (tagPanelCollapsed || event.button !== 0) {
-			return;
-		}
-
-		const handle = event.currentTarget as HTMLElement;
-		handle.setPointerCapture(event.pointerId);
-		sidebarResizeState = {
-			pointerId: event.pointerId,
-			startX: event.clientX,
-			startWidth: tagPanelWidthPx,
-		};
-		event.preventDefault();
-	}
-
-	function moveTagPanelResize(event: PointerEvent) {
-		if (!sidebarResizeState || sidebarResizeState.pointerId !== event.pointerId) {
-			return;
-		}
-
-		const delta = sidebarResizeState.startX - event.clientX;
-		tagPanelWidthPx = clampTagPanelWidth(sidebarResizeState.startWidth + delta);
-	}
-
-	function endTagPanelResize(event: PointerEvent) {
-		const handle = event.currentTarget as HTMLElement;
-		if (handle.hasPointerCapture(event.pointerId)) {
-			handle.releasePointerCapture(event.pointerId);
-		}
-
-		if (sidebarResizeState?.pointerId === event.pointerId) {
-			sidebarResizeState = null;
-		}
-	}
-
-	function cancelTagPanelResize() {
-		sidebarResizeState = null;
-	}
-
-	function fileByIndex(fileIndex: number): FilesResponse["files"][number] | null {
-		return filesById.get(fileIndex) ?? null;
-	}
-
-	function applyCatalogResponses(files: FilesResponse, series: SeriesCatalogResponse) {
-		seriesResponse = {
-			...series,
-			series: reuseUnchangedEntries(seriesResponse?.series, series.series, (entry) => entry.id),
-		};
-		filesResponse = {
-			...files,
-			files: reuseUnchangedEntries(filesResponse?.files, files.files, (entry) => entry.index),
-		};
-		if (activeFileIndex === null && openTabs.length === 0 && files.files.length > 0) {
-			openOrActivateFile(files.files[0].index);
-			return;
-		}
-		if (activeFileIndex !== null && activeTabId !== null) {
-			const located = findSeriesStackForFile(series.series, activeFileIndex);
-			if (located && activeTabId !== located.stack.id) {
-				const previousId = activeTabId;
-				activeTabId = located.stack.id;
-				openTabs = openTabs.map((tab) => tab.id === previousId
-					? { ...tab, id: located.stack.id }
-					: tab);
-			}
-			const position = located
-				? framePosition(located.stack, activeFileIndex, currentFrame)
-				: null;
-			if (position !== null) {
-				stackPosition = position;
-				openTabs = openTabs.map((tab) => tab.id === activeTabId
-					? { ...tab, stackPosition: position }
-					: tab);
-			}
-		}
-	}
-
-	function defaultWindowForFile(fileIndex: number): WindowPreset | null {
-		const window = fileByIndex(fileIndex)?.default_window ?? null;
-		if (!window || !Number.isFinite(window.center) || !Number.isFinite(window.width) || window.width <= 0) {
-			return null;
-		}
-		return window;
-	}
-
-	function resolveManualWindowForFile(fileIndex: number): WindowPreset | null {
-		if (!manualWindowAdjustment) return null;
-		const base = defaultWindowForFile(fileIndex);
-		if (!base) return null;
-		return {
-			center: base.center + manualWindowAdjustment.centerOffsetRatio * base.width,
-			width: Math.max(1, manualWindowAdjustment.widthRatio * base.width),
-		};
-	}
-
-	function recordManualWindowLevel(center: number, width: number) {
-		windowCenter = center;
-		windowWidth = width;
-		if (activeFileIndex === null || !Number.isFinite(center) || !Number.isFinite(width) || width <= 0) {
-			return;
-		}
-		const base = defaultWindowForFile(activeFileIndex);
-		if (!base) {
-			manualWindowAdjustment = null;
-			return;
-		}
-		manualWindowAdjustment = {
-			centerOffsetRatio: (center - base.center) / base.width,
-			widthRatio: width / base.width,
-		};
-		windowMode = 'default';
-		selectedPresetId = 'default';
-		lastAppliedPresetId = 'default';
-	}
-
-	function applyWindowPreset(presetId: string) {
-		manualWindowAdjustment = null;
-		const preset = WL_PRESETS.find(p => p.id === presetId);
-		if (!preset) return;
-		if (preset.wc !== undefined && preset.ww !== undefined) {
-			windowCenter = preset.wc;
-			windowWidth = preset.ww;
-			windowMode = 'default';
-		} else {
-			windowCenter = null;
-			windowWidth = null;
-			windowMode = preset.mode ?? 'default';
-		}
-	}
-
-	$effect(() => {
-		const presetId = selectedPresetId;
-		if (presetId === lastAppliedPresetId) return;
-		lastAppliedPresetId = presetId;
-		applyWindowPreset(presetId);
-	});
-
-	$effect(() => {
-		const fileIndex = activeFileIndex;
-		if (fileIndex === lastWindowFileIndex) return;
-		lastWindowFileIndex = fileIndex;
-		if (fileIndex === null || !manualWindowAdjustment) return;
-		const resolved = resolveManualWindowForFile(fileIndex);
-		if (!resolved) return;
-		windowCenter = resolved.center;
-		windowWidth = resolved.width;
-		windowMode = 'default';
-	});
-
-	$effect(() => {
-		const stackId = activeTabId;
-		if (stackId === lastCineStackId) return;
-		lastCineStackId = stackId;
-		cinePlaying = false;
-		cineDirection = 1;
-	});
-
 	/** The single global keyboard dispatcher; bindings live in keyboardShortcuts.ts. */
 	function handleWindowKeydown(event: KeyboardEvent) {
 		const action = shortcutFor(event, {
-			drawerOpen: compactDrawer !== null,
-			multiFrame: activeFile !== null && navigationFrameCount > 1,
+			drawerOpen: layout.compactDrawer !== null,
+			multiFrame: activeFile !== null && tabs.frames.length > 1,
 			roiToolActive: activeFile !== null && activeTool === "annotate_rect",
 		});
 		if (!action) return;
 		switch (action.type) {
 			case "close-drawer":
 				event.preventDefault();
-				closeCompactDrawer();
+				layout.closeDrawer();
 				return;
 			case "select-adjacent-file": {
-				const adjacent = adjacentFileIndex(fileNavigationOrder, activeFileIndex, action.step);
+				const adjacent = adjacentFileIndex(fileNavigationOrder, tabs.activeFileIndex, action.step);
 				if (adjacent === null) return;
 				event.preventDefault();
 				cinePlaying = false;
-				openOrActivateFile(adjacent);
+				tabs.open(adjacent);
 				return;
 			}
 			case "select-tool":
@@ -601,57 +156,19 @@
 		}
 	}
 
-	function handleWindowResize() {
-		if (compactDrawer === "explorer" && !window.matchMedia("(max-width: 519px)").matches) {
-			closeCompactDrawer(false);
-		}
-		if (compactDrawer === "tags" && !window.matchMedia("(max-width: 979px)").matches) {
-			closeCompactDrawer(false);
-		}
-	}
-
-	onMount(() => {
-		let cancelled = false;
-		let pollTimer: number | null = null;
-
-		const pollCatalog = async () => {
-			try {
-				const [files, series] = await Promise.all([fetchFiles(), fetchSeries()]);
-				if (cancelled) return;
-				applyCatalogResponses(files, series);
-				if (!files.scan_complete || !series.scan_complete) {
-					pollTimer = window.setTimeout(pollCatalog, 500);
-				}
-			} catch (error) {
-				if (cancelled) return;
-				if (!filesResponse) {
-					loadError = error instanceof Error ? error.message : String(error);
-					return;
-				}
-				pollTimer = window.setTimeout(pollCatalog, 1000);
-			}
-		};
-
-		pollCatalog();
-		return () => {
-			cancelled = true;
-			if (pollTimer !== null) {
-				window.clearTimeout(pollTimer);
-			}
-		};
-	});
+	onMount(() => catalog.poll(() => tabs.syncCatalog(catalog.files?.files[0]?.index ?? null)));
 </script>
 
-<svelte:window onkeydown={handleWindowKeydown} onresize={handleWindowResize} />
+<svelte:window onkeydown={handleWindowKeydown} onresize={() => layout.viewportResized()} />
 
-{#if loadError}
-	<main class="error">{loadError}</main>
-{:else if !filesResponse}
+{#if catalog.loadError}
+	<main class="error">{catalog.loadError}</main>
+{:else if !catalog.files}
 	<main class="loading">Loading dcmview…</main>
 {:else}
 	<main
 		class="layout"
-		style={`--file-nav-width:${fileNavigatorWidthPx}px; --tag-panel-width:${tagPanelWidth}px;`}
+		style={`--file-nav-width:${layout.fileNavigatorWidthPx}px; --tag-panel-width:${layout.tagPanelWidth}px;`}
 	>
 		<header class="topbar">
 			<img
@@ -662,36 +179,37 @@
 			<button
 				type="button"
 				class="compact-sidebar-button explorer-drawer-button"
-				bind:this={explorerDrawerButton}
-				onclick={() => toggleCompactDrawer("explorer")}
+				bind:this={layout.explorerButton}
+				onclick={() => layout.toggleDrawer("explorer")}
 				aria-label="Toggle Explorer drawer"
 				aria-controls="file-navigator-panel"
-				aria-expanded={compactDrawer === "explorer"}
+				aria-expanded={layout.compactDrawer === "explorer"}
 			>
 				Explorer
 			</button>
 			<OpenImageTabs
 				openFiles={openTabFiles}
-				frameCounts={openTabFrameCounts}
-				activeFileIndex={activeFileIndex}
-				onactivate={activateOpenTab}
-				onclose={closeOpenTab}
+				frameCounts={tabs.frameCounts}
+				activeFileIndex={tabs.activeFileIndex}
+				onactivate={(fileIndex) => tabs.activate(fileIndex)}
+				onclose={(fileIndex) => tabs.close(fileIndex)}
 			/>
 			<button
 				type="button"
 				class="compact-sidebar-button tags-drawer-button"
-				bind:this={tagsDrawerButton}
-				onclick={() => toggleCompactDrawer("tags")}
+				bind:this={layout.tagsButton}
+				onclick={() => layout.toggleDrawer("tags")}
 				aria-label="Toggle Tags drawer"
 				aria-controls="tag-panel"
-				aria-expanded={compactDrawer === "tags"}
+				aria-expanded={layout.compactDrawer === "tags"}
 			>
 				Tags
 			</button>
 		</header>
 		<ViewerToolbar
 			bind:activeTool
-			bind:selectedPresetId
+			selectedPresetId={windowSettings.presetId}
+			onpresetchange={(presetId) => windowSettings.selectPreset(presetId)}
 			onreset={resetViewport}
 			onflipH={() => reorient(flipHorizontal)}
 			onflipV={() => reorient(flipVertical)}
@@ -699,11 +217,11 @@
 			onrotateCCW={() => reorient(rotateCounterClockwise)}
 			onexportAnnotations={exportAnnotations}
 		/>
-		{#if compactDrawer !== null}
+		{#if layout.compactDrawer !== null}
 			<button
 				type="button"
 				class="drawer-backdrop"
-				onclick={() => closeCompactDrawer()}
+				onclick={() => layout.closeDrawer()}
 				aria-label="Close sidebar drawer"
 			></button>
 		{/if}
@@ -711,19 +229,19 @@
 			<div
 				id="file-navigator-panel"
 				class="file-navigator-shell"
-				class:compact-open={compactDrawer === "explorer"}
-				bind:this={explorerDrawerElement}
+				class:compact-open={layout.compactDrawer === "explorer"}
+				bind:this={layout.explorerDrawer}
 				tabindex="-1"
-				role={compactDrawer === "explorer" ? "dialog" : undefined}
-				aria-modal={compactDrawer === "explorer" ? "true" : undefined}
+				role={layout.compactDrawer === "explorer" ? "dialog" : undefined}
+				aria-modal={layout.compactDrawer === "explorer" ? "true" : undefined}
 				aria-label="Explorer"
-				onkeydown={handleCompactDrawerKeydown}
+				onkeydown={(event) => layout.trapDrawerFocus(event)}
 			>
 				<FileNavigator
-					files={filesResponse.files}
-					activeFileIndex={activeFileIndex}
-					scanComplete={filesResponse.scan_complete}
-					bind:collapsed={fileNavigatorCollapsed}
+					files={catalog.files.files}
+					activeFileIndex={tabs.activeFileIndex}
+					scanComplete={catalog.files.scan_complete}
+					bind:collapsed={layout.fileNavigatorCollapsed}
 					onopenfile={openFileFromNavigator}
 					onnavigationorderchange={updateFileNavigationOrder}
 				/>
@@ -735,48 +253,48 @@
 					<div class="viewer-context">
 						<ReferenceNavigator
 							fileIndex={activeFile.index}
-							files={filesResponse.files}
-							onopenreference={openReferenceTarget}
+							files={catalog.files.files}
+							onopenreference={(fileIndex, frameIndex) => tabs.openReference(fileIndex, frameIndex)}
 						/>
 						{#if supportsSemanticContext(activeFile.object_kind, activeFile.sop_class_uid)}
 							<SemanticContextPanel
 								fileIndex={activeFile.index}
-								{currentFrame}
-								onmodechange={handleSemanticModeChange}
-								oncontextchange={handleSemanticContextChange}
+								currentFrame={tabs.currentFrame}
+								onmodechange={(mode) => { semanticMode = mode; }}
+								oncontextchange={(response) => { semanticResponse = response; }}
 							/>
 						{/if}
 						{#if activeFile.object_kind === "whole_slide_microscopy"}
-							<WsiTileContext fileIndex={activeFile.index} frame={currentFrame} />
+							<WsiTileContext fileIndex={activeFile.index} frame={tabs.currentFrame} />
 						{/if}
 					</div>
 					<ImageViewport
-						{activeFile}
-						{currentFrame}
 						bind:this={viewport}
-						{windowCenter}
-						{windowWidth}
+						{activeFile}
+						currentFrame={tabs.currentFrame}
+						windowCenter={windowSettings.center}
+						windowWidth={windowSettings.width}
+						windowMode={windowSettings.mode}
 						{activeTool}
-						{windowMode}
 						{viewStates}
 						overlay={frameOverlay}
 						bind:cinePlaying
 						{cineFps}
 						{cineMode}
 						bind:cineDirection
-						navigationFrameCount={navigationFrameCount}
-						navigationFrames={navigationFrames}
-						navigationScopeKey={navigationScopeKey}
-						navigationPosition={stackPosition}
-						onnavigationchange={setStackPosition}
+						navigationFrameCount={tabs.frames.length}
+						navigationFrames={tabs.frames}
+						navigationScopeKey={tabs.scopeKey}
+						navigationPosition={tabs.stackPosition}
+						onnavigationchange={(position) => tabs.setStackPosition(position)}
 						onreset={resetViewport}
-						onmanualwindowlevel={recordManualWindowLevel}
+						onmanualwindowlevel={(center, width) => windowSettings.recordManual(tabs.activeFileIndex, center, width)}
 					/>
 					<FrameSlider
 						bind:this={frameSlider}
-						totalFrames={navigationFrameCount}
-						currentPosition={stackPosition}
-						onpositionchange={setStackPosition}
+						totalFrames={tabs.frames.length}
+						currentPosition={tabs.stackPosition}
+						onpositionchange={(position) => tabs.setStackPosition(position)}
 						bind:cinePlaying
 						bind:cineFps
 						bind:cineMode
@@ -787,40 +305,40 @@
 			<aside
 				id="tag-panel"
 				class="tag-panel-shell"
-				class:collapsed={tagPanelCollapsed}
-				class:compact-open={compactDrawer === "tags"}
-				bind:this={tagsDrawerElement}
+				class:collapsed={layout.tagPanelCollapsed}
+				class:compact-open={layout.compactDrawer === "tags"}
+				bind:this={layout.tagsDrawer}
 				tabindex="-1"
-				role={compactDrawer === "tags" ? "dialog" : undefined}
-				aria-modal={compactDrawer === "tags" ? "true" : undefined}
+				role={layout.compactDrawer === "tags" ? "dialog" : undefined}
+				aria-modal={layout.compactDrawer === "tags" ? "true" : undefined}
 				aria-label="DICOM tags"
-				onkeydown={handleCompactDrawerKeydown}
+				onkeydown={(event) => layout.trapDrawerFocus(event)}
 			>
 				<div
 					class="sidebar-handle"
-					class:dragging={sidebarResizeState !== null}
-					class:disabled={tagPanelCollapsed}
+					class:dragging={layout.resizing !== null}
+					class:disabled={layout.tagPanelCollapsed}
 					role="separator"
 					aria-label="Resize DICOM tag panel"
 					aria-orientation="vertical"
 					aria-valuemin={TAG_PANEL_MIN_WIDTH_PX}
 					aria-valuemax={TAG_PANEL_MAX_WIDTH_PX}
-					aria-valuenow={tagPanelWidthPx}
-					onpointerdown={startTagPanelResize}
-					onpointermove={moveTagPanelResize}
-					onpointerup={endTagPanelResize}
-					onpointercancel={cancelTagPanelResize}
+					aria-valuenow={layout.tagPanelWidthPx}
+					onpointerdown={(event) => layout.startTagPanelResize(event)}
+					onpointermove={(event) => layout.moveTagPanelResize(event)}
+					onpointerup={(event) => layout.endTagPanelResize(event)}
+					onpointercancel={() => layout.cancelTagPanelResize()}
 				></div>
 				<button
 					type="button"
 					class="panel-toggle"
-					onclick={toggleTagPanel}
-					aria-label={tagPanelCollapsed ? "Expand DICOM tag panel" : "Collapse DICOM tag panel"}
-					aria-expanded={!tagPanelCollapsed}
+					onclick={() => layout.toggleTagPanel()}
+					aria-label={layout.tagPanelCollapsed ? "Expand DICOM tag panel" : "Collapse DICOM tag panel"}
+					aria-expanded={!layout.tagPanelCollapsed}
 				>
-					{tagPanelCollapsed ? "◀" : "▶"}
+					{layout.tagPanelCollapsed ? "◀" : "▶"}
 				</button>
-				{#if !tagPanelCollapsed}
+				{#if !layout.tagPanelCollapsed}
 					{#if activeFile === null}
 						<div class="tag-empty">No file selected</div>
 					{:else}
@@ -830,8 +348,8 @@
 			</aside>
 		</section>
 		<StatusBar
-			serverStartMs={filesResponse.server_start_ms}
-			fileCount={filesResponse.files.length}
+			serverStartMs={catalog.files.server_start_ms}
+			fileCount={catalog.files.files.length}
 		/>
 	</main>
 {/if}

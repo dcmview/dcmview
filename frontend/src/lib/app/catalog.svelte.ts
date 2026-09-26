@@ -1,0 +1,62 @@
+import {
+	fetchFiles,
+	fetchSeries,
+	type FileSummary,
+	type FilesResponse,
+	type SeriesCatalogResponse,
+} from "../../api";
+import { indexFilesById, reuseUnchangedEntries } from "../fileRegistry";
+
+const SCANNING_POLL_MS = 500;
+const RETRY_POLL_MS = 1000;
+
+/**
+ * The file and series catalogs. Discovery is progressive, so the catalog is
+ * polled until the server reports the scan complete; unchanged entries keep
+ * their identity across polls so components do not re-render for them.
+ */
+export class Catalog {
+	files = $state<FilesResponse | null>(null);
+	series = $state<SeriesCatalogResponse | null>(null);
+	/** Set when the first load fails; later failures retry quietly. */
+	loadError = $state<string | null>(null);
+	readonly filesById = $derived<ReadonlyMap<number, FileSummary>>(indexFilesById(this.files?.files ?? []));
+
+	apply(files: FilesResponse, series: SeriesCatalogResponse): void {
+		this.series = {
+			...series,
+			series: reuseUnchangedEntries(this.series?.series, series.series, (entry) => entry.id),
+		};
+		this.files = {
+			...files,
+			files: reuseUnchangedEntries(this.files?.files, files.files, (entry) => entry.index),
+		};
+	}
+
+	/** Polls until the scan completes, calling `onupdate` after each change. Returns stop. */
+	poll(onupdate: () => void): () => void {
+		let stopped = false;
+		let timer: ReturnType<typeof setTimeout> | null = null;
+		const load = async () => {
+			try {
+				const [files, series] = await Promise.all([fetchFiles(), fetchSeries()]);
+				if (stopped) return;
+				this.apply(files, series);
+				onupdate();
+				if (!files.scan_complete || !series.scan_complete) timer = setTimeout(load, SCANNING_POLL_MS);
+			} catch (error) {
+				if (stopped) return;
+				if (!this.files) {
+					this.loadError = error instanceof Error ? error.message : String(error);
+					return;
+				}
+				timer = setTimeout(load, RETRY_POLL_MS);
+			}
+		};
+		void load();
+		return () => {
+			stopped = true;
+			if (timer !== null) clearTimeout(timer);
+		};
+	}
+}
