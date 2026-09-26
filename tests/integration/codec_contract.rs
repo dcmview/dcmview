@@ -1,6 +1,7 @@
 use super::support;
 use axum::http::StatusCode;
 use axum_test::{TestResponse, TestServer};
+use dcmview::api::contracts::SupportState;
 use dcmview::loader::{self, DiscoverOptions};
 use dcmview::pixels;
 use dcmview::pixels::Codec;
@@ -108,6 +109,82 @@ async fn assert_compressed_fixture_contract(
     assert_eq!(first_raw.as_bytes(), second_raw.as_bytes());
 }
 
+/// Y, Cb, Cr samples shared by the committed color fixtures.
+const FIXTURE_YBR_4X2: [[u8; 3]; 8] = [
+    [76, 85, 255],
+    [76, 85, 255],
+    [150, 44, 21],
+    [150, 44, 21],
+    [29, 255, 107],
+    [29, 255, 107],
+    [128, 100, 160],
+    [128, 100, 160],
+];
+
+/// FIXTURE_YBR_4X2 through the PS3.3 C.7.6.3.1.2 YBR_FULL equations, rounded.
+const FIXTURE_RGB_4X2: [[u8; 3]; 8] = [
+    [254, 0, 0],
+    [254, 0, 0],
+    [0, 255, 1],
+    [0, 255, 1],
+    [0, 0, 254],
+    [0, 0, 254],
+    [173, 115, 78],
+    [173, 115, 78],
+];
+
+/// Asserts a color fixture is advertised renderable and displays as the
+/// expected RGB, returning the server for further endpoint checks.
+async fn assert_color_fixture_display(name: &str, transfer_syntax_uid: &str) -> TestServer {
+    let report = loader::discover(
+        &[fixture_path(name)],
+        DiscoverOptions {
+            recursive: false,
+            filters: Vec::new(),
+        },
+    )
+    .await
+    .expect("discover color golden fixture");
+    assert_eq!(report.files.len(), 1);
+    assert_eq!(report.files[0].transfer_syntax_uid, transfer_syntax_uid);
+    assert_eq!(
+        pixels::classify_pixel_support(&report.files[0]).state,
+        SupportState::Renderable,
+        "{name} should be advertised as renderable"
+    );
+
+    let test_server = TestServer::new(server::router(support::app_state(report.files)));
+    let display = test_server.get("/api/file/0/frame/0").await;
+    display.assert_status_ok();
+    assert_eq!(header(&display, "content-type"), "image/png");
+    let rendered =
+        image::load_from_memory_with_format(display.as_bytes().as_ref(), ImageFormat::Png)
+            .expect("color display should be a PNG")
+            .to_rgb8();
+    assert_eq!(rendered.dimensions(), (4, 2));
+    assert_eq!(rendered.into_raw(), FIXTURE_RGB_4X2.concat());
+    test_server
+}
+
+#[tokio::test]
+async fn rle_ybr_full_422_fixture_displays_full_resolution_ybr_as_rgb() {
+    let test_server = assert_color_fixture_display(
+        "golden-rle-ybr-full-422-u8-single-frame.dcm",
+        "1.2.840.10008.1.2.5",
+    )
+    .await;
+
+    // RLE segments hold every chroma sample, so raw bytes are YBR_FULL.
+    let raw = test_server.get("/api/file/0/frame/0/raw").await;
+    raw.assert_status_ok();
+    assert_eq!(header(&raw, "x-frame-samples-per-pixel"), "3");
+    assert_eq!(
+        header(&raw, "x-frame-photometric-interpretation"),
+        "YBR_FULL"
+    );
+    assert_eq!(raw.as_bytes().as_ref(), FIXTURE_YBR_4X2.concat());
+}
+
 #[tokio::test]
 async fn jpeg_lossless_fixture_satisfies_display_and_raw_contracts() {
     let samples = [
@@ -171,7 +248,7 @@ async fn deflated_explicit_vr_little_endian_satisfies_display_and_raw_contracts(
     assert_eq!(pixels::codec_for_syntax(UID), Some(Codec::Native));
     assert_eq!(
         pixels::classify_pixel_support(&report.files[0]).state,
-        dcmview::api::contracts::SupportState::Renderable
+        SupportState::Renderable
     );
 
     let test_server = TestServer::new(server::router(support::app_state(report.files)));

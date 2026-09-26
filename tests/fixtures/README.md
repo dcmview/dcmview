@@ -10,6 +10,7 @@ The committed corpus is intentionally small and synthetic:
 - `golden-jpeg-baseline-multiframe-bot.dcm`
 - `golden-jpeg-lossless-u16-single-frame.dcm`
 - `golden-jpeg2000-lossless-u8-single-frame.dcm`
+- `golden-rle-ybr-full-422-u8-single-frame.dcm`
 - `golden-image-no-pixels.dcm`
 - `golden-no-pixels-sr.dcm`
 
@@ -18,3 +19,6 @@ fixture keeps file size small while exercising realistic viewport geometry.
 The JPEG Lossless and JPEG 2000 fixtures contain fixed, losslessly encoded
 grayscale codestreams so successful server-side display and raw-sample paths
 remain covered without network access or external codecs during regeneration.
+The color fixtures share one 4x2 set of Y, Cb, Cr samples (red, green, blue,
+and a muted orange, with chroma shared by horizontal pairs) so each asserts
+the same YBR_FULL to RGB conversion through a different decoder.

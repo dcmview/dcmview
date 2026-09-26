@@ -76,7 +76,10 @@ impl Codec {
             (Self::Jpeg2000, 8 | 16, "RGB" | "YBR_RCT" | "YBR_ICT") => Some(Rgb),
             (Self::JpegXl, 8, "RGB") => Some(Rgb),
             (Self::Rle, 8, "RGB") => Some(Rgb),
-            (Self::Rle, 8, "YBR_FULL") => Some(YbrFull),
+            // PS3.5 Table 8.2.2-1 does not pair RLE with YBR_FULL_422, but files
+            // transcoded from JPEG keep that label over full-resolution Y, Cb,
+            // and Cr segments; the segment-length check rejects anything else.
+            (Self::Rle, 8, "YBR_FULL" | "YBR_FULL_422") => Some(YbrFull),
             _ => None,
         }
     }
@@ -422,11 +425,16 @@ mod tests {
             entry.photometric_interpretation = photometric.to_string();
             classify_pixel_support(&entry).state
         };
-        // rle.rs and jpegxl.rs reject these, so they must not be advertised.
+        // RLE YBR_FULL_422 segments are full resolution and display as YBR_FULL.
         assert_eq!(
             color("1.2.840.10008.1.2.5", 8, "YBR_FULL_422"),
+            SupportState::Renderable
+        );
+        assert_eq!(
+            color("1.2.840.10008.1.2.5", 16, "YBR_FULL"),
             SupportState::Unsupported
         );
+        // jpegxl.rs rejects this, so it must not be advertised.
         assert_eq!(
             color("1.2.840.10008.1.2.4.110", 8, "YBR_FULL"),
             SupportState::Unsupported

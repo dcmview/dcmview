@@ -26,6 +26,16 @@ fn main() {
     write_jpeg2000_lossless_single_frame(
         &fixture_dir.join("golden-jpeg2000-lossless-u8-single-frame.dcm"),
     );
+    write_color_fixture(
+        &fixture_dir.join("golden-rle-ybr-full-422-u8-single-frame.dcm"),
+        ColorFixtureSpec {
+            sop_instance_uid: "2.25.2000009",
+            patient_id: "GOLDEN-RLE-YBR422",
+            transfer_syntax_uid: uids::RLE_LOSSLESS,
+            photometric_interpretation: "YBR_FULL_422",
+        },
+        rle_ybr_fragment_4x2(),
+    );
     write_sr_without_pixels(&fixture_dir.join("golden-no-pixels-sr.dcm"));
     write_image_without_pixels(&fixture_dir.join("golden-image-no-pixels.dcm"));
 }
@@ -308,6 +318,108 @@ fn write_grayscale_encapsulated_fixture(
     file_object
         .write_to_file(path)
         .expect("write compressed grayscale golden fixture");
+}
+
+/// Y, Cb, Cr samples of a 4x2 image: red, green / blue, muted orange. Each
+/// horizontal pair shares its chroma, so the samples are also a valid 4:2:2
+/// source upsampled to full resolution.
+const YBR_4X2: [[u8; 3]; 8] = [
+    [76, 85, 255],
+    [76, 85, 255],
+    [150, 44, 21],
+    [150, 44, 21],
+    [29, 255, 107],
+    [29, 255, 107],
+    [128, 100, 160],
+    [128, 100, 160],
+];
+
+struct ColorFixtureSpec<'a> {
+    sop_instance_uid: &'a str,
+    patient_id: &'a str,
+    transfer_syntax_uid: &'a str,
+    photometric_interpretation: &'a str,
+}
+
+/// Writes a single-frame 4x2 8-bit three-sample Secondary Capture image.
+fn write_color_fixture(path: &Path, spec: ColorFixtureSpec<'_>, fragment: Vec<u8>) {
+    let mut obj = InMemDicomObject::from_element_iter([
+        DataElement::new(
+            tags::SOP_CLASS_UID,
+            VR::UI,
+            uids::SECONDARY_CAPTURE_IMAGE_STORAGE,
+        ),
+        DataElement::new(tags::SOP_INSTANCE_UID, VR::UI, spec.sop_instance_uid),
+        DataElement::new(
+            tags::PATIENT_ID,
+            VR::LO,
+            PrimitiveValue::from(spec.patient_id),
+        ),
+        DataElement::new(tags::MODALITY, VR::CS, PrimitiveValue::from("OT")),
+        DataElement::new(tags::STUDY_DATE, VR::DA, PrimitiveValue::from("20260608")),
+        DataElement::new(tags::ROWS, VR::US, PrimitiveValue::from(2_u16)),
+        DataElement::new(tags::COLUMNS, VR::US, PrimitiveValue::from(4_u16)),
+        DataElement::new(tags::BITS_ALLOCATED, VR::US, PrimitiveValue::from(8_u16)),
+        DataElement::new(tags::BITS_STORED, VR::US, PrimitiveValue::from(8_u16)),
+        DataElement::new(tags::HIGH_BIT, VR::US, PrimitiveValue::from(7_u16)),
+        DataElement::new(
+            tags::PIXEL_REPRESENTATION,
+            VR::US,
+            PrimitiveValue::from(0_u16),
+        ),
+        DataElement::new(tags::SAMPLES_PER_PIXEL, VR::US, PrimitiveValue::from(3_u16)),
+        DataElement::new(
+            tags::PHOTOMETRIC_INTERPRETATION,
+            VR::CS,
+            PrimitiveValue::from(spec.photometric_interpretation),
+        ),
+        DataElement::new(
+            tags::PLANAR_CONFIGURATION,
+            VR::US,
+            PrimitiveValue::from(0_u16),
+        ),
+        DataElement::new(tags::NUMBER_OF_FRAMES, VR::IS, PrimitiveValue::from("1")),
+    ]);
+
+    let pixel_sequence: PixelFragmentSequence<Vec<u8>> = vec![Fragments::new(fragment, 0)].into();
+    obj.put(DataElement::new(tags::PIXEL_DATA, VR::OB, pixel_sequence));
+
+    let file_object = obj
+        .with_meta(
+            FileMetaTableBuilder::new()
+                .implementation_class_uid(FIXTURE_IMPLEMENTATION_CLASS_UID)
+                .implementation_version_name(FIXTURE_IMPLEMENTATION_VERSION_NAME)
+                .transfer_syntax(spec.transfer_syntax_uid)
+                .media_storage_sop_class_uid(uids::SECONDARY_CAPTURE_IMAGE_STORAGE)
+                .media_storage_sop_instance_uid(spec.sop_instance_uid),
+        )
+        .expect("build color fixture meta");
+
+    file_object
+        .write_to_file(path)
+        .expect("write color golden fixture");
+}
+
+/// PS3.5 Annex G frame: a 64-byte header, then one PackBits literal-run
+/// segment per sample plane (Y, Cb, Cr), each at full resolution.
+fn rle_ybr_fragment_4x2() -> Vec<u8> {
+    let planes = (0..3)
+        .map(|sample| {
+            YBR_4X2
+                .iter()
+                .map(|pixel| pixel[sample])
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let mut fragment = vec![0_u8; 64];
+    fragment[0..4].copy_from_slice(&(planes.len() as u32).to_le_bytes());
+    for (index, plane) in planes.iter().enumerate() {
+        let offset = fragment.len() as u32;
+        fragment[4 + index * 4..8 + index * 4].copy_from_slice(&offset.to_le_bytes());
+        fragment.push((plane.len() - 1) as u8);
+        fragment.extend_from_slice(plane);
+    }
+    fragment
 }
 
 fn write_jpeg_fixture(

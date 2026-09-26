@@ -134,12 +134,21 @@ pub(crate) async fn decode_raw_rle(
 ) -> PixelResult<(Bytes, RawFrameMetadata)> {
     task::spawn_blocking(move || {
         let decoded = read_and_decode_frame(&file, frame).map_err(PixelError::raw_decode)?;
-        let metadata = file.raw_metadata(
+        let mut metadata = file.raw_metadata(
             file.rows,
             file.columns,
             file.bits_allocated,
             file.samples_per_pixel,
         );
+        // RLE segments carry every chroma sample, so a YBR_FULL_422 label
+        // describes full-resolution YBR_FULL bytes once decoded.
+        if metadata
+            .photometric_interpretation
+            .trim()
+            .eq_ignore_ascii_case("YBR_FULL_422")
+        {
+            metadata.photometric_interpretation = "YBR_FULL".to_string();
+        }
         Ok((Bytes::from(decoded), metadata))
     })
     .await
