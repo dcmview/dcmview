@@ -1,21 +1,5 @@
+use crate::api::contracts::SupportState;
 use crate::types::{FileEntry, TransferSyntaxClass};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PixelSupportState {
-    Renderable,
-    MetadataOnly,
-    Unsupported,
-}
-
-impl PixelSupportState {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Renderable => "renderable",
-            Self::MetadataOnly => "metadata_only",
-            Self::Unsupported => "unsupported",
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PixelSupportReason {
@@ -61,28 +45,28 @@ impl PixelSupportReason {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PixelSupport {
-    pub state: PixelSupportState,
+    pub state: SupportState,
     pub reason: Option<PixelSupportReason>,
 }
 
 impl PixelSupport {
     const fn renderable() -> Self {
         Self {
-            state: PixelSupportState::Renderable,
+            state: SupportState::Renderable,
             reason: None,
         }
     }
 
     const fn metadata_only(reason: PixelSupportReason) -> Self {
         Self {
-            state: PixelSupportState::MetadataOnly,
+            state: SupportState::MetadataOnly,
             reason: Some(reason),
         }
     }
 
     const fn unsupported(reason: PixelSupportReason) -> Self {
         Self {
-            state: PixelSupportState::Unsupported,
+            state: SupportState::Unsupported,
             reason: Some(reason),
         }
     }
@@ -255,7 +239,7 @@ fn unsupported_transfer_syntax_reason(uid: &str) -> PixelSupportReason {
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_pixel_support, PixelSupportReason, PixelSupportState};
+    use super::{classify_pixel_support, PixelSupportReason, SupportState};
     use crate::types::{FileEntry, NativePixelDataKind};
     use std::path::PathBuf;
 
@@ -305,7 +289,7 @@ mod tests {
             "1.2.840.10008.1.2.4.80",
         ] {
             let support = classify_pixel_support(&file(uid));
-            assert_eq!(support.state, PixelSupportState::Renderable, "{uid}");
+            assert_eq!(support.state, SupportState::Renderable, "{uid}");
             assert_eq!(support.reason_id(), None, "{uid}");
         }
     }
@@ -317,7 +301,7 @@ mod tests {
         entry.bits_allocated = 64;
 
         let support = classify_pixel_support(&entry);
-        assert_eq!(support.state, PixelSupportState::MetadataOnly);
+        assert_eq!(support.state, SupportState::MetadataOnly);
         assert_eq!(
             support.reason,
             Some(PixelSupportReason::PixelDataAbsentOrUnrecognized)
@@ -360,7 +344,7 @@ mod tests {
 
         for (uid, reason, reason_id) in cases {
             let support = classify_pixel_support(&file(uid));
-            assert_eq!(support.state, PixelSupportState::Unsupported, "{uid}");
+            assert_eq!(support.state, SupportState::Unsupported, "{uid}");
             assert_eq!(support.reason, Some(reason), "{uid}");
             assert_eq!(support.reason_id(), Some(reason_id), "{uid}");
         }
@@ -372,12 +356,12 @@ mod tests {
         entry.bits_allocated = 1;
         assert_eq!(
             classify_pixel_support(&entry).state,
-            PixelSupportState::Renderable
+            SupportState::Renderable
         );
 
         entry.bits_allocated = 8;
         let unsupported = classify_pixel_support(&entry);
-        assert_eq!(unsupported.state, PixelSupportState::Unsupported);
+        assert_eq!(unsupported.state, SupportState::Unsupported);
         assert_eq!(
             unsupported.reason,
             Some(PixelSupportReason::BitPackedPixelsNotSupported)
@@ -399,11 +383,7 @@ mod tests {
             entry.photometric_interpretation = photometric.to_string();
 
             let support = classify_pixel_support(&entry);
-            assert_eq!(
-                support.state,
-                PixelSupportState::Renderable,
-                "{photometric}"
-            );
+            assert_eq!(support.state, SupportState::Renderable, "{photometric}");
             assert_eq!(support.reason, None, "{photometric}");
         }
 
@@ -429,17 +409,17 @@ mod tests {
         // rle.rs and jpegxl.rs reject these, so they must not be advertised.
         assert_eq!(
             color("1.2.840.10008.1.2.5", 8, "YBR_FULL_422"),
-            PixelSupportState::Unsupported
+            SupportState::Unsupported
         );
         assert_eq!(
             color("1.2.840.10008.1.2.4.110", 8, "YBR_FULL"),
-            PixelSupportState::Unsupported
+            SupportState::Unsupported
         );
         // jpeg2000.rs renders three-component codestreams as RGB.
         for photometric in ["RGB", "YBR_RCT", "YBR_ICT"] {
             assert_eq!(
                 color("1.2.840.10008.1.2.4.90", 8, photometric),
-                PixelSupportState::Renderable,
+                SupportState::Renderable,
                 "{photometric}"
             );
         }
@@ -453,12 +433,12 @@ mod tests {
         lossless.photometric_interpretation = "RGB".to_string();
         assert_eq!(
             classify_pixel_support(&lossless).state,
-            PixelSupportState::Renderable
+            SupportState::Renderable
         );
 
         for uid in ["1.2.840.10008.1.2.4.111", "1.2.840.10008.1.2.4.112"] {
             let support = classify_pixel_support(&file(uid));
-            assert_eq!(support.state, PixelSupportState::Unsupported, "{uid}");
+            assert_eq!(support.state, SupportState::Unsupported, "{uid}");
             assert_eq!(support.reason, Some(PixelSupportReason::JpegXlNotSupported));
         }
     }
@@ -472,11 +452,7 @@ mod tests {
             entry.photometric_interpretation = photometric.to_string();
 
             let support = classify_pixel_support(&entry);
-            assert_eq!(
-                support.state,
-                PixelSupportState::Renderable,
-                "{photometric}"
-            );
+            assert_eq!(support.state, SupportState::Renderable, "{photometric}");
             assert_eq!(support.reason, None, "{photometric}");
         }
 
@@ -503,11 +479,7 @@ mod tests {
             entry.photometric_interpretation = photometric.to_string();
 
             let support = classify_pixel_support(&entry);
-            assert_eq!(
-                support.state,
-                PixelSupportState::Renderable,
-                "{photometric}"
-            );
+            assert_eq!(support.state, SupportState::Renderable, "{photometric}");
             assert_eq!(support.reason, None, "{photometric}");
         }
     }
@@ -530,7 +502,7 @@ mod tests {
             entry.bits_allocated = bits_allocated;
 
             let support = classify_pixel_support(&entry);
-            assert_eq!(support.state, PixelSupportState::Unsupported);
+            assert_eq!(support.state, SupportState::Unsupported);
             assert_eq!(support.reason, Some(expected_reason));
             assert_eq!(support.reason_id(), Some(reason_id));
         }
@@ -549,7 +521,7 @@ mod tests {
             entry.series_metadata.native_pixel.pixel_data_kind = Some(kind);
 
             let support = classify_pixel_support(&entry);
-            assert_eq!(support.state, PixelSupportState::Renderable, "{kind:?}");
+            assert_eq!(support.state, SupportState::Renderable, "{kind:?}");
             assert_eq!(support.reason, None, "{kind:?}");
         }
     }
@@ -573,8 +545,9 @@ mod tests {
 
     #[test]
     fn state_names_are_stable() {
-        assert_eq!(PixelSupportState::Renderable.as_str(), "renderable");
-        assert_eq!(PixelSupportState::MetadataOnly.as_str(), "metadata_only");
-        assert_eq!(PixelSupportState::Unsupported.as_str(), "unsupported");
+        let name = |state| serde_json::to_value(state).unwrap();
+        assert_eq!(name(SupportState::Renderable), "renderable");
+        assert_eq!(name(SupportState::MetadataOnly), "metadata_only");
+        assert_eq!(name(SupportState::Unsupported), "unsupported");
     }
 }

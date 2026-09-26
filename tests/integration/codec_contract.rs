@@ -173,7 +173,7 @@ async fn deflated_explicit_vr_little_endian_satisfies_display_and_raw_contracts(
     );
     assert_eq!(
         pixels::classify_pixel_support(&report.files[0]).state,
-        pixels::PixelSupportState::Renderable
+        dcmview::api::contracts::SupportState::Renderable
     );
 
     let test_server = TestServer::new(server::router(support::app_state(report.files)));

@@ -224,17 +224,7 @@ impl From<&FileEntry> for FileSummary {
             sop_instance_uid: value.sop_instance_uid.clone(),
             sop_class_uid: value.sop_class_uid.clone(),
             object_kind: crate::object_kind::classify_sop_class(&value.sop_class_uid).to_string(),
-            support_state: match support.state {
-                crate::pixels::PixelSupportState::Renderable => {
-                    crate::api::contracts::SupportState::Renderable
-                }
-                crate::pixels::PixelSupportState::MetadataOnly => {
-                    crate::api::contracts::SupportState::MetadataOnly
-                }
-                crate::pixels::PixelSupportState::Unsupported => {
-                    crate::api::contracts::SupportState::Unsupported
-                }
-            },
+            support_state: support.state,
             support_reason: support.reason_id().map(ToString::to_string),
             raw_windowing_compatible: raw_windowing_reason.is_none(),
             raw_windowing_reason: raw_windowing_reason.map(ToString::to_string),

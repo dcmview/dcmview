@@ -33,6 +33,5 @@ pub use service::{
 };
 pub use syntax::{
     classify_pixel_support, classify_transfer_syntax, PixelSupport, PixelSupportReason,
-    PixelSupportState,
 };
 pub use window::{apply_window, resolve_window, resolve_window_with_mode};
