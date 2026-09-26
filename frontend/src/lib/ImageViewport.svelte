@@ -82,12 +82,10 @@
 	let {
 		activeFile,
 		currentFrame,
-		windowCenter = $bindable(),
-		windowWidth = $bindable(),
+		windowCenter,
+		windowWidth,
 		activeTool,
 		windowMode,
-		selectedPresetId,
-		resetCount,
 		viewStates,
 		onreset,
 		onmanualwindowlevel,
@@ -108,11 +106,10 @@
 		windowWidth: number | null;
 		activeTool: ActiveTool;
 		windowMode: WindowMode;
-		selectedPresetId: string;
-		resetCount: number;
 		viewStates: ViewStates;
 		onreset: () => void;
-		onmanualwindowlevel?: (center: number, width: number) => void;
+		/** A window/level drag ended at this window. */
+		onmanualwindowlevel: (center: number, width: number) => void;
 		cinePlaying: boolean;
 		cineFps: number;
 		cineMode: CineMode;
@@ -146,7 +143,6 @@
 		onScopeChange: () => rendered.reset(),
 	});
 	let retainedScopeKey = "";
-	let lastHandledResetCount = 0;
 	let requestGeneration = 0;
 	let lastFrameForDirection = 0;
 	let frameDirection: 1 | -1 = 1;
@@ -502,16 +498,17 @@
 		return target instanceof Element && !!target.closest(".zoom-controls, .roi-list");
 	}
 
-	$effect(() => {
-		const current = currentFrame;
+	/** Direction of travel for prefetch ordering: cine's, else the last frame step's. */
+	function frameDirectionTo(frame: number): 1 | -1 {
 		if (cinePlaying) {
 			frameDirection = cineDirection;
 		} else {
-			if (current > lastFrameForDirection) frameDirection = 1;
-			if (current < lastFrameForDirection) frameDirection = -1;
+			if (frame > lastFrameForDirection) frameDirection = 1;
+			if (frame < lastFrameForDirection) frameDirection = -1;
 		}
-		lastFrameForDirection = current;
-	});
+		lastFrameForDirection = frame;
+		return frameDirection;
+	}
 
 	$effect(() => {
 		if (!activeFile?.has_pixels) return;
@@ -659,6 +656,8 @@
 	});
 
 	$effect(() => {
+		const frameIndex = currentFrame;
+		const direction = untrack(() => frameDirectionTo(frameIndex));
 		if (!activeFile?.has_pixels) {
 			currentRawFrame = null;
 			loading = false;
@@ -670,24 +669,21 @@
 		const mode = pipelineMode;
 		const activeOverlay = overlay;
 		const fileIndex = activeFile.index;
-		const frameIndex = currentFrame;
 		const generation = ++requestGeneration;
-		const modeWc = mode !== "diagnostic_wl" ? windowCenter : null;
-		const modeWw = mode !== "diagnostic_wl" ? windowWidth : null;
-		const modePreset = mode !== "diagnostic_wl" ? selectedPresetId : "";
-		const modeWindowMode = mode !== "diagnostic_wl" ? windowMode : "default";
-		void modeWc;
-		void modeWw;
-		void modePreset;
-		void modeWindowMode;
+		if (mode !== "diagnostic_wl") {
+			// Server-rendered frames bake in the window, so window changes refetch.
+			void windowCenter;
+			void windowWidth;
+			void windowMode;
+		}
 
 		loadError = null;
 		if (mode === "overlay" && activeOverlay) {
 			void loadOverlayAndRender(activeOverlay, generation);
 		} else if (mode === "diagnostic_wl") {
-			void loadRawFrameAndRender(fileIndex, frameIndex, generation, frameDirection);
+			void loadRawFrameAndRender(fileIndex, frameIndex, generation, direction);
 		} else {
-			void loadDisplayFrameAndRender(fileIndex, frameIndex, generation, frameDirection);
+			void loadDisplayFrameAndRender(fileIndex, frameIndex, generation, direction);
 		}
 	});
 
@@ -718,16 +714,14 @@
 		};
 	});
 
-	$effect(() => {
-		if (resetCount === lastHandledResetCount) return;
-		lastHandledResetCount = resetCount;
-		if (resetCount === 0) return;
+	/** Refits the image and drops any in-progress window/level or drag. */
+	export function resetView(): void {
 		invalidateWindowLevelRenders();
 		fitActiveImageToViewport();
 		liveWindowCenter = null;
 		liveWindowWidth = null;
 		endDrag();
-	});
+	}
 
 	function zoomAnchorFromClient(clientX: number, clientY: number): ZoomAnchor | null {
 		const origin = imageLayoutOrigin();
@@ -993,9 +987,7 @@
 			target.releasePointerCapture(event.pointerId);
 		}
 		if (dragState?.mode === "wl" && liveWindowCenter !== null && liveWindowWidth !== null) {
-			windowCenter = liveWindowCenter;
-			windowWidth = liveWindowWidth;
-			onmanualwindowlevel?.(liveWindowCenter, liveWindowWidth);
+			onmanualwindowlevel(liveWindowCenter, liveWindowWidth);
 		}
 		if (dragState?.mode === "draw_roi") {
 			const coord = canonicalRect(dragState.start, dragState.current, imageRows, imageColumns);

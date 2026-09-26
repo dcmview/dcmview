@@ -106,7 +106,7 @@
 	let lastAppliedPresetId = 'default';
 	let manualWindowAdjustment = $state<ManualWindowAdjustment | null>(null);
 	let lastWindowFileIndex = $state<number | null>(null);
-	let resetCount = $state(0);
+	let viewport = $state<ReturnType<typeof ImageViewport>>();
 	// Zoom, pan, and orientation per open tab; ImageViewport reads and zooms,
 	// the toolbar reorients.
 	const viewStates = new ViewStates();
@@ -381,7 +381,7 @@
 		windowWidth = null;
 		windowMode = 'default';
 		selectedPresetId = 'default';
-		resetCount += 1;
+		viewport?.resetView();
 		viewStates.resetOrientation(navigationScopeKey);
 	}
 
@@ -499,6 +499,8 @@
 	}
 
 	function recordManualWindowLevel(center: number, width: number) {
+		windowCenter = center;
+		windowWidth = width;
 		if (activeFileIndex === null || !Number.isFinite(center) || !Number.isFinite(width) || width <= 0) {
 			return;
 		}
@@ -755,12 +757,11 @@
 					<ImageViewport
 						{activeFile}
 						{currentFrame}
-						bind:windowCenter
-						bind:windowWidth
-						activeTool={activeTool}
-						windowMode={windowMode}
-						resetCount={resetCount}
-						selectedPresetId={selectedPresetId}
+						bind:this={viewport}
+						{windowCenter}
+						{windowWidth}
+						{activeTool}
+						{windowMode}
 						{viewStates}
 						overlay={frameOverlay}
 						bind:cinePlaying
