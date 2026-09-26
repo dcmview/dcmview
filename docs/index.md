@@ -83,21 +83,3 @@ or metadata unless they are fully de-identified and approved for public use.
 - [Release checklist](release-checklist.md): repeatable release-note,
   publication, CI qualification, tagging, documentation synchronization,
   incident handling, and next-version steps for every tagged release.
-- [v0.2.10 frontend QA](v0.2.10-frontend-qa.md): active browser matrix,
-  release-blocker fixes, automated gate, and remaining responsive manual check.
-- [npm audit notes](npm-audit-2026-06-09.md): recorded frontend and VS Code npm
-  audit state.
-
-## Internal Planning Notes
-
-These documents are project planning and review notes. They are useful for
-maintainers, but they are not user-facing setup guides.
-
-- [Public-facing project review](public-facing-project-review.md)
-- [Structural review remediation plan](structural-review-remediation-plan.md)
-- [Large-directory scalability plan](large-directory-scalability-plan.md)
-- [VS Code extension feasibility](vscode-extension-feasibility.md)
-- [VS Code DICOM auto-open feasibility](vscode-dicom-auto-open-feasibility.md)
-- [VS Code bridge review findings](vscode-bridge-review-findings.md)
-- [VS Code bridge remote reliability plan](vscode-bridge-remote-reliability-plan.md)
-- [JupyterLab extension feasibility](jupyterlab-extension-feasibility.md)

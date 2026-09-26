@@ -139,7 +139,7 @@ diagnostic viewer.
   validation or a DICOM conformance certificate.
 - Documented the frozen inputs, results, browser acceptance matrix, and
   intentional support boundaries in
-  [`docs/dicom-compatibility-campaign-2026-08-28.md`](docs/dicom-compatibility-campaign-2026-08-28.md).
+  `docs/dicom-compatibility-campaign-2026-08-28.md` (removed; see git history).
 
 ## 0.2.10 - 2026-08-28
 
@@ -206,7 +206,7 @@ diagnostic viewer.
   expanding committed integration coverage for logical series, discovery,
   native pixels, API contracts, tags, and supported codecs.
 - Recorded the release frontend QA matrix in
-  [`docs/v0.2.10-frontend-qa.md`](docs/v0.2.10-frontend-qa.md), including the
+  `docs/v0.2.10-frontend-qa.md` (removed; see git history), including the
   automated core gate, active browser checks, fixes found during review, and the
   remaining responsive-layout manual check.
 
