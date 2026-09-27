@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from "svelte";
-	import { annotationsExportUrl, type SemanticContextResponse } from "./api";
+	import { annotationsExportUrl, fetchHealth, onReachabilityChange, type SemanticContextResponse } from "./api";
 	import FileNavigator from "./lib/FileNavigator.svelte";
 	import FrameSlider from "./lib/FrameSlider.svelte";
 	import ImageViewport from "./lib/ImageViewport.svelte";
@@ -186,13 +186,33 @@
 
 	$effect(() => valueOverlays.load(tabs.activeFileIndex));
 
-	onMount(() => catalog.poll(() => tabs.syncCatalog(catalog.files?.files[0]?.index ?? null)));
+	let stopPolling: (() => void) | null = null;
+	function loadCatalog(): void {
+		stopPolling?.();
+		catalog.loadError = null;
+		stopPolling = catalog.poll(() => tabs.syncCatalog(catalog.files?.files[0]?.index ?? null));
+	}
+	onMount(() => {
+		loadCatalog();
+		return () => stopPolling?.();
+	});
+
+	// One place says the server is gone, instead of every panel's own error;
+	// cine stops rather than failing frame by frame.
+	let serverReachable = $state(true);
+	onMount(() => onReachabilityChange((reachable) => {
+		serverReachable = reachable;
+		if (!reachable) cinePlaying = false;
+	}));
 </script>
 
 <svelte:window onkeydown={handleWindowKeydown} onresize={() => layout.viewportResized()} />
 
 {#if catalog.loadError}
-	<main class="error">{catalog.loadError}</main>
+	<main class="error">
+		<p>{catalog.loadError}</p>
+		<Button onclick={loadCatalog}>Retry</Button>
+	</main>
 {:else if !catalog.files}
 	<main class="loading">Loading dcmview…</main>
 {:else}
@@ -405,6 +425,8 @@
 		<StatusBar
 			serverStartMs={catalog.files.server_start_ms}
 			fileCount={catalog.files.files.length}
+			reachable={serverReachable}
+			onretry={() => void fetchHealth().catch(() => {})}
 		/>
 	</main>
 {/if}
@@ -595,6 +617,8 @@
 	.error {
 		display: grid;
 		place-content: center;
+		justify-items: center;
+		gap: 12px;
 		height: 100vh;
 		background: var(--canvas);
 		color: var(--text);

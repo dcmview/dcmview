@@ -11,7 +11,9 @@ import {
 	fetchSelectedTag,
 	frameUrl,
 	isApiError,
+	onReachabilityChange,
 	parseRawFrameMetadata,
+	UNREACHABLE_STATUS,
 	updateAnnotations,
 } from "./api";
 import { RAW_FRAME_HEADERS } from "./generated/api-types";
@@ -165,6 +167,22 @@ describe("fetch wrappers", () => {
 		);
 
 		await expect(fetchFiles()).rejects.toThrow("HTTP 502");
+	});
+
+	it("reports an unreachable server once and its return", async () => {
+		const changes: boolean[] = [];
+		const unsubscribe = onReachabilityChange((reachable) => changes.push(reachable));
+		vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("Failed to fetch")));
+
+		const error = await fetchFiles().catch((caught: unknown) => caught);
+		await fetchFiles().catch(() => {});
+		expect(error).toMatchObject({ status: UNREACHABLE_STATUS, code: null });
+		expect((error as Error).message).toContain("not reachable");
+
+		vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ files: [] }, 200)));
+		await fetchFiles();
+		expect(changes).toEqual([false, true]);
+		unsubscribe();
 	});
 
 	it("never sends a real-world window as is", async () => {

@@ -1,10 +1,18 @@
 <script lang="ts">
+	import Button from "./ui/Button.svelte";
+	import StatusBadge from "./ui/StatusBadge.svelte";
+
 	let {
 		serverStartMs,
 		fileCount,
+		reachable = true,
+		onretry,
 	}: {
 		serverStartMs: number;
 		fileCount: number;
+		/** False once a request could not reach the server at all. */
+		reachable?: boolean;
+		onretry?: () => void;
 	} = $props();
 
 	let nowMs = $state(Date.now());
@@ -27,7 +35,15 @@
 <footer class="status">
 	<span>{window.location.origin}</span>
 	<span>{fileCount} files loaded</span>
-	<span>uptime {uptime}</span>
+	{#if reachable}
+		<span>uptime {uptime}</span>
+	{:else}
+		<span class="unreachable" role="alert">
+			<StatusBadge status="negative">Disconnected</StatusBadge>
+			<span>dcmview is not reachable: the viewer process may have stopped</span>
+			<Button variant="ghost" onclick={onretry}>Retry</Button>
+		</span>
+	{/if}
 </footer>
 
 <style>
@@ -44,6 +60,14 @@
 		color: var(--ink-muted);
 		font: 400 11px/14px var(--font-mono);
 		font-variant-numeric: tabular-nums;
+	}
+
+	.unreachable {
+		display: inline-flex;
+		align-items: center;
+		gap: 8px;
+		color: var(--text);
+		font-family: var(--font-ui);
 	}
 
 	.status span {
