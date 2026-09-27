@@ -67,9 +67,20 @@ diagnostic viewer.
 - The viewer has a light theme and follows the operating system's light or
   dark setting; the image area stays dark in both. Inside VS Code it follows
   the editor's colour theme instead, including live theme switches.
+- The viewer is restyled in the Bea · dcmview design system: neutral chrome
+  with ink-outlined controls and line icons, one context strip for overlays
+  and references, tabs that show the stack position, an explorer that shows
+  the DICOM hierarchy by nesting with tier icons instead of tier labels, and
+  opaque overlays on the image. ROIs are drawn as outlines only, and
+  warnings, errors and "No pixels" or "Unsupported" files carry an icon and
+  a word as well as a colour. The explorer now opens at 276px and the tag
+  panel at 420px.
 
 ### Fixed
 
+- The tag panel's Value column no longer starts past the panel's right edge;
+  the keyword column truncates first, so values stay visible at any panel
+  width.
 - A VS Code viewer that took more than 5 seconds to start was treated as a dead
   bridge: its registry entry was deleted and a second, local viewer opened.
   Slow launches now wait up to 120 seconds, and a launch VS Code did not

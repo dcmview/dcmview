@@ -233,6 +233,7 @@ dcmview/
 |   |-- src/
 |   |   |-- App.svelte
 |   |   |-- api.ts                    typed fetch boundary
+|   |   |-- theme.css                 Bea · dcmview tokens, light and dark
 |   |   |-- generated/api-types.ts    generated Rust wire contract
 |   |   |-- testing/fixtures.ts       component-test catalog and frame builders
 |   |   `-- lib/
@@ -240,6 +241,9 @@ dcmview/
 |   |       |                         window settings, sidebar layout
 |   |       |-- viewport/             ImageViewport units: frame sources, W/L
 |   |       |                         worker client, view state, overlays, ROIs
+|   |       |-- ui/                   Bea · dcmview controls: Button, ButtonGroup,
+|   |       |                         SegmentedControl, Select, SearchField,
+|   |       |                         StatusBadge, Icon and its line icons
 |   |       |-- FileNavigator.svelte
 |   |       |-- OpenImageTabs.svelte
 |   |       |-- ViewerToolbar.svelte
@@ -437,6 +441,9 @@ unless one is actually implemented.
   Pixel values come from `viewport/pixelProbe.svelte.ts` and the per-frame
   `value-mapping` conversions in `viewport/valueMapping.ts`.
 - No external CSS frameworks. Use scoped Svelte styles.
+- Use the `lib/ui` controls for buttons, segmented choices, selects, search
+  fields and status badges, and `lib/ui/icons.ts` for icons; do not draw
+  glyphs with text characters or restyle controls per component.
 - Theme tokens are the Bea · dcmview design system's, in `src/theme.css`:
   light by default, dark from `prefers-color-scheme` or `data-theme`. Use the
   role tokens (`paper`, `ink`, `line`, `accent`, `selection-fill`, ...) instead
