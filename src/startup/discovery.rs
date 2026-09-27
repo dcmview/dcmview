@@ -83,7 +83,7 @@ async fn run_discovery(
         // finds nothing then exits non-zero; this line tells a launcher (the
         // Python wrapper) which of the two happened.
         let file_count = inputs.registry.status().file_count;
-        println!(
+        dcmview::status_line!(
             "{}",
             serde_json::json!({ "type": "scan_complete", "file_count": file_count })
         );
@@ -286,9 +286,11 @@ fn print_progressive_load_summary(
     let note = notes.join(", ");
 
     if file_count == 1 && skipped == 0 && filtered == 0 && filters.is_empty() {
-        println!("dcmview: loaded 1 DICOM file");
+        dcmview::status_line!("dcmview: loaded 1 DICOM file");
     } else {
-        println!("dcmview: loaded {file_count} DICOM file(s) from {path_label} ({note})");
+        dcmview::status_line!(
+            "dcmview: loaded {file_count} DICOM file(s) from {path_label} ({note})"
+        );
     }
 }
 

@@ -140,12 +140,12 @@ fn launch_request(
 
 fn print_launched(url: &str, startup_json: bool) {
     if startup_json {
-        println!(
+        dcmview::status_line!(
             "{}",
             serde_json::json!({ "type": "vscode_session_started", "url": url })
         );
     }
-    println!("dcmview: opened in VS Code at {url}");
+    dcmview::status_line!("dcmview: opened in VS Code at {url}");
 }
 
 /// What answers at a registered bridge endpoint.
