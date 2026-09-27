@@ -150,6 +150,21 @@ describe("ImageViewport window/level path", () => {
 		await waitFor(() => expect(fetchDisplayFrameBlob).toHaveBeenCalledWith(5, 0, {}, expect.any(AbortSignal)));
 	});
 
+	it("falls back to server presentation only when the raw endpoint refuses the layout", async () => {
+		fetchRawFrame.mockRejectedValue(new api.ApiError("unsupported layout", 422, "unsupported_pixel_layout"));
+		renderViewport({ activeTool: "window_level" });
+		await waitFor(() => expect(fetchDisplayFrameBlob).toHaveBeenCalledWith(5, 0, {}, expect.any(AbortSignal)));
+	});
+
+	it("reports a failed raw request without giving up client windowing", async () => {
+		fetchRawFrame.mockRejectedValue(new TypeError("Failed to fetch"));
+		renderViewport({ activeTool: "window_level" });
+
+		expect(await screen.findByText("Failed to fetch")).toBeTruthy();
+		expect(fetchDisplayFrameBlob).not.toHaveBeenCalled();
+		expect(screen.queryByText("server presentation retained")).toBeNull();
+	});
+
 	it("shows a placeholder instead of fetching frames for metadata-only objects", async () => {
 		renderViewport({ file: fileSummary(2, { has_pixels: false }) });
 

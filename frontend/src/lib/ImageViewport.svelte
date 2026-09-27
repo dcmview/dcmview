@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { untrack } from "svelte";
 	import {
+		ApiError,
 		fetchDisplayFrameBlob,
 		isApiError,
 		type DisplayFrameWindowOptions,
@@ -609,10 +610,17 @@
 			if (generation !== requestGeneration || pipelineMode !== "diagnostic_wl") return;
 			loading = false;
 			currentRawFrame = null;
-			rawWindowLevelFallbackByFile = {
-				...rawWindowLevelFallbackByFile,
-				[fileIndex]: true,
-			};
+			// Only a layout the raw endpoint cannot serve moves the file to
+			// server windowing for good; a dropped request or a failed frame is
+			// this frame's error, and the next frame tries raw samples again.
+			if (error instanceof ApiError && error.status === 422) {
+				rawWindowLevelFallbackByFile = {
+					...rawWindowLevelFallbackByFile,
+					[fileIndex]: true,
+				};
+			} else {
+				loadError = (error as Error).message || "Failed to load frame";
+			}
 		}
 	}
 
