@@ -2,10 +2,9 @@ use crate::api::contracts::WindowMode;
 use crate::types::FileEntry;
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
-use image::{ImageBuffer, ImageFormat, Luma};
-use std::io::Cursor;
+use image::{ExtendedColorType, ImageEncoder};
 
-use super::color::encode_rgb8_png_with_icc;
+use super::color::{encode_rgb8_png_with_icc, png_encoder};
 use super::overlay::apply_overlay_planes;
 use super::shutter;
 use super::window::{
@@ -76,13 +75,11 @@ pub(crate) fn encode_windowed_luminance_png(
         &file.series_metadata.presentation.overlay_planes,
     );
 
-    let image = ImageBuffer::<Luma<u8>, Vec<u8>>::from_raw(columns, rows, windowed)
-        .ok_or_else(|| anyhow!("windowed buffer size mismatch"))?;
-    let mut buffer = Cursor::new(Vec::<u8>::new());
-    image::DynamicImage::ImageLuma8(image)
-        .write_to(&mut buffer, ImageFormat::Png)
+    let mut encoded = Vec::new();
+    png_encoder(&mut encoded)
+        .write_image(&windowed, columns, rows, ExtendedColorType::L8)
         .context("png encoding failed")?;
-    Ok(Bytes::from(buffer.into_inner()))
+    Ok(Bytes::from(encoded))
 }
 
 /// 8- and 16-bit frames: every step up to the displayed byte depends only on
