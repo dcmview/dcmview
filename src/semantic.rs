@@ -39,8 +39,8 @@ const DISPLAYED_VALUE_KIND: &str = "stored";
 pub enum SegmentationOverlayError {
     #[error("semantic overlay is only available for segmentation objects")]
     NotSegmentation,
-    #[error("segmentation frame is out of range")]
-    FrameOutOfRange,
+    #[error(transparent)]
+    FrameOutOfRange(crate::pixels::PixelError),
     #[error("segmentation overlay unavailable: {0}")]
     Unavailable(String),
     #[error(transparent)]
@@ -68,10 +68,8 @@ pub fn check_segmentation_frame(
     if classify_sop_class(&source.sop_class_uid) != ObjectKind::Segmentation {
         return Err(SegmentationOverlayError::NotSegmentation);
     }
-    if frame >= source.frame_count {
-        return Err(SegmentationOverlayError::FrameOutOfRange);
-    }
-    Ok(())
+    crate::pixels::PixelError::ensure_frame(frame, source.frame_count)
+        .map_err(SegmentationOverlayError::FrameOutOfRange)
 }
 
 /// Plan one frame's overlay from the segmentation's semantic context, which

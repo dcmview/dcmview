@@ -53,7 +53,7 @@ fn decode_compressed_frame_to_png_blocking(
     if decoded.samples_per_pixel() == 3 {
         if decoded.bits_allocated() != 8 {
             return Err(anyhow!(
-                "compressed decode failed: unsupported color BitsAllocated {}",
+                "unsupported color BitsAllocated {}",
                 decoded.bits_allocated()
             ));
         }
@@ -76,11 +76,11 @@ fn decode_compressed_frame_to_png_blocking(
             decoded.rows(),
             select_icc_profile(&obj),
         )
-        .context("compressed decode failed: color PNG encoding failed");
+        .context("color PNG encoding failed");
     }
     if decoded.samples_per_pixel() != 1 {
         return Err(anyhow!(
-            "compressed decode failed: unsupported SamplesPerPixel {}",
+            "unsupported SamplesPerPixel {}",
             decoded.samples_per_pixel()
         ));
     }
@@ -130,9 +130,7 @@ fn decoded_luminance_samples(
             })
             .collect::<Vec<_>>(),
         _ => {
-            return Err(anyhow!(
-                "compressed decode failed: unsupported BitsAllocated {bits_allocated}"
-            ));
+            return Err(anyhow!("unsupported BitsAllocated {bits_allocated}"));
         }
     };
 

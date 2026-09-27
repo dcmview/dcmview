@@ -58,7 +58,7 @@ fn decode_uncompressed_to_png_blocking(
             file.series_metadata.native_pixel.high_bit,
             file.pixel_representation == 1,
         )
-        .context("frame decode failed: invalid native stored-bit layout")?;
+        .context("invalid native stored-bit layout")?;
     }
     let pixel_count = usize::try_from(rows)
         .ok()
@@ -67,7 +67,7 @@ fn decode_uncompressed_to_png_blocking(
                 .ok()
                 .and_then(|columns| rows.checked_mul(columns))
         })
-        .ok_or_else(|| anyhow!("frame decode failed: invalid image geometry"))?;
+        .ok_or_else(|| anyhow!("invalid image geometry"))?;
     let photometric = file.photometric_interpretation.trim().to_ascii_uppercase();
     let color_samples = match samples_per_pixel {
         3 => Codec::Native.color_samples(&photometric, bits_allocated),
@@ -91,11 +91,11 @@ fn decode_uncompressed_to_png_blocking(
             rows,
             select_icc_profile(&object),
         )
-        .context("frame decode failed: color PNG encoding failed");
+        .context("color PNG encoding failed");
     }
     if samples_per_pixel != 1 || !matches!(photometric.as_str(), "MONOCHROME1" | "MONOCHROME2") {
         return Err(anyhow!(
-            "frame decode failed: unsupported native layout SamplesPerPixel {samples_per_pixel}, PhotometricInterpretation {}",
+            "unsupported native layout SamplesPerPixel {samples_per_pixel}, PhotometricInterpretation {}",
             file.photometric_interpretation
         ));
     }
@@ -149,13 +149,13 @@ impl NativeFrameSource<'_> {
     fn raw_frame(&self) -> Result<Vec<u8>> {
         self.layout
             .extract_raw_frame(&self.bytes, self.frame_in_bytes)
-            .context("frame decode failed: invalid native frame layout")
+            .context("invalid native frame layout")
     }
 
     fn display_frame(&self) -> Result<Vec<u8>> {
         self.layout
             .extract_display_frame(&self.bytes, self.frame_in_bytes)
-            .context("frame decode failed: invalid native frame layout")
+            .context("invalid native frame layout")
     }
 }
 
@@ -197,9 +197,9 @@ fn read_native_frame(file: &FileEntry, frame: u32) -> Result<NativeFrameSource<'
     // supported release hosts are little-endian, matching the raw API.
     let bytes = object
         .get(native_pixel_element_tag(native_pixel_data_kind(file)))
-        .context("frame decode failed: missing native pixel data element")?
+        .context("missing native pixel data element")?
         .to_bytes()
-        .context("frame decode failed: pixel bytes unavailable")?
+        .context("pixel bytes unavailable")?
         .into_owned();
     Ok(NativeFrameSource {
         bytes,
@@ -217,14 +217,14 @@ fn read_native_frame_bytes(
 ) -> Result<Vec<u8>> {
     let frame_len = layout
         .stored_frame_bytes()
-        .context("frame decode failed: invalid native frame layout")?;
+        .context("invalid native frame layout")?;
     let start = usize::try_from(frame)
         .ok()
         .and_then(|frame| frame.checked_mul(frame_len))
-        .context("frame decode failed: frame offset overflowed")?;
+        .context("frame offset overflowed")?;
     let end = start
         .checked_add(frame_len)
-        .context("frame decode failed: frame offset overflowed")?;
+        .context("frame offset overflowed")?;
 
     let mut reader = BufReader::new(
         File::open(&file.path)
@@ -256,10 +256,10 @@ fn read_native_frame_bytes(
                     .len
                     .get()
                     .and_then(|length| usize::try_from(length).ok())
-                    .context("frame decode failed: native pixel data has undefined length")?;
+                    .context("native pixel data has undefined length")?;
                 if end > available {
                     return Err(anyhow!(
-                        "frame decode failed: native pixel data frame {frame} extends beyond {available} source bytes"
+                        "native pixel data frame {frame} extends beyond {available} source bytes"
                     ));
                 }
                 let value_start = decoder.position();
@@ -281,9 +281,7 @@ fn read_native_frame_bytes(
             _ => {}
         }
     }
-    Err(anyhow!(
-        "frame decode failed: missing native pixel data element"
-    ))
+    Err(anyhow!("missing native pixel data element"))
 }
 
 fn native_pixel_data_kind(file: &FileEntry) -> NativePixelDataKind {
@@ -382,7 +380,7 @@ pub(super) fn decode_numeric_samples(
             })
             .collect()),
         _ => Err(anyhow!(
-            "frame decode failed: unsupported native sample kind {kind:?} with BitsAllocated {bits_allocated}"
+            "unsupported native sample kind {kind:?} with BitsAllocated {bits_allocated}"
         )),
     }
 }
@@ -413,7 +411,7 @@ fn read_raw_uncompressed_blocking(
             file.series_metadata.native_pixel.high_bit,
             file.pixel_representation == 1,
         )
-        .context("frame decode failed: invalid native stored-bit layout")?;
+        .context("invalid native stored-bit layout")?;
     }
 
     let metadata = file.raw_metadata(rows, columns, bits_allocated, samples_per_pixel);

@@ -44,11 +44,11 @@ pub async fn load_raw_frame(
     request: RawFrameRequest,
 ) -> PixelResult<RawFrameResponse> {
     if !file.has_pixels {
-        return Err(PixelError::NoPixelData);
+        return Err(PixelError::NoPixelData {
+            file_index: file.index,
+        });
     }
-    if request.frame >= file.frame_count {
-        return Err(PixelError::FrameOutOfRange);
-    }
+    PixelError::ensure_frame(request.frame, file.frame_count)?;
 
     let codec = codec_or_unsupported(&file)?;
     reject_unsupported_layout(&file, FrameKind::Raw)?;
@@ -132,11 +132,11 @@ pub async fn load_frame(
     request: FrameRequest,
 ) -> PixelResult<FrameResponse> {
     if !file.has_pixels {
-        return Err(PixelError::NoPixelData);
+        return Err(PixelError::NoPixelData {
+            file_index: file.index,
+        });
     }
-    if request.frame >= file.frame_count {
-        return Err(PixelError::FrameOutOfRange);
-    }
+    PixelError::ensure_frame(request.frame, file.frame_count)?;
 
     let window = WindowRequest::new(
         request.window_center,

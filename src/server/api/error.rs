@@ -79,7 +79,24 @@ impl ApiError {
 }
 
 pub(super) fn path_rejection(error: PathRejection) -> ApiError {
-    ApiError::from_rejection(error.status(), ApiErrorCode::InvalidPath, error.body_text())
+    // axum's text names Rust types and parser internals.
+    ApiError::from_rejection(
+        error.status(),
+        ApiErrorCode::InvalidPath,
+        "invalid path: file indexes and frame numbers are non-negative integers",
+    )
+}
+
+/// A read that failed because the file was deleted or moved after discovery
+/// is a 404 that says so, rather than a 500 with the system's message.
+pub(super) fn gone_or(path: &std::path::Path, error: ApiError) -> ApiError {
+    if error.status.is_server_error() && !path.exists() {
+        return ApiError::not_found(format!(
+            "{} no longer exists; restart dcmview to scan again",
+            path.display()
+        ));
+    }
+    error
 }
 
 pub(super) fn query_rejection(error: QueryRejection) -> ApiError {
@@ -96,12 +113,12 @@ pub(super) fn json_rejection(error: JsonRejection) -> ApiError {
 
 pub(super) fn pixel_error(error: PixelError) -> ApiError {
     match error {
-        pixels::PixelError::NoPixelData => ApiError::coded(
+        pixels::PixelError::NoPixelData { .. } => ApiError::coded(
             StatusCode::NOT_FOUND,
             ApiErrorCode::NoPixelData,
             error.to_string(),
         ),
-        pixels::PixelError::FrameOutOfRange => ApiError::coded(
+        pixels::PixelError::FrameOutOfRange { .. } => ApiError::coded(
             StatusCode::NOT_FOUND,
             ApiErrorCode::FrameOutOfRange,
             error.to_string(),
@@ -134,6 +151,15 @@ pub(super) async fn not_found_handler() -> ApiError {
         StatusCode::NOT_FOUND,
         ApiErrorCode::RouteNotFound,
         "API route not found",
+    )
+}
+
+/// Outside `/api`: only the viewer page and its assets are served.
+pub(super) async fn page_not_found_handler() -> ApiError {
+    ApiError::coded(
+        StatusCode::NOT_FOUND,
+        ApiErrorCode::RouteNotFound,
+        "not found: the viewer is served at /",
     )
 }
 

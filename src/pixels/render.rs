@@ -80,7 +80,7 @@ pub(crate) fn encode_windowed_luminance_png(
             file.default_window,
             window_source,
         )
-        .ok_or_else(|| anyhow!("frame decode failed: could not resolve window"))?;
+        .ok_or_else(|| anyhow!("could not resolve window"))?;
         apply_window(
             &rescaled,
             resolved_window.center,
@@ -102,11 +102,11 @@ pub(crate) fn encode_windowed_luminance_png(
     );
 
     let image = ImageBuffer::<Luma<u8>, Vec<u8>>::from_raw(columns, rows, windowed)
-        .ok_or_else(|| anyhow!("frame decode failed: windowed buffer size mismatch"))?;
+        .ok_or_else(|| anyhow!("windowed buffer size mismatch"))?;
     let mut buffer = Cursor::new(Vec::<u8>::new());
     image::DynamicImage::ImageLuma8(image)
         .write_to(&mut buffer, ImageFormat::Png)
-        .context("frame decode failed: png encoding failed")?;
+        .context("png encoding failed")?;
     Ok(Bytes::from(buffer.into_inner()))
 }
 

@@ -2,10 +2,10 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum PixelError {
-    #[error("no pixel data")]
-    NoPixelData,
-    #[error("frame out of range")]
-    FrameOutOfRange,
+    #[error("file {file_index} has no pixel data")]
+    NoPixelData { file_index: usize },
+    #[error("frame {frame} is out of range: the file has {frame_count} frame(s)")]
+    FrameOutOfRange { frame: u32, frame_count: u32 },
     #[error("unsupported transfer syntax: {0}")]
     UnsupportedTransferSyntax(String),
     #[error("unsupported pixel layout: {0}")]
@@ -23,6 +23,15 @@ pub enum PixelError {
 }
 
 impl PixelError {
+    /// `FrameOutOfRange` unless `frame` is one of the file's frames.
+    pub(crate) fn ensure_frame(frame: u32, frame_count: u32) -> Result<(), Self> {
+        if frame < frame_count {
+            Ok(())
+        } else {
+            Err(Self::FrameOutOfRange { frame, frame_count })
+        }
+    }
+
     pub(crate) fn frame_decode(source: anyhow::Error) -> Self {
         Self::Decode {
             context: "frame decode failed",
@@ -34,8 +43,13 @@ impl PixelError {
     /// variant (and so the same HTTP status), with the source as text.
     pub(crate) fn duplicate(&self) -> Self {
         match self {
-            Self::NoPixelData => Self::NoPixelData,
-            Self::FrameOutOfRange => Self::FrameOutOfRange,
+            Self::NoPixelData { file_index } => Self::NoPixelData {
+                file_index: *file_index,
+            },
+            Self::FrameOutOfRange { frame, frame_count } => Self::FrameOutOfRange {
+                frame: *frame,
+                frame_count: *frame_count,
+            },
             Self::UnsupportedTransferSyntax(uid) => Self::UnsupportedTransferSyntax(uid.clone()),
             Self::UnsupportedLayout(reason) => Self::UnsupportedLayout(reason.clone()),
             Self::InvalidWindow(message) => Self::InvalidWindow(message.clone()),

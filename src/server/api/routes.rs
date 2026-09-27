@@ -73,6 +73,8 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/", get(web::index))
         .route("/assets/{*path}", get(web::asset))
         .nest(API_PREFIX, api)
+        .fallback(error::page_not_found_handler)
+        .method_not_allowed_fallback(error::method_not_allowed_handler)
         .layer(middleware::from_fn_with_state(
             activity,
             track_request_activity,
