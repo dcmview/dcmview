@@ -60,6 +60,11 @@ It provides:
 | `stop(timeout=5.0)` | Ask the viewer to stop, wait for exit, and return the exit code. |
 | Context manager | Calls `stop()` automatically on context exit. |
 
+Viewers started with `block=False` are stopped when the Python interpreter
+exits, whether or not the handle is still referenced, so a finished script or a
+restarted notebook kernel does not leave a server running. Use a blocking call
+or the `dcmview` command when the viewer should outlive the script.
+
 `stop()` is idempotent for local handles after the process has already exited.
 It first requests graceful process shutdown and waits; the Rust startup
 lifecycle cancels and awaits any in-progress DICOM discovery before a normal

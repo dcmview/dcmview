@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import os
 import json
 import shutil
@@ -112,12 +113,14 @@ class ShutdownHandle:
 	def __init__(self, process: subprocess.Popen[str], monitor: _OutputMonitor) -> None:
 		self._process = process
 		self._monitor = monitor
+		_LIVE_HANDLES.add(self)
 
 	@property
 	def url(self) -> Optional[str]:
 		return self._monitor.url
 
 	def stop(self, timeout: float = _STOP_TIMEOUT_SECONDS) -> int:
+		_LIVE_HANDLES.discard(self)
 		if self._process.poll() is not None:
 			self._monitor.join()
 			return int(self._process.returncode or 0)
@@ -145,6 +148,22 @@ class ShutdownHandle:
 
 	def __exit__(self, _exc_type, _exc, _tb) -> None:
 		self.stop()
+
+
+# Viewers started without blocking are stopped when the interpreter exits, so a
+# restarted kernel or finished script does not leave servers running. Handles
+# are held strongly: a caller that dropped its handle still gets its viewer
+# stopped.
+_LIVE_HANDLES: set[ShutdownHandle] = set()
+
+
+@atexit.register
+def _stop_live_handles() -> None:
+	for handle in list(_LIVE_HANDLES):
+		try:
+			handle.stop(timeout=2.0)
+		except Exception:  # best effort while the interpreter shuts down
+			pass
 
 
 def view(
