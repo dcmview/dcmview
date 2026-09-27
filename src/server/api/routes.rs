@@ -8,10 +8,10 @@ use crate::server::RequestActivity;
 use axum::extract::{Request, State};
 use axum::middleware::{self, Next};
 use axum::response::Response;
-use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Predicate};
-use tower_http::compression::{CompressionLayer, CompressionLevel};
 use axum::routing::get;
 use axum::Router;
+use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Predicate};
+use tower_http::compression::{CompressionLayer, CompressionLevel};
 #[cfg(feature = "debug-api")]
 use tower_http::cors::CorsLayer;
 
