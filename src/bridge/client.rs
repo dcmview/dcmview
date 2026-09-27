@@ -29,7 +29,7 @@ pub(crate) enum BridgeOutcome {
 /// A failed launch, classified by whether VS Code may have opened a viewer.
 #[derive(Debug, thiserror::Error)]
 enum LaunchError {
-    /// Nothing listens at the endpoint, so its registry entry is stale.
+    /// No bridge listens at the endpoint, so its registry entry is stale.
     #[error("VS Code bridge is not running: {0}")]
     Unreachable(String),
     /// The bridge never received or explicitly refused the launch.
@@ -78,9 +78,15 @@ pub(crate) async fn launch_in_vscode(
     };
 
     let request = launch_request(program, args, &cwd, current_executable());
-    let (attempt, unreachable) =
-        launch_on_first_endpoint(&client, &endpoints, &request, BRIDGE_LAUNCH_TIMEOUT).await;
-    for endpoint in &unreachable {
+    let (attempt, stale) = launch_on_first_endpoint(
+        &client,
+        &endpoints,
+        &request,
+        BRIDGE_REQUEST_TIMEOUT,
+        BRIDGE_LAUNCH_TIMEOUT,
+    )
+    .await;
+    for endpoint in &stale {
         remove_vscode_bridge_registry_endpoint(endpoint);
     }
 
@@ -103,7 +109,8 @@ pub(crate) async fn launch_in_vscode(
         }
         LaunchAttempt::Uncertain(error) => {
             eprintln!(
-                "dcmview: {error}. VS Code may still open the viewer, so no local viewer was started."
+                "dcmview: {error}. VS Code may still open the viewer, so no local viewer was started. \
+                 Set DCMVIEW_VSCODE_BYPASS=1 to run the local viewer instead."
             );
             BridgeOutcome::Routed(1)
         }
@@ -141,34 +148,87 @@ fn print_launched(url: &str, startup_json: bool) {
     println!("dcmview: opened in VS Code at {url}");
 }
 
+/// What answers at a registered bridge endpoint.
+enum Probe {
+    /// The VS Code bridge, which refuses an unauthenticated request with
+    /// `401 {"error":"unauthorized"}`.
+    Bridge,
+    /// Nothing, something else, or a listener that closed without answering:
+    /// the entry outlived its VS Code window and its port may have been reused.
+    Stale(String),
+    /// No usable answer in time. A busy VS Code can be slow, so the entry is
+    /// kept; nothing was launched, so falling back cannot open a second viewer.
+    Silent(String),
+}
+
+/// Ask an endpoint whether it is a bridge before handing it a launch, so a
+/// reused port fails fast instead of spending the launch budget or leaving
+/// the launch uncertain.
+async fn probe_bridge(
+    client: &reqwest::Client,
+    endpoint: &BridgeEndpoint,
+    timeout: Duration,
+) -> Probe {
+    let url = format!("{}/", endpoint.url.trim_end_matches('/'));
+    let response = match client.get(url).timeout(timeout).send().await {
+        Ok(response) => response,
+        Err(error) if error.is_timeout() || error.is_builder() => {
+            return Probe::Silent(error.to_string());
+        }
+        Err(error) => return Probe::Stale(error.to_string()),
+    };
+    let status = response.status();
+    let body = response.json::<serde_json::Value>().await.ok();
+    let unauthorized = body
+        .as_ref()
+        .and_then(|body| body.get("error"))
+        .and_then(|error| error.as_str())
+        == Some("unauthorized");
+    if status == reqwest::StatusCode::UNAUTHORIZED && unauthorized {
+        Probe::Bridge
+    } else {
+        Probe::Stale(format!(
+            "endpoint answered {status}, not as a VS Code bridge"
+        ))
+    }
+}
+
 /// Try endpoints in order until one launches or the outcome is uncertain.
 ///
-/// Also returns the endpoints that refused the connection, whose registry
+/// Also returns the endpoints that are not bridges any more, whose registry
 /// entries are stale.
 async fn launch_on_first_endpoint(
     client: &reqwest::Client,
     endpoints: &[BridgeEndpoint],
     request: &BridgeLaunchRequest,
+    probe_timeout: Duration,
     launch_timeout: Duration,
 ) -> (LaunchAttempt, Vec<BridgeEndpoint>) {
-    let mut unreachable = Vec::new();
+    let mut stale = Vec::new();
     let mut last_error = None;
     for endpoint in endpoints {
-        match launch_vscode_session(client, endpoint, request, launch_timeout).await {
+        let result = match probe_bridge(client, endpoint, probe_timeout).await {
+            Probe::Bridge => launch_vscode_session(client, endpoint, request, launch_timeout).await,
+            Probe::Stale(reason) => Err(LaunchError::Unreachable(reason)),
+            Probe::Silent(reason) => Err(LaunchError::NotLaunched(format!(
+                "VS Code bridge did not answer: {reason}"
+            ))),
+        };
+        match result {
             Ok(response) => {
                 let attempt = LaunchAttempt::Launched {
                     endpoint: endpoint.clone(),
                     response,
                 };
-                return (attempt, unreachable);
+                return (attempt, stale);
             }
             Err(error @ LaunchError::Uncertain(_)) => {
-                return (LaunchAttempt::Uncertain(error), unreachable);
+                return (LaunchAttempt::Uncertain(error), stale);
             }
             Err(error) => {
                 bridge_debug(&format!("endpoint {} failed: {error}", endpoint.url));
                 if matches!(error, LaunchError::Unreachable(_)) {
-                    unreachable.push(endpoint.clone());
+                    stale.push(endpoint.clone());
                 }
                 last_error = Some(error);
             }
@@ -176,7 +236,7 @@ async fn launch_on_first_endpoint(
     }
     let error = last_error
         .unwrap_or_else(|| LaunchError::NotLaunched("no VS Code bridge endpoints".to_string()));
-    (LaunchAttempt::Failed(error), unreachable)
+    (LaunchAttempt::Failed(error), stale)
 }
 
 async fn launch_vscode_session(
@@ -403,10 +463,22 @@ mod tests {
     }
 
     fn launch_router(state: MockBridgeState) -> Router {
-        Router::new()
-            .route("/launch", post(authenticated_launch))
-            .route("/sessions/{session_id}/wait", get(authenticated_wait))
-            .with_state(state)
+        bridge(
+            Router::new()
+                .route("/launch", post(authenticated_launch))
+                .route("/sessions/{session_id}/wait", get(authenticated_wait))
+                .with_state(state),
+        )
+    }
+
+    /// The real bridge refuses every unauthenticated request before routing.
+    fn bridge(router: Router) -> Router {
+        router.fallback(|| async {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({ "error": "unauthorized" })),
+            )
+        })
     }
 
     #[tokio::test]
@@ -419,6 +491,7 @@ mod tests {
             &client,
             &[endpoint(format!("{}/", server.url()))],
             &test_request(),
+            Duration::from_secs(1),
             Duration::from_secs(1),
         )
         .await;
@@ -650,7 +723,8 @@ mod tests {
     async fn refused_and_rejected_endpoints_fall_through_to_the_next() {
         let state = MockBridgeState::default();
         let good = MockServer::spawn(launch_router(state.clone())).await;
-        let rejecting = MockServer::spawn(Router::new().route("/launch", post(http_error))).await;
+        let rejecting =
+            MockServer::spawn(bridge(Router::new().route("/launch", post(http_error)))).await;
         let refused = endpoint(unused_loopback_url().await);
 
         let (attempt, unreachable) = launch_on_first_endpoint(
@@ -661,6 +735,7 @@ mod tests {
                 endpoint(good.url()),
             ],
             &test_request(),
+            REFUSED_CONNECT_TIMEOUT,
             REFUSED_CONNECT_TIMEOUT,
         )
         .await;
@@ -677,13 +752,15 @@ mod tests {
     #[tokio::test]
     async fn slow_launch_stops_without_trying_other_bridges_or_marking_it_stale() {
         let state = MockBridgeState::default();
-        let slow = MockServer::spawn(Router::new().route("/launch", post(slow_launch))).await;
+        let slow =
+            MockServer::spawn(bridge(Router::new().route("/launch", post(slow_launch)))).await;
         let good = MockServer::spawn(launch_router(state.clone())).await;
 
         let (attempt, unreachable) = launch_on_first_endpoint(
             &reqwest::Client::new(),
             &[endpoint(slow.url()), endpoint(good.url())],
             &test_request(),
+            Duration::from_secs(1),
             Duration::from_millis(50),
         )
         .await;
@@ -694,6 +771,54 @@ mod tests {
             "a live but slow bridge is not stale"
         );
         assert!(state.events().is_empty(), "no second viewer is launched");
+    }
+
+    #[tokio::test]
+    async fn endpoints_that_are_not_bridges_are_stale_and_silent_ones_are_kept() {
+        let state = MockBridgeState::default();
+        let good = MockServer::spawn(launch_router(state.clone())).await;
+        // A reused port: another HTTP service, and a listener that closes
+        // every connection without answering.
+        let other_service =
+            MockServer::spawn(Router::new().route("/", get(|| async { "hello" }))).await;
+        let closing = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let closing_url = format!("http://{}", closing.local_addr().expect("address"));
+        let _closing = tokio::spawn(async move {
+            while let Ok((socket, _)) = closing.accept().await {
+                drop(socket);
+            }
+        });
+        // Accepts and never answers, like a VS Code too busy to respond.
+        let silent = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let silent_url = format!("http://{}", silent.local_addr().expect("address"));
+        let _silent = tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((socket, _)) = silent.accept().await {
+                held.push(socket);
+            }
+        });
+
+        let (attempt, stale) = launch_on_first_endpoint(
+            &reqwest::Client::new(),
+            &[
+                endpoint(other_service.url()),
+                endpoint(closing_url.clone()),
+                endpoint(silent_url),
+                endpoint(good.url()),
+            ],
+            &test_request(),
+            Duration::from_millis(200),
+            Duration::from_secs(1),
+        )
+        .await;
+
+        assert!(matches!(attempt, LaunchAttempt::Launched { .. }));
+        assert_eq!(
+            stale,
+            vec![endpoint(other_service.url()), endpoint(closing_url)],
+            "a silent endpoint may be a busy VS Code and is kept"
+        );
+        assert_eq!(state.events(), vec!["launch:dcmview:/workspace"]);
     }
 
     struct MockServer {

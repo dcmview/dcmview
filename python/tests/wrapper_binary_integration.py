@@ -49,9 +49,9 @@ class FakeBridge:
 			def log_message(self, *_args: object) -> None:
 				pass
 
-			def _reply(self, body: dict[str, object]) -> None:
+			def _reply(self, body: dict[str, object], status: int = 200) -> None:
 				payload = json.dumps(body).encode("utf-8")
-				self.send_response(200)
+				self.send_response(status)
 				self.send_header("Content-Type", "application/json")
 				self.send_header("Content-Length", str(len(payload)))
 				self.end_headers()
@@ -60,8 +60,8 @@ class FakeBridge:
 			def _authorized(self) -> bool:
 				if self.headers.get("Authorization") == f"Bearer {BRIDGE_TOKEN}":
 					return True
-				self.send_response(401)
-				self.end_headers()
+				# The extension's reply, which the binary probes for.
+				self._reply({"error": "unauthorized"}, status=401)
 				return False
 
 			def do_POST(self) -> None:
