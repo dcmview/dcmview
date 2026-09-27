@@ -653,7 +653,7 @@
 			right: 0;
 			bottom: 0;
 			z-index: 40;
-			width: min(360px, 90vw);
+			width: min(420px, 90vw);
 			visibility: hidden;
 			transform: translateX(100%);
 			transition: transform var(--settle) var(--ease-standard), visibility 0s linear var(--settle);
