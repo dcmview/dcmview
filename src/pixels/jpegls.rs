@@ -7,7 +7,7 @@ use tokio::task;
 
 use super::encapsulated::open_for_frame_decode;
 use super::error::{PixelError, PixelResult};
-use super::render::{encode_windowed_luminance_png, LuminanceRenderOptions};
+use super::render::{encode_windowed_luminance_png, LuminanceRenderOptions, StoredSamples};
 
 struct DecodedJpegLsFrame {
     bytes: Vec<u8>,
@@ -25,40 +25,19 @@ pub(crate) async fn decode_jpeg_ls_to_png(
 ) -> PixelResult<Bytes> {
     task::spawn_blocking(move || {
         let decoded = decode_frame(&file, frame).map_err(PixelError::frame_decode)?;
-        let signed = file.pixel_representation == 1;
-        let samples: Vec<f64> = match decoded.bits_allocated {
-            8 => decoded
-                .bytes
-                .into_iter()
-                .map(|value| {
-                    if signed {
-                        f64::from(value as i8)
-                    } else {
-                        f64::from(value)
-                    }
-                })
-                .collect(),
-            16 => decoded
-                .bytes
-                .chunks_exact(2)
-                .map(|sample| {
-                    let value = u16::from_le_bytes([sample[0], sample[1]]);
-                    if signed {
-                        f64::from(value as i16)
-                    } else {
-                        f64::from(value)
-                    }
-                })
-                .collect(),
-            bits => {
-                return Err(PixelError::UnsupportedLayout(format!(
-                    "JPEG-LS Lossless display does not support BitsAllocated {bits}"
-                )));
-            }
-        };
+        if !matches!(decoded.bits_allocated, 8 | 16) {
+            return Err(PixelError::UnsupportedLayout(format!(
+                "JPEG-LS Lossless display does not support BitsAllocated {}",
+                decoded.bits_allocated
+            )));
+        }
         encode_windowed_luminance_png(
             &file,
-            &samples,
+            StoredSamples::Integer {
+                bytes: &decoded.bytes,
+                bits_allocated: decoded.bits_allocated,
+                signed: file.pixel_representation == 1,
+            },
             LuminanceRenderOptions {
                 frame,
                 rows: decoded.rows,

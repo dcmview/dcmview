@@ -11,7 +11,7 @@ use super::error::{PixelError, PixelResult};
 use super::header::open_header;
 use super::icc::select_icc_profile;
 use super::render::{
-    encode_rgb8_display_png, encode_windowed_luminance_png, LuminanceRenderOptions,
+    encode_rgb8_display_png, encode_windowed_luminance_png, LuminanceRenderOptions, StoredSamples,
 };
 use super::shutter;
 
@@ -55,18 +55,38 @@ fn decode_jp2_fragment_to_png_blocking(
         // Grayscale shares the presentation pipeline used by every other
         // syntax: Modality LUT/rescale, VOI LUT/window, padding, inversion,
         // shutter, and overlays.
-        let stored_samples: Vec<f64> = comps[0].data().iter().map(|&value| value as f64).collect();
+        let data = comps[0].data();
+        let options = LuminanceRenderOptions {
+            frame,
+            rows: comps[0].height(),
+            columns: comps[0].width(),
+            requested_wc,
+            requested_ww,
+            window_mode,
+        };
+        // Components that fit the declared 8- or 16-bit layout take the
+        // table path; anything else is windowed per sample, as before.
+        if let Ok((bytes, bits_allocated)) = encode_raw_jp2_samples(
+            data,
+            comps[0].precision(),
+            comps[0].is_signed(),
+            file.pixel_representation,
+        ) {
+            return encode_windowed_luminance_png(
+                file,
+                StoredSamples::Integer {
+                    bytes: &bytes,
+                    bits_allocated,
+                    signed: file.pixel_representation == 1,
+                },
+                options,
+            );
+        }
+        let stored_samples: Vec<f64> = data.iter().map(|&value| f64::from(value)).collect();
         return encode_windowed_luminance_png(
             file,
-            &stored_samples,
-            LuminanceRenderOptions {
-                frame,
-                rows: comps[0].height(),
-                columns: comps[0].width(),
-                requested_wc,
-                requested_ww,
-                window_mode,
-            },
+            StoredSamples::Values(&stored_samples),
+            options,
         );
     } else if comps.len() == 3 {
         // RGB — rare in medical imaging but handle it

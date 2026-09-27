@@ -19,7 +19,7 @@ use super::icc::select_icc_profile;
 use super::native_layout::{native_pixel_element_tag, NativeByteOrder, NativeFrameLayout};
 use super::palette::palette_indices_to_rgb8;
 use super::render::{
-    encode_rgb8_display_png, encode_windowed_luminance_png, LuminanceRenderOptions,
+    encode_rgb8_display_png, encode_windowed_luminance_png, LuminanceRenderOptions, StoredSamples,
 };
 use super::stored_bits::canonicalize_integer_samples;
 use super::syntax::Codec;
@@ -100,27 +100,41 @@ fn decode_uncompressed_to_png_blocking(
         ));
     }
 
-    // dicom-object normalizes primitive pixel bytes to host order for native pixel data.
-    // Decode from the normalized byte representation directly.
+    let options = LuminanceRenderOptions {
+        frame,
+        rows,
+        columns,
+        requested_wc,
+        requested_ww,
+        window_mode,
+    };
+    // dicom-object normalizes primitive pixel bytes to host order for native
+    // pixel data; one-bit frames arrive expanded to one byte per sample.
+    let kind = native_pixel_data_kind(file);
+    let container = match (kind, bits_allocated) {
+        (NativePixelDataKind::Integer, 1) => Some(8),
+        (NativePixelDataKind::Integer, 8 | 16) => Some(bits_allocated),
+        _ => None,
+    };
+    if let Some(container) = container {
+        return encode_windowed_luminance_png(
+            file,
+            StoredSamples::Integer {
+                bytes: &frame_bytes,
+                bits_allocated: container,
+                signed: bits_allocated > 1 && file.pixel_representation == 1,
+            },
+            options,
+        );
+    }
     let stored = decode_numeric_samples(
         &frame_bytes,
         bits_allocated,
         file.pixel_representation == 1,
         false,
-        native_pixel_data_kind(file),
+        kind,
     )?;
-    encode_windowed_luminance_png(
-        file,
-        &stored,
-        LuminanceRenderOptions {
-            frame,
-            rows,
-            columns,
-            requested_wc,
-            requested_ww,
-            window_mode,
-        },
-    )
+    encode_windowed_luminance_png(file, StoredSamples::Values(&stored), options)
 }
 
 fn native_frame_layout(file: &FileEntry) -> NativeFrameLayout<'_> {

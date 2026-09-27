@@ -7,7 +7,7 @@ use dicom_pixeldata::PixelDecoder;
 use tokio::task;
 
 use super::error::{PixelError, PixelResult};
-use super::render::{encode_windowed_luminance_png, LuminanceRenderOptions};
+use super::render::{encode_windowed_luminance_png, LuminanceRenderOptions, StoredSamples};
 
 pub(crate) const DEFLATED_IMAGE_FRAME_UID: &str = "1.2.840.10008.1.2.8.1";
 
@@ -28,14 +28,14 @@ pub(crate) async fn decode_deflated_binary_frame_to_png(
         .map_err(|error| PixelError::UnsupportedLayout(error.to_string()))?;
     task::spawn_blocking(move || {
         let decoded = decode_binary_frame(&file, frame).map_err(PixelError::frame_decode)?;
-        let samples = decoded
-            .samples
-            .iter()
-            .map(|sample| f64::from(*sample))
-            .collect::<Vec<_>>();
+        // One byte per binary sample, 0 or 1.
         encode_windowed_luminance_png(
             &file,
-            &samples,
+            StoredSamples::Integer {
+                bytes: &decoded.samples,
+                bits_allocated: 8,
+                signed: false,
+            },
             LuminanceRenderOptions {
                 frame,
                 rows: decoded.rows,

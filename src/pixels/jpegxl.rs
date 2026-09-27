@@ -10,7 +10,7 @@ use super::encapsulated::open_for_frame_decode;
 use super::error::{PixelError, PixelResult};
 use super::icc::select_icc_profile;
 use super::render::{
-    encode_rgb8_display_png, encode_windowed_luminance_png, LuminanceRenderOptions,
+    encode_rgb8_display_png, encode_windowed_luminance_png, LuminanceRenderOptions, StoredSamples,
 };
 use super::syntax::{Codec, ColorSamples};
 
@@ -55,7 +55,11 @@ pub(crate) async fn decode_jpeg_xl_to_png(
                     .map_err(PixelError::frame_decode)
             }
             (8, 1) => {
-                let samples = decoded.bytes.into_iter().map(f64::from).collect::<Vec<_>>();
+                let samples = StoredSamples::Integer {
+                    bytes: &decoded.bytes,
+                    bits_allocated: 8,
+                    signed: false,
+                };
                 encode_monochrome(
                     &file,
                     samples,
@@ -68,19 +72,11 @@ pub(crate) async fn decode_jpeg_xl_to_png(
                 )
             }
             (16, 1) => {
-                let signed = file.pixel_representation == 1;
-                let samples = decoded
-                    .bytes
-                    .chunks_exact(2)
-                    .map(|sample| {
-                        let value = u16::from_le_bytes([sample[0], sample[1]]);
-                        if signed {
-                            f64::from(value as i16)
-                        } else {
-                            f64::from(value)
-                        }
-                    })
-                    .collect::<Vec<_>>();
+                let samples = StoredSamples::Integer {
+                    bytes: &decoded.bytes,
+                    bits_allocated: 16,
+                    signed: file.pixel_representation == 1,
+                };
                 encode_monochrome(
                     &file,
                     samples,
@@ -175,7 +171,7 @@ fn decode_frame(file: &FileEntry, frame: u32) -> Result<DecodedJpegXlFrame> {
 #[allow(clippy::too_many_arguments)]
 fn encode_monochrome(
     file: &FileEntry,
-    samples: Vec<f64>,
+    samples: StoredSamples<'_>,
     frame: u32,
     rows: u32,
     columns: u32,
@@ -185,7 +181,7 @@ fn encode_monochrome(
 ) -> PixelResult<Bytes> {
     encode_windowed_luminance_png(
         file,
-        &samples,
+        samples,
         LuminanceRenderOptions {
             frame,
             rows,

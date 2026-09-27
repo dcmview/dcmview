@@ -10,7 +10,7 @@ use super::encapsulated::open_for_frame_decode;
 use super::error::{PixelError, PixelResult};
 use super::icc::select_icc_profile;
 use super::render::{
-    encode_rgb8_display_png, encode_windowed_luminance_png, LuminanceRenderOptions,
+    encode_rgb8_display_png, encode_windowed_luminance_png, LuminanceRenderOptions, StoredSamples,
 };
 use super::syntax::{Codec, ColorSamples};
 
@@ -85,56 +85,28 @@ fn decode_compressed_frame_to_png_blocking(
         ));
     }
 
-    let (stored, rows, columns) = decoded_luminance_samples(file, &decoded)?;
+    let bits_allocated = u32::from(decoded.bits_allocated());
+    if !matches!(bits_allocated, 8 | 16) {
+        return Err(anyhow!("unsupported BitsAllocated {bits_allocated}"));
+    }
+    // Decoded samples are in host byte order, little endian on every
+    // supported host.
     encode_windowed_luminance_png(
         file,
-        &stored,
+        StoredSamples::Integer {
+            bytes: decoded.frame_data(0)?,
+            bits_allocated,
+            signed: file.pixel_representation == 1,
+        },
         LuminanceRenderOptions {
             frame,
-            rows,
-            columns,
+            rows: decoded.rows(),
+            columns: decoded.columns(),
             requested_wc,
             requested_ww,
             window_mode,
         },
     )
-}
-
-fn decoded_luminance_samples(
-    file: &FileEntry,
-    decoded: &dicom_pixeldata::DecodedPixelData<'_>,
-) -> Result<(Vec<f64>, u32, u32)> {
-    let bits_allocated = decoded.bits_allocated() as u32;
-    let signed = file.pixel_representation == 1;
-    let raw_samples = match bits_allocated {
-        8 => decoded
-            .frame_data(0)?
-            .iter()
-            .map(|value| {
-                if signed {
-                    (*value as i8) as f64
-                } else {
-                    *value as f64
-                }
-            })
-            .collect::<Vec<_>>(),
-        16 => decoded
-            .frame_data_ow(0)?
-            .into_iter()
-            .map(|value| {
-                if signed {
-                    (value as i16) as f64
-                } else {
-                    value as f64
-                }
-            })
-            .collect::<Vec<_>>(),
-        _ => {
-            return Err(anyhow!("unsupported BitsAllocated {bits_allocated}"));
-        }
-    };
-
-    Ok((raw_samples, decoded.rows(), decoded.columns()))
 }
 
 pub(crate) async fn read_raw_jpeg_samples(
