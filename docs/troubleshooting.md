@@ -81,11 +81,14 @@ inside the selected directory.
 Symptom: startup or the viewer file registry reports skipped files.
 
 Likely cause: the scan encountered non-DICOM files, unreadable paths, or invalid
-DICOM objects. Files excluded by metadata filters are counted separately as
-filtered.
+DICOM objects. The startup summary counts skips by reason, for example
+`(3 skipped: 2 not DICOM (no DICM preamble), 1 unparsable DICOM, ...)`. Files
+excluded by metadata filters are counted separately as filtered.
 
-Fix: skipped non-DICOM sidecar files are usually harmless. If an expected DICOM
-file is skipped, check file permissions and try opening that file directly:
+Fix: skipped non-DICOM sidecar files are usually harmless. To see which files
+were skipped and why, run with `RUST_LOG=dcmview=debug`, which logs each skipped
+path and its reason to stderr. If an expected DICOM file is skipped, check file
+permissions and try opening that file directly:
 
 ```bash
 dcmview ./expected-file.dcm

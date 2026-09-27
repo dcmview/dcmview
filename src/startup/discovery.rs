@@ -216,32 +216,40 @@ fn finish_scan(
                 "dcmview: no DICOM files matched active filters ({})",
                 format_scan_filters(filters)
             );
+        } else if report.skipped > 0 {
+            eprintln!(
+                "dcmview: no valid DICOM files found ({})",
+                skip_breakdown(&report)
+            );
         } else {
             eprintln!("dcmview: no valid DICOM files found");
         }
         return DiscoveryOutcome::Failed;
     }
 
-    print_progressive_load_summary(
-        file_count,
-        report.skipped,
-        report.filtered,
-        report.searched_recursive,
-        filters,
-        input_paths,
-    );
+    print_progressive_load_summary(file_count, &report, filters, input_paths);
     DiscoveryOutcome::Completed
+}
+
+/// "3 skipped: 2 not DICOM (no DICM preamble), 1 unparsable DICOM".
+fn skip_breakdown(report: &loader::DiscoveryReport) -> String {
+    let reasons = report
+        .skipped_by_reason
+        .iter()
+        .map(|(reason, count)| format!("{count} {}", reason.summary()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{} skipped: {reasons}", report.skipped)
 }
 
 fn print_progressive_load_summary(
     file_count: usize,
-    skipped: usize,
-    filtered: usize,
-    searched_recursive: bool,
+    report: &loader::DiscoveryReport,
     filters: &[loader::ScanFilter],
     input_paths: &[PathBuf],
 ) {
-    let recursive_note = if searched_recursive {
+    let (skipped, filtered) = (report.skipped, report.filtered);
+    let recursive_note = if report.searched_recursive {
         "searched recursively"
     } else {
         "searched top-level only"
@@ -254,7 +262,7 @@ fn print_progressive_load_summary(
 
     let mut notes = Vec::new();
     if skipped > 0 {
-        notes.push(format!("{skipped} skipped — not valid DICOM"));
+        notes.push(skip_breakdown(report));
     }
     if filtered > 0 {
         notes.push(format!("{filtered} filtered"));
