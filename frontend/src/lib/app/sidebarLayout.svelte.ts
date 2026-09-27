@@ -5,7 +5,7 @@ export const TAG_PANEL_MIN_WIDTH_PX = 260;
 export const TAG_PANEL_MAX_WIDTH_PX = 720;
 const TAG_PANEL_DEFAULT_WIDTH_PX = 360;
 const TAG_PANEL_COLLAPSED_WIDTH_PX = 44;
-const FILE_NAV_WIDTH_PX = 300;
+const FILE_NAV_WIDTH_PX = 276;
 const FILE_NAV_COLLAPSED_WIDTH_PX = 44;
 /** Widths at which each sidebar becomes a compact drawer (matches App's CSS). */
 const EXPLORER_DRAWER_QUERY = "(max-width: 519px)";

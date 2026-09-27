@@ -696,7 +696,7 @@
 			left: 0;
 			bottom: 0;
 			z-index: 40;
-			width: min(300px, 90vw);
+			width: min(276px, 90vw);
 			visibility: hidden;
 			transform: translateX(-100%);
 			transition: transform var(--settle) var(--ease-standard), visibility 0s linear var(--settle);
