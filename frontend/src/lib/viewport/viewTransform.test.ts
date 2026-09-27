@@ -4,6 +4,7 @@ import { DEFAULT_ORIENTATION, type ImageOrientation } from "../viewerTools";
 import {
 	clampZoom,
 	clientToImagePoint,
+	imageToViewportPoint,
 	layerTransformCss,
 	nextZoomStep,
 	rotateClockwise,
@@ -17,32 +18,6 @@ import {
 } from "./viewTransform";
 
 const origin = { left: 40, top: 25 };
-
-/**
- * Applies the same operations as layerTransformCss, in CSS order, to an
- * image point: aspect ratio, orientation about the center, zoom, pan.
- */
-function imageToClient(
-	point: { x: number; y: number },
-	transform: ViewTransform,
-	orientation: ImageOrientation,
-	rows: number,
-	columns: number,
-	ratio: number,
-): { x: number; y: number } {
-	const geometry = imageDisplayGeometry(rows, columns, ratio);
-	let x = point.x - geometry.centerX;
-	let y = point.y * ratio - geometry.centerY;
-	if (orientation.flipH) x = -x;
-	if (orientation.flipV) y = -y;
-	const radians = (orientation.rotation * Math.PI) / 180;
-	const rx = x * Math.cos(radians) - y * Math.sin(radians);
-	const ry = x * Math.sin(radians) + y * Math.cos(radians);
-	return {
-		x: origin.left + transform.tx + (rx + geometry.centerX) * transform.scale,
-		y: origin.top + transform.ty + (ry + geometry.centerY) * transform.scale,
-	};
-}
 
 describe("clientToImagePoint", () => {
 	const transform: ViewTransform = { scale: 2.5, tx: -30, ty: 12, fit: false };
@@ -73,7 +48,8 @@ describe("clientToImagePoint", () => {
 		}
 		for (const orientation of orientations) {
 			for (const imagePoint of [{ x: 0, y: 0 }, { x: 89.5, y: 3 }, { x: 17.25, y: 39.9 }]) {
-				const client = imageToClient(imagePoint, transform, orientation, rows, columns, ratio);
+				const local = imageToViewportPoint(imagePoint, transform, orientation, geometry);
+				const client = { x: origin.left + local.x, y: origin.top + local.y };
 				const mapped = clientToImagePoint(client, origin, transform, orientation, geometry);
 				expect(mapped.x, JSON.stringify(orientation)).toBeCloseTo(imagePoint.x, 6);
 				expect(mapped.y, JSON.stringify(orientation)).toBeCloseTo(imagePoint.y, 6);
@@ -93,6 +69,19 @@ describe("clientToImagePoint", () => {
 		);
 		expect(point.x).toBeCloseTo(0.5);
 		expect(point.y).toBeCloseTo(0.5);
+	});
+
+	it("maps the top-left image corner to the top-right after a clockwise rotation", () => {
+		const geometry = imageDisplayGeometry(10, 20, 1);
+		const point = imageToViewportPoint(
+			{ x: 0, y: 0 },
+			{ scale: 2, tx: 5, ty: 7, fit: false },
+			{ rotation: 90, flipH: false, flipV: false },
+			geometry,
+		);
+		// Rotated about the center (10, 5): the 20x10 layer spans x 5..15, y -5..15.
+		expect(point.x).toBeCloseTo(5 + 15 * 2);
+		expect(point.y).toBeCloseTo(7 - 5 * 2);
 	});
 
 	it("leaves points outside the image unclamped", () => {

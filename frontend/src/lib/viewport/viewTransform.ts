@@ -114,6 +114,31 @@ export function clientToImagePoint(
 	return { x: layerX, y: layerY / geometry.pixelAspectRatio };
 }
 
+/**
+ * Maps continuous image coordinates to viewport-local CSS pixels (relative to
+ * the layer origin) by applying `layerTransformCss` and the pixel aspect
+ * ratio; the inverse of `clientToImagePoint`.
+ */
+export function imageToViewportPoint(
+	point: ClientPoint,
+	transform: ViewTransform,
+	orientation: ImageOrientation,
+	geometry: ImageDisplayGeometry,
+): ClientPoint {
+	const { scale, tx, ty } = transform;
+	const layerX = point.x - geometry.centerX;
+	const layerY = point.y * geometry.pixelAspectRatio - geometry.centerY;
+	const dx = orientation.flipH ? -layerX : layerX;
+	const dy = orientation.flipV ? -layerY : layerY;
+	const radians = (orientation.rotation * Math.PI) / 180;
+	const cos = Math.cos(radians);
+	const sin = Math.sin(radians);
+	return {
+		x: tx + (geometry.centerX + dx * cos - dy * sin) * scale,
+		y: ty + (geometry.centerY + dx * sin + dy * cos) * scale,
+	};
+}
+
 export function flipHorizontal(orientation: ImageOrientation): ImageOrientation {
 	return { ...orientation, flipH: !orientation.flipH };
 }
