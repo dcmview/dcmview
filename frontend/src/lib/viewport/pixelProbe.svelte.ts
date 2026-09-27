@@ -48,7 +48,7 @@ function planarConfigurationOf(node: TagNode): number {
 export class PixelProbe {
 	/** Image pixel under the cursor; null off the image or outside the viewport. */
 	pixel = $state<ImagePixel | null>(null);
-	#samples = $state<{ key: string; state: ProbeSamples } | null>(null);
+	#samples = $state.raw<{ key: string; state: ProbeSamples } | null>(null);
 	#unavailableFiles = $state<Record<number, string | undefined>>({});
 	#planar = $state<Record<number, number | undefined>>({});
 	readonly #planarRequested = new Set<number>();

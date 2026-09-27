@@ -16,8 +16,10 @@ const RETRY_POLL_MS = 1000;
  * their identity across polls so components do not re-render for them.
  */
 export class Catalog {
-	files = $state<FilesResponse | null>(null);
-	series = $state<SeriesCatalogResponse | null>(null);
+	// Server payloads are replaced per poll, never mutated: kept raw so
+	// reused entries keep their identity and nothing is deep-proxied.
+	files = $state.raw<FilesResponse | null>(null);
+	series = $state.raw<SeriesCatalogResponse | null>(null);
 	/** Set when the first load fails; later failures retry quietly. */
 	loadError = $state<string | null>(null);
 	readonly filesById = $derived<ReadonlyMap<number, FileSummary>>(indexFilesById(this.files?.files ?? []));
