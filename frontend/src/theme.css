@@ -351,6 +351,12 @@
 	--badge-hi: inset 0 1px 0 rgba(255,255,255,0.08);
 }
 
+/* Theme switches are instant: lib/app/theme.ts holds transitions for one frame. */
+.theme-switching,
+.theme-switching * {
+	transition: none !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
 	*, *::before, *::after {
 		animation-duration: 0.01ms !important;

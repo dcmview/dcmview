@@ -64,6 +64,9 @@ diagnostic viewer.
   binary, so text and tag-table columns look the same on every platform and
   offline. Previously it used each operating system's fonts. Scripts the
   fonts do not cover, such as CJK patient names, still come from the system.
+- The viewer has a light theme and follows the operating system's light or
+  dark setting; the image area stays dark in both. Inside VS Code it follows
+  the editor's colour theme instead, including live theme switches.
 
 ### Fixed
 

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- The viewer follows the editor's colour theme: light themes open it light,
+  dark and high-contrast themes dark, and switching themes updates open
+  viewers without reloading them.
 - `dcmview` no longer looks for bridges in the pre-0.2.5 registry locations
   under `$XDG_RUNTIME_DIR` and `/tmp`. Extension 0.2.5 and later already
   publish only to the per-user state directory.
