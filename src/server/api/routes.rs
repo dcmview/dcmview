@@ -110,5 +110,10 @@ async fn track_request_activity(
     next: Next,
 ) -> Response {
     let _request = activity.request_started();
-    next.run(request).await
+    let (method, uri) = (request.method().clone(), request.uri().clone());
+    let response = next.run(request).await;
+    if let Some(error::ServerErrorMessage(message)) = response.extensions().get() {
+        tracing::warn!(%method, %uri, status = response.status().as_u16(), "{message}");
+    }
+    response
 }

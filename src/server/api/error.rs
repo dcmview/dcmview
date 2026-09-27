@@ -167,15 +167,28 @@ pub(super) async fn method_not_allowed_handler() -> ApiError {
     ApiError::method_not_allowed("method not allowed")
 }
 
+/// A server error's message, kept on the response so the request logger can
+/// report it with the request that caused it.
+#[derive(Clone)]
+pub(super) struct ServerErrorMessage(pub(super) String);
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (
+        let logged = self
+            .status
+            .is_server_error()
+            .then(|| ServerErrorMessage(self.message.clone()));
+        let mut response = (
             self.status,
             Json(ErrorResponse {
                 code: self.code,
                 error: self.message,
             }),
         )
-            .into_response()
+            .into_response();
+        if let Some(message) = logged {
+            response.extensions_mut().insert(message);
+        }
+        response
     }
 }

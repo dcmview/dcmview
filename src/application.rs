@@ -58,8 +58,15 @@ fn initialize_tracing() {
     static TRACING_INITIALIZATION: Once = Once::new();
 
     TRACING_INITIALIZATION.call_once(|| {
+        // RUST_LOG overrides the default, e.g. RUST_LOG=dcmview=debug lists
+        // every skipped file. Logs go to stderr: stdout carries the startup
+        // line that the Python wrapper and the VS Code extension parse.
+        let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,jpeg2k=warn"));
         let _ = tracing_subscriber::fmt()
-            .with_env_filter("info,jpeg2k=warn")
+            .with_env_filter(filter)
+            .with_writer(std::io::stderr)
+            .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
             .try_init();
     });
 }
