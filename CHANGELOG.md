@@ -60,6 +60,10 @@ diagnostic viewer.
 - The Python wrapper routes through the `dcmview` binary rather than its own
   bridge client. Non-blocking VS Code launches return a `ShutdownHandle`; the
   separate `BridgeShutdownHandle` type is gone.
+- The viewer now ships its own fonts, Inter and JetBrains Mono, inside the
+  binary, so text and tag-table columns look the same on every platform and
+  offline. Previously it used each operating system's fonts. Scripts the
+  fonts do not cover, such as CJK patient names, still come from the system.
 
 ### Fixed
 

@@ -47,6 +47,7 @@ fn serve_asset(path: &str) -> Option<Response> {
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
         "woff2" => "font/woff2",
+        "txt" => "text/plain; charset=utf-8",
         _ => "application/octet-stream",
     };
 
