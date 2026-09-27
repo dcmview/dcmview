@@ -1207,10 +1207,11 @@ mod tests {
             VR::SQ,
             DataSetSequence::from(optical_path_items),
         ));
+        // Two 2x2 three-sample frames.
         object.put(DataElement::new(
             tags::PIXEL_DATA,
             VR::OW,
-            PrimitiveValue::U16(vec![0_u16; 8].into()),
+            PrimitiveValue::U16(vec![0_u16; 24].into()),
         ));
 
         let object = object

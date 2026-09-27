@@ -35,6 +35,7 @@ pub use colorwash::{
 };
 pub use error::{PixelError, PixelResult};
 pub(crate) use header::open_header;
+pub(crate) use native_layout::{NativeByteOrder, NativeFrameLayout};
 pub use segmentation::encode_segmentation_overlay_png;
 pub use service::{
     load_frame, load_raw_frame, FrameRequest, FrameResponse, RawFrameRequest, RawFrameResponse,
