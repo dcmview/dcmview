@@ -14,7 +14,6 @@ use super::deflated_frame::{
     decode_deflated_binary_frame_to_png, decode_raw_deflated_binary_frame,
 };
 use super::error::{PixelError, PixelResult};
-use super::header::open_header;
 use super::jpeg::{
     decode_compressed_frame_to_png, decode_raw_jpeg_lossless, read_raw_jpeg_samples,
 };
@@ -24,7 +23,6 @@ use super::jpegxl::{decode_jpeg_xl_to_png, decode_raw_jpeg_xl};
 use super::native::{decode_uncompressed_to_png, read_raw_uncompressed};
 use super::rle::{decode_raw_rle, decode_rle_to_png};
 use super::syntax::{classify_pixel_support, codec_for_syntax, Codec, PixelSupportReason};
-use super::window::read_pixel_padding_range;
 
 #[derive(Debug, Clone)]
 pub struct RawFrameRequest {
@@ -76,7 +74,7 @@ pub async fn load_raw_frame(
                 .map_err(PixelError::raw_decode)?,
             Codec::Rle => decode_raw_rle(file.clone(), frame).await?,
         };
-        if let Some((low, high)) = raw_padding_bounds(&file, &metadata).await {
+        if let Some([low, high]) = raw_padding_bounds(&file, &metadata) {
             metadata.padding_low = Some(low);
             metadata.padding_high = Some(high);
         }
@@ -93,22 +91,15 @@ pub async fn load_raw_frame(
 
 /// Pixel Padding bounds for a grayscale integer raw frame, so client-side
 /// windowing can exclude padding exactly as the display path does.
-async fn raw_padding_bounds(file: &FileEntry, metadata: &RawFrameMetadata) -> Option<(f64, f64)> {
+fn raw_padding_bounds(file: &FileEntry, metadata: &RawFrameMetadata) -> Option<[f64; 2]> {
+    let native = &file.series_metadata.native_pixel;
     let integer_pixels = matches!(
-        file.series_metadata.native_pixel.pixel_data_kind,
+        native.pixel_data_kind,
         None | Some(NativePixelDataKind::Integer)
     );
-    if metadata.samples_per_pixel != 1 || !integer_pixels {
-        return None;
-    }
-    let path = file.path.clone();
-    tokio::task::spawn_blocking(move || {
-        let object = open_header(&path).ok()?;
-        read_pixel_padding_range(&object, NativePixelDataKind::Integer).map(|range| range.bounds())
-    })
-    .await
-    .ok()
-    .flatten()
+    (metadata.samples_per_pixel == 1 && integer_pixels)
+        .then_some(native.pixel_padding)
+        .flatten()
 }
 
 #[derive(Debug, Clone)]

@@ -535,7 +535,14 @@ mod tests {
             instance_number: "1".to_string(),
             sop_instance_uid: "2.25.72001".to_string(),
             sop_class_uid: uids::SECONDARY_CAPTURE_IMAGE_STORAGE.to_string(),
-            series_metadata: Default::default(),
+            // Discovery reads the padding range from the header.
+            series_metadata: Box::new(crate::types::SeriesMetadata {
+                native_pixel: crate::types::NativePixelMetadata {
+                    pixel_padding: Some([0.0, 64.0]),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
             has_pixels: true,
             frame_count: 1,
             rows: 2,

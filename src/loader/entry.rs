@@ -6,7 +6,7 @@ use super::metadata::{
 use super::DiscoveryReason;
 use crate::api::contracts::WindowPreset;
 use crate::dicom_values::{read_first_string, read_number, read_strings, sequence_items};
-use crate::pixels::{NativeByteOrder, NativeFrameLayout};
+use crate::pixels::{read_pixel_padding_range, NativeByteOrder, NativeFrameLayout};
 use crate::types::{FileEntry, NativePixelDataKind, NativePixelMetadata, SeriesMetadata};
 use anyhow::{Context, Result};
 use dicom_core::header::HasLength;
@@ -189,6 +189,9 @@ pub(super) fn build_entry(path: &Path) -> Result<EntryInspection> {
                 normalized_pixel_aspect,
                 modality_lut,
                 voi_lut,
+                pixel_padding: pixel_data_kind
+                    .and_then(|kind| read_pixel_padding_range(&obj, kind))
+                    .map(|range| range.bounds().into()),
             },
             presentation,
             frame_of_reference_uid,

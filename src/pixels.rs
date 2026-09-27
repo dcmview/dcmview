@@ -42,4 +42,5 @@ pub use service::{
 pub use syntax::{
     classify_pixel_support, codec_for_syntax, Codec, PixelSupport, PixelSupportReason,
 };
+pub(crate) use window::read_pixel_padding_range;
 pub use window::{apply_window, resolve_window, resolve_window_with_mode};

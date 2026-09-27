@@ -1,19 +1,18 @@
 use crate::api::contracts::WindowMode;
-use crate::types::{FileEntry, NativePixelDataKind};
+use crate::types::FileEntry;
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use image::{ImageBuffer, ImageFormat, Luma};
 use std::io::Cursor;
 
 use super::color::encode_rgb8_png_with_icc;
-use super::header::open_header;
 use super::overlay::apply_overlay_planes;
 use super::shutter;
 use super::window::{
     apply_modality_transform, apply_padding_background, apply_voi_lut_if_selected, apply_window,
-    exclude_padding_samples, modality_value, read_pixel_padding_range,
-    resolve_window_from_distribution, resolve_window_with_mode, selected_voi_lut, voi_lut_value,
-    window_value, PixelPaddingRange, ValueDistribution,
+    exclude_padding_samples, modality_value, resolve_window_from_distribution,
+    resolve_window_with_mode, selected_voi_lut, voi_lut_value, window_value, PixelPaddingRange,
+    ValueDistribution,
 };
 
 pub(crate) struct LuminanceRenderOptions {
@@ -49,14 +48,11 @@ pub(crate) fn encode_windowed_luminance_png(
     stored: StoredSamples<'_>,
     options: LuminanceRenderOptions,
 ) -> Result<Bytes> {
-    let pixel_kind = file
+    let padding = file
         .series_metadata
         .native_pixel
-        .pixel_data_kind
-        .unwrap_or(NativePixelDataKind::Integer);
-    let padding = open_header(&file.path)
-        .ok()
-        .and_then(|object| read_pixel_padding_range(&object, pixel_kind));
+        .pixel_padding
+        .map(|[low, high]| PixelPaddingRange::new(low, Some(high)));
     let mut windowed = match stored {
         StoredSamples::Integer {
             bytes,

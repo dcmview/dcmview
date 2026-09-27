@@ -113,6 +113,9 @@ pub struct NativePixelMetadata {
     pub normalized_pixel_aspect: Option<[f64; 2]>,
     pub modality_lut: Option<DicomLut>,
     pub voi_lut: Option<DicomLut>,
+    /// Inclusive stored-value range of Pixel Padding, read at discovery so no
+    /// frame request has to parse the header again for it.
+    pub pixel_padding: Option<[f64; 2]>,
 }
 
 impl NativePixelMetadata {
