@@ -8,6 +8,8 @@ use crate::server::RequestActivity;
 use axum::extract::{Request, State};
 use axum::middleware::{self, Next};
 use axum::response::Response;
+use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Predicate};
+use tower_http::compression::{CompressionLayer, CompressionLevel};
 use axum::routing::get;
 use axum::Router;
 #[cfg(feature = "debug-api")]
@@ -75,12 +77,29 @@ pub(crate) fn router(state: AppState) -> Router {
             activity,
             track_request_activity,
         ))
+        .layer(compression())
         .with_state(state);
 
     #[cfg(feature = "debug-api")]
     let router = router.layer(CorsLayer::permissive());
 
     router
+}
+
+/// Gzip for JSON, CSV and the viewer's scripts and styles: the catalog of a
+/// few thousand files is megabytes of JSON polled during a scan, often over
+/// an SSH tunnel. PNG frames (skipped by the default predicate), raw frame
+/// samples and fonts are already compressed or too costly to compress per
+/// request.
+fn compression() -> CompressionLayer<impl Predicate> {
+    CompressionLayer::new()
+        .gzip(true)
+        .quality(CompressionLevel::Fastest)
+        .compress_when(
+            DefaultPredicate::new()
+                .and(NotForContentType::const_new("application/octet-stream"))
+                .and(NotForContentType::const_new("font/")),
+        )
 }
 
 async fn track_request_activity(
