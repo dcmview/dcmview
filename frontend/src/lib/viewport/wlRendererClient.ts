@@ -72,6 +72,9 @@ export class WlRendererClient {
 	#workerFrameId = 0;
 	#renderInFlight = false;
 	#queued: WlRenderRequest | null = null;
+	/** The newest main-thread render waiting for the next animation frame. */
+	#nextDraw: { target: () => HTMLCanvasElement | undefined; request: WlRenderRequest } | null = null;
+	#drawn: Promise<void> | null = null;
 
 	constructor({
 		createWorker = createWlWorker,
@@ -85,10 +88,7 @@ export class WlRendererClient {
 	async render(target: () => HTMLCanvasElement | undefined, request: WlRenderRequest): Promise<void> {
 		const canvas = target();
 		if (!canvas) return;
-		if (!this.#shouldUseWorker(request.frame)) {
-			drawRawFrame(canvas, request.frame, request.wc, request.ww, request.valueMap);
-			return;
-		}
+		if (!this.#shouldUseWorker(request.frame)) return this.#drawOnNextFrame(target, request);
 
 		this.#queued = request;
 		if (this.#renderInFlight) return;
@@ -120,7 +120,32 @@ export class WlRendererClient {
 		}
 	}
 
+	/**
+	 * Main-thread renders cost tens of milliseconds on large frames and a
+	 * window drag asks for one per pointer move, so requests made before the
+	 * next animation frame replace each other and only the newest is drawn.
+	 */
+	#drawOnNextFrame(target: () => HTMLCanvasElement | undefined, request: WlRenderRequest): Promise<void> {
+		this.#nextDraw = { target, request };
+		this.#drawn ??= new Promise<void>((resolve) => {
+			const schedule = globalThis.requestAnimationFrame ?? ((draw: () => void) => setTimeout(draw, 16));
+			schedule(() => {
+				const next = this.#nextDraw;
+				this.#nextDraw = null;
+				this.#drawn = null;
+				const canvas = next?.target();
+				if (next && canvas && next.request.isCurrent()) {
+					const { frame, wc, ww, valueMap } = next.request;
+					drawRawFrame(canvas, frame, wc, ww, valueMap);
+				}
+				resolve();
+			});
+		});
+		return this.#drawn;
+	}
+
 	dispose(): void {
+		this.#nextDraw = null;
 		this.#rejectPending("viewport disposed");
 		this.#worker?.terminate();
 		this.#worker = null;
