@@ -407,47 +407,6 @@
 {/if}
 
 <style>
-	/* Compatibility aliases from the pre-Bea palette to Bea · dcmview roles
-	   (src/theme.css). Declared on every [data-theme] too, so they resolve
-	   inside the always-dark viewport island. Components move to the role
-	   tokens directly as each part of the restyle lands. */
-	:global(:root),
-	:global([data-theme]) {
-		--surface-root: var(--canvas);
-		--surface-viewport: var(--viewport);
-		--surface-chrome: var(--paper);
-		--surface-panel: var(--paper);
-		--surface-control: var(--control-bot);
-		--surface-control-hover: var(--control-top);
-		--surface-control-active: var(--knob);
-		--border-subtle: var(--line);
-		--border-strong: var(--line);
-		--text-primary: var(--text);
-		--text-secondary: var(--text);
-		--text-muted: var(--ink-muted);
-		--text-inverse: var(--text);
-		--text-disabled: var(--subtle);
-		--accent-soft: var(--selection-fill);
-		--accent-text: var(--text);
-		--danger: var(--red-text);
-		--danger-text: var(--red-text);
-		--success-text: var(--text);
-		--surface-hud: var(--paper);
-		--surface-hover-overlay: var(--row-hover);
-		--spinner-track: var(--track);
-		--label-halo: var(--viewport);
-		--roi-stroke: var(--roi);
-		--roi-label: var(--roi);
-		--roi-selected-stroke: var(--roi-selected);
-		--roi-selected-label: var(--roi-selected);
-		--roi-draft-stroke: var(--roi-draft);
-		--roi-handle-outline: var(--viewport);
-		--radius-control: var(--radius-md);
-		--radius-panel: var(--radius-md);
-		--control-height: var(--ctl-h);
-		--shadow-hud: var(--elev-overlay);
-	}
-
 	:global(*) {
 		box-sizing: border-box;
 	}
@@ -460,8 +419,8 @@
 		height: 100%;
 		overflow: hidden;
 		font-family: var(--font-ui);
-		background: var(--surface-root);
-		color: var(--text-primary);
+		background: var(--canvas);
+		color: var(--text);
 		-webkit-font-smoothing: antialiased;
 		text-rendering: optimizeLegibility;
 	}
@@ -472,7 +431,7 @@
 		height: 100vh;
 		width: 100%;
 		overflow: hidden;
-		background: var(--surface-root);
+		background: var(--canvas);
 	}
 
 	.topbar {
@@ -536,7 +495,7 @@
 		grid-template-rows: auto minmax(0, 1fr) auto;
 		min-width: 0;
 		min-height: 0;
-		background: var(--surface-viewport);
+		background: var(--viewport);
 	}
 
 	.viewer-context {
@@ -564,12 +523,12 @@
 	.tag-empty {
 		display: grid;
 		place-content: center;
-		color: var(--text-muted);
+		color: var(--ink-muted);
 	}
 
 	.empty-viewer {
 		min-height: 0;
-		background: var(--surface-viewport);
+		background: var(--viewport);
 	}
 
 	.tag-empty {
@@ -579,15 +538,15 @@
 
 	.tag-panel-shell {
 		position: relative;
-		background: var(--surface-panel);
-		border-left: 1px solid var(--border-subtle);
+		background: var(--paper);
+		border-left: 1px solid var(--line);
 		min-width: 0;
 		min-height: 0;
 		overflow: hidden;
 	}
 
 	.tag-panel-shell.collapsed {
-		background: var(--surface-chrome);
+		background: var(--surface);
 	}
 
 	.sidebar-handle {
@@ -609,7 +568,7 @@
 		top: 0;
 		bottom: 0;
 		width: 1px;
-		background: var(--border-subtle);
+		background: var(--line);
 		transform: translateX(-50%);
 	}
 
@@ -634,8 +593,8 @@
 		display: grid;
 		place-content: center;
 		height: 100vh;
-		background: var(--surface-root);
-		color: var(--text-secondary);
+		background: var(--canvas);
+		color: var(--text);
 	}
 
 	@media (max-width: 979px) {
