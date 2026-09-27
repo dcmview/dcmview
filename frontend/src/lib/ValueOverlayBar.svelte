@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { ValueOverlayCandidate } from "./app/valueOverlays.svelte";
+	import StatusBadge from "./ui/StatusBadge.svelte";
 
 	let {
 		candidates,
@@ -52,7 +53,7 @@
 		<span class="percent">{percent}%</span>
 	</label>
 	{#if shown && !coversFrame}
-		<span class="note">Not covering this frame</span>
+		<StatusBadge status="partial">Not covering this frame</StatusBadge>
 	{/if}
 </section>
 
@@ -61,61 +62,72 @@
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
-		gap: 6px 12px;
-		padding: 6px 12px;
-		border-bottom: 1px solid var(--border-subtle);
-		background: var(--surface-chrome);
-		color: var(--text-secondary);
-		font-size: 12px;
+		gap: 6px 10px;
+		min-width: 0;
+		color: var(--ink-muted);
+		font: var(--t-meta);
 	}
+
 	.heading {
-		color: var(--text-primary);
-		font-weight: 600;
+		font: var(--t-micro);
+		letter-spacing: 0.06em;
+		text-transform: uppercase;
 	}
+
 	.choices {
 		display: flex;
 		flex-wrap: wrap;
-		gap: 4px;
+		gap: 6px;
 	}
+
 	button {
-		border: 1px solid var(--border-strong);
-		border-radius: 4px;
-		padding: 4px 9px;
-		color: var(--text-secondary);
-		background: var(--surface-control);
-		font: inherit;
+		height: 24px;
+		padding: 0 8px;
+		border: 1px solid var(--line);
+		border-radius: var(--radius-sm);
+		background: var(--paper);
+		color: var(--ink-muted);
+		font: 500 12px/16px var(--font-ui);
+		white-space: nowrap;
 		cursor: pointer;
 	}
+
 	button:hover {
-		background: var(--surface-control-hover);
-		color: var(--text-primary);
+		border-color: var(--subtle);
+		color: var(--text);
 	}
+
 	button.active {
-		color: var(--surface-root);
-		background: var(--surface-control-active);
+		border-color: var(--selection-edge);
+		background: var(--selection-fill);
+		color: var(--text);
 	}
+
 	button:focus-visible,
 	input:focus-visible {
 		outline: 2px solid var(--focus-ring);
 		outline-offset: 2px;
 	}
+
 	.opacity {
 		display: flex;
 		align-items: center;
-		gap: 6px;
+		gap: 8px;
 	}
+
 	input {
 		width: 7rem;
 		accent-color: var(--accent);
 	}
+
 	input:disabled {
 		opacity: 0.42;
 	}
+
 	.percent {
 		min-width: 2.6rem;
-		font-family: var(--font-mono);
-	}
-	.note {
-		color: var(--text-muted);
+		color: var(--text);
+		font: var(--t-mono);
+		font-variant-numeric: tabular-nums;
 	}
 </style>

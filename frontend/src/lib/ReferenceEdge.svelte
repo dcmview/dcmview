@@ -59,10 +59,12 @@
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
-		gap: 0.35rem;
+		gap: 6px;
 		min-width: 0;
-		padding-left: 0.45rem;
-		border-left: 1px solid var(--border-subtle);
+		padding-left: 8px;
+		border-left: 1px solid var(--line);
+		color: var(--text);
+		font: var(--t-meta);
 	}
 
 	.edge.inline {
@@ -72,9 +74,8 @@
 	}
 
 	code {
-		color: var(--accent);
-		font-family: var(--font-mono);
-		font-size: 0.68rem;
+		color: var(--ink-muted);
+		font: 400 11px/14px var(--font-mono);
 	}
 
 	.identity {
@@ -82,12 +83,12 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-		font-family: var(--font-mono);
+		font: var(--t-mono);
 	}
 
 	.detail,
 	.unresolved {
-		color: var(--text-muted);
+		color: var(--ink-muted);
 		white-space: nowrap;
 	}
 
@@ -96,17 +97,30 @@
 	}
 
 	.target {
-		padding: 0.15rem 0.4rem;
-		border: 1px solid var(--border-strong);
-		border-radius: 3px;
-		background: var(--surface-panel);
-		color: var(--text-primary);
-		font: inherit;
+		height: 24px;
+		padding: 0 8px;
+		border: 1px solid var(--ink);
+		border-radius: var(--radius-sm);
+		background: linear-gradient(var(--control-top), var(--control-bot));
+		box-shadow: var(--elev-control-secondary);
+		color: var(--text);
+		font: 500 12px/16px var(--font-ui);
+		white-space: nowrap;
 		cursor: pointer;
 	}
 
 	.target:hover {
-		border-color: var(--accent);
+		background: var(--control-top);
+	}
+
+	.target:active {
+		transform: translate(1px, 1px);
+		box-shadow: var(--press);
+	}
+
+	.target:focus-visible {
+		outline: 2px solid var(--focus-ring);
+		outline-offset: 2px;
 	}
 
 	@media (max-width: 519px) {

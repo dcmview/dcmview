@@ -33,14 +33,17 @@
 <style>
 	.status {
 		display: flex;
+		align-items: center;
 		justify-content: space-between;
-		gap: 1rem;
-		font-size: 0.78rem;
-		padding: 0.38rem 0.85rem;
-		background: var(--surface-chrome);
-		border-top: 1px solid var(--border-subtle);
-		color: var(--text-muted);
+		gap: 16px;
 		min-width: 0;
+		height: 26px;
+		padding: 0 12px;
+		background: var(--surface);
+		border-top: 1px solid var(--line);
+		color: var(--ink-muted);
+		font: 400 11px/14px var(--font-mono);
+		font-variant-numeric: tabular-nums;
 	}
 
 	.status span {

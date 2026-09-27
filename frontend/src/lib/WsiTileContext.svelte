@@ -91,7 +91,7 @@
 				<span>focal plane {shown(context.focal_plane?.index)}{context.focal_plane?.z_offset_slide !== null ? ` · z ${context.focal_plane?.z_offset_slide}` : ""}</span>
 				<span>{context.tiling_status} tiling · {shown(context.image_type_role)}</span>
 			{:else if error}
-				<span class="warning">Tile position unavailable: {error}</span>
+				<span class="warning status-line">Tile position unavailable: {error}</span>
 			{:else}
 				<span>Loading tile position…</span>
 			{/if}
@@ -111,7 +111,7 @@
 				<span>{context.total_pixel_matrix?.columns} × {context.total_pixel_matrix?.rows}</span>
 			</div>
 		{:else if context}
-			<div class="warning">{context.warnings.join(" · ") || "Slide-position metadata is missing or invalid."}</div>
+			<div class="warning status-line">{context.warnings.join(" · ") || "Slide-position metadata is missing or invalid."}</div>
 		{/if}
 		{#if context}
 			<div class="boundary">Selected tile only · no stitching or Total Pixel Matrix reconstruction</div>
@@ -157,24 +157,28 @@
 </section>
 
 <style>
-	.wsi-context { display: grid; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border-subtle); background: var(--surface-panel); color: var(--text-secondary); font-size: 11px; }
+	.wsi-context { display: grid; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--paper); color: var(--ink-muted); font: var(--t-meta); font-size: 11px; }
 	.tile-row { display: flex; justify-content: space-between; gap: 14px; }
 	.labels { display: flex; flex-wrap: wrap; align-content: flex-start; gap: 4px 12px; }
-	.labels strong { width: 100%; color: var(--text-primary); font-size: 12px; }
+	.labels strong { width: 100%; color: var(--text); font: var(--t-title); font-size: 12px; }
 	.labels span { font-family: var(--font-mono); }
-	.minimap-wrap { display: grid; justify-items: end; gap: 2px; color: var(--text-muted); font-family: var(--font-mono); }
+	.minimap-wrap { display: grid; justify-items: end; gap: 2px; color: var(--ink-muted); font-family: var(--font-mono); }
 	.minimap { overflow: visible; }
-	.matrix { fill: var(--surface-viewport); stroke: var(--border-strong); }
-	.tile { fill: var(--accent); stroke: var(--accent-text); vector-effect: non-scaling-stroke; }
-	.warning { color: var(--danger-text); }
-	.boundary { align-self: flex-end; color: var(--text-muted); white-space: nowrap; }
+	.matrix { fill: var(--surface); stroke: var(--line); }
+	.tile { fill: var(--selection-fill); stroke: var(--selection-edge); vector-effect: non-scaling-stroke; }
+	.boundary { align-self: flex-end; color: var(--ink-muted); white-space: nowrap; }
 	.links { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 6px 16px; max-height: 120px; overflow: auto; }
 	.link-group { display: grid; align-content: start; gap: 4px; min-width: 0; }
-	.link-group strong { color: var(--text-primary); font-size: 11px; }
+	.link-group strong { color: var(--ink-muted); font: var(--t-micro); letter-spacing: 0.06em; text-transform: uppercase; }
 	.companion-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
-	.role { min-width: 6.5rem; color: var(--text-muted); }
-	.target { padding: 0.15rem 0.4rem; border: 1px solid var(--border-strong); border-radius: 3px; background: var(--surface-control); color: var(--text-primary); font: inherit; cursor: pointer; }
-	.target:hover { border-color: var(--accent); }
-	.unresolved, .empty { color: var(--text-muted); font-style: italic; }
+	.role { min-width: 6.5rem; color: var(--ink-muted); }
+	.target { height: 24px; padding: 0 8px; border: 1px solid var(--ink); border-radius: var(--radius-sm); background: linear-gradient(var(--control-top), var(--control-bot)); box-shadow: var(--elev-control-secondary); color: var(--text); font: 500 12px/16px var(--font-ui); cursor: pointer; }
+	.target:hover { background: var(--control-top); }
+	.target:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+	.unresolved, .empty { color: var(--ink-muted); font-style: italic; }
+	/* Status lines: the status icon in its hue beside text-coloured words (Bea pairs every status with a second channel). */
+	.status-line { display: flex; align-items: baseline; gap: 6px; color: var(--text); }
+	.status-line::before { content: ""; flex: none; width: 12px; height: 12px; align-self: center; background: var(--status-icon); mask: var(--status-mask) center / contain no-repeat; -webkit-mask: var(--status-mask) center / contain no-repeat; }
+	.warning { --status-icon: var(--status-partial); --status-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='8' cy='8' r='5.5'/%3E%3Cpath d='M8 2.5a5.5 5.5 0 0 1 0 11z' fill='black'/%3E%3C/svg%3E"); }
 	@media (max-width: 850px) { .tile-row { flex-wrap: wrap; } .boundary { white-space: normal; } }
 </style>

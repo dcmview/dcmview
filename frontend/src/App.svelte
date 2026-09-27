@@ -219,6 +219,7 @@
 				openFiles={openTabFiles}
 				frameCounts={tabs.frameCounts}
 				activeFileIndex={tabs.activeFileIndex}
+				activePosition={tabs.stackPosition}
 				onactivate={(fileIndex) => tabs.activate(fileIndex)}
 				onclose={(fileIndex) => tabs.close(fileIndex)}
 			/>
@@ -280,11 +281,23 @@
 					<div class="empty-viewer">Open a file from the sidebar</div>
 				{:else}
 					<div class="viewer-context">
-						<ReferenceNavigator
-							fileIndex={activeFile.index}
-							files={catalog.files.files}
-							onopenreference={(fileIndex, frameIndex) => tabs.openReference(fileIndex, frameIndex)}
-						/>
+						<div class="context-strip">
+							{#if overlayCandidates.length > 0 && !frameOverlay}
+								<ValueOverlayBar
+									candidates={overlayCandidates}
+									selectedVolume={valueOverlays.selectedVolume}
+									opacity={valueOverlays.opacity}
+									coversFrame={valueOverlay?.coversFrame ?? false}
+									ontoggle={(volumeFileIndex) => valueOverlays.toggle(volumeFileIndex)}
+									onopacity={(opacity) => valueOverlays.setOpacity(opacity)}
+								/>
+							{/if}
+							<ReferenceNavigator
+								fileIndex={activeFile.index}
+								files={catalog.files.files}
+								onopenreference={(fileIndex, frameIndex) => tabs.openReference(fileIndex, frameIndex)}
+							/>
+						</div>
 						{#if supportsSemanticContext(activeFile.object_kind, activeFile.sop_class_uid)}
 							<SemanticContextPanel
 								fileIndex={activeFile.index}
@@ -294,16 +307,6 @@
 								onmodechange={(mode) => { semanticMode = mode; }}
 								oncontextchange={(response) => { semanticResponse = response; }}
 								onshowoverlay={showValueOverlay}
-							/>
-						{/if}
-						{#if overlayCandidates.length > 0 && !frameOverlay}
-							<ValueOverlayBar
-								candidates={overlayCandidates}
-								selectedVolume={valueOverlays.selectedVolume}
-								opacity={valueOverlays.opacity}
-								coversFrame={valueOverlay?.coversFrame ?? false}
-								ontoggle={(volumeFileIndex) => valueOverlays.toggle(volumeFileIndex)}
-								onopacity={(opacity) => valueOverlays.setOpacity(opacity)}
 							/>
 						{/if}
 						{#if activeFile.object_kind === "whole_slide_microscopy"}
@@ -475,12 +478,10 @@
 	.topbar {
 		display: grid;
 		grid-template-columns: auto minmax(0, 1fr) auto;
-		align-items: end;
-		gap: 0.8rem;
-		min-height: 2.6rem;
-		background: var(--surface-chrome);
-		padding: 0 0.7rem;
-		border-bottom: 1px solid var(--border-subtle);
+		align-items: stretch;
+		height: var(--tab-h);
+		background: var(--surface);
+		border-bottom: 1px solid var(--line);
 	}
 
 	.compact-sidebar-button {
@@ -506,9 +507,10 @@
 	.brand-mark {
 		align-self: center;
 		display: block;
-		width: 1.55rem;
-		height: 1.55rem;
-		border-radius: 0.28rem;
+		width: 22px;
+		height: 22px;
+		margin: 0 12px;
+		border-radius: var(--radius-sm);
 	}
 
 	.workspace {
@@ -539,6 +541,23 @@
 
 	.viewer-context {
 		min-width: 0;
+		background: var(--paper);
+	}
+
+	/* Overlay choice and references share one row; with neither, the row is gone. */
+	.context-strip {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 6px 16px;
+		min-height: 38px;
+		padding: 6px 10px;
+		box-sizing: border-box;
+		border-bottom: 1px solid var(--line);
+	}
+
+	.context-strip:not(:has(*)) {
+		display: none;
 	}
 
 	.empty-viewer,

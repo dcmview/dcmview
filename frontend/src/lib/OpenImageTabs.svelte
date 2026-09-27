@@ -1,16 +1,20 @@
 <script lang="ts">
 	import type { FileSummary } from "../api";
+	import Icon from "./ui/Icon.svelte";
 
 	let {
 		openFiles,
 		frameCounts,
 		activeFileIndex,
+		activePosition,
 		onactivate,
 		onclose,
 	}: {
 		openFiles: FileSummary[];
 		frameCounts: ReadonlyMap<number, number>;
 		activeFileIndex: number | null;
+		/** Zero-based position of the active tab in its stack or frames. */
+		activePosition: number;
 		onactivate: (index: number) => void;
 		onclose: (index: number) => void;
 	} = $props();
@@ -23,6 +27,13 @@
 		const instance = file.instance_number.trim();
 		const base = basename(file.path);
 		return instance ? `#${instance} ${base}` : base;
+	}
+
+	/** The active tab shows where it is in its images; the others how many they hold. */
+	function tabDetail(file: FileSummary): string {
+		if (!file.has_pixels) return "tags";
+		const count = frameCounts.get(file.index) ?? file.frame_count;
+		return file.index === activeFileIndex ? `${activePosition + 1}/${count}` : `${count} img`;
 	}
 
 	function closeTab(event: MouseEvent, index: number) {
@@ -39,6 +50,7 @@
 			<div
 				class="tab"
 				class:active={file.index === activeFileIndex}
+				aria-current={file.index === activeFileIndex ? "page" : undefined}
 				title={file.path}
 			>
 				<button
@@ -47,7 +59,7 @@
 					onclick={() => onactivate(file.index)}
 				>
 					<span class="tab-label">{tabLabel(file)}</span>
-					<span class="tab-detail">{file.has_pixels ? `${frameCounts.get(file.index) ?? file.frame_count}i` : "tags"}</span>
+					<span class="tab-detail">{tabDetail(file)}</span>
 				</button>
 				<button
 					type="button"
@@ -55,7 +67,7 @@
 					onclick={(event) => closeTab(event, file.index)}
 					aria-label={`Close ${tabLabel(file)}`}
 				>
-					x
+					<Icon name="close" size={12} />
 				</button>
 			</div>
 		{/each}
@@ -65,60 +77,68 @@
 <style>
 	.open-tabs {
 		display: flex;
-		align-items: end;
-		gap: 0.2rem;
+		align-items: stretch;
 		min-width: 0;
+		height: 100%;
 		overflow-x: auto;
-		padding-top: 0.3rem;
 		scrollbar-width: thin;
 	}
 
 	.empty-tabs {
-		color: var(--text-muted);
-		font-size: 0.84rem;
-		padding: 0.35rem 0.25rem;
+		align-self: center;
+		padding: 0 14px;
+		color: var(--ink-muted);
+		font: var(--t-ui);
 		white-space: nowrap;
 	}
 
 	.tab {
+		position: relative;
 		display: grid;
-		grid-template-columns: minmax(5rem, 1fr) auto;
+		grid-template-columns: minmax(0, 1fr) auto;
 		align-items: center;
 		min-width: 9rem;
 		max-width: 16rem;
-		height: 2rem;
-		border: 1px solid transparent;
-		border-bottom: 0;
-		border-radius: var(--radius-control) var(--radius-control) 0 0;
-		background: rgba(255, 255, 255, 0.035);
-		color: var(--text-secondary);
-		overflow: hidden;
+		border-right: 1px solid var(--line);
+		color: var(--ink-muted);
 	}
 
 	.tab:hover {
-		background: rgba(255, 255, 255, 0.07);
-		color: var(--text-primary);
+		background: var(--row-hover);
+		color: var(--text);
 	}
 
 	.tab.active {
-		background: var(--surface-panel);
-		border-color: var(--border-subtle);
-		color: var(--text-primary);
-		box-shadow: inset 0 2px 0 var(--accent);
+		margin-bottom: -1px;
+		background: var(--paper);
+		color: var(--text);
+	}
+
+	.tab.active::before {
+		content: "";
+		position: absolute;
+		inset: 0 0 auto;
+		height: 2px;
+		background: var(--accent);
 	}
 
 	.tab-main {
 		display: grid;
 		grid-template-columns: minmax(0, 1fr) auto;
 		align-items: center;
-		gap: 0.4rem;
+		gap: 8px;
 		min-width: 0;
 		height: 100%;
+		padding: 0 4px 0 14px;
 		border: 0;
 		background: transparent;
 		color: inherit;
+		font: var(--t-ui);
 		cursor: pointer;
-		padding: 0 0.35rem 0 0.65rem;
+	}
+
+	.tab.active .tab-main {
+		font-weight: 600;
 	}
 
 	.tab-label {
@@ -127,35 +147,35 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 		text-align: left;
-		font-size: 0.82rem;
 	}
 
 	.tab-detail {
-		color: var(--text-muted);
-		font-size: 0.72rem;
+		color: var(--ink-muted);
+		font: 400 11px/14px var(--font-mono);
+		font-variant-numeric: tabular-nums;
 	}
 
 	.close {
 		display: grid;
 		place-items: center;
-		width: 1.25rem;
-		height: 1.25rem;
+		width: 20px;
+		height: 20px;
+		margin-right: 6px;
 		border: 0;
-		border-radius: 50%;
+		border-radius: var(--radius-sm);
 		background: transparent;
-		color: var(--text-muted);
+		color: var(--ink-muted);
 		cursor: pointer;
-		font-size: 0.78rem;
 	}
 
 	.close:hover {
-		background: var(--surface-control-hover);
-		color: var(--text-primary);
+		background: var(--row-hover);
+		color: var(--text);
 	}
 
 	.tab-main:focus-visible,
 	.close:focus-visible {
 		outline: 2px solid var(--focus-ring);
-		outline-offset: 2px;
+		outline-offset: -2px;
 	}
 </style>
