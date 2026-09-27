@@ -157,6 +157,39 @@ describe("shared windowing oracle", () => {
 });
 
 describe("raw window resolution", () => {
+	it("finds the same automatic windows as sorting every rescaled sample", () => {
+		// Deterministic pseudo-random frames: both signs, both widths, a
+		// negative slope (which reverses the order) and padding.
+		let seed = 7;
+		const next = (limit: number) => {
+			seed = (seed * 1103515245 + 12345) % 2147483648;
+			return seed % limit;
+		};
+		const reference = (values: number[], percentile: boolean) => {
+			const sorted = Float64Array.from(values).sort();
+			const low = percentile ? sorted[Math.floor(sorted.length * 0.01)] : sorted[0];
+			const high = percentile
+				? sorted[Math.min(Math.ceil(sorted.length * 0.99), sorted.length - 1)]
+				: sorted[sorted.length - 1];
+			const width = Math.max(high - low, 1);
+			return { wc: low + width / 2, ww: width };
+		};
+		for (const [bits, signed, slope, intercept] of [
+			[8, 0, 1, 0], [8, 1, 2.5, -10], [16, 0, -0.5, 100], [16, 1, 1, -1024],
+		] as const) {
+			const span = bits === 8 ? 256 : 65536;
+			const low = signed ? -span / 2 : 0;
+			const samples = Array.from({ length: 997 }, () => low + next(span));
+			const padded = { paddingLow: low, paddingHigh: low + span / 16 };
+			const frame = frameFromSamples(samples, bits, signed, { rescaleSlope: slope, rescaleIntercept: intercept, ...padded });
+			const kept = samples.filter((sample) => sample < padded.paddingLow || sample > padded.paddingHigh);
+			const rescaled = kept.map((sample) => sample * slope + intercept);
+
+			expect(computePercentileWindow(frame)).toEqual(reference(rescaled, true));
+			expect(computeFullDynamicWindow(frame)).toEqual(reference(rescaled, false));
+		}
+	});
+
 	it("excludes Pixel Padding from automatic windows like the server", () => {
 		const padded = { paddingLow: 0, paddingHigh: 1000 };
 		const frame = frameFromSamples([0, 1000, 2000, 3000], 16, 0, padded);

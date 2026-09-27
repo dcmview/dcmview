@@ -138,10 +138,10 @@ export function resolveMappedDisplayWindow(
 	mode: WindowMode,
 ): ResolvedWindow {
 	const step = mappedUnitsPerStoredUnit(valueMap);
-	if (mode === "full_dynamic") return windowOfValues(mappedWindowValues(frame, valueMap), false, step);
+	if (mode === "full_dynamic") return windowOfValues(mappedWindowRuns(frame, valueMap), false, step);
 	if (liveWc !== null && liveWw !== null) return { wc: liveWc, ww: liveWw };
 	if (wc !== null && ww !== null) return { wc, ww };
-	return windowOfValues(mappedWindowValues(frame, valueMap), true, step);
+	return windowOfValues(mappedWindowRuns(frame, valueMap), true, step);
 }
 
 /**
@@ -157,31 +157,75 @@ export function mappedUnitsPerStoredUnit(valueMap: RealWorldValueMap): number {
 	return range > 0 ? range / (finite.length - 1) : 1;
 }
 
-function mappedWindowValues(frame: RawFrame, valueMap: RealWorldValueMap): Float64Array {
+// Raw frames hold 8- or 16-bit integers (validateRenderableRawFrame), so every
+// stored value lies in this range.
+const RAW_VALUE_OFFSET = 32768;
+const RAW_VALUE_COUNT = RAW_VALUE_OFFSET + 65536;
+
+/** How many samples hold each stored value, indexed by value + RAW_VALUE_OFFSET. */
+function storedValueCounts(frame: RawFrame): Uint32Array {
 	const reader = validatedSampleReader(frame);
 	const { rows, columns } = frame.metadata;
-	const isPadding = paddingPredicate(frame.metadata);
-	const values = new Float64Array(rows * columns);
-	let count = 0;
-	for (let index = 0; index < values.length; index += 1) {
-		const raw = reader.read(index);
-		if (isPadding?.(raw)) continue;
-		const value = realWorldValue(raw, valueMap);
-		if (value === null || !Number.isFinite(value)) continue;
-		values[count] = value;
-		count += 1;
+	const counts = new Uint32Array(RAW_VALUE_COUNT);
+	for (let index = 0; index < rows * columns; index += 1) {
+		counts[reader.read(index) + RAW_VALUE_OFFSET] += 1;
 	}
-	return values.subarray(0, count);
+	return counts;
+}
+
+/**
+ * The frame's values in ascending order, as (value, count) runs: each stored
+ * value that occurs is mapped once by `valueOf` (null or non-finite drops it),
+ * instead of mapping and sorting every sample.
+ */
+class ValueRuns {
+	readonly total: number;
+	readonly #runs: [number, number][];
+
+	constructor(counts: Uint32Array, valueOf: (raw: number) => number | null, include: (raw: number) => boolean) {
+		const runs: [number, number][] = [];
+		let total = 0;
+		for (let index = 0; index < counts.length; index += 1) {
+			const count = counts[index];
+			const raw = index - RAW_VALUE_OFFSET;
+			if (count === 0 || !include(raw)) continue;
+			const value = valueOf(raw);
+			if (value === null || !Number.isFinite(value)) continue;
+			runs.push([value, count]);
+			total += count;
+		}
+		this.#runs = runs.sort((left, right) => left[0] - right[0]);
+		this.total = total;
+	}
+
+	/** The value at `index` of the samples in ascending order. */
+	at(index: number): number {
+		let seen = 0;
+		for (const [value, count] of this.#runs) {
+			seen += count;
+			if (index < seen) return value;
+		}
+		return this.#runs.length > 0 ? this.#runs[this.#runs.length - 1][0] : Number.NaN;
+	}
+
+	/** The 1st/99th percentile span, or the full range. */
+	span(percentile: boolean): [number, number] {
+		const last = this.total - 1;
+		return percentile
+			? [this.at(Math.floor(this.total * 0.01)), this.at(Math.min(Math.ceil(this.total * 0.99), last))]
+			: [this.at(0), this.at(last)];
+	}
+}
+
+function mappedWindowRuns(frame: RawFrame, valueMap: RealWorldValueMap): ValueRuns {
+	const isPadding = paddingPredicate(frame.metadata);
+	return new ValueRuns(storedValueCounts(frame), (raw) => realWorldValue(raw, valueMap), (raw) => !isPadding?.(raw));
 }
 
 /** A window over `values`, at least `minWidth` (one stored unit's worth) wide. */
-function windowOfValues(values: Float64Array, percentile: boolean, minWidth: number): ResolvedWindow {
-	if (values.length === 0) return { wc: minWidth / 2, ww: minWidth };
-	const sorted = Float64Array.from(values).sort();
-	const low = percentile ? sorted[Math.floor(sorted.length * 0.01)] : sorted[0];
-	const high = percentile
-		? sorted[Math.min(Math.ceil(sorted.length * 0.99), sorted.length - 1)]
-		: sorted[sorted.length - 1];
+function windowOfValues(values: ValueRuns, percentile: boolean, minWidth: number): ResolvedWindow {
+	if (values.total === 0) return { wc: minWidth / 2, ww: minWidth };
+	const [low, high] = values.span(percentile);
 	// Mapped values can span less than one unit, so the floor is one stored
 	// unit in mapped units rather than 1.
 	const width = Math.max(high - low, minWidth);
@@ -211,54 +255,27 @@ export function computePercentileWindow(frame: RawFrame): ResolvedWindow {
 
 function scanFullDynamicWindow(frame: RawFrame): ResolvedWindow {
 	const values = windowSourceValues(frame);
-	let min = Infinity;
-	let max = -Infinity;
-
-	for (const value of values) {
-		if (value < min) min = value;
-		if (value > max) max = value;
-	}
-
-	if (!Number.isFinite(min) || !Number.isFinite(max)) {
-		return { wc: 128, ww: 256 };
-	}
+	if (values.total === 0) return { wc: 128, ww: 256 };
+	const [min, max] = values.span(false);
 	const width = Math.max(max - min, 1);
 	return { wc: min + width / 2, ww: width };
 }
 
 function scanPercentileWindow(frame: RawFrame): ResolvedWindow {
-	const values = windowSourceValues(frame);
-	const numPixels = values.length;
-
-	values.sort();
-	const p1 = values[Math.floor(numPixels * 0.01)];
-	const p99 = values[Math.min(Math.ceil(numPixels * 0.99), numPixels - 1)];
+	const [p1, p99] = windowSourceValues(frame).span(true);
 	const width = Math.max(p99 - p1, 1);
 	return { wc: p1 + width / 2, ww: width };
 }
 
 /** Rescaled samples for automatic windows, excluding Pixel Padding like the server. */
-function windowSourceValues(frame: RawFrame): Float64Array {
-	const reader = validatedSampleReader(frame);
-	const { rescaleSlope, rescaleIntercept, rows, columns } = frame.metadata;
-	const numPixels = rows * columns;
+function windowSourceValues(frame: RawFrame): ValueRuns {
+	const { rescaleSlope, rescaleIntercept } = frame.metadata;
+	const counts = storedValueCounts(frame);
+	const rescale = (raw: number) => raw * rescaleSlope + rescaleIntercept;
 	const isPadding = paddingPredicate(frame.metadata);
-	const values = new Float64Array(numPixels);
-	let count = 0;
-
-	for (let index = 0; index < numPixels; index += 1) {
-		const raw = reader.read(index);
-		if (isPadding?.(raw)) continue;
-		values[count] = raw * rescaleSlope + rescaleIntercept;
-		count += 1;
-	}
-	if (count > 0 || !isPadding) return values.subarray(0, count);
-
+	const unpadded = new ValueRuns(counts, rescale, (raw) => !isPadding?.(raw));
 	// An all-padding frame falls back to every sample, as the server does.
-	for (let index = 0; index < numPixels; index += 1) {
-		values[index] = reader.read(index) * rescaleSlope + rescaleIntercept;
-	}
-	return values;
+	return unpadded.total > 0 || !isPadding ? unpadded : new ValueRuns(counts, rescale, () => true);
 }
 
 function paddingPredicate(metadata: RawFrameMetadata): ((raw: number) => boolean) | null {
