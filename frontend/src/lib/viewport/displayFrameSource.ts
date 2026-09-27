@@ -8,7 +8,7 @@ import type { CineMode } from "../cinePlayback";
 import { createDisplayFrameCaches } from "../frameCache";
 import { SharedRequestRegistry } from "../keyedAsyncResource";
 import { planDisplayPrefetchTargets } from "../prefetchPolicy";
-import type { NavigationFrameRef } from "../seriesNavigation";
+import { framesNear, type NavigationFrameRef } from "../seriesNavigation";
 import { scheduleIdle } from "./prefetchScheduling";
 
 export const DISPLAY_BLOB_CACHE_BYTE_BUDGET = 320 * 1024 * 1024;
@@ -53,6 +53,8 @@ export class DisplayFrameSource {
 	readonly #onScopeChange: () => void;
 	readonly #caches = createDisplayFrameCaches(DISPLAY_BLOB_CACHE_BYTE_BUDGET, DISPLAY_BITMAP_CACHE_BYTE_BUDGET);
 	readonly #requests = new SharedRequestRegistry<string, Blob>();
+	/** `file:frame` of each frame request in flight, by request key. */
+	readonly #framesInFlight = new Map<string, string>();
 	// Keyed by payload identity, so a refetched payload never reuses an
 	// older payload's decode.
 	readonly #decodes = new SharedRequestRegistry<Blob, ImageBitmap>();
@@ -93,11 +95,28 @@ export class DisplayFrameSource {
 		const existing = this.#requests.get(key);
 		if (existing) return existing;
 		this.enterScope(options);
-		return this.#requests.request(key, (signal) => this.#load(fileIndex, frameIndex, options, signal)
-			.then((blob) => {
-				if (!this.#caches.blobs.set(key, blob)) throw new Error("Display frame exceeded PNG cache budget");
-				return this.#caches.blobs.get(key) ?? blob;
-			}));
+		return this.#requests.request(key, (signal) => {
+			this.#framesInFlight.set(key, `${fileIndex}:${frameIndex}`);
+			return this.#load(fileIndex, frameIndex, options, signal)
+				.then((blob) => {
+					if (!this.#caches.blobs.set(key, blob)) throw new Error("Display frame exceeded PNG cache budget");
+					return this.#caches.blobs.get(key) ?? blob;
+				})
+				.finally(() => this.#framesInFlight.delete(key));
+		});
+	}
+
+	/**
+	 * Aborts frame requests beyond the prefetch neighbourhood of `position`:
+	 * scrubbing past them leaves them nobody to serve, and they would hold the
+	 * browser's few connections ahead of the frame now wanted.
+	 */
+	abortFar(frames: readonly NavigationFrameRef[], position: number): void {
+		const near = framesNear(frames, position, DISPLAY_NEAR_PREFETCH_DISTANCE);
+		this.#requests.abortWhere((key) => {
+			const frame = this.#framesInFlight.get(key);
+			return frame !== undefined && !near.has(frame);
+		});
 	}
 
 	/**

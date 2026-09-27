@@ -56,3 +56,26 @@ export function shortcutFor(event: ShortcutKeyEvent, context: ShortcutContext): 
 	}
 	return null;
 }
+
+/** Shortest gap between auto-repeated steps while a key is held. */
+export const REPEAT_INTERVAL_MS = {
+	"step-frame": 60,
+	"select-adjacent-file": 150,
+} as const;
+
+/**
+ * Limits how often a held key repeats an action. Each repeat can start
+ * fetches and decodes, and the OS repeat rate (~30 Hz) outpaces an uncached
+ * stack; a held key still steps, just no faster than the interval. First
+ * presses are never throttled.
+ */
+export class RepeatThrottle {
+	readonly #last = new Map<string, number>();
+
+	allow(event: Pick<KeyboardEvent, "key" | "repeat" | "timeStamp">, intervalMs: number): boolean {
+		const last = this.#last.get(event.key);
+		if (event.repeat && last !== undefined && event.timeStamp - last < intervalMs) return false;
+		this.#last.set(event.key, event.timeStamp);
+		return true;
+	}
+}

@@ -870,6 +870,10 @@
 		}
 
 		loadError = null;
+		untrack(() => {
+			rawFrames.abortFar(navigationFrames, navigationPosition);
+			displayFrames.abortFar(navigationFrames, navigationPosition);
+		});
 		if (mode === "overlay" && activeOverlay) {
 			void loadOverlayAndRender(activeOverlay, generation);
 		} else if (mode === "diagnostic_wl") {

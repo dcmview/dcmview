@@ -72,3 +72,17 @@ export function navigationFrameAtPosition(
 	const bounded = Math.max(0, Math.min(frames.length - 1, position));
 	return frames[bounded] ?? null;
 }
+
+/** `file:frame` of every frame within `distance` positions of `position`. */
+export function framesNear(
+	frames: readonly NavigationFrameRef[],
+	position: number,
+	distance: number,
+): Set<string> {
+	const near = new Set<string>();
+	const last = Math.min(frames.length - 1, position + distance);
+	for (let index = Math.max(0, position - distance); index <= last; index += 1) {
+		near.add(`${frames[index].file_index}:${frames[index].frame_index}`);
+	}
+	return near;
+}

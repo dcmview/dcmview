@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isEditableTarget, shortcutFor, type ShortcutContext, type ShortcutKeyEvent } from "./keyboardShortcuts";
+import { isEditableTarget, RepeatThrottle, shortcutFor, type ShortcutContext, type ShortcutKeyEvent } from "./keyboardShortcuts";
 
 const idle: ShortcutContext = { drawerOpen: false, multiFrame: true, roiToolActive: false };
 
@@ -69,5 +69,19 @@ describe("shortcutFor", () => {
 		const drawer = { ...idle, drawerOpen: true };
 		expect(shortcutFor(press("Escape", { target: element("INPUT") }), drawer)).toEqual({ type: "close-drawer" });
 		expect(shortcutFor(press("Escape"), idle)).toBeNull();
+	});
+});
+
+describe("RepeatThrottle", () => {
+	it("lets first presses through and spaces out held-key repeats", () => {
+		const throttle = new RepeatThrottle();
+		const key = (timeStamp: number, repeat: boolean) => ({ key: "ArrowRight", repeat, timeStamp });
+
+		expect(throttle.allow(key(0, false), 60)).toBe(true);
+		expect(throttle.allow(key(33, true), 60)).toBe(false);
+		expect(throttle.allow(key(66, true), 60)).toBe(true);
+		expect(throttle.allow(key(99, true), 60)).toBe(false);
+		// A fresh press is never throttled.
+		expect(throttle.allow(key(100, false), 60)).toBe(true);
 	});
 });

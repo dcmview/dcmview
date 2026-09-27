@@ -42,8 +42,13 @@ export class SharedRequestRegistry<Key, Value> {
 
 	/** Abort every request except `key`'s; returns the aborted keys. */
 	abortOthers(key: Key): Key[] {
-		const aborted = [...this.#pending.keys()].filter((other) => other !== key);
-		for (const other of aborted) this.abort(other);
+		return this.abortWhere((other) => other !== key);
+	}
+
+	/** Abort every request whose key `drop` selects; returns the aborted keys. */
+	abortWhere(drop: (key: Key) => boolean): Key[] {
+		const aborted = [...this.#pending.keys()].filter(drop);
+		for (const key of aborted) this.abort(key);
 		return aborted;
 	}
 

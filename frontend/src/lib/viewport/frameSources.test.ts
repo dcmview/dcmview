@@ -233,6 +233,28 @@ describe("DisplayFrameSource", () => {
 		expect(requested.size).toBe(199);
 	});
 
+	it("aborts frame requests far from the new position but not overlay fetches", () => {
+		const signals = new Map<number, AbortSignal>();
+		const { source } = displaySource((_file, frame, _options, signal) => {
+			signals.set(frame, signal);
+			return abortable<Blob>(signal);
+		});
+		const frames = navigationFramesForFile(2, 200);
+		void source.ensureBlob(2, 0, {}).catch(() => {});
+		void source.ensureBlob(2, 150, {}).catch(() => {});
+		let overlaySignal: AbortSignal | undefined;
+		void source.fetchInScope("overlay", {}, (signal) => {
+			overlaySignal = signal;
+			return abortable<Blob>(signal);
+		}).catch(() => {});
+
+		source.abortFar(frames, 150);
+
+		expect(signals.get(0)?.aborted).toBe(true);
+		expect(signals.get(150)?.aborted).toBe(false);
+		expect(overlaySignal?.aborted).toBe(false);
+	});
+
 	it("starts cine prefetch without waiting for idle time", () => {
 		vi.useFakeTimers();
 		const requested: number[] = [];

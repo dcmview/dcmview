@@ -3,7 +3,7 @@ import { ByteBudgetLruCache } from "../frameCache";
 import { SharedRequestRegistry } from "../keyedAsyncResource";
 import { buildDirectionalFrameOrder } from "../prefetchPolicy";
 import { validateRenderableRawFrame } from "../rawWindowing";
-import type { NavigationFrameRef } from "../seriesNavigation";
+import { framesNear, type NavigationFrameRef } from "../seriesNavigation";
 
 export const RAW_CACHE_BYTE_BUDGET = 256 * 1024 * 1024;
 /** Frames prefetched on each side of the current position. */
@@ -74,6 +74,16 @@ export class RawFrameSource {
 	stopPrefetch(): void {
 		this.#prefetch?.abort();
 		this.#prefetch = null;
+	}
+
+	/**
+	 * Aborts requests for frames beyond the prefetch ring around `position`:
+	 * scrubbing past them leaves them nobody to serve, and they would hold the
+	 * browser's few connections ahead of the frame now wanted.
+	 */
+	abortFar(frames: readonly NavigationFrameRef[], position: number): void {
+		const near = framesNear(frames, position, RAW_RING_RADIUS);
+		this.#requests.abortWhere((key) => !near.has(key));
 	}
 
 	/** Aborts all work; cached frames stay for a later return. */

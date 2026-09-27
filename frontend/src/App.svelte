@@ -30,7 +30,7 @@
 	import type { CineDirection, CineMode } from "./lib/cinePlayback";
 	import { resolveFilesById } from "./lib/fileRegistry";
 	import { adjacentFileIndex } from "./lib/fileTree";
-	import { shortcutFor } from "./lib/keyboardShortcuts";
+	import { REPEAT_INTERVAL_MS, RepeatThrottle, shortcutFor } from "./lib/keyboardShortcuts";
 	import type { ActiveTool } from "./lib/viewerTools";
 	import type { FrameOverlay } from "./lib/viewport/frameOverlay";
 	import { ViewStates } from "./lib/viewport/viewStates.svelte";
@@ -56,6 +56,7 @@
 	// Zoom, pan, and orientation per open tab: the viewport zooms and pans,
 	// the toolbar reorients.
 	const viewStates = new ViewStates();
+	const keyRepeats = new RepeatThrottle();
 	// Value colorwashes (RT Dose, Parametric Map) over the images they cover.
 	const valueOverlays = new ValueOverlays({
 		files: () => catalog.filesById,
@@ -159,6 +160,7 @@
 				const adjacent = adjacentFileIndex(fileNavigationOrder, tabs.activeFileIndex, action.step);
 				if (adjacent === null) return;
 				event.preventDefault();
+				if (!keyRepeats.allow(event, REPEAT_INTERVAL_MS[action.type])) return;
 				cinePlaying = false;
 				tabs.open(adjacent);
 				return;
@@ -168,6 +170,7 @@
 				return;
 			case "step-frame":
 				event.preventDefault();
+				if (!keyRepeats.allow(event, REPEAT_INTERVAL_MS[action.type])) return;
 				frameSlider?.step(action.step);
 				return;
 			case "toggle-cine":
