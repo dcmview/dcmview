@@ -6,15 +6,11 @@ use futures::future::{BoxFuture, Shared};
 use lru::LruCache;
 use std::collections::HashMap;
 use std::hash::Hash;
-use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 
-pub const CACHE_CAPACITY: usize = 128;
 // Keep these budgets in sync with README memory guidance and frontend frame retention.
 pub const FRAME_CACHE_MAX_BYTES: usize = 256 * 1024 * 1024; // 256 MiB
-pub const RAW_CACHE_CAPACITY: usize = 512;
 pub const RAW_CACHE_MAX_BYTES: usize = 384 * 1024 * 1024; // 384 MiB
-pub const OVERLAY_CACHE_CAPACITY: usize = 256;
 pub const OVERLAY_CACHE_MAX_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
 
 /// Encoded display frames keyed by file, frame, and window request.
@@ -44,8 +40,9 @@ impl FrameBody for (Bytes, RawFrameMetadata) {
 /// A decode other requests for the same key await instead of repeating.
 pub(crate) type InFlight<V> = Shared<BoxFuture<'static, Result<V, Arc<PixelError>>>>;
 
-/// An LRU bounded by both an entry count and a total body-byte budget, plus
-/// the decodes currently running for keys it does not hold yet.
+/// An LRU bounded by the total bytes of its bodies, plus the decodes
+/// currently running for keys it does not hold yet. Entries are not counted:
+/// a cine loop of small PNGs must fit as long as its bytes do.
 ///
 /// Callers hold the surrounding mutex only for lookups and inserts; decoding
 /// and encoding happen outside the lock.
@@ -57,9 +54,9 @@ pub struct BudgetedLru<K: Hash + Eq, V> {
 }
 
 impl<K: Hash + Eq, V: FrameBody> BudgetedLru<K, V> {
-    fn new(capacity: usize, max_bytes: usize) -> Self {
+    fn new(max_bytes: usize) -> Self {
         Self {
-            entries: LruCache::new(NonZeroUsize::new(capacity).expect("non-zero cache capacity")),
+            entries: LruCache::unbounded(),
             bytes: 0,
             max_bytes,
             in_flight: HashMap::new(),
@@ -101,33 +98,21 @@ impl<K: Hash + Eq, V: FrameBody> BudgetedLru<K, V> {
             self.bytes = self.bytes.saturating_sub(evicted.body_len());
         }
 
-        // The entry-count bound may still evict an entry the byte budget kept.
-        if let Some((_, evicted)) = self.entries.push(key, value) {
-            self.bytes = self.bytes.saturating_sub(evicted.body_len());
-        }
+        self.entries.put(key, value);
         self.bytes = self.bytes.saturating_add(incoming);
     }
 }
 
 pub fn new_cache() -> Arc<Mutex<FrameCache>> {
-    Arc::new(Mutex::new(FrameCache::new(
-        CACHE_CAPACITY,
-        FRAME_CACHE_MAX_BYTES,
-    )))
+    Arc::new(Mutex::new(FrameCache::new(FRAME_CACHE_MAX_BYTES)))
 }
 
 pub fn new_raw_cache() -> Arc<Mutex<RawFrameCache>> {
-    Arc::new(Mutex::new(RawFrameCache::new(
-        RAW_CACHE_CAPACITY,
-        RAW_CACHE_MAX_BYTES,
-    )))
+    Arc::new(Mutex::new(RawFrameCache::new(RAW_CACHE_MAX_BYTES)))
 }
 
 pub fn new_overlay_cache() -> Arc<Mutex<OverlayCache>> {
-    Arc::new(Mutex::new(OverlayCache::new(
-        OVERLAY_CACHE_CAPACITY,
-        OVERLAY_CACHE_MAX_BYTES,
-    )))
+    Arc::new(Mutex::new(OverlayCache::new(OVERLAY_CACHE_MAX_BYTES)))
 }
 
 #[cfg(test)]
@@ -169,7 +154,7 @@ mod tests {
 
     #[test]
     fn frame_cache_budget_evicts_lru_entries() {
-        let mut cache = FrameCache::new(4, 8);
+        let mut cache = FrameCache::new(8);
         let key0 = frame_key(0);
         let key1 = frame_key(1);
         let key2 = frame_key(2);
@@ -192,7 +177,7 @@ mod tests {
 
     #[test]
     fn frame_cache_budget_skips_oversized_entries() {
-        let mut cache = FrameCache::new(4, 8);
+        let mut cache = FrameCache::new(8);
         let key0 = frame_key(0);
 
         cache.insert(key0.clone(), Bytes::from(vec![0_u8; 9]));
@@ -206,7 +191,7 @@ mod tests {
 
     #[test]
     fn raw_cache_budget_evicts_lru_entries() {
-        let mut cache = RawFrameCache::new(4, 8);
+        let mut cache = RawFrameCache::new(8);
         let key0 = raw_key(0);
         let key1 = raw_key(1);
         let key2 = raw_key(2);
@@ -229,7 +214,7 @@ mod tests {
 
     #[test]
     fn frame_cache_replacement_updates_tracked_bytes() {
-        let mut cache = FrameCache::new(4, 8);
+        let mut cache = FrameCache::new(8);
         let key = frame_key(0);
 
         cache.insert(key.clone(), Bytes::from(vec![0_u8; 6]));
@@ -237,16 +222,5 @@ mod tests {
 
         assert!(contains(&cache, &key));
         assert_eq!(cache.bytes, 3);
-    }
-
-    #[test]
-    fn entry_count_eviction_releases_tracked_bytes() {
-        let mut cache = FrameCache::new(2, 64);
-        for frame in 0..3 {
-            cache.insert(frame_key(frame), Bytes::from(vec![0_u8; 4]));
-        }
-
-        assert!(!contains(&cache, &frame_key(0)));
-        assert_eq!(cache.bytes, 8);
     }
 }
