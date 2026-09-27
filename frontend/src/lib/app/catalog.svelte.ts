@@ -8,7 +8,14 @@ import {
 import { indexFilesById, reuseUnchangedEntries } from "../fileRegistry";
 
 const SCANNING_POLL_MS = 500;
+/** Polls that change nothing back off to this, e.g. during a long walk. */
+const UNCHANGED_POLL_MAX_MS = 2000;
 const RETRY_POLL_MS = 1000;
+
+/** Everything a files response can change by: entries only ever append. */
+function scanProgress(files: FilesResponse): string {
+	return [files.files.length, files.scanned, files.skipped, files.filtered, files.scan_complete].join("|");
+}
 
 /**
  * The file and series catalogs. Discovery is progressive, so the catalog is
@@ -39,13 +46,30 @@ export class Catalog {
 	poll(onupdate: () => void): () => void {
 		let stopped = false;
 		let timer: ReturnType<typeof setTimeout> | null = null;
+		let progress: string | null = null;
+		let delay = SCANNING_POLL_MS;
 		const load = async () => {
 			try {
-				const [files, series] = await Promise.all([fetchFiles(), fetchSeries()]);
+				const [files, fetchedSeries] = this.files
+					? [await fetchFiles(), null]
+					: await Promise.all([fetchFiles(), fetchSeries()]);
 				if (stopped) return;
-				this.apply(files, series);
-				onupdate();
-				if (!files.scan_complete || !series.scan_complete) timer = setTimeout(load, SCANNING_POLL_MS);
+				if (scanProgress(files) === progress) {
+					delay = Math.min(delay * 2, UNCHANGED_POLL_MAX_MS);
+				} else {
+					// The server builds the series catalog from the file list
+					// and scan state, so it only changes with them.
+					const seriesStale = this.series === null
+						|| files.files.length !== this.files?.files.length
+						|| files.scan_complete !== this.series.scan_complete;
+					const series = fetchedSeries ?? (seriesStale ? await fetchSeries() : this.series);
+					if (stopped || !series) return;
+					this.apply(files, series);
+					progress = scanProgress(files);
+					delay = SCANNING_POLL_MS;
+					onupdate();
+				}
+				if (!files.scan_complete || !this.series?.scan_complete) timer = setTimeout(load, delay);
 			} catch (error) {
 				if (stopped) return;
 				if (!this.files) {
