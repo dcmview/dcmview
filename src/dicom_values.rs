@@ -12,7 +12,7 @@ use std::borrow::Cow;
 use std::str::FromStr;
 
 fn text(object: &InMemDicomObject, tag: Tag) -> Option<Cow<'_, str>> {
-    object.element(tag).ok()?.to_str().ok()
+    object.get(tag)?.to_str().ok()
 }
 
 /// The whole value, trimmed; `None` when absent or blank.
@@ -60,8 +60,7 @@ pub(crate) fn read_numbers<T: FromStr>(object: &InMemDicomObject, tag: Tag) -> V
 /// The items of a sequence attribute; empty when absent or not a sequence.
 pub(crate) fn sequence_items(object: &InMemDicomObject, tag: Tag) -> &[InMemDicomObject] {
     object
-        .element(tag)
-        .ok()
+        .get(tag)
         .and_then(|element| element.items())
         .unwrap_or_default()
 }

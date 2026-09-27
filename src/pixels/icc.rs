@@ -7,14 +7,10 @@ const MAX_ICC_PROFILE_LEN: usize = 16 * 1024 * 1024;
 /// Return an ICC profile only when it applies unambiguously to every possible
 /// optical path represented by this object.
 pub(super) fn select_icc_profile(object: &InMemDicomObject) -> Option<Vec<u8>> {
-    let top_level = object
-        .element(tags::ICC_PROFILE)
-        .ok()
-        .and_then(element_profile);
+    let top_level = object.get(tags::ICC_PROFILE).and_then(element_profile);
 
     let optical_paths = object
-        .element(tags::OPTICAL_PATH_SEQUENCE)
-        .ok()
+        .get(tags::OPTICAL_PATH_SEQUENCE)
         .and_then(|element| element.items());
 
     let Some(optical_paths) = optical_paths else {
@@ -26,11 +22,7 @@ pub(super) fn select_icc_profile(object: &InMemDicomObject) -> Option<Vec<u8>> {
 
     let nested = optical_paths
         .iter()
-        .map(|item| {
-            item.element(tags::ICC_PROFILE)
-                .ok()
-                .and_then(element_profile)
-        })
+        .map(|item| item.get(tags::ICC_PROFILE).and_then(element_profile))
         .collect::<Option<Vec<_>>>()?;
 
     select_identical_profiles(top_level.into_iter().chain(nested))

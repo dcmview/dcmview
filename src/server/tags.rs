@@ -227,8 +227,8 @@ fn select_from_object(
         bail!("tag path must begin with a tag");
     };
     let element = object
-        .element(tag)
-        .map_err(|_| anyhow!("tag ({:04X},{:04X}) not found", tag.0, tag.1))?;
+        .get(tag)
+        .ok_or_else(|| anyhow!("tag ({:04X},{:04X}) not found", tag.0, tag.1))?;
     if steps.len() == 1 {
         return serialize_selected_element(element, offset, limit, text_codec);
     }
@@ -417,11 +417,7 @@ fn serialize_sequence_items(
 fn declared_text_codec(
     object: &InMemDicomObject<StandardDataDictionary>,
 ) -> Option<SpecificCharacterSet> {
-    let declaration = object
-        .element(tags::SPECIFIC_CHARACTER_SET)
-        .ok()?
-        .to_str()
-        .ok()?;
+    let declaration = object.get(tags::SPECIFIC_CHARACTER_SET)?.to_str().ok()?;
     declaration
         .split(['\\', ';'])
         .map(str::trim)

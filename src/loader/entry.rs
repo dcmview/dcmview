@@ -232,8 +232,7 @@ pub(super) fn build_entry(path: &Path) -> Result<EntryInspection> {
 
 fn valid_discovery_structure(object: &dicom_object::DefaultDicomObject) -> bool {
     let character_set_valid = object
-        .element(tags::SPECIFIC_CHARACTER_SET)
-        .ok()
+        .get(tags::SPECIFIC_CHARACTER_SET)
         .and_then(|element| element.to_str().ok())
         .map(|value| valid_specific_character_set(&value))
         .unwrap_or(true);

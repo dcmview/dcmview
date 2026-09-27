@@ -33,7 +33,7 @@ pub(crate) fn read_pixel_padding_range(
     object: &dicom_object::DefaultDicomObject,
     kind: NativePixelDataKind,
 ) -> Option<PixelPaddingRange> {
-    let read = |tag| object.element(tag).ok()?.to_float64().ok();
+    let read = |tag| object.get(tag)?.to_float64().ok();
     let (value_tag, limit_tag) = match kind {
         NativePixelDataKind::Integer => {
             (tags::PIXEL_PADDING_VALUE, tags::PIXEL_PADDING_RANGE_LIMIT)

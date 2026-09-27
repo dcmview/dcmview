@@ -41,11 +41,7 @@ pub(super) fn read_lut_sequence(
     sequence_tag: dicom_core::Tag,
 ) -> Option<DicomLut> {
     let item = sequence_item(obj, sequence_tag, 0)?;
-    let descriptor = item
-        .element(tags::LUT_DESCRIPTOR)
-        .ok()?
-        .to_multi_int::<i32>()
-        .ok()?;
+    let descriptor = item.get(tags::LUT_DESCRIPTOR)?.to_multi_int::<i32>().ok()?;
     let [entry_count, first_mapped_value, bits_per_entry]: [i32; 3] = descriptor.try_into().ok()?;
     let entry_count = if entry_count == 0 {
         65_536
@@ -56,7 +52,7 @@ pub(super) fn read_lut_sequence(
     if !matches!(bits_per_entry, 8 | 16) {
         return None;
     }
-    let data = item.element(tags::LUT_DATA).ok()?;
+    let data = item.get(tags::LUT_DATA)?;
     let entries = if bits_per_entry == 8 {
         let bytes = data.to_bytes().ok()?;
         if bytes.len() >= entry_count && bytes.len() <= entry_count.saturating_add(1) {
@@ -128,8 +124,7 @@ fn read_overlay_plane(obj: &dicom_object::DefaultDicomObject, group: u16) -> Opt
     let rows = read_u32_tag(obj, dicom_core::Tag(group, 0x0010))?;
     let columns = read_u32_tag(obj, dicom_core::Tag(group, 0x0011))?;
     let origin = obj
-        .element(dicom_core::Tag(group, 0x0050))
-        .ok()?
+        .get(dicom_core::Tag(group, 0x0050))?
         .to_multi_int::<i32>()
         .ok()?
         .try_into()
@@ -153,8 +148,7 @@ fn read_overlay_plane(obj: &dicom_object::DefaultDicomObject, group: u16) -> Opt
         / 16;
     let required_words = usize::try_from(required_words).ok()?;
     let mut data = obj
-        .element(dicom_core::Tag(group, 0x3000))
-        .ok()?
+        .get(dicom_core::Tag(group, 0x3000))?
         .to_multi_int::<u16>()
         .ok()?;
     if data.len() < required_words {
@@ -204,8 +198,7 @@ fn read_display_shutter(
         // Grayscale falls back to the color's L*: both are perceptual
         // 0-FFFFH scales. Without either the shutter is black.
         presentation_value: obj
-            .element(tags::SHUTTER_PRESENTATION_VALUE)
-            .ok()
+            .get(tags::SHUTTER_PRESENTATION_VALUE)
             .and_then(|element| element.to_int::<u16>().ok())
             .or(presentation_color_cielab.map(|[lightness, _, _]| lightness))
             .unwrap_or(0),
@@ -265,12 +258,7 @@ fn read_exact_u16s<const N: usize>(
     obj: &InMemDicomObject,
     tag: dicom_core::Tag,
 ) -> Option<[u16; N]> {
-    obj.element(tag)
-        .ok()?
-        .to_multi_int::<u16>()
-        .ok()?
-        .try_into()
-        .ok()
+    obj.get(tag)?.to_multi_int::<u16>().ok()?.try_into().ok()
 }
 
 fn read_exact_i32s<const N: usize>(
@@ -286,7 +274,7 @@ fn read_exact_i32s<const N: usize>(
 }
 
 fn read_u32_tag(obj: &InMemDicomObject, tag: dicom_core::Tag) -> Option<u32> {
-    obj.element(tag).ok()?.to_int::<u32>().ok()
+    obj.get(tag)?.to_int::<u32>().ok()
 }
 
 pub(super) fn read_exact_f64s<const N: usize>(
@@ -344,8 +332,7 @@ pub(super) fn read_frame_patient_geometry(
         })
         .filter(|values: &[f64; 2]| values.iter().all(|value| value.is_finite() && *value > 0.0));
     let per_frame_items = obj
-        .element(tags::PER_FRAME_FUNCTIONAL_GROUPS_SEQUENCE)
-        .ok()
+        .get(tags::PER_FRAME_FUNCTIONAL_GROUPS_SEQUENCE)
         .and_then(|element| element.items());
 
     if per_frame_items.is_none() && shared_orientation.is_none() {

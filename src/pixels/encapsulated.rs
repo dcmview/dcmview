@@ -59,8 +59,7 @@ pub(crate) fn read_encapsulated_fragment_blocking(path: &PathBuf, frame: u32) ->
     let mut dataset = InMemDicomObject::new_empty();
     collector.read_dataset_up_to_pixeldata(&mut dataset)?;
     let frame_count = dataset
-        .element(tags::NUMBER_OF_FRAMES)
-        .ok()
+        .get(tags::NUMBER_OF_FRAMES)
         .and_then(|element| element.to_int::<u32>().ok())
         .unwrap_or(1)
         .max(1);
@@ -99,8 +98,7 @@ pub(crate) fn read_encapsulated_fragment_blocking(path: &PathBuf, frame: u32) ->
 
 fn read_u64_values(dataset: &InMemDicomObject, tag: dicom_core::Tag) -> Vec<u64> {
     dataset
-        .element(tag)
-        .ok()
+        .get(tag)
         .and_then(|element| element.to_multi_int::<u64>().ok())
         .unwrap_or_default()
 }

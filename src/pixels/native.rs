@@ -196,7 +196,7 @@ fn read_native_frame(file: &FileEntry, frame: u32) -> Result<NativeFrameSource<'
     // dicom-object normalizes native primitive values to host order. The
     // supported release hosts are little-endian, matching the raw API.
     let bytes = object
-        .element(native_pixel_element_tag(native_pixel_data_kind(file)))
+        .get(native_pixel_element_tag(native_pixel_data_kind(file)))
         .context("frame decode failed: missing native pixel data element")?
         .to_bytes()
         .context("frame decode failed: pixel bytes unavailable")?
