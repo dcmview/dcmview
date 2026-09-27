@@ -162,9 +162,13 @@ async fn concurrent_and_abandoned_requests_share_one_decode() {
     entry.columns = 2;
 
     let cache = new_raw_cache();
-    let responses = futures::future::join_all(
-        (0..6).map(|_| load_raw_frame(entry.clone(), cache.clone(), RawFrameRequest { frame: 0 })),
-    )
+    let responses = futures::future::join_all((0..6).map(|_| {
+        load_raw_frame(
+            entry.clone().into(),
+            cache.clone(),
+            RawFrameRequest { frame: 0 },
+        )
+    }))
     .await;
     let decoded = responses
         .into_iter()
@@ -176,9 +180,13 @@ async fn concurrent_and_abandoned_requests_share_one_decode() {
     // A request dropped mid-decode (a client abort) still leaves its frame
     // for the next request.
     let other = new_raw_cache();
-    let abandoned = load_raw_frame(entry.clone(), other.clone(), RawFrameRequest { frame: 0 });
+    let abandoned = load_raw_frame(
+        entry.clone().into(),
+        other.clone(),
+        RawFrameRequest { frame: 0 },
+    );
     let _ = tokio::time::timeout(std::time::Duration::ZERO, abandoned).await;
-    let next = load_raw_frame(entry, other, RawFrameRequest { frame: 0 })
+    let next = load_raw_frame(entry.into(), other, RawFrameRequest { frame: 0 })
         .await
         .expect("raw frame");
     assert!(next.cache_hit, "the abandoned decode is reused");
@@ -430,10 +438,14 @@ async fn raw_endpoint_multiframe_second_frame_has_correct_pixels() {
 
     let cache = new_raw_cache();
 
-    let frame0 = load_raw_frame(entry.clone(), cache.clone(), RawFrameRequest { frame: 0 })
-        .await
-        .expect("frame 0");
-    let frame1 = load_raw_frame(entry, cache, RawFrameRequest { frame: 1 })
+    let frame0 = load_raw_frame(
+        entry.clone().into(),
+        cache.clone(),
+        RawFrameRequest { frame: 0 },
+    )
+    .await
+    .expect("frame 0");
+    let frame1 = load_raw_frame(entry.into(), cache, RawFrameRequest { frame: 1 })
         .await
         .expect("frame 1");
 
@@ -494,7 +506,7 @@ async fn raw_native_frame_ignores_nested_icon_pixel_data() {
     let mut file = support::file_entry(path, "1.2.840.10008.1.2.1", 1);
     file.rows = 2;
     file.columns = 2;
-    let raw = load_raw_frame(file, new_raw_cache(), RawFrameRequest { frame: 0 })
+    let raw = load_raw_frame(file.into(), new_raw_cache(), RawFrameRequest { frame: 0 })
         .await
         .expect("raw native frame");
 

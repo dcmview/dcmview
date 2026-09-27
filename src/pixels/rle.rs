@@ -2,6 +2,7 @@ use crate::api::contracts::{RawFrameMetadata, WindowMode};
 use crate::types::FileEntry;
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
+use std::sync::Arc;
 use thiserror::Error;
 use tokio::task;
 
@@ -55,7 +56,7 @@ enum RleDecodeError {
 }
 
 pub(crate) async fn decode_rle_to_png(
-    file: FileEntry,
+    file: Arc<FileEntry>,
     frame: u32,
     requested_wc: Option<f64>,
     requested_ww: Option<f64>,
@@ -133,7 +134,7 @@ fn unsupported_display_layout(file: &FileEntry) -> PixelError {
 }
 
 pub(crate) async fn decode_raw_rle(
-    file: FileEntry,
+    file: Arc<FileEntry>,
     frame: u32,
 ) -> PixelResult<(Bytes, RawFrameMetadata)> {
     task::spawn_blocking(move || {
@@ -421,7 +422,7 @@ mod tests {
         );
         let file = crate::loader::test_entry(&path);
 
-        let display = super::decode_rle_to_png(file, 0, None, None, WindowMode::Default)
+        let display = super::decode_rle_to_png(file.into(), 0, None, None, WindowMode::Default)
             .await
             .expect("render prepared RLE CR");
         let pixels = image::load_from_memory(&display)

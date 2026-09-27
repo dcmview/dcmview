@@ -112,11 +112,9 @@ impl FileRegistry {
         self.notify.notified()
     }
 
-    pub fn get(&self, index: usize) -> Option<FileEntry> {
-        self.read()
-            .files
-            .get(index)
-            .map(|file| FileEntry::clone(file))
+    /// A shared handle to the file at `index`; entries never change once registered.
+    pub fn get(&self, index: usize) -> Option<Arc<FileEntry>> {
+        self.read().files.get(index).cloned()
     }
 
     /// Shared handles to every registered file; cheap to take on each request.

@@ -31,6 +31,7 @@ use axum::http::{header, HeaderValue};
 use axum::response::Response;
 use bytes::Bytes;
 use dicom_dictionary_std::uids;
+use std::sync::Arc;
 use tokio::task;
 
 pub(super) async fn segmentation_overlay(
@@ -165,8 +166,8 @@ async fn parametric_map_value_overlay(
 /// as a colorwash PNG or as the values themselves.
 async fn value_overlay(
     state: &AppState,
-    overlay: FileEntry,
-    target: FileEntry,
+    overlay: Arc<FileEntry>,
+    target: Arc<FileEntry>,
     frame: u32,
     encoding: OverlayEncoding,
 ) -> Result<Response, ApiError> {
@@ -305,7 +306,7 @@ enum LegendScale {
 /// make the overlay ineligible instead.
 pub(super) async fn add_overlay_legend(
     state: &AppState,
-    file: &FileEntry,
+    file: &Arc<FileEntry>,
     context: &mut SemanticContextResponse,
 ) {
     let (eligibility, source_frames, legend, scale): (
@@ -342,7 +343,7 @@ pub(super) async fn add_overlay_legend(
 
 async fn value_legend(
     state: &AppState,
-    file: &FileEntry,
+    file: &Arc<FileEntry>,
     scale: LegendScale,
 ) -> Result<OverlayLegend, String> {
     let mappings = value_mappings_for(state, file.clone())
@@ -384,7 +385,7 @@ async fn value_legend(
 /// samples outside the mapped range are NaN.
 async fn mapped_frame_values(
     state: &AppState,
-    file: &FileEntry,
+    file: &Arc<FileEntry>,
     mappings: &FileValueMappings,
     frame: u32,
 ) -> PixelResult<Vec<f64>> {

@@ -4,6 +4,7 @@ use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use dicom_object::open_file;
 use dicom_pixeldata::PixelDecoder;
+use std::sync::Arc;
 use tokio::task;
 
 use super::error::{PixelError, PixelResult};
@@ -18,7 +19,7 @@ struct DecodedBinaryFrame {
 }
 
 pub(crate) async fn decode_deflated_binary_frame_to_png(
-    file: FileEntry,
+    file: Arc<FileEntry>,
     frame: u32,
     requested_wc: Option<f64>,
     requested_ww: Option<f64>,
@@ -54,7 +55,7 @@ pub(crate) async fn decode_deflated_binary_frame_to_png(
 }
 
 pub(crate) async fn decode_raw_deflated_binary_frame(
-    file: FileEntry,
+    file: Arc<FileEntry>,
     frame: u32,
 ) -> PixelResult<(Bytes, RawFrameMetadata)> {
     validate_binary_layout(&file)
@@ -188,14 +189,18 @@ mod tests {
             (0, [1_u8, 0, 0, 1], [255_u8, 0, 0, 255]),
             (1, [0_u8, 1, 1, 0], [0_u8, 255, 255, 0]),
         ] {
-            let raw = load_raw_frame(file.clone(), raw_cache.clone(), RawFrameRequest { frame })
-                .await
-                .expect("decode prepared raw frame");
+            let raw = load_raw_frame(
+                file.clone().into(),
+                raw_cache.clone(),
+                RawFrameRequest { frame },
+            )
+            .await
+            .expect("decode prepared raw frame");
             assert_eq!(raw.body.as_ref(), samples);
             assert_eq!(raw.metadata.bits_allocated, 1);
 
             let display = load_frame(
-                file.clone(),
+                file.clone().into(),
                 display_cache.clone(),
                 FrameRequest {
                     frame,

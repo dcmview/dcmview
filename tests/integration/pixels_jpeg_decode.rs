@@ -28,7 +28,7 @@ async fn decodes_requested_jpeg_display_frame_to_png() {
         window_mode: dcmview::types::WindowMode::Default,
     };
 
-    let first = load_frame(file.clone(), new_cache(), request(1))
+    let first = load_frame(file.clone().into(), new_cache(), request(1))
         .await
         .expect("decoded JPEG frame 1");
     assert_eq!(first.content_type, "image/png");
@@ -43,7 +43,7 @@ async fn decodes_requested_jpeg_display_frame_to_png() {
         "display endpoint must not return raw JPEG bytes"
     );
 
-    let other = load_frame(file, new_cache(), request(0))
+    let other = load_frame(file.into(), new_cache(), request(0))
         .await
         .expect("decoded JPEG frame 0");
     assert_ne!(

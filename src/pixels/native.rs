@@ -12,6 +12,7 @@ use dicom_parser::StatefulDecode;
 use dicom_transfer_syntax_registry::TransferSyntaxRegistry;
 use std::fs::File;
 use std::io::{self, BufReader, Read, Seek, SeekFrom};
+use std::sync::Arc;
 use tokio::task;
 
 use super::color::color_samples_to_rgb8;
@@ -26,7 +27,7 @@ use super::stored_bits::canonicalize_integer_samples;
 use super::syntax::Codec;
 
 pub(crate) async fn decode_uncompressed_to_png(
-    file: FileEntry,
+    file: Arc<FileEntry>,
     frame: u32,
     requested_wc: Option<f64>,
     requested_ww: Option<f64>,
@@ -476,7 +477,7 @@ pub(super) fn decode_numeric_samples(
 }
 
 pub(crate) async fn read_raw_uncompressed(
-    file: FileEntry,
+    file: Arc<FileEntry>,
     frame: u32,
 ) -> Result<(Bytes, RawFrameMetadata)> {
     task::spawn_blocking(move || read_raw_uncompressed_blocking(&file, frame))

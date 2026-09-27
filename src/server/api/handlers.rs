@@ -68,7 +68,7 @@ pub(super) fn registered_file(
     state: &AppState,
     index: usize,
     role: &str,
-) -> Result<FileEntry, ApiError> {
+) -> Result<Arc<FileEntry>, ApiError> {
     let registry = state.registry();
     registry.get(index).ok_or_else(|| {
         let count = registry.status().file_count;
@@ -91,7 +91,7 @@ pub(super) async fn info(
 ) -> Result<Json<FrameInfo>, ApiError> {
     let Path(index) = path.map_err(error::path_rejection)?;
     let file = registered_file(&state, index, "file")?;
-    let summary = FileSummary::from(&file);
+    let summary = FileSummary::from(&*file);
     Ok(Json(FrameInfo {
         frame_count: file.frame_count,
         rows: file.rows,
@@ -129,7 +129,7 @@ pub(super) async fn references(
         .collect();
     Ok(Json(ReferenceCatalogResponse {
         source_file_index: index,
-        source_sop_instance_uid: source.sop_instance_uid,
+        source_sop_instance_uid: source.sop_instance_uid.clone(),
         references: resolved,
     }))
 }
@@ -152,7 +152,7 @@ pub(super) async fn semantic_context(
 /// file set and kept in a small LRU.
 pub(super) async fn semantic_context_for(
     state: &AppState,
-    source: FileEntry,
+    source: Arc<FileEntry>,
     files: Vec<Arc<FileEntry>>,
 ) -> anyhow::Result<Arc<SemanticContextResponse>> {
     let key = (source.index, files.len());
@@ -188,7 +188,7 @@ pub(super) async fn value_mapping(
 /// reference it, read at most once per file set while cached.
 pub(super) async fn value_mappings_for(
     state: &AppState,
-    file: FileEntry,
+    file: Arc<FileEntry>,
 ) -> anyhow::Result<Arc<FileValueMappings>> {
     let files = state.registry().files_snapshot();
     let key = (file.index, files.len());

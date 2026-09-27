@@ -2,6 +2,7 @@ use crate::api::contracts::{RawFrameMetadata, WindowMode};
 use crate::types::FileEntry;
 use anyhow::{anyhow, Result};
 use bytes::Bytes;
+use std::sync::Arc;
 use tokio::task;
 
 use super::color::color_samples_to_rgb8;
@@ -13,7 +14,7 @@ use super::render::{
 use super::syntax::{Codec, ColorSamples};
 
 pub(crate) async fn decode_jpeg_xl_to_png(
-    file: FileEntry,
+    file: Arc<FileEntry>,
     frame: u32,
     requested_wc: Option<f64>,
     requested_ww: Option<f64>,
@@ -87,7 +88,7 @@ pub(crate) async fn decode_jpeg_xl_to_png(
 }
 
 pub(crate) async fn decode_raw_jpeg_xl(
-    file: FileEntry,
+    file: Arc<FileEntry>,
     frame: u32,
 ) -> PixelResult<(Bytes, RawFrameMetadata)> {
     task::spawn_blocking(move || {
@@ -275,7 +276,7 @@ mod tests {
         let directory = tempdir().unwrap();
         let file = write_fixture(&directory.path().join("rgb-lossless-jxl.dcm"));
 
-        let (raw, metadata) = decode_raw_jpeg_xl(file.clone(), 0).await.unwrap();
+        let (raw, metadata) = decode_raw_jpeg_xl(file.clone().into(), 0).await.unwrap();
         assert_eq!(raw.as_ref(), RGB_QUADRANTS);
         assert_eq!(metadata.rows, 2);
         assert_eq!(metadata.columns, 2);
@@ -284,7 +285,7 @@ mod tests {
         assert_eq!(metadata.pixel_representation, 0);
         assert_eq!(metadata.photometric_interpretation, "RGB");
 
-        let png = decode_jpeg_xl_to_png(file, 0, None, None, WindowMode::Default)
+        let png = decode_jpeg_xl_to_png(file.into(), 0, None, None, WindowMode::Default)
             .await
             .unwrap();
         let rendered = image::load_from_memory(&png).unwrap().to_rgb8();

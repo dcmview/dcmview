@@ -4,6 +4,7 @@ use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use image::{ImageBuffer, ImageFormat, Rgb};
 use std::io::Cursor;
+use std::sync::Arc;
 use tokio::task;
 
 use super::encapsulated::read_encapsulated_fragment_blocking;
@@ -16,7 +17,7 @@ use super::render::{
 use super::shutter;
 
 pub(crate) async fn decode_jp2_fragment_to_png(
-    file: FileEntry,
+    file: Arc<FileEntry>,
     frame: u32,
     requested_wc: Option<f64>,
     requested_ww: Option<f64>,
@@ -131,7 +132,7 @@ fn decode_jp2_fragment_to_png_blocking(
 }
 
 pub(crate) async fn decode_raw_jp2_samples(
-    file: FileEntry,
+    file: Arc<FileEntry>,
     frame: u32,
 ) -> PixelResult<(Bytes, RawFrameMetadata)> {
     task::spawn_blocking(move || decode_raw_jp2_samples_blocking(&file, frame))

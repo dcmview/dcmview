@@ -2,6 +2,7 @@ use crate::api::contracts::{RawFrameMetadata, WindowMode};
 use crate::types::FileEntry;
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
+use std::sync::Arc;
 use tokio::task;
 
 use super::error::{PixelError, PixelResult};
@@ -9,7 +10,7 @@ use super::pixeldata_frame::{self, DecodedFrame};
 use super::render::{encode_windowed_luminance_png, LuminanceRenderOptions, StoredSamples};
 
 pub(crate) async fn decode_jpeg_ls_to_png(
-    file: FileEntry,
+    file: Arc<FileEntry>,
     frame: u32,
     requested_wc: Option<f64>,
     requested_ww: Option<f64>,
@@ -46,7 +47,7 @@ pub(crate) async fn decode_jpeg_ls_to_png(
 }
 
 pub(crate) async fn decode_raw_jpeg_ls(
-    file: FileEntry,
+    file: Arc<FileEntry>,
     frame: u32,
 ) -> PixelResult<(Bytes, RawFrameMetadata)> {
     task::spawn_blocking(move || {
@@ -184,9 +185,13 @@ mod tests {
         let directory = tempdir().unwrap();
         let file = write_fixture(&directory.path().join("mono2-lossless-jpegls.dcm"));
 
-        let raw = load_raw_frame(file.clone(), new_raw_cache(), RawFrameRequest { frame: 0 })
-            .await
-            .unwrap();
+        let raw = load_raw_frame(
+            file.clone().into(),
+            new_raw_cache(),
+            RawFrameRequest { frame: 0 },
+        )
+        .await
+        .unwrap();
         assert_eq!(raw.body.as_ref(), EXPECTED_SAMPLES);
         assert_eq!(raw.metadata.rows, 2);
         assert_eq!(raw.metadata.columns, 2);
@@ -196,7 +201,7 @@ mod tests {
         assert_eq!(raw.metadata.photometric_interpretation, "MONOCHROME2");
 
         let display = load_frame(
-            file,
+            file.into(),
             new_cache(),
             FrameRequest {
                 frame: 0,

@@ -13,7 +13,7 @@ async fn invalid_jp2_payload_surfaces_server_side_decode_error() {
 
     let file = support::file_entry(path, "1.2.840.10008.1.2.4.90", 1);
     let error = load_frame(
-        file,
+        file.into(),
         new_cache(),
         FrameRequest {
             frame: 0,
@@ -39,7 +39,7 @@ async fn invalid_jp2_codestream_surfaces_decode_context() {
 
     let file = support::file_entry(path, "1.2.840.10008.1.2.4.90", 1);
     let error = load_frame(
-        file,
+        file.into(),
         new_cache(),
         FrameRequest {
             frame: 0,
@@ -85,7 +85,7 @@ async fn jp2_grayscale_display_applies_the_shared_presentation_pipeline() {
     });
 
     let frame = load_frame(
-        file,
+        file.into(),
         new_cache(),
         FrameRequest {
             frame: 0,

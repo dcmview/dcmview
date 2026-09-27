@@ -2,6 +2,7 @@ use crate::api::contracts::{RawFrameMetadata, WindowMode};
 use crate::types::FileEntry;
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
+use std::sync::Arc;
 use tokio::task;
 
 use super::color::color_samples_to_rgb8;
@@ -15,7 +16,7 @@ use super::syntax::{Codec, ColorSamples};
 /// Displays one JPEG Baseline or JPEG Lossless frame decoded by dicom-pixeldata.
 pub(crate) async fn decode_compressed_frame_to_png(
     codec: Codec,
-    file: FileEntry,
+    file: Arc<FileEntry>,
     frame: u32,
     requested_wc: Option<f64>,
     requested_ww: Option<f64>,
@@ -102,7 +103,7 @@ fn decode_compressed_frame_to_png_blocking(
 }
 
 pub(crate) async fn read_raw_jpeg_samples(
-    file: FileEntry,
+    file: Arc<FileEntry>,
     frame: u32,
 ) -> Result<(Bytes, RawFrameMetadata)> {
     task::spawn_blocking(move || read_raw_jpeg_samples_blocking(&file, frame))
@@ -141,7 +142,7 @@ fn read_raw_jpeg_samples_blocking(
 }
 
 pub(crate) async fn decode_raw_jpeg_lossless(
-    file: FileEntry,
+    file: Arc<FileEntry>,
     frame: u32,
 ) -> PixelResult<(Bytes, RawFrameMetadata)> {
     task::spawn_blocking(move || decode_raw_jpeg_lossless_blocking(&file, frame))

@@ -37,7 +37,7 @@ pub struct RawFrameResponse {
 }
 
 pub async fn load_raw_frame(
-    file: FileEntry,
+    file: Arc<FileEntry>,
     cache: Arc<Mutex<RawFrameCache>>,
     request: RawFrameRequest,
 ) -> PixelResult<RawFrameResponse> {
@@ -118,7 +118,7 @@ pub struct FrameResponse {
 }
 
 pub async fn load_frame(
-    file: FileEntry,
+    file: Arc<FileEntry>,
     cache: Arc<Mutex<FrameCache>>,
     request: FrameRequest,
 ) -> PixelResult<FrameResponse> {

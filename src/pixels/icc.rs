@@ -243,7 +243,7 @@ mod tests {
 
             let entry = crate::loader::test_entry(&path);
             let response = super::super::service::load_frame(
-                entry,
+                entry.into(),
                 super::super::cache::new_cache(),
                 super::super::service::FrameRequest {
                     frame,
