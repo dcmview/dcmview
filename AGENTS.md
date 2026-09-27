@@ -441,6 +441,10 @@ unless one is actually implemented.
   introducing component-local chrome palettes.
 - Use the shared monospace stack for tag values and the shared UI stack for
   viewer chrome.
+- Fonts are bundled: Inter and JetBrains Mono come from the
+  `@fontsource-variable/*` packages imported in `main.ts`, and their OFL texts
+  ship in `public/assets/licenses/`. Keep the bundled face first in
+  `--font-ui` and `--font-mono`; never load fonts from a CDN.
 
 **Frontend design iteration**
 
