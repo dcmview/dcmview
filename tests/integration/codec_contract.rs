@@ -267,7 +267,11 @@ async fn deflated_explicit_vr_little_endian_satisfies_display_and_raw_contracts(
     let directory = tempdir().expect("temporary fixture directory");
     let path = directory.path().join("deflated-u16.dcm");
     let samples = [0_u16, 85, 170, 255];
-    support::write_uncompressed_u16_dicom(&path, UID, 2, 2, samples.to_vec(), None, None);
+    // Three frames: a deflated data set cannot be seeked, so later frames are
+    // inflated past the ones before them.
+    let last_frame = [1000_u16, 2000, 3000, 4000];
+    let frames = [samples, [1, 2, 3, 4], last_frame].concat();
+    support::write_uncompressed_u16_dicom(&path, UID, 2, 2, frames, None, None);
 
     let report = support::discover(
         &[path],
@@ -308,6 +312,14 @@ async fn deflated_explicit_vr_little_endian_satisfies_display_and_raw_contracts(
         .flat_map(u16::to_le_bytes)
         .collect::<Vec<_>>();
     assert_eq!(raw.as_bytes().as_ref(), expected_raw);
+
+    let last = test_server.get("/api/file/0/frame/2/raw").await;
+    last.assert_status_ok();
+    let expected_last = last_frame
+        .into_iter()
+        .flat_map(u16::to_le_bytes)
+        .collect::<Vec<_>>();
+    assert_eq!(last.as_bytes().as_ref(), expected_last);
 }
 
 #[tokio::test]

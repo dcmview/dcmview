@@ -6,11 +6,12 @@ use dicom_dictionary_std::uids;
 use dicom_encoding::TransferSyntaxIndex;
 use dicom_object::{open_file, FileMetaTable};
 use dicom_parser::dataset::lazy_read::LazyDataSetReader;
-use dicom_parser::dataset::LazyDataToken;
+use dicom_parser::dataset::read::DataSetReader;
+use dicom_parser::dataset::{DataToken, LazyDataToken};
 use dicom_parser::StatefulDecode;
 use dicom_transfer_syntax_registry::TransferSyntaxRegistry;
 use std::fs::File;
-use std::io::{BufReader, Seek, SeekFrom};
+use std::io::{self, BufReader, Read, Seek, SeekFrom};
 use tokio::task;
 
 use super::color::color_samples_to_rgb8;
@@ -177,20 +178,24 @@ impl NativeFrameSource<'_> {
 ///
 /// Byte-aligned frames in an undeflated data set are read by seeking straight
 /// to the frame inside the top-level pixel element, so each request costs one
-/// frame of I/O. Deflated data sets cannot be seeked and one-bit frames need
-/// not start on a byte boundary; both are small in practice and fall back to
-/// reading the whole element.
+/// frame of I/O. A deflated data set cannot be seeked, so it is inflated up to
+/// the frame, discarding what precedes it: one frame of memory, and time that
+/// grows with the frame's position. One-bit frames need not start on a byte
+/// boundary; they are small in practice and read the whole element.
 fn read_native_frame(file: &FileEntry, frame: u32) -> Result<NativeFrameSource<'_>> {
     let layout = native_frame_layout(file);
-    let seekable = file.transfer_syntax_uid != uids::DEFLATED_EXPLICIT_VR_LITTLE_ENDIAN
-        && layout.bits_allocated != 1;
-    if seekable {
+    if layout.bits_allocated != 1 {
+        let deflated = file.transfer_syntax_uid == uids::DEFLATED_EXPLICIT_VR_LITTLE_ENDIAN;
         let byte_order = if file.transfer_syntax_uid == EXPLICIT_VR_BIG_ENDIAN {
             NativeByteOrder::BigEndian
         } else {
             NativeByteOrder::LittleEndian
         };
-        let bytes = read_native_frame_bytes(file, layout, frame)?;
+        let bytes = if deflated {
+            read_deflated_frame_bytes(file, layout, frame)?
+        } else {
+            read_native_frame_bytes(file, layout, frame)?
+        };
         return Ok(NativeFrameSource {
             bytes,
             frame_in_bytes: 0,
@@ -222,13 +227,8 @@ fn read_native_frame(file: &FileEntry, frame: u32) -> Result<NativeFrameSource<'
     })
 }
 
-/// Returns the stored bytes of `frame`, in the file's byte order, by locating
-/// the top-level native pixel element and seeking past the preceding frames.
-fn read_native_frame_bytes(
-    file: &FileEntry,
-    layout: NativeFrameLayout<'_>,
-    frame: u32,
-) -> Result<Vec<u8>> {
+/// Where `frame` lies in a native pixel element: its start and end offsets.
+fn frame_span(layout: NativeFrameLayout<'_>, frame: u32) -> Result<(usize, usize)> {
     let frame_len = layout
         .stored_frame_bytes()
         .context("invalid native frame layout")?;
@@ -239,6 +239,82 @@ fn read_native_frame_bytes(
     let end = start
         .checked_add(frame_len)
         .context("frame offset overflowed")?;
+    Ok((start, end))
+}
+
+/// Returns the stored bytes of `frame` of a deflated data set: the inflated
+/// stream is parsed up to the top-level pixel element's header, the frames
+/// before `frame` are inflated and discarded, and only `frame` is kept.
+fn read_deflated_frame_bytes(
+    file: &FileEntry,
+    layout: NativeFrameLayout<'_>,
+    frame: u32,
+) -> Result<Vec<u8>> {
+    let (start, end) = frame_span(layout, frame)?;
+    let mut reader = BufReader::new(
+        File::open(&file.path)
+            .with_context(|| format!("failed to open {}", file.path.display()))?,
+    );
+    reader.seek(SeekFrom::Start(128))?;
+    let meta = FileMetaTable::from_reader(&mut reader)
+        .with_context(|| format!("failed to read file meta: {}", file.path.display()))?;
+    let transfer_syntax = TransferSyntaxRegistry
+        .get(meta.transfer_syntax())
+        .with_context(|| format!("unknown transfer syntax {}", meta.transfer_syntax()))?;
+    let mut inflated = flate2::read::DeflateDecoder::new(reader);
+
+    let pixel_tag = native_pixel_element_tag(native_pixel_data_kind(file));
+    let available = {
+        // Stops at the pixel element's header, before its value is read.
+        let tokens = DataSetReader::new_with_ts(&mut inflated, transfer_syntax)
+            .context("failed to start DICOM data set parser")?;
+        let mut sequence_depth = 0_usize;
+        let mut available = None;
+        for token in tokens {
+            match token.context("failed to parse DICOM data set")? {
+                DataToken::SequenceStart { .. } | DataToken::PixelSequenceStart => {
+                    sequence_depth += 1;
+                }
+                DataToken::SequenceEnd => sequence_depth = sequence_depth.saturating_sub(1),
+                DataToken::ElementHeader(header)
+                    if sequence_depth == 0 && header.tag == pixel_tag =>
+                {
+                    available = Some(
+                        header
+                            .len
+                            .get()
+                            .and_then(|length| usize::try_from(length).ok())
+                            .context("native pixel data has undefined length")?,
+                    );
+                    break;
+                }
+                _ => {}
+            }
+        }
+        available.context("missing native pixel data element")?
+    };
+    if end > available {
+        return Err(anyhow!(
+            "native pixel data frame {frame} extends beyond {available} source bytes"
+        ));
+    }
+    io::copy(&mut (&mut inflated).take(start as u64), &mut io::sink())?;
+    let mut bytes = vec![0; end - start];
+    inflated
+        .read_exact(&mut bytes)
+        .context("deflated pixel data is truncated")?;
+    Ok(bytes)
+}
+
+/// Returns the stored bytes of `frame`, in the file's byte order, by locating
+/// the top-level native pixel element and seeking past the preceding frames.
+fn read_native_frame_bytes(
+    file: &FileEntry,
+    layout: NativeFrameLayout<'_>,
+    frame: u32,
+) -> Result<Vec<u8>> {
+    let (start, end) = frame_span(layout, frame)?;
+    let frame_len = end - start;
 
     let mut reader = BufReader::new(
         File::open(&file.path)
