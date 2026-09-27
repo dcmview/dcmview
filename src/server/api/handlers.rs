@@ -3,15 +3,14 @@ use super::overlays;
 use super::state::AppState;
 use crate::api::contracts::{
     DiscoveryResult, EmbedRoiAnnotations, FileSummary, FilesResponse, FrameInfo, FrameQuery,
-    FrameValueMapping, HealthResponse, ReferenceCatalogResponse, SemanticContextResponse,
-    SeriesCatalogResponse, TagNode, TagQuery, ViewerIdentity, WsiFrameContextResponse,
-    CACHE_HEADER, CACHE_HIT, CACHE_MISS, CSV_MEDIA_TYPE, EXPORT_CONTENT_DISPOSITION_HEADER,
-    EXPORT_CONTENT_DISPOSITION_VALUE, OCTET_STREAM_MEDIA_TYPE, RAW_FRAME_HEADER_BITS_ALLOCATED,
-    RAW_FRAME_HEADER_COLUMNS, RAW_FRAME_HEADER_DEFAULT_WC, RAW_FRAME_HEADER_DEFAULT_WW,
-    RAW_FRAME_HEADER_PADDING_HIGH, RAW_FRAME_HEADER_PADDING_LOW,
-    RAW_FRAME_HEADER_PHOTOMETRIC_INTERPRETATION, RAW_FRAME_HEADER_PIXEL_REPRESENTATION,
-    RAW_FRAME_HEADER_RESCALE_INTERCEPT, RAW_FRAME_HEADER_RESCALE_SLOPE, RAW_FRAME_HEADER_ROWS,
-    RAW_FRAME_HEADER_SAMPLES_PER_PIXEL,
+    FrameValueMapping, HealthResponse, ReferenceCatalogResponse, SemanticContextResponse, TagNode,
+    TagQuery, ViewerIdentity, WsiFrameContextResponse, CACHE_HEADER, CACHE_HIT, CACHE_MISS,
+    CSV_MEDIA_TYPE, EXPORT_CONTENT_DISPOSITION_HEADER, EXPORT_CONTENT_DISPOSITION_VALUE,
+    OCTET_STREAM_MEDIA_TYPE, RAW_FRAME_HEADER_BITS_ALLOCATED, RAW_FRAME_HEADER_COLUMNS,
+    RAW_FRAME_HEADER_DEFAULT_WC, RAW_FRAME_HEADER_DEFAULT_WW, RAW_FRAME_HEADER_PADDING_HIGH,
+    RAW_FRAME_HEADER_PADDING_LOW, RAW_FRAME_HEADER_PHOTOMETRIC_INTERPRETATION,
+    RAW_FRAME_HEADER_PIXEL_REPRESENTATION, RAW_FRAME_HEADER_RESCALE_INTERCEPT,
+    RAW_FRAME_HEADER_RESCALE_SLOPE, RAW_FRAME_HEADER_ROWS, RAW_FRAME_HEADER_SAMPLES_PER_PIXEL,
 };
 use crate::pixels::{self, FrameRequest, RawFrameRequest};
 use crate::references::{self, ReferenceCandidate};
@@ -21,7 +20,7 @@ use crate::value_mapping::FileValueMappings;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use std::sync::Arc;
 use tokio::task;
@@ -63,8 +62,11 @@ pub(super) async fn files(State(state): State<AppState>) -> Json<FilesResponse> 
     })
 }
 
-pub(super) async fn series(State(state): State<AppState>) -> Json<SeriesCatalogResponse> {
-    Json(state.registry().series_catalog_snapshot())
+pub(super) async fn series(State(state): State<AppState>) -> Result<Response, ApiError> {
+    let json = state.registry().series_catalog_json().map_err(|error| {
+        ApiError::internal(format!("series catalog serialization failed: {error}"))
+    })?;
+    Ok(([(header::CONTENT_TYPE, "application/json")], json).into_response())
 }
 
 pub(super) async fn info(

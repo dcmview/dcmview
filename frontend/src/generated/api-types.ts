@@ -80,7 +80,7 @@ export type FrameInfo = { frame_count: number, rows: number, columns: number, tr
  */
 export type FrameQuery = { wc?: number, ww?: number, mode?: WindowMode, };
 
-export type FrameRefSummary = { virtual_index: number, file_index: number, frame_index: number, source_path: string, sop_instance_uid: string, instance_number: number | null, position_along_normal_mm: number | null, };
+export type FrameRefSummary = { virtual_index: number, file_index: number, frame_index: number, sop_instance_uid: string, instance_number: number | null, position_along_normal_mm: number | null, };
 
 /**
  * How one frame's stored samples, as served by the raw-frame endpoint,

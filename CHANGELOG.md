@@ -105,6 +105,9 @@ diagnostic viewer.
   every commit, checkout, or pull force a full crate rebuild, and a clone
   without `packed-refs` rebuilt on every Cargo invocation; `viewer.version`
   identifies released builds.
+- Removed `source_path` from each frame in `/api/series` stacks. `file_index`
+  identifies the file and `/api/files` carries its path; the repeated path
+  was most of the response (half of it at 3000 files).
 
 ## 0.2.12 - 2026-08-31
 

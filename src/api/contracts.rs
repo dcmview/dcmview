@@ -683,7 +683,6 @@ pub struct FrameRefSummary {
     pub virtual_index: usize,
     pub file_index: usize,
     pub frame_index: u32,
-    pub source_path: String,
     pub sop_instance_uid: String,
     pub instance_number: Option<i32>,
     pub position_along_normal_mm: Option<f64>,
