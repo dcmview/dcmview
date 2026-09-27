@@ -11,6 +11,10 @@ from pathlib import Path
 from typing import Iterable, Optional, Union
 
 _STARTUP_EVENT_TYPES = ("server_started", "vscode_session_started")
+# The binary announces its URL before discovery ends, then this event once it
+# found files; a scan that finds none exits non-zero instead. In VS Code the
+# extension's viewer does the scan, so the session event settles it.
+_SCAN_SETTLED_EVENT_TYPES = ("scan_complete", "vscode_session_started")
 _URL_WAIT_SECONDS = 5.0
 _STOP_TIMEOUT_SECONDS = 5.0
 _BINARY_ENV = "DCMVIEW_BINARY"
@@ -27,6 +31,9 @@ class _OutputMonitor:
 		self._url: Optional[str] = None
 		self._url_lock = threading.Lock()
 		self._url_ready = threading.Event()
+		self._scan_settled = threading.Event()
+		self._scan_succeeded = threading.Event()
+		self._closed = threading.Event()
 		self._thread = threading.Thread(target=self._run, name="dcmview-py-output", daemon=True)
 
 	def start(self) -> None:
@@ -39,10 +46,19 @@ class _OutputMonitor:
 		self._url_ready.wait(timeout)
 		return self.url
 
+	def wait_for_scan(self, timeout: float) -> bool:
+		"""Wait until discovery found files or VS Code took the launch (``True``),
+		or until output ended or ``timeout`` passed (``False``)."""
+		self._scan_settled.wait(timeout)
+		return self._scan_succeeded.is_set()
+
 	@property
 	def url(self) -> Optional[str]:
 		with self._url_lock:
 			return self._url
+
+	def output_ended(self) -> bool:
+		return self._closed.is_set()
 
 	def _set_url(self, url: str) -> None:
 		with self._url_lock:
@@ -60,12 +76,18 @@ class _OutputMonitor:
 			for line in stdout:
 				sys.stdout.write(line)
 				sys.stdout.flush()
-				url = _parse_startup_url(line)
+				event = _parse_event(line)
+				url = _startup_url(event)
 				if url is not None:
 					self._set_url(url)
+				if event is not None and event.get("type") in _SCAN_SETTLED_EVENT_TYPES:
+					self._scan_succeeded.set()
+					self._scan_settled.set()
 		finally:
 			stdout.close()
+			self._closed.set()
 			self._url_ready.set()
+			self._scan_settled.set()
 
 
 class ShutdownHandle:
@@ -193,9 +215,17 @@ def view(
 		return None
 
 	monitor.wait_for_url(_URL_WAIT_SECONDS)
-	if process.poll() is not None and process.returncode not in (0, None):
+	scan_succeeded = monitor.wait_for_scan(_URL_WAIT_SECONDS)
+	return_code = process.poll()
+	if return_code is None and not scan_succeeded and monitor.output_ended():
+		# Output ended before discovery found anything: the process is exiting.
+		try:
+			return_code = process.wait(timeout=_STOP_TIMEOUT_SECONDS)
+		except subprocess.TimeoutExpired:
+			return_code = None
+	if return_code not in (0, None):
 		monitor.join()
-		raise subprocess.CalledProcessError(int(process.returncode), command)
+		raise subprocess.CalledProcessError(int(return_code), command)
 
 	return ShutdownHandle(process, monitor)
 
@@ -291,7 +321,7 @@ def _build_args(
 	return command
 
 
-def _parse_startup_url(line: str) -> Optional[str]:
+def _parse_event(line: str) -> Optional[dict]:
 	trimmed = line.strip()
 	if not trimmed.startswith("{"):
 		return None
@@ -299,14 +329,22 @@ def _parse_startup_url(line: str) -> Optional[str]:
 		event = json.loads(trimmed)
 	except json.JSONDecodeError:
 		return None
+	return event if isinstance(event, dict) else None
+
+
+def _startup_url(event: Optional[dict]) -> Optional[str]:
 	if (
-		isinstance(event, dict)
+		event is not None
 		and event.get("type") in _STARTUP_EVENT_TYPES
 		and isinstance(event.get("url"), str)
 		and event["url"]
 	):
 		return event["url"]
 	return None
+
+
+def _parse_startup_url(line: str) -> Optional[str]:
+	return _startup_url(_parse_event(line))
 
 
 def _resolve_binary() -> str:

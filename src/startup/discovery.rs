@@ -16,6 +16,8 @@ pub(super) struct DiscoveryInputs {
     pub(super) registry: FileRegistry,
     pub(super) annotation_store: AnnotationStore,
     pub(super) shutdown: CancellationToken,
+    /// Announce a completed scan on stdout for `--startup-json` readers.
+    pub(super) startup_json: bool,
 }
 
 /// How discovery ended. Only `Failed` makes the process exit non-zero.
@@ -76,6 +78,16 @@ async fn run_discovery(
         finish.failed = outcome == DiscoveryOutcome::Failed;
         outcome
     };
+    if outcome == DiscoveryOutcome::Completed && inputs.startup_json {
+        // The server announces its URL before discovery ends, and a scan that
+        // finds nothing then exits non-zero; this line tells a launcher (the
+        // Python wrapper) which of the two happened.
+        let file_count = inputs.registry.status().file_count;
+        println!(
+            "{}",
+            serde_json::json!({ "type": "scan_complete", "file_count": file_count })
+        );
+    }
 
     if outcome == DiscoveryOutcome::Completed {
         if let Some(source) = inputs.annotation_source {
@@ -333,6 +345,7 @@ mod tests {
                 registry: registry.clone(),
                 annotation_store: annotation_store.clone(),
                 shutdown: shutdown.clone(),
+                startup_json: false,
             },
             registry,
             annotation_store,

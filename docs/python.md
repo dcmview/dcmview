@@ -170,7 +170,10 @@ Open `http://127.0.0.1:8010` locally.
 ## Return Values and Errors
 
 Blocking calls return `None` after a successful viewer exit. Non-blocking calls
-return a shutdown handle.
+return a shutdown handle once the viewer has found DICOM files (or VS Code has
+taken the launch), usually within milliseconds; if the scan finds none, the
+call raises `subprocess.CalledProcessError` instead of returning a handle whose
+viewer has already exited.
 
 The wrapper may raise:
 
@@ -190,9 +193,9 @@ The Python wrapper resolves the binary in this order:
 2. The bundled wheel binary under `dcmview_py/bin/`.
 3. `dcmview` or `dcmview.exe` on `PATH`.
 
-When launching a local subprocess, the wrapper sets `DCMVIEW_VSCODE_BYPASS=1`
-for the child process so that the Rust binary does not recursively route itself
-back into VS Code interception.
+With `vscode_bridge=False`, the wrapper sets `DCMVIEW_VSCODE_BYPASS=1` for the
+child process so that the binary runs the local viewer instead of routing into
+VS Code.
 
 ## VS Code Bridge
 

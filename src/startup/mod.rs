@@ -73,6 +73,7 @@ pub(crate) async fn run_local_viewer(options: LocalViewerOptions) -> Result<Loca
         registry,
         annotation_store,
         shutdown,
+        startup_json: config.startup_json,
     });
 
     let server_result = bound.serve(config, state).await;

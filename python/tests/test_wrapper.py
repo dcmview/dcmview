@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import importlib.util
 import sys
 import tempfile
@@ -247,7 +248,10 @@ class WrapperTests(unittest.TestCase):
 
 	def test_view_can_disable_vscode_bridge_per_call(self) -> None:
 		process = mock.Mock()
-		process.stdout = StringIO('{"type":"server_started","url":"http://127.0.0.1:51234"}\n')
+		process.stdout = StringIO(
+			'{"type":"server_started","url":"http://127.0.0.1:51234"}\n'
+			'{"type":"scan_complete","file_count":1}\n'
+		)
 		process.poll.return_value = None
 		process.returncode = None
 
@@ -259,6 +263,21 @@ class WrapperTests(unittest.TestCase):
 		self.assertIsInstance(handle, wrapper.ShutdownHandle)
 		self.assertNotIn("--vscode-bridge-client", popen_mock.call_args.args[0])
 		self.assertEqual(popen_mock.call_args.kwargs["env"]["DCMVIEW_VSCODE_BYPASS"], "1")
+
+	def test_non_blocking_view_raises_when_the_scan_finds_nothing(self) -> None:
+		# The URL comes before discovery; a scan that finds no DICOM then exits 1.
+		process = mock.Mock()
+		process.stdout = StringIO('{"type":"server_started","url":"http://127.0.0.1:51234"}\n')
+		process.poll.return_value = None
+		process.wait.return_value = 1
+
+		with mock.patch("dcmview_py.wrapper.shutil.which", return_value="/tmp/dcmview"):
+			with mock.patch("dcmview_py.wrapper.subprocess.Popen", return_value=process):
+				with redirect_stdout(StringIO()):
+					with self.assertRaises(subprocess.CalledProcessError) as raised:
+						wrapper.view(["/missing"], browser=False, block=False)
+
+		self.assertEqual(raised.exception.returncode, 1)
 
 	def test_cli_forwards_argv_through_the_bridge_client_form(self) -> None:
 		process = mock.Mock()
