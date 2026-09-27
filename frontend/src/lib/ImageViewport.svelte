@@ -766,8 +766,10 @@
 		if (!nextScope || nextScope === retainedScopeKey) return;
 		retainedScopeKey = nextScope;
 		invalidateWindowLevelRenders();
-		rawFrames.clear();
-		displayFrames.clear();
+		// The frame caches are byte-budgeted and keyed by file, so a tab's
+		// frames stay for a return; only the previous tab's work stops.
+		rawFrames.abortAll();
+		displayFrames.resetScope();
 	});
 
 	$effect(() => {

@@ -76,6 +76,12 @@ export class RawFrameSource {
 		this.#prefetch = null;
 	}
 
+	/** Aborts all work; cached frames stay for a later return. */
+	abortAll(): void {
+		this.stopPrefetch();
+		this.#requests.abortAll();
+	}
+
 	/** Aborts all work and drops every cached frame. */
 	clear(): void {
 		this.stopPrefetch();

@@ -15,6 +15,12 @@ export const DISPLAY_BLOB_CACHE_BYTE_BUDGET = 320 * 1024 * 1024;
 export const DISPLAY_BITMAP_CACHE_BYTE_BUDGET = 128 * 1024 * 1024;
 const DISPLAY_FULL_PREFETCH_BUDGET_BYTES = 320 * 1024 * 1024;
 const DISPLAY_NEAR_PREFETCH_DISTANCE = 48;
+/**
+ * A scope is prefetched near the current frame at first and as a whole stack
+ * once the viewer has stayed on it this long, or as soon as cine plays, so a
+ * glance at a large stack costs its neighbourhood rather than every frame.
+ */
+export const FULL_STACK_PREFETCH_DWELL_MS = 1500;
 const CINE_LOOKAHEAD_FRAMES = 16;
 /** A still-running prefetch seeded this close to the new position is kept. */
 const PREFETCH_RESEED_DISTANCE = 6;
@@ -29,7 +35,7 @@ export type DisplayFrameSourceOptions = {
 	onScopeChange: () => void;
 };
 
-type PrefetchRun = { ctrl: AbortController; scopeKey: string; seedPosition: number };
+type PrefetchRun = { ctrl: AbortController; scopeKey: string; seedPosition: number; fullStack: boolean };
 
 /**
  * Server-rendered display PNGs for the cine and server window/level paths.
@@ -51,7 +57,11 @@ export class DisplayFrameSource {
 	// older payload's decode.
 	readonly #decodes = new SharedRequestRegistry<Blob, ImageBitmap>();
 	#scopeKey: string | null = null;
+	#scopeEnteredAt = 0;
 	#prefetch: PrefetchRun | null = null;
+	#widen: ReturnType<typeof setTimeout> | null = null;
+	/** Where navigation last seeded a prefetch; the widened prefetch starts there. */
+	#lastSeed = 0;
 
 	constructor({ load = fetchDisplayFrameBlob, navigationScope, concurrency, onScopeChange }: DisplayFrameSourceOptions) {
 		this.#load = load;
@@ -71,6 +81,7 @@ export class DisplayFrameSource {
 		this.#requests.abortAll();
 		this.stopPrefetch();
 		this.#scopeKey = scopeKey;
+		this.#scopeEnteredAt = performance.now();
 		this.#onScopeChange();
 	}
 
@@ -119,7 +130,9 @@ export class DisplayFrameSource {
 	/**
 	 * Prefetches payloads around `position`. During cine the playback order is
 	 * followed immediately; otherwise an idle-time prefetch is (re)seeded unless
-	 * one for the same scope is still running nearby.
+	 * one for the same scope and extent is still running nearby. Before the
+	 * scope's dwell has passed only the neighbourhood is fetched, and the
+	 * prefetch widens to the whole stack when it does.
 	 */
 	startPrefetch(
 		frames: readonly NavigationFrameRef[],
@@ -129,6 +142,29 @@ export class DisplayFrameSource {
 		currentBlobSize: number,
 		cineMode: CineMode | null,
 	): void {
+		const dwellLeft = FULL_STACK_PREFETCH_DWELL_MS - (performance.now() - this.#scopeEnteredAt);
+		this.#lastSeed = position;
+		this.#seedPrefetch(frames, position, direction, options, currentBlobSize, cineMode, cineMode !== null || dwellLeft <= 0);
+		if (cineMode === null && dwellLeft > 0 && this.#prefetch?.fullStack === false && this.#widen === null) {
+			const scopeKey = this.#fetchScope(options);
+			this.#widen = setTimeout(() => {
+				this.#widen = null;
+				if (this.#fetchScope(options) === scopeKey) {
+					this.#seedPrefetch(frames, this.#lastSeed, direction, options, currentBlobSize, null, true);
+				}
+			}, dwellLeft);
+		}
+	}
+
+	#seedPrefetch(
+		frames: readonly NavigationFrameRef[],
+		position: number,
+		direction: 1 | -1,
+		options: DisplayFrameWindowOptions,
+		currentBlobSize: number,
+		cineMode: CineMode | null,
+		fullStack: boolean,
+	): void {
 		const scopeKey = this.#fetchScope(options);
 		if (cineMode === null) {
 			const running = this.#prefetch;
@@ -136,16 +172,17 @@ export class DisplayFrameSource {
 				running
 				&& !running.ctrl.signal.aborted
 				&& running.scopeKey === scopeKey
+				&& running.fullStack === fullStack
 				&& Math.abs(position - running.seedPosition) <= PREFETCH_RESEED_DISTANCE
 			) return;
 		}
 
-		this.stopPrefetch();
-		const run: PrefetchRun = { ctrl: new AbortController(), scopeKey, seedPosition: position };
+		this.#prefetch?.ctrl.abort();
+		const run: PrefetchRun = { ctrl: new AbortController(), scopeKey, seedPosition: position, fullStack };
 		this.#prefetch = run;
 		const start = () => {
 			if (this.#prefetch !== run) return;
-			void this.#runPrefetch(frames, position, direction, options, run.ctrl.signal, currentBlobSize, cineMode)
+			void this.#runPrefetch(frames, position, direction, options, run.ctrl.signal, currentBlobSize, cineMode, fullStack)
 				.finally(() => {
 					if (this.#prefetch === run) this.#prefetch = null;
 				});
@@ -157,6 +194,8 @@ export class DisplayFrameSource {
 	stopPrefetch(): void {
 		this.#prefetch?.ctrl.abort();
 		this.#prefetch = null;
+		if (this.#widen !== null) clearTimeout(this.#widen);
+		this.#widen = null;
 	}
 
 	/** Aborts the current scope's work; the next request starts a new scope. */
@@ -187,13 +226,14 @@ export class DisplayFrameSource {
 		signal: AbortSignal,
 		currentBlobSize: number,
 		cineMode: CineMode | null,
+		fullStack: boolean,
 	): Promise<void> {
 		const targets = planDisplayPrefetchTargets({
 			startFrame: startPosition,
 			totalFrames: frames.length,
 			direction,
 			currentPayloadBytes: currentBlobSize,
-			fullStackBudgetBytes: DISPLAY_FULL_PREFETCH_BUDGET_BYTES,
+			fullStackBudgetBytes: fullStack ? DISPLAY_FULL_PREFETCH_BUDGET_BYTES : 0,
 			nearDistance: DISPLAY_NEAR_PREFETCH_DISTANCE,
 			cineMode,
 			lookaheadFrames: CINE_LOOKAHEAD_FRAMES,
