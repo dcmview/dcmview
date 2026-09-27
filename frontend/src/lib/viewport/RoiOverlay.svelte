@@ -8,6 +8,8 @@
 		draft,
 		rows,
 		columns,
+		scale,
+		pixelAspectRatio,
 	}: {
 		rois: readonly VisibleRoi[];
 		selectedIndex: number | null;
@@ -15,12 +17,23 @@
 		draft: RoiCoord | null;
 		rows: number;
 		columns: number;
+		/** View zoom applied to the layer by CSS, which non-scaling strokes do not undo. */
+		scale: number;
+		pixelAspectRatio: number;
 	} = $props();
+
+	const HANDLE_RADIUS = 4;
 </script>
 
-<!-- Drawn in image pixel coordinates inside the transformed image layer. -->
+<!--
+	Drawn in image pixel coordinates inside the transformed image layer; RoiLabels
+	draws the labels unscaled. Stroke and handle sizes are divided by the view
+	scale so they stay constant on screen; non-scaling-stroke still undoes the
+	viewBox's pixel-aspect stretch.
+-->
 <svg
 	class="roi-overlay"
+	style:--roi-px={`${1 / scale}px`}
 	viewBox={`0 0 ${columns} ${rows}`}
 	preserveAspectRatio="none"
 	aria-hidden="true"
@@ -34,14 +47,15 @@
 				width={Math.max(1, Math.abs(roi.xmax - roi.xmin))}
 				height={Math.max(1, Math.abs(roi.ymax - roi.ymin))}
 			></rect>
-			<text
-				class="roi-label"
-				x={Math.min(roi.xmin, roi.xmax) + 3}
-				y={Math.max(10, Math.min(roi.ymin, roi.ymax) - 4)}
-			>#{roi.index + 1}</text>
 			{#if selectedIndex === roi.index}
 				{#each roiHandles(roi) as handle}
-					<circle class="roi-handle" cx={handle.x} cy={handle.y} r={4}></circle>
+					<ellipse
+						class="roi-handle"
+						cx={handle.x}
+						cy={handle.y}
+						rx={HANDLE_RADIUS / scale}
+						ry={HANDLE_RADIUS / (scale * pixelAspectRatio)}
+					></ellipse>
 				{/each}
 			{/if}
 		</g>
@@ -70,38 +84,24 @@
 	.roi-rect {
 		fill: none;
 		stroke: var(--roi);
-		stroke-width: 1.2;
+		stroke-width: calc(1.2 * var(--roi-px));
 		vector-effect: non-scaling-stroke;
 	}
 
 	.roi-overlay g.selected .roi-rect {
 		stroke: var(--roi-selected);
-		stroke-width: 1.6;
+		stroke-width: calc(1.6 * var(--roi-px));
 	}
 
 	.roi-rect.draft {
 		stroke: var(--roi-draft);
-		stroke-dasharray: 5 4;
-	}
-
-	.roi-label {
-		fill: var(--roi);
-		stroke: var(--viewport);
-		stroke-width: 2.4;
-		paint-order: stroke;
-		font-size: 11px;
-		font-family: var(--font-mono);
-		vector-effect: non-scaling-stroke;
-	}
-
-	.roi-overlay g.selected .roi-label {
-		fill: var(--roi-selected);
+		stroke-dasharray: calc(5 * var(--roi-px)) calc(4 * var(--roi-px));
 	}
 
 	.roi-handle {
 		fill: var(--viewport);
 		stroke: var(--roi-selected);
-		stroke-width: 1.4;
+		stroke-width: calc(1.4 * var(--roi-px));
 		vector-effect: non-scaling-stroke;
 	}
 </style>
