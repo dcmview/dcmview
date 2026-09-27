@@ -10,7 +10,7 @@ use crate::types::FileEntry;
 use anyhow::{Context, Result};
 use dicom_core::Tag;
 use dicom_dictionary_std::{tags, uids, StandardDataDictionary};
-use dicom_object::{InMemDicomObject, OpenFileOptions};
+use dicom_object::InMemDicomObject;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -250,10 +250,11 @@ fn navigable_frame_indices(frame_numbers: &[u32], frame_count: u32) -> Vec<u32> 
 }
 
 /// Open one Part 10 object and extract its declared semantic reference edges.
+///
+/// Only the header is read: stopping before Float Pixel Data keeps a
+/// Parametric Map's float payload unread as well as ordinary Pixel Data.
 pub fn extract_reference_edges(path: &Path) -> Result<Vec<ReferenceEdge>> {
-    let object = OpenFileOptions::new()
-        .read_until(tags::PIXEL_DATA)
-        .open_file(path)
+    let object = crate::pixels::open_header(path)
         .with_context(|| format!("failed to open DICOM references: {}", path.display()))?;
     Ok(extract_reference_edges_from_object(&object))
 }
