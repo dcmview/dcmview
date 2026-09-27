@@ -16,6 +16,7 @@
 	import TagPanel from "./lib/TagPanel.svelte";
 	import ValueOverlayBar from "./lib/ValueOverlayBar.svelte";
 	import ViewerToolbar from "./lib/ViewerToolbar.svelte";
+	import Button from "./lib/ui/Button.svelte";
 	import WsiTileContext from "./lib/WsiTileContext.svelte";
 	import { Catalog } from "./lib/app/catalog.svelte";
 	import {
@@ -202,17 +203,18 @@
 				src="/assets/dcmview-icon.png"
 				alt="dcmview"
 			/>
-			<button
-				type="button"
-				class="compact-sidebar-button explorer-drawer-button"
-				bind:this={layout.explorerButton}
-				onclick={() => layout.toggleDrawer("explorer")}
-				aria-label="Toggle Explorer drawer"
-				aria-controls="file-navigator-panel"
-				aria-expanded={layout.compactDrawer === "explorer"}
-			>
-				Explorer
-			</button>
+			<span class="compact-sidebar-button explorer-drawer-button">
+				<Button
+					icon="panel-left"
+					bind:element={layout.explorerButton}
+					onclick={() => layout.toggleDrawer("explorer")}
+					aria-label="Toggle Explorer drawer"
+					aria-controls="file-navigator-panel"
+					aria-expanded={layout.compactDrawer === "explorer"}
+				>
+					Explorer
+				</Button>
+			</span>
 			<OpenImageTabs
 				openFiles={openTabFiles}
 				frameCounts={tabs.frameCounts}
@@ -220,17 +222,18 @@
 				onactivate={(fileIndex) => tabs.activate(fileIndex)}
 				onclose={(fileIndex) => tabs.close(fileIndex)}
 			/>
-			<button
-				type="button"
-				class="compact-sidebar-button tags-drawer-button"
-				bind:this={layout.tagsButton}
-				onclick={() => layout.toggleDrawer("tags")}
-				aria-label="Toggle Tags drawer"
-				aria-controls="tag-panel"
-				aria-expanded={layout.compactDrawer === "tags"}
-			>
-				Tags
-			</button>
+			<span class="compact-sidebar-button tags-drawer-button">
+				<Button
+					icon="panel-right"
+					bind:element={layout.tagsButton}
+					onclick={() => layout.toggleDrawer("tags")}
+					aria-label="Toggle Tags drawer"
+					aria-controls="tag-panel"
+					aria-expanded={layout.compactDrawer === "tags"}
+				>
+					Tags
+				</Button>
+			</span>
 		</header>
 		<ViewerToolbar
 			bind:activeTool
@@ -375,15 +378,15 @@
 					onpointerup={(event) => layout.endTagPanelResize(event)}
 					onpointercancel={() => layout.cancelTagPanelResize()}
 				></div>
-				<button
-					type="button"
-					class="panel-toggle"
-					onclick={() => layout.toggleTagPanel()}
-					aria-label={layout.tagPanelCollapsed ? "Expand DICOM tag panel" : "Collapse DICOM tag panel"}
-					aria-expanded={!layout.tagPanelCollapsed}
-				>
-					{layout.tagPanelCollapsed ? "◀" : "▶"}
-				</button>
+				<span class="panel-toggle">
+					<Button
+						variant="ghost"
+						icon="panel-right"
+						onclick={() => layout.toggleTagPanel()}
+						aria-label={layout.tagPanelCollapsed ? "Expand DICOM tag panel" : "Collapse DICOM tag panel"}
+						aria-expanded={!layout.tagPanelCollapsed}
+					/>
+				</span>
 				{#if !layout.tagPanelCollapsed}
 					{#if activeFile === null}
 						<div class="tag-empty">No file selected</div>
@@ -483,24 +486,8 @@
 	.compact-sidebar-button {
 		display: none;
 		align-self: center;
-		height: var(--control-height);
-		padding: 0 0.65rem;
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-control);
-		background: var(--surface-control);
-		color: var(--text-secondary);
-		font: inherit;
-		font-size: 0.74rem;
-		cursor: pointer;
 	}
 
-	.compact-sidebar-button:hover,
-	.compact-sidebar-button[aria-expanded="true"] {
-		background: var(--surface-control-hover);
-		color: var(--text-primary);
-	}
-
-	.compact-sidebar-button:focus-visible,
 	.file-navigator-shell:focus-visible,
 	.tag-panel-shell:focus-visible {
 		outline: 2px solid var(--focus-ring);
@@ -618,28 +605,9 @@
 
 	.panel-toggle {
 		position: absolute;
-		top: 0.6rem;
-		right: 0.45rem;
-		display: grid;
-		place-items: center;
-		width: 1.5rem;
-		height: 1.5rem;
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-control);
-		background: var(--surface-control);
-		color: var(--text-secondary);
-		cursor: pointer;
+		top: 8px;
+		right: 8px;
 		z-index: 6;
-	}
-
-	.panel-toggle:hover {
-		background: var(--surface-control-hover);
-		color: var(--text-primary);
-	}
-
-	.panel-toggle:focus-visible {
-		outline: 2px solid var(--focus-ring);
-		outline-offset: 2px;
 	}
 
 	.loading,

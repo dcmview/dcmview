@@ -60,7 +60,7 @@ function zoomLabel(): string {
 }
 
 function activeTool(): string {
-	return document.querySelector(".toolbar button.active")?.textContent?.trim() ?? "";
+	return document.querySelector('.toolbar button[aria-pressed="true"]')?.textContent?.trim() ?? "";
 }
 
 function tabButton(path: string): HTMLElement {
@@ -98,7 +98,7 @@ describe("App", () => {
 		await renderApp();
 		expect(activeTool()).toBe("Pan");
 
-		const filter = screen.getByPlaceholderText("filter tags...");
+		const filter = screen.getByLabelText("Filter tags");
 		filter.focus();
 		await fireEvent.keyDown(filter, { key: "w" });
 		expect(activeTool()).toBe("Pan");
@@ -111,7 +111,7 @@ describe("App", () => {
 		editable.remove();
 
 		await fireEvent.keyDown(document.body, { key: "w" });
-		expect(activeTool()).toBe("WL");
+		expect(activeTool()).toBe("W/L");
 		await fireEvent.keyDown(document.body, { key: "R" });
 		expect(activeTool()).toBe("ROI");
 	});
@@ -123,7 +123,7 @@ describe("App", () => {
 
 		await fireEvent.keyDown(document.body, { key: "ArrowRight" });
 		await screen.findByText("image 2 / 3", { selector: ".slider span" });
-		await fireEvent.keyDown(screen.getByPlaceholderText("filter tags..."), { key: "]" });
+		await fireEvent.keyDown(screen.getByLabelText("Filter tags"), { key: "]" });
 		expect(screen.getByText("image 2 / 3", { selector: ".slider span" })).toBeTruthy();
 		await fireEvent.keyDown(document.body, { key: "[" });
 		await screen.findByText("image 1 / 3", { selector: ".slider span" });
@@ -138,7 +138,7 @@ describe("App", () => {
 		await fireEvent.change(presets);
 		await screen.findByText("W: 80 · C: 40");
 
-		await fireEvent.click(screen.getByRole("button", { name: "Reset" }));
+		await fireEvent.click(screen.getByRole("button", { name: "Reset view" }));
 		await screen.findByText("W: 400 · C: 40");
 		expect(presets.value).toBe("default");
 	});

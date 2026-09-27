@@ -13,6 +13,8 @@
 		tagValueToCopyText,
 		type FlatTagRow,
 	} from "./tagRows";
+	import Button from "./ui/Button.svelte";
+	import SearchField from "./ui/SearchField.svelte";
 
 	type ColumnKey = "tag" | "keyword" | "vr";
 
@@ -190,12 +192,12 @@
 <aside class="panel">
 	<header>
 		<h2>DICOM Tags</h2>
-		<input bind:value={filter} placeholder="filter tags..." />
+		<SearchField bind:value={filter} placeholder="keyword, tag or value" aria-label="Filter tags" />
 	</header>
 	{#if error}
 		<div class="error">
 			<span>{error}</span>
-			<button type="button" onclick={retryTags}>Retry</button>
+			<Button icon="reset" onclick={retryTags}>Retry</Button>
 		</div>
 	{:else if loading}
 		<p class="loading">Loading tags…</p>
@@ -314,25 +316,6 @@
 		font-weight: 650;
 	}
 
-	input {
-		width: 100%;
-		background: var(--surface-control);
-		border: 1px solid var(--border-subtle);
-		color: var(--text-primary);
-		padding: 0.42rem 0.6rem;
-		border-radius: var(--radius-control);
-		font: inherit;
-		font-size: 0.82rem;
-	}
-
-	input::placeholder {
-		color: var(--text-muted);
-	}
-
-	input:focus-visible {
-		outline: 2px solid var(--focus-ring);
-		outline-offset: 2px;
-	}
 
 	.table {
 		overflow: auto;
@@ -499,15 +482,5 @@
 		justify-items: start;
 		gap: 0.45rem;
 		color: var(--danger);
-	}
-
-	.error button {
-		background: var(--surface-control);
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-control);
-		color: var(--text-secondary);
-		cursor: pointer;
-		font: inherit;
-		padding: 0.25rem 0.55rem;
 	}
 </style>

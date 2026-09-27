@@ -32,7 +32,7 @@ export const WL_PRESETS: WlPreset[] = [
 ];
 
 export const TOOL_LABELS: Record<ActiveTool, string> = {
-	window_level: 'WL',
+	window_level: 'W/L',
 	pan: 'Pan',
 	zoom: 'Zoom',
 	scroll: 'Scroll',

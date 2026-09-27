@@ -1,0 +1,45 @@
+/**
+ * Bea · dcmview line icons: 16-unit drawings, stroke 1.6, round caps and joins
+ * (see the design system's Iconography rules). Rendered by Icon.svelte.
+ */
+export const ICONS = {
+	pan: "<path d=\"M8 2v12M2 8h12M6 4l2-2 2 2M6 12l2 2 2-2M4 6L2 8l2 2M12 6l2 2-2 2\"/>",
+	scroll: "<path d=\"M4.5 2.5v11M2.5 4.5l2-2 2 2M2.5 11.5l2 2 2-2M9 4h4.5M9 8h4.5M9 12h4.5\"/>",
+	zoom: "<circle cx=\"7\" cy=\"7\" r=\"4.5\"/><path d=\"M10.5 10.5L14 14M5 7h4M7 5v4\"/>",
+	wl: "<rect x=\"2.5\" y=\"2.5\" width=\"11\" height=\"11\" rx=\"1.5\"/><path d=\"M13.5 2.5l-11 11M8 2.5l-5.5 5.5M13.5 8L8 13.5\"/>",
+	roi: "<path d=\"M3.5 5.5v-2h2M10.5 3.5h2v2M12.5 10.5v2h-2M5.5 12.5h-2v-2\"/><rect x=\"6\" y=\"6\" width=\"4\" height=\"4\" rx=\".5\"/>",
+	"flip-h": "<path d=\"M8 1.5v13\"/><path d=\"M5.6 4L2.2 12h3.4z\" style=\"fill: currentColor\" stroke-width=\"1.2\"/><path d=\"M10.4 4l3.4 8h-3.4z\" style=\"fill: currentColor\" stroke-width=\"1.2\"/>",
+	"flip-v": "<path d=\"M1.5 8h13\"/><path d=\"M4 5.6l8-3.4v3.4z\" style=\"fill: currentColor\" stroke-width=\"1.2\"/><path d=\"M4 10.4l8 3.4v-3.4z\" style=\"fill: currentColor\" stroke-width=\"1.2\"/>",
+	"rotate-ccw": "<path d=\"M3.8 6A5 5 0 1 1 3 9.5M4.17 2.52L3.8 6L7.28 6.37\"/>",
+	"rotate-cw": "<path d=\"M12.2 6A5 5 0 1 0 13 9.5M11.83 2.52L12.2 6L8.72 6.37\"/>",
+	"chevron-down": "<path d=\"M4.5 6.5L8 10l3.5-3.5\"/>",
+	"chevron-right": "<path d=\"M6.5 4.5L10 8l-3.5 3.5\"/>",
+	close: "<path d=\"M5 5l6 6M11 5l-6 6\"/>",
+	export: "<path d=\"M8 2.5v8M4.5 7.5L8 11l3.5-3.5M3 13.5h10\"/>",
+	reset: "<path d=\"M3.8 6A5 5 0 1 1 3 9.5M4.17 2.52L3.8 6L7.28 6.37\"/>",
+	play: "<path d=\"M5 3.5l7 4.5-7 4.5z\"/>",
+	pause: "<path d=\"M5.5 3.5v9M10.5 3.5v9\"/>",
+	prev: "<path d=\"M4 3.5v9M12 3.5L6.5 8l5.5 4.5\"/>",
+	next: "<path d=\"M12 3.5v9M4 3.5L9.5 8 4 12.5\"/>",
+	references: "<path d=\"M7.36 5.81L9.48 3.69A2 2 0 0 1 12.31 6.52L10.19 8.64M5.81 7.36L3.69 9.48A2 2 0 0 0 6.52 12.31L8.64 10.19M6.23 9.77L9.77 6.23\"/>",
+	"panel-left": "<rect x=\"2.5\" y=\"2.5\" width=\"11\" height=\"11\" rx=\"1.5\"/><path d=\"M6 2.5v11\"/>",
+	"panel-right": "<rect x=\"2.5\" y=\"2.5\" width=\"11\" height=\"11\" rx=\"1.5\"/><path d=\"M10 2.5v11\"/>",
+	search: "<circle cx=\"7\" cy=\"7\" r=\"4.5\"/><path d=\"M10.5 10.5L14 14\"/>",
+	patient: "<circle cx=\"8\" cy=\"5.5\" r=\"2.5\"/><path d=\"M3 13.5c.8-2.6 2.8-4 5-4s4.2 1.4 5 4\"/>",
+	study: "<rect x=\"2.5\" y=\"3.5\" width=\"11\" height=\"10\" rx=\"1.5\"/><path d=\"M2.5 6.5h11M5.5 2v3M10.5 2v3\"/>",
+	series: "<rect x=\"5\" y=\"5\" width=\"8.5\" height=\"8.5\" rx=\"1\"/><path d=\"M2.5 11V3.5a1 1 0 0 1 1-1H11\"/>",
+	directory: "<path d=\"M2.5 4h4l1.5 1.5h5.5v7.5h-11z\"/>",
+	file: "<path d=\"M4 2.5h5.5l2.5 2.5v8.5H4zM9.5 2.5V5H12\"/>",
+	dose: "<circle cx=\"8\" cy=\"8\" r=\"5.5\"/><circle cx=\"8\" cy=\"8\" r=\"2.5\"/>",
+	seg: "<path d=\"M5.5 3.2c3-1 6.8.6 7.2 4s-2.3 5.6-5.4 5.3S2 10.3 2.6 7.3c.3-2 1.3-3.4 2.9-4.1z\"/>",
+	pmap: "<rect x=\"2.5\" y=\"2.5\" width=\"11\" height=\"11\" rx=\"1.5\"/><path d=\"M2.5 8h11M8 2.5v11\"/>",
+	wsi: "<rect x=\"2.5\" y=\"2.5\" width=\"11\" height=\"11\" rx=\"1.5\"/><path d=\"M6.2 2.5v11M9.8 2.5v11M2.5 6.2h11M2.5 9.8h11\"/>",
+	report: "<path d=\"M4 2.5h5.5l2.5 2.5v8.5H4zM6 7h4M6 9.5h4\"/>",
+	check: "<path d=\"M3 8.5l3 3 7-7\"/>",
+	unknown: "<circle cx=\"8\" cy=\"8\" r=\"5.5\" stroke-dasharray=\"2 1.6\"/><path d=\"M6.4 6.4a1.7 1.7 0 1 1 2.3 1.6c-.5.2-.7.5-.7 1v.4M8 11.2v.1\"/>",
+	progress: "<circle cx=\"8\" cy=\"8\" r=\"5.5\"/><g class=\"icon-hand\"><path d=\"M8 8V4.8\"/></g><path d=\"M8 8l1.8 1.2\"/>",
+	partial: "<circle cx=\"8\" cy=\"8\" r=\"5.5\"/><path d=\"M8 2.5a5.5 5.5 0 0 1 0 11z\" style=\"fill: var(--status-partial)\"/>",
+	negative: "<path d=\"M5 5l6 6M11 5l-6 6\"/>",
+} as const;
+
+export type IconName = keyof typeof ICONS;

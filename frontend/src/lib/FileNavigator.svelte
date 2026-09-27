@@ -17,6 +17,9 @@
 		type NavKind,
 		type DirectoryNode,
 	} from "./fileTree";
+	import Button from "./ui/Button.svelte";
+	import SearchField from "./ui/SearchField.svelte";
+	import SegmentedControl from "./ui/SegmentedControl.svelte";
 
 	let {
 		files,
@@ -38,6 +41,10 @@
 	let collapsedNodes = $state<Record<string, boolean>>({});
 	let filterQuery = $state("");
 	let viewMode = $state<"study" | "directory">("study");
+	const VIEW_OPTIONS: { value: "study" | "directory"; label: string }[] = [
+		{ value: "study", label: "Study" },
+		{ value: "directory", label: "Directory" },
+	];
 
 	function defaultCollapsed(key: string): boolean {
 		if (filterActive) {
@@ -141,28 +148,31 @@
 		{#if !collapsed}
 			<div class="header-copy"><strong>Explorer</strong><span>{files.length} images</span></div>
 		{/if}
-		<button
-			type="button"
-			class="collapse-button"
-			onclick={() => collapsed = !collapsed}
-			aria-label={collapsed ? "Expand file navigator" : "Collapse file navigator"}
-			aria-expanded={!collapsed}
-		>
-			{collapsed ? "▶" : "◀"}
-		</button>
+		<span class="collapse-button">
+			<Button
+				variant="ghost"
+				icon="panel-left"
+				onclick={() => collapsed = !collapsed}
+				aria-label={collapsed ? "Expand file navigator" : "Collapse file navigator"}
+				aria-expanded={!collapsed}
+			/>
+		</span>
 	</div>
 
 	{#if !collapsed}
-		<div class="view-switch" role="group" aria-label="Explorer organization">
-			<button class:active={viewMode === "study"} aria-pressed={viewMode === "study"} onclick={() => viewMode = "study"}>Study</button>
-			<button class:active={viewMode === "directory"} aria-pressed={viewMode === "directory"} onclick={() => viewMode = "directory"}>Directory</button>
+		<div class="view-switch">
+			<SegmentedControl
+				fill
+				label="Explorer organization"
+				options={VIEW_OPTIONS}
+				value={viewMode}
+				onchange={(mode) => viewMode = mode}
+			/>
 		</div>
 		<div class="navigator-filter">
-			<input
-				class="filter-input"
-				type="search"
+			<SearchField
 				bind:value={filterQuery}
-				placeholder="Patient, study, series, modality"
+				placeholder="patient, study, series, modality"
 				aria-label="Filter file hierarchy"
 			/>
 			{#if filterActive}
@@ -284,51 +294,12 @@
 	.header-copy span { color: var(--text-muted); font-size: 0.64rem; font-weight: 500; }
 
 	.view-switch {
-		display: grid;
-		grid-template-columns: 1fr 1fr;
-		margin: 0.55rem 0.65rem 0;
-		padding: 0.18rem;
-		border: 1px solid var(--border-subtle);
-		border-radius: 0.48rem;
-		background: rgba(0, 0, 0, 0.18);
-	}
-	.view-switch button {
-		height: 1.8rem;
-		border: 0;
-		border-radius: 0.34rem;
-		background: transparent;
-		color: var(--text-muted);
-		font: 650 0.7rem var(--font-ui);
-		cursor: pointer;
-	}
-	.view-switch button.active {
-		background: var(--surface-control-hover);
-		color: var(--text-primary);
-		box-shadow: 0 1px 4px rgba(0, 0, 0, 0.24);
+		padding: 10px 10px 0;
 	}
 
-	.collapse-button {
-		display: grid;
-		place-items: center;
-		width: 1.6rem;
-		height: 1.6rem;
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-control);
-		background: var(--surface-control);
-		color: var(--text-secondary);
-		cursor: pointer;
-	}
 
-	.collapse-button:hover {
-		background: var(--surface-control-hover);
-		color: var(--text-primary);
-	}
-
-	.collapse-button:focus-visible,
-	.filter-input:focus-visible,
 	.tree-header:focus-visible,
 	.file-row:focus-visible,
-	.view-switch button:focus-visible,
 	.directory-row:focus-visible {
 		outline: 2px solid var(--focus-ring);
 		outline-offset: -2px;
@@ -341,21 +312,6 @@
 		border-bottom: 1px solid var(--border-subtle);
 	}
 
-	.filter-input {
-		width: 100%;
-		height: var(--control-height);
-		min-width: 0;
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-control);
-		background: var(--surface-control);
-		color: var(--text-primary);
-		font: 0.78rem var(--font-ui);
-		padding: 0 0.55rem;
-	}
-
-	.filter-input::placeholder {
-		color: var(--text-muted);
-	}
 
 	.filter-result,
 	.scan-progress {
