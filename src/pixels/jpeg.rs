@@ -49,12 +49,7 @@ fn decode_compressed_frame_to_png_blocking(
     // Decode only the requested frame; the result holds that frame at index 0.
     let decoded = obj
         .decode_pixel_data_frame(frame_in_object)
-        .with_context(|| {
-            format!(
-                "unsupported transfer syntax: {}",
-                obj.meta().transfer_syntax()
-            )
-        })?;
+        .context("JPEG frame decode failed")?;
     if decoded.samples_per_pixel() == 3 {
         if decoded.bits_allocated() != 8 {
             return Err(anyhow!(
@@ -223,12 +218,7 @@ fn decode_raw_jpeg_lossless_blocking(
 
     let decoded = obj
         .decode_pixel_data_frame(frame_in_object)
-        .with_context(|| {
-            format!(
-                "unsupported transfer syntax: {}",
-                obj.meta().transfer_syntax()
-            )
-        })
+        .context("JPEG frame decode failed")
         .map_err(PixelError::raw_decode)?;
     if decoded.samples_per_pixel() != 1 {
         return Err(PixelError::UnsupportedLayout(format!(

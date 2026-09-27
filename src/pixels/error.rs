@@ -12,7 +12,9 @@ pub enum PixelError {
     UnsupportedLayout(String),
     #[error("invalid window request: {0}")]
     InvalidWindow(String),
-    #[error("{context}: {source}")]
+    /// Rendered with the source's whole cause chain: the decoder's own
+    /// reason is what the viewer shows.
+    #[error("{context}: {source:#}")]
     Decode {
         context: &'static str,
         #[source]
