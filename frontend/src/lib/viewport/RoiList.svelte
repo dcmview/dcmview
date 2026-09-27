@@ -91,122 +91,132 @@
 <style>
 	.roi-list {
 		position: absolute;
-		right: 0.75rem;
-		top: 0.75rem;
+		right: 12px;
+		top: 12px;
+		z-index: 2;
 		max-width: min(48ch, 46%);
 		max-height: 38%;
 		overflow: auto;
-		font-size: 0.72rem;
-		padding: 0.5rem 0.55rem;
-		background: var(--surface-hud);
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-panel);
-		box-shadow: var(--shadow-hud);
-		backdrop-filter: blur(16px);
-		z-index: 2;
+		padding: 8px 10px;
+		background: var(--paper);
+		border: 1px solid var(--line);
+		border-radius: var(--radius-md);
+		box-shadow: var(--elev-overlay);
+		color: var(--text);
+		font: 400 11px/16px var(--font-ui);
 		scrollbar-width: thin;
 	}
+
 	.roi-list-title {
 		display: flex;
 		justify-content: space-between;
-		gap: 0.75rem;
-		font-weight: 600;
-		margin-bottom: 0.25rem;
-		color: var(--text-primary);
+		gap: 12px;
+		margin-bottom: 4px;
+		padding-bottom: 6px;
+		border-bottom: 1px solid var(--line);
+		font: 600 12px/16px var(--font-ui);
 	}
+
 	.roi-save-status {
-		color: var(--text-muted);
-		font-weight: 400;
+		color: var(--ink-muted);
+		font: 400 11px/16px var(--font-mono);
 	}
+
 	.roi-list-status {
-		color: var(--text-muted);
+		color: var(--ink-muted);
 	}
+
 	.roi-list-status.error {
-		color: var(--danger);
+		color: var(--red-text);
 	}
-	.roi-error-actions {
+
+	.roi-error-actions,
+	.roi-actions {
 		display: flex;
-		gap: 0.25rem;
-		margin-top: 0.35rem;
+		gap: 4px;
+		margin-top: 4px;
 	}
-	.roi-error-actions button {
-		background: var(--surface-control);
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-control);
-		color: var(--text-secondary);
+
+	.roi-error-actions button,
+	.roi-actions button {
+		height: 22px;
+		padding: 0 8px;
+		border: 1px solid var(--ink);
+		border-radius: var(--radius-sm);
+		background: linear-gradient(var(--control-top), var(--control-bot));
+		box-shadow: var(--elev-control-secondary);
+		color: var(--text);
+		font: 500 11px/1 var(--font-ui);
 		cursor: pointer;
-		font-size: 0.68rem;
-		padding: 0.15rem 0.35rem;
 	}
+
+	.roi-error-actions button:hover,
+	.roi-actions button:hover {
+		background: var(--control-top);
+	}
+
+	.roi-error-actions button:focus-visible,
+	.roi-actions button:focus-visible {
+		outline: 2px solid var(--focus-ring);
+		outline-offset: 2px;
+	}
+
+	.roi-actions button.danger {
+		color: var(--red-text);
+	}
+
 	ul {
+		display: grid;
+		gap: 2px;
 		margin: 0;
 		padding: 0;
 		list-style: none;
-		display: grid;
-		gap: 0.2rem;
 	}
+
 	li {
 		display: grid;
-		gap: 0.1rem;
-		padding: 0.18rem 0;
-		border-top: 1px solid var(--border-subtle);
+		gap: 2px;
+		padding: 3px 0;
+		border-top: 1px solid var(--line);
 	}
-	li.selected {
-		background: var(--accent-soft);
-		margin-inline: -0.25rem;
-		padding-inline: 0.25rem;
-		border-radius: 4px;
-	}
+
 	li:first-child {
 		border-top: none;
 		padding-top: 0;
 	}
+
+	li.selected {
+		margin-inline: -4px;
+		padding-inline: 4px;
+		border: 1px solid var(--selection-edge);
+		border-radius: var(--radius-sm);
+		background: var(--selection-fill);
+	}
+
 	.roi-select {
 		width: fit-content;
-		background: none;
-		border: none;
-		color: inherit;
 		padding: 0;
+		border: none;
+		background: none;
+		color: inherit;
+		font: inherit;
 		cursor: pointer;
 	}
+
 	.roi-select:focus-visible {
-		outline: none;
-		box-shadow: var(--focus-ring);
-		border-radius: 3px;
+		outline: 2px solid var(--focus-ring);
+		outline-offset: 2px;
+		border-radius: var(--radius-sm);
 	}
+
 	.roi-id {
 		font-weight: 600;
-		color: var(--accent-text);
 	}
+
 	.roi-coords,
 	.roi-frames {
-		font-family: var(--font-mono);
-		line-height: 1.25;
-		color: var(--text-secondary);
-	}
-	.roi-actions {
-		display: flex;
-		gap: 0.25rem;
-		margin-top: 0.15rem;
-	}
-	.roi-actions button {
-		background: var(--surface-control);
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-control);
-		color: var(--text-secondary);
-		cursor: pointer;
-		font-size: 0.68rem;
-		padding: 0.15rem 0.35rem;
-	}
-	.roi-actions button:hover {
-		background: var(--surface-control-hover);
-		color: var(--text-primary);
-	}
-	.roi-actions button:focus-visible {
-		outline: none;
-		box-shadow: var(--focus-ring);
-	}
-	.roi-actions button.danger {
-		color: var(--danger-text);
+		color: var(--ink-muted);
+		font: 400 11px/14px var(--font-mono);
+		font-variant-numeric: tabular-nums;
 	}
 </style>

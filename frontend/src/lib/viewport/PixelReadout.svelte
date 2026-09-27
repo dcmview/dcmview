@@ -58,26 +58,31 @@
 	.pixel-readout {
 		display: flex;
 		flex-wrap: wrap;
-		gap: 0.2rem 0.75rem;
+		gap: 3px 10px;
 		max-width: min(36rem, calc(100vw - 2rem));
-		font-size: 0.78rem;
-		font-family: var(--font-mono);
-		padding: 0.34rem 0.55rem;
-		background: var(--surface-hud);
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-control);
-		box-shadow: var(--shadow-hud);
-		backdrop-filter: blur(16px);
-		color: var(--text-primary);
+		padding: 6px 9px;
+		background: var(--paper);
+		border: 1px solid var(--line);
+		border-radius: var(--radius-md);
+		box-shadow: var(--elev-overlay);
+		color: var(--text);
+		font: var(--t-mono);
+		font-variant-numeric: tabular-nums;
 		pointer-events: none;
 	}
+
 	.coordinates,
 	.label,
 	.note {
-		color: var(--text-muted);
+		color: var(--ink-muted);
 	}
+
+	.label {
+		font: 400 11px/16px var(--font-ui);
+	}
+
 	.mapped,
 	.overlay-value {
-		color: var(--accent-text);
+		font-weight: 600;
 	}
 </style>

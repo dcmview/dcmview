@@ -13,6 +13,9 @@
 		tagValueToCopyText,
 		type FlatTagRow,
 	} from "./tagRows";
+	import Button from "./ui/Button.svelte";
+	import Icon from "./ui/Icon.svelte";
+	import SearchField from "./ui/SearchField.svelte";
 
 	type ColumnKey = "tag" | "keyword" | "vr";
 
@@ -23,15 +26,15 @@
 		startWidth: number;
 	};
 
-	const TAG_COLUMN_DEFAULT_PX = 128;
-	const KEYWORD_COLUMN_DEFAULT_PX = 136;
-	const VR_COLUMN_DEFAULT_PX = 64;
+	const TAG_COLUMN_DEFAULT_PX = 84;
+	const KEYWORD_COLUMN_DEFAULT_PX = 140;
+	const VR_COLUMN_DEFAULT_PX = 28;
 
-	const TAG_COLUMN_MIN_PX = 88;
+	const TAG_COLUMN_MIN_PX = 72;
 	const TAG_COLUMN_MAX_PX = 260;
-	const KEYWORD_COLUMN_MIN_PX = 100;
+	const KEYWORD_COLUMN_MIN_PX = 80;
 	const KEYWORD_COLUMN_MAX_PX = 320;
-	const VR_COLUMN_MIN_PX = 52;
+	const VR_COLUMN_MIN_PX = 28;
 	const VR_COLUMN_MAX_PX = 140;
 
 	let { fileIndex }: { fileIndex: number } = $props();
@@ -55,7 +58,8 @@
 	});
 
 	const tableColumns = $derived(
-		`${tagColumnWidthPx}px ${keywordColumnWidthPx}px ${vrColumnWidthPx}px minmax(0, 1fr)`,
+		// Keyword gives way before Value: Value always keeps at least 96px on screen.
+		`${tagColumnWidthPx}px minmax(0, ${keywordColumnWidthPx}px) ${vrColumnWidthPx}px minmax(96px, 1fr)`,
 	);
 	const activeTagResource = $derived(tagResourcesByFile[fileIndex]);
 	// A file waiting out the settle delay counts as loading.
@@ -189,13 +193,13 @@
 
 <aside class="panel">
 	<header>
-		<h2>DICOM Tags</h2>
-		<input bind:value={filter} placeholder="filter tags..." />
+		<h2>DICOM tags</h2>
+		<SearchField bind:value={filter} placeholder="keyword, tag or value" aria-label="Filter tags" />
 	</header>
 	{#if error}
 		<div class="error">
 			<span>{error}</span>
-			<button type="button" onclick={retryTags}>Retry</button>
+			<Button icon="reset" onclick={retryTags}>Retry</Button>
 		</div>
 	{:else if loading}
 		<p class="loading">Loading tags…</p>
@@ -246,6 +250,7 @@
 			{#each visibleRows as row}
 				<div
 					class="row row-grid"
+					class:nested={row.depth > 0}
 					role="button"
 					tabindex="0"
 					onclick={() => copyRow(row)}
@@ -261,16 +266,22 @@
 							<button
 								type="button"
 								class="chevron"
+								aria-label={expandedSequences.has(row.key) ? "Collapse sequence" : "Expand sequence"}
+								aria-expanded={expandedSequences.has(row.key)}
 								onclick={(event) => { event.stopPropagation(); toggleSequence(row.key); }}
 							>
-								{expandedSequences.has(row.key) ? "▼" : "▶"}
+								<Icon name={expandedSequences.has(row.key) ? "chevron-down" : "chevron-right"} size={12} />
 							</button>
 						{/if}
 						<span>{row.node.tag}</span>
 					</div>
 					<div class="keyword-cell">{row.node.keyword}</div>
 					<div class="vr-cell">{row.node.vr}</div>
-					<div class:binary={row.node.value.type === "binary"} class="value-cell">
+					<div
+						class:note={row.node.value.type === "binary" || row.node.value.type === "sequence"}
+						class:value-error={row.node.value.type === "error"}
+						class="value-cell"
+					>
 						<button
 							type="button"
 							class="value-toggle"
@@ -284,7 +295,7 @@
 							{tagValueDisplay(row, expandedLongValues.has(row.key))}
 						</button>
 						{#if copiedKey === row.key}
-							<span class="copied">Copied ✓</span>
+							<span class="copied"><Icon name="check" size={12} />Copied</span>
 						{/if}
 					</div>
 				</div>
@@ -295,92 +306,76 @@
 
 <style>
 	.panel {
-		background: var(--surface-panel);
 		display: grid;
 		grid-template-rows: auto 1fr;
 		height: 100%;
 		min-height: 0;
+		background: var(--paper);
 	}
 
 	header {
-		padding: 0.7rem;
-		border-bottom: 1px solid var(--border-subtle);
+		display: grid;
+		gap: 8px;
+		padding: 10px 10px 10px 12px;
+		border-bottom: 1px solid var(--line);
 	}
 
 	h2 {
-		margin: 0 0 0.5rem 0;
-		color: var(--text-secondary);
-		font-size: 0.84rem;
-		font-weight: 650;
-	}
-
-	input {
-		width: 100%;
-		background: var(--surface-control);
-		border: 1px solid var(--border-subtle);
-		color: var(--text-primary);
-		padding: 0.42rem 0.6rem;
-		border-radius: var(--radius-control);
-		font: inherit;
-		font-size: 0.82rem;
-	}
-
-	input::placeholder {
-		color: var(--text-muted);
-	}
-
-	input:focus-visible {
-		outline: none;
-		box-shadow: var(--focus-ring);
+		margin: 0;
+		padding-right: 36px;
+		color: var(--text);
+		font: var(--t-title);
 	}
 
 	.table {
 		overflow: auto;
 		min-width: 0;
 		min-height: 0;
-		font-family: var(--font-mono);
-		font-size: 0.8rem;
+		font: var(--t-mono);
 		scrollbar-width: thin;
 	}
 
 	.row-grid {
 		display: grid;
 		grid-template-columns: var(--tag-grid-columns);
-		gap: 0.5rem;
+		gap: 8px;
 		align-items: center;
 		min-width: 0;
+		padding: 0 12px;
 	}
 
 	.header-row {
 		position: sticky;
 		top: 0;
 		z-index: 2;
-		padding: 0.42rem 0.75rem;
-		background: color-mix(in srgb, var(--surface-panel) 94%, black);
-		border-bottom: 1px solid var(--border-subtle);
+		height: 26px;
+		background: var(--surface);
+		border-bottom: 1px solid var(--line);
 	}
 
 	.header-cell {
 		position: relative;
 		min-width: 0;
-		color: var(--text-muted);
-		font-size: 0.72rem;
-		font-weight: 600;
-		letter-spacing: 0.03em;
+		overflow: hidden;
+		color: var(--ink-muted);
+		font: var(--t-micro);
+		letter-spacing: 0.06em;
 		text-transform: uppercase;
+		white-space: nowrap;
 		user-select: none;
 	}
 
 	.header-cell.resizable {
-		padding-right: 0.45rem;
+		overflow: visible;
+		padding-right: 6px;
 	}
 
 	.column-resizer {
 		position: absolute;
-		right: -0.35rem;
-		top: -0.35rem;
-		bottom: -0.35rem;
-		width: 0.75rem;
+		right: -6px;
+		top: -6px;
+		bottom: -6px;
+		width: 12px;
 		border: 0;
 		padding: 0;
 		margin: 0;
@@ -393,10 +388,10 @@
 		content: "";
 		position: absolute;
 		left: 50%;
-		top: 0.2rem;
-		bottom: 0.2rem;
+		top: 4px;
+		bottom: 4px;
 		width: 1px;
-		background: var(--border-subtle);
+		background: var(--line);
 		transform: translateX(-50%);
 	}
 
@@ -405,19 +400,20 @@
 	}
 
 	.row {
-		padding: 0.36rem 0.75rem;
-		border-bottom: 1px solid rgba(255, 255, 255, 0.045);
-		color: inherit;
+		min-height: var(--row-h);
+		border-bottom: 1px solid var(--surface);
+		color: var(--text);
 		text-align: left;
+		cursor: pointer;
 	}
 
 	.row:hover {
-		background: rgba(255, 255, 255, 0.045);
+		background: var(--row-hover);
 	}
 
 	.row:focus-visible {
-		outline: none;
-		box-shadow: inset var(--focus-ring);
+		outline: 2px solid var(--focus-ring);
+		outline-offset: -2px;
 	}
 
 	.row > div {
@@ -426,9 +422,16 @@
 
 	.tag-cell {
 		display: flex;
-		gap: 0.35rem;
+		gap: 4px;
 		align-items: center;
-		padding-left: calc(var(--depth) * 0.9rem);
+		padding-left: calc(var(--depth) * 12px);
+		color: var(--ink-muted);
+		font-variant-numeric: tabular-nums;
+	}
+
+	.nested .tag-cell {
+		box-shadow: inset 1px 0 var(--line);
+		padding-left: calc(var(--depth) * 12px + 6px);
 	}
 
 	.tag-cell span,
@@ -439,19 +442,32 @@
 		white-space: nowrap;
 	}
 
+	.vr-cell {
+		color: var(--ink-muted);
+		font-size: 11px;
+	}
+
 	.chevron {
-		cursor: pointer;
-		color: var(--accent);
-		font-size: 0.75rem;
+		display: grid;
+		place-items: center;
+		flex: none;
+		width: 14px;
+		height: 14px;
 		border: 0;
+		border-radius: var(--radius-sm);
 		padding: 0;
 		background: transparent;
+		color: var(--ink-muted);
+		cursor: pointer;
+	}
+
+	.chevron:hover {
+		color: var(--text);
 	}
 
 	.value-cell {
 		position: relative;
 		min-width: 0;
-		padding-right: 4.4rem;
 	}
 
 	.value-toggle {
@@ -468,46 +484,70 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+		cursor: inherit;
 	}
 
-	.binary {
-		color: var(--text-muted);
+	.note {
+		color: var(--ink-muted);
 	}
 
+	.value-error {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		color: var(--red-text);
+	}
+
+	.value-error::before {
+		content: "";
+		flex: none;
+		width: 12px;
+		height: 12px;
+		background: var(--status-negative);
+		mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round'%3E%3Cpath d='M5 5l6 6M11 5l-6 6'/%3E%3C/svg%3E") center / contain no-repeat;
+		-webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round'%3E%3Cpath d='M5 5l6 6M11 5l-6 6'/%3E%3C/svg%3E") center / contain no-repeat;
+	}
+
+	/* Copy confirmation floats over the value instead of reserving room for it. */
 	.copied {
 		position: absolute;
 		right: 0;
 		top: 50%;
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		padding: 0 6px;
 		transform: translateY(-50%);
-		color: var(--accent);
-		font-size: 0.72rem;
+		border-radius: var(--radius-sm);
+		background: var(--paper);
+		box-shadow: -8px 0 8px var(--paper);
+		color: var(--text);
+		font: 600 11px/18px var(--font-ui);
 		white-space: nowrap;
-		max-width: 4rem;
-		overflow: hidden;
-		text-overflow: ellipsis;
 		pointer-events: none;
+		animation: copied-pop var(--settle) var(--ease-spring);
+	}
+
+	.copied :global(.icon) {
+		stroke: var(--status-positive);
+	}
+
+	@keyframes copied-pop {
+		from { opacity: 0; transform: translateY(-50%) scale(0.6); }
+		to { opacity: 1; transform: translateY(-50%) scale(1); }
 	}
 
 	.error,
 	.loading {
-		padding: 0.75rem;
-		color: var(--text-muted);
+		padding: 12px;
+		color: var(--ink-muted);
+		font: var(--t-meta);
 	}
 
 	.error {
 		display: grid;
 		justify-items: start;
-		gap: 0.45rem;
-		color: var(--danger);
-	}
-
-	.error button {
-		background: var(--surface-control);
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-control);
-		color: var(--text-secondary);
-		cursor: pointer;
-		font: inherit;
-		padding: 0.25rem 0.55rem;
+		gap: 8px;
+		color: var(--red-text);
 	}
 </style>

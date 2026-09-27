@@ -13,10 +13,15 @@
 		seriesDetailWithCounts,
 		studyDetailWithCounts,
 		studyFileOrder,
-		tierLabel,
-		type NavKind,
 		type DirectoryNode,
 	} from "./fileTree";
+	import { fileIcon } from "./objectIcons";
+	import Button from "./ui/Button.svelte";
+	import Icon from "./ui/Icon.svelte";
+	import StatusBadge from "./ui/StatusBadge.svelte";
+	import type { IconName } from "./ui/icons";
+	import SearchField from "./ui/SearchField.svelte";
+	import SegmentedControl from "./ui/SegmentedControl.svelte";
 
 	let {
 		files,
@@ -38,6 +43,10 @@
 	let collapsedNodes = $state<Record<string, boolean>>({});
 	let filterQuery = $state("");
 	let viewMode = $state<"study" | "directory">("study");
+	const VIEW_OPTIONS: { value: "study" | "directory"; label: string }[] = [
+		{ value: "study", label: "Study" },
+		{ value: "directory", label: "Directory" },
+	];
 
 	function defaultCollapsed(key: string): boolean {
 		if (filterActive) {
@@ -89,48 +98,70 @@
 	});
 </script>
 
-{#snippet nodeContent(kind: NavKind, label: string, detail: string)}
-	<span class="kind-badge">{tierLabel(kind)}</span>
+{#snippet twisty(collapsedNode: boolean)}
+	<span class="twisty"><Icon name={collapsedNode ? "chevron-right" : "chevron-down"} size={14} /></span>
+{/snippet}
+
+{#snippet fileState(file: FileSummary, detail: string)}
+	{#if file.support_state === "unsupported"}
+		<StatusBadge status="negative" title={file.support_reason ?? undefined}>Unsupported</StatusBadge>
+	{:else if !file.has_pixels}
+		<StatusBadge status="unknown">No pixels</StatusBadge>
+	{:else if detail}
+		<span class="node-detail">{detail}</span>
+	{/if}
+{/snippet}
+
+{#snippet nodeContent(icon: IconName, label: string, detail: string, file?: FileSummary)}
+	<span class="tier"><Icon name={icon} size={14} /></span>
 	<span class="node-text">
 		<span class="node-label">{label}</span>
-		{#if detail}<span class="node-detail">{detail}</span>{/if}
+		{#if file}
+			{@render fileState(file, detail)}
+		{:else if detail}
+			<span class="node-detail">{detail}</span>
+		{/if}
 	</span>
 {/snippet}
 
 {#snippet directoryNodes(nodes: DirectoryNode[], depth: number)}
 	{#each nodes as node}
 		{#if node.kind === "folder"}
-			<button
-				type="button"
-				class="directory-row folder-row"
-				class:active-path={activeDirectoryPath.has(node.key)}
-				style:--depth={depth}
-				aria-expanded={!isCollapsed(node.key)}
-				onclick={() => toggleNode(node.key)}
-			>
-				<span class="folder-icon" aria-hidden="true"></span>
-				<span class="directory-label">{node.label}</span>
-				<span class="directory-count">{directoryFileCount(node)}</span>
-				<span class="folder-twisty">{isCollapsed(node.key) ? "▶" : "▼"}</span>
-			</button>
-			{#if !isCollapsed(node.key)}
-				{@render directoryNodes(node.children, depth + 1)}
-			{/if}
+			{@const holdsActive = node.children.some((child) => child.kind === "file" && child.file.index === activeFileIndex)}
+			<div class="folder" class:root={depth === 0}>
+				<button
+					type="button"
+					class="directory-row folder-row"
+					class:active-path={activeDirectoryPath.has(node.key)}
+					aria-expanded={!isCollapsed(node.key)}
+					onclick={() => toggleNode(node.key)}
+				>
+					{@render twisty(isCollapsed(node.key))}
+					<span class="tier"><Icon name="directory" size={14} /></span>
+					<span class="directory-label">{node.label}</span>
+					<span class="directory-count">{directoryFileCount(node)}</span>
+				</button>
+				{#if !isCollapsed(node.key)}
+					<div class="directory-children" class:current={holdsActive} role="group">
+						{@render directoryNodes(node.children, depth + 1)}
+					</div>
+				{/if}
+			</div>
 		{:else}
 			<button
 				type="button"
 				class="directory-row directory-file"
 				class:active={node.file.index === activeFileIndex}
+				class:unsupported={node.file.support_state === "unsupported"}
+				class:dim={!node.file.has_pixels}
 				aria-current={node.file.index === activeFileIndex ? "true" : undefined}
-				style:--depth={depth}
 				title={node.file.path}
 				onclick={() => onopenfile(node.file.index)}
 			>
-				<span class="file-icon" aria-hidden="true">DCM</span>
-				<span class="directory-text">
-					<span class="directory-label">{node.label}</span>
-					<span class="directory-detail">{node.detail}</span>
-				</span>
+				<span class="tier"><Icon name={fileIcon(node.file)} size={14} /></span>
+				<span class="directory-label">{node.label}</span>
+				{#if node.file.modality}<span class="modality">{node.file.modality}</span>{/if}
+				<span class="directory-detail">{@render fileState(node.file, node.detail)}</span>
 			</button>
 		{/if}
 	{/each}
@@ -141,28 +172,31 @@
 		{#if !collapsed}
 			<div class="header-copy"><strong>Explorer</strong><span>{files.length} images</span></div>
 		{/if}
-		<button
-			type="button"
-			class="collapse-button"
-			onclick={() => collapsed = !collapsed}
-			aria-label={collapsed ? "Expand file navigator" : "Collapse file navigator"}
-			aria-expanded={!collapsed}
-		>
-			{collapsed ? "▶" : "◀"}
-		</button>
+		<span class="collapse-button">
+			<Button
+				variant="ghost"
+				icon="panel-left"
+				onclick={() => collapsed = !collapsed}
+				aria-label={collapsed ? "Expand file navigator" : "Collapse file navigator"}
+				aria-expanded={!collapsed}
+			/>
+		</span>
 	</div>
 
 	{#if !collapsed}
-		<div class="view-switch" role="group" aria-label="Explorer organization">
-			<button class:active={viewMode === "study"} aria-pressed={viewMode === "study"} onclick={() => viewMode = "study"}>Study</button>
-			<button class:active={viewMode === "directory"} aria-pressed={viewMode === "directory"} onclick={() => viewMode = "directory"}>Directory</button>
+		<div class="view-switch">
+			<SegmentedControl
+				fill
+				label="Explorer organization"
+				options={VIEW_OPTIONS}
+				value={viewMode}
+				onchange={(mode) => viewMode = mode}
+			/>
 		</div>
 		<div class="navigator-filter">
-			<input
-				class="filter-input"
-				type="search"
+			<SearchField
 				bind:value={filterQuery}
-				placeholder="Patient, study, series, modality"
+				placeholder="patient, study, series, modality"
 				aria-label="Filter file hierarchy"
 			/>
 			{#if filterActive}
@@ -185,8 +219,8 @@
 						aria-expanded={!isCollapsed(patient.key)}
 						onclick={() => toggleNode(patient.key)}
 					>
-						<span class="twisty">{isCollapsed(patient.key) ? "▶" : "▼"}</span>
-						{@render nodeContent(patient.kind, patient.label, patientDetail)}
+						{@render twisty(isCollapsed(patient.key))}
+						{@render nodeContent("patient", patient.label, patientDetail)}
 					</button>
 					{#if !isCollapsed(patient.key)}
 						{#each patient.studies as study}
@@ -200,8 +234,8 @@
 								aria-expanded={!isCollapsed(study.key)}
 								onclick={() => toggleNode(study.key)}
 							>
-								<span class="twisty">{isCollapsed(study.key) ? "▶" : "▼"}</span>
-								{@render nodeContent(study.kind, study.label, studyDetail)}
+								{@render twisty(isCollapsed(study.key))}
+								{@render nodeContent("study", study.label, studyDetail)}
 							</button>
 							{#if !isCollapsed(study.key)}
 								{#each study.series as series}
@@ -215,24 +249,28 @@
 										aria-expanded={!isCollapsed(series.key)}
 										onclick={() => toggleNode(series.key)}
 									>
-										<span class="twisty">{isCollapsed(series.key) ? "▶" : "▼"}</span>
-										{@render nodeContent(series.kind, series.label, seriesDetail)}
+										{@render twisty(isCollapsed(series.key))}
+										{@render nodeContent("series", series.label, seriesDetail)}
 									</button>
 									{#if !isCollapsed(series.key)}
+										<div class="series-files" role="group">
 										{#each series.files as item}
 											<button
 												type="button"
 												data-capture-file-index={item.file.index}
 												class="file-row depth-3"
 												class:active={item.file.index === activeFileIndex}
+												class:unsupported={item.file.support_state === "unsupported"}
+												class:dim={!item.file.has_pixels}
 												aria-current={item.file.index === activeFileIndex ? "true" : undefined}
 												onclick={() => onopenfile(item.file.index)}
 												title={item.file.path}
 												aria-label={fileAriaLabel(item)}
 											>
-												{@render nodeContent(item.kind, item.label, item.detail)}
+												{@render nodeContent(fileIcon(item.file), item.label, item.detail, item.file)}
 											</button>
 										{/each}
+										</div>
 									{/if}
 									</div>
 								{/each}
@@ -257,337 +295,282 @@
 		grid-template-rows: auto auto auto 1fr;
 		min-width: 0;
 		min-height: 0;
-		background: var(--surface-panel);
-		border-right: 1px solid var(--border-subtle);
+		background: var(--paper);
+		border-right: 1px solid var(--line);
 		overflow: hidden;
 	}
 
 	.navigator.collapsed {
-		background: var(--surface-chrome);
+		background: var(--surface);
 	}
 
 	.navigator-header {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		gap: 0.5rem;
-		min-height: 2.5rem;
-		padding: 0.55rem 0.65rem;
-		border-bottom: 1px solid var(--border-subtle);
-		color: var(--text-secondary);
-		font-size: 0.82rem;
-		font-weight: 650;
+		gap: 8px;
+		min-height: 44px;
+		padding: 8px 8px 6px 12px;
+		box-sizing: border-box;
 	}
 
-	.header-copy { display: grid; gap: 0.08rem; }
-	.header-copy strong { color: var(--text-primary); font-size: 0.82rem; }
-	.header-copy span { color: var(--text-muted); font-size: 0.64rem; font-weight: 500; }
+	.header-copy {
+		display: flex;
+		align-items: baseline;
+		gap: 8px;
+		min-width: 0;
+	}
+
+	.header-copy strong {
+		color: var(--text);
+		font: var(--t-title);
+	}
+
+	.header-copy span {
+		color: var(--ink-muted);
+		font: 400 11px/14px var(--font-mono);
+		white-space: nowrap;
+	}
 
 	.view-switch {
-		display: grid;
-		grid-template-columns: 1fr 1fr;
-		margin: 0.55rem 0.65rem 0;
-		padding: 0.18rem;
-		border: 1px solid var(--border-subtle);
-		border-radius: 0.48rem;
-		background: rgba(0, 0, 0, 0.18);
-	}
-	.view-switch button {
-		height: 1.8rem;
-		border: 0;
-		border-radius: 0.34rem;
-		background: transparent;
-		color: var(--text-muted);
-		font: 650 0.7rem var(--font-ui);
-		cursor: pointer;
-	}
-	.view-switch button.active {
-		background: var(--surface-control-hover);
-		color: var(--text-primary);
-		box-shadow: 0 1px 4px rgba(0, 0, 0, 0.24);
-	}
-
-	.collapse-button {
-		display: grid;
-		place-items: center;
-		width: 1.6rem;
-		height: 1.6rem;
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-control);
-		background: var(--surface-control);
-		color: var(--text-secondary);
-		cursor: pointer;
-	}
-
-	.collapse-button:hover {
-		background: var(--surface-control-hover);
-		color: var(--text-primary);
-	}
-
-	.collapse-button:focus-visible,
-	.filter-input:focus-visible,
-	.tree-header:focus-visible,
-	.file-row:focus-visible,
-	.view-switch button:focus-visible,
-	.directory-row:focus-visible {
-		outline: none;
-		box-shadow: inset var(--focus-ring);
+		padding: 0 10px;
 	}
 
 	.navigator-filter {
 		display: grid;
-		gap: 0.35rem;
-		padding: 0.5rem 0.65rem;
-		border-bottom: 1px solid var(--border-subtle);
-	}
-
-	.filter-input {
-		width: 100%;
-		height: var(--control-height);
-		min-width: 0;
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-control);
-		background: var(--surface-control);
-		color: var(--text-primary);
-		font: 0.78rem var(--font-ui);
-		padding: 0 0.55rem;
-	}
-
-	.filter-input::placeholder {
-		color: var(--text-muted);
+		gap: 6px;
+		padding: 8px 10px 10px;
+		border-bottom: 1px solid var(--line);
 	}
 
 	.filter-result,
 	.scan-progress {
-		color: var(--text-muted);
-		font-size: 0.72rem;
-		line-height: 1.25;
+		color: var(--ink-muted);
+		font: var(--t-meta);
+		font-size: 11px;
 	}
 
 	.tree {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
 		overflow: auto;
-		padding: 0.4rem 0;
+		padding: 10px;
 		scrollbar-width: thin;
 	}
 
-	.study-tree { padding: 0.5rem 0.55rem 0.8rem; }
-	.study-tree .tree-group {
-		margin-bottom: 0.55rem;
-		padding-bottom: 0.34rem;
-		border: 1px solid var(--border-subtle);
-		border-left: 3px solid var(--border-subtle);
-		border-radius: 0.52rem;
-		background: transparent;
-		overflow: hidden;
+	/* Encapsulation shows the DICOM hierarchy: patient card, study box, then rows. */
+	.tree-group {
+		flex: none;
+		border: 1px solid var(--ink);
+		border-radius: var(--radius-lg);
+		background: var(--paper);
+		padding-bottom: 6px;
 	}
 
-	.tree-group,
-	.tree-header,
-	.file-row {
-		min-width: 0;
+	.study-sibling {
+		margin: 0 6px;
+		border: 1px solid var(--line);
+		border-radius: var(--radius-md);
+		padding-bottom: 4px;
+	}
+
+	.study-sibling + .study-sibling {
+		margin-top: 6px;
+	}
+
+	.series-sibling {
+		margin: 0 4px;
+	}
+
+	.series-files {
+		margin: 0 0 2px 13px;
+		padding-left: 8px;
+		border-left: 1px solid var(--line);
 	}
 
 	.tree-header,
-	.file-row {
+	.file-row,
+	.directory-row {
+		display: grid;
+		align-items: center;
+		gap: 6px;
 		width: 100%;
-		border: 0;
+		min-width: 0;
+		padding: 3px 8px 3px 6px;
+		border: 1px solid transparent;
+		border-radius: var(--radius-sm);
 		background: transparent;
-		color: var(--text-secondary);
+		color: var(--text);
+		font: var(--t-ui);
 		text-align: left;
 		cursor: pointer;
 	}
 
 	.tree-header {
-		display: grid;
-		grid-template-columns: 1.1rem 3.35rem minmax(0, 1fr);
-		align-items: start;
-		gap: 0.35rem;
-		padding-top: 0.28rem;
-		padding-bottom: 0.28rem;
-		font-size: 0.81rem;
+		grid-template-columns: 14px 14px minmax(0, 1fr);
+		min-height: 32px;
 	}
 
 	.file-row {
-		display: grid;
-		grid-template-columns: 3.35rem minmax(0, 1fr);
-		align-items: start;
-		gap: 0.35rem;
-		padding-top: 0.26rem;
-		padding-bottom: 0.26rem;
-		font-size: 0.8rem;
+		grid-template-columns: 14px minmax(0, 1fr);
+		min-height: 32px;
 	}
 
 	.tree-header:hover,
-	.file-row:hover {
-		background: rgba(255, 255, 255, 0.05);
-	}
-	.study-tree .depth-0 {
-		min-height: 2.75rem;
-		padding-top: 0.42rem;
-		padding-bottom: 0.42rem;
-		background: transparent;
-	}
-	.study-tree .depth-0.active-path {
-		background: color-mix(in srgb, var(--accent) 6%, transparent);
+	.file-row:hover,
+	.directory-row:hover {
+		background: var(--row-hover);
 	}
 
-	.study-sibling {
-		margin: 0 0.34rem;
-		border: 1px solid var(--border-subtle);
-		border-left: 3px solid var(--border-subtle);
-		border-radius: 0.36rem;
-		background: transparent;
-		overflow: hidden;
-	}
-	.study-sibling + .study-sibling { margin-top: 0.34rem; }
-
-	.series-sibling {
-		margin: 0 0.32rem 0.3rem;
-		border: 1px solid var(--border-subtle);
-		border-left: 3px solid var(--border-subtle);
-		border-radius: 0.3rem;
-		background: transparent;
-		overflow: hidden;
-	}
-	.series-sibling + .series-sibling { margin-top: 0.3rem; }
-	.study-tree .depth-1,
-	.study-tree .depth-2 { border-left: 0; }
-	.study-tree .depth-1.active-path {
-		background: color-mix(in srgb, var(--accent) 9%, transparent);
-	}
-	.study-tree .depth-2.active-path {
-		background: color-mix(in srgb, var(--accent) 12%, transparent);
-	}
-	.study-tree .tree-header.active-path .node-label {
-		color: var(--text-primary);
+	.tree-header:focus-visible,
+	.file-row:focus-visible,
+	.directory-row:focus-visible {
+		outline: 2px solid var(--focus-ring);
+		outline-offset: -2px;
 	}
 
-	.file-row.active {
-		background: var(--accent-soft);
-		color: var(--text-primary);
-		box-shadow: inset 3px 0 0 var(--accent);
-	}
-
-	.depth-0 { padding-left: 0.48rem; }
-	.depth-1 { padding: 0.36rem 0.5rem; }
-	.depth-2 { padding: 0.32rem 0.42rem; }
-	.depth-3 { padding-left: 2.62rem; padding-right: 0.5rem; }
-
-	.twisty {
-		align-self: center;
-		color: var(--text-muted);
-		font-size: 0.72rem;
-		line-height: 1.35;
-	}
-
-	.kind-badge {
-		display: block;
-		align-self: center;
-		min-width: 0;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		color: var(--text-muted);
-		font-size: 0.6rem;
+	.depth-0 .node-label {
 		font-weight: 700;
-		letter-spacing: 0.04em;
-		line-height: 1.45;
-		text-transform: uppercase;
 	}
 
-	.node-text {
-		min-width: 0;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
+	.depth-1 .node-label {
+		font-weight: 600;
+	}
+
+	.tree-header.active-path .node-label,
+	.folder-row.active-path .directory-label {
+		font-weight: 700;
+	}
+
+	.file-row.active,
+	.directory-row.active {
+		border-color: var(--selection-edge);
+		background: var(--selection-fill);
+	}
+
+	.file-row.unsupported,
+	.directory-row.unsupported,
+	.file-row.unsupported:hover,
+	.directory-row.unsupported:hover {
+		border: 1px dashed var(--red);
+		background: var(--red-wash);
+	}
+
+	.dim .node-label,
+	.dim .directory-label {
+		color: var(--ink-muted);
+	}
+
+	.twisty,
+	.tier {
+		display: grid;
+		place-items: center;
+		align-self: start;
+		height: 18px;
+		color: var(--ink-muted);
 	}
 
 	.node-text {
 		display: grid;
-		gap: 0.04rem;
-		line-height: 1.25;
+		justify-items: start;
+		gap: 2px;
+		min-width: 0;
 	}
 
 	.node-label {
+		max-width: 100%;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-		color: var(--text-secondary);
 	}
 
-	.file-row.active .node-label {
-		color: var(--text-primary);
+	.file-row .node-label {
+		font: var(--t-mono);
+		line-height: 18px;
 	}
 
 	.node-detail {
-		color: var(--text-muted);
-		font-size: 0.72rem;
+		max-width: 100%;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		color: var(--ink-muted);
+		font: 400 11px/14px var(--font-mono);
+		font-variant-numeric: tabular-nums;
 	}
 
-	.directory-tree { padding: 0.45rem 0.55rem 0.8rem; }
-	.directory-row {
-		display: grid;
-		align-items: center;
-		gap: 0.35rem;
-		width: 100%;
-		min-height: 2rem;
-		padding-left: calc(0.3rem + var(--depth) * 0.72rem);
-		border: 0;
-		border-radius: 0.3rem;
-		background: transparent;
-		color: var(--text-secondary);
-		font: 0.77rem var(--font-ui);
-		text-align: left;
-		cursor: pointer;
+	/* Directory mode: folders are rows on one rail per level; the rail holding the open file is ink. */
+	.folder.root {
+		flex: none;
+		border: 1px solid var(--ink);
+		border-radius: var(--radius-lg);
+		background: var(--paper);
+		padding-bottom: 4px;
 	}
-	.directory-row:hover { background: rgba(255, 255, 255, 0.05); }
-	.directory-row.active-path {
-		background: color-mix(in srgb, var(--accent) 9%, transparent);
-		color: var(--text-primary);
-		box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent) 58%, transparent);
-	}
-	.directory-row.active { background: var(--accent-soft); box-shadow: inset 3px 0 var(--accent); color: var(--text-primary); }
+
 	.folder-row {
-		grid-template-columns: 1rem minmax(0, 1fr) auto 0.65rem;
-		padding-top: 0.25rem;
-		padding-right: 0.35rem;
-		padding-bottom: 0.25rem;
+		grid-template-columns: 14px 14px minmax(0, 1fr) auto;
+		min-height: 28px;
 	}
+
+	.folder-row .directory-label {
+		font: var(--t-mono);
+		line-height: 18px;
+	}
+
+	.folder.root > .folder-row .directory-label {
+		font-weight: 700;
+	}
+
+	.directory-children {
+		display: flex;
+		flex-direction: column;
+		margin: 0 0 2px 13px;
+		padding-left: 8px;
+		border-left: 1px solid var(--line);
+	}
+
+	.directory-children.current {
+		border-left-color: var(--ink);
+	}
+
+	.directory-count {
+		color: var(--ink-muted);
+		font: 400 11px/14px var(--font-mono);
+		font-variant-numeric: tabular-nums;
+	}
+
 	.directory-file {
-		grid-template-columns: 1.75rem minmax(0, 1fr);
-		align-items: center;
-		padding-top: 0.34rem;
-		padding-right: 0.4rem;
-		padding-bottom: 0.34rem;
-		padding-left: calc(0.42rem + var(--depth) * 0.72rem);
+		grid-template-columns: 14px minmax(0, 1fr) auto;
+		min-height: 36px;
+		row-gap: 2px;
 	}
-	.folder-twisty { color: var(--text-muted); font-size: 0.55rem; text-align: center; }
-	.folder-icon {
-		position: relative;
-		display: block;
-		width: 0.92rem;
-		height: 0.65rem;
-		/* Account for the tab extending above the icon's layout box. */
-		transform: translateY(0.1rem);
-		border-radius: 0.12rem;
-		background: #72879e;
+
+	.directory-file .tier {
+		grid-row: 1 / span 2;
 	}
-	.folder-icon::before { content: ""; position: absolute; left: 0.08rem; top: -0.2rem; width: 0.42rem; height: 0.25rem; border-radius: 0.1rem 0.1rem 0 0; background: #72879e; }
-	.file-icon {
-		display: grid;
-		place-items: center;
-		width: 1.55rem;
-		height: 1.1rem;
-		border: 1px solid rgba(126, 179, 236, 0.28);
-		border-radius: 0.18rem;
-		background: rgba(64, 124, 186, 0.13);
-		color: #8cb9e9;
-		font: 800 0.46rem var(--font-ui);
-		letter-spacing: 0.03em;
+
+	.directory-file .directory-label {
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		font: var(--t-mono);
 	}
-	.directory-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-	.directory-text { display: grid; gap: 0.04rem; min-width: 0; line-height: 1.25; }
-	.directory-detail { color: var(--text-muted); font-size: 0.68rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-	.folder-row .directory-label { font-weight: 600; }
-	.directory-count { min-width: 1.25rem; padding: 0.08rem 0.28rem; border-radius: 99px; background: rgba(255,255,255,0.06); color: var(--text-muted); font-size: 0.62rem; text-align: center; }
+
+	.directory-detail {
+		grid-column: 2 / span 2;
+		display: flex;
+		min-width: 0;
+	}
+
+	.modality {
+		padding: 0 4px;
+		border: 1px solid var(--line);
+		border-radius: var(--radius-sm);
+		color: var(--ink-2);
+		font: 500 10px/14px var(--font-mono);
+		letter-spacing: 0.02em;
+	}
 </style>

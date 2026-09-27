@@ -106,7 +106,15 @@ async function startSessionInPanel(
     if (panelDisposed) {
       throw new Error('dcmview panel closed before startup completed.');
     }
-    panel.webview.html = webviewHtml(panel.webview, externalUri);
+    const theme = viewerTheme(vscode.window.activeColorTheme.kind);
+    const viewerUri = externalUri.with({
+      query: [externalUri.query, `theme=${theme}`].filter(Boolean).join('&'),
+    });
+    panel.webview.html = webviewHtml(panel.webview, viewerUri);
+    const themeListener = vscode.window.onDidChangeActiveColorTheme((colorTheme) => {
+      void panel.webview.postMessage({ type: THEME_MESSAGE_TYPE, theme: viewerTheme(colorTheme.kind) });
+    });
+    panel.onDidDispose(() => themeListener.dispose());
   } catch (error) {
     panelDisposeListener.dispose();
     child.kill('SIGINT');
@@ -294,14 +302,27 @@ export function parseStartupLine(line: string): string | undefined {
   return undefined;
 }
 
+/** Message the viewer page accepts from its parent frame; see frontend/src/lib/app/theme.ts. */
+const THEME_MESSAGE_TYPE = 'dcmview-theme';
+
+/** The viewer follows the editor's colour theme; high-contrast themes map to their base. */
+function viewerTheme(kind: vscode.ColorThemeKind): 'light' | 'dark' {
+  return kind === vscode.ColorThemeKind.Light || kind === vscode.ColorThemeKind.HighContrastLight
+    ? 'light'
+    : 'dark';
+}
+
 function webviewHtml(webview: vscode.Webview, externalUri: vscode.Uri): string {
   const iframeSrc = escapeHtml(externalUri.toString());
-  const frameOrigin = escapeHtml(`${externalUri.scheme}://${externalUri.authority}`);
+  const origin = `${externalUri.scheme}://${externalUri.authority}`;
+  const frameOrigin = escapeHtml(origin);
+  const nonce = crypto.randomBytes(16).toString('base64');
   const csp = [
     "default-src 'none'",
     `frame-src ${frameOrigin}`,
     `img-src ${webview.cspSource} https: data:`,
     "style-src 'unsafe-inline'",
+    `script-src 'nonce-${nonce}'`,
   ].join('; ');
 
   return `<!DOCTYPE html>
@@ -318,13 +339,21 @@ function webviewHtml(webview: vscode.Webview, externalUri: vscode.Uri): string {
       margin: 0;
       padding: 0;
       border: 0;
-      background: #1a1a1a;
+      background: var(--vscode-editor-background, #1a1a1a);
       overflow: hidden;
     }
   </style>
 </head>
 <body>
   <iframe src="${iframeSrc}" title="dcmview"></iframe>
+  <script nonce="${nonce}">
+    const frame = document.querySelector('iframe');
+    window.addEventListener('message', (event) => {
+      if (event.data && event.data.type === ${JSON.stringify(THEME_MESSAGE_TYPE)}) {
+        frame.contentWindow.postMessage(event.data, ${JSON.stringify(origin)});
+      }
+    });
+  </script>
 </body>
 </html>`;
 }

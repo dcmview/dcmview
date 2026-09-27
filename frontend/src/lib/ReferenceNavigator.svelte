@@ -11,6 +11,7 @@
 		type AsyncResourceSnapshot,
 	} from "./keyedAsyncResource";
 	import ReferenceEdge from "./ReferenceEdge.svelte";
+	import Button from "./ui/Button.svelte";
 
 	let {
 		fileIndex,
@@ -41,97 +42,57 @@
 	}
 </script>
 
-<section class="reference-navigator" aria-label="DICOM references">
-	<header>
+<!-- Shown only when there is something to act on: references, or a failed load to retry. -->
+{#if activeResource?.status === "error"}
+	<section class="reference-navigator" aria-label="DICOM references">
 		<span class="title">References</span>
-		{#if !activeResource || activeResource.status === "loading"}
-			<span class="status">Loading…</span>
-		{:else if activeResource?.status === "error"}
-			<span class="status error" title={activeResource.error ?? undefined}>Unavailable</span>
-			<button class="retry" type="button" onclick={retry}>Retry</button>
-		{:else}
-			<span class="count">{references.length}</span>
-		{/if}
-	</header>
-
-	{#if activeResource?.status === "ready" && references.length === 0}
-		<span class="empty">No typed references</span>
-	{:else if references.length > 0}
+		<span class="error" title={activeResource.error ?? undefined}>Unavailable</span>
+		<Button icon="reset" onclick={retry}>Retry</Button>
+	</section>
+{:else if references.length > 0}
+	<section class="reference-navigator" aria-label="DICOM references">
+		<span class="title">References</span>
+		<span class="count">{references.length}</span>
 		<div class="edges">
 			{#each references as reference, referenceIndex (`${reference.relationship}:${referenceIndex}`)}
 				<ReferenceEdge {reference} {files} {onopenreference} inline />
 			{/each}
 		</div>
-	{/if}
-</section>
+	</section>
+{/if}
 
 <style>
 	.reference-navigator {
 		display: flex;
-		align-items: stretch;
-		gap: 0.55rem;
-		min-width: 0;
-		min-height: 2.1rem;
-		padding: 0.3rem 0.55rem;
-		border-bottom: 1px solid var(--border-subtle);
-		background: var(--surface-chrome);
-		color: var(--text-secondary);
-		font-size: 0.72rem;
-	}
-
-	header {
-		display: flex;
-		flex: 0 0 auto;
 		align-items: center;
-		gap: 0.35rem;
+		gap: 8px;
+		min-width: 0;
+		margin-left: auto;
+		color: var(--ink-muted);
+		font: var(--t-meta);
 	}
 
 	.title {
-		font-weight: 650;
-		color: var(--text-primary);
+		font: var(--t-micro);
+		letter-spacing: 0.06em;
+		text-transform: uppercase;
 	}
 
 	.count {
-		color: var(--text-muted);
+		color: var(--text);
+		font: var(--t-mono);
 		font-variant-numeric: tabular-nums;
 	}
 
 	.edges {
 		display: flex;
 		align-items: center;
-		gap: 0.45rem;
+		gap: 8px;
 		min-width: 0;
 		overflow-x: auto;
 	}
 
-	.retry {
-		padding: 0.1rem 0.3rem;
-		border: 1px solid var(--border-strong);
-		border-radius: 3px;
-		background: var(--surface-panel);
-		color: var(--text-primary);
-		font: inherit;
-		cursor: pointer;
-	}
-
-	.retry:hover {
-		border-color: var(--accent);
-	}
-
 	.error {
-		color: var(--danger);
-	}
-
-	.empty,
-	.status {
-		align-self: center;
-		color: var(--text-muted);
-	}
-
-	@media (max-width: 519px) {
-		.reference-navigator {
-			gap: 0.35rem;
-			padding-inline: 0.4rem;
-		}
+		color: var(--red-text);
 	}
 </style>

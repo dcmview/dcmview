@@ -1344,6 +1344,7 @@
 <section
 	bind:this={viewportEl}
 	class="viewport"
+	data-theme="dark"
 	class:dragging={isDragging}
 	data-tool={activeTool}
 	role="application"
@@ -1473,9 +1474,7 @@
 		position: relative;
 		display: grid;
 		place-items: center;
-		background:
-			radial-gradient(circle at center, var(--viewport-glow), transparent 58%),
-			var(--surface-viewport);
+		background: var(--viewport);
 		min-height: 0;
 		overflow: hidden;
 		user-select: none;
@@ -1513,31 +1512,35 @@
 		image-rendering: pixelated;
 	}
 	.placeholder {
-		color: var(--text-muted);
+		color: var(--ink-muted);
+		font: var(--t-ui);
 	}
+
 	.frame-request-indicator {
 		position: absolute;
-		top: 0.75rem;
-		left: 0.75rem;
+		top: 12px;
+		left: 12px;
 		z-index: 2;
 		display: grid;
 		place-items: center;
-		width: 1.8rem;
-		height: 1.8rem;
-		background: var(--surface-hud);
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-control);
-		backdrop-filter: blur(14px);
+		width: 28px;
+		height: 28px;
+		background: var(--paper);
+		border: 1px solid var(--line);
+		border-radius: var(--radius-md);
+		box-shadow: var(--elev-overlay);
 	}
+
 	.loading-wheel {
-		width: 0.9rem;
-		height: 0.9rem;
+		width: 14px;
+		height: 14px;
 		box-sizing: border-box;
-		border: 2px solid var(--spinner-track);
+		border: 2px solid var(--track);
 		border-top-color: var(--accent);
 		border-radius: 50%;
 		animation: frame-request-spin 0.78s linear infinite;
 	}
+
 	.visually-hidden {
 		position: absolute;
 		width: 1px;
@@ -1549,49 +1552,58 @@
 		white-space: nowrap;
 		border: 0;
 	}
+
 	@keyframes frame-request-spin {
 		to { transform: rotate(360deg); }
 	}
+
 	@media (prefers-reduced-motion: reduce) {
 		.loading-wheel {
 			animation-duration: 1.8s;
 		}
 	}
+
 	.legends {
 		position: absolute;
-		right: 0.75rem;
+		right: 12px;
 		top: 50%;
 		transform: translateY(-50%);
 		display: flex;
-		align-items: center;
-		gap: 0.4rem;
+		flex-direction: column;
+		align-items: flex-end;
+		gap: 10px;
 	}
-	.mapped-window {
-		font-family: var(--font-mono);
-	}
+
 	.hud {
 		position: absolute;
-		left: 0.75rem;
-		bottom: 0.75rem;
+		left: 12px;
+		bottom: 12px;
 		display: flex;
 		flex-direction: column;
 		align-items: flex-start;
-		gap: 0.4rem;
+		gap: 6px;
 		max-width: calc(100% - 9.5rem);
 		pointer-events: none;
 	}
+
 	.overlay {
 		display: flex;
 		flex-wrap: wrap;
+		gap: 3px 12px;
+		padding: 6px 9px;
+		background: var(--paper);
+		border: 1px solid var(--line);
+		border-radius: var(--radius-md);
+		box-shadow: var(--elev-overlay);
+		color: var(--text);
+		font: var(--t-mono);
+		font-variant-numeric: tabular-nums;
 		pointer-events: auto;
-		gap: 0.75rem;
-		font-size: 0.78rem;
-		padding: 0.34rem 0.55rem;
-		background: var(--surface-hud);
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-control);
-		box-shadow: var(--shadow-hud);
-		backdrop-filter: blur(16px);
-		color: var(--text-secondary);
+	}
+
+	.presentation-path {
+		color: var(--ink-muted);
+		font-family: var(--font-ui);
+		font-size: 11px;
 	}
 </style>

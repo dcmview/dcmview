@@ -1,6 +1,11 @@
 <script lang="ts">
-	import type { ActiveTool } from './viewerTools';
+	import type { ActiveTool, WlPreset } from './viewerTools';
 	import { TOOL_LABELS, TOOL_ORDER, TOOL_SHORTCUTS, WL_PRESETS } from './viewerTools';
+	import Button from './ui/Button.svelte';
+	import ButtonGroup from './ui/ButtonGroup.svelte';
+	import SegmentedControl from './ui/SegmentedControl.svelte';
+	import Select from './ui/Select.svelte';
+	import type { IconName } from './ui/icons';
 
 	let {
 		activeTool = $bindable(),
@@ -24,115 +29,75 @@
 		onexportAnnotations: () => void;
 	} = $props();
 
-	const tools: ActiveTool[] = TOOL_ORDER;
+	const TOOL_ICONS: Record<ActiveTool, IconName> = {
+		pan: "pan",
+		scroll: "scroll",
+		zoom: "zoom",
+		window_level: "wl",
+		annotate_rect: "roi",
+	};
+	const toolOptions = TOOL_ORDER.map((tool) => ({
+		value: tool,
+		label: TOOL_LABELS[tool],
+		icon: TOOL_ICONS[tool],
+		title: `${TOOL_LABELS[tool]} (${TOOL_SHORTCUTS[tool]})`,
+	}));
+
+	function presetLabel(preset: WlPreset): string {
+		return preset.ww === undefined ? preset.label : `${preset.label} · W ${preset.ww} C ${preset.wc}`;
+	}
 </script>
 
 <div class="toolbar">
-	<div class="tool-group">
-		{#each tools as tool}
-			<button
-				type="button"
-				class:active={activeTool === tool}
-				onclick={() => { activeTool = tool; }}
-				title="{TOOL_LABELS[tool]} ({TOOL_SHORTCUTS[tool]})"
-			>
-				{TOOL_LABELS[tool]}
-			</button>
-		{/each}
-	</div>
+	<SegmentedControl
+		label="Pointer tool"
+		options={toolOptions}
+		value={activeTool}
+		onchange={(tool) => { activeTool = tool; }}
+	/>
 	<span class="sep"></span>
-	<select value={selectedPresetId} onchange={(event) => onpresetchange(event.currentTarget.value)}>
+	<Select
+		aria-label="Window preset"
+		value={selectedPresetId}
+		onchange={(event) => onpresetchange(event.currentTarget.value)}
+	>
 		{#each WL_PRESETS as preset}
-			<option value={preset.id}>{preset.label}</option>
+			<option value={preset.id}>{presetLabel(preset)}</option>
 		{/each}
-	</select>
-	<span class="sep"></span>
-	<button type="button" onclick={onexportAnnotations} title="Export annotations as EMBED CSV">Export ROIs</button>
-	<span class="sep"></span>
-	<button type="button" onclick={onreset} title="Reset viewport (double-click)">Reset</button>
-	<div class="tool-group transform-group">
-		<button type="button" onclick={onflipH} title="Flip horizontal">↔</button>
-		<button type="button" onclick={onflipV} title="Flip vertical">↕</button>
-		<span class="sep"></span>
-		<button type="button" onclick={onrotateCCW} title="Rotate 90° CCW">↺</button>
-		<button type="button" onclick={onrotateCW} title="Rotate 90° CW">↻</button>
-	</div>
+	</Select>
+	<ButtonGroup label="Orientation">
+		<Button icon="flip-h" onclick={onflipH} aria-label="Flip horizontal" title="Flip horizontal" />
+		<Button icon="flip-v" onclick={onflipV} aria-label="Flip vertical" title="Flip vertical" />
+		<Button icon="rotate-ccw" onclick={onrotateCCW} aria-label="Rotate 90° counter-clockwise" title="Rotate 90° counter-clockwise" />
+		<Button icon="rotate-cw" onclick={onrotateCW} aria-label="Rotate 90° clockwise" title="Rotate 90° clockwise" />
+	</ButtonGroup>
+	<span class="grow"></span>
+	<Button icon="export" onclick={onexportAnnotations} title="Export annotations as EMBED CSV">Export ROIs</Button>
+	<Button variant="ghost" icon="reset" onclick={onreset} title="Reset viewport (double-click)">Reset view</Button>
 </div>
 
 <style>
 	.toolbar {
 		display: flex;
 		align-items: center;
-		gap: 0.45rem;
-		padding: 0.38rem 0.7rem;
-		background: var(--surface-chrome);
-		border-bottom: 1px solid var(--border-subtle);
+		gap: 10px;
+		min-height: var(--bar-h);
+		padding: 6px 10px;
+		box-sizing: border-box;
+		background: var(--paper);
+		border-bottom: 1px solid var(--line);
 		min-width: 0;
 		flex-wrap: wrap;
 	}
-	.tool-group {
-		display: flex;
-		flex: 0 0 auto;
-		padding: 2px;
-		background: rgba(255, 255, 255, 0.045);
-		border: 1px solid var(--border-subtle);
-		border-radius: calc(var(--radius-control) + 2px);
-	}
-	.transform-group {
-		margin-left: auto;
-	}
-	button {
-		min-height: var(--control-height);
-		background: transparent;
-		border: 1px solid transparent;
-		color: var(--text-secondary);
-		padding: 0.22rem 0.62rem;
-		border-radius: var(--radius-control);
-		cursor: pointer;
-		font: inherit;
-		font-size: 0.82rem;
-		line-height: 1;
-	}
-	button:hover {
-		background: var(--surface-control-hover);
-		color: var(--text-primary);
-	}
-	.toolbar > button {
-		background: var(--surface-control);
-		border-color: var(--border-subtle);
-	}
-	button.active {
-		border-color: rgba(255, 255, 255, 0.22);
-		color: var(--text-inverse);
-		background: var(--surface-control-active);
-		box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
-	}
-	select {
-		min-height: var(--control-height);
-		background: var(--surface-control);
-		border: 1px solid var(--border-subtle);
-		color: var(--text-primary);
-		padding: 0.22rem 1.8rem 0.22rem 0.65rem;
-		border-radius: var(--radius-control);
-		cursor: pointer;
-		font: inherit;
-		font-size: 0.82rem;
-	}
-	button:focus-visible,
-	select:focus-visible {
-		outline: none;
-		box-shadow: var(--focus-ring);
-	}
+
 	.sep {
 		width: 1px;
-		height: 1.2rem;
-		background: var(--border-subtle);
-		margin: 0 0.15rem;
+		align-self: stretch;
+		margin: 4px 2px;
+		background: var(--line);
 	}
 
-	@media (max-width: 760px) {
-		.transform-group {
-			margin-left: 0;
-		}
+	.grow {
+		flex: 1;
 	}
 </style>

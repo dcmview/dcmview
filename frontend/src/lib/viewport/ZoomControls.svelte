@@ -22,51 +22,50 @@
 <style>
 	.zoom-controls {
 		position: absolute;
-		right: 0.75rem;
-		bottom: 0.75rem;
+		right: 12px;
+		bottom: 12px;
 		display: flex;
 		align-items: center;
-		gap: 0;
-		background: var(--surface-hud);
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-panel);
-		overflow: hidden;
-		box-shadow: var(--shadow-hud);
-		backdrop-filter: blur(16px);
+		padding: 2px;
+		background: var(--paper);
+		border: 1px solid var(--line);
+		border-radius: var(--radius-md);
+		box-shadow: var(--elev-overlay);
 	}
+
 	button {
+		display: grid;
+		place-items: center;
+		min-width: 24px;
+		height: 22px;
+		padding: 0 6px;
+		border: 0;
+		border-radius: var(--radius-sm);
 		background: none;
-		border: none;
-		color: var(--text-secondary);
-		padding: 0.3rem 0.55rem;
-		font-size: 0.95rem;
+		color: var(--text);
+		font: 400 14px/1 var(--font-ui);
 		cursor: pointer;
-		line-height: 1;
 	}
+
 	button:hover:not(:disabled) {
-		background: var(--surface-hover-overlay);
-		color: var(--text-primary);
+		background: var(--row-hover);
 	}
+
 	button:focus-visible {
-		outline: none;
-		box-shadow: inset var(--focus-ring);
+		outline: 2px solid var(--focus-ring);
+		outline-offset: -2px;
 	}
+
 	button:disabled {
-		color: var(--text-disabled);
+		color: var(--subtle);
 		cursor: default;
 	}
+
 	.zoom-level {
-		padding: 0.3rem 0.4rem;
-		font-size: 0.78rem;
-		font-family: var(--font-mono);
-		color: var(--text-secondary);
 		min-width: 3.2rem;
-		text-align: center;
-		cursor: pointer;
-		border-left: 1px solid var(--border-subtle);
-		border-right: 1px solid var(--border-subtle);
-	}
-	.zoom-level:hover {
-		color: var(--text-primary);
+		border-radius: 0;
+		border-inline: 1px solid var(--line);
+		font: 400 11px/1 var(--font-mono);
+		font-variant-numeric: tabular-nums;
 	}
 </style>

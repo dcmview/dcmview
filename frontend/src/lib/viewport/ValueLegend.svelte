@@ -42,49 +42,60 @@
 <style>
 	.value-legend {
 		display: grid;
-		gap: 0.25rem;
-		margin: 0;
+		justify-items: center;
+		gap: 4px;
 		width: max-content;
 		max-width: 7.5rem;
-		padding: 0.4rem 0.5rem;
-		font-size: 0.72rem;
-		background: var(--surface-hud);
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-control);
-		box-shadow: var(--shadow-hud);
-		backdrop-filter: blur(16px);
-		color: var(--text-secondary);
+		margin: 0;
+		padding: 8px 8px 6px;
+		background: var(--paper);
+		border: 1px solid var(--line);
+		border-radius: var(--radius-md);
+		box-shadow: var(--elev-overlay);
+		color: var(--text);
+		font: 400 10px/12px var(--font-mono);
+		font-variant-numeric: tabular-nums;
 		pointer-events: none;
 	}
+
 	figcaption {
+		max-width: 100%;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-		color: var(--text-primary);
+		color: var(--ink-muted);
+		font: 600 10px/12px var(--font-ui);
+		letter-spacing: 0.05em;
+		text-transform: uppercase;
 	}
+
 	.scale {
 		display: flex;
-		gap: 0.4rem;
-		height: 7rem;
+		gap: 6px;
+		height: 104px;
 	}
+
 	.bar {
-		flex: 0 0 0.7rem;
-		border: 1px solid var(--border-strong);
+		flex: 0 0 10px;
+		border: 1px solid var(--line);
 		border-radius: 2px;
 	}
+
 	.ticks {
 		display: flex;
 		flex-direction: column;
 		justify-content: space-between;
-		font-family: var(--font-mono);
 	}
+
 	.unit,
 	.caption {
-		color: var(--text-muted);
+		color: var(--ink-muted);
 	}
-	.unit {
-		font-family: var(--font-mono);
+
+	.caption {
+		font-family: var(--font-ui);
 	}
+
 	@media (max-height: 640px), (max-width: 519px) {
 		.scale {
 			height: 4.5rem;

@@ -1,5 +1,9 @@
 <script lang="ts">
 	import type { CineDirection, CineMode } from "./cinePlayback";
+	import Button from "./ui/Button.svelte";
+	import ButtonGroup from "./ui/ButtonGroup.svelte";
+	import SegmentedControl from "./ui/SegmentedControl.svelte";
+	import Select from "./ui/Select.svelte";
 
 	let {
 		totalFrames,
@@ -20,6 +24,10 @@
 	} = $props();
 
 	const FPS_OPTIONS = [1, 5, 10, 15, 24];
+	const MODE_OPTIONS: { value: CineMode; label: string; title: string }[] = [
+		{ value: "loop", label: "Loop", title: "Restart from the first image" },
+		{ value: "sweep", label: "Sweep", title: "Play forward, then back" },
+	];
 
 	/** Stops cine and moves one image back or forward, clamped to the stack. */
 	export function step(delta: -1 | 1) {
@@ -59,20 +67,27 @@
 			value={currentPosition}
 			oninput={(event) => onpositionchange(Number(event.currentTarget.value))}
 		/>
-		<button type="button" onclick={() => step(-1)} aria-label="Previous image">◀</button>
-		<span>image {currentPosition + 1} / {totalFrames}</span>
-		<button type="button" onclick={() => step(1)} aria-label="Next image">▶</button>
-		<button type="button" class="play" onclick={togglePlay} aria-label={cinePlaying ? "Pause cine" : "Play cine"}>
-			{cinePlaying ? "⏸" : "▶"}
-		</button>
-		<select class="fps-select" bind:value={cineFps}>
+		<ButtonGroup label="Playback">
+			<Button icon="prev" onclick={() => step(-1)} aria-label="Previous image" />
+			<Button
+				icon={cinePlaying ? "pause" : "play"}
+				onclick={togglePlay}
+				aria-label={cinePlaying ? "Pause cine" : "Play cine"}
+			/>
+			<Button icon="next" onclick={() => step(1)} aria-label="Next image" />
+		</ButtonGroup>
+		<span class="position">image {currentPosition + 1} / {totalFrames}</span>
+		<Select aria-label="Cine speed" bind:value={cineFps}>
 			{#each FPS_OPTIONS as f}
 				<option value={f}>{f} fps</option>
 			{/each}
-		</select>
-		<button type="button" class="mode-toggle" onclick={() => cineMode = cineMode === "loop" ? "sweep" : "loop"}>
-			{cineMode === "sweep" ? 'Sweep' : 'Loop'}
-		</button>
+		</Select>
+		<SegmentedControl
+			label="Cine mode"
+			options={MODE_OPTIONS}
+			value={cineMode}
+			onchange={(mode) => { cineMode = mode; }}
+		/>
 	</div>
 {/if}
 
@@ -80,50 +95,20 @@
 	.slider {
 		display: flex;
 		flex-wrap: wrap;
-		gap: 0.42rem 0.55rem;
+		gap: 8px 10px;
 		align-items: center;
 		min-width: 0;
-		padding: 0.55rem 0.85rem;
-		background: var(--surface-chrome);
-		border-top: 1px solid var(--border-subtle);
-		color: var(--text-secondary);
-		font-size: 0.84rem;
+		min-height: var(--bar-h);
+		padding: 6px 10px;
+		box-sizing: border-box;
+		background: var(--paper);
+		border-top: 1px solid var(--line);
+		color: var(--text);
 	}
-	button {
-		min-height: var(--control-height);
-		background: var(--surface-control);
-		border: 1px solid var(--border-subtle);
-		color: var(--text-secondary);
-		padding: 0.22rem 0.65rem;
-		border-radius: var(--radius-control);
-		cursor: pointer;
-		font: inherit;
-	}
-	.play {
-		margin-left: 0.25rem;
-		border-color: rgba(10, 132, 255, 0.42);
-		color: var(--text-primary);
-	}
-	.fps-select {
-		min-height: var(--control-height);
-		background: var(--surface-control);
-		border: 1px solid var(--border-subtle);
-		color: var(--text-primary);
-		padding: 0.22rem 1.55rem 0.22rem 0.5rem;
-		border-radius: var(--radius-control);
-		font-size: inherit;
-	}
-	button:hover,
-	.fps-select:hover {
-		background: var(--surface-control-hover);
-		color: var(--text-primary);
-	}
-	button:focus-visible,
-	.fps-select:focus-visible {
-		outline: none;
-		box-shadow: var(--focus-ring);
-	}
-	.mode-toggle {
-		font-size: 0.85em;
+
+	.position {
+		font: var(--t-mono);
+		font-variant-numeric: tabular-nums;
+		white-space: nowrap;
 	}
 </style>

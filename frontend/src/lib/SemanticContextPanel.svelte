@@ -113,7 +113,7 @@
 	{#if loading}
 		<p class="message">Loading declared semantic metadata…</p>
 	{:else if error}
-		<p class="message error">Semantic metadata unavailable: {error}. Pixel Preview remains active.</p>
+		<p class="message error status-line">Semantic metadata unavailable: {error}. Pixel Preview remains active.</p>
 	{:else if response}
 		{#if mode === "pixel_preview"}
 			<p class="message">
@@ -157,7 +157,7 @@
 						<span>Algorithm: {display(segment.algorithm_type)} / {display(segment.algorithm_name)}</span>
 					</div>
 				{/each}
-				<p class:eligible={response.context.overlay.eligible} class="reason">
+				<p class:eligible={response.context.overlay.eligible} class:status-line={response.context.overlay.eligible} class="reason">
 					Overlay {response.context.overlay.eligible ? "eligible" : "unavailable"}: {response.context.overlay.reason}.
 				</p>
 			</div>
@@ -176,7 +176,7 @@
 					<p class="reason">No compatible Real World Value Mapping is available.</p>
 				{/each}
 				{#each response.context.warnings as warning}<p class="reason">{warning}</p>{/each}
-				<p class:eligible={response.context.overlay.eligible} class="reason">
+				<p class:eligible={response.context.overlay.eligible} class:status-line={response.context.overlay.eligible} class="reason">
 					Overlay {response.context.overlay.eligible ? "eligible" : "unavailable"}: {response.context.overlay.reason}.
 				</p>
 				{#if response.context.overlay.eligible && onshowoverlay}
@@ -196,7 +196,7 @@
 				</div>
 				<p class="reason">Scaled value = stored value × {display(response.context.dose_grid_scaling)}. The pixel canvas remains the stored-value preview.</p>
 				{#if response.context.scaling_status !== "available"}
-					<p class="warning">Dose Grid Scaling is {response.context.scaling_status.replace(/_/g, " ")}; values are shown as stored.</p>
+					<p class="warning status-line">Dose Grid Scaling is {response.context.scaling_status.replace(/_/g, " ")}; values are shown as stored.</p>
 				{/if}
 				<h3>Dose grid</h3>
 				<dl class="geometry">
@@ -221,7 +221,7 @@
 						<p class="reason">No plan, structure set, or image references are declared.</p>
 					{/each}
 				</div>
-				<p class:eligible={response.context.overlay.eligible} class="reason">
+				<p class:eligible={response.context.overlay.eligible} class:status-line={response.context.overlay.eligible} class="reason">
 					Overlay {response.context.overlay.eligible ? "eligible" : "unavailable"}: {response.context.overlay.reason}.
 				</p>
 				{#if response.context.overlay.eligible && onshowoverlay}
@@ -230,40 +230,47 @@
 						Show dose on source image
 					</button>
 				{/if}
-				<p class="warning">{response.context.clinical_use_warning}</p>
+				<p class="warning status-line">{response.context.clinical_use_warning}</p>
 			</div>
 		{/if}
 	{/if}
 </section>
 
 <style>
-	.semantic-panel { border-bottom: 1px solid var(--border-subtle); background: var(--surface-chrome); padding: 8px 12px; color: var(--text-secondary); font-size: 12px; }
+	.semantic-panel { padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--paper); color: var(--ink-muted); font: var(--t-meta); }
 	header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 	header div { display: flex; align-items: baseline; gap: 8px; }
-	header strong { color: var(--text-primary); }
-	header span, .active-mode { color: var(--text-muted); }
-	.active-mode { font-family: var(--font-mono); }
-	.mode-switch { display: flex; gap: 4px; margin-top: 7px; }
-	button { border: 1px solid var(--border-strong); border-radius: 4px; padding: 4px 9px; color: var(--text-secondary); background: var(--surface-control); font: inherit; cursor: pointer; }
-	button.active { color: var(--surface-root); background: var(--surface-control-active); }
-	button:disabled { opacity: .42; cursor: not-allowed; }
-	.message, .reason, .warning { margin: 7px 0 0; }
-	.error, .warning { color: var(--danger-text); }
+	header strong { color: var(--text); font: var(--t-title); }
+	header span, .active-mode { color: var(--ink-muted); }
+	.active-mode { font: var(--t-mono); }
+	.mode-switch { display: flex; gap: 6px; margin-top: 8px; }
+	button { height: 24px; padding: 0 8px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--paper); color: var(--ink-muted); font: 500 12px/16px var(--font-ui); cursor: pointer; }
+	button:hover:not(:disabled) { border-color: var(--subtle); color: var(--text); }
+	button.active { border-color: var(--selection-edge); background: var(--selection-fill); color: var(--text); }
+	button:disabled { opacity: 0.42; cursor: not-allowed; }
+	button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+	.show-overlay { margin-top: 6px; border-color: var(--ink); background: linear-gradient(var(--control-top), var(--control-bot)); box-shadow: var(--elev-control-secondary); color: var(--text); }
+	.show-overlay:hover { background: var(--control-top); }
+	.message, .reason, .warning { margin: 8px 0 0; }
 	.details { max-height: 180px; overflow: auto; }
-	.summary-grid { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 7px; }
-	.summary-grid b { color: var(--text-primary); font-family: var(--font-mono); }
-	.item { display: grid; gap: 2px; margin-top: 7px; padding: 6px 8px; border-left: 2px solid var(--border-strong); background: var(--surface-panel); }
-	.item strong { color: var(--text-primary); }
-	.item span { font-family: var(--font-mono); }
+	.summary-grid { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 8px; }
+	.summary-grid b { color: var(--text); font: 500 12px/16px var(--font-mono); }
+	.item { display: grid; gap: 2px; margin-top: 8px; padding: 6px 8px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--paper); }
+	.item strong { color: var(--text); }
+	.item span { font: var(--t-mono); }
 	.segment-title, .item .recommended { display: flex; align-items: center; gap: 6px; }
-	.swatch { flex: 0 0 auto; width: 10px; height: 10px; border: 1px solid var(--border-strong); border-radius: 2px; }
-	h3 { margin: 9px 0 0; color: var(--text-primary); font-size: 11px; font-weight: 650; }
+	.swatch { flex: 0 0 auto; width: 10px; height: 10px; border: 1px solid var(--line); border-radius: 2px; }
+	h3 { margin: 10px 0 0; color: var(--ink-muted); font: var(--t-micro); letter-spacing: 0.06em; text-transform: uppercase; }
 	.geometry { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 12px; margin: 4px 0 0; }
-	.geometry dt { color: var(--text-muted); }
-	.geometry dd { margin: 0; overflow-wrap: anywhere; color: var(--text-primary); font-family: var(--font-mono); }
+	.geometry dt { color: var(--ink-muted); }
+	.geometry dd { margin: 0; overflow-wrap: anywhere; color: var(--text); font: var(--t-mono); }
 	.references { display: grid; gap: 4px; margin-top: 4px; }
-	.reason { color: var(--text-muted); }
-	.reason.eligible { color: var(--success-text); }
-	.show-overlay { margin-top: 5px; }
+	.reason { color: var(--ink-muted); }
+	/* Status lines: the status icon in its hue beside text-coloured words (Bea pairs every status with a second channel). */
+	.status-line { display: flex; align-items: baseline; gap: 6px; color: var(--text); }
+	.status-line::before { content: ""; flex: none; width: 12px; height: 12px; align-self: center; background: var(--status-icon); mask: var(--status-mask) center / contain no-repeat; -webkit-mask: var(--status-mask) center / contain no-repeat; }
+	.warning { --status-icon: var(--status-partial); --status-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='8' cy='8' r='5.5'/%3E%3Cpath d='M8 2.5a5.5 5.5 0 0 1 0 11z' fill='black'/%3E%3C/svg%3E"); }
+	.error { --status-icon: var(--status-negative); --status-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 5l6 6M11 5l-6 6'/%3E%3C/svg%3E"); }
+	.eligible { --status-icon: var(--status-positive); --status-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 8.5l3 3 7-7'/%3E%3C/svg%3E"); }
 	@media (max-width: 700px) { header { align-items: flex-start; } .details { max-height: 130px; } }
 </style>

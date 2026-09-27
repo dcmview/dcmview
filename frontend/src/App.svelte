@@ -16,6 +16,7 @@
 	import TagPanel from "./lib/TagPanel.svelte";
 	import ValueOverlayBar from "./lib/ValueOverlayBar.svelte";
 	import ViewerToolbar from "./lib/ViewerToolbar.svelte";
+	import Button from "./lib/ui/Button.svelte";
 	import WsiTileContext from "./lib/WsiTileContext.svelte";
 	import { Catalog } from "./lib/app/catalog.svelte";
 	import {
@@ -202,35 +203,38 @@
 				src="/assets/dcmview-icon.png"
 				alt="dcmview"
 			/>
-			<button
-				type="button"
-				class="compact-sidebar-button explorer-drawer-button"
-				bind:this={layout.explorerButton}
-				onclick={() => layout.toggleDrawer("explorer")}
-				aria-label="Toggle Explorer drawer"
-				aria-controls="file-navigator-panel"
-				aria-expanded={layout.compactDrawer === "explorer"}
-			>
-				Explorer
-			</button>
+			<span class="compact-sidebar-button explorer-drawer-button">
+				<Button
+					icon="panel-left"
+					bind:element={layout.explorerButton}
+					onclick={() => layout.toggleDrawer("explorer")}
+					aria-label="Toggle Explorer drawer"
+					aria-controls="file-navigator-panel"
+					aria-expanded={layout.compactDrawer === "explorer"}
+				>
+					Explorer
+				</Button>
+			</span>
 			<OpenImageTabs
 				openFiles={openTabFiles}
 				frameCounts={tabs.frameCounts}
 				activeFileIndex={tabs.activeFileIndex}
+				activePosition={tabs.stackPosition}
 				onactivate={(fileIndex) => tabs.activate(fileIndex)}
 				onclose={(fileIndex) => tabs.close(fileIndex)}
 			/>
-			<button
-				type="button"
-				class="compact-sidebar-button tags-drawer-button"
-				bind:this={layout.tagsButton}
-				onclick={() => layout.toggleDrawer("tags")}
-				aria-label="Toggle Tags drawer"
-				aria-controls="tag-panel"
-				aria-expanded={layout.compactDrawer === "tags"}
-			>
-				Tags
-			</button>
+			<span class="compact-sidebar-button tags-drawer-button">
+				<Button
+					icon="panel-right"
+					bind:element={layout.tagsButton}
+					onclick={() => layout.toggleDrawer("tags")}
+					aria-label="Toggle Tags drawer"
+					aria-controls="tag-panel"
+					aria-expanded={layout.compactDrawer === "tags"}
+				>
+					Tags
+				</Button>
+			</span>
 		</header>
 		<ViewerToolbar
 			bind:activeTool
@@ -277,11 +281,23 @@
 					<div class="empty-viewer">Open a file from the sidebar</div>
 				{:else}
 					<div class="viewer-context">
-						<ReferenceNavigator
-							fileIndex={activeFile.index}
-							files={catalog.files.files}
-							onopenreference={(fileIndex, frameIndex) => tabs.openReference(fileIndex, frameIndex)}
-						/>
+						<div class="context-strip">
+							{#if overlayCandidates.length > 0 && !frameOverlay}
+								<ValueOverlayBar
+									candidates={overlayCandidates}
+									selectedVolume={valueOverlays.selectedVolume}
+									opacity={valueOverlays.opacity}
+									coversFrame={valueOverlay?.coversFrame ?? false}
+									ontoggle={(volumeFileIndex) => valueOverlays.toggle(volumeFileIndex)}
+									onopacity={(opacity) => valueOverlays.setOpacity(opacity)}
+								/>
+							{/if}
+							<ReferenceNavigator
+								fileIndex={activeFile.index}
+								files={catalog.files.files}
+								onopenreference={(fileIndex, frameIndex) => tabs.openReference(fileIndex, frameIndex)}
+							/>
+						</div>
 						{#if supportsSemanticContext(activeFile.object_kind, activeFile.sop_class_uid)}
 							<SemanticContextPanel
 								fileIndex={activeFile.index}
@@ -291,16 +307,6 @@
 								onmodechange={(mode) => { semanticMode = mode; }}
 								oncontextchange={(response) => { semanticResponse = response; }}
 								onshowoverlay={showValueOverlay}
-							/>
-						{/if}
-						{#if overlayCandidates.length > 0 && !frameOverlay}
-							<ValueOverlayBar
-								candidates={overlayCandidates}
-								selectedVolume={valueOverlays.selectedVolume}
-								opacity={valueOverlays.opacity}
-								coversFrame={valueOverlay?.coversFrame ?? false}
-								ontoggle={(volumeFileIndex) => valueOverlays.toggle(volumeFileIndex)}
-								onopacity={(opacity) => valueOverlays.setOpacity(opacity)}
 							/>
 						{/if}
 						{#if activeFile.object_kind === "whole_slide_microscopy"}
@@ -375,15 +381,15 @@
 					onpointerup={(event) => layout.endTagPanelResize(event)}
 					onpointercancel={() => layout.cancelTagPanelResize()}
 				></div>
-				<button
-					type="button"
-					class="panel-toggle"
-					onclick={() => layout.toggleTagPanel()}
-					aria-label={layout.tagPanelCollapsed ? "Expand DICOM tag panel" : "Collapse DICOM tag panel"}
-					aria-expanded={!layout.tagPanelCollapsed}
-				>
-					{layout.tagPanelCollapsed ? "◀" : "▶"}
-				</button>
+				<span class="panel-toggle">
+					<Button
+						variant="ghost"
+						icon="panel-right"
+						onclick={() => layout.toggleTagPanel()}
+						aria-label={layout.tagPanelCollapsed ? "Expand DICOM tag panel" : "Collapse DICOM tag panel"}
+						aria-expanded={!layout.tagPanelCollapsed}
+					/>
+				</span>
 				{#if !layout.tagPanelCollapsed}
 					{#if activeFile === null}
 						<div class="tag-empty">No file selected</div>
@@ -401,55 +407,6 @@
 {/if}
 
 <style>
-	:global(:root) {
-		/* Bundled faces first so installed fonts never change the look; the system
-		   fallbacks only supply scripts the bundles lack (CJK, Arabic, Hebrew, ...). */
-		--font-ui: "Inter Variable", system-ui, sans-serif;
-		--font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
-		--surface-root: #151516;
-		--surface-viewport: #080809;
-		--surface-chrome: #202124;
-		--surface-panel: #252629;
-		--surface-panel-alt: #2b2c30;
-		--surface-control: #303136;
-		--surface-control-hover: #393a40;
-		--surface-control-active: #e7e7ea;
-		--border-subtle: rgba(255, 255, 255, 0.08);
-		--border-strong: rgba(255, 255, 255, 0.14);
-		--text-primary: #f2f2f3;
-		--text-secondary: #c7c7cc;
-		--text-muted: #8e8e93;
-		--text-inverse: #1d1d1f;
-		--accent: #0a84ff;
-		--accent-soft: rgba(10, 132, 255, 0.16);
-		--danger: #ff6961;
-		--accent-text: #9fcbff;
-		--danger-text: #ffb0b0;
-		--success-text: #8bd5a1;
-		--text-disabled: rgba(255, 255, 255, 0.22);
-		--surface-hud: rgba(28, 28, 30, 0.78);
-		--surface-hover-overlay: rgba(255, 255, 255, 0.08);
-		--viewport-glow: rgba(255, 255, 255, 0.025);
-		--spinner-track: rgba(142, 142, 147, 0.24);
-		--label-halo: rgba(0, 0, 0, 0.75);
-		/* ROI annotations drawn over the image. */
-		--roi-stroke: #ff7373;
-		--roi-fill: rgba(255, 115, 115, 0.12);
-		--roi-label: #ffdede;
-		--roi-selected-stroke: #4a9eff;
-		--roi-selected-fill: rgba(74, 158, 255, 0.16);
-		--roi-selected-label: #c8ddff;
-		--roi-draft-stroke: #ffd45c;
-		--roi-draft-fill: rgba(255, 212, 92, 0.14);
-		--roi-handle-outline: #101820;
-		--radius-control: 7px;
-		--radius-panel: 8px;
-		--control-height: 1.75rem;
-		--shadow-hud: 0 12px 30px rgba(0, 0, 0, 0.28);
-		--focus-ring: 0 0 0 2px rgba(10, 132, 255, 0.48);
-		color-scheme: dark;
-	}
-
 	:global(*) {
 		box-sizing: border-box;
 	}
@@ -462,8 +419,8 @@
 		height: 100%;
 		overflow: hidden;
 		font-family: var(--font-ui);
-		background: var(--surface-root);
-		color: var(--text-primary);
+		background: var(--canvas);
+		color: var(--text);
 		-webkit-font-smoothing: antialiased;
 		text-rendering: optimizeLegibility;
 	}
@@ -474,45 +431,27 @@
 		height: 100vh;
 		width: 100%;
 		overflow: hidden;
-		background: var(--surface-root);
+		background: var(--canvas);
 	}
 
 	.topbar {
 		display: grid;
 		grid-template-columns: auto minmax(0, 1fr) auto;
-		align-items: end;
-		gap: 0.8rem;
-		min-height: 2.6rem;
-		background: var(--surface-chrome);
-		padding: 0 0.7rem;
-		border-bottom: 1px solid var(--border-subtle);
+		align-items: stretch;
+		height: var(--tab-h);
+		background: var(--surface);
+		border-bottom: 1px solid var(--line);
 	}
 
 	.compact-sidebar-button {
 		display: none;
 		align-self: center;
-		height: var(--control-height);
-		padding: 0 0.65rem;
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-control);
-		background: var(--surface-control);
-		color: var(--text-secondary);
-		font: inherit;
-		font-size: 0.74rem;
-		cursor: pointer;
 	}
 
-	.compact-sidebar-button:hover,
-	.compact-sidebar-button[aria-expanded="true"] {
-		background: var(--surface-control-hover);
-		color: var(--text-primary);
-	}
-
-	.compact-sidebar-button:focus-visible,
 	.file-navigator-shell:focus-visible,
 	.tag-panel-shell:focus-visible {
-		outline: none;
-		box-shadow: var(--focus-ring);
+		outline: 2px solid var(--focus-ring);
+		outline-offset: 2px;
 	}
 
 	.drawer-backdrop {
@@ -520,16 +459,17 @@
 		inset: 0;
 		z-index: 30;
 		border: 0;
-		background: rgba(0, 0, 0, 0.52);
+		background: var(--scrim);
 		cursor: default;
 	}
 
 	.brand-mark {
 		align-self: center;
 		display: block;
-		width: 1.55rem;
-		height: 1.55rem;
-		border-radius: 0.28rem;
+		width: 22px;
+		height: 22px;
+		margin: 0 12px;
+		border-radius: var(--radius-sm);
 	}
 
 	.workspace {
@@ -555,23 +495,40 @@
 		grid-template-rows: auto minmax(0, 1fr) auto;
 		min-width: 0;
 		min-height: 0;
-		background: var(--surface-viewport);
+		background: var(--viewport);
 	}
 
 	.viewer-context {
 		min-width: 0;
+		background: var(--paper);
+	}
+
+	/* Overlay choice and references share one row; with neither, the row is gone. */
+	.context-strip {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 6px 16px;
+		min-height: 38px;
+		padding: 6px 10px;
+		box-sizing: border-box;
+		border-bottom: 1px solid var(--line);
+	}
+
+	.context-strip:not(:has(*)) {
+		display: none;
 	}
 
 	.empty-viewer,
 	.tag-empty {
 		display: grid;
 		place-content: center;
-		color: var(--text-muted);
+		color: var(--ink-muted);
 	}
 
 	.empty-viewer {
 		min-height: 0;
-		background: var(--surface-viewport);
+		background: var(--viewport);
 	}
 
 	.tag-empty {
@@ -581,15 +538,15 @@
 
 	.tag-panel-shell {
 		position: relative;
-		background: var(--surface-panel);
-		border-left: 1px solid var(--border-subtle);
+		background: var(--paper);
+		border-left: 1px solid var(--line);
 		min-width: 0;
 		min-height: 0;
 		overflow: hidden;
 	}
 
 	.tag-panel-shell.collapsed {
-		background: var(--surface-chrome);
+		background: var(--surface);
 	}
 
 	.sidebar-handle {
@@ -611,7 +568,7 @@
 		top: 0;
 		bottom: 0;
 		width: 1px;
-		background: var(--border-subtle);
+		background: var(--line);
 		transform: translateX(-50%);
 	}
 
@@ -626,28 +583,9 @@
 
 	.panel-toggle {
 		position: absolute;
-		top: 0.6rem;
-		right: 0.45rem;
-		display: grid;
-		place-items: center;
-		width: 1.5rem;
-		height: 1.5rem;
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-control);
-		background: var(--surface-control);
-		color: var(--text-secondary);
-		cursor: pointer;
+		top: 8px;
+		right: 8px;
 		z-index: 6;
-	}
-
-	.panel-toggle:hover {
-		background: var(--surface-control-hover);
-		color: var(--text-primary);
-	}
-
-	.panel-toggle:focus-visible {
-		outline: none;
-		box-shadow: var(--focus-ring);
 	}
 
 	.loading,
@@ -655,8 +593,8 @@
 		display: grid;
 		place-content: center;
 		height: 100vh;
-		background: var(--surface-root);
-		color: var(--text-secondary);
+		background: var(--canvas);
+		color: var(--text);
 	}
 
 	@media (max-width: 979px) {
@@ -674,11 +612,11 @@
 			right: 0;
 			bottom: 0;
 			z-index: 40;
-			width: min(360px, 90vw);
+			width: min(420px, 90vw);
 			visibility: hidden;
 			transform: translateX(100%);
-			transition: transform 150ms ease, visibility 0s linear 150ms;
-			box-shadow: -12px 0 30px rgba(0, 0, 0, 0.34);
+			transition: transform var(--settle) var(--ease-standard), visibility 0s linear var(--settle);
+			box-shadow: var(--elev-overlay);
 		}
 
 		.tag-panel-shell.compact-open {
@@ -717,11 +655,11 @@
 			left: 0;
 			bottom: 0;
 			z-index: 40;
-			width: min(300px, 90vw);
+			width: min(276px, 90vw);
 			visibility: hidden;
 			transform: translateX(-100%);
-			transition: transform 150ms ease, visibility 0s linear 150ms;
-			box-shadow: 12px 0 30px rgba(0, 0, 0, 0.34);
+			transition: transform var(--settle) var(--ease-standard), visibility 0s linear var(--settle);
+			box-shadow: var(--elev-overlay);
 		}
 
 		.file-navigator-shell.compact-open {

@@ -65,38 +65,43 @@
 		height: 100%;
 		pointer-events: none;
 	}
+
+	/* Outlines only; saved, selected and draft differ by line style as well as colour. */
 	.roi-rect {
-		fill: var(--roi-fill);
-		stroke: var(--roi-stroke);
+		fill: none;
+		stroke: var(--roi);
 		stroke-width: 1.2;
 		vector-effect: non-scaling-stroke;
 	}
+
 	.roi-overlay g.selected .roi-rect {
-		fill: var(--roi-selected-fill);
-		stroke: var(--roi-selected-stroke);
+		stroke: var(--roi-selected);
 		stroke-width: 1.6;
 	}
+
 	.roi-rect.draft {
-		fill: var(--roi-draft-fill);
-		stroke: var(--roi-draft-stroke);
+		stroke: var(--roi-draft);
 		stroke-dasharray: 5 4;
 	}
+
 	.roi-label {
-		fill: var(--roi-label);
-		stroke: var(--label-halo);
+		fill: var(--roi);
+		stroke: var(--viewport);
 		stroke-width: 2.4;
 		paint-order: stroke;
 		font-size: 11px;
 		font-family: var(--font-mono);
 		vector-effect: non-scaling-stroke;
 	}
+
 	.roi-overlay g.selected .roi-label {
-		fill: var(--roi-selected-label);
+		fill: var(--roi-selected);
 	}
+
 	.roi-handle {
-		fill: var(--roi-selected-stroke);
-		stroke: var(--roi-handle-outline);
-		stroke-width: 1;
+		fill: var(--viewport);
+		stroke: var(--roi-selected);
+		stroke-width: 1.4;
 		vector-effect: non-scaling-stroke;
 	}
 </style>
