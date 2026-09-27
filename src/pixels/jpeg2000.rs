@@ -37,8 +37,6 @@ fn decode_jp2_fragment_to_png_blocking(
     window_mode: WindowMode,
 ) -> Result<Bytes> {
     let fragment = read_encapsulated_fragment_blocking(&file.path, frame)?;
-    let object = open_header(&file.path)?;
-    let icc_profile = select_icc_profile(&object);
 
     let jp2_image = jpeg2k::Image::from_bytes(&fragment)
         .map_err(anyhow::Error::from)
@@ -102,6 +100,8 @@ fn decode_jp2_fragment_to_png_blocking(
                 .zip(b)
                 .flat_map(|((rv, gv), bv)| [rv, gv, bv])
                 .collect();
+            // Only 8-bit color carries an ICC profile into the PNG.
+            let icc_profile = select_icc_profile(&*open_header(&file.path)?);
             return encode_rgb8_display_png(file, frame, interleaved, width, height, icc_profile)
                 .context("JP2 decode failed: png encoding failed");
         } else if precision <= 16 {
