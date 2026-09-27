@@ -13,7 +13,7 @@ use dicom_parser::dataset::LazyDataToken;
 use dicom_parser::StatefulDecode;
 use dicom_transfer_syntax_registry::TransferSyntaxRegistry;
 use std::fs::File;
-use std::io::{BufReader, Seek, SeekFrom};
+use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
 /// Float Pixel Data (7FE0,0008), the first standard pixel element. Tag reads
@@ -92,6 +92,12 @@ fn open_tag_header(path: &Path) -> Result<InMemDicomObject<StandardDataDictionar
 /// Nodes for the top-level elements from Float Pixel Data onward, built from
 /// element headers alone.
 ///
+/// Pixel values are never read: when parsing reaches a top-level pixel
+/// element, the parser is dropped and the file is seeked past its value (or
+/// across its fragment item headers), then parsing resumes with a fresh parser
+/// there. The parser tracks positions itself, so seeking under a live one
+/// would desynchronize them.
+///
 /// Returns `None` when those elements cannot be described without reading
 /// them (a deflated data set, or a trailing element that is not a binary
 /// value), so the caller falls back to reading the whole file.
@@ -103,18 +109,57 @@ fn trailing_element_summaries(path: &Path) -> Option<Vec<TagNode>> {
     if transfer_syntax.uid() == dicom_dictionary_std::uids::DEFLATED_EXPLICIT_VR_LITTLE_ENDIAN {
         return None;
     }
-    let mut parser = LazyDataSetReader::new_with_ts(reader, transfer_syntax).ok()?;
 
     let mut nodes = Vec::new();
+    loop {
+        let next = next_pixel_element(&mut reader, transfer_syntax)?;
+        let resume_at = match next {
+            None => return Some(nodes),
+            Some(PixelElement::Native {
+                tag,
+                vr,
+                length,
+                value_end,
+            }) => {
+                nodes.push(binary_summary_node(tag, vr, length as usize));
+                value_end
+            }
+            Some(PixelElement::Encapsulated) => {
+                let (length, end) = skip_pixel_fragments(&mut reader)?;
+                nodes.push(binary_summary_node(tags::PIXEL_DATA, VR::OB, length));
+                end
+            }
+        };
+        reader.seek(SeekFrom::Start(resume_at)).ok()?;
+    }
+}
+
+/// A top-level pixel element whose header was just read.
+enum PixelElement {
+    Native {
+        tag: Tag,
+        vr: VR,
+        length: u32,
+        value_end: u64,
+    },
+    Encapsulated,
+}
+
+/// Parses from the reader's position to the next top-level pixel element,
+/// leaving the reader just after its header. `None` at the end of the file.
+fn next_pixel_element(
+    reader: &mut BufReader<File>,
+    transfer_syntax: &dicom_encoding::TransferSyntax,
+) -> Option<Option<PixelElement>> {
+    let mut parser = LazyDataSetReader::new_with_ts(&mut *reader, transfer_syntax).ok()?;
     let mut depth = 0_usize;
-    // Byte total of an open top-level encapsulated pixel element, and how
-    // many of its items have started; the first is the Basic Offset Table.
-    let mut fragments: Option<(usize, usize)> = None;
-    while let Some(token) = parser.advance() {
+    let element = loop {
+        let Some(token) = parser.advance() else {
+            break None;
+        };
         match token.ok()? {
             LazyDataToken::PixelSequenceStart if depth == 0 => {
-                fragments = Some((0, 0));
-                depth += 1;
+                break Some(PixelElement::Encapsulated)
             }
             LazyDataToken::SequenceStart { tag, .. } => {
                 if depth == 0 && tag >= FIRST_PIXEL_ELEMENT {
@@ -123,22 +168,7 @@ fn trailing_element_summaries(path: &Path) -> Option<Vec<TagNode>> {
                 depth += 1;
             }
             LazyDataToken::PixelSequenceStart => depth += 1,
-            LazyDataToken::SequenceEnd => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    if let Some((length, _)) = fragments.take() {
-                        nodes.push(binary_summary_node(tags::PIXEL_DATA, VR::OB, length));
-                    }
-                }
-            }
-            LazyDataToken::ItemStart { len } if depth == 1 => {
-                if let Some((length, items)) = fragments.as_mut() {
-                    if *items > 0 {
-                        *length += len.get()? as usize;
-                    }
-                    *items += 1;
-                }
-            }
+            LazyDataToken::SequenceEnd => depth = depth.saturating_sub(1),
             LazyDataToken::LazyItemValue { len, decoder } => decoder.skip_bytes(len).ok()?,
             LazyDataToken::LazyValue { header, decoder } => {
                 let length = header.len.get()?;
@@ -146,14 +176,53 @@ fn trailing_element_summaries(path: &Path) -> Option<Vec<TagNode>> {
                     if !is_binary_vr(header.vr) {
                         return None;
                     }
-                    nodes.push(binary_summary_node(header.tag, header.vr, length as usize));
+                    let value_end = decoder.position().checked_add(u64::from(length))?;
+                    break Some(PixelElement::Native {
+                        tag: header.tag,
+                        vr: header.vr,
+                        length,
+                        value_end,
+                    });
                 }
                 decoder.skip_bytes(length).ok()?;
             }
             _ => {}
         }
+    };
+    Some(element)
+}
+
+/// Walks an encapsulated pixel element's item headers from just after its
+/// header, seeking over every fragment. Returns the fragment bytes, excluding
+/// the Basic Offset Table item, and the position after the sequence
+/// delimiter. Encapsulated transfer syntaxes are all little endian.
+fn skip_pixel_fragments(reader: &mut BufReader<File>) -> Option<(usize, u64)> {
+    const ITEM: Tag = Tag(0xFFFE, 0xE000);
+    const SEQUENCE_DELIMITER: Tag = Tag(0xFFFE, 0xE0DD);
+    let mut length = 0_usize;
+    let mut items = 0_usize;
+    loop {
+        let mut header = [0_u8; 8];
+        reader.read_exact(&mut header).ok()?;
+        let tag = Tag(
+            u16::from_le_bytes([header[0], header[1]]),
+            u16::from_le_bytes([header[2], header[3]]),
+        );
+        let len = u32::from_le_bytes([header[4], header[5], header[6], header[7]]);
+        match tag {
+            ITEM if len != u32::MAX => {
+                if items > 0 {
+                    length = length.checked_add(len as usize)?;
+                }
+                items += 1;
+                reader.seek_relative(i64::from(len)).ok()?;
+            }
+            SEQUENCE_DELIMITER => {
+                return Some((length, reader.stream_position().ok()?));
+            }
+            _ => return None,
+        }
     }
-    Some(nodes)
 }
 
 fn is_binary_vr(vr: VR) -> bool {
