@@ -185,6 +185,54 @@ async fn concurrent_and_abandoned_requests_share_one_decode() {
 }
 
 #[tokio::test]
+async fn unsupported_layouts_are_422_for_display_and_only_unreadable_ones_for_raw() {
+    let dir = tempdir().expect("temp dir");
+    let path = dir.path().join("layouts.dcm");
+    support::write_uncompressed_u16_dicom(
+        &path,
+        "1.2.840.10008.1.2.1",
+        2,
+        2,
+        vec![0, 1000, 2000, 3000],
+        None,
+        None,
+    );
+    let entry = |photometric: &str, rows: u32| {
+        let mut entry = support::file_entry(path.clone(), "1.2.840.10008.1.2.1", 1);
+        entry.rows = rows;
+        entry.columns = 2;
+        entry.photometric_interpretation = photometric.to_string();
+        entry
+    };
+    // Display cannot present an unknown photometric interpretation, but the
+    // stored samples are still readable.
+    let server = TestServer::new(server::router(support::app_state(vec![entry("HSL", 2)])));
+    let display = server.get("/api/file/0/frame/0").await;
+    display.assert_status(axum::http::StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        display.json::<serde_json::Value>()["code"],
+        "unsupported_pixel_layout"
+    );
+    server
+        .get("/api/file/0/frame/0/raw")
+        .await
+        .assert_status_ok();
+
+    // Zero rows leaves nothing to read on either path.
+    let server = TestServer::new(server::router(support::app_state(vec![entry(
+        "MONOCHROME2",
+        0,
+    )])));
+    for url in ["/api/file/0/frame/0", "/api/file/0/frame/0/raw"] {
+        let response = server.get(url).await;
+        response.assert_status(axum::http::StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(response.json::<serde_json::Value>()["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("pixel_layout.invalid_geometry")));
+    }
+}
+
+#[tokio::test]
 async fn raw_endpoint_returns_404_for_out_of_range_frame() {
     let dir = tempdir().expect("temp dir");
     let path = dir.path().join("raw-oob.dcm");

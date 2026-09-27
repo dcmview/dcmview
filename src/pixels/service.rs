@@ -1,4 +1,4 @@
-use crate::api::contracts::{RawFrameMetadata, WindowMode};
+use crate::api::contracts::{RawFrameMetadata, SupportState, WindowMode};
 use crate::types::{
     FileEntry, FrameCacheKey, NativePixelDataKind, RawFrameCacheKey, WindowRequest,
 };
@@ -23,7 +23,7 @@ use super::jpegls::{decode_jpeg_ls_to_png, decode_raw_jpeg_ls};
 use super::jpegxl::{decode_jpeg_xl_to_png, decode_raw_jpeg_xl};
 use super::native::{decode_uncompressed_to_png, read_raw_uncompressed};
 use super::rle::{decode_raw_rle, decode_rle_to_png};
-use super::syntax::{codec_for_syntax, Codec};
+use super::syntax::{classify_pixel_support, codec_for_syntax, Codec, PixelSupportReason};
 use super::window::read_pixel_padding_range;
 
 #[derive(Debug, Clone)]
@@ -51,6 +51,7 @@ pub async fn load_raw_frame(
     }
 
     let codec = codec_or_unsupported(&file)?;
+    reject_unsupported_layout(&file, FrameKind::Raw)?;
 
     let key = RawFrameCacheKey {
         file_index: file.index,
@@ -144,6 +145,7 @@ pub async fn load_frame(
     )
     .map_err(|error| PixelError::InvalidWindow(error.to_string()))?;
     let codec = codec_or_unsupported(&file)?;
+    reject_unsupported_layout(&file, FrameKind::Display)?;
     let key = FrameCacheKey::new(
         file.index,
         request.frame,
@@ -278,6 +280,35 @@ where
 
 fn cache_poisoned() -> PixelError {
     PixelError::frame_decode(anyhow::anyhow!("frame cache lock poisoned"))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FrameKind {
+    Display,
+    Raw,
+}
+
+/// Reports a layout the catalog marks unsupported as such, with the catalog's
+/// reason, before any decode is attempted. Raw frames serve samples for some
+/// layouts display cannot present (palette indices, other photometric
+/// interpretations, color the display path rejects), so for them only the
+/// reasons that break sample reads too apply.
+fn reject_unsupported_layout(file: &FileEntry, kind: FrameKind) -> PixelResult<()> {
+    let support = classify_pixel_support(file);
+    let Some(reason) = support.reason else {
+        return Ok(());
+    };
+    let applies = support.state == SupportState::Unsupported
+        && (kind == FrameKind::Display
+            || matches!(
+                reason,
+                PixelSupportReason::InvalidGeometry
+                    | PixelSupportReason::NumericPrecisionNotSupported
+            ));
+    if applies {
+        return Err(PixelError::UnsupportedLayout(reason.id().to_string()));
+    }
+    Ok(())
 }
 
 fn codec_or_unsupported(file: &FileEntry) -> PixelResult<Codec> {
