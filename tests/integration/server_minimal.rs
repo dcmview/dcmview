@@ -5,7 +5,6 @@ use dcmview::loader::{DiscoveryDisposition, DiscoveryReason, DiscoveryRecord};
 use dcmview::server;
 use dcmview::server::FileRegistry;
 use serde_json::Value;
-use std::process::Command;
 use tempfile::tempdir;
 
 #[tokio::test]
@@ -87,23 +86,6 @@ async fn health_endpoint_reports_ready_state() {
     assert_eq!(health["status"], "ok");
     assert_eq!(health["viewer"]["name"], "dcmview");
     assert_eq!(health["viewer"]["version"], env!("CARGO_PKG_VERSION"));
-    let build_git_sha = health["viewer"]["build_git_sha"]
-        .as_str()
-        .expect("build_git_sha should be a string");
-    if std::env::var_os("DCMVIEW_BUILD_GIT_SHA").is_none() {
-        let output = Command::new("git")
-            .args(["-C", env!("CARGO_MANIFEST_DIR"), "rev-parse", "HEAD"])
-            .output()
-            .expect("git should be available for a repository build");
-        assert!(output.status.success(), "git rev-parse HEAD should succeed");
-        assert_eq!(
-            build_git_sha,
-            String::from_utf8(output.stdout)
-                .expect("git SHA should be UTF-8")
-                .trim(),
-            "embedded build identity should match the checked-out commit"
-        );
-    }
     assert!(health["viewer"]["build_target"].as_str().is_some());
     assert!(health["viewer"]["build_profile"].as_str().is_some());
     assert_eq!(health["file_count"], 1);

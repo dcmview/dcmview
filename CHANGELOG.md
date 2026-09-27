@@ -101,6 +101,10 @@ diagnostic viewer.
   `/tmp/dcmview-vscode-bridges-$USER`). Only extension builds older than 0.2.5
   publish there; update the extension if terminal or notebook launches stop
   opening in VS Code.
+- Removed `viewer.build_git_sha` from `/api/health`. Embedding the commit made
+  every commit, checkout, or pull force a full crate rebuild, and a clone
+  without `packed-refs` rebuilt on every Cargo invocation; `viewer.version`
+  identifies released builds.
 
 ## 0.2.12 - 2026-08-31
 

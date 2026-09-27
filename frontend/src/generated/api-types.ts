@@ -307,7 +307,7 @@ export type TagValue = { "type": "string", value: string, } | { "type": "number"
  */
 export type ValueLookupTable = { first_value_mapped: number, values: Array<number>, };
 
-export type ViewerIdentity = { name: string, version: string, build_git_sha: string, build_target: string, build_profile: string, };
+export type ViewerIdentity = { name: string, version: string, build_target: string, build_profile: string, };
 
 export type WindowMode = "default" | "full_dynamic";
 

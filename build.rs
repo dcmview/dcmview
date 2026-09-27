@@ -50,45 +50,10 @@ fn main() {
 }
 
 fn emit_build_identity() {
-    println!("cargo:rerun-if-env-changed=DCMVIEW_BUILD_GIT_SHA");
-    emit_git_identity_fingerprints();
-    let git_sha = std::env::var("DCMVIEW_BUILD_GIT_SHA")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| git_output(&["rev-parse", "HEAD"]))
-        .unwrap_or_else(|| "unknown".to_string());
     let target = std::env::var("TARGET").unwrap_or_else(|_| "unknown".to_string());
     let profile = std::env::var("PROFILE").unwrap_or_else(|_| "unknown".to_string());
-    println!("cargo:rustc-env=DCMVIEW_BUILD_GIT_SHA={git_sha}");
     println!("cargo:rustc-env=DCMVIEW_BUILD_TARGET={target}");
     println!("cargo:rustc-env=DCMVIEW_BUILD_PROFILE={profile}");
-}
-
-fn emit_git_identity_fingerprints() {
-    // HEAD normally contains only a symbolic-ref name, so watching it alone
-    // does not notice new commits on the checked-out branch. Resolve Git's
-    // actual metadata paths to support both ordinary clones and worktrees.
-    for name in ["HEAD", "logs/HEAD", "packed-refs"] {
-        if let Some(path) = git_output(&["rev-parse", "--git-path", name]) {
-            println!("cargo:rerun-if-changed={path}");
-        }
-    }
-    if let Some(reference) = git_output(&["symbolic-ref", "-q", "HEAD"]) {
-        if let Some(path) = git_output(&["rev-parse", "--git-path", &reference]) {
-            println!("cargo:rerun-if-changed={path}");
-        }
-    }
-}
-
-fn git_output(args: &[&str]) -> Option<String> {
-    Command::new("git")
-        .args(args)
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
 }
 
 fn debug_api_enabled() -> bool {
