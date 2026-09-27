@@ -145,6 +145,46 @@ async fn raw_endpoint_x_cache_miss_then_hit() {
 }
 
 #[tokio::test]
+async fn concurrent_and_abandoned_requests_share_one_decode() {
+    let dir = tempdir().expect("temp dir");
+    let path = dir.path().join("raw-shared.dcm");
+    support::write_uncompressed_u16_dicom(
+        &path,
+        "1.2.840.10008.1.2.1",
+        2,
+        2,
+        vec![0, 1000, 2000, 3000],
+        None,
+        None,
+    );
+    let mut entry = support::file_entry(path, "1.2.840.10008.1.2.1", 1);
+    entry.rows = 2;
+    entry.columns = 2;
+
+    let cache = new_raw_cache();
+    let responses = futures::future::join_all(
+        (0..6).map(|_| load_raw_frame(entry.clone(), cache.clone(), RawFrameRequest { frame: 0 })),
+    )
+    .await;
+    let decoded = responses
+        .into_iter()
+        .map(|response| response.expect("raw frame"))
+        .filter(|response| !response.cache_hit)
+        .count();
+    assert_eq!(decoded, 1, "identical concurrent requests decode once");
+
+    // A request dropped mid-decode (a client abort) still leaves its frame
+    // for the next request.
+    let other = new_raw_cache();
+    let abandoned = load_raw_frame(entry.clone(), other.clone(), RawFrameRequest { frame: 0 });
+    let _ = tokio::time::timeout(std::time::Duration::ZERO, abandoned).await;
+    let next = load_raw_frame(entry, other, RawFrameRequest { frame: 0 })
+        .await
+        .expect("raw frame");
+    assert!(next.cache_hit, "the abandoned decode is reused");
+}
+
+#[tokio::test]
 async fn raw_endpoint_returns_404_for_out_of_range_frame() {
     let dir = tempdir().expect("temp dir");
     let path = dir.path().join("raw-oob.dcm");

@@ -1,7 +1,10 @@
+use super::error::PixelError;
 use crate::api::contracts::RawFrameMetadata;
 use crate::types::{FrameCacheKey, OverlayCacheKey, RawFrameCacheKey};
 use bytes::Bytes;
+use futures::future::{BoxFuture, Shared};
 use lru::LruCache;
+use std::collections::HashMap;
 use std::hash::Hash;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
@@ -38,14 +41,19 @@ impl FrameBody for (Bytes, RawFrameMetadata) {
     }
 }
 
-/// An LRU bounded by both an entry count and a total body-byte budget.
+/// A decode other requests for the same key await instead of repeating.
+pub(crate) type InFlight<V> = Shared<BoxFuture<'static, Result<V, Arc<PixelError>>>>;
+
+/// An LRU bounded by both an entry count and a total body-byte budget, plus
+/// the decodes currently running for keys it does not hold yet.
 ///
-/// Callers hold the surrounding mutex only for `get` and `insert`; decoding
+/// Callers hold the surrounding mutex only for lookups and inserts; decoding
 /// and encoding happen outside the lock.
 pub struct BudgetedLru<K: Hash + Eq, V> {
     entries: LruCache<K, V>,
     bytes: usize,
     max_bytes: usize,
+    in_flight: HashMap<K, InFlight<V>>,
 }
 
 impl<K: Hash + Eq, V: FrameBody> BudgetedLru<K, V> {
@@ -54,7 +62,20 @@ impl<K: Hash + Eq, V: FrameBody> BudgetedLru<K, V> {
             entries: LruCache::new(NonZeroUsize::new(capacity).expect("non-zero cache capacity")),
             bytes: 0,
             max_bytes,
+            in_flight: HashMap::new(),
         }
+    }
+
+    pub(crate) fn in_flight(&self, key: &K) -> Option<InFlight<V>> {
+        self.in_flight.get(key).cloned()
+    }
+
+    pub(crate) fn start_flight(&mut self, key: K, decode: InFlight<V>) {
+        self.in_flight.insert(key, decode);
+    }
+
+    pub(crate) fn finish_flight(&mut self, key: &K) {
+        self.in_flight.remove(key);
     }
 
     pub(crate) fn get(&mut self, key: &K) -> Option<V> {
