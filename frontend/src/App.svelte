@@ -402,8 +402,10 @@
 
 <style>
 	:global(:root) {
-		--font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
-		--font-mono: "SF Mono", "JetBrains Mono", ui-monospace, monospace;
+		/* Bundled faces first so installed fonts never change the look; the system
+		   fallbacks only supply scripts the bundles lack (CJK, Arabic, Hebrew, ...). */
+		--font-ui: "Inter Variable", system-ui, sans-serif;
+		--font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
 		--surface-root: #151516;
 		--surface-viewport: #080809;
 		--surface-chrome: #202124;
