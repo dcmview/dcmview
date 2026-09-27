@@ -165,7 +165,9 @@
 	let viewportEl: HTMLElement | undefined = $state();
 	let viewportSize = $state({ width: 0, height: 0 });
 	let canvasEl: HTMLCanvasElement | undefined = $state();
-	let currentRawFrame = $state<RawFrame | null>(null);
+	// Raw, not a deep proxy: the frame is posted to the W/L worker, and a
+	// proxied metadata object cannot be structured-cloned.
+	let currentRawFrame = $state.raw<RawFrame | null>(null);
 	let rawWindowLevelFallbackByFile = $state<Record<number, boolean>>({});
 	const annotations = new AnnotationStore();
 
