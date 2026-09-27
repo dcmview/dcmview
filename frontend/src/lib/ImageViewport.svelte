@@ -1396,6 +1396,8 @@
 					draft={draftRoi}
 					rows={imageRows}
 					columns={imageColumns}
+					scale={activeTransform.scale}
+					pixelAspectRatio={displayGeometry.pixelAspectRatio}
 				/>
 			{/if}
 		</div>
