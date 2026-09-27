@@ -330,8 +330,8 @@
 	.file-row:focus-visible,
 	.view-switch button:focus-visible,
 	.directory-row:focus-visible {
-		outline: none;
-		box-shadow: inset var(--focus-ring);
+		outline: 2px solid var(--focus-ring);
+		outline-offset: -2px;
 	}
 
 	.navigator-filter {

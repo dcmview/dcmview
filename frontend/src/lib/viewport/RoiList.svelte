@@ -170,8 +170,8 @@
 		cursor: pointer;
 	}
 	.roi-select:focus-visible {
-		outline: none;
-		box-shadow: var(--focus-ring);
+		outline: 2px solid var(--focus-ring);
+		outline-offset: 2px;
 		border-radius: 3px;
 	}
 	.roi-id {
@@ -203,8 +203,8 @@
 		color: var(--text-primary);
 	}
 	.roi-actions button:focus-visible {
-		outline: none;
-		box-shadow: var(--focus-ring);
+		outline: 2px solid var(--focus-ring);
+		outline-offset: 2px;
 	}
 	.roi-actions button.danger {
 		color: var(--danger-text);

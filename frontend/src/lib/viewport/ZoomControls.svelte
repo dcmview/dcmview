@@ -48,8 +48,8 @@
 		color: var(--text-primary);
 	}
 	button:focus-visible {
-		outline: none;
-		box-shadow: inset var(--focus-ring);
+		outline: 2px solid var(--focus-ring);
+		outline-offset: -2px;
 	}
 	button:disabled {
 		color: var(--text-disabled);

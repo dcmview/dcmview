@@ -120,8 +120,8 @@
 	}
 	button:focus-visible,
 	.fps-select:focus-visible {
-		outline: none;
-		box-shadow: var(--focus-ring);
+		outline: 2px solid var(--focus-ring);
+		outline-offset: 2px;
 	}
 	.mode-toggle {
 		font-size: 0.85em;

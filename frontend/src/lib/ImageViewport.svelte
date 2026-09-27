@@ -1344,6 +1344,7 @@
 <section
 	bind:this={viewportEl}
 	class="viewport"
+	data-theme="dark"
 	class:dragging={isDragging}
 	data-tool={activeTool}
 	role="application"
@@ -1473,9 +1474,7 @@
 		position: relative;
 		display: grid;
 		place-items: center;
-		background:
-			radial-gradient(circle at center, var(--viewport-glow), transparent 58%),
-			var(--surface-viewport);
+		background: var(--viewport);
 		min-height: 0;
 		overflow: hidden;
 		user-select: none;

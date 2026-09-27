@@ -401,53 +401,45 @@
 {/if}
 
 <style>
-	:global(:root) {
-		/* Bundled faces first so installed fonts never change the look; the system
-		   fallbacks only supply scripts the bundles lack (CJK, Arabic, Hebrew, ...). */
-		--font-ui: "Inter Variable", system-ui, sans-serif;
-		--font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
-		--surface-root: #151516;
-		--surface-viewport: #080809;
-		--surface-chrome: #202124;
-		--surface-panel: #252629;
-		--surface-panel-alt: #2b2c30;
-		--surface-control: #303136;
-		--surface-control-hover: #393a40;
-		--surface-control-active: #e7e7ea;
-		--border-subtle: rgba(255, 255, 255, 0.08);
-		--border-strong: rgba(255, 255, 255, 0.14);
-		--text-primary: #f2f2f3;
-		--text-secondary: #c7c7cc;
-		--text-muted: #8e8e93;
-		--text-inverse: #1d1d1f;
-		--accent: #0a84ff;
-		--accent-soft: rgba(10, 132, 255, 0.16);
-		--danger: #ff6961;
-		--accent-text: #9fcbff;
-		--danger-text: #ffb0b0;
-		--success-text: #8bd5a1;
-		--text-disabled: rgba(255, 255, 255, 0.22);
-		--surface-hud: rgba(28, 28, 30, 0.78);
-		--surface-hover-overlay: rgba(255, 255, 255, 0.08);
-		--viewport-glow: rgba(255, 255, 255, 0.025);
-		--spinner-track: rgba(142, 142, 147, 0.24);
-		--label-halo: rgba(0, 0, 0, 0.75);
-		/* ROI annotations drawn over the image. */
-		--roi-stroke: #ff7373;
-		--roi-fill: rgba(255, 115, 115, 0.12);
-		--roi-label: #ffdede;
-		--roi-selected-stroke: #4a9eff;
-		--roi-selected-fill: rgba(74, 158, 255, 0.16);
-		--roi-selected-label: #c8ddff;
-		--roi-draft-stroke: #ffd45c;
-		--roi-draft-fill: rgba(255, 212, 92, 0.14);
-		--roi-handle-outline: #101820;
-		--radius-control: 7px;
-		--radius-panel: 8px;
-		--control-height: 1.75rem;
-		--shadow-hud: 0 12px 30px rgba(0, 0, 0, 0.28);
-		--focus-ring: 0 0 0 2px rgba(10, 132, 255, 0.48);
-		color-scheme: dark;
+	/* Compatibility aliases from the pre-Bea palette to Bea · dcmview roles
+	   (src/theme.css). Declared on every [data-theme] too, so they resolve
+	   inside the always-dark viewport island. Components move to the role
+	   tokens directly as each part of the restyle lands. */
+	:global(:root),
+	:global([data-theme]) {
+		--surface-root: var(--canvas);
+		--surface-viewport: var(--viewport);
+		--surface-chrome: var(--paper);
+		--surface-panel: var(--paper);
+		--surface-control: var(--control-bot);
+		--surface-control-hover: var(--control-top);
+		--surface-control-active: var(--knob);
+		--border-subtle: var(--line);
+		--border-strong: var(--line);
+		--text-primary: var(--text);
+		--text-secondary: var(--text);
+		--text-muted: var(--ink-muted);
+		--text-inverse: var(--text);
+		--text-disabled: var(--subtle);
+		--accent-soft: var(--selection-fill);
+		--accent-text: var(--text);
+		--danger: var(--red-text);
+		--danger-text: var(--red-text);
+		--success-text: var(--text);
+		--surface-hud: var(--paper);
+		--surface-hover-overlay: var(--row-hover);
+		--spinner-track: var(--track);
+		--label-halo: var(--viewport);
+		--roi-stroke: var(--roi);
+		--roi-label: var(--roi);
+		--roi-selected-stroke: var(--roi-selected);
+		--roi-selected-label: var(--roi-selected);
+		--roi-draft-stroke: var(--roi-draft);
+		--roi-handle-outline: var(--viewport);
+		--radius-control: var(--radius-md);
+		--radius-panel: var(--radius-md);
+		--control-height: var(--ctl-h);
+		--shadow-hud: var(--elev-overlay);
 	}
 
 	:global(*) {
@@ -511,8 +503,8 @@
 	.compact-sidebar-button:focus-visible,
 	.file-navigator-shell:focus-visible,
 	.tag-panel-shell:focus-visible {
-		outline: none;
-		box-shadow: var(--focus-ring);
+		outline: 2px solid var(--focus-ring);
+		outline-offset: 2px;
 	}
 
 	.drawer-backdrop {
@@ -520,7 +512,7 @@
 		inset: 0;
 		z-index: 30;
 		border: 0;
-		background: rgba(0, 0, 0, 0.52);
+		background: var(--scrim);
 		cursor: default;
 	}
 
@@ -646,8 +638,8 @@
 	}
 
 	.panel-toggle:focus-visible {
-		outline: none;
-		box-shadow: var(--focus-ring);
+		outline: 2px solid var(--focus-ring);
+		outline-offset: 2px;
 	}
 
 	.loading,
@@ -677,8 +669,8 @@
 			width: min(360px, 90vw);
 			visibility: hidden;
 			transform: translateX(100%);
-			transition: transform 150ms ease, visibility 0s linear 150ms;
-			box-shadow: -12px 0 30px rgba(0, 0, 0, 0.34);
+			transition: transform var(--settle) var(--ease-standard), visibility 0s linear var(--settle);
+			box-shadow: var(--elev-overlay);
 		}
 
 		.tag-panel-shell.compact-open {
@@ -720,8 +712,8 @@
 			width: min(300px, 90vw);
 			visibility: hidden;
 			transform: translateX(-100%);
-			transition: transform 150ms ease, visibility 0s linear 150ms;
-			box-shadow: 12px 0 30px rgba(0, 0, 0, 0.34);
+			transition: transform var(--settle) var(--ease-standard), visibility 0s linear var(--settle);
+			box-shadow: var(--elev-overlay);
 		}
 
 		.file-navigator-shell.compact-open {

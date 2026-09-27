@@ -96,8 +96,8 @@
 	}
 	button:focus-visible,
 	input:focus-visible {
-		outline: none;
-		box-shadow: var(--focus-ring);
+		outline: 2px solid var(--focus-ring);
+		outline-offset: 2px;
 	}
 	.opacity {
 		display: flex;

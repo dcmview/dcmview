@@ -66,18 +66,18 @@
 		pointer-events: none;
 	}
 	.roi-rect {
-		fill: var(--roi-fill);
+		fill: none;
 		stroke: var(--roi-stroke);
 		stroke-width: 1.2;
 		vector-effect: non-scaling-stroke;
 	}
 	.roi-overlay g.selected .roi-rect {
-		fill: var(--roi-selected-fill);
+		fill: none;
 		stroke: var(--roi-selected-stroke);
 		stroke-width: 1.6;
 	}
 	.roi-rect.draft {
-		fill: var(--roi-draft-fill);
+		fill: none;
 		stroke: var(--roi-draft-stroke);
 		stroke-dasharray: 5 4;
 	}

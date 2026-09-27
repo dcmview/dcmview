@@ -437,8 +437,11 @@ unless one is actually implemented.
   Pixel values come from `viewport/pixelProbe.svelte.ts` and the per-frame
   `value-mapping` conversions in `viewport/valueMapping.ts`.
 - No external CSS frameworks. Use scoped Svelte styles.
-- Theme tokens live as CSS variables in `App.svelte`; reuse them instead of
-  introducing component-local chrome palettes.
+- Theme tokens are the Bea · dcmview design system's, in `src/theme.css`:
+  light by default, dark from `prefers-color-scheme` or `data-theme`. Use the
+  role tokens (`paper`, `ink`, `line`, `accent`, `selection-fill`, ...) instead
+  of component-local palettes, and never branch a component on the theme. The
+  viewport is always a `data-theme="dark"` island on the `viewport` ground.
 - Use the shared monospace stack for tag values and the shared UI stack for
   viewer chrome.
 - Fonts are bundled: Inter and JetBrains Mono come from the

@@ -330,8 +330,8 @@
 	}
 
 	input:focus-visible {
-		outline: none;
-		box-shadow: var(--focus-ring);
+		outline: 2px solid var(--focus-ring);
+		outline-offset: 2px;
 	}
 
 	.table {
@@ -416,8 +416,8 @@
 	}
 
 	.row:focus-visible {
-		outline: none;
-		box-shadow: inset var(--focus-ring);
+		outline: 2px solid var(--focus-ring);
+		outline-offset: -2px;
 	}
 
 	.row > div {
