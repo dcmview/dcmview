@@ -170,8 +170,12 @@ function numericValue(value: string): number | null {
 	return Number.isFinite(parsed) ? parsed : null;
 }
 
+// One collator for every comparison: localeCompare with options builds a new
+// one per call, which dominated sorting a few thousand files.
+const NATURAL_ORDER = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+
 function compareNatural(left: string, right: string): number {
-	return left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" });
+	return NATURAL_ORDER.compare(left, right);
 }
 
 function compareKnownText(left: string, right: string, descending = false): number {
