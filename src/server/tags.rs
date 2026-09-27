@@ -9,7 +9,8 @@ use dicom_encoding::text::{SpecificCharacterSet, TextCodec};
 use dicom_encoding::TransferSyntaxIndex;
 use dicom_object::{open_file, FileMetaTable, InMemDicomObject, OpenFileOptions};
 use dicom_parser::dataset::lazy_read::LazyDataSetReader;
-use dicom_parser::dataset::LazyDataToken;
+use dicom_parser::dataset::read::DataSetReader;
+use dicom_parser::dataset::{DataToken, LazyDataToken};
 use dicom_parser::StatefulDecode;
 use dicom_transfer_syntax_registry::TransferSyntaxRegistry;
 use std::fs::File;
@@ -107,7 +108,7 @@ fn trailing_element_summaries(path: &Path) -> Option<Vec<TagNode>> {
     let meta = FileMetaTable::from_reader(&mut reader).ok()?;
     let transfer_syntax = TransferSyntaxRegistry.get(meta.transfer_syntax())?;
     if transfer_syntax.uid() == dicom_dictionary_std::uids::DEFLATED_EXPLICIT_VR_LITTLE_ENDIAN {
-        return None;
+        return deflated_trailing_summaries(reader, transfer_syntax);
     }
 
     let mut nodes = Vec::new();
@@ -131,6 +132,57 @@ fn trailing_element_summaries(path: &Path) -> Option<Vec<TagNode>> {
             }
         };
         reader.seek(SeekFrom::Start(resume_at)).ok()?;
+    }
+}
+
+/// `trailing_element_summaries` for a deflated data set, which cannot be
+/// seeked: the inflated stream is parsed up to each top-level element from
+/// Float Pixel Data on, whose value is inflated into a sink rather than kept.
+fn deflated_trailing_summaries(
+    reader: BufReader<File>,
+    transfer_syntax: &dicom_encoding::TransferSyntax,
+) -> Option<Vec<TagNode>> {
+    let mut inflated = flate2::read::DeflateDecoder::new(reader);
+    let mut nodes = Vec::new();
+    loop {
+        let next = {
+            // Stops at the element's header, before its value is read.
+            let tokens = DataSetReader::new_with_ts(&mut inflated, transfer_syntax).ok()?;
+            let mut depth = 0_usize;
+            let mut next = None;
+            for token in tokens {
+                match token.ok()? {
+                    DataToken::SequenceStart { tag, .. } => {
+                        if depth == 0 && tag >= FIRST_PIXEL_ELEMENT {
+                            return None;
+                        }
+                        depth += 1;
+                    }
+                    DataToken::PixelSequenceStart => return None,
+                    DataToken::SequenceEnd => depth = depth.saturating_sub(1),
+                    DataToken::ElementHeader(header)
+                        if depth == 0 && header.tag >= FIRST_PIXEL_ELEMENT =>
+                    {
+                        if !is_binary_vr(header.vr) {
+                            return None;
+                        }
+                        next = Some((header.tag, header.vr, header.len.get()?));
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            next
+        };
+        let Some((tag, vr, length)) = next else {
+            return Some(nodes);
+        };
+        nodes.push(binary_summary_node(tag, vr, length as usize));
+        std::io::copy(
+            &mut (&mut inflated).take(u64::from(length)),
+            &mut std::io::sink(),
+        )
+        .ok()?;
     }
 }
 
@@ -548,6 +600,49 @@ fn is_numeric_vr(vr_repr: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deflated_tag_tree_matches_a_full_read_without_keeping_pixels() {
+        use dicom_core::{DataElement, PrimitiveValue};
+        use dicom_object::meta::FileMetaTableBuilder;
+
+        let directory = tempfile::tempdir().expect("temp directory");
+        let path = directory.path().join("deflated.dcm");
+        InMemDicomObject::from_element_iter([
+            DataElement::new(tags::SOP_INSTANCE_UID, VR::UI, "2.25.9"),
+            DataElement::new(tags::ROWS, VR::US, PrimitiveValue::from(2_u16)),
+            DataElement::new(tags::COLUMNS, VR::US, PrimitiveValue::from(2_u16)),
+            DataElement::new(
+                tags::PIXEL_DATA,
+                VR::OW,
+                PrimitiveValue::U16(vec![7; 4].into()),
+            ),
+            // A trailing element must still be described after the pixels.
+            DataElement::new(
+                Tag(0xFFFC, 0xFFFC),
+                VR::OB,
+                PrimitiveValue::from(vec![0_u8; 6]),
+            ),
+        ])
+        .with_meta(
+            FileMetaTableBuilder::new()
+                .transfer_syntax(dicom_dictionary_std::uids::DEFLATED_EXPLICIT_VR_LITTLE_ENDIAN)
+                .media_storage_sop_class_uid(
+                    dicom_dictionary_std::uids::SECONDARY_CAPTURE_IMAGE_STORAGE,
+                )
+                .media_storage_sop_instance_uid("2.25.9"),
+        )
+        .expect("file meta")
+        .write_to_file(&path)
+        .expect("write deflated file");
+
+        let full = open_full(&path).expect("full read");
+        assert!(trailing_element_summaries(&path).is_some());
+        assert_eq!(
+            serde_json::to_value(build_tag_tree(&path).expect("tag tree")).unwrap(),
+            serde_json::to_value(serialize_object_tags(&full, 0, None)).unwrap()
+        );
+    }
 
     #[test]
     fn header_only_tag_tree_matches_a_full_read_for_every_fixture() {
