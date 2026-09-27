@@ -18,7 +18,7 @@
 	} = $props();
 </script>
 
-<!-- Drawn in image pixel coordinates inside the transformed image layer. -->
+<!-- Drawn in image pixel coordinates inside the transformed image layer; RoiLabels draws the labels unscaled. -->
 <svg
 	class="roi-overlay"
 	viewBox={`0 0 ${columns} ${rows}`}
@@ -34,11 +34,6 @@
 				width={Math.max(1, Math.abs(roi.xmax - roi.xmin))}
 				height={Math.max(1, Math.abs(roi.ymax - roi.ymin))}
 			></rect>
-			<text
-				class="roi-label"
-				x={Math.min(roi.xmin, roi.xmax) + 3}
-				y={Math.max(10, Math.min(roi.ymin, roi.ymax) - 4)}
-			>#{roi.index + 1}</text>
 			{#if selectedIndex === roi.index}
 				{#each roiHandles(roi) as handle}
 					<circle class="roi-handle" cx={handle.x} cy={handle.y} r={4}></circle>
@@ -82,20 +77,6 @@
 	.roi-rect.draft {
 		stroke: var(--roi-draft);
 		stroke-dasharray: 5 4;
-	}
-
-	.roi-label {
-		fill: var(--roi);
-		stroke: var(--viewport);
-		stroke-width: 2.4;
-		paint-order: stroke;
-		font-size: 11px;
-		font-family: var(--font-mono);
-		vector-effect: non-scaling-stroke;
-	}
-
-	.roi-overlay g.selected .roi-label {
-		fill: var(--roi-selected);
 	}
 
 	.roi-handle {

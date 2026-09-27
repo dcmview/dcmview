@@ -66,6 +66,7 @@
 	import { RawFrameSource } from "./viewport/rawFrameSource";
 	import { RenderedFrames } from "./viewport/renderedFrames.svelte";
 	import RoiList from "./viewport/RoiList.svelte";
+	import RoiLabels from "./viewport/RoiLabels.svelte";
 	import RoiOverlay from "./viewport/RoiOverlay.svelte";
 	import { hitTestRoi, roiCoord, visibleRois as roisOnFrame } from "./viewport/roiEditing";
 	import type { ViewStates } from "./viewport/viewStates.svelte";
@@ -1398,6 +1399,15 @@
 				/>
 			{/if}
 		</div>
+		{#if !overlay && imageColumns > 0 && imageRows > 0}
+			<RoiLabels
+				rois={visibleRois}
+				selectedIndex={selectedRoiIndex}
+				transform={activeTransform}
+				{orientation}
+				geometry={displayGeometry}
+			/>
+		{/if}
 		<div class="hud">
 			{#if readout}
 				<PixelReadout {readout} />
