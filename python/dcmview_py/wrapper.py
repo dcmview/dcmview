@@ -7,6 +7,8 @@ import signal
 import subprocess
 import sys
 import threading
+import warnings
+from collections import deque
 from pathlib import Path
 from typing import Iterable, Optional, Union
 
@@ -15,7 +17,11 @@ _STARTUP_EVENT_TYPES = ("server_started", "vscode_session_started")
 # found files; a scan that finds none exits non-zero instead. In VS Code the
 # extension's viewer does the scan, so the session event settles it.
 _SCAN_SETTLED_EVENT_TYPES = ("scan_complete", "vscode_session_started")
-_URL_WAIT_SECONDS = 5.0
+# Returns as soon as the URL is printed; the budget covers a VS Code viewer,
+# which the extension may take up to its 20 s startup timeout to report.
+_URL_WAIT_SECONDS = 30.0
+_SCAN_WAIT_SECONDS = 5.0
+_OUTPUT_TAIL_LINES = 20
 _STOP_TIMEOUT_SECONDS = 5.0
 _BINARY_ENV = "DCMVIEW_BINARY"
 _VSCODE_BRIDGE_BYPASS_ENV = "DCMVIEW_VSCODE_BYPASS"
@@ -34,6 +40,7 @@ class _OutputMonitor:
 		self._scan_settled = threading.Event()
 		self._scan_succeeded = threading.Event()
 		self._closed = threading.Event()
+		self._tail: deque[str] = deque(maxlen=_OUTPUT_TAIL_LINES)
 		self._thread = threading.Thread(target=self._run, name="dcmview-py-output", daemon=True)
 
 	def start(self) -> None:
@@ -60,6 +67,10 @@ class _OutputMonitor:
 	def output_ended(self) -> bool:
 		return self._closed.is_set()
 
+	def tail(self) -> str:
+		"""The last lines of output, for an error raised after the viewer exited."""
+		return "".join(self._tail)
+
 	def _set_url(self, url: str) -> None:
 		with self._url_lock:
 			if self._url is None:
@@ -76,6 +87,7 @@ class _OutputMonitor:
 			for line in stdout:
 				sys.stdout.write(line)
 				sys.stdout.flush()
+				self._tail.append(line)
 				event = _parse_event(line)
 				url = _startup_url(event)
 				if url is not None:
@@ -208,14 +220,20 @@ def view(
 	monitor.start()
 
 	if block:
-		return_code = process.wait()
+		try:
+			return_code = process.wait()
+		except KeyboardInterrupt:
+			# Ctrl+C in a terminal reaches the viewer too, but a notebook
+			# interrupt reaches only Python: stop the viewer before re-raising.
+			ShutdownHandle(process, monitor).stop()
+			raise
 		monitor.join()
 		if return_code != 0:
-			raise subprocess.CalledProcessError(return_code, command)
+			raise subprocess.CalledProcessError(return_code, command, output=monitor.tail())
 		return None
 
-	monitor.wait_for_url(_URL_WAIT_SECONDS)
-	scan_succeeded = monitor.wait_for_scan(_URL_WAIT_SECONDS)
+	url = monitor.wait_for_url(_URL_WAIT_SECONDS)
+	scan_succeeded = monitor.wait_for_scan(_SCAN_WAIT_SECONDS)
 	return_code = process.poll()
 	if return_code is None and not scan_succeeded and monitor.output_ended():
 		# Output ended before discovery found anything: the process is exiting.
@@ -225,7 +243,14 @@ def view(
 			return_code = None
 	if return_code not in (0, None):
 		monitor.join()
-		raise subprocess.CalledProcessError(int(return_code), command)
+		raise subprocess.CalledProcessError(int(return_code), command, output=monitor.tail())
+	if url is None:
+		warnings.warn(
+			f"dcmview did not report its URL within {_URL_WAIT_SECONDS:.0f} s; "
+			"handle.url stays None until it does",
+			RuntimeWarning,
+			stacklevel=2,
+		)
 
 	return ShutdownHandle(process, monitor)
 

@@ -279,6 +279,33 @@ class WrapperTests(unittest.TestCase):
 
 		self.assertEqual(raised.exception.returncode, 1)
 
+	def test_blocking_view_failure_carries_the_viewer_output(self) -> None:
+		process = mock.Mock()
+		process.stdout = StringIO("dcmview: no valid DICOM files found\n")
+		process.wait.return_value = 1
+
+		with mock.patch("dcmview_py.wrapper.shutil.which", return_value="/tmp/dcmview"):
+			with mock.patch("dcmview_py.wrapper.subprocess.Popen", return_value=process):
+				with redirect_stdout(StringIO()):
+					with self.assertRaises(subprocess.CalledProcessError) as raised:
+						wrapper.view(["/missing"], browser=False)
+
+		self.assertIn("no valid DICOM files found", raised.exception.output)
+
+	def test_interrupting_a_blocking_view_stops_the_viewer(self) -> None:
+		# A notebook interrupt reaches only Python, not the viewer process.
+		process = mock.Mock()
+		process.stdout = StringIO("")
+		process.poll.return_value = None
+		process.wait.side_effect = [KeyboardInterrupt(), 0]
+
+		with mock.patch("dcmview_py.wrapper.shutil.which", return_value="/tmp/dcmview"):
+			with mock.patch("dcmview_py.wrapper.subprocess.Popen", return_value=process):
+				with self.assertRaises(KeyboardInterrupt):
+					wrapper.view([FIXTURE_FILE], browser=False)
+
+		process.send_signal.assert_called_once()
+
 	def test_cli_forwards_argv_through_the_bridge_client_form(self) -> None:
 		process = mock.Mock()
 		process.wait.return_value = 7
