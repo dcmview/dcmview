@@ -14,6 +14,7 @@ mod native;
 mod native_layout;
 mod overlay;
 mod palette;
+mod pixeldata_frame;
 mod render;
 mod rle;
 mod segmentation;

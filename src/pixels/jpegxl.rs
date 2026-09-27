@@ -1,27 +1,16 @@
 use crate::api::contracts::{RawFrameMetadata, WindowMode};
 use crate::types::FileEntry;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use bytes::Bytes;
-use dicom_pixeldata::PixelDecoder;
 use tokio::task;
 
 use super::color::color_samples_to_rgb8;
-use super::encapsulated::open_for_frame_decode;
 use super::error::{PixelError, PixelResult};
-use super::icc::select_icc_profile;
+use super::pixeldata_frame::{self, DecodedFrame};
 use super::render::{
     encode_rgb8_display_png, encode_windowed_luminance_png, LuminanceRenderOptions, StoredSamples,
 };
 use super::syntax::{Codec, ColorSamples};
-
-struct DecodedJpegXlFrame {
-    bytes: Vec<u8>,
-    rows: u32,
-    columns: u32,
-    bits_allocated: u32,
-    samples_per_pixel: u32,
-    icc_profile: Option<Vec<u8>>,
-}
 
 pub(crate) async fn decode_jpeg_xl_to_png(
     file: FileEntry,
@@ -139,33 +128,8 @@ pub(crate) async fn decode_raw_jpeg_xl(
     .map_err(|error| PixelError::raw_decode(anyhow!("raw JPEG XL decode task failed: {error}")))?
 }
 
-fn decode_frame(file: &FileEntry, frame: u32) -> Result<DecodedJpegXlFrame> {
-    let (object, frame_in_object) = open_for_frame_decode(file, frame)?;
-    let decoded = object
-        .decode_pixel_data_frame(frame_in_object)
-        .context("JPEG XL Lossless frame decode failed")?;
-    let bits_allocated = decoded.bits_allocated() as u32;
-    let samples_per_pixel = decoded.samples_per_pixel() as u32;
-    let frame_bytes = decoded
-        .frame_data(0)
-        .context("decoded JPEG XL frame is incomplete")?;
-    let bytes = if bits_allocated == 16 {
-        frame_bytes
-            .chunks_exact(2)
-            .flat_map(|sample| u16::from_ne_bytes([sample[0], sample[1]]).to_le_bytes())
-            .collect()
-    } else {
-        frame_bytes.to_vec()
-    };
-    let icc_profile = select_icc_profile(&object);
-    Ok(DecodedJpegXlFrame {
-        bytes,
-        rows: decoded.rows(),
-        columns: decoded.columns(),
-        bits_allocated,
-        samples_per_pixel,
-        icc_profile,
-    })
+fn decode_frame(file: &FileEntry, frame: u32) -> Result<DecodedFrame> {
+    pixeldata_frame::decode_frame(file, frame, "JPEG XL Lossless")
 }
 
 #[allow(clippy::too_many_arguments)]
