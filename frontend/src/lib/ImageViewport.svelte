@@ -26,8 +26,6 @@
 	import { canRunCinePlayback, type CineDirection, type CineMode } from "./cinePlayback";
 	import { fitImageToViewportHeight, imageDisplayGeometry } from "./imageGeometry";
 	import {
-		computeFullDynamicWindow,
-		computePercentileWindow,
 		mappedUnitsPerStoredUnit,
 		resolveDisplayWindow,
 		resolveMappedDisplayWindow,
@@ -294,29 +292,12 @@
 					? { wc: activeFile.default_window.center, ww: activeFile.default_window.width }
 					: null),
 	);
-	// The window a mapped file is actually shown with, for its HUD and
-	// legend: the server's automatic window is recomputed from the samples.
-	const needsWindowSamples = $derived(
-		mappedScale !== null
-		&& pipelineMode !== "diagnostic_wl"
-		&& liveWindowCenter === null
-		&& renderWindowCenter === null
-		&& (windowMode === "full_dynamic" || !activeFile.default_window),
-	);
-	const mappedWindow = $derived.by<ResolvedWindow | null>(() => {
-		if (!mappedScale) return null;
-		if (!needsWindowSamples) return displayWindow;
-		const samples = probe.samples(activeFile.index, currentFrame);
-		if (samples?.status !== "ready" || samples.at || validateRenderableRawFrame(samples.frame) !== null) return null;
-		return windowMode === "full_dynamic"
-			? computeFullDynamicWindow(samples.frame)
-			: computePercentileWindow(samples.frame);
-	});
+	// A mapped file's legend: the window it is shown with, in its unit.
 	const mappedLegend = $derived.by(() => {
-		if (!mappedScale || !mappedWindow) return null;
-		const low = mappedScale.toMapped(mappedWindow.wc - mappedWindow.ww / 2);
-		const high = mappedScale.toMapped(mappedWindow.wc + mappedWindow.ww / 2);
-		const mapped = windowToMapped({ center: mappedWindow.wc, width: mappedWindow.ww }, mappedScale);
+		if (!mappedScale || !displayWindow) return null;
+		const low = mappedScale.toMapped(displayWindow.wc - displayWindow.ww / 2);
+		const high = mappedScale.toMapped(displayWindow.wc + displayWindow.ww / 2);
+		const mapped = windowToMapped({ center: displayWindow.wc, width: displayWindow.ww }, mappedScale);
 		return { low, high, ...mapped, unit: mappedScale.unit, label: mappedScale.label };
 	});
 	// A LUT-unit window: the raw renderer's, or the one set while cine plays.
@@ -939,19 +920,17 @@
 		return untrack(() => valueMappings.ensureWhenSettled(fileIndex, frameIndex));
 	});
 
-	// Samples and the value mapping load once the cursor rests on a frame,
-	// or when a mapped file's automatic window must be recomputed; cine
-	// playback skips them.
+	// Samples and the value mapping load once the cursor rests on a frame;
+	// cine playback skips them.
 	$effect(() => {
-		if (!(probing || needsWindowSamples) || cinePlaying || !activeFile.has_pixels) return;
+		if (!probing || cinePlaying || !activeFile.has_pixels) return;
 		const { file, frameIndex } = probeTarget;
 		const displayed = pipelineMode === "diagnostic_wl" ? currentRawFrame : null;
-		const wholeFrame = needsWindowSamples;
 		// A frame read one pixel at a time follows the cursor.
-		const pixel = !wholeFrame && probesSinglePixels(file) ? probe.pixel : null;
+		const pixel = probesSinglePixels(file) ? probe.pixel : null;
 		return untrack(() => {
 			valueMappings.ensure(file.index, frameIndex);
-			return probe.track(file, frameIndex, displayed, { pixel, wholeFrame });
+			return probe.track(file, frameIndex, displayed, { pixel });
 		});
 	});
 
@@ -1174,9 +1153,7 @@
 			switch (activeTool) {
 				case "window_level": {
 					if (pipelineMode === "diagnostic_wl" && !currentRawFrame) break;
-					const baseWindow = (pipelineMode === "diagnostic_wl" && currentRawFrame
-						? displayWindow
-						: mappedWindow ?? displayWindow) ?? { wc: 0, ww: 1 };
+					const baseWindow = displayWindow ?? { wc: 0, ww: 1 };
 					nextDragState = {
 						mode: "wl",
 						startX: event.clientX,

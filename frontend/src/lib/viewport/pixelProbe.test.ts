@@ -116,11 +116,6 @@ describe("PixelProbe", () => {
 			const readout = (at: typeof pixel) => pixelReadout(input({ file: large, pixel: at, samples }));
 			expect(readout(pixel).values).toMatchObject({ kind: "grayscale", stored: "0" });
 			expect(readout({ row: 0, column: 0 })).toMatchObject({ values: null, note: "reading…" });
-
-			// Automatic windows still get the whole frame.
-			probe.track(large, 0, null, { wholeFrame: true });
-			await vi.advanceTimersByTimeAsync(200);
-			expect(loadFrame).toHaveBeenCalledOnce();
 		} finally {
 			vi.useRealTimers();
 		}

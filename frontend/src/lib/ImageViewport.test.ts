@@ -333,6 +333,17 @@ describe("ImageViewport window/level in real-world units", () => {
 		expect(screen.getByRole("figure", { name: "ADC: -10 to 90 um2/s" })).toBeTruthy();
 	});
 
+	it("shows a mapped file's automatic window in its unit without fetching raw samples", async () => {
+		fetchFrameValueMapping.mockResolvedValue(adcMapping());
+		fetchDisplayFrame.mockResolvedValueOnce({ blob: new Blob(["png"]), window: { wc: 100, ww: 200 } });
+		renderViewport({ file: fileSummary(5, { default_window: null }) });
+
+		// mapped = 0.5 × stored − 10: C 100 / W 200 stored is C 40 / W 100 um2/s.
+		await screen.findByText(/W: 100 · C: 40 um2\/s/);
+		expect(screen.getByRole("figure", { name: "ADC: -10 to 90 um2/s" })).toBeTruthy();
+		expect(fetchRawFrame).not.toHaveBeenCalled();
+	});
+
 	it("converts the window through each frame's own mapping as frames change", async () => {
 		// Frame f maps stored values with slope (f + 1) / 2 um2/s.
 		fetchFrameValueMapping.mockImplementation(async (fileIndex, frameIndex) => {
