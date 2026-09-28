@@ -24,7 +24,9 @@ struct Oracle {
 #[derive(Deserialize)]
 struct WindowingCase {
     name: String,
-    stored: Vec<u16>,
+    /// `int32`, `float32` or `float64`; unsigned 16-bit when absent.
+    sample: Option<String>,
+    stored: Vec<f64>,
     rescale_slope: f64,
     rescale_intercept: f64,
     photometric_interpretation: String,
@@ -37,7 +39,31 @@ struct WindowingCase {
     shutter: Option<Shutter>,
     overlay: Option<Vec<u8>>,
     layer: Option<Vec<Option<u8>>>,
+    modality_lut: Option<Lut>,
+    voi_lut: Option<Lut>,
     expected: Vec<u8>,
+}
+
+#[derive(Deserialize)]
+struct Lut {
+    first_value_mapped: u16,
+    bits: u16,
+    values: Vec<u16>,
+}
+
+fn lut_item(lut: &Lut) -> InMemDicomObject {
+    InMemDicomObject::from_element_iter([
+        DataElement::new(
+            tags::LUT_DESCRIPTOR,
+            VR::US,
+            PrimitiveValue::from([lut.values.len() as u16, lut.first_value_mapped, lut.bits]),
+        ),
+        DataElement::new(
+            tags::LUT_DATA,
+            VR::OW,
+            PrimitiveValue::U16(lut.values.iter().copied().collect()),
+        ),
+    ])
 }
 
 /// A rectangular shutter opening over one-based columns of the one-row frame.
@@ -67,8 +93,24 @@ struct Window {
 
 #[derive(Deserialize)]
 struct Padding {
-    value: u16,
-    range_limit: Option<u16>,
+    value: f64,
+    range_limit: Option<f64>,
+}
+
+impl WindowingCase {
+    /// The stored samples as little-endian bytes of the case's sample type.
+    fn stored_le(&self) -> Vec<u8> {
+        self.stored
+            .iter()
+            .flat_map(|value| match self.sample.as_deref() {
+                None => (*value as u16).to_le_bytes().to_vec(),
+                Some("int32") => (*value as i32).to_le_bytes().to_vec(),
+                Some("float32") => (*value as f32).to_le_bytes().to_vec(),
+                Some("float64") => value.to_le_bytes().to_vec(),
+                Some(other) => panic!("unknown oracle sample type {other}"),
+            })
+            .collect()
+    }
 }
 
 fn load_oracle() -> Oracle {
@@ -84,13 +126,47 @@ fn write_case_dicom(path: &Path, case: &WindowingCase) {
         path,
         "1.2.840.10008.1.2.1",
         (1, case.stored.len() as u16),
-        case.stored.clone(),
+        vec![0; case.stored.len()],
         &case.photometric_interpretation,
         center.as_deref(),
         width.as_deref(),
     );
 
     let mut object = dicom_object::open_file(path).expect("reopen oracle DICOM");
+    let (bits, pixel_tag, pixel_vr) = match case.sample.as_deref() {
+        None => (16_u16, tags::PIXEL_DATA, VR::OW),
+        Some("int32") => (32, tags::PIXEL_DATA, VR::OB),
+        Some("float32") => (32, tags::FLOAT_PIXEL_DATA, VR::OF),
+        Some(_) => (64, tags::DOUBLE_FLOAT_PIXEL_DATA, VR::OD),
+    };
+    object.remove_element(tags::PIXEL_DATA);
+    object.put(DataElement::new(
+        pixel_tag,
+        pixel_vr,
+        PrimitiveValue::from(case.stored_le()),
+    ));
+    object.put(DataElement::new(
+        tags::BITS_ALLOCATED,
+        VR::US,
+        PrimitiveValue::from(bits),
+    ));
+    object.put(DataElement::new(
+        tags::BITS_STORED,
+        VR::US,
+        PrimitiveValue::from(bits),
+    ));
+    object.put(DataElement::new(
+        tags::HIGH_BIT,
+        VR::US,
+        PrimitiveValue::from(bits - 1),
+    ));
+    if case.sample.as_deref() == Some("int32") {
+        object.put(DataElement::new(
+            tags::PIXEL_REPRESENTATION,
+            VR::US,
+            PrimitiveValue::from(1_u16),
+        ));
+    }
     object.put(DataElement::new(
         tags::RESCALE_SLOPE,
         VR::DS,
@@ -102,16 +178,43 @@ fn write_case_dicom(path: &Path, case: &WindowingCase) {
         PrimitiveValue::from(case.rescale_intercept.to_string()),
     ));
     if let Some(padding) = &case.padding {
-        object.put(DataElement::new(
-            tags::PIXEL_PADDING_VALUE,
-            VR::US,
-            PrimitiveValue::from(padding.value),
-        ));
-        if let Some(limit) = padding.range_limit {
+        let values = [
+            (true, padding.value),
+            (false, padding.range_limit.unwrap_or(f64::NAN)),
+        ];
+        for (is_value, value) in values.into_iter().filter(|(_, value)| !value.is_nan()) {
+            let element = match case.sample.as_deref() {
+                Some("float32") => DataElement::new(
+                    if is_value {
+                        tags::FLOAT_PIXEL_PADDING_VALUE
+                    } else {
+                        tags::FLOAT_PIXEL_PADDING_RANGE_LIMIT
+                    },
+                    VR::FL,
+                    PrimitiveValue::from(value as f32),
+                ),
+                _ => DataElement::new(
+                    if is_value {
+                        tags::PIXEL_PADDING_VALUE
+                    } else {
+                        tags::PIXEL_PADDING_RANGE_LIMIT
+                    },
+                    VR::US,
+                    PrimitiveValue::from(value as u16),
+                ),
+            };
+            object.put(element);
+        }
+    }
+    for (tag, lut) in [
+        (tags::MODALITY_LUT_SEQUENCE, &case.modality_lut),
+        (tags::VOILUT_SEQUENCE, &case.voi_lut),
+    ] {
+        if let Some(lut) = lut {
             object.put(DataElement::new(
-                tags::PIXEL_PADDING_RANGE_LIMIT,
-                VR::US,
-                PrimitiveValue::from(limit),
+                tag,
+                VR::SQ,
+                DataSetSequence::from(vec![lut_item(lut)]),
             ));
         }
     }
@@ -255,12 +358,11 @@ fn header_f64(response: &TestResponse, name: &str) -> Option<f64> {
 /// by the oracle, so both consumers window the same stored samples.
 fn assert_raw_transport(case: &WindowingCase, raw: &TestResponse) {
     let name = &case.name;
-    let stored_le = case
-        .stored
-        .iter()
-        .flat_map(|sample| sample.to_le_bytes())
-        .collect::<Vec<_>>();
-    assert_eq!(raw.as_bytes().as_ref(), stored_le, "{name}: raw samples");
+    assert_eq!(
+        raw.as_bytes().as_ref(),
+        case.stored_le(),
+        "{name}: raw samples"
+    );
     assert_eq!(
         raw.header("X-Frame-Photometric-Interpretation"),
         case.photometric_interpretation.as_str(),
@@ -289,10 +391,7 @@ fn assert_raw_transport(case: &WindowingCase, raw: &TestResponse) {
     );
     let padding = case.padding.as_ref().map(|padding| {
         let limit = padding.range_limit.unwrap_or(padding.value);
-        (
-            f64::from(padding.value.min(limit)),
-            f64::from(padding.value.max(limit)),
-        )
+        (padding.value.min(limit), padding.value.max(limit))
     });
     assert_eq!(
         (
@@ -338,6 +437,35 @@ async fn loader_driven_display_frames_match_the_shared_windowing_oracle() {
         let raw = test_server.get("/api/file/0/frame/0/raw").await;
         raw.assert_status_ok();
         assert_raw_transport(case, &raw);
+
+        // The client takes the LUTs from the frame's value mapping.
+        let mapping = test_server
+            .get("/api/file/0/frame/0/value-mapping")
+            .await
+            .json::<serde_json::Value>();
+        let modality_lut = case.modality_lut.as_ref().map(|lut| {
+            let values = lut.values.iter().copied().map(f64::from).collect::<Vec<_>>();
+            serde_json::json!({ "first_value_mapped": f64::from(lut.first_value_mapped), "values": values })
+        });
+        let voi_lut = case.voi_lut.as_ref().map(|lut| {
+            serde_json::json!({
+                "first_value_mapped": lut.first_value_mapped,
+                "bits_per_entry": lut.bits,
+                "values": lut.values,
+            })
+        });
+        assert_eq!(
+            mapping["modality"]["lut"],
+            modality_lut.unwrap_or_default(),
+            "{}: Modality LUT",
+            case.name
+        );
+        assert_eq!(
+            mapping["voi_lut"],
+            voi_lut.unwrap_or_default(),
+            "{}: VOI LUT",
+            case.name
+        );
 
         // The layer the client composites over its raw render: gray and
         // opaque where drawn, transparent elsewhere.

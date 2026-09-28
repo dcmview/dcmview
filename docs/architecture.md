@@ -541,13 +541,16 @@ installation and VS Code Electron integration can also use network/cache state;
   render `App.svelte` and `ImageViewport.svelte` in happy-dom with the API
   module mocked, covering per-tab view state, the keyboard guard, and the
   window/level render-path choice.
-- `tests/windowing-cases.json` is the shared windowing oracle: stored samples,
-  rescale, photometric interpretation, DICOM window, Pixel Padding, and the
-  request, with expected 8-bit output from PS3.3 C.11.2.1.2.1. The Rust
-  integration test writes each case as a DICOM file and runs it through the
-  loader, `AppState`, and the display and raw endpoints; `rawWindowing.test.ts`
-  renders the same cases client-side. Server and client windowing must agree
-  on every case.
+- `tests/windowing-cases.json` is the shared windowing oracle: stored samples
+  (unsigned 16-bit, or signed 32-bit, float and double float), rescale,
+  Modality and VOI LUTs, photometric interpretation, DICOM window, Pixel
+  Padding, a real-world mapping, a shutter or overlay with its presentation
+  layer, and the request, with expected 8-bit output from PS3.3 C.11.2.1.2.1.
+  The Rust integration test writes each case as a DICOM file and runs it
+  through the loader, `AppState`, and the display, raw, value-mapping and
+  presentation-layer endpoints; `rawWindowing.test.ts` renders the same cases
+  client-side with the value mapping's presentation and composites the layer.
+  Server and client windowing must agree on every case.
 - The `X-Cache` MISS-then-HIT sequence is asserted once per cached endpoint
   (display frame, raw frame) plus the display cache-key tests for window
   override and window mode; the runtime contract test checks every cached

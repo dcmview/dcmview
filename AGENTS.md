@@ -380,8 +380,10 @@ Window resolution order is:
 The display pipeline applies the Modality LUT or rescale before windowing for
 every grayscale path; 8- and 16-bit frames go through a per-stored-value lookup
 table and automatic windows come from a histogram of stored values. The
-frontend raw-frame renderer receives rescale metadata in headers and applies
-the same convention client-side.
+frontend raw-frame renderer (`rawWindowing.ts`) applies the same pipeline
+client-side from the raw headers and the frame's value mapping (stored value
+type, Modality LUT, VOI LUT): a per-stored-value table for 1-, 8- and 16-bit
+integers, one sample at a time for 32-bit and float samples.
 
 **Encapsulated frame access**
 

@@ -1,10 +1,55 @@
 import type { RawFrame, RawFrameMetadata } from "../rawFrame";
-import type { RealWorldValueMap, WindowMode } from "../generated/api-types";
+import type {
+	FrameValueMapping,
+	ModalityValueTransform,
+	RealWorldValueMap,
+	VoiLookupTable,
+	WindowMode,
+} from "../generated/api-types";
 import { realWorldValue } from "./viewport/valueMapping";
 
 export type ResolvedWindow = {
 	wc: number;
 	ww: number;
+	/**
+	 * The VOI LUT that presents the frame instead of this window: default
+	 * mode with no window requested or stored, as on the server.
+	 */
+	voiLut?: VoiLookupTable;
+};
+
+/**
+ * What the display pipeline needs about a frame's samples beyond the raw
+ * headers, from the frame's value mapping: whether 32-bit samples are
+ * floats, the Modality LUT that replaces the rescale, and the VOI LUT.
+ */
+export type SamplePresentation = {
+	/** `integer`, `float32`, or `float64`. */
+	storedValueType: string;
+	modality: ModalityValueTransform;
+	voiLut: VoiLookupTable | null;
+};
+
+/** The presentation a value mapping describes, or the raw headers' rescale alone. */
+export function samplePresentation(frame: RawFrame, mapping: FrameValueMapping | null): SamplePresentation {
+	if (mapping) {
+		return { storedValueType: mapping.stored_value_type, modality: mapping.modality, voiLut: mapping.voi_lut };
+	}
+	const { rescaleSlope, rescaleIntercept } = frame.metadata;
+	return {
+		storedValueType: "integer",
+		modality: { rescale_slope: rescaleSlope, rescale_intercept: rescaleIntercept, rescale_type: null, lut: null },
+		voiLut: null,
+	};
+}
+
+export type RenderOptions = {
+	/** Window this real-world mapping's values instead of Modality values. */
+	valueMap?: RealWorldValueMap | null;
+	/** Defaults to the raw headers' rescale for integer samples. */
+	presentation?: SamplePresentation;
+	/** Present Modality values with this VOI LUT instead of the window. */
+	voiLut?: VoiLookupTable | null;
 };
 
 export const MAX_RENDER_PIXELS = 20_000_000;
@@ -24,9 +69,17 @@ const PLATFORM_LITTLE_ENDIAN = new Uint8Array(new Uint16Array([1]).buffer)[0] ==
 
 type SampleReader = {
 	read: (index: number) => number;
-	minRaw: number;
-	size: number;
+	/**
+	 * For 1-, 8- and 16-bit integers, every stored value lies in
+	 * [minRaw, minRaw + size), so the pipeline runs once per possible value;
+	 * null for 32-bit and float samples, which are presented one by one.
+	 */
+	table: { minRaw: number; size: number } | null;
 };
+
+function bytesPerSample(bitsAllocated: number): number {
+	return bitsAllocated === 1 ? 1 : bitsAllocated / 8;
+}
 
 export function validateRenderableRawFrame(
 	frame: RawFrame,
@@ -39,7 +92,7 @@ export function validateRenderableRawFrame(
 	if (samplesPerPixel !== 1) {
 		return `Unsupported SamplesPerPixel: ${samplesPerPixel}`;
 	}
-	if (bitsAllocated !== 8 && bitsAllocated !== 16) {
+	if (![1, 8, 16, 32, 64].includes(bitsAllocated)) {
 		return `Unsupported BitsAllocated for viewport: ${bitsAllocated}`;
 	}
 	if (pixelRepresentation !== 0 && pixelRepresentation !== 1) {
@@ -52,49 +105,49 @@ export function validateRenderableRawFrame(
 	if (numPixels > maxRenderPixels) {
 		return `Frame too large to render safely (${rows}×${columns})`;
 	}
-	const minExpectedBytes = numPixels * (bitsAllocated / 8);
-	if (frame.buffer.byteLength < minExpectedBytes) {
+	if (frame.buffer.byteLength < numPixels * bytesPerSample(bitsAllocated)) {
 		return "Raw frame buffer is shorter than expected for declared metadata";
 	}
 	return null;
 }
 
 /**
- * Windows a raw frame into RGBA. With `valueMap`, the window applies to
- * that real-world mapping's values (a LUT mapping included) instead of
- * Modality values; stored values it does not map take the window's low end.
- * The server's display frames with `unit` follow the same rules
- * (tests/windowing-cases.json).
+ * Windows a raw frame into RGBA with the server's display pipeline: the
+ * Modality LUT or rescale, then the LINEAR window or a VOI LUT, MONOCHROME1
+ * inversion, and Pixel Padding drawn black. With `valueMap`, the window
+ * applies to that real-world mapping's values (a LUT mapping included)
+ * instead of Modality values; stored values it does not map take the
+ * window's low end. The server's display frames with `unit` follow the same
+ * rules (tests/windowing-cases.json).
  */
 export function renderRawFrameToRgba(
 	frame: RawFrame,
 	wc: number,
 	ww: number,
-	valueMap: RealWorldValueMap | null = null,
+	options: RenderOptions = {},
 ): Uint8ClampedArray<ArrayBuffer> {
 	const validationError = validateRenderableRawFrame(frame);
 	if (validationError) {
 		throw new Error(validationError);
 	}
-
-	const reader = createSampleReader(frame);
-	const lut = buildWindowLut(frame.metadata, reader, wc, Math.max(ww, 1), valueMap);
+	const presentation = options.presentation ?? samplePresentation(frame, null);
+	const reader = createSampleReader(frame, presentation.storedValueType);
+	const gray = grayFunction(frame.metadata, presentation, wc, Math.max(ww, 1), options);
+	// Padding is background: black after any MONOCHROME1 inversion.
 	const isPadding = paddingPredicate(frame.metadata);
-	if (isPadding) {
-		// Padding is background: black after any MONOCHROME1 inversion.
-		for (let index = 0; index < reader.size; index += 1) {
-			if (isPadding(index + reader.minRaw)) lut[index] = 0;
-		}
-	}
+	const present = (stored: number) => (isPadding?.(stored) ? 0 : gray(stored));
 	const numPixels = frame.metadata.rows * frame.metadata.columns;
 	const output = new Uint8ClampedArray(new ArrayBuffer(numPixels * 4));
 
+	const { table } = reader;
+	const lut = table ? Uint8Array.from({ length: table.size }, (_, index) => present(index + table.minRaw)) : null;
 	for (let index = 0; index < numPixels; index += 1) {
-		const gray = lut[reader.read(index) - reader.minRaw];
+		const stored = reader.read(index);
+		const value = lut && table ? lut[stored - table.minRaw] : present(stored);
 		const offset = index * 4;
-		output[offset] = gray;
-		output[offset + 1] = gray;
-		output[offset + 2] = gray;
+		output[offset] = value;
+		output[offset + 1] = value;
+		output[offset + 2] = value;
 		output[offset + 3] = 255;
 	}
 
@@ -108,9 +161,10 @@ export function resolveDisplayWindow(
 	wc: number | null,
 	ww: number | null,
 	mode: WindowMode,
+	presentation?: SamplePresentation,
 ): ResolvedWindow {
 	if (mode === "full_dynamic") {
-		return computeFullDynamicWindow(frame);
+		return computeFullDynamicWindow(frame, presentation);
 	}
 	if (liveWc !== null && liveWw !== null) {
 		return { wc: liveWc, ww: liveWw };
@@ -122,7 +176,9 @@ export function resolveDisplayWindow(
 	if (defaultWc !== null && defaultWw !== null) {
 		return { wc: defaultWc, ww: defaultWw };
 	}
-	return computePercentileWindow(frame);
+	// A VOI LUT presents the frame; the percentile window is where a drag starts.
+	const window = computePercentileWindow(frame, presentation);
+	return presentation?.voiLut ? { ...window, voiLut: presentation.voiLut } : window;
 }
 
 /**
@@ -159,14 +215,12 @@ export function mappedUnitsPerStoredUnit(valueMap: RealWorldValueMap): number {
 	return range > 0 ? range / (finite.length - 1) : 1;
 }
 
-// Raw frames hold 8- or 16-bit integers (validateRenderableRawFrame), so every
-// stored value lies in this range.
+// 1-, 8- and 16-bit integer samples lie in this range.
 const RAW_VALUE_OFFSET = 32768;
 const RAW_VALUE_COUNT = RAW_VALUE_OFFSET + 65536;
 
 /** How many samples hold each stored value, indexed by value + RAW_VALUE_OFFSET. */
-function storedValueCounts(frame: RawFrame): Uint32Array {
-	const reader = validatedSampleReader(frame);
+function storedValueCounts(frame: RawFrame, reader: SampleReader): Uint32Array {
 	const { rows, columns } = frame.metadata;
 	const counts = new Uint32Array(RAW_VALUE_COUNT);
 	for (let index = 0; index < rows * columns; index += 1) {
@@ -175,12 +229,29 @@ function storedValueCounts(frame: RawFrame): Uint32Array {
 	return counts;
 }
 
+/** A frame's values in ascending order, for automatic windows. */
+interface OrderedValues {
+	readonly total: number;
+	/** The value at `index` of the samples in ascending order. */
+	at(index: number): number;
+	/** The smallest and largest value. */
+	range(): [number, number];
+}
+
+/** The 1st/99th percentile span, or the full range. */
+function valueSpan(values: OrderedValues, percentile: boolean): [number, number] {
+	const last = values.total - 1;
+	return percentile
+		? [values.at(Math.floor(values.total * 0.01)), values.at(Math.min(Math.ceil(values.total * 0.99), last))]
+		: values.range();
+}
+
 /**
  * The frame's values in ascending order, as (value, count) runs: each stored
  * value that occurs is mapped once by `valueOf` (null or non-finite drops it),
  * instead of mapping and sorting every sample.
  */
-class ValueRuns {
+class ValueRuns implements OrderedValues {
 	readonly total: number;
 	readonly #runs: [number, number][];
 
@@ -200,7 +271,6 @@ class ValueRuns {
 		this.total = total;
 	}
 
-	/** The value at `index` of the samples in ascending order. */
 	at(index: number): number {
 		let seen = 0;
 		for (const [value, count] of this.#runs) {
@@ -210,24 +280,51 @@ class ValueRuns {
 		return this.#runs.length > 0 ? this.#runs[this.#runs.length - 1][0] : Number.NaN;
 	}
 
-	/** The 1st/99th percentile span, or the full range. */
-	span(percentile: boolean): [number, number] {
-		const last = this.total - 1;
-		return percentile
-			? [this.at(Math.floor(this.total * 0.01)), this.at(Math.min(Math.ceil(this.total * 0.99), last))]
-			: [this.at(0), this.at(last)];
+	range(): [number, number] {
+		return [this.at(0), this.at(this.total - 1)];
+	}
+}
+
+/**
+ * Every value of a frame presented one sample at a time (32-bit and float
+ * samples), sorted, as the server's per-sample path orders them: NaN last,
+ * and ignored by the full range, which takes a minimum and maximum.
+ */
+class SortedValues implements OrderedValues {
+	readonly total: number;
+	readonly #values: Float64Array;
+
+	constructor(values: Float64Array) {
+		this.#values = values.sort();
+		this.total = values.length;
+	}
+
+	at(index: number): number {
+		return this.#values[Math.min(index, this.total - 1)];
+	}
+
+	range(): [number, number] {
+		// f64::min and f64::max folds: comparisons with NaN are false.
+		let low = Number.POSITIVE_INFINITY;
+		let high = Number.NEGATIVE_INFINITY;
+		for (const value of this.#values) {
+			if (value < low) low = value;
+			if (value > high) high = value;
+		}
+		return [low, high];
 	}
 }
 
 function mappedWindowRuns(frame: RawFrame, valueMap: RealWorldValueMap): ValueRuns {
 	const isPadding = paddingPredicate(frame.metadata);
-	return new ValueRuns(storedValueCounts(frame), (raw) => realWorldValue(raw, valueMap), (raw) => !isPadding?.(raw));
+	const counts = storedValueCounts(frame, validatedSampleReader(frame, "integer"));
+	return new ValueRuns(counts, (raw) => realWorldValue(raw, valueMap), (raw) => !isPadding?.(raw));
 }
 
 /** A window over `values`, at least `minWidth` (one stored unit's worth) wide. */
 function windowOfValues(values: ValueRuns, percentile: boolean, minWidth: number): ResolvedWindow {
 	if (values.total === 0) return { wc: minWidth / 2, ww: minWidth };
-	const [low, high] = values.span(percentile);
+	const [low, high] = valueSpan(values, percentile);
 	// Mapped values can span less than one unit, so the floor is one stored
 	// unit in mapped units rather than 1.
 	const width = Math.max(high - low, minWidth);
@@ -235,49 +332,62 @@ function windowOfValues(values: ValueRuns, percentile: boolean, minWidth: number
 }
 
 // Automatic windows scan every sample, so each frame's result is computed
-// once; frames are immutable once fetched.
-const fullDynamicWindows = new WeakMap<RawFrame, ResolvedWindow>();
-const percentileWindows = new WeakMap<RawFrame, ResolvedWindow>();
+// once per presentation; frames are immutable once fetched.
+type AutomaticWindows = { modality: ModalityValueTransform | null; full?: ResolvedWindow; percentile?: ResolvedWindow };
+const automaticWindows = new WeakMap<RawFrame, AutomaticWindows>();
 
-export function computeFullDynamicWindow(frame: RawFrame): ResolvedWindow {
-	const cached = fullDynamicWindows.get(frame);
-	if (cached) return cached;
-	const window = scanFullDynamicWindow(frame);
-	fullDynamicWindows.set(frame, window);
-	return window;
+function cachedAutomaticWindow(
+	frame: RawFrame,
+	presentation: SamplePresentation | undefined,
+	kind: "full" | "percentile",
+): ResolvedWindow {
+	const modality = presentation?.modality ?? null;
+	let cached = automaticWindows.get(frame);
+	if (!cached || cached.modality !== modality) {
+		cached = { modality };
+		automaticWindows.set(frame, cached);
+	}
+	cached[kind] ??= automaticWindow(windowSourceValues(frame, presentation), kind === "percentile");
+	return cached[kind];
 }
 
-export function computePercentileWindow(frame: RawFrame): ResolvedWindow {
-	const cached = percentileWindows.get(frame);
-	if (cached) return cached;
-	const window = scanPercentileWindow(frame);
-	percentileWindows.set(frame, window);
-	return window;
+export function computeFullDynamicWindow(frame: RawFrame, presentation?: SamplePresentation): ResolvedWindow {
+	return cachedAutomaticWindow(frame, presentation, "full");
 }
 
-function scanFullDynamicWindow(frame: RawFrame): ResolvedWindow {
-	const values = windowSourceValues(frame);
+export function computePercentileWindow(frame: RawFrame, presentation?: SamplePresentation): ResolvedWindow {
+	return cachedAutomaticWindow(frame, presentation, "percentile");
+}
+
+function automaticWindow(values: OrderedValues, percentile: boolean): ResolvedWindow {
 	if (values.total === 0) return { wc: 128, ww: 256 };
-	const [min, max] = values.span(false);
-	const width = Math.max(max - min, 1);
-	return { wc: min + width / 2, ww: width };
+	const [low, high] = valueSpan(values, percentile);
+	// f64::max on the server ignores NaN; Math.max would return it.
+	const span = high - low;
+	const width = span > 1 ? span : 1;
+	return { wc: low + width / 2, ww: width };
 }
 
-function scanPercentileWindow(frame: RawFrame): ResolvedWindow {
-	const [p1, p99] = windowSourceValues(frame).span(true);
-	const width = Math.max(p99 - p1, 1);
-	return { wc: p1 + width / 2, ww: width };
-}
-
-/** Rescaled samples for automatic windows, excluding Pixel Padding like the server. */
-function windowSourceValues(frame: RawFrame): ValueRuns {
-	const { rescaleSlope, rescaleIntercept } = frame.metadata;
-	const counts = storedValueCounts(frame);
-	const rescale = (raw: number) => raw * rescaleSlope + rescaleIntercept;
+/** Modality values for automatic windows, excluding Pixel Padding like the server. */
+function windowSourceValues(frame: RawFrame, presentation = samplePresentation(frame, null)): OrderedValues {
+	const reader = validatedSampleReader(frame, presentation.storedValueType);
+	const modal = modalityFunction(presentation.modality);
 	const isPadding = paddingPredicate(frame.metadata);
-	const unpadded = new ValueRuns(counts, rescale, (raw) => !isPadding?.(raw));
-	// An all-padding frame falls back to every sample, as the server does.
-	return unpadded.total > 0 || !isPadding ? unpadded : new ValueRuns(counts, rescale, () => true);
+	if (!reader.table) {
+		const count = frame.metadata.rows * frame.metadata.columns;
+		const all = new Float64Array(count);
+		const unpadded: number[] = [];
+		for (let index = 0; index < count; index += 1) {
+			const stored = reader.read(index);
+			all[index] = modal(stored);
+			if (!isPadding?.(stored)) unpadded.push(all[index]);
+		}
+		// An all-padding frame falls back to every sample, as the server does.
+		return new SortedValues(unpadded.length > 0 || !isPadding ? Float64Array.from(unpadded) : all);
+	}
+	const counts = storedValueCounts(frame, reader);
+	const unpadded = new ValueRuns(counts, modal, (raw) => !isPadding?.(raw));
+	return unpadded.total > 0 || !isPadding ? unpadded : new ValueRuns(counts, modal, () => true);
 }
 
 function paddingPredicate(metadata: RawFrameMetadata): ((raw: number) => boolean) | null {
@@ -286,94 +396,119 @@ function paddingPredicate(metadata: RawFrameMetadata): ((raw: number) => boolean
 	return (raw) => raw >= paddingLow && raw <= paddingHigh;
 }
 
-function validatedSampleReader(frame: RawFrame): SampleReader {
+function validatedSampleReader(frame: RawFrame, storedValueType: string): SampleReader {
 	const validationError = validateRenderableRawFrame(frame);
 	if (validationError) {
 		throw new Error(validationError);
 	}
-	return createSampleReader(frame);
+	return createSampleReader(frame, storedValueType);
 }
 
-function createSampleReader(frame: RawFrame): SampleReader {
+function createSampleReader(frame: RawFrame, storedValueType: string): SampleReader {
 	const { bitsAllocated, pixelRepresentation, rows, columns } = frame.metadata;
 	const numPixels = rows * columns;
-	const signed = pixelRepresentation === 1;
-
-	if (bitsAllocated === 8 && signed) {
-		const source = new Int8Array(frame.buffer, 0, numPixels);
-		return { read: (index) => source[index], minRaw: -128, size: 256 };
-	}
-	if (bitsAllocated === 8) {
-		const source = new Uint8Array(frame.buffer, 0, numPixels);
-		return { read: (index) => source[index], minRaw: 0, size: 256 };
-	}
-	if (bitsAllocated === 16 && PLATFORM_LITTLE_ENDIAN) {
-		if (signed) {
-			const source = new Int16Array(frame.buffer, 0, numPixels);
-			return { read: (index) => source[index], minRaw: -32768, size: 65536 };
+	// One-bit samples arrive one per byte and are unsigned, as on the server.
+	const signed = pixelRepresentation === 1 && bitsAllocated !== 1;
+	const view = new DataView(frame.buffer);
+	const typed = <T extends { [index: number]: number }>(make: () => T, fallback: (offset: number) => number) => {
+		if (PLATFORM_LITTLE_ENDIAN) {
+			const source = make();
+			return (index: number) => source[index];
 		}
-		const source = new Uint16Array(frame.buffer, 0, numPixels);
-		return { read: (index) => source[index], minRaw: 0, size: 65536 };
-	}
-
-	const source = new DataView(frame.buffer);
-	if (signed) {
-		return {
-			read: (index) => source.getInt16(index * 2, true),
-			minRaw: -32768,
-			size: 65536,
-		};
-	}
-	return {
-		read: (index) => source.getUint16(index * 2, true),
-		minRaw: 0,
-		size: 65536,
+		return (index: number) => fallback(index * (bitsAllocated / 8));
 	};
+
+	switch (bitsAllocated) {
+		case 1:
+		case 8: {
+			const source = signed ? new Int8Array(frame.buffer, 0, numPixels) : new Uint8Array(frame.buffer, 0, numPixels);
+			return { read: (index) => source[index], table: { minRaw: signed ? -128 : 0, size: 256 } };
+		}
+		case 16:
+			return signed
+				? {
+					read: typed(() => new Int16Array(frame.buffer, 0, numPixels), (offset) => view.getInt16(offset, true)),
+					table: { minRaw: -32768, size: 65536 },
+				}
+				: {
+					read: typed(() => new Uint16Array(frame.buffer, 0, numPixels), (offset) => view.getUint16(offset, true)),
+					table: { minRaw: 0, size: 65536 },
+				};
+		case 32:
+			if (storedValueType === "float32") {
+				return {
+					read: typed(() => new Float32Array(frame.buffer, 0, numPixels), (offset) => view.getFloat32(offset, true)),
+					table: null,
+				};
+			}
+			return signed
+				? { read: typed(() => new Int32Array(frame.buffer, 0, numPixels), (offset) => view.getInt32(offset, true)), table: null }
+				: { read: typed(() => new Uint32Array(frame.buffer, 0, numPixels), (offset) => view.getUint32(offset, true)), table: null };
+		case 64:
+			if (storedValueType !== "float64") throw new Error("64-bit samples must be Double Float Pixel Data");
+			return {
+				read: typed(() => new Float64Array(frame.buffer, 0, numPixels), (offset) => view.getFloat64(offset, true)),
+				table: null,
+			};
+		default:
+			throw new Error(`Unsupported BitsAllocated for viewport: ${bitsAllocated}`);
+	}
 }
 
-function buildWindowLut(
+/** One LUT entry, indexed like the server: the value truncated, then clamped to the table. */
+function lutEntry(firstValueMapped: number, values: readonly number[], value: number): number {
+	const offset = (Number.isNaN(value) ? 0 : Math.trunc(value)) - firstValueMapped;
+	return values[Math.min(Math.max(offset, 0), values.length - 1)];
+}
+
+/** The Modality LUT, or else the rescale, applied to one stored value. */
+function modalityFunction(modality: ModalityValueTransform): (stored: number) => number {
+	const { lut, rescale_slope: slope, rescale_intercept: intercept } = modality;
+	if (lut && lut.values.length > 0) return (stored) => lutEntry(lut.first_value_mapped, lut.values, stored);
+	return (stored) => stored * slope + intercept;
+}
+
+/** A display byte, as the server casts one: NaN is 0, and values saturate. */
+function toByte(value: number): number {
+	return Number.isNaN(value) ? 0 : Math.min(Math.max(Math.round(value), 0), 255);
+}
+
+/** The displayed byte of one stored value, before Pixel Padding. */
+function grayFunction(
 	metadata: RawFrameMetadata,
-	reader: SampleReader,
+	presentation: SamplePresentation,
 	wc: number,
 	ww: number,
-	valueMap: RealWorldValueMap | null,
-): Uint8Array {
+	{ valueMap = null, voiLut = null }: RenderOptions,
+): (stored: number) => number {
 	const invert = metadata.photometricInterpretation.trim().toUpperCase() === "MONOCHROME1";
-	const lut = new Uint8Array(reader.size);
+	// MONOCHROME1 inverts the quantized output, like the server.
+	const output = (gray: number) => (invert ? 255 - gray : gray);
 	if (valueMap) {
 		// Mapped values follow the linear VOI function without the integer
 		// half-unit offsets, which assume Modality integers.
 		const low = wc - ww / 2;
-		for (let index = 0; index < reader.size; index += 1) {
-			const mapped = realWorldValue(index + reader.minRaw, valueMap);
-			const value = mapped === null || !Number.isFinite(mapped)
-				? 0
-				: Math.min(Math.max((mapped - low) / ww, 0), 1);
-			const gray = Math.round(value * 255);
-			lut[index] = invert ? 255 - gray : gray;
-		}
-		return lut;
+		return (stored) => {
+			const mapped = realWorldValue(stored, valueMap);
+			const value = mapped === null || !Number.isFinite(mapped) ? 0 : Math.min(Math.max((mapped - low) / ww, 0), 1);
+			return output(toByte(value * 255));
+		};
 	}
-	const width = Math.max(ww, 1);
+	const modal = modalityFunction(presentation.modality);
+	if (voiLut) {
+		const max = 2 ** voiLut.bits_per_entry - 1;
+		return (stored) => {
+			const entry = lutEntry(voiLut.first_value_mapped, voiLut.values, modal(stored));
+			return output(Math.floor((entry * 255 + Math.floor(max / 2)) / max));
+		};
+	}
 	const center = wc - 0.5;
-	const low = center - (width - 1) / 2;
-	const high = center + (width - 1) / 2;
-
-	for (let index = 0; index < reader.size; index += 1) {
-		const raw = index + reader.minRaw;
-		const modal = raw * metadata.rescaleSlope + metadata.rescaleIntercept;
-		let value: number;
-		if (modal <= low) {
-			value = 0;
-		} else if (modal > high || width === 1) {
-			value = 1;
-		} else {
-			value = (modal - center) / (width - 1) + 0.5;
-		}
-		// MONOCHROME1 inverts the quantized VOI output, like the server.
-		const gray = Math.round(value * 255);
-		lut[index] = invert ? 255 - gray : gray;
-	}
-
-	return lut;
+	const low = center - (ww - 1) / 2;
+	const high = center + (ww - 1) / 2;
+	return (stored) => {
+		const value = modal(stored);
+		if (value <= low) return output(0);
+		if (value > high || ww === 1) return output(255);
+		return output(toByte(((value - center) / (ww - 1) + 0.5) * 255));
+	};
 }

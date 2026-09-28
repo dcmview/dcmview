@@ -1,6 +1,5 @@
-import type { RealWorldValueMap } from "../../api";
 import type { RawFrame } from "../../rawFrame";
-import { renderRawFrameToRgba } from "../rawWindowing";
+import { renderRawFrameToRgba, type RenderOptions } from "../rawWindowing";
 import type {
 	WlRendererRequest,
 	WlRendererResponse,
@@ -14,8 +13,8 @@ export type WlRenderRequest = {
 	frame: RawFrame;
 	wc: number;
 	ww: number;
-	/** Window this real-world mapping's values instead of Modality values. */
-	valueMap?: RealWorldValueMap | null;
+	/** The frame's presentation, a real-world mapping to window, or a VOI LUT. */
+	options?: RenderOptions;
 	/** False once a newer frame, file, or pipeline supersedes this render. */
 	isCurrent: () => boolean;
 };
@@ -37,7 +36,7 @@ export function drawRawFrame(
 	frame: RawFrame,
 	wc: number,
 	ww: number,
-	valueMap: RealWorldValueMap | null = null,
+	options: RenderOptions = {},
 ): void {
 	const { rows, columns } = frame.metadata;
 	canvas.width = columns;
@@ -45,7 +44,7 @@ export function drawRawFrame(
 	const ctx = canvas.getContext("2d", { alpha: false });
 	if (!ctx) return;
 	const imageData = ctx.createImageData(columns, rows);
-	imageData.data.set(renderRawFrameToRgba(frame, wc, ww, valueMap));
+	imageData.data.set(renderRawFrameToRgba(frame, wc, ww, options));
 	ctx.putImageData(imageData, 0, 0);
 }
 
@@ -97,7 +96,7 @@ export class WlRendererClient {
 			while (this.#queued) {
 				const next = this.#queued;
 				this.#queued = null;
-				const bitmap = await this.#renderInWorker(next.frame, next.wc, next.ww, next.valueMap ?? null);
+				const bitmap = await this.#renderInWorker(next.frame, next.wc, next.ww, next.options ?? {});
 				const current = target();
 				if (!next.isCurrent() || !current) {
 					bitmap.close();
@@ -114,7 +113,7 @@ export class WlRendererClient {
 			this.#queued = null;
 			const current = target();
 			if (!latest.isCurrent() || !current) return;
-			drawRawFrame(current, latest.frame, latest.wc, latest.ww, latest.valueMap);
+			drawRawFrame(current, latest.frame, latest.wc, latest.ww, latest.options);
 		} finally {
 			this.#renderInFlight = false;
 		}
@@ -135,8 +134,8 @@ export class WlRendererClient {
 				this.#drawn = null;
 				const canvas = next?.target();
 				if (next && canvas && next.request.isCurrent()) {
-					const { frame, wc, ww, valueMap } = next.request;
-					drawRawFrame(canvas, frame, wc, ww, valueMap);
+					const { frame, wc, ww, options } = next.request;
+					drawRawFrame(canvas, frame, wc, ww, options);
 				}
 				resolve();
 			});
@@ -198,7 +197,7 @@ export class WlRendererClient {
 		frame: RawFrame,
 		wc: number,
 		ww: number,
-		valueMap: RealWorldValueMap | null,
+		options: RenderOptions,
 	): Promise<ImageBitmap> {
 		const worker = this.#worker;
 		if (!worker || !this.#available) throw new Error("worker unavailable");
@@ -219,7 +218,7 @@ export class WlRendererClient {
 		const pending = new Promise<RenderedBitmap>((resolve, reject) => {
 			this.#pending.set(id, { resolve, reject });
 		});
-		const request: WlRendererRequest = { type: "render", id, frameId: this.#workerFrameId, wc, ww, valueMap };
+		const request: WlRendererRequest = { type: "render", id, frameId: this.#workerFrameId, wc, ww, options };
 		worker.postMessage(request);
 		return (await pending).bitmap;
 	}

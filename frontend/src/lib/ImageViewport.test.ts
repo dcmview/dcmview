@@ -144,7 +144,7 @@ describe("ImageViewport window/level path", () => {
 	});
 
 	it("falls back to server presentation when a raw frame is not renderable", async () => {
-		fetchRawFrame.mockResolvedValue(rawFrame(64, 64, 32));
+		fetchRawFrame.mockResolvedValue(rawFrame(64, 64, 12));
 		renderViewport({ activeTool: "window_level" });
 
 		await waitFor(() => expect(fetchRawFrame).toHaveBeenCalledOnce());

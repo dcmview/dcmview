@@ -906,7 +906,7 @@
 			frame,
 			wc,
 			ww,
-			valueMap,
+			options: { valueMap },
 			isCurrent: () => generation === wlRenderGeneration
 				&& frame === currentRawFrame
 				&& pipelineMode === "diagnostic_wl",

@@ -28,7 +28,7 @@ self.onmessage = async (event: MessageEvent<WlRendererRequest>) => {
 			throw new Error("render requested for a frame the worker does not hold");
 		}
 		const { metadata } = loaded.frame;
-		const output = renderRawFrameToRgba(loaded.frame, payload.wc, payload.ww, payload.valueMap);
+		const output = renderRawFrameToRgba(loaded.frame, payload.wc, payload.ww, payload.options);
 		const bitmap = await createImageBitmap(new ImageData(output, metadata.columns, metadata.rows));
 		const response: WlRendererSuccess = {
 			type: "rendered",
