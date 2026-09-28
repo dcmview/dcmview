@@ -12,6 +12,18 @@ diagnostic viewer.
 
 ### Added
 
+- `GET /api/file/{index}/frame/{frame}/raw/pixel?row=&column=` returns one
+  pixel's stored samples as a 1x1 raw frame. The pixel readout uses it for
+  frames too large to fetch whole, instead of downloading tens of megabytes to
+  read one value.
+- With `--startup-json`, a completed scan that found files prints
+  `{"type":"scan_complete","file_count":N}`.
+- The status bar says when the server can no longer be reached, with a Retry;
+  a failed first load has a Retry too.
+- `RUST_LOG` now controls logging (for example `RUST_LOG=dcmview=debug` lists
+  every skipped file and why); server errors are logged to stderr with their
+  request.
+
 - RLE Lossless frames labelled YBR_FULL_422, and JPEG Lossless and JPEG XL
   Lossless frames labelled YBR_FULL, now display in color. They were
   previously reported unsupported; a JPEG Lossless YBR_FULL frame requested
@@ -51,6 +63,37 @@ diagnostic viewer.
 
 ### Changed
 
+- Discovery is much faster: 3000 small files scan in about 0.1 s instead of
+  3.2 s, and more threads now help rather than hurt.
+- Large grayscale frames render with a quarter of the memory (an 8192x8192
+  16-bit frame peaks at about 340 MB instead of 1.4 GB) and faster; automatic
+  windows no longer sort every sample, on the server or in the browser.
+- Identical concurrent frame requests share one decode, a request whose client
+  went away still caches its frame, and concurrent decodes are bounded.
+- Encapsulated frames are read by seeking with the offset table, deflated
+  frames are streamed, and `/tags` no longer reads pixel data; frame caches are
+  bounded by bytes only.
+- JSON, CSV, scripts and styles are gzip-compressed for clients that accept
+  it; content-hashed assets are cacheable.
+- The viewer keeps frames when switching tabs, prefetches a new tab's
+  neighbourhood first and the whole stack after 1.5 s or on cine, paces held
+  arrow keys, and uses its window/level worker again (it had silently fallen
+  back to the main thread).
+- `frame_count` is bounded by the frames a file can hold, so a corrupt or
+  truncated header no longer exhausts memory during discovery.
+- Display frames of layouts the catalog marks unsupported return `422
+  unsupported_pixel_layout` instead of `500`; a file deleted after discovery
+  returns `404` naming it; error messages name the file, frame and cause.
+- The startup summary breaks skipped files down by reason.
+- The VS Code bridge client probes a registry entry before launching, so an
+  entry whose port another service reused no longer blocks launches.
+- Python: `view(..., block=False)` raises `CalledProcessError` when the viewer
+  finds no files, non-blocking viewers stop when the interpreter exits, an
+  interrupted blocking `view()` stops its viewer, and `CalledProcessError`
+  carries the viewer's last output.
+- Release binaries are built with LTO and stripped (about 8.7 MB instead of
+  17 MB).
+
 - VS Code routing now follows one rule for `dcmview`, `dcmview-py`, and
   `dcmview_py.view()`: open in VS Code from a VS Code terminal, or when the
   working directory is inside an open workspace folder. Otherwise the local
@@ -77,6 +120,12 @@ diagnostic viewer.
   panel at 420px.
 
 ### Fixed
+
+- A corrupt JPEG fragment is reported as a JPEG decode failure with the
+  decoder's reason, not as an unsupported transfer syntax.
+- A transient raw-frame failure no longer turns off client-side window/level
+  for the rest of the session.
+- `dcmview ... | head` no longer panics on the closed pipe.
 
 - The tag panel's Value column no longer starts past the panel's right edge;
   the keyword column truncates first, so values stay visible at any panel
