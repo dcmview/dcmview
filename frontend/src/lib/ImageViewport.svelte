@@ -28,6 +28,7 @@
 		computeFullDynamicWindow,
 		computePercentileWindow,
 		mappedUnitsPerStoredUnit,
+		MAX_RENDER_PIXELS,
 		resolveDisplayWindow,
 		resolveMappedDisplayWindow,
 		samplePresentation,
@@ -40,6 +41,7 @@
 	import type { ActiveTool } from "./viewerTools";
 	import { AnnotationStore } from "./viewport/annotationStore.svelte";
 	import { playDisplayCine } from "./viewport/displayCine";
+	import { LiveWindowPreview } from "./viewport/liveWindowPreview";
 	import { DisplayFrameSource } from "./viewport/displayFrameSource";
 	import {
 		composeOverlayFrame,
@@ -173,6 +175,8 @@
 	// proxied metadata object cannot be structured-cloned.
 	let currentRawFrame = $state.raw<RawFrame | null>(null);
 	let rawWindowLevelFallbackByFile = $state<Record<number, boolean>>({});
+	// Color files: neither path windows them, so a drag sends no previews.
+	let colorFiles = $state<Record<number, boolean>>({});
 	const annotations = new AnnotationStore();
 
 	let prefetchConcurrency = $state(PREFETCH_CONCURRENCY);
@@ -229,7 +233,10 @@
 	);
 	const pipelineMode = $derived.by<PipelineMode>(() => {
 		if (overlay) return "overlay";
-		const rawFallback = rawWindowLevelFallbackByFile[activeFile.index] ?? false;
+		// Frames over the browser's limit stay on the server without first
+		// downloading their samples.
+		const rawFallback = (rawWindowLevelFallbackByFile[activeFile.index] ?? false)
+			|| activeFile.rows * activeFile.columns > MAX_RENDER_PIXELS;
 		// Stills keep a window set in such a unit on the raw path, whatever
 		// the tool; cine plays display frames the server windows in that unit
 		// (see frameDisplayWindowOptions).
@@ -571,6 +578,35 @@
 		}
 	}
 
+	/**
+	 * Server-windowed previews of a drag over a frame the browser does not
+	 * window; the settled window is fetched as usual on release.
+	 */
+	const livePreview = new LiveWindowPreview({
+		load: ({ wc, ww }, signal) => fetchDisplayFrameBlob(
+			activeFile.index,
+			currentFrame,
+			{ wc, ww, windowMode: "default", preview: true },
+			signal,
+		),
+		show: drawPreviewBlob,
+	});
+
+	async function drawPreviewBlob(blob: Blob): Promise<void> {
+		const isLive = () => dragState?.mode === "wl" && pipelineMode === "server_wl" && !!canvasEl;
+		if (!isLive()) return;
+		const image = await decodeCanvasImage(blob);
+		try {
+			if (!isLive() || !canvasEl) return;
+			const ctx = canvasEl.getContext("2d", { alpha: false });
+			canvasEl.width = image.width;
+			canvasEl.height = image.height;
+			ctx?.drawImage(image.source, 0, 0);
+		} finally {
+			image.dispose();
+		}
+	}
+
 	function prefetchRawRing(direction: 1 | -1): void {
 		const prefetchScope = retainedScopeKey;
 		const frames = navigationFrames;
@@ -609,6 +645,7 @@
 			const validationError = validateRenderableRawFrame(rawFrame);
 			if (validationError) {
 				currentRawFrame = null;
+				if (rawFrame.metadata.samplesPerPixel !== 1) colorFiles = { ...colorFiles, [fileIndex]: true };
 				rawWindowLevelFallbackByFile = {
 					...rawWindowLevelFallbackByFile,
 					[fileIndex]: true,
@@ -798,9 +835,19 @@
 		displayFrames.resetScope();
 	});
 
+	// A window/level drag on a server-windowed frame shows server previews.
+	$effect(() => {
+		const wc = liveWindowCenter;
+		const ww = liveWindowWidth;
+		if (pipelineMode !== "server_wl" || dragState?.mode !== "wl" || wc === null || ww === null) return;
+		if (colorFiles[activeFile.index]) return;
+		untrack(() => livePreview.request({ wc, ww }));
+	});
+
 	$effect(() => {
 		if (!activeFile) return;
 		void activeFile.index;
+		livePreview.stop();
 		invalidateWindowLevelRenders();
 		currentRawFrame = null;
 		liveWindowCenter = null;
@@ -1086,6 +1133,7 @@
 			overlayValues.clear();
 			rawFrames.clear();
 			displayFrames.clear();
+			livePreview.stop();
 			wlRenderer.dispose();
 		};
 	});
@@ -1398,6 +1446,7 @@
 	}
 
 	function endDrag() {
+		livePreview.stop();
 		dragState = null;
 		annotations.endLiveEdit();
 	}

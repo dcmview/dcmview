@@ -12,6 +12,11 @@ diagnostic viewer.
 
 ### Added
 
+- `GET /api/file/{index}/frame/{frame}/presentation-layer` returns a frame's
+  display shutter and overlay graphics as a transparent RGBA PNG;
+  `FileSummary.presentation_layer` says which files have one. The value
+  mapping gains `voi_lut`, and display frames take `preview=true` for drag
+  previews that are not cached.
 - Display frames take `unit` with `wc`/`ww` to window a frame's real-world
   values. Cine in the unit of a LUT mapping (a Parametric Map or RWVM LUT,
   non-monotonic ones included, or any mapping behind a Modality LUT) now
@@ -71,6 +76,9 @@ diagnostic viewer.
 
 ### Changed
 
+- Dragging the window on frames too large for the browser (over 20 Mpx) now
+  updates the image during the drag from server-rendered previews, which are
+  not cached; such frames no longer download their raw samples first.
 - Window/level now updates live while dragging on files with a Modality LUT,
   a VOI LUT, overlay planes or a display shutter, and on one-bit, 32-bit and
   float frames: the browser windows them and draws the server's shutter and

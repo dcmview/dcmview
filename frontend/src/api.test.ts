@@ -116,17 +116,20 @@ describe("display frame cache keys", () => {
 describe("display frame URLs", () => {
 	it("sends explicit windows only outside full-dynamic mode", () => {
 		expect(frameUrl(2, 7)).toBe("/api/file/2/frame/7");
-		expect(frameUrl(2, 7, 40, 80, "default")).toBe(
+		expect(frameUrl(2, 7, { wc: 40, ww: 80, windowMode: "default" })).toBe(
 			"/api/file/2/frame/7?wc=40&ww=80",
 		);
-		expect(frameUrl(2, 7, 40, 80, "full_dynamic")).toBe(
+		expect(frameUrl(2, 7, { wc: 40, ww: 80, windowMode: "full_dynamic" })).toBe(
 			"/api/file/2/frame/7?mode=full_dynamic",
 		);
-		expect(frameUrl(2, 7, 1.5, 3, "default", "SUV")).toBe(
+		expect(frameUrl(2, 7, { wc: 1.5, ww: 3, windowMode: "default", unit: "SUV" })).toBe(
 			"/api/file/2/frame/7?wc=1.5&ww=3&unit=SUV",
 		);
-		expect(frameUrl(2, 7, 1.5, 3, "full_dynamic", "SUV")).toBe(
+		expect(frameUrl(2, 7, { wc: 1.5, ww: 3, windowMode: "full_dynamic", unit: "SUV" })).toBe(
 			"/api/file/2/frame/7?mode=full_dynamic",
+		);
+		expect(frameUrl(2, 7, { wc: 40, ww: 80, preview: true })).toBe(
+			"/api/file/2/frame/7?wc=40&ww=80&preview=true",
 		);
 	});
 });

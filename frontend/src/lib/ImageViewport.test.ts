@@ -159,6 +159,23 @@ describe("ImageViewport window/level path", () => {
 		await waitFor(() => expect(fetchDisplayFrameBlob).toHaveBeenCalledWith(5, 0, {}, expect.any(AbortSignal)));
 	});
 
+	it("previews a drag on frames too large for the browser with server windows", async () => {
+		renderViewport({ activeTool: "window_level", file: fileSummary(5, { rows: 5000, columns: 5000 }) });
+		await waitFor(() => expect(fetchDisplayFrameBlob).toHaveBeenCalledWith(5, 0, {}, expect.any(AbortSignal)));
+		const viewport = await screen.findByRole("application");
+
+		await fireEvent.pointerDown(viewport, { button: 0, clientX: 10, clientY: 10, pointerId: 1 });
+		await fireEvent.pointerMove(viewport, { clientX: 20, clientY: 10, pointerId: 1 });
+
+		await waitFor(() => expect(fetchDisplayFrameBlob).toHaveBeenCalledWith(
+			5,
+			0,
+			expect.objectContaining({ windowMode: "default", preview: true }),
+			expect.any(AbortSignal),
+		));
+		expect(fetchRawFrame).not.toHaveBeenCalled();
+	});
+
 	it("falls back to server presentation when a raw frame is not renderable", async () => {
 		fetchRawFrame.mockResolvedValue(rawFrame(64, 64, 12));
 		renderViewport({ activeTool: "window_level" });

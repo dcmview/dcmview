@@ -379,7 +379,12 @@ with a display shutter or overlay planes (`presentation_layer`), the viewport
 draws the frame's `presentation-layer` on a canvas above the windowed image
 and below any value colorwash, which reproduces the server's display frame
 exactly because neither depends on the window. Color frames, and frames over
-the pixel limit, stay on parameterized display PNG requests.
+the pixel limit, stay on parameterized display PNG requests; the latter go
+there without downloading their samples first. A window/level drag over such a
+frame shows server previews (`preview=true`, never cached): one request in
+flight, only the newest window queued behind it, all aborted when the drag
+ends, after which the settled window is fetched like any other. Color frames
+send none, since neither path windows them.
 
 For supported 8-bit RGB display paths, a structurally valid source ICC profile
 is preserved in the PNG `iCCP` chunk. The profile may come from the top-level

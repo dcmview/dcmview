@@ -328,16 +328,14 @@ export function annotationsExportUrl(): string {
 export function frameUrl(
 	fileIndex: number,
 	frame: number,
-	wc?: number | null,
-	ww?: number | null,
-	windowMode?: WindowMode | null,
-	unit?: string | null,
+	{ wc, ww, windowMode, unit, preview }: DisplayFrameWindowOptions = {},
 ): string {
 	// Full-dynamic windowing ignores explicit values, so they are not sent.
-	const query: FrameQuery =
+	const window: FrameQuery =
 		windowMode === "full_dynamic"
 			? { mode: "full_dynamic" }
 			: { wc: wc ?? undefined, ww: ww ?? undefined, unit: unit ?? undefined };
+	const query: FrameQuery = preview ? { ...window, preview: true } : window;
 	return endpointUrl(API_ENDPOINTS.fileFrame, { index: fileIndex, frame }, query);
 }
 
@@ -352,6 +350,8 @@ export interface DisplayFrameWindowOptions {
 	 * preferred mapping in this unit.
 	 */
 	unit?: string | null;
+	/** A window/level drag preview, which the server does not cache. */
+	preview?: boolean;
 }
 
 export function displayFrameWindowCacheKey(
@@ -380,7 +380,7 @@ export async function fetchDisplayFrameBlob(
 	options: DisplayFrameWindowOptions = {},
 	signal?: AbortSignal,
 ): Promise<Blob> {
-	const url = frameUrl(fileIndex, frame, options.wc, options.ww, options.windowMode, options.unit);
+	const url = frameUrl(fileIndex, frame, options);
 	const response = await send(API_ENDPOINTS.fileFrame, url, { signal });
 	return response.blob();
 }

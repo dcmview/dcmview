@@ -433,8 +433,10 @@ is cached between requests.
   and VOI LUTs) and draws the `presentation-layer` (shutter and overlays) over
   the image, so every grayscale frame the browser can hold is windowed live.
 - Window/level interactions should avoid flooding requests: local raw rendering
-  draws at most once per animation frame, and the server-windowing drag sends
-  one request on release.
+  draws at most once per animation frame, and a drag over a server-windowed
+  frame (over `MAX_RENDER_PIXELS`) sends `preview` requests, one in flight and
+  only the newest window queued (`viewport/liveWindowPreview.ts`), which the
+  server never caches; the released window is fetched as usual.
 - Zoom and pan use canvas/CSS transform state and should not refetch frames.
 - Zoom/pan state is per open tab (navigation scope). Moving through a tab's
   frames, including the single-frame files of a stack, preserves the viewport
