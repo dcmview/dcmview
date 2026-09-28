@@ -93,6 +93,18 @@ describe("WlRendererClient", () => {
 		expect(canvas.ctx.putImageData).toHaveBeenCalledOnce();
 	});
 
+	it("draws only the newest of the main-thread renders made before a frame", async () => {
+		const client = new WlRendererClient({ createWorker: vi.fn(), minWorkerPixels: 100 });
+		const canvas = fakeCanvas();
+		const frame = rawFrame(2, 3);
+
+		// A window drag: one request per pointer move.
+		const renders = [10, 20, 30].map((wc) => client.render(() => canvas, { frame, wc, ww: 40, isCurrent: () => true }));
+		await Promise.all(renders);
+
+		expect(canvas.ctx.putImageData).toHaveBeenCalledOnce();
+	});
+
 	it("sends a frame to the worker once and only the window per render", async () => {
 		const { worker, client } = workerClient();
 		const canvas = fakeCanvas();

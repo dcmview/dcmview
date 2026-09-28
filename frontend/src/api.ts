@@ -6,7 +6,9 @@ import type {
 	FilesResponse,
 	FrameQuery,
 	FrameValueMapping,
+	HealthResponse,
 	ParametricMapOverlayQuery,
+	PixelQuery,
 	RawFrameMetadata,
 	ReferenceCatalogResponse,
 	SemanticContextResponse,
@@ -67,7 +69,7 @@ type PathParams = { index?: number; frame?: number };
 function endpointUrl(
 	endpoint: Endpoint,
 	params: PathParams = {},
-	query?: FrameQuery | TagQuery | DoseOverlayQuery | ParametricMapOverlayQuery,
+	query?: FrameQuery | TagQuery | DoseOverlayQuery | ParametricMapOverlayQuery | PixelQuery,
 ): string {
 	const path = endpoint.path.replace(/\{(\w+)\}/g, (_, name: string) => {
 		const value = params[name as keyof PathParams];
@@ -112,9 +114,41 @@ async function readServerError(response: Response): Promise<Partial<ErrorRespons
 	}
 }
 
-/** Sends one request and turns non-2xx responses into an `ApiError`. */
+/** Status of an `ApiError` for a request that never reached the server. */
+export const UNREACHABLE_STATUS = 0;
+const UNREACHABLE_MESSAGE = "dcmview is not reachable: the viewer process may have stopped";
+
+let serverReachable = true;
+const reachabilityListeners = new Set<(reachable: boolean) => void>();
+
+/** Calls `listener` whenever requests start or stop reaching the server. Returns unsubscribe. */
+export function onReachabilityChange(listener: (reachable: boolean) => void): () => void {
+	reachabilityListeners.add(listener);
+	return () => reachabilityListeners.delete(listener);
+}
+
+function setReachable(reachable: boolean): void {
+	if (reachable === serverReachable) return;
+	serverReachable = reachable;
+	for (const listener of reachabilityListeners) listener(reachable);
+}
+
+/**
+ * Sends one request and turns non-2xx responses into an `ApiError`. A request
+ * that cannot reach the server at all (the process stopped, or the tunnel
+ * closed) becomes one with `UNREACHABLE_STATUS` and a plain message instead
+ * of the browser's bare "Failed to fetch".
+ */
 async function send(endpoint: Endpoint, url: string, init: RequestInit = {}): Promise<Response> {
-	const response = await fetch(url, { ...init, method: endpoint.method });
+	let response: Response;
+	try {
+		response = await fetch(url, { ...init, method: endpoint.method });
+	} catch (error) {
+		if ((error as Error).name === "AbortError") throw error;
+		setReachable(false);
+		throw new ApiError(UNREACHABLE_MESSAGE, UNREACHABLE_STATUS, null);
+	}
+	setReachable(true);
 	if (!response.ok) {
 		const body = await readServerError(response);
 		const message = typeof body.error === "string" && body.error.length > 0
@@ -129,6 +163,10 @@ async function send(endpoint: Endpoint, url: string, init: RequestInit = {}): Pr
 async function getJson<T>(endpoint: Endpoint, url: string, signal?: AbortSignal): Promise<T> {
 	const response = await send(endpoint, url, { signal });
 	return (await response.json()) as T;
+}
+
+export function fetchHealth(): Promise<HealthResponse> {
+	return getJson(API_ENDPOINTS.health, endpointUrl(API_ENDPOINTS.health));
 }
 
 export function fetchFiles(): Promise<FilesResponse> {
@@ -394,6 +432,25 @@ export async function fetchRawFrame(
 ): Promise<RawFrame> {
 	const endpoint = API_ENDPOINTS.fileRawFrame;
 	const response = await send(endpoint, endpointUrl(endpoint, { index: fileIndex, frame }), {
+		signal,
+	});
+	const buffer = await response.arrayBuffer();
+	return { metadata: parseRawFrameMetadata(response.headers), buffer };
+}
+
+/**
+ * One pixel of a raw frame as a 1x1 raw frame, its samples in
+ * color-by-pixel order: the readout's source where a whole frame is too
+ * large to fetch for one value.
+ */
+export async function fetchRawPixel(
+	fileIndex: number,
+	frame: number,
+	pixel: PixelQuery,
+	signal?: AbortSignal,
+): Promise<RawFrame> {
+	const endpoint = API_ENDPOINTS.fileRawPixel;
+	const response = await send(endpoint, endpointUrl(endpoint, { index: fileIndex, frame }, pixel), {
 		signal,
 	});
 	const buffer = await response.arrayBuffer();

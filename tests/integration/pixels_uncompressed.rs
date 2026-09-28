@@ -31,7 +31,7 @@ async fn decodes_uncompressed_png_and_tracks_window_cache_keys() {
     let cache = new_cache();
 
     let first = load_frame(
-        entry.clone(),
+        entry.clone().into(),
         cache.clone(),
         FrameRequest {
             frame: 0,
@@ -52,7 +52,7 @@ async fn decodes_uncompressed_png_and_tracks_window_cache_keys() {
     assert_eq!(first_image.height(), 2);
 
     let second = load_frame(
-        entry.clone(),
+        entry.clone().into(),
         cache.clone(),
         FrameRequest {
             frame: 0,
@@ -66,7 +66,7 @@ async fn decodes_uncompressed_png_and_tracks_window_cache_keys() {
     assert!(second.cache_hit);
 
     let overridden = load_frame(
-        entry,
+        entry.into(),
         cache,
         FrameRequest {
             frame: 0,
@@ -118,7 +118,7 @@ async fn native_overlay_composites_after_windowing_without_changing_raw_samples(
         });
 
     let display = load_frame(
-        entry.clone(),
+        entry.clone().into(),
         new_cache(),
         FrameRequest {
             frame: 0,
@@ -129,7 +129,7 @@ async fn native_overlay_composites_after_windowing_without_changing_raw_samples(
     )
     .await
     .expect("overlay display frame");
-    let raw = load_raw_frame(entry, new_raw_cache(), RawFrameRequest { frame: 0 })
+    let raw = load_raw_frame(entry.into(), new_raw_cache(), RawFrameRequest { frame: 0 })
         .await
         .expect("overlay raw frame");
 
@@ -162,7 +162,7 @@ async fn prepared_native_overlay_composites_after_luts_and_preserves_raw_frame()
     let entry = report.files.into_iter().next().expect("prepared CR entry");
 
     let display = load_frame(
-        entry.clone(),
+        entry.clone().into(),
         new_cache(),
         FrameRequest {
             frame: 0,
@@ -173,7 +173,7 @@ async fn prepared_native_overlay_composites_after_luts_and_preserves_raw_frame()
     )
     .await
     .expect("prepared overlay display");
-    let raw = load_raw_frame(entry, new_raw_cache(), RawFrameRequest { frame: 0 })
+    let raw = load_raw_frame(entry.into(), new_raw_cache(), RawFrameRequest { frame: 0 })
         .await
         .expect("prepared overlay raw frame");
 
@@ -219,7 +219,7 @@ async fn native_rectangular_shutter_applies_after_monochrome1_and_preserves_raw_
     });
 
     let display = load_frame(
-        entry.clone(),
+        entry.clone().into(),
         new_cache(),
         FrameRequest {
             frame: 0,
@@ -230,7 +230,7 @@ async fn native_rectangular_shutter_applies_after_monochrome1_and_preserves_raw_
     )
     .await
     .expect("shutter display frame");
-    let raw = load_raw_frame(entry, new_raw_cache(), RawFrameRequest { frame: 0 })
+    let raw = load_raw_frame(entry.into(), new_raw_cache(), RawFrameRequest { frame: 0 })
         .await
         .expect("shutter raw frame");
 
@@ -261,7 +261,7 @@ async fn prepared_native_full_frame_shutter_preserves_windowed_pixels_and_raw_fr
     let entry = report.files.into_iter().next().expect("prepared DX entry");
 
     let display = load_frame(
-        entry.clone(),
+        entry.clone().into(),
         new_cache(),
         FrameRequest {
             frame: 0,
@@ -272,7 +272,7 @@ async fn prepared_native_full_frame_shutter_preserves_windowed_pixels_and_raw_fr
     )
     .await
     .expect("prepared shutter display");
-    let raw = load_raw_frame(entry, new_raw_cache(), RawFrameRequest { frame: 0 })
+    let raw = load_raw_frame(entry.into(), new_raw_cache(), RawFrameRequest { frame: 0 })
         .await
         .expect("prepared shutter raw frame");
 
@@ -310,7 +310,7 @@ async fn applies_big_endian_byte_order_for_uncompressed_pixels() {
     });
 
     let response = load_frame(
-        entry,
+        entry.into(),
         new_cache(),
         FrameRequest {
             frame: 0,

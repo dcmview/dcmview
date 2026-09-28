@@ -4,6 +4,7 @@ use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use image::{ImageBuffer, ImageFormat, Rgb};
 use std::io::Cursor;
+use std::sync::Arc;
 use tokio::task;
 
 use super::encapsulated::read_encapsulated_fragment_blocking;
@@ -11,12 +12,12 @@ use super::error::{PixelError, PixelResult};
 use super::header::open_header;
 use super::icc::select_icc_profile;
 use super::render::{
-    encode_rgb8_display_png, encode_windowed_luminance_png, LuminanceRenderOptions,
+    encode_rgb8_display_png, encode_windowed_luminance_png, LuminanceRenderOptions, StoredSamples,
 };
 use super::shutter;
 
 pub(crate) async fn decode_jp2_fragment_to_png(
-    file: FileEntry,
+    file: Arc<FileEntry>,
     frame: u32,
     requested_wc: Option<f64>,
     requested_ww: Option<f64>,
@@ -37,8 +38,6 @@ fn decode_jp2_fragment_to_png_blocking(
     window_mode: WindowMode,
 ) -> Result<Bytes> {
     let fragment = read_encapsulated_fragment_blocking(&file.path, frame)?;
-    let object = open_header(&file.path)?;
-    let icc_profile = select_icc_profile(&object);
 
     let jp2_image = jpeg2k::Image::from_bytes(&fragment)
         .map_err(anyhow::Error::from)
@@ -55,18 +54,38 @@ fn decode_jp2_fragment_to_png_blocking(
         // Grayscale shares the presentation pipeline used by every other
         // syntax: Modality LUT/rescale, VOI LUT/window, padding, inversion,
         // shutter, and overlays.
-        let stored_samples: Vec<f64> = comps[0].data().iter().map(|&value| value as f64).collect();
+        let data = comps[0].data();
+        let options = LuminanceRenderOptions {
+            frame,
+            rows: comps[0].height(),
+            columns: comps[0].width(),
+            requested_wc,
+            requested_ww,
+            window_mode,
+        };
+        // Components that fit the declared 8- or 16-bit layout take the
+        // table path; anything else is windowed per sample, as before.
+        if let Ok((bytes, bits_allocated)) = encode_raw_jp2_samples(
+            data,
+            comps[0].precision(),
+            comps[0].is_signed(),
+            file.pixel_representation,
+        ) {
+            return encode_windowed_luminance_png(
+                file,
+                StoredSamples::Integer {
+                    bytes: &bytes,
+                    bits_allocated,
+                    signed: file.pixel_representation == 1,
+                },
+                options,
+            );
+        }
+        let stored_samples: Vec<f64> = data.iter().map(|&value| f64::from(value)).collect();
         return encode_windowed_luminance_png(
             file,
-            &stored_samples,
-            LuminanceRenderOptions {
-                frame,
-                rows: comps[0].height(),
-                columns: comps[0].width(),
-                requested_wc,
-                requested_ww,
-                window_mode,
-            },
+            StoredSamples::Values(&stored_samples),
+            options,
         );
     } else if comps.len() == 3 {
         // RGB — rare in medical imaging but handle it
@@ -82,6 +101,8 @@ fn decode_jp2_fragment_to_png_blocking(
                 .zip(b)
                 .flat_map(|((rv, gv), bv)| [rv, gv, bv])
                 .collect();
+            // Only 8-bit color carries an ICC profile into the PNG.
+            let icc_profile = select_icc_profile(&*open_header(&file.path)?);
             return encode_rgb8_display_png(file, frame, interleaved, width, height, icc_profile)
                 .context("JP2 decode failed: png encoding failed");
         } else if precision <= 16 {
@@ -111,7 +132,7 @@ fn decode_jp2_fragment_to_png_blocking(
 }
 
 pub(crate) async fn decode_raw_jp2_samples(
-    file: FileEntry,
+    file: Arc<FileEntry>,
     frame: u32,
 ) -> PixelResult<(Bytes, RawFrameMetadata)> {
     task::spawn_blocking(move || decode_raw_jp2_samples_blocking(&file, frame))

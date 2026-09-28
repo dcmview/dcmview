@@ -10,7 +10,7 @@
 //! overlay can also be sent as its resampled values, for readouts.
 
 use super::error::{self, ApiError};
-use super::handlers::{semantic_context_for, value_mappings_for};
+use super::handlers::{registered_file, semantic_context_for, value_mappings_for};
 use super::state::AppState;
 use crate::api::contracts::{
     DoseOverlayQuery, OverlayEligibility, OverlayLegend, ParametricMapOverlayQuery,
@@ -31,6 +31,7 @@ use axum::http::{header, HeaderValue};
 use axum::response::Response;
 use bytes::Bytes;
 use dicom_dictionary_std::uids;
+use std::sync::Arc;
 use tokio::task;
 
 pub(super) async fn segmentation_overlay(
@@ -40,10 +41,7 @@ pub(super) async fn segmentation_overlay(
     use crate::semantic::SegmentationOverlayError;
 
     let Path((index, frame)) = path.map_err(error::path_rejection)?;
-    let segmentation = state
-        .registry()
-        .get(index)
-        .ok_or_else(|| ApiError::not_found("file index out of range"))?;
+    let segmentation = registered_file(&state, index, "file")?;
     let files = state.registry().files_snapshot();
     let plan = async {
         crate::semantic::check_segmentation_frame(&segmentation, frame)?;
@@ -55,9 +53,7 @@ pub(super) async fn segmentation_overlay(
     .await
     .map_err(|error| match error {
         SegmentationOverlayError::NotSegmentation => ApiError::bad_request(error.to_string()),
-        SegmentationOverlayError::FrameOutOfRange => {
-            error::pixel_error(PixelError::FrameOutOfRange)
-        }
+        SegmentationOverlayError::FrameOutOfRange(error) => error::pixel_error(error),
         SegmentationOverlayError::Unavailable(_) => {
             ApiError::semantic_mapping_unavailable(error.to_string())
         }
@@ -139,15 +135,9 @@ async fn dose_value_overlay(
     encoding: OverlayEncoding,
 ) -> Result<Response, ApiError> {
     let Path((index, frame)) = path.map_err(error::path_rejection)?;
-    let target = state
-        .registry()
-        .get(index)
-        .ok_or_else(|| ApiError::not_found("file index out of range"))?;
+    let target = registered_file(&state, index, "file")?;
     let Query(query) = query.map_err(error::query_rejection)?;
-    let dose = state
-        .registry()
-        .get(query.dose)
-        .ok_or_else(|| ApiError::not_found("dose file index out of range"))?;
+    let dose = registered_file(&state, query.dose, "dose file")?;
     if dose.sop_class_uid != uids::RT_DOSE_STORAGE {
         return Err(ApiError::bad_request("dose must select an RT Dose object"));
     }
@@ -161,15 +151,9 @@ async fn parametric_map_value_overlay(
     encoding: OverlayEncoding,
 ) -> Result<Response, ApiError> {
     let Path((index, frame)) = path.map_err(error::path_rejection)?;
-    let target = state
-        .registry()
-        .get(index)
-        .ok_or_else(|| ApiError::not_found("file index out of range"))?;
+    let target = registered_file(&state, index, "file")?;
     let Query(query) = query.map_err(error::query_rejection)?;
-    let map = state
-        .registry()
-        .get(query.map)
-        .ok_or_else(|| ApiError::not_found("parametric map file index out of range"))?;
+    let map = registered_file(&state, query.map, "parametric map file")?;
     if map.sop_class_uid != uids::PARAMETRIC_MAP_STORAGE {
         return Err(ApiError::bad_request(
             "map must select a Parametric Map object",
@@ -182,14 +166,12 @@ async fn parametric_map_value_overlay(
 /// as a colorwash PNG or as the values themselves.
 async fn value_overlay(
     state: &AppState,
-    overlay: FileEntry,
-    target: FileEntry,
+    overlay: Arc<FileEntry>,
+    target: Arc<FileEntry>,
     frame: u32,
     encoding: OverlayEncoding,
 ) -> Result<Response, ApiError> {
-    if frame >= target.frame_count {
-        return Err(error::pixel_error(PixelError::FrameOutOfRange));
-    }
+    PixelError::ensure_frame(frame, target.frame_count).map_err(error::pixel_error)?;
     if target.index == overlay.index {
         return Err(ApiError::semantic_mapping_unavailable(
             "an overlay is drawn on image frames, not on its own frames",
@@ -324,7 +306,7 @@ enum LegendScale {
 /// make the overlay ineligible instead.
 pub(super) async fn add_overlay_legend(
     state: &AppState,
-    file: &FileEntry,
+    file: &Arc<FileEntry>,
     context: &mut SemanticContextResponse,
 ) {
     let (eligibility, source_frames, legend, scale): (
@@ -361,7 +343,7 @@ pub(super) async fn add_overlay_legend(
 
 async fn value_legend(
     state: &AppState,
-    file: &FileEntry,
+    file: &Arc<FileEntry>,
     scale: LegendScale,
 ) -> Result<OverlayLegend, String> {
     let mappings = value_mappings_for(state, file.clone())
@@ -403,7 +385,7 @@ async fn value_legend(
 /// samples outside the mapped range are NaN.
 async fn mapped_frame_values(
     state: &AppState,
-    file: &FileEntry,
+    file: &Arc<FileEntry>,
     mappings: &FileValueMappings,
     frame: u32,
 ) -> PixelResult<Vec<f64>> {

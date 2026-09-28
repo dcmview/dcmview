@@ -46,6 +46,7 @@ All paths are under `/api`; `{index}` is a file index from `/api/files` and
 | GET | `/file/{index}/semantic-context` | `SemanticContextResponse`: SEG, Parametric Map, or RT Dose context, or `not_applicable`. |
 | GET | `/file/{index}/frame/{frame}` | Display frame as `image/png`, with `X-Cache`. Query: `wc`, `ww`, `mode`. |
 | GET | `/file/{index}/frame/{frame}/raw` | Decoded samples as `application/octet-stream`, with `X-Cache` and `X-Frame-*` metadata headers. |
+| GET | `/file/{index}/frame/{frame}/raw/pixel?row=&column=` | One pixel of the raw frame as a 1x1 raw frame: its stored samples in color-by-pixel order (planar and subsampled YBR_FULL_422 resolved), with the same headers. `400` outside the frame. |
 | GET | `/file/{index}/frame/{frame}/segmentation-overlay` | Transparent source-sized SEG mask as `image/png`, with `X-Cache`. |
 | GET | `/file/{index}/frame/{frame}/dose-overlay` | RT Dose colorwash sized to this frame as `image/png`, with `X-Cache`. Query: `dose` (RT Dose file index). |
 | GET | `/file/{index}/frame/{frame}/dose-overlay/values` | The same resampled dose as little-endian `f32` values, `application/octet-stream`, with `X-Cache`. Query: `dose`. |
@@ -92,9 +93,17 @@ never returns compressed DICOM fragments. The window is chosen in this order:
 3. DICOM Window Center/Width.
 4. The current frame's 1st/99th percentile.
 
-The display cache key includes file, frame, `wc`, `ww`, and `mode`; the raw
-cache key is file and frame only. Both endpoints send `X-Cache: HIT` or
-`X-Cache: MISS`.
+The display cache key includes file, frame, `wc`, `ww`, and `mode` (windows
+that render alike, such as `wc=-0` and `wc=0` or widths below 1, share a key);
+the raw cache key is file and frame only. Both endpoints send `X-Cache: HIT` or
+`X-Cache: MISS`. A request for a frame another request is already decoding
+waits for that decode and reports `HIT`, and a decode whose client
+disconnected still fills the cache.
+
+A file's `frame_count` in `/api/files` and `/api/series` is its Number of
+Frames bounded by the frames it can hold (the Per-frame Functional Groups items
+and the pixel data present), so a truncated or mislabelled file lists only the
+frames it has; the tag panel still shows the declared Number of Frames.
 
 Raw frames carry decoded samples in little-endian order for client-side
 rendering. Metadata headers:
@@ -117,9 +126,10 @@ Transfer syntax coverage:
 | JPEG Baseline (`.50`) | PNG | 8-bit grayscale or interleaved RGB. |
 | JPEG Lossless (`.57`, `.70`) | PNG; 8-bit RGB, and YBR_FULL converted to RGB. | 8- or 16-bit grayscale. |
 | JPEG 2000 Lossless (`.90`) | PNG | 8- or 16-bit grayscale; multi-component is `422`. |
-| JPEG-LS Lossless (`.80`) | Grayscale PNG | Unsigned 8-bit grayscale. |
+| JPEG-LS Lossless (`.80`) | Grayscale PNG | 8- or 16-bit grayscale. |
 | JPEG XL Lossless (`.110`) | PNG; 8-bit RGB and YBR_RCT (RGB after the decoder inverts the RCT), and YBR_FULL converted to RGB. | Unsigned interleaved 8-bit samples: RGB (YBR_RCT frames included), or a YBR_FULL frame's stored channels labelled `YBR_FULL`. |
 | RLE Lossless (`.5`) | 8/16-bit monochrome, 8-bit RGB, YBR_FULL, YBR_FULL_422 (full resolution, shown as YBR_FULL), palette color. | Interleaved native samples; YBR_FULL_422 frames are labelled `YBR_FULL`. |
+| Deflated Image Frame Compression (`.8.1`) | One-bit monochrome (binary segmentation frames). | One byte per sample (0 or 1), `X-Frame-Bits-Allocated: 1`. |
 | Implicit LE, Explicit LE/BE, Deflated Explicit LE | 1/8/16/32-bit monochrome integer, float, double float, RGB (planar 0/1), YBR_FULL, YBR_FULL_422, palette color. | Native samples; planar order kept, padding bits masked, signed values sign-extended. |
 | JPEG Extended (`.51`), JPEG 2000 lossy (`.91`), JPEG-LS Near-Lossless (`.81`), JPEG XL `.111`/`.112`, anything else | `422 unsupported_transfer_syntax` | `422` |
 
@@ -280,8 +290,14 @@ Branch on `code`; `error` is diagnostic text and may change.
 | `400` | `invalid_path`, `invalid_query`, `invalid_json` (malformed body), `bad_request`, `invalid_window` |
 | `404` | `not_found`, `route_not_found`, `asset_not_found`, `no_pixel_data`, `frame_out_of_range`, `overlay_not_covering_frame` |
 | `405` | `method_not_allowed` |
+| `413` | `invalid_json` (a JSON body over 2 MiB, about 200,000 ROIs in one annotation edit) |
 | `415` | `invalid_json` (missing `Content-Type: application/json`) |
-| `422` | `invalid_json` (valid JSON of the wrong shape), `unsupported_transfer_syntax`, `unsupported_pixel_layout`, `semantic_mapping_unavailable` |
+| `422` | `invalid_json` (valid JSON of the wrong shape), `unsupported_transfer_syntax`, `unsupported_pixel_layout` (display frames for any layout the catalog marks unsupported; raw frames for invalid geometry or numeric precision), `semantic_mapping_unavailable` |
 | `500` | `pixel_decode_failed`, `internal_error` |
 
-A failed decode affects only that request; the server keeps running.
+A failed decode affects only that request; the server keeps running, and logs
+the failure (with the request) to stderr. A file deleted or moved after
+discovery answers `404 not_found` naming its path.
+
+JSON, CSV and the viewer's scripts and styles are gzip-compressed for clients
+that send `Accept-Encoding: gzip`; PNG frames, raw samples and fonts are not.

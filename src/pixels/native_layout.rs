@@ -83,6 +83,14 @@ impl NativeFrameLayout<'_> {
         }
     }
 
+    /// Whole frames that `value_length` bytes of native pixel data hold, or
+    /// `None` when the frame size cannot be computed. One-bit frames are
+    /// packed back to back across byte boundaries, so this counts bits.
+    pub(crate) fn frame_capacity(self, value_length: u64) -> Option<u64> {
+        let frame_bits = u64::try_from(self.stored_frame_bits().ok()?).ok()?;
+        Some(value_length.checked_mul(8)? / frame_bits)
+    }
+
     pub(crate) fn stored_frame_bytes(self) -> Result<usize, NativeLayoutError> {
         let bits = self.stored_frame_bits()?;
         bits.checked_add(7)
@@ -370,6 +378,25 @@ mod tests {
             photometric_interpretation,
             byte_order: NativeByteOrder::LittleEndian,
         }
+    }
+
+    #[test]
+    fn counts_whole_frames_including_bit_packed_ones() {
+        // Three 1x2 8-bit frames and a partial fourth.
+        assert_eq!(layout("MONOCHROME2").frame_capacity(7), Some(3));
+        // 3x3 one-bit frames are 9 bits each and straddle byte boundaries.
+        let one_bit = NativeFrameLayout {
+            rows: 3,
+            columns: 3,
+            bits_allocated: 1,
+            ..layout("MONOCHROME2")
+        };
+        assert_eq!(one_bit.frame_capacity(9), Some(8));
+        let unsupported = NativeFrameLayout {
+            bits_allocated: 12,
+            ..layout("MONOCHROME2")
+        };
+        assert_eq!(unsupported.frame_capacity(1024), None);
     }
 
     #[test]

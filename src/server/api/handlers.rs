@@ -3,8 +3,8 @@ use super::overlays;
 use super::state::AppState;
 use crate::api::contracts::{
     DiscoveryResult, EmbedRoiAnnotations, FileSummary, FilesResponse, FrameInfo, FrameQuery,
-    FrameValueMapping, HealthResponse, ReferenceCatalogResponse, SemanticContextResponse,
-    SeriesCatalogResponse, TagNode, TagQuery, ViewerIdentity, WsiFrameContextResponse,
+    FrameValueMapping, HealthResponse, PixelQuery, ReferenceCatalogResponse,
+    SemanticContextResponse, TagNode, TagQuery, ViewerIdentity, WsiFrameContextResponse,
     CACHE_HEADER, CACHE_HIT, CACHE_MISS, CSV_MEDIA_TYPE, EXPORT_CONTENT_DISPOSITION_HEADER,
     EXPORT_CONTENT_DISPOSITION_VALUE, OCTET_STREAM_MEDIA_TYPE, RAW_FRAME_HEADER_BITS_ALLOCATED,
     RAW_FRAME_HEADER_COLUMNS, RAW_FRAME_HEADER_DEFAULT_WC, RAW_FRAME_HEADER_DEFAULT_WW,
@@ -21,7 +21,7 @@ use crate::value_mapping::FileValueMappings;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use std::sync::Arc;
 use tokio::task;
@@ -63,8 +63,27 @@ pub(super) async fn files(State(state): State<AppState>) -> Json<FilesResponse> 
     })
 }
 
-pub(super) async fn series(State(state): State<AppState>) -> Json<SeriesCatalogResponse> {
-    Json(state.registry().series_catalog_snapshot())
+/// The registered file at `index`, or a 404 naming the index and how many
+/// files are loaded. `role` names what the index selects.
+pub(super) fn registered_file(
+    state: &AppState,
+    index: usize,
+    role: &str,
+) -> Result<Arc<FileEntry>, ApiError> {
+    let registry = state.registry();
+    registry.get(index).ok_or_else(|| {
+        let count = registry.status().file_count;
+        ApiError::not_found(format!(
+            "{role} index {index} is out of range: {count} file(s) are loaded"
+        ))
+    })
+}
+
+pub(super) async fn series(State(state): State<AppState>) -> Result<Response, ApiError> {
+    let json = state.registry().series_catalog_json().map_err(|error| {
+        ApiError::internal(format!("series catalog serialization failed: {error}"))
+    })?;
+    Ok(([(header::CONTENT_TYPE, "application/json")], json).into_response())
 }
 
 pub(super) async fn info(
@@ -72,11 +91,8 @@ pub(super) async fn info(
     path: Result<Path<usize>, PathRejection>,
 ) -> Result<Json<FrameInfo>, ApiError> {
     let Path(index) = path.map_err(error::path_rejection)?;
-    let file = state
-        .registry()
-        .get(index)
-        .ok_or_else(|| ApiError::not_found("file index out of range"))?;
-    let summary = FileSummary::from(&file);
+    let file = registered_file(&state, index, "file")?;
+    let summary = FileSummary::from(&*file);
     Ok(Json(FrameInfo {
         frame_count: file.frame_count,
         rows: file.rows,
@@ -96,15 +112,12 @@ pub(super) async fn references(
     path: Result<Path<usize>, PathRejection>,
 ) -> Result<Json<ReferenceCatalogResponse>, ApiError> {
     let Path(index) = path.map_err(error::path_rejection)?;
-    let source = state
-        .registry()
-        .get(index)
-        .ok_or_else(|| ApiError::not_found("file index out of range"))?;
+    let source = registered_file(&state, index, "file")?;
     let source_path = source.path.clone();
     let edges = task::spawn_blocking(move || references::extract_reference_edges(&source_path))
         .await
         .map_err(|error| ApiError::internal(format!("reference extraction task failed: {error}")))?
-        .map_err(|error| ApiError::internal(error.to_string()))?;
+        .map_err(|error| error::gone_or(&source.path, ApiError::internal(error.to_string())))?;
     let candidates = state
         .registry()
         .files_snapshot()
@@ -117,7 +130,7 @@ pub(super) async fn references(
         .collect();
     Ok(Json(ReferenceCatalogResponse {
         source_file_index: index,
-        source_sop_instance_uid: source.sop_instance_uid,
+        source_sop_instance_uid: source.sop_instance_uid.clone(),
         references: resolved,
     }))
 }
@@ -127,14 +140,12 @@ pub(super) async fn semantic_context(
     path: Result<Path<usize>, PathRejection>,
 ) -> Result<Json<SemanticContextResponse>, ApiError> {
     let Path(index) = path.map_err(error::path_rejection)?;
-    let source = state
-        .registry()
-        .get(index)
-        .ok_or_else(|| ApiError::not_found("file index out of range"))?;
+    let source = registered_file(&state, index, "file")?;
     let files = state.registry().files_snapshot();
+    let path = source.path.clone();
     let context = semantic_context_for(&state, source, files)
         .await
-        .map_err(|error| ApiError::internal(format!("{error:#}")))?;
+        .map_err(|failure| error::gone_or(&path, ApiError::internal(format!("{failure:#}"))))?;
     Ok(Json(SemanticContextResponse::clone(&context)))
 }
 
@@ -142,7 +153,7 @@ pub(super) async fn semantic_context(
 /// file set and kept in a small LRU.
 pub(super) async fn semantic_context_for(
     state: &AppState,
-    source: FileEntry,
+    source: Arc<FileEntry>,
     files: Vec<Arc<FileEntry>>,
 ) -> anyhow::Result<Arc<SemanticContextResponse>> {
     let key = (source.index, files.len());
@@ -165,18 +176,12 @@ pub(super) async fn value_mapping(
     path: Result<Path<(usize, u32)>, PathRejection>,
 ) -> Result<Json<FrameValueMapping>, ApiError> {
     let Path((index, frame)) = path.map_err(error::path_rejection)?;
-    let file = state
-        .registry()
-        .get(index)
-        .ok_or_else(|| ApiError::not_found("file index out of range"))?;
-    if frame >= file.frame_count {
-        return Err(error::pixel_error(
-            crate::pixels::PixelError::FrameOutOfRange,
-        ));
-    }
+    let file = registered_file(&state, index, "file")?;
+    crate::pixels::PixelError::ensure_frame(frame, file.frame_count).map_err(error::pixel_error)?;
+    let path = file.path.clone();
     let mappings = value_mappings_for(&state, file)
         .await
-        .map_err(|error| ApiError::internal(format!("{error:#}")))?;
+        .map_err(|failure| error::gone_or(&path, ApiError::internal(format!("{failure:#}"))))?;
     Ok(Json(mappings.frame(index, frame)))
 }
 
@@ -184,7 +189,7 @@ pub(super) async fn value_mapping(
 /// reference it, read at most once per file set while cached.
 pub(super) async fn value_mappings_for(
     state: &AppState,
-    file: FileEntry,
+    file: Arc<FileEntry>,
 ) -> anyhow::Result<Arc<FileValueMappings>> {
     let files = state.registry().files_snapshot();
     let key = (file.index, files.len());
@@ -204,15 +209,9 @@ pub(super) async fn wsi_context(
     path: Result<Path<(usize, u32)>, PathRejection>,
 ) -> Result<Json<WsiFrameContextResponse>, ApiError> {
     let Path((index, frame)) = path.map_err(error::path_rejection)?;
-    let source = state
-        .registry()
-        .get(index)
-        .ok_or_else(|| ApiError::not_found("file index out of range"))?;
-    if frame >= source.frame_count {
-        return Err(error::pixel_error(
-            crate::pixels::PixelError::FrameOutOfRange,
-        ));
-    }
+    let source = registered_file(&state, index, "file")?;
+    crate::pixels::PixelError::ensure_frame(frame, source.frame_count)
+        .map_err(error::pixel_error)?;
     if crate::object_kind::classify_sop_class(&source.sop_class_uid)
         != crate::object_kind::ObjectKind::WholeSlideMicroscopy
     {
@@ -233,9 +232,7 @@ pub(super) async fn annotations(
     path: Result<Path<usize>, PathRejection>,
 ) -> Result<Json<EmbedRoiAnnotations>, ApiError> {
     let Path(index) = path.map_err(error::path_rejection)?;
-    if state.registry().get(index).is_none() {
-        return Err(ApiError::not_found("file index out of range"));
-    }
+    registered_file(&state, index, "file")?;
 
     state
         .annotations()
@@ -257,10 +254,7 @@ pub(super) async fn update_annotations(
 ) -> Result<Json<EmbedRoiAnnotations>, ApiError> {
     let Path(index) = path.map_err(error::path_rejection)?;
     let Json(annotations) = payload.map_err(error::json_rejection)?;
-    let file = state
-        .registry()
-        .get(index)
-        .ok_or_else(|| ApiError::not_found("file index out of range"))?;
+    let file = registered_file(&state, index, "file")?;
 
     let canonical = state
         .annotations()
@@ -303,10 +297,8 @@ pub(super) async fn frame(
 ) -> Result<Response, ApiError> {
     let Path((index, frame)) = path.map_err(error::path_rejection)?;
     let Query(query) = query.map_err(error::query_rejection)?;
-    let file = state
-        .registry()
-        .get(index)
-        .ok_or_else(|| ApiError::not_found("file index out of range"))?;
+    let file = registered_file(&state, index, "file")?;
+    let source = file.path.clone();
 
     let frame_response = pixels::load_frame(
         file,
@@ -319,7 +311,7 @@ pub(super) async fn frame(
         },
     )
     .await
-    .map_err(error::pixel_error)?;
+    .map_err(|failure| error::gone_or(&source, error::pixel_error(failure)))?;
 
     let mut response = Response::new(axum::body::Body::from(frame_response.body));
     let cache_header = if frame_response.cache_hit {
@@ -342,23 +334,51 @@ pub(super) async fn raw_frame(
     path: Result<Path<(usize, u32)>, PathRejection>,
 ) -> Result<Response, ApiError> {
     let Path((index, frame)) = path.map_err(error::path_rejection)?;
-    let file = state
-        .registry()
-        .get(index)
-        .ok_or_else(|| ApiError::not_found("file index out of range"))?;
+    let file = registered_file(&state, index, "file")?;
+    let source = file.path.clone();
 
     let raw_response = pixels::load_raw_frame(file, state.raw_cache(), RawFrameRequest { frame })
         .await
-        .map_err(error::pixel_error)?;
+        .map_err(|failure| error::gone_or(&source, error::pixel_error(failure)))?;
 
-    let meta = &raw_response.metadata;
-    let cache_header = if raw_response.cache_hit {
-        CACHE_HIT
-    } else {
-        CACHE_MISS
-    };
+    Ok(raw_response_with_headers(
+        raw_response.body,
+        &raw_response.metadata,
+        raw_response.cache_hit,
+    ))
+}
 
-    let mut response = Response::new(axum::body::Body::from(raw_response.body));
+pub(super) async fn raw_pixel(
+    State(state): State<AppState>,
+    path: Result<Path<(usize, u32)>, PathRejection>,
+    query: Result<Query<PixelQuery>, QueryRejection>,
+) -> Result<Response, ApiError> {
+    let Path((index, frame)) = path.map_err(error::path_rejection)?;
+    let Query(query) = query.map_err(error::query_rejection)?;
+    let file = registered_file(&state, index, "file")?;
+    let source = file.path.clone();
+    let raw = pixels::load_raw_frame(file.clone(), state.raw_cache(), RawFrameRequest { frame })
+        .await
+        .map_err(|failure| error::gone_or(&source, error::pixel_error(failure)))?;
+    let (body, metadata) =
+        pixels::raw_pixel(&file, &raw, query.row, query.column).ok_or_else(|| {
+            ApiError::bad_request(format!(
+                "pixel (row {}, column {}) is outside the {}x{} frame",
+                query.row, query.column, raw.metadata.rows, raw.metadata.columns
+            ))
+        })?;
+    Ok(raw_response_with_headers(body, &metadata, raw.cache_hit))
+}
+
+/// A raw-frame response: the samples, `X-Cache`, and the metadata headers.
+fn raw_response_with_headers(
+    body: bytes::Bytes,
+    meta: &crate::api::contracts::RawFrameMetadata,
+    cache_hit: bool,
+) -> Response {
+    let cache_header = if cache_hit { CACHE_HIT } else { CACHE_MISS };
+
+    let mut response = Response::new(axum::body::Body::from(body));
     let headers = response.headers_mut();
     headers.insert(CACHE_HEADER, HeaderValue::from_static(cache_header));
     headers.insert(
@@ -408,7 +428,7 @@ pub(super) async fn raw_frame(
         insert_header_if_valid(headers, RAW_FRAME_HEADER_PADDING_HIGH, high.to_string());
     }
 
-    Ok(response)
+    response
 }
 
 pub(super) async fn tags(
@@ -416,10 +436,7 @@ pub(super) async fn tags(
     path: Result<Path<usize>, PathRejection>,
 ) -> Result<Json<Vec<TagNode>>, ApiError> {
     let Path(index) = path.map_err(error::path_rejection)?;
-    let file = state
-        .registry()
-        .get(index)
-        .ok_or_else(|| ApiError::not_found("file index out of range"))?;
+    let file = registered_file(&state, index, "file")?;
 
     if let Some(nodes) = state.cached_tags(index) {
         return Ok(Json(nodes));
@@ -429,7 +446,12 @@ pub(super) async fn tags(
     let nodes = tokio::task::spawn_blocking(move || tags::build_tag_tree(&path))
         .await
         .map_err(|error| ApiError::internal(format!("tag serialization task failed: {error}")))?
-        .map_err(|error| ApiError::internal(format!("tag serialization failed: {error}")))?;
+        .map_err(|failure| {
+            error::gone_or(
+                &file.path,
+                ApiError::internal(format!("tag serialization failed: {failure}")),
+            )
+        })?;
 
     state.cache_tags(index, nodes.clone());
     Ok(Json(nodes))
@@ -442,10 +464,7 @@ pub(super) async fn select_tag(
 ) -> Result<Json<TagNode>, ApiError> {
     let Path(index) = path.map_err(error::path_rejection)?;
     let Query(query) = query.map_err(error::query_rejection)?;
-    let file = state
-        .registry()
-        .get(index)
-        .ok_or_else(|| ApiError::not_found("file index out of range"))?;
+    let file = registered_file(&state, index, "file")?;
     let path = file.path.clone();
     let selector = query.path;
     let offset = query.offset.unwrap_or(0);
@@ -457,7 +476,9 @@ pub(super) async fn select_tag(
     .map_err(|error| ApiError::internal(format!("tag selection task failed: {error}")))?
     .map_err(|error| match error {
         tags::TagSelectError::Invalid(_) => ApiError::bad_request(error.to_string()),
-        tags::TagSelectError::Read(_) => ApiError::internal(error.to_string()),
+        tags::TagSelectError::Read(_) => {
+            error::gone_or(&file.path, ApiError::internal(error.to_string()))
+        }
     })?;
     Ok(Json(node))
 }

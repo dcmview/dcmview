@@ -113,6 +113,9 @@ pub struct NativePixelMetadata {
     pub normalized_pixel_aspect: Option<[f64; 2]>,
     pub modality_lut: Option<DicomLut>,
     pub voi_lut: Option<DicomLut>,
+    /// Inclusive stored-value range of Pixel Padding, read at discovery so no
+    /// frame request has to parse the header again for it.
+    pub pixel_padding: Option<[f64; 2]>,
 }
 
 impl NativePixelMetadata {
@@ -411,9 +414,11 @@ impl WindowRequest {
             }
         }
 
+        // Requests that render identically share a cache key: -0 is 0, and
+        // the LINEAR function treats every width below 1 as 1.
         Ok(Self {
-            center,
-            width,
+            center: center.map(|center| center + 0.0),
+            width: width.map(|width| width.max(1.0)),
             mode,
         })
     }
@@ -523,6 +528,17 @@ mod tests {
             Err(WindowRequestError::NonPositiveWidth)
         );
         assert!(WindowRequest::new(Some(10.0), Some(20.0), WindowMode::Default).is_ok());
+    }
+
+    #[test]
+    fn window_requests_that_render_alike_share_a_key() {
+        let key = |center: f64, width: f64| {
+            let request = WindowRequest::new(Some(center), Some(width), WindowMode::Default)
+                .expect("valid window");
+            FrameCacheKey::new(0, 0, request.center(), request.width(), request.mode())
+        };
+        assert_eq!(key(-0.0, 0.25), key(0.0, 1.0));
+        assert_ne!(key(0.0, 2.0), key(0.0, 1.0));
     }
 }
 

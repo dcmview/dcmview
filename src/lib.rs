@@ -1,3 +1,14 @@
+/// `println!` for status lines. A closed stdout (`dcmview ... | head -n 1`, or
+/// a launcher that stopped reading) is ignored instead of panicking, so the
+/// viewer keeps serving and exits normally.
+#[macro_export]
+macro_rules! status_line {
+    ($($arg:tt)*) => {{
+        use ::std::io::Write as _;
+        let _ = ::std::writeln!(::std::io::stdout(), $($arg)*);
+    }};
+}
+
 pub mod annotations;
 pub mod api;
 mod dicom_values;

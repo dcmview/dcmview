@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DisplayFrameWindowOptions } from "../../api";
 import type { RawFrame } from "../../rawFrame";
 import { navigationFramesForFile } from "../seriesNavigation";
-import { DisplayFrameSource } from "./displayFrameSource";
+import { DisplayFrameSource, FULL_STACK_PREFETCH_DWELL_MS } from "./displayFrameSource";
 import { RawFrameSource } from "./rawFrameSource";
 
 function rawFrame(bitsAllocated = 8): RawFrame {
@@ -213,6 +213,46 @@ describe("DisplayFrameSource", () => {
 		await vi.advanceTimersByTimeAsync(1);
 
 		expect(requested.slice(0, 2)).toEqual([1, 2]);
+	});
+
+	it("prefetches the neighbourhood first and the whole stack after the dwell", async () => {
+		vi.useFakeTimers();
+		const requested = new Set<number>();
+		const { source } = displaySource(async (_file, frame) => {
+			requested.add(frame);
+			return new Blob(["png"]);
+		});
+		const frames = navigationFramesForFile(2, 200);
+		source.enterScope({});
+
+		source.startPrefetch(frames, 0, 1, {}, 3, null);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(Math.max(...requested)).toBeLessThanOrEqual(48);
+
+		await vi.advanceTimersByTimeAsync(FULL_STACK_PREFETCH_DWELL_MS);
+		expect(requested.size).toBe(199);
+	});
+
+	it("aborts frame requests far from the new position but not overlay fetches", () => {
+		const signals = new Map<number, AbortSignal>();
+		const { source } = displaySource((_file, frame, _options, signal) => {
+			signals.set(frame, signal);
+			return abortable<Blob>(signal);
+		});
+		const frames = navigationFramesForFile(2, 200);
+		void source.ensureBlob(2, 0, {}).catch(() => {});
+		void source.ensureBlob(2, 150, {}).catch(() => {});
+		let overlaySignal: AbortSignal | undefined;
+		void source.fetchInScope("overlay", {}, (signal) => {
+			overlaySignal = signal;
+			return abortable<Blob>(signal);
+		}).catch(() => {});
+
+		source.abortFar(frames, 150);
+
+		expect(signals.get(0)?.aborted).toBe(true);
+		expect(signals.get(150)?.aborted).toBe(false);
+		expect(overlaySignal?.aborted).toBe(false);
 	});
 
 	it("starts cine prefetch without waiting for idle time", () => {

@@ -1,30 +1,20 @@
 use crate::api::contracts::{RawFrameMetadata, WindowMode};
 use crate::types::FileEntry;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use bytes::Bytes;
-use dicom_pixeldata::PixelDecoder;
+use std::sync::Arc;
 use tokio::task;
 
 use super::color::color_samples_to_rgb8;
-use super::encapsulated::open_for_frame_decode;
 use super::error::{PixelError, PixelResult};
-use super::icc::select_icc_profile;
+use super::pixeldata_frame::{self, DecodedFrame};
 use super::render::{
-    encode_rgb8_display_png, encode_windowed_luminance_png, LuminanceRenderOptions,
+    encode_rgb8_display_png, encode_windowed_luminance_png, LuminanceRenderOptions, StoredSamples,
 };
 use super::syntax::{Codec, ColorSamples};
 
-struct DecodedJpegXlFrame {
-    bytes: Vec<u8>,
-    rows: u32,
-    columns: u32,
-    bits_allocated: u32,
-    samples_per_pixel: u32,
-    icc_profile: Option<Vec<u8>>,
-}
-
 pub(crate) async fn decode_jpeg_xl_to_png(
-    file: FileEntry,
+    file: Arc<FileEntry>,
     frame: u32,
     requested_wc: Option<f64>,
     requested_ww: Option<f64>,
@@ -55,7 +45,11 @@ pub(crate) async fn decode_jpeg_xl_to_png(
                     .map_err(PixelError::frame_decode)
             }
             (8, 1) => {
-                let samples = decoded.bytes.into_iter().map(f64::from).collect::<Vec<_>>();
+                let samples = StoredSamples::Integer {
+                    bytes: &decoded.bytes,
+                    bits_allocated: 8,
+                    signed: false,
+                };
                 encode_monochrome(
                     &file,
                     samples,
@@ -68,19 +62,11 @@ pub(crate) async fn decode_jpeg_xl_to_png(
                 )
             }
             (16, 1) => {
-                let signed = file.pixel_representation == 1;
-                let samples = decoded
-                    .bytes
-                    .chunks_exact(2)
-                    .map(|sample| {
-                        let value = u16::from_le_bytes([sample[0], sample[1]]);
-                        if signed {
-                            f64::from(value as i16)
-                        } else {
-                            f64::from(value)
-                        }
-                    })
-                    .collect::<Vec<_>>();
+                let samples = StoredSamples::Integer {
+                    bytes: &decoded.bytes,
+                    bits_allocated: 16,
+                    signed: file.pixel_representation == 1,
+                };
                 encode_monochrome(
                     &file,
                     samples,
@@ -102,7 +88,7 @@ pub(crate) async fn decode_jpeg_xl_to_png(
 }
 
 pub(crate) async fn decode_raw_jpeg_xl(
-    file: FileEntry,
+    file: Arc<FileEntry>,
     frame: u32,
 ) -> PixelResult<(Bytes, RawFrameMetadata)> {
     task::spawn_blocking(move || {
@@ -143,39 +129,14 @@ pub(crate) async fn decode_raw_jpeg_xl(
     .map_err(|error| PixelError::raw_decode(anyhow!("raw JPEG XL decode task failed: {error}")))?
 }
 
-fn decode_frame(file: &FileEntry, frame: u32) -> Result<DecodedJpegXlFrame> {
-    let (object, frame_in_object) = open_for_frame_decode(file, frame)?;
-    let decoded = object
-        .decode_pixel_data_frame(frame_in_object)
-        .context("JPEG XL Lossless frame decode failed")?;
-    let bits_allocated = decoded.bits_allocated() as u32;
-    let samples_per_pixel = decoded.samples_per_pixel() as u32;
-    let frame_bytes = decoded
-        .frame_data(0)
-        .context("decoded JPEG XL frame is incomplete")?;
-    let bytes = if bits_allocated == 16 {
-        frame_bytes
-            .chunks_exact(2)
-            .flat_map(|sample| u16::from_ne_bytes([sample[0], sample[1]]).to_le_bytes())
-            .collect()
-    } else {
-        frame_bytes.to_vec()
-    };
-    let icc_profile = select_icc_profile(&object);
-    Ok(DecodedJpegXlFrame {
-        bytes,
-        rows: decoded.rows(),
-        columns: decoded.columns(),
-        bits_allocated,
-        samples_per_pixel,
-        icc_profile,
-    })
+fn decode_frame(file: &FileEntry, frame: u32) -> Result<DecodedFrame> {
+    pixeldata_frame::decode_frame(file, frame, "JPEG XL Lossless")
 }
 
 #[allow(clippy::too_many_arguments)]
 fn encode_monochrome(
     file: &FileEntry,
-    samples: Vec<f64>,
+    samples: StoredSamples<'_>,
     frame: u32,
     rows: u32,
     columns: u32,
@@ -185,7 +146,7 @@ fn encode_monochrome(
 ) -> PixelResult<Bytes> {
     encode_windowed_luminance_png(
         file,
-        &samples,
+        samples,
         LuminanceRenderOptions {
             frame,
             rows,
@@ -315,7 +276,7 @@ mod tests {
         let directory = tempdir().unwrap();
         let file = write_fixture(&directory.path().join("rgb-lossless-jxl.dcm"));
 
-        let (raw, metadata) = decode_raw_jpeg_xl(file.clone(), 0).await.unwrap();
+        let (raw, metadata) = decode_raw_jpeg_xl(file.clone().into(), 0).await.unwrap();
         assert_eq!(raw.as_ref(), RGB_QUADRANTS);
         assert_eq!(metadata.rows, 2);
         assert_eq!(metadata.columns, 2);
@@ -324,7 +285,7 @@ mod tests {
         assert_eq!(metadata.pixel_representation, 0);
         assert_eq!(metadata.photometric_interpretation, "RGB");
 
-        let png = decode_jpeg_xl_to_png(file, 0, None, None, WindowMode::Default)
+        let png = decode_jpeg_xl_to_png(file.into(), 0, None, None, WindowMode::Default)
             .await
             .unwrap();
         let rendered = image::load_from_memory(&png).unwrap().to_rgb8();

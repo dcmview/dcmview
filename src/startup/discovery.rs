@@ -16,6 +16,8 @@ pub(super) struct DiscoveryInputs {
     pub(super) registry: FileRegistry,
     pub(super) annotation_store: AnnotationStore,
     pub(super) shutdown: CancellationToken,
+    /// Announce a completed scan on stdout for `--startup-json` readers.
+    pub(super) startup_json: bool,
 }
 
 /// How discovery ended. Only `Failed` makes the process exit non-zero.
@@ -76,6 +78,16 @@ async fn run_discovery(
         finish.failed = outcome == DiscoveryOutcome::Failed;
         outcome
     };
+    if outcome == DiscoveryOutcome::Completed && inputs.startup_json {
+        // The server announces its URL before discovery ends, and a scan that
+        // finds nothing then exits non-zero; this line tells a launcher (the
+        // Python wrapper) which of the two happened.
+        let file_count = inputs.registry.status().file_count;
+        dcmview::status_line!(
+            "{}",
+            serde_json::json!({ "type": "scan_complete", "file_count": file_count })
+        );
+    }
 
     if outcome == DiscoveryOutcome::Completed {
         if let Some(source) = inputs.annotation_source {
@@ -216,32 +228,40 @@ fn finish_scan(
                 "dcmview: no DICOM files matched active filters ({})",
                 format_scan_filters(filters)
             );
+        } else if report.skipped > 0 {
+            eprintln!(
+                "dcmview: no valid DICOM files found ({})",
+                skip_breakdown(&report)
+            );
         } else {
             eprintln!("dcmview: no valid DICOM files found");
         }
         return DiscoveryOutcome::Failed;
     }
 
-    print_progressive_load_summary(
-        file_count,
-        report.skipped,
-        report.filtered,
-        report.searched_recursive,
-        filters,
-        input_paths,
-    );
+    print_progressive_load_summary(file_count, &report, filters, input_paths);
     DiscoveryOutcome::Completed
+}
+
+/// "3 skipped: 2 not DICOM (no DICM preamble), 1 unparsable DICOM".
+fn skip_breakdown(report: &loader::DiscoveryReport) -> String {
+    let reasons = report
+        .skipped_by_reason
+        .iter()
+        .map(|(reason, count)| format!("{count} {}", reason.summary()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{} skipped: {reasons}", report.skipped)
 }
 
 fn print_progressive_load_summary(
     file_count: usize,
-    skipped: usize,
-    filtered: usize,
-    searched_recursive: bool,
+    report: &loader::DiscoveryReport,
     filters: &[loader::ScanFilter],
     input_paths: &[PathBuf],
 ) {
-    let recursive_note = if searched_recursive {
+    let (skipped, filtered) = (report.skipped, report.filtered);
+    let recursive_note = if report.searched_recursive {
         "searched recursively"
     } else {
         "searched top-level only"
@@ -254,7 +274,7 @@ fn print_progressive_load_summary(
 
     let mut notes = Vec::new();
     if skipped > 0 {
-        notes.push(format!("{skipped} skipped — not valid DICOM"));
+        notes.push(skip_breakdown(report));
     }
     if filtered > 0 {
         notes.push(format!("{filtered} filtered"));
@@ -266,9 +286,11 @@ fn print_progressive_load_summary(
     let note = notes.join(", ");
 
     if file_count == 1 && skipped == 0 && filtered == 0 && filters.is_empty() {
-        println!("dcmview: loaded 1 DICOM file");
+        dcmview::status_line!("dcmview: loaded 1 DICOM file");
     } else {
-        println!("dcmview: loaded {file_count} DICOM file(s) from {path_label} ({note})");
+        dcmview::status_line!(
+            "dcmview: loaded {file_count} DICOM file(s) from {path_label} ({note})"
+        );
     }
 }
 
@@ -325,6 +347,7 @@ mod tests {
                 registry: registry.clone(),
                 annotation_store: annotation_store.clone(),
                 shutdown: shutdown.clone(),
+                startup_json: false,
             },
             registry,
             annotation_store,

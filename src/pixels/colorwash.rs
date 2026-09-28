@@ -4,7 +4,9 @@
 use crate::api::contracts::RawFrameMetadata;
 use crate::types::NativePixelDataKind;
 use bytes::Bytes;
-use image::{codecs::png::PngEncoder, ExtendedColorType, ImageEncoder};
+use image::{ExtendedColorType, ImageEncoder};
+
+use super::color::png_encoder;
 
 use super::native::decode_numeric_samples;
 use super::{PixelError, PixelResult};
@@ -128,7 +130,7 @@ pub fn encode_colorwash_png(request: ColorwashRequest<'_>) -> PixelResult<Bytes>
     }
 
     let mut encoded = Vec::new();
-    PngEncoder::new(&mut encoded)
+    png_encoder(&mut encoded)
         .write_image(
             &rgba,
             request.target_columns,

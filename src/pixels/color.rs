@@ -1,9 +1,18 @@
 use anyhow::{anyhow, Result};
 use bytes::Bytes;
-use image::{codecs::png::PngEncoder, ExtendedColorType, ImageEncoder};
-use std::io::Cursor;
+use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+use image::{ExtendedColorType, ImageEncoder};
+use std::io::{Cursor, Write};
 
 use super::syntax::ColorSamples;
+
+/// The PNG encoder for every image the viewer serves. The Sub filter encodes
+/// grayscale about 1.75x faster than the default adaptive filtering, with
+/// output as small or smaller; stronger compression would cost far more time
+/// than it saves bytes for loopback or tunnelled viewing.
+pub(super) fn png_encoder<W: Write>(writer: W) -> PngEncoder<W> {
+    PngEncoder::new_with_quality(writer, CompressionType::Fast, FilterType::Sub)
+}
 
 /// Converts a decoded three-sample frame to interleaved display RGB.
 pub(super) fn color_samples_to_rgb8(
@@ -77,7 +86,7 @@ pub(super) fn encode_rgb8_png_with_icc(
         return Err(anyhow!("RGB buffer size does not match image geometry"));
     }
     let mut encoded = Cursor::new(Vec::new());
-    let mut encoder = PngEncoder::new(&mut encoded);
+    let mut encoder = png_encoder(&mut encoded);
     if let Some(profile) = icc_profile {
         encoder
             .set_icc_profile(profile)

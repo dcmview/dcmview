@@ -1,5 +1,6 @@
 import {
 	ApiError,
+	fetchRawPixel,
 	fetchSelectedTag,
 	type FileSummary,
 	type FrameValueMapping,
@@ -20,11 +21,28 @@ import {
 /** How long the cursor must rest on a frame before its samples load. */
 export const PROBE_SETTLE_MS = 150;
 
+/** Larger frames are read a pixel at a time unless their samples are already held. */
+export const WHOLE_FRAME_PROBE_MAX_PIXELS = 4 * 1024 * 1024;
+/**
+ * Frames the raw renderer cannot window (color, 32-bit, very large) are not
+ * cached, so returning to one would fetch it again; from this size they are
+ * read a pixel at a time.
+ */
+export const UNCACHED_FRAME_PROBE_MAX_PIXELS = 512 * 512;
+
+/** Whether the readout reads `file`'s frames one pixel at a time. */
+export function probesSinglePixels(file: FileSummary): boolean {
+	const pixels = file.rows * file.columns;
+	return pixels > WHOLE_FRAME_PROBE_MAX_PIXELS
+		|| (!file.raw_windowing_compatible && pixels > UNCACHED_FRAME_PROBE_MAX_PIXELS);
+}
+
 const PLANAR_CONFIGURATION_TAG = "(0028,0006)";
 
 export type ProbeSamples =
 	| { status: "loading" }
-	| { status: "ready"; frame: RawFrame }
+	/** `at`: the frame holds only this pixel, as a 1x1 frame. */
+	| { status: "ready"; frame: RawFrame; at?: ImagePixel }
 	| { status: "unavailable"; reason: string };
 
 function frameKey(fileIndex: number, frameIndex: number): string {
@@ -48,16 +66,22 @@ function planarConfigurationOf(node: TagNode): number {
 export class PixelProbe {
 	/** Image pixel under the cursor; null off the image or outside the viewport. */
 	pixel = $state<ImagePixel | null>(null);
-	#samples = $state<{ key: string; state: ProbeSamples } | null>(null);
+	#samples = $state.raw<{ key: string; state: ProbeSamples } | null>(null);
 	#unavailableFiles = $state<Record<number, string | undefined>>({});
 	#planar = $state<Record<number, number | undefined>>({});
 	readonly #planarRequested = new Set<number>();
 	readonly #rawFrames: RawFrameSource;
 	readonly #loadTag: typeof fetchSelectedTag;
+	readonly #loadPixel: typeof fetchRawPixel;
 
-	constructor(rawFrames: RawFrameSource, loadTag: typeof fetchSelectedTag = fetchSelectedTag) {
+	constructor(
+		rawFrames: RawFrameSource,
+		loadTag: typeof fetchSelectedTag = fetchSelectedTag,
+		loadPixel: typeof fetchRawPixel = fetchRawPixel,
+	) {
 		this.#rawFrames = rawFrames;
 		this.#loadTag = loadTag;
+		this.#loadPixel = loadPixel;
 	}
 
 	/** Samples of this frame, when it is the one being read. */
@@ -81,10 +105,17 @@ export class PixelProbe {
 
 	/**
 	 * Reads this frame's samples: `displayed` when the renderer already holds
-	 * them, else a cached or settled fetch. Call untracked from an effect;
-	 * returns the effect's cleanup.
+	 * them, else a cached or settled fetch. A frame too large to fetch for one
+	 * value is read at `pixel` only, unless `wholeFrame` (automatic windows
+	 * need every sample). Call untracked from an effect; returns the effect's
+	 * cleanup.
 	 */
-	track(file: FileSummary, frameIndex: number, displayed: RawFrame | null): (() => void) | undefined {
+	track(
+		file: FileSummary,
+		frameIndex: number,
+		displayed: RawFrame | null,
+		{ pixel = null, wholeFrame = false }: { pixel?: ImagePixel | null; wholeFrame?: boolean } = {},
+	): (() => void) | undefined {
 		if (this.#unavailableFiles[file.index]) return undefined;
 		const key = frameKey(file.index, frameIndex);
 		const known = displayed ?? this.#rawFrames.cached(file.index, frameIndex);
@@ -92,9 +123,15 @@ export class PixelProbe {
 			this.#ready(file, key, known);
 			return undefined;
 		}
+		if (!wholeFrame && probesSinglePixels(file)) return this.#trackPixel(file, frameIndex, key, pixel);
 		const current = this.#samples;
-		if (current?.key === key && current.state.status !== "loading") return undefined;
-		if (current?.key !== key) this.#samples = { key, state: { status: "loading" } };
+		// A single-pixel read does not stand in for the whole frame.
+		const whole = current?.key === key && current.state.status !== "loading"
+			&& !(current.state.status === "ready" && current.state.at);
+		if (whole) return undefined;
+		if (current?.key !== key || current.state.status === "ready") {
+			this.#samples = { key, state: { status: "loading" } };
+		}
 
 		let cancelled = false;
 		const timer = setTimeout(() => {
@@ -103,21 +140,49 @@ export class PixelProbe {
 					if (validateRenderableRawFrame(frame) === null) this.#rawFrames.store(file.index, frameIndex, frame);
 					if (!cancelled) this.#ready(file, key, frame);
 				})
-				.catch((error: unknown) => {
-					if (cancelled || (error as Error).name === "AbortError") return;
-					const reason = error instanceof Error && error.message ? error.message : String(error);
-					// 422 means the raw endpoint does not serve this file's layout.
-					if (error instanceof ApiError && error.status === 422) {
-						this.#unavailableFiles = { ...this.#unavailableFiles, [file.index]: reason };
-					} else {
-						this.#samples = { key, state: { status: "unavailable", reason } };
-					}
-				});
+				.catch((error: unknown) => this.#failed(file, key, error, cancelled));
 		}, PROBE_SETTLE_MS);
 		return () => {
 			cancelled = true;
 			clearTimeout(timer);
 		};
+	}
+
+	#trackPixel(file: FileSummary, frameIndex: number, key: string, pixel: ImagePixel | null): (() => void) | undefined {
+		if (!pixel) return undefined;
+		const current = this.#samples;
+		if (
+			current?.key === key
+			&& current.state.status === "ready"
+			&& current.state.at?.row === pixel.row
+			&& current.state.at.column === pixel.column
+		) return undefined;
+		if (current?.key !== key || current.state.status !== "loading") {
+			this.#samples = { key, state: { status: "loading" } };
+		}
+		const controller = new AbortController();
+		const timer = setTimeout(() => {
+			this.#loadPixel(file.index, frameIndex, pixel, controller.signal)
+				.then((frame) => {
+					this.#samples = { key, state: { status: "ready", frame, at: pixel } };
+				})
+				.catch((error: unknown) => this.#failed(file, key, error, controller.signal.aborted));
+		}, PROBE_SETTLE_MS);
+		return () => {
+			clearTimeout(timer);
+			controller.abort();
+		};
+	}
+
+	#failed(file: FileSummary, key: string, error: unknown, cancelled: boolean): void {
+		if (cancelled || (error as Error).name === "AbortError") return;
+		const reason = error instanceof Error && error.message ? error.message : String(error);
+		// 422 means the raw endpoint does not serve this file's layout.
+		if (error instanceof ApiError && error.status === 422) {
+			this.#unavailableFiles = { ...this.#unavailableFiles, [file.index]: reason };
+		} else {
+			this.#samples = { key, state: { status: "unavailable", reason } };
+		}
 	}
 
 	#ready(file: FileSummary, key: string, frame: RawFrame): void {
@@ -211,6 +276,11 @@ export function pixelReadout(input: PixelReadoutInput): PixelReadoutModel {
 	const { samples } = input;
 	if (samples?.status === "unavailable") return { ...base, values: null, note: "value unavailable (display only)" };
 	if (samples?.status !== "ready") return { ...base, values: null, note: "reading…" };
+	// A single-pixel read answers only for the pixel it was made at.
+	const { at } = samples;
+	if (at && (at.row !== input.pixel.row || at.column !== input.pixel.column)) {
+		return { ...base, values: null, note: "reading…" };
+	}
 	let mapping = input.mapping;
 	let note: string | null = null;
 	if (!mapping) {
@@ -219,8 +289,15 @@ export function pixelReadout(input: PixelReadoutInput): PixelReadoutModel {
 		note = "value mapping unavailable";
 		if (!mapping) return { ...base, values: null, note };
 	}
-	const planar = input.planarConfiguration(samples.frame);
+	// A single pixel arrives with its samples already color-by-pixel.
+	const planar = at ? 0 : input.planarConfiguration(samples.frame);
 	if (planar === undefined) return { ...base, values: null, note: "reading…" };
-	const values = describePixelValues(samples.frame, input.pixel, mapping, input.file.modality, planar);
+	const values = describePixelValues(
+		samples.frame,
+		at ? { row: 0, column: 0 } : input.pixel,
+		mapping,
+		input.file.modality,
+		planar,
+	);
 	return values ? { ...base, values, note } : { ...base, values: null, note: "value unavailable" };
 }

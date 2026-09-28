@@ -25,9 +25,11 @@ function parseFrameKey(key: FrameKey): [number, number] {
  * values are kept reactively for the readout and mapped-unit windowing.
  */
 export class ValueMappings {
-	#snapshots = $state<Record<FrameKey, AsyncResourceSnapshot<FrameValueMapping> | undefined>>({});
+	// Raw: mappings are replaced, never mutated, and their value maps are
+	// posted to the W/L worker, which cannot clone proxies.
+	#snapshots = $state.raw<Record<FrameKey, AsyncResourceSnapshot<FrameValueMapping> | undefined>>({});
 	/** The most recent mapping loaded for each file, while a frame's own loads. */
-	#latestByFile = $state<Record<number, FrameValueMapping | undefined>>({});
+	#latestByFile = $state.raw<Record<number, FrameValueMapping | undefined>>({});
 	readonly #resource: KeyedAsyncResource<FrameKey, FrameValueMapping>;
 
 	constructor(load: typeof fetchFrameValueMapping = fetchFrameValueMapping) {

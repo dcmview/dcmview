@@ -1,7 +1,9 @@
 use crate::api::contracts::RawFrameMetadata;
 use crate::semantic::SegmentationOverlayPlan;
 use bytes::Bytes;
-use image::{codecs::png::PngEncoder, ExtendedColorType, ImageEncoder};
+use image::{ExtendedColorType, ImageEncoder};
+
+use super::color::png_encoder;
 
 use super::{PixelError, PixelResult};
 
@@ -86,7 +88,7 @@ pub fn encode_segmentation_overlay_png(
     }
 
     let mut encoded = Vec::new();
-    PngEncoder::new(&mut encoded)
+    png_encoder(&mut encoded)
         .write_image(&rgba, target_columns, target_rows, ExtendedColorType::Rgba8)
         .map_err(|error| PixelError::frame_decode(error.into()))?;
     Ok(Bytes::from(encoded))

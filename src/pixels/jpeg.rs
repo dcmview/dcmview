@@ -2,22 +2,21 @@ use crate::api::contracts::{RawFrameMetadata, WindowMode};
 use crate::types::FileEntry;
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
-use dicom_pixeldata::PixelDecoder;
+use std::sync::Arc;
 use tokio::task;
 
 use super::color::color_samples_to_rgb8;
-use super::encapsulated::open_for_frame_decode;
 use super::error::{PixelError, PixelResult};
-use super::icc::select_icc_profile;
+use super::pixeldata_frame::decode_frame;
 use super::render::{
-    encode_rgb8_display_png, encode_windowed_luminance_png, LuminanceRenderOptions,
+    encode_rgb8_display_png, encode_windowed_luminance_png, LuminanceRenderOptions, StoredSamples,
 };
 use super::syntax::{Codec, ColorSamples};
 
 /// Displays one JPEG Baseline or JPEG Lossless frame decoded by dicom-pixeldata.
 pub(crate) async fn decode_compressed_frame_to_png(
     codec: Codec,
-    file: FileEntry,
+    file: Arc<FileEntry>,
     frame: u32,
     requested_wc: Option<f64>,
     requested_ww: Option<f64>,
@@ -45,59 +44,57 @@ fn decode_compressed_frame_to_png_blocking(
     requested_ww: Option<f64>,
     window_mode: WindowMode,
 ) -> Result<Bytes> {
-    let (obj, frame_in_object) = open_for_frame_decode(file, frame)?;
-    // Decode only the requested frame; the result holds that frame at index 0.
-    let decoded = obj
-        .decode_pixel_data_frame(frame_in_object)
-        .with_context(|| {
-            format!(
-                "unsupported transfer syntax: {}",
-                obj.meta().transfer_syntax()
-            )
-        })?;
-    if decoded.samples_per_pixel() == 3 {
-        if decoded.bits_allocated() != 8 {
+    let decoded = decode_frame(file, frame, "JPEG")?;
+    if decoded.samples_per_pixel == 3 {
+        if decoded.bits_allocated != 8 {
             return Err(anyhow!(
-                "compressed decode failed: unsupported color BitsAllocated {}",
-                decoded.bits_allocated()
+                "unsupported color BitsAllocated {}",
+                decoded.bits_allocated
             ));
         }
-        let decoded_frame = decoded.frame_data(0)?;
         let photometric = file.photometric_interpretation.trim().to_ascii_uppercase();
         // The table names the layouts whose samples still need converting;
         // any other three-sample frame is displayed as the decoder produced it.
         let rgb = match codec.color_samples(&photometric, 8) {
             Some(samples @ ColorSamples::YbrFull) => {
-                let pixel_count = decoded_frame.len() / 3;
-                color_samples_to_rgb8(samples, decoded_frame, pixel_count, 0)?
+                let pixel_count = decoded.bytes.len() / 3;
+                color_samples_to_rgb8(samples, &decoded.bytes, pixel_count, 0)?
             }
-            Some(ColorSamples::Rgb) | None => decoded_frame.to_vec(),
+            Some(ColorSamples::Rgb) | None => decoded.bytes,
         };
         return encode_rgb8_display_png(
             file,
             frame,
             rgb,
-            decoded.columns(),
-            decoded.rows(),
-            select_icc_profile(&obj),
+            decoded.columns,
+            decoded.rows,
+            decoded.icc_profile,
         )
-        .context("compressed decode failed: color PNG encoding failed");
+        .context("color PNG encoding failed");
     }
-    if decoded.samples_per_pixel() != 1 {
+    if decoded.samples_per_pixel != 1 {
         return Err(anyhow!(
-            "compressed decode failed: unsupported SamplesPerPixel {}",
-            decoded.samples_per_pixel()
+            "unsupported SamplesPerPixel {}",
+            decoded.samples_per_pixel
         ));
     }
-
-    let (stored, rows, columns) = decoded_luminance_samples(file, &decoded)?;
+    if !matches!(decoded.bits_allocated, 8 | 16) {
+        return Err(anyhow!(
+            "unsupported BitsAllocated {}",
+            decoded.bits_allocated
+        ));
+    }
     encode_windowed_luminance_png(
         file,
-        &stored,
+        StoredSamples::Integer {
+            bytes: &decoded.bytes,
+            bits_allocated: decoded.bits_allocated,
+            signed: file.pixel_representation == 1,
+        },
         LuminanceRenderOptions {
             frame,
-            rows,
-            columns,
+            rows: decoded.rows,
+            columns: decoded.columns,
             requested_wc,
             requested_ww,
             window_mode,
@@ -105,47 +102,8 @@ fn decode_compressed_frame_to_png_blocking(
     )
 }
 
-fn decoded_luminance_samples(
-    file: &FileEntry,
-    decoded: &dicom_pixeldata::DecodedPixelData<'_>,
-) -> Result<(Vec<f64>, u32, u32)> {
-    let bits_allocated = decoded.bits_allocated() as u32;
-    let signed = file.pixel_representation == 1;
-    let raw_samples = match bits_allocated {
-        8 => decoded
-            .frame_data(0)?
-            .iter()
-            .map(|value| {
-                if signed {
-                    (*value as i8) as f64
-                } else {
-                    *value as f64
-                }
-            })
-            .collect::<Vec<_>>(),
-        16 => decoded
-            .frame_data_ow(0)?
-            .into_iter()
-            .map(|value| {
-                if signed {
-                    (value as i16) as f64
-                } else {
-                    value as f64
-                }
-            })
-            .collect::<Vec<_>>(),
-        _ => {
-            return Err(anyhow!(
-                "compressed decode failed: unsupported BitsAllocated {bits_allocated}"
-            ));
-        }
-    };
-
-    Ok((raw_samples, decoded.rows(), decoded.columns()))
-}
-
 pub(crate) async fn read_raw_jpeg_samples(
-    file: FileEntry,
+    file: Arc<FileEntry>,
     frame: u32,
 ) -> Result<(Bytes, RawFrameMetadata)> {
     task::spawn_blocking(move || read_raw_jpeg_samples_blocking(&file, frame))
@@ -157,54 +115,34 @@ fn read_raw_jpeg_samples_blocking(
     file: &FileEntry,
     frame: u32,
 ) -> Result<(Bytes, RawFrameMetadata)> {
-    let (obj, frame_in_object) = open_for_frame_decode(file, frame)?;
     // The transfer-syntax adapter assembles every fragment belonging to the
     // requested frame using the Basic Offset Table before decoding. A frame is
     // not required to have a one-to-one relationship with a fragment.
-    let decoded = obj
-        .decode_pixel_data_frame(frame_in_object)
-        .context("JPEG decode failed for raw samples")?;
-    let bits_allocated = decoded.bits_allocated() as u32;
-    let samples_per_pixel = decoded.samples_per_pixel() as u32;
-    let photometric_interpretation = match samples_per_pixel {
-        1 => "MONOCHROME2",
-        3 => "RGB",
-        value => {
-            return Err(anyhow!(
-                "raw JPEG does not support decoded SamplesPerPixel {value}"
-            ));
-        }
-    };
-    let decoded_frame = decoded.frame_data(0)?;
-    let samples = match (bits_allocated, samples_per_pixel) {
-        (8, 1 | 3) => Bytes::copy_from_slice(decoded_frame),
-        (16, 1) => Bytes::from(
-            decoded_frame
-                .chunks_exact(2)
-                .flat_map(|sample| u16::from_ne_bytes([sample[0], sample[1]]).to_le_bytes())
-                .collect::<Vec<_>>(),
-        ),
-        _ => {
+    let decoded = decode_frame(file, frame, "JPEG")?;
+    let photometric_interpretation = match (decoded.bits_allocated, decoded.samples_per_pixel) {
+        (8 | 16, 1) => "MONOCHROME2",
+        (8, 3) => "RGB",
+        (bits_allocated, samples_per_pixel) => {
             return Err(anyhow!(
                 "raw JPEG does not support decoded BitsAllocated {bits_allocated} with SamplesPerPixel {samples_per_pixel}"
             ));
         }
     };
     let mut metadata = file.raw_metadata(
-        decoded.rows(),
-        decoded.columns(),
-        bits_allocated,
-        samples_per_pixel,
+        decoded.rows,
+        decoded.columns,
+        decoded.bits_allocated,
+        decoded.samples_per_pixel,
     );
     // JPEG Baseline output from the decoder is canonical unsigned,
     // color-by-pixel RGB (or grayscale), regardless of stored DICOM layout.
     metadata.pixel_representation = 0;
     metadata.photometric_interpretation = photometric_interpretation.to_string();
-    Ok((samples, metadata))
+    Ok((Bytes::from(decoded.bytes), metadata))
 }
 
 pub(crate) async fn decode_raw_jpeg_lossless(
-    file: FileEntry,
+    file: Arc<FileEntry>,
     frame: u32,
 ) -> PixelResult<(Bytes, RawFrameMetadata)> {
     task::spawn_blocking(move || decode_raw_jpeg_lossless_blocking(&file, frame))
@@ -218,52 +156,22 @@ fn decode_raw_jpeg_lossless_blocking(
     file: &FileEntry,
     frame: u32,
 ) -> PixelResult<(Bytes, RawFrameMetadata)> {
-    let (obj, frame_in_object) =
-        open_for_frame_decode(file, frame).map_err(PixelError::raw_decode)?;
-
-    let decoded = obj
-        .decode_pixel_data_frame(frame_in_object)
-        .with_context(|| {
-            format!(
-                "unsupported transfer syntax: {}",
-                obj.meta().transfer_syntax()
-            )
-        })
-        .map_err(PixelError::raw_decode)?;
-    if decoded.samples_per_pixel() != 1 {
+    let decoded = decode_frame(file, frame, "JPEG").map_err(PixelError::raw_decode)?;
+    if decoded.samples_per_pixel != 1 {
         return Err(PixelError::UnsupportedLayout(format!(
             "raw JPEG Lossless requires one sample per pixel, decoded {}",
-            decoded.samples_per_pixel()
+            decoded.samples_per_pixel
         )));
     }
-
-    let bits_allocated = decoded.bits_allocated() as u32;
-    let sample_bytes = match bits_allocated {
-        8 => Bytes::copy_from_slice(
-            decoded
-                .frame_data(0)
-                .map_err(anyhow::Error::from)
-                .map_err(PixelError::raw_decode)?,
-        ),
-        16 => {
-            let bytes = decoded
-                .frame_data_ow(0)
-                .map_err(anyhow::Error::from)
-                .map_err(PixelError::raw_decode)?
-                .into_iter()
-                .flat_map(|value| value.to_le_bytes())
-                .collect::<Vec<_>>();
-            Bytes::from(bytes)
-        }
-        _ => {
-            return Err(PixelError::UnsupportedLayout(format!(
-                "raw JPEG Lossless does not support BitsAllocated {bits_allocated}"
-            )));
-        }
-    };
-
-    let metadata = file.raw_metadata(decoded.rows(), decoded.columns(), bits_allocated, 1);
-    Ok((sample_bytes, metadata))
+    if !matches!(decoded.bits_allocated, 8 | 16) {
+        return Err(PixelError::UnsupportedLayout(format!(
+            "raw JPEG Lossless does not support BitsAllocated {}",
+            decoded.bits_allocated
+        )));
+    }
+    // Lossless output keeps the stored signedness and photometric.
+    let metadata = file.raw_metadata(decoded.rows, decoded.columns, decoded.bits_allocated, 1);
+    Ok((Bytes::from(decoded.bytes), metadata))
 }
 
 #[cfg(test)]

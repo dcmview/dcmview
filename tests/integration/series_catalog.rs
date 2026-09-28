@@ -49,12 +49,14 @@ async fn series_api_orders_geometry_and_keeps_shared_frame_of_reference_series_s
             .as_array()
             .expect("frame array")
             .iter()
-            .map(|frame| frame["source_path"].as_str().expect("source path"))
+            .map(|frame| frame["sop_instance_uid"]
+                .as_str()
+                .expect("SOP instance UID"))
             .collect::<Vec<_>>(),
         vec![
-            "series-a/slice-001.dcm",
-            "series-a/slice-002.dcm",
-            "series-a/slice-003.dcm",
+            "sop-series-a-series-a/slice-001.dcm",
+            "sop-series-a-series-a/slice-002.dcm",
+            "sop-series-a-series-a/slice-003.dcm",
         ]
     );
 }

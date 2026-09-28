@@ -145,6 +145,102 @@ async fn raw_endpoint_x_cache_miss_then_hit() {
 }
 
 #[tokio::test]
+async fn concurrent_and_abandoned_requests_share_one_decode() {
+    let dir = tempdir().expect("temp dir");
+    let path = dir.path().join("raw-shared.dcm");
+    support::write_uncompressed_u16_dicom(
+        &path,
+        "1.2.840.10008.1.2.1",
+        2,
+        2,
+        vec![0, 1000, 2000, 3000],
+        None,
+        None,
+    );
+    let mut entry = support::file_entry(path, "1.2.840.10008.1.2.1", 1);
+    entry.rows = 2;
+    entry.columns = 2;
+
+    let cache = new_raw_cache();
+    let responses = futures::future::join_all((0..6).map(|_| {
+        load_raw_frame(
+            entry.clone().into(),
+            cache.clone(),
+            RawFrameRequest { frame: 0 },
+        )
+    }))
+    .await;
+    let decoded = responses
+        .into_iter()
+        .map(|response| response.expect("raw frame"))
+        .filter(|response| !response.cache_hit)
+        .count();
+    assert_eq!(decoded, 1, "identical concurrent requests decode once");
+
+    // A request dropped mid-decode (a client abort) still leaves its frame
+    // for the next request.
+    let other = new_raw_cache();
+    let abandoned = load_raw_frame(
+        entry.clone().into(),
+        other.clone(),
+        RawFrameRequest { frame: 0 },
+    );
+    let _ = tokio::time::timeout(std::time::Duration::ZERO, abandoned).await;
+    let next = load_raw_frame(entry.into(), other, RawFrameRequest { frame: 0 })
+        .await
+        .expect("raw frame");
+    assert!(next.cache_hit, "the abandoned decode is reused");
+}
+
+#[tokio::test]
+async fn unsupported_layouts_are_422_for_display_and_only_unreadable_ones_for_raw() {
+    let dir = tempdir().expect("temp dir");
+    let path = dir.path().join("layouts.dcm");
+    support::write_uncompressed_u16_dicom(
+        &path,
+        "1.2.840.10008.1.2.1",
+        2,
+        2,
+        vec![0, 1000, 2000, 3000],
+        None,
+        None,
+    );
+    let entry = |photometric: &str, rows: u32| {
+        let mut entry = support::file_entry(path.clone(), "1.2.840.10008.1.2.1", 1);
+        entry.rows = rows;
+        entry.columns = 2;
+        entry.photometric_interpretation = photometric.to_string();
+        entry
+    };
+    // Display cannot present an unknown photometric interpretation, but the
+    // stored samples are still readable.
+    let server = TestServer::new(server::router(support::app_state(vec![entry("HSL", 2)])));
+    let display = server.get("/api/file/0/frame/0").await;
+    display.assert_status(axum::http::StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        display.json::<serde_json::Value>()["code"],
+        "unsupported_pixel_layout"
+    );
+    server
+        .get("/api/file/0/frame/0/raw")
+        .await
+        .assert_status_ok();
+
+    // Zero rows leaves nothing to read on either path.
+    let server = TestServer::new(server::router(support::app_state(vec![entry(
+        "MONOCHROME2",
+        0,
+    )])));
+    for url in ["/api/file/0/frame/0", "/api/file/0/frame/0/raw"] {
+        let response = server.get(url).await;
+        response.assert_status(axum::http::StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(response.json::<serde_json::Value>()["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("pixel_layout.invalid_geometry")));
+    }
+}
+
+#[tokio::test]
 async fn raw_endpoint_returns_404_for_out_of_range_frame() {
     let dir = tempdir().expect("temp dir");
     let path = dir.path().join("raw-oob.dcm");
@@ -342,10 +438,14 @@ async fn raw_endpoint_multiframe_second_frame_has_correct_pixels() {
 
     let cache = new_raw_cache();
 
-    let frame0 = load_raw_frame(entry.clone(), cache.clone(), RawFrameRequest { frame: 0 })
-        .await
-        .expect("frame 0");
-    let frame1 = load_raw_frame(entry, cache, RawFrameRequest { frame: 1 })
+    let frame0 = load_raw_frame(
+        entry.clone().into(),
+        cache.clone(),
+        RawFrameRequest { frame: 0 },
+    )
+    .await
+    .expect("frame 0");
+    let frame1 = load_raw_frame(entry.into(), cache, RawFrameRequest { frame: 1 })
         .await
         .expect("frame 1");
 
@@ -406,7 +506,7 @@ async fn raw_native_frame_ignores_nested_icon_pixel_data() {
     let mut file = support::file_entry(path, "1.2.840.10008.1.2.1", 1);
     file.rows = 2;
     file.columns = 2;
-    let raw = load_raw_frame(file, new_raw_cache(), RawFrameRequest { frame: 0 })
+    let raw = load_raw_frame(file.into(), new_raw_cache(), RawFrameRequest { frame: 0 })
         .await
         .expect("raw native frame");
 
@@ -415,4 +515,82 @@ async fn raw_native_frame_ignores_nested_icon_pixel_data() {
         .flat_map(|value| value.to_le_bytes())
         .collect::<Vec<_>>();
     assert_eq!(raw.body.as_ref(), expected.as_slice());
+}
+
+#[tokio::test]
+async fn raw_pixel_serves_one_pixels_samples_as_a_one_by_one_frame() {
+    let dir = tempdir().expect("temp dir");
+    let path = dir.path().join("raw-pixel.dcm");
+    support::write_uncompressed_u16_dicom(
+        &path,
+        "1.2.840.10008.1.2.1",
+        2,
+        2,
+        vec![0, 1000, 2000, 3000],
+        None,
+        None,
+    );
+    let mut entry = support::file_entry(path, "1.2.840.10008.1.2.1", 1);
+    entry.rows = 2;
+    entry.columns = 2;
+    let server = TestServer::new(server::router(support::app_state(vec![entry])));
+
+    let pixel = server
+        .get("/api/file/0/frame/0/raw/pixel?row=1&column=0")
+        .await;
+    pixel.assert_status_ok();
+    assert_eq!(pixel.as_bytes().as_ref(), 2000_u16.to_le_bytes());
+    assert_eq!(header_str(&pixel, "X-Frame-Rows"), "1");
+    assert_eq!(header_str(&pixel, "X-Frame-Columns"), "1");
+
+    server
+        .get("/api/file/0/frame/0/raw/pixel?row=2&column=0")
+        .await
+        .assert_status(axum::http::StatusCode::BAD_REQUEST);
+}
+
+#[test]
+fn raw_pixel_resolves_planar_and_subsampled_color_to_color_by_pixel() {
+    use dcmview::api::contracts::RawFrameMetadata;
+    use dcmview::pixels::{raw_pixel, RawFrameResponse};
+
+    let raw = |photometric: &str, body: Vec<u8>| RawFrameResponse {
+        body: body.into(),
+        metadata: RawFrameMetadata {
+            rows: 1,
+            columns: 2,
+            bits_allocated: 8,
+            pixel_representation: 0,
+            samples_per_pixel: 3,
+            photometric_interpretation: photometric.to_string(),
+            rescale_slope: 1.0,
+            rescale_intercept: 0.0,
+            default_wc: None,
+            default_ww: None,
+            padding_low: None,
+            padding_high: None,
+        },
+        cache_hit: false,
+    };
+    let mut planar = support::file_entry("planar.dcm".into(), "1.2.840.10008.1.2.1", 1);
+    planar.series_metadata.native_pixel.planar_configuration = Some(1);
+    // R R G G B B for two pixels.
+    let (body, metadata) =
+        raw_pixel(&planar, &raw("RGB", vec![10, 11, 20, 21, 30, 31]), 0, 1).expect("pixel");
+    assert_eq!(body.as_ref(), [11, 21, 31]);
+    assert_eq!(
+        (metadata.rows, metadata.columns, metadata.samples_per_pixel),
+        (1, 1, 3)
+    );
+
+    // Y0 Y1 Cb Cr for the pixel pair.
+    let interleaved = support::file_entry("ybr.dcm".into(), "1.2.840.10008.1.2.1", 1);
+    let (body, _) = raw_pixel(
+        &interleaved,
+        &raw("YBR_FULL_422", vec![50, 60, 128, 130]),
+        0,
+        1,
+    )
+    .expect("pixel");
+    assert_eq!(body.as_ref(), [60, 128, 130]);
 }

@@ -172,7 +172,6 @@ describe("App value overlays", () => {
 					virtual_index,
 					file_index,
 					frame_index: 0,
-					source_path: "",
 					sop_instance_uid: "",
 					instance_number: null,
 					position_along_normal_mm: null,

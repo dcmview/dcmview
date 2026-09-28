@@ -115,7 +115,7 @@ export class ValueOverlays {
 	selectedVolume = $state<number | null>(null);
 	/** 0..1 */
 	opacity = $state(DEFAULT_VALUE_OVERLAY_OPACITY);
-	#snapshots = $state<Record<number, AsyncResourceSnapshot<SemanticContextResponse> | undefined>>({});
+	#snapshots = $state.raw<Record<number, AsyncResourceSnapshot<SemanticContextResponse> | undefined>>({});
 	/** Whether each volume's context was read after discovery completed. */
 	readonly #loadedComplete = new Map<number, boolean>();
 	readonly #contexts: KeyedAsyncResource<number, SemanticContextResponse>;

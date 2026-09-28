@@ -239,9 +239,7 @@ fn instance_mappings(file: &FileEntry, rwvm: &FileEntry) -> Vec<InstanceMappings
 /// The mappings of one Real World Value Mapping Sequence, or `None` when
 /// `group` does not declare the sequence.
 fn declared_mappings(group: &InMemDicomObject) -> Option<Vec<RealWorldValueMap>> {
-    group
-        .element(tags::REAL_WORLD_VALUE_MAPPING_SEQUENCE)
-        .ok()?;
+    group.get(tags::REAL_WORLD_VALUE_MAPPING_SEQUENCE)?;
     Some(
         sequence_items(group, tags::REAL_WORLD_VALUE_MAPPING_SEQUENCE)
             .iter()

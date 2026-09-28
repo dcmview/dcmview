@@ -213,6 +213,16 @@ pub mod endpoints {
         OCTET_STREAM_MEDIA_TYPE,
         ResponseHeaders::RawFrame,
     );
+    /// One pixel of the raw frame as a 1x1 raw frame: its stored samples in
+    /// color-by-pixel order, with `RawFrameMetadata` in headers; query
+    /// `PixelQuery`. The readout uses it where a whole frame is too large to
+    /// fetch for one value.
+    pub const FILE_RAW_PIXEL: Endpoint = binary(
+        "fileRawPixel",
+        "/file/{index}/frame/{frame}/raw/pixel",
+        OCTET_STREAM_MEDIA_TYPE,
+        ResponseHeaders::RawFrame,
+    );
     /// `TagNode[]`.
     pub const FILE_TAGS: Endpoint = json("fileTags", ApiMethod::Get, "/file/{index}/tags");
     /// One `TagNode`; query `TagQuery`.
@@ -254,6 +264,7 @@ pub mod endpoints {
         FILE_WSI_CONTEXT,
         FILE_FRAME,
         FILE_RAW_FRAME,
+        FILE_RAW_PIXEL,
         FILE_TAGS,
         FILE_TAG_SELECT,
         FILE_ANNOTATIONS_GET,
@@ -683,7 +694,6 @@ pub struct FrameRefSummary {
     pub virtual_index: usize,
     pub file_index: usize,
     pub frame_index: u32,
-    pub source_path: String,
     pub sop_instance_uid: String,
     pub instance_number: Option<i32>,
     pub position_along_normal_mm: Option<f64>,
@@ -861,6 +871,13 @@ pub struct FrameQuery {
     pub wc: Option<f64>,
     pub ww: Option<f64>,
     pub mode: Option<WindowMode>,
+}
+
+/// Raw-pixel query: the zero-based image row and column.
+#[derive(Debug, Clone, Copy, Deserialize, TS)]
+pub struct PixelQuery {
+    pub row: u32,
+    pub column: u32,
 }
 
 /// Dose-overlay query: the RT Dose object drawn on the path's frame.

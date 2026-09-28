@@ -6,11 +6,13 @@ use dicom_dictionary_std::uids;
 use dicom_encoding::TransferSyntaxIndex;
 use dicom_object::{open_file, FileMetaTable};
 use dicom_parser::dataset::lazy_read::LazyDataSetReader;
-use dicom_parser::dataset::LazyDataToken;
+use dicom_parser::dataset::read::DataSetReader;
+use dicom_parser::dataset::{DataToken, LazyDataToken};
 use dicom_parser::StatefulDecode;
 use dicom_transfer_syntax_registry::TransferSyntaxRegistry;
 use std::fs::File;
-use std::io::{BufReader, Seek, SeekFrom};
+use std::io::{self, BufReader, Read, Seek, SeekFrom};
+use std::sync::Arc;
 use tokio::task;
 
 use super::color::color_samples_to_rgb8;
@@ -19,13 +21,13 @@ use super::icc::select_icc_profile;
 use super::native_layout::{native_pixel_element_tag, NativeByteOrder, NativeFrameLayout};
 use super::palette::palette_indices_to_rgb8;
 use super::render::{
-    encode_rgb8_display_png, encode_windowed_luminance_png, LuminanceRenderOptions,
+    encode_rgb8_display_png, encode_windowed_luminance_png, LuminanceRenderOptions, StoredSamples,
 };
 use super::stored_bits::canonicalize_integer_samples;
 use super::syntax::Codec;
 
 pub(crate) async fn decode_uncompressed_to_png(
-    file: FileEntry,
+    file: Arc<FileEntry>,
     frame: u32,
     requested_wc: Option<f64>,
     requested_ww: Option<f64>,
@@ -58,7 +60,7 @@ fn decode_uncompressed_to_png_blocking(
             file.series_metadata.native_pixel.high_bit,
             file.pixel_representation == 1,
         )
-        .context("frame decode failed: invalid native stored-bit layout")?;
+        .context("invalid native stored-bit layout")?;
     }
     let pixel_count = usize::try_from(rows)
         .ok()
@@ -67,7 +69,7 @@ fn decode_uncompressed_to_png_blocking(
                 .ok()
                 .and_then(|columns| rows.checked_mul(columns))
         })
-        .ok_or_else(|| anyhow!("frame decode failed: invalid image geometry"))?;
+        .ok_or_else(|| anyhow!("invalid image geometry"))?;
     let photometric = file.photometric_interpretation.trim().to_ascii_uppercase();
     let color_samples = match samples_per_pixel {
         3 => Codec::Native.color_samples(&photometric, bits_allocated),
@@ -91,36 +93,50 @@ fn decode_uncompressed_to_png_blocking(
             rows,
             select_icc_profile(&object),
         )
-        .context("frame decode failed: color PNG encoding failed");
+        .context("color PNG encoding failed");
     }
     if samples_per_pixel != 1 || !matches!(photometric.as_str(), "MONOCHROME1" | "MONOCHROME2") {
         return Err(anyhow!(
-            "frame decode failed: unsupported native layout SamplesPerPixel {samples_per_pixel}, PhotometricInterpretation {}",
+            "unsupported native layout SamplesPerPixel {samples_per_pixel}, PhotometricInterpretation {}",
             file.photometric_interpretation
         ));
     }
 
-    // dicom-object normalizes primitive pixel bytes to host order for native pixel data.
-    // Decode from the normalized byte representation directly.
+    let options = LuminanceRenderOptions {
+        frame,
+        rows,
+        columns,
+        requested_wc,
+        requested_ww,
+        window_mode,
+    };
+    // dicom-object normalizes primitive pixel bytes to host order for native
+    // pixel data; one-bit frames arrive expanded to one byte per sample.
+    let kind = native_pixel_data_kind(file);
+    let container = match (kind, bits_allocated) {
+        (NativePixelDataKind::Integer, 1) => Some(8),
+        (NativePixelDataKind::Integer, 8 | 16) => Some(bits_allocated),
+        _ => None,
+    };
+    if let Some(container) = container {
+        return encode_windowed_luminance_png(
+            file,
+            StoredSamples::Integer {
+                bytes: &frame_bytes,
+                bits_allocated: container,
+                signed: bits_allocated > 1 && file.pixel_representation == 1,
+            },
+            options,
+        );
+    }
     let stored = decode_numeric_samples(
         &frame_bytes,
         bits_allocated,
         file.pixel_representation == 1,
         false,
-        native_pixel_data_kind(file),
+        kind,
     )?;
-    encode_windowed_luminance_png(
-        file,
-        &stored,
-        LuminanceRenderOptions {
-            frame,
-            rows,
-            columns,
-            requested_wc,
-            requested_ww,
-            window_mode,
-        },
-    )
+    encode_windowed_luminance_png(file, StoredSamples::Values(&stored), options)
 }
 
 fn native_frame_layout(file: &FileEntry) -> NativeFrameLayout<'_> {
@@ -149,13 +165,13 @@ impl NativeFrameSource<'_> {
     fn raw_frame(&self) -> Result<Vec<u8>> {
         self.layout
             .extract_raw_frame(&self.bytes, self.frame_in_bytes)
-            .context("frame decode failed: invalid native frame layout")
+            .context("invalid native frame layout")
     }
 
     fn display_frame(&self) -> Result<Vec<u8>> {
         self.layout
             .extract_display_frame(&self.bytes, self.frame_in_bytes)
-            .context("frame decode failed: invalid native frame layout")
+            .context("invalid native frame layout")
     }
 }
 
@@ -163,20 +179,24 @@ impl NativeFrameSource<'_> {
 ///
 /// Byte-aligned frames in an undeflated data set are read by seeking straight
 /// to the frame inside the top-level pixel element, so each request costs one
-/// frame of I/O. Deflated data sets cannot be seeked and one-bit frames need
-/// not start on a byte boundary; both are small in practice and fall back to
-/// reading the whole element.
+/// frame of I/O. A deflated data set cannot be seeked, so it is inflated up to
+/// the frame, discarding what precedes it: one frame of memory, and time that
+/// grows with the frame's position. One-bit frames need not start on a byte
+/// boundary; they are small in practice and read the whole element.
 fn read_native_frame(file: &FileEntry, frame: u32) -> Result<NativeFrameSource<'_>> {
     let layout = native_frame_layout(file);
-    let seekable = file.transfer_syntax_uid != uids::DEFLATED_EXPLICIT_VR_LITTLE_ENDIAN
-        && layout.bits_allocated != 1;
-    if seekable {
+    if layout.bits_allocated != 1 {
+        let deflated = file.transfer_syntax_uid == uids::DEFLATED_EXPLICIT_VR_LITTLE_ENDIAN;
         let byte_order = if file.transfer_syntax_uid == EXPLICIT_VR_BIG_ENDIAN {
             NativeByteOrder::BigEndian
         } else {
             NativeByteOrder::LittleEndian
         };
-        let bytes = read_native_frame_bytes(file, layout, frame)?;
+        let bytes = if deflated {
+            read_deflated_frame_bytes(file, layout, frame)?
+        } else {
+            read_native_frame_bytes(file, layout, frame)?
+        };
         return Ok(NativeFrameSource {
             bytes,
             frame_in_bytes: 0,
@@ -196,16 +216,95 @@ fn read_native_frame(file: &FileEntry, frame: u32) -> Result<NativeFrameSource<'
     // dicom-object normalizes native primitive values to host order. The
     // supported release hosts are little-endian, matching the raw API.
     let bytes = object
-        .element(native_pixel_element_tag(native_pixel_data_kind(file)))
-        .context("frame decode failed: missing native pixel data element")?
+        .get(native_pixel_element_tag(native_pixel_data_kind(file)))
+        .context("missing native pixel data element")?
         .to_bytes()
-        .context("frame decode failed: pixel bytes unavailable")?
+        .context("pixel bytes unavailable")?
         .into_owned();
     Ok(NativeFrameSource {
         bytes,
         frame_in_bytes: frame,
         layout,
     })
+}
+
+/// Where `frame` lies in a native pixel element: its start and end offsets.
+fn frame_span(layout: NativeFrameLayout<'_>, frame: u32) -> Result<(usize, usize)> {
+    let frame_len = layout
+        .stored_frame_bytes()
+        .context("invalid native frame layout")?;
+    let start = usize::try_from(frame)
+        .ok()
+        .and_then(|frame| frame.checked_mul(frame_len))
+        .context("frame offset overflowed")?;
+    let end = start
+        .checked_add(frame_len)
+        .context("frame offset overflowed")?;
+    Ok((start, end))
+}
+
+/// Returns the stored bytes of `frame` of a deflated data set: the inflated
+/// stream is parsed up to the top-level pixel element's header, the frames
+/// before `frame` are inflated and discarded, and only `frame` is kept.
+fn read_deflated_frame_bytes(
+    file: &FileEntry,
+    layout: NativeFrameLayout<'_>,
+    frame: u32,
+) -> Result<Vec<u8>> {
+    let (start, end) = frame_span(layout, frame)?;
+    let mut reader = BufReader::new(
+        File::open(&file.path)
+            .with_context(|| format!("failed to open {}", file.path.display()))?,
+    );
+    reader.seek(SeekFrom::Start(128))?;
+    let meta = FileMetaTable::from_reader(&mut reader)
+        .with_context(|| format!("failed to read file meta: {}", file.path.display()))?;
+    let transfer_syntax = TransferSyntaxRegistry
+        .get(meta.transfer_syntax())
+        .with_context(|| format!("unknown transfer syntax {}", meta.transfer_syntax()))?;
+    let mut inflated = flate2::read::DeflateDecoder::new(reader);
+
+    let pixel_tag = native_pixel_element_tag(native_pixel_data_kind(file));
+    let available = {
+        // Stops at the pixel element's header, before its value is read.
+        let tokens = DataSetReader::new_with_ts(&mut inflated, transfer_syntax)
+            .context("failed to start DICOM data set parser")?;
+        let mut sequence_depth = 0_usize;
+        let mut available = None;
+        for token in tokens {
+            match token.context("failed to parse DICOM data set")? {
+                DataToken::SequenceStart { .. } | DataToken::PixelSequenceStart => {
+                    sequence_depth += 1;
+                }
+                DataToken::SequenceEnd => sequence_depth = sequence_depth.saturating_sub(1),
+                DataToken::ElementHeader(header)
+                    if sequence_depth == 0 && header.tag == pixel_tag =>
+                {
+                    available = Some(
+                        header
+                            .len
+                            .get()
+                            .and_then(|length| usize::try_from(length).ok())
+                            .context("native pixel data has undefined length")?,
+                    );
+                    break;
+                }
+                _ => {}
+            }
+        }
+        available.context("missing native pixel data element")?
+    };
+    if end > available {
+        return Err(anyhow!(
+            "native pixel data frame {frame} extends beyond {available} source bytes"
+        ));
+    }
+    io::copy(&mut (&mut inflated).take(start as u64), &mut io::sink())?;
+    let mut bytes = vec![0; end - start];
+    inflated
+        .read_exact(&mut bytes)
+        .context("deflated pixel data is truncated")?;
+    Ok(bytes)
 }
 
 /// Returns the stored bytes of `frame`, in the file's byte order, by locating
@@ -215,16 +314,8 @@ fn read_native_frame_bytes(
     layout: NativeFrameLayout<'_>,
     frame: u32,
 ) -> Result<Vec<u8>> {
-    let frame_len = layout
-        .stored_frame_bytes()
-        .context("frame decode failed: invalid native frame layout")?;
-    let start = usize::try_from(frame)
-        .ok()
-        .and_then(|frame| frame.checked_mul(frame_len))
-        .context("frame decode failed: frame offset overflowed")?;
-    let end = start
-        .checked_add(frame_len)
-        .context("frame decode failed: frame offset overflowed")?;
+    let (start, end) = frame_span(layout, frame)?;
+    let frame_len = end - start;
 
     let mut reader = BufReader::new(
         File::open(&file.path)
@@ -256,10 +347,10 @@ fn read_native_frame_bytes(
                     .len
                     .get()
                     .and_then(|length| usize::try_from(length).ok())
-                    .context("frame decode failed: native pixel data has undefined length")?;
+                    .context("native pixel data has undefined length")?;
                 if end > available {
                     return Err(anyhow!(
-                        "frame decode failed: native pixel data frame {frame} extends beyond {available} source bytes"
+                        "native pixel data frame {frame} extends beyond {available} source bytes"
                     ));
                 }
                 let value_start = decoder.position();
@@ -281,9 +372,7 @@ fn read_native_frame_bytes(
             _ => {}
         }
     }
-    Err(anyhow!(
-        "frame decode failed: missing native pixel data element"
-    ))
+    Err(anyhow!("missing native pixel data element"))
 }
 
 fn native_pixel_data_kind(file: &FileEntry) -> NativePixelDataKind {
@@ -382,13 +471,13 @@ pub(super) fn decode_numeric_samples(
             })
             .collect()),
         _ => Err(anyhow!(
-            "frame decode failed: unsupported native sample kind {kind:?} with BitsAllocated {bits_allocated}"
+            "unsupported native sample kind {kind:?} with BitsAllocated {bits_allocated}"
         )),
     }
 }
 
 pub(crate) async fn read_raw_uncompressed(
-    file: FileEntry,
+    file: Arc<FileEntry>,
     frame: u32,
 ) -> Result<(Bytes, RawFrameMetadata)> {
     task::spawn_blocking(move || read_raw_uncompressed_blocking(&file, frame))
@@ -413,7 +502,7 @@ fn read_raw_uncompressed_blocking(
             file.series_metadata.native_pixel.high_bit,
             file.pixel_representation == 1,
         )
-        .context("frame decode failed: invalid native stored-bit layout")?;
+        .context("invalid native stored-bit layout")?;
     }
 
     let metadata = file.raw_metadata(rows, columns, bits_allocated, samples_per_pixel);

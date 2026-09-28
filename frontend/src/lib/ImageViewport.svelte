@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { untrack } from "svelte";
 	import {
+		ApiError,
 		fetchDisplayFrameBlob,
 		isApiError,
 		type DisplayFrameWindowOptions,
@@ -61,6 +62,7 @@
 		overlayValueReadout,
 		PixelProbe,
 		pixelReadout,
+		probesSinglePixels,
 		type OverlayValueState,
 	} from "./viewport/pixelProbe.svelte";
 	import { RawFrameSource } from "./viewport/rawFrameSource";
@@ -165,7 +167,9 @@
 	let viewportEl: HTMLElement | undefined = $state();
 	let viewportSize = $state({ width: 0, height: 0 });
 	let canvasEl: HTMLCanvasElement | undefined = $state();
-	let currentRawFrame = $state<RawFrame | null>(null);
+	// Raw, not a deep proxy: the frame is posted to the W/L worker, and a
+	// proxied metadata object cannot be structured-cloned.
+	let currentRawFrame = $state.raw<RawFrame | null>(null);
 	let rawWindowLevelFallbackByFile = $state<Record<number, boolean>>({});
 	const annotations = new AnnotationStore();
 
@@ -296,7 +300,7 @@
 		if (!mappedScale) return null;
 		if (!needsWindowSamples) return displayWindow;
 		const samples = probe.samples(activeFile.index, currentFrame);
-		if (samples?.status !== "ready" || validateRenderableRawFrame(samples.frame) !== null) return null;
+		if (samples?.status !== "ready" || samples.at || validateRenderableRawFrame(samples.frame) !== null) return null;
 		return windowMode === "full_dynamic"
 			? computeFullDynamicWindow(samples.frame)
 			: computePercentileWindow(samples.frame);
@@ -607,10 +611,17 @@
 			if (generation !== requestGeneration || pipelineMode !== "diagnostic_wl") return;
 			loading = false;
 			currentRawFrame = null;
-			rawWindowLevelFallbackByFile = {
-				...rawWindowLevelFallbackByFile,
-				[fileIndex]: true,
-			};
+			// Only a layout the raw endpoint cannot serve moves the file to
+			// server windowing for good; a dropped request or a failed frame is
+			// this frame's error, and the next frame tries raw samples again.
+			if (error instanceof ApiError && error.status === 422) {
+				rawWindowLevelFallbackByFile = {
+					...rawWindowLevelFallbackByFile,
+					[fileIndex]: true,
+				};
+			} else {
+				loadError = (error as Error).message || "Failed to load frame";
+			}
 		}
 	}
 
@@ -764,8 +775,10 @@
 		if (!nextScope || nextScope === retainedScopeKey) return;
 		retainedScopeKey = nextScope;
 		invalidateWindowLevelRenders();
-		rawFrames.clear();
-		displayFrames.clear();
+		// The frame caches are byte-budgeted and keyed by file, so a tab's
+		// frames stay for a return; only the previous tab's work stops.
+		rawFrames.abortAll();
+		displayFrames.resetScope();
 	});
 
 	$effect(() => {
@@ -866,6 +879,10 @@
 		}
 
 		loadError = null;
+		untrack(() => {
+			rawFrames.abortFar(navigationFrames, navigationPosition);
+			displayFrames.abortFar(navigationFrames, navigationPosition);
+		});
 		if (mode === "overlay" && activeOverlay) {
 			void loadOverlayAndRender(activeOverlay, generation);
 		} else if (mode === "diagnostic_wl") {
@@ -916,9 +933,12 @@
 		if (!(probing || needsWindowSamples) || cinePlaying || !activeFile.has_pixels) return;
 		const { file, frameIndex } = probeTarget;
 		const displayed = pipelineMode === "diagnostic_wl" ? currentRawFrame : null;
+		const wholeFrame = needsWindowSamples;
+		// A frame read one pixel at a time follows the cursor.
+		const pixel = !wholeFrame && probesSinglePixels(file) ? probe.pixel : null;
 		return untrack(() => {
 			valueMappings.ensure(file.index, frameIndex);
-			return probe.track(file, frameIndex, displayed);
+			return probe.track(file, frameIndex, displayed, { pixel, wholeFrame });
 		});
 	});
 

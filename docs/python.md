@@ -60,6 +60,11 @@ It provides:
 | `stop(timeout=5.0)` | Ask the viewer to stop, wait for exit, and return the exit code. |
 | Context manager | Calls `stop()` automatically on context exit. |
 
+Viewers started with `block=False` are stopped when the Python interpreter
+exits, whether or not the handle is still referenced, so a finished script or a
+restarted notebook kernel does not leave a server running. Use a blocking call
+or the `dcmview` command when the viewer should outlive the script.
+
 `stop()` is idempotent for local handles after the process has already exited.
 It first requests graceful process shutdown and waits; the Rust startup
 lifecycle cancels and awaits any in-progress DICOM discovery before a normal
@@ -143,7 +148,7 @@ Metadata filters:
 ```python
 view(
     "./study_dir",
-    filters=["Modality=CT", "PatientID=phantom"],
+    filters=["modality=CT", "patient_id=phantom"],
 )
 ```
 
@@ -170,7 +175,10 @@ Open `http://127.0.0.1:8010` locally.
 ## Return Values and Errors
 
 Blocking calls return `None` after a successful viewer exit. Non-blocking calls
-return a shutdown handle.
+return a shutdown handle once the viewer has found DICOM files (or VS Code has
+taken the launch), usually within milliseconds; if the scan finds none, the
+call raises `subprocess.CalledProcessError` instead of returning a handle whose
+viewer has already exited.
 
 The wrapper may raise:
 
@@ -190,9 +198,9 @@ The Python wrapper resolves the binary in this order:
 2. The bundled wheel binary under `dcmview_py/bin/`.
 3. `dcmview` or `dcmview.exe` on `PATH`.
 
-When launching a local subprocess, the wrapper sets `DCMVIEW_VSCODE_BYPASS=1`
-for the child process so that the Rust binary does not recursively route itself
-back into VS Code interception.
+With `vscode_bridge=False`, the wrapper sets `DCMVIEW_VSCODE_BYPASS=1` for the
+child process so that the binary runs the local viewer instead of routing into
+VS Code.
 
 ## VS Code Bridge
 

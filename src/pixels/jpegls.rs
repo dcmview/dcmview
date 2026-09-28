@@ -2,22 +2,15 @@ use crate::api::contracts::{RawFrameMetadata, WindowMode};
 use crate::types::FileEntry;
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
-use dicom_pixeldata::PixelDecoder;
+use std::sync::Arc;
 use tokio::task;
 
-use super::encapsulated::open_for_frame_decode;
 use super::error::{PixelError, PixelResult};
-use super::render::{encode_windowed_luminance_png, LuminanceRenderOptions};
-
-struct DecodedJpegLsFrame {
-    bytes: Vec<u8>,
-    rows: u32,
-    columns: u32,
-    bits_allocated: u32,
-}
+use super::pixeldata_frame::{self, DecodedFrame};
+use super::render::{encode_windowed_luminance_png, LuminanceRenderOptions, StoredSamples};
 
 pub(crate) async fn decode_jpeg_ls_to_png(
-    file: FileEntry,
+    file: Arc<FileEntry>,
     frame: u32,
     requested_wc: Option<f64>,
     requested_ww: Option<f64>,
@@ -25,40 +18,19 @@ pub(crate) async fn decode_jpeg_ls_to_png(
 ) -> PixelResult<Bytes> {
     task::spawn_blocking(move || {
         let decoded = decode_frame(&file, frame).map_err(PixelError::frame_decode)?;
-        let signed = file.pixel_representation == 1;
-        let samples: Vec<f64> = match decoded.bits_allocated {
-            8 => decoded
-                .bytes
-                .into_iter()
-                .map(|value| {
-                    if signed {
-                        f64::from(value as i8)
-                    } else {
-                        f64::from(value)
-                    }
-                })
-                .collect(),
-            16 => decoded
-                .bytes
-                .chunks_exact(2)
-                .map(|sample| {
-                    let value = u16::from_le_bytes([sample[0], sample[1]]);
-                    if signed {
-                        f64::from(value as i16)
-                    } else {
-                        f64::from(value)
-                    }
-                })
-                .collect(),
-            bits => {
-                return Err(PixelError::UnsupportedLayout(format!(
-                    "JPEG-LS Lossless display does not support BitsAllocated {bits}"
-                )));
-            }
-        };
+        if !matches!(decoded.bits_allocated, 8 | 16) {
+            return Err(PixelError::UnsupportedLayout(format!(
+                "JPEG-LS Lossless display does not support BitsAllocated {}",
+                decoded.bits_allocated
+            )));
+        }
         encode_windowed_luminance_png(
             &file,
-            &samples,
+            StoredSamples::Integer {
+                bytes: &decoded.bytes,
+                bits_allocated: decoded.bits_allocated,
+                signed: file.pixel_representation == 1,
+            },
             LuminanceRenderOptions {
                 frame,
                 rows: decoded.rows,
@@ -75,7 +47,7 @@ pub(crate) async fn decode_jpeg_ls_to_png(
 }
 
 pub(crate) async fn decode_raw_jpeg_ls(
-    file: FileEntry,
+    file: Arc<FileEntry>,
     frame: u32,
 ) -> PixelResult<(Bytes, RawFrameMetadata)> {
     task::spawn_blocking(move || {
@@ -87,66 +59,31 @@ pub(crate) async fn decode_raw_jpeg_ls(
     .map_err(|error| PixelError::raw_decode(anyhow!("raw JPEG-LS decode task failed: {error}")))?
 }
 
-fn decode_frame(file: &FileEntry, frame: u32) -> Result<DecodedJpegLsFrame> {
-    if file.samples_per_pixel != 1 {
+fn decode_frame(file: &FileEntry, frame: u32) -> Result<DecodedFrame> {
+    let decoded = pixeldata_frame::decode_frame(file, frame, "JPEG-LS Lossless")?;
+    if !matches!(decoded.bits_allocated, 8 | 16) {
         return Err(anyhow!(
-            "JPEG-LS Lossless requires one sample per pixel, found {}",
-            file.samples_per_pixel
+            "JPEG-LS Lossless does not support decoded BitsAllocated {}",
+            decoded.bits_allocated
         ));
     }
-    if !matches!(
-        file.photometric_interpretation.trim(),
-        "MONOCHROME1" | "MONOCHROME2"
-    ) {
-        return Err(anyhow!(
-            "JPEG-LS Lossless grayscale does not support PhotometricInterpretation {}",
-            file.photometric_interpretation
-        ));
-    }
-
-    let (object, frame_in_object) = open_for_frame_decode(file, frame)?;
-    let decoded = object
-        .decode_pixel_data_frame(frame_in_object)
-        .context("JPEG-LS Lossless frame decode failed")?;
-    let bits_allocated = decoded.bits_allocated() as u32;
-    if !matches!(bits_allocated, 8 | 16) {
-        return Err(anyhow!(
-            "JPEG-LS Lossless does not support decoded BitsAllocated {bits_allocated}"
-        ));
-    }
-    if decoded.samples_per_pixel() != 1 {
+    if decoded.samples_per_pixel != 1 {
         return Err(anyhow!(
             "JPEG-LS Lossless requires one decoded sample per pixel, found {}",
-            decoded.samples_per_pixel()
+            decoded.samples_per_pixel
         ));
     }
-    let frame_bytes = decoded
-        .frame_data(0)
-        .context("decoded JPEG-LS frame is incomplete")?;
-    let expected_len = usize::try_from(decoded.rows())?
-        .checked_mul(usize::try_from(decoded.columns())?)
-        .and_then(|pixels| pixels.checked_mul((bits_allocated / 8) as usize))
+    let expected_len = usize::try_from(decoded.rows)?
+        .checked_mul(usize::try_from(decoded.columns)?)
+        .and_then(|pixels| pixels.checked_mul((decoded.bits_allocated / 8) as usize))
         .context("decoded JPEG-LS frame size overflow")?;
-    if frame_bytes.len() != expected_len {
+    if decoded.bytes.len() != expected_len {
         return Err(anyhow!(
             "decoded JPEG-LS frame length {} does not match expected {expected_len}",
-            frame_bytes.len()
+            decoded.bytes.len()
         ));
     }
-    let bytes = if bits_allocated == 16 {
-        frame_bytes
-            .chunks_exact(2)
-            .flat_map(|sample| u16::from_ne_bytes([sample[0], sample[1]]).to_le_bytes())
-            .collect()
-    } else {
-        frame_bytes.to_vec()
-    };
-    Ok(DecodedJpegLsFrame {
-        bytes,
-        rows: decoded.rows(),
-        columns: decoded.columns(),
-        bits_allocated,
-    })
+    Ok(decoded)
 }
 
 #[cfg(test)]
@@ -248,9 +185,13 @@ mod tests {
         let directory = tempdir().unwrap();
         let file = write_fixture(&directory.path().join("mono2-lossless-jpegls.dcm"));
 
-        let raw = load_raw_frame(file.clone(), new_raw_cache(), RawFrameRequest { frame: 0 })
-            .await
-            .unwrap();
+        let raw = load_raw_frame(
+            file.clone().into(),
+            new_raw_cache(),
+            RawFrameRequest { frame: 0 },
+        )
+        .await
+        .unwrap();
         assert_eq!(raw.body.as_ref(), EXPECTED_SAMPLES);
         assert_eq!(raw.metadata.rows, 2);
         assert_eq!(raw.metadata.columns, 2);
@@ -260,7 +201,7 @@ mod tests {
         assert_eq!(raw.metadata.photometric_interpretation, "MONOCHROME2");
 
         let display = load_frame(
-            file,
+            file.into(),
             new_cache(),
             FrameRequest {
                 frame: 0,

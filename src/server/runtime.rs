@@ -66,7 +66,7 @@ impl BoundServer {
         let mut stop_signals = StopSignals::listen();
         let server_url = self.url();
 
-        println!(
+        crate::status_line!(
             "dcmview: (on a remote server? run on your local machine: ssh -L {0}:localhost:{0} user@host)",
             self.local_addr.port()
         );
@@ -100,14 +100,14 @@ impl BoundServer {
         );
 
         if config.startup_json {
-            println!(
+            crate::status_line!(
                 "{}",
                 startup_event_json(&server_url, &config.host, self.local_addr.port())
                     .context("failed to serialize startup event")?
             );
         }
-        println!("dcmview: server running at {server_url}");
-        println!("dcmview: press Ctrl+C to stop");
+        crate::status_line!("dcmview: server running at {server_url}");
+        crate::status_line!("dcmview: press Ctrl+C to stop");
 
         let serve_result = axum::serve(self.listener, app)
             .with_graceful_shutdown(shutdown)
@@ -115,7 +115,7 @@ impl BoundServer {
 
         browser_task.abort();
         serve_result.context("server failed")?;
-        println!("dcmview: shutting down...");
+        crate::status_line!("dcmview: shutting down...");
         Ok(())
     }
 }

@@ -3,9 +3,10 @@ use super::filter::{matches_filters, ScanFilter};
 use crate::types::FileEntry;
 use anyhow::{Context, Result};
 use rayon::prelude::*;
+use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use thiserror::Error;
@@ -53,6 +54,20 @@ pub enum DiscoveryReason {
 }
 
 impl DiscoveryReason {
+    /// What a skip for this reason means, for the discovery summary.
+    pub const fn summary(self) -> &'static str {
+        match self {
+            Self::ValidDicom => "valid DICOM",
+            Self::InputPathUnavailable => "missing input path",
+            Self::DirectoryEntryUnreadable => "unreadable directory entry",
+            Self::MissingPart10Preamble => "not DICOM (no DICM preamble)",
+            Self::DicomParseFailed => "unparsable DICOM",
+            Self::UnsupportedMediaDirectory => "DICOMDIR",
+            Self::InspectionFailed => "unreadable file",
+            Self::FilterMismatch => "filtered",
+        }
+    }
+
     pub const fn code(self) -> &'static str {
         match self {
             Self::ValidDicom => "valid_dicom",
@@ -88,6 +103,8 @@ impl DiscoveryRecord {
 pub struct DiscoveryReport {
     pub files_found: usize,
     pub skipped: usize,
+    /// Skipped candidates by reason, so the summary can say why.
+    pub skipped_by_reason: BTreeMap<DiscoveryReason, usize>,
     pub filtered: usize,
     pub searched_recursive: bool,
 }
@@ -243,7 +260,16 @@ fn discover_progressive_blocking(
     }
 
     let files_found = AtomicUsize::new(0);
-    let skipped = AtomicUsize::new(initial_skipped.len());
+    let skipped = Mutex::new(BTreeMap::<DiscoveryReason, usize>::new());
+    let note_skip = |path: &Path, reason: DiscoveryReason| {
+        tracing::debug!(path = %path.display(), reason = reason.code(), "skipped");
+        if let Ok(mut counts) = skipped.lock() {
+            *counts.entry(reason).or_default() += 1;
+        }
+    };
+    for record in &initial_skipped {
+        note_skip(&record.path, record.reason);
+    }
     let filtered = AtomicUsize::new(0);
 
     let processing_result: std::result::Result<(), DiscoveryCancelled> = candidates
@@ -281,6 +307,7 @@ fn discover_progressive_blocking(
                         cancellation,
                         DiscoveryEvent::FilteredInput(record),
                     )?;
+                    tracing::debug!(path = %candidate.display(), "filtered");
                     filtered.fetch_add(1, Ordering::Relaxed);
                 }
                 Ok(EntryInspection::Skipped(reason)) => {
@@ -291,7 +318,7 @@ fn discover_progressive_blocking(
                         cancellation,
                         DiscoveryEvent::SkippedInput(record),
                     )?;
-                    skipped.fetch_add(1, Ordering::Relaxed);
+                    note_skip(candidate, reason);
                 }
                 Err(error) => {
                     let record = DiscoveryRecord::new(
@@ -304,7 +331,7 @@ fn discover_progressive_blocking(
                         cancellation,
                         DiscoveryEvent::SkippedInput(record),
                     )?;
-                    skipped.fetch_add(1, Ordering::Relaxed);
+                    note_skip(candidate, DiscoveryReason::InspectionFailed);
                     eprintln!("dcmview: warning — failed to inspect DICOM: {error}");
                 }
             }
@@ -314,9 +341,11 @@ fn discover_progressive_blocking(
     processing_result?;
     ensure_discovery_active(&events, cancellation)?;
 
+    let skipped_by_reason = skipped.into_inner().unwrap_or_default();
     Ok(DiscoveryReport {
         files_found: files_found.load(Ordering::Relaxed),
-        skipped: skipped.load(Ordering::Relaxed),
+        skipped: skipped_by_reason.values().sum(),
+        skipped_by_reason,
         filtered: filtered.load(Ordering::Relaxed),
         searched_recursive: options.recursive,
     })

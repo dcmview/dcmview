@@ -5,7 +5,8 @@ use super::metadata::{
 };
 use super::DiscoveryReason;
 use crate::api::contracts::WindowPreset;
-use crate::dicom_values::{read_first_string, read_number, read_strings};
+use crate::dicom_values::{read_first_string, read_number, read_strings, sequence_items};
+use crate::pixels::{read_pixel_padding_range, NativeByteOrder, NativeFrameLayout};
 use crate::types::{FileEntry, NativePixelDataKind, NativePixelMetadata, SeriesMetadata};
 use anyhow::{Context, Result};
 use dicom_core::header::HasLength;
@@ -59,7 +60,31 @@ pub(super) fn build_entry(path: &Path) -> Result<EntryInspection> {
     let series_number = read_first_string(&obj, tags::SERIES_NUMBER).unwrap_or_default();
     let series_description = read_first_string(&obj, tags::SERIES_DESCRIPTION).unwrap_or_default();
     let instance_number = read_first_string(&obj, tags::INSTANCE_NUMBER).unwrap_or_default();
-    let frame_count = read_number::<u32>(&obj, tags::NUMBER_OF_FRAMES).unwrap_or(1);
+    let rows = read_number::<u32>(&obj, tags::ROWS).unwrap_or(0);
+    let columns = read_number::<u32>(&obj, tags::COLUMNS).unwrap_or(0);
+    let bits_allocated = read_number::<u32>(&obj, tags::BITS_ALLOCATED).unwrap_or(8);
+    let samples_per_pixel = read_number::<u32>(&obj, tags::SAMPLES_PER_PIXEL)
+        .unwrap_or(1)
+        .max(1);
+    let photometric_interpretation = read_first_string(&obj, tags::PHOTOMETRIC_INTERPRETATION)
+        .unwrap_or_else(|| "MONOCHROME2".to_string());
+    let pixel_header = find_pixel_data_header(path, &transfer_syntax_uid)?;
+    let pixel_data_kind = pixel_header.as_ref().map(|header| header.kind);
+    let has_pixels = pixel_header.is_some();
+    let frame_count = present_frame_count(
+        read_number::<u32>(&obj, tags::NUMBER_OF_FRAMES).unwrap_or(1),
+        sequence_items(&obj, tags::PER_FRAME_FUNCTIONAL_GROUPS_SEQUENCE).len(),
+        pixel_header.as_ref(),
+        NativeFrameLayout {
+            rows,
+            columns,
+            samples_per_pixel,
+            bits_allocated,
+            planar_configuration: None,
+            photometric_interpretation: &photometric_interpretation,
+            byte_order: NativeByteOrder::LittleEndian,
+        },
+    );
     let frame_of_reference_uid =
         read_first_string(&obj, tags::FRAME_OF_REFERENCE_UID).unwrap_or_default();
     let image_position_patient = read_exact_f64s(&obj, tags::IMAGE_POSITION_PATIENT);
@@ -110,9 +135,6 @@ pub(super) fn build_entry(path: &Path) -> Result<EntryInspection> {
         tags::OPTICAL_PATH_SEQUENCE,
         tags::OPTICAL_PATH_IDENTIFIER,
     );
-    let rows = read_number::<u32>(&obj, tags::ROWS).unwrap_or(0);
-    let columns = read_number::<u32>(&obj, tags::COLUMNS).unwrap_or(0);
-    let bits_allocated = read_number::<u32>(&obj, tags::BITS_ALLOCATED).unwrap_or(8);
     let planar_configuration = read_number::<u32>(&obj, tags::PLANAR_CONFIGURATION);
     let bits_stored = read_number::<u32>(&obj, tags::BITS_STORED);
     let high_bit = read_number::<u32>(&obj, tags::HIGH_BIT);
@@ -123,15 +145,8 @@ pub(super) fn build_entry(path: &Path) -> Result<EntryInspection> {
     let voi_lut = read_lut_sequence(&obj, tags::VOILUT_SEQUENCE);
     let presentation = read_presentation_metadata(&obj, frame_count);
     let pixel_representation = read_number::<u32>(&obj, tags::PIXEL_REPRESENTATION).unwrap_or(0);
-    let samples_per_pixel = read_number::<u32>(&obj, tags::SAMPLES_PER_PIXEL)
-        .unwrap_or(1)
-        .max(1);
-    let photometric_interpretation = read_first_string(&obj, tags::PHOTOMETRIC_INTERPRETATION)
-        .unwrap_or_else(|| "MONOCHROME2".to_string());
     let rescale_slope = read_number::<f64>(&obj, tags::RESCALE_SLOPE).unwrap_or(1.0);
     let rescale_intercept = read_number::<f64>(&obj, tags::RESCALE_INTERCEPT).unwrap_or(0.0);
-    let pixel_data_kind = find_native_pixel_data_kind(path, &transfer_syntax_uid)?;
-    let has_pixels = pixel_data_kind.is_some();
     let default_window = match (
         read_number::<f64>(&obj, tags::WINDOW_CENTER),
         read_number::<f64>(&obj, tags::WINDOW_WIDTH),
@@ -174,6 +189,9 @@ pub(super) fn build_entry(path: &Path) -> Result<EntryInspection> {
                 normalized_pixel_aspect,
                 modality_lut,
                 voi_lut,
+                pixel_padding: pixel_data_kind
+                    .and_then(|kind| read_pixel_padding_range(&obj, kind))
+                    .map(|range| range.bounds().into()),
             },
             presentation,
             frame_of_reference_uid,
@@ -217,8 +235,7 @@ pub(super) fn build_entry(path: &Path) -> Result<EntryInspection> {
 
 fn valid_discovery_structure(object: &dicom_object::DefaultDicomObject) -> bool {
     let character_set_valid = object
-        .element(tags::SPECIFIC_CHARACTER_SET)
-        .ok()
+        .get(tags::SPECIFIC_CHARACTER_SET)
         .and_then(|element| element.to_str().ok())
         .map(|value| valid_specific_character_set(&value))
         .unwrap_or(true);
@@ -270,13 +287,56 @@ fn has_dicm_preamble(path: &Path) -> Result<bool> {
 /// top-level elements, so a pixel element nested in a sequence (an Icon Image
 /// Sequence, for example) or pixel-tag bytes inside another value never make
 /// a no-pixel object look like an image.
-fn find_native_pixel_data_kind(
+/// The top-level pixel element as discovery sees it, without reading pixel
+/// values.
+struct PixelDataHeader {
+    kind: NativePixelDataKind,
+    /// Value length of a native element; `None` for encapsulated pixel data.
+    native_length: Option<u32>,
+    file_length: u64,
+}
+
+/// `NumberOfFrames` bounded by what the file can hold: the Per-frame
+/// Functional Groups items present and the pixel data present. Discovery
+/// sizes per-frame geometry, and the catalog per-frame navigation, from this
+/// count, so a corrupt or hostile header must not size them beyond the file.
+/// Frames past the data would fail to decode anyway. At least one frame is
+/// kept so a file whose data is short still reports its decode error.
+fn present_frame_count(
+    declared: u32,
+    per_frame_items: usize,
+    pixels: Option<&PixelDataHeader>,
+    layout: NativeFrameLayout<'_>,
+) -> u32 {
+    let mut bound = u64::from(declared);
+    if per_frame_items > 0 {
+        bound = bound.min(per_frame_items as u64);
+    }
+    bound = match pixels {
+        // No pixel data holds no frames.
+        None => bound.min(1),
+        Some(PixelDataHeader {
+            native_length: Some(length),
+            ..
+        }) => layout
+            .frame_capacity(u64::from(*length))
+            .map_or(bound, |capacity| bound.min(capacity)),
+        // Every encapsulated frame takes at least one 8-byte item header.
+        Some(PixelDataHeader { file_length, .. }) => bound.min(file_length / 8),
+    };
+    u32::try_from(bound.max(1)).unwrap_or(u32::MAX)
+}
+
+fn find_pixel_data_header(
     path: &Path,
     transfer_syntax_uid: &str,
-) -> Result<Option<NativePixelDataKind>> {
-    let mut reader = io::BufReader::new(
-        File::open(path).with_context(|| format!("failed to open {}", path.display()))?,
-    );
+) -> Result<Option<PixelDataHeader>> {
+    let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    let file_length = file
+        .metadata()
+        .with_context(|| format!("failed to stat {}", path.display()))?
+        .len();
+    let mut reader = io::BufReader::new(file);
     reader
         .seek(io::SeekFrom::Start(128))
         .with_context(|| format!("failed to seek {}", path.display()))?;
@@ -285,24 +345,29 @@ fn find_native_pixel_data_kind(
     let transfer_syntax = TransferSyntaxRegistry
         .get(transfer_syntax_uid)
         .with_context(|| format!("unknown transfer syntax {transfer_syntax_uid}"))?;
-    let kind = if transfer_syntax_uid == uids::DEFLATED_EXPLICIT_VR_LITTLE_ENDIAN {
-        top_level_pixel_data_kind(flate2::read::DeflateDecoder::new(reader), transfer_syntax)
+    let element = if transfer_syntax_uid == uids::DEFLATED_EXPLICIT_VR_LITTLE_ENDIAN {
+        top_level_pixel_element(flate2::read::DeflateDecoder::new(reader), transfer_syntax)
     } else {
-        top_level_pixel_data_kind(reader, transfer_syntax)
+        top_level_pixel_element(reader, transfer_syntax)
     };
-    kind.with_context(|| format!("failed to parse {}", path.display()))
+    let element = element.with_context(|| format!("failed to parse {}", path.display()))?;
+    Ok(element.map(|(kind, native_length)| PixelDataHeader {
+        kind,
+        native_length,
+        file_length,
+    }))
 }
 
-fn top_level_pixel_data_kind(
+fn top_level_pixel_element(
     source: impl Read,
     transfer_syntax: &TransferSyntax,
-) -> Result<Option<NativePixelDataKind>> {
+) -> Result<Option<(NativePixelDataKind, Option<u32>)>> {
     let tokens = DataSetReader::new_with_ts(source, transfer_syntax)?;
     let mut depth = 0_usize;
     for token in tokens {
         match token? {
             DataToken::PixelSequenceStart if depth == 0 => {
-                return Ok(Some(NativePixelDataKind::Integer));
+                return Ok(Some((NativePixelDataKind::Integer, None)));
             }
             DataToken::SequenceStart { .. } | DataToken::PixelSequenceStart => depth += 1,
             DataToken::SequenceEnd => depth = depth.saturating_sub(1),
@@ -313,7 +378,7 @@ fn top_level_pixel_data_kind(
                     tags::DOUBLE_FLOAT_PIXEL_DATA => NativePixelDataKind::Float64,
                     _ => continue,
                 };
-                return Ok(Some(kind));
+                return Ok(Some((kind, header.len.get())));
             }
             _ => {}
         }
@@ -382,6 +447,62 @@ mod tests {
         assert_eq!((file.rows, file.columns), (2, 2));
         assert_eq!(file.bits_allocated, 1);
         assert!(file.has_pixels);
+    }
+
+    #[test]
+    fn bounds_frame_count_by_the_pixel_data_present() {
+        let directory = tempdir().expect("temp directory");
+        let path = directory.path().join("absurd-frames.dcm");
+        let mut object = base_object();
+        object.put(DataElement::new(
+            tags::NUMBER_OF_FRAMES,
+            VR::IS,
+            u32::MAX.to_string(),
+        ));
+        // Enhanced objects always carry a Shared Functional Groups item, which
+        // used to size per-frame geometry by the declared frame count.
+        object.put(DataElement::new(
+            tags::SHARED_FUNCTIONAL_GROUPS_SEQUENCE,
+            VR::SQ,
+            dicom_core::value::DataSetSequence::from(vec![
+                dicom_object::InMemDicomObject::from_element_iter([DataElement::new(
+                    tags::PLANE_ORIENTATION_SEQUENCE,
+                    VR::SQ,
+                    dicom_core::value::DataSetSequence::from(vec![
+                        dicom_object::InMemDicomObject::from_element_iter([DataElement::new(
+                            tags::IMAGE_ORIENTATION_PATIENT,
+                            VR::DS,
+                            "1\\0\\0\\0\\1\\0",
+                        )]),
+                    ]),
+                )]),
+            ]),
+        ));
+        // Three whole 2x2 16-bit frames and half of a fourth.
+        object.put(DataElement::new(
+            tags::PIXEL_DATA,
+            VR::OW,
+            PrimitiveValue::U16(vec![0_u16; 14].into()),
+        ));
+        object
+            .with_meta(
+                FileMetaTableBuilder::new()
+                    .transfer_syntax(uids::EXPLICIT_VR_LITTLE_ENDIAN)
+                    .media_storage_sop_class_uid(uids::ENHANCED_CT_IMAGE_STORAGE)
+                    .media_storage_sop_instance_uid("2.25.300"),
+            )
+            .expect("file meta")
+            .write_to_file(&path)
+            .expect("write fixture");
+
+        let EntryInspection::Selected(file) = build_entry(&path).expect("inspect fixture") else {
+            panic!("fixture should be selected");
+        };
+        assert_eq!(file.frame_count, 3);
+        assert_eq!(
+            file.series_metadata.frame_image_orientations_patient.len(),
+            3
+        );
     }
 
     #[test]

@@ -8,8 +8,9 @@ use crate::series::{
     SeriesFileInput, SeriesGroup, SeriesStack, SeriesWarning,
 };
 use crate::types::FileEntry;
+use bytes::Bytes;
 use dicom_dictionary_std::uids;
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use tokio::sync::{futures::Notified, Notify};
 
@@ -19,9 +20,10 @@ pub const DISCOVERY_RESPONSE_MAX_RECORDS: usize = 256;
 pub struct FileRegistry {
     inner: Arc<RwLock<FileRegistryInner>>,
     notify: Arc<Notify>,
-    /// The last series catalog, keyed by the file count and scan state it
-    /// was built from; the viewer polls it every 500 ms during a scan.
-    catalog: Arc<Mutex<Option<(usize, bool, SeriesCatalogResponse)>>>,
+    /// The last series catalog as JSON, keyed by the file count and scan
+    /// state it was built from; the viewer polls it every 500 ms during a
+    /// scan, and a large catalog is costly to clone and serialize again.
+    catalog: Arc<Mutex<Option<(usize, bool, Bytes)>>>,
 }
 
 /// Files and scan counters share one lock so every status read is a
@@ -110,11 +112,9 @@ impl FileRegistry {
         self.notify.notified()
     }
 
-    pub fn get(&self, index: usize) -> Option<FileEntry> {
-        self.read()
-            .files
-            .get(index)
-            .map(|file| FileEntry::clone(file))
+    /// A shared handle to the file at `index`; entries never change once registered.
+    pub fn get(&self, index: usize) -> Option<Arc<FileEntry>> {
+        self.read().files.get(index).cloned()
     }
 
     /// Shared handles to every registered file; cheap to take on each request.
@@ -126,33 +126,54 @@ impl FileRegistry {
         self.read().summaries.clone()
     }
 
-    pub fn series_catalog_snapshot(&self) -> SeriesCatalogResponse {
+    /// The series catalog, serialized as its API response.
+    pub fn series_catalog_json(&self) -> serde_json::Result<Bytes> {
         let (files, scan_complete) = {
             let inner = self.read();
             (inner.files.clone(), inner.scan_complete)
         };
         let key = (files.len(), scan_complete);
         if let Ok(cached) = self.catalog.lock() {
-            if let Some((count, complete, catalog)) = cached.as_ref() {
+            if let Some((count, complete, json)) = cached.as_ref() {
                 if (*count, *complete) == key {
-                    return catalog.clone();
+                    return Ok(json.clone());
                 }
             }
         }
 
         let catalog = SeriesCatalog::build(files.iter().map(|file| series_file_input(file)));
+        let mut frames_of_reference = HashMap::<(&str, &str), BTreeSet<&str>>::new();
+        for file in &files {
+            let uids = frames_of_reference
+                .entry((&file.study_instance_uid, &file.series_instance_uid))
+                .or_default();
+            let uid = file.series_metadata.frame_of_reference_uid.as_str();
+            if !uid.is_empty() {
+                uids.insert(uid);
+            }
+        }
         let response = SeriesCatalogResponse {
             series: catalog
                 .series()
                 .iter()
-                .map(|group| series_summary(group, &files))
+                .map(|group| {
+                    let uids = frames_of_reference
+                        .get(&(
+                            group.id.study_instance_uid.as_str(),
+                            group.id.series_instance_uid.as_str(),
+                        ))
+                        .map(|uids| uids.iter().map(|uid| uid.to_string()).collect())
+                        .unwrap_or_default();
+                    series_summary(group, uids)
+                })
                 .collect(),
             scan_complete,
         };
+        let json = Bytes::from(serde_json::to_vec(&response)?);
         if let Ok(mut cached) = self.catalog.lock() {
-            *cached = Some((key.0, key.1, response.clone()));
+            *cached = Some((key.0, key.1, json.clone()));
         }
-        response
+        Ok(json)
     }
 
     /// The most recent discovery records, sorted by path.
@@ -234,18 +255,7 @@ fn series_file_input(file: &FileEntry) -> SeriesFileInput {
     }
 }
 
-fn series_summary(group: &SeriesGroup, files: &[Arc<FileEntry>]) -> SeriesSummary {
-    let frame_of_reference_uids = files
-        .iter()
-        .filter(|file| {
-            file.study_instance_uid == group.id.study_instance_uid
-                && file.series_instance_uid == group.id.series_instance_uid
-        })
-        .map(|file| file.series_metadata.frame_of_reference_uid.clone())
-        .filter(|uid| !uid.is_empty())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
+fn series_summary(group: &SeriesGroup, frame_of_reference_uids: Vec<String>) -> SeriesSummary {
     let id = series_id(&group.id.study_instance_uid, &group.id.series_instance_uid);
     SeriesSummary {
         id: id.clone(),
@@ -332,7 +342,6 @@ fn stack_summary(series_id: &str, stack: &SeriesStack) -> SeriesStackSummary {
                 virtual_index: frame.virtual_index,
                 file_index: frame.file_index,
                 frame_index: frame.frame_index,
-                source_path: frame.source_path.display().to_string(),
                 sop_instance_uid: frame.sop_instance_uid.clone(),
                 instance_number: frame
                     .instance_number

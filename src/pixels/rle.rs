@@ -2,6 +2,7 @@ use crate::api::contracts::{RawFrameMetadata, WindowMode};
 use crate::types::FileEntry;
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
+use std::sync::Arc;
 use thiserror::Error;
 use tokio::task;
 
@@ -12,7 +13,7 @@ use super::header::open_header;
 use super::icc::select_icc_profile;
 use super::palette::palette_indices_to_rgb8;
 use super::render::{
-    encode_rgb8_display_png, encode_windowed_luminance_png, LuminanceRenderOptions,
+    encode_rgb8_display_png, encode_windowed_luminance_png, LuminanceRenderOptions, StoredSamples,
 };
 use super::stored_bits::canonicalize_integer_samples;
 use super::syntax::{Codec, ColorSamples};
@@ -55,7 +56,7 @@ enum RleDecodeError {
 }
 
 pub(crate) async fn decode_rle_to_png(
-    file: FileEntry,
+    file: Arc<FileEntry>,
     frame: u32,
     requested_wc: Option<f64>,
     requested_ww: Option<f64>,
@@ -80,14 +81,15 @@ fn decode_rle_to_png_blocking(
 
     match (file.samples_per_pixel, photometric.as_str()) {
         (1, "MONOCHROME1" | "MONOCHROME2") => {
-            let samples = decode_monochrome_samples(
-                &decoded,
-                file.bits_allocated,
-                file.pixel_representation,
-            )?;
+            let (bits_allocated, signed) =
+                monochrome_layout(file.bits_allocated, file.pixel_representation)?;
             encode_windowed_luminance_png(
                 file,
-                &samples,
+                StoredSamples::Integer {
+                    bytes: &decoded,
+                    bits_allocated,
+                    signed,
+                },
                 LuminanceRenderOptions {
                     frame,
                     rows: file.rows,
@@ -132,7 +134,7 @@ fn unsupported_display_layout(file: &FileEntry) -> PixelError {
 }
 
 pub(crate) async fn decode_raw_rle(
-    file: FileEntry,
+    file: Arc<FileEntry>,
     frame: u32,
 ) -> PixelResult<(Bytes, RawFrameMetadata)> {
     task::spawn_blocking(move || {
@@ -338,25 +340,11 @@ fn read_u32_le(bytes: &[u8], offset: usize) -> u32 {
     ])
 }
 
-fn decode_monochrome_samples(
-    decoded: &[u8],
-    bits_allocated: u32,
-    pixel_representation: u32,
-) -> PixelResult<Vec<f64>> {
+/// The container width and signedness of a displayable monochrome RLE frame,
+/// whose decoded bytes are little endian.
+fn monochrome_layout(bits_allocated: u32, pixel_representation: u32) -> PixelResult<(u32, bool)> {
     match (bits_allocated, pixel_representation) {
-        (8, 0) => Ok(decoded.iter().map(|value| f64::from(*value)).collect()),
-        (8, 1) => Ok(decoded
-            .iter()
-            .map(|value| f64::from(*value as i8))
-            .collect()),
-        (16, 0) => Ok(decoded
-            .chunks_exact(2)
-            .map(|chunk| f64::from(u16::from_le_bytes([chunk[0], chunk[1]])))
-            .collect()),
-        (16, 1) => Ok(decoded
-            .chunks_exact(2)
-            .map(|chunk| f64::from(i16::from_le_bytes([chunk[0], chunk[1]])))
-            .collect()),
+        (8 | 16, 0 | 1) => Ok((bits_allocated, pixel_representation == 1)),
         (_, representation) if representation > 1 => Err(PixelError::UnsupportedLayout(format!(
             "RLE PixelRepresentation {representation} is unsupported"
         ))),
@@ -434,7 +422,7 @@ mod tests {
         );
         let file = crate::loader::test_entry(&path);
 
-        let display = super::decode_rle_to_png(file, 0, None, None, WindowMode::Default)
+        let display = super::decode_rle_to_png(file.into(), 0, None, None, WindowMode::Default)
             .await
             .expect("render prepared RLE CR");
         let pixels = image::load_from_memory(&display)
@@ -548,7 +536,14 @@ mod tests {
             instance_number: "1".to_string(),
             sop_instance_uid: "2.25.72001".to_string(),
             sop_class_uid: uids::SECONDARY_CAPTURE_IMAGE_STORAGE.to_string(),
-            series_metadata: Default::default(),
+            // Discovery reads the padding range from the header.
+            series_metadata: Box::new(crate::types::SeriesMetadata {
+                native_pixel: crate::types::NativePixelMetadata {
+                    pixel_padding: Some([0.0, 64.0]),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
             has_pixels: true,
             frame_count: 1,
             rows: 2,

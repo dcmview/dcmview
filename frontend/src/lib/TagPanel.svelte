@@ -40,7 +40,7 @@
 	let { fileIndex }: { fileIndex: number } = $props();
 
 	let filter = $state("");
-	let tagResourcesByFile = $state<Record<number, AsyncResourceSnapshot<TagNode[]> | undefined>>({});
+	let tagResourcesByFile = $state.raw<Record<number, AsyncResourceSnapshot<TagNode[]> | undefined>>({});
 	let expandedSequences = $state<Set<string>>(new Set());
 	let expandedLongValues = $state<Set<string>>(new Set());
 	let copiedKey = $state<string | null>(null);

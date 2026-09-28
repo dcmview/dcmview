@@ -264,8 +264,7 @@ fn sparse_focal_index(
         return None;
     }
     let groups = object
-        .element(tags::PER_FRAME_FUNCTIONAL_GROUPS_SEQUENCE)
-        .ok()?
+        .get(tags::PER_FRAME_FUNCTIONAL_GROUPS_SEQUENCE)?
         .items()?;
     let mut offsets = groups
         .iter()
