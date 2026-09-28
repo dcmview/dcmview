@@ -6,6 +6,10 @@ import {
 	type BitmapResource,
 } from "./frameCache";
 
+function displayFrame(blob: Blob) {
+	return { blob, window: null };
+}
+
 function bitmap(width: number, height: number): BitmapResource {
 	return { width, height, close: vi.fn() };
 }
@@ -65,9 +69,9 @@ describe("display frame cache accounting", () => {
 		expect(decodedBitmapBytes(decoded)).toBe(48);
 
 		const cache = createDisplayFrameCaches<BitmapResource>(10, 48);
-		expect(cache.blobs.set("one", new Blob([new Uint8Array(10)]))).toBe(true);
+		expect(cache.frames.set("one", displayFrame(new Blob([new Uint8Array(10)])))).toBe(true);
 		expect(cache.bitmaps.set("one", decoded)).toBe(true);
-		expect(cache.blobs.bytes).toBe(10);
+		expect(cache.frames.bytes).toBe(10);
 		expect(cache.bitmaps.bytes).toBe(48);
 	});
 
@@ -76,13 +80,13 @@ describe("display frame cache accounting", () => {
 		const second = bitmap(4, 2);
 		const cache = createDisplayFrameCaches<BitmapResource>(20, 32);
 
-		cache.blobs.set("first", new Blob([new Uint8Array(10)]));
-		cache.blobs.set("second", new Blob([new Uint8Array(10)]));
+		cache.frames.set("first", displayFrame(new Blob([new Uint8Array(10)])));
+		cache.frames.set("second", displayFrame(new Blob([new Uint8Array(10)])));
 		cache.bitmaps.set("first", first);
 		cache.bitmaps.set("second", second);
 
-		expect(cache.blobs.has("first")).toBe(true);
-		expect(cache.blobs.has("second")).toBe(true);
+		expect(cache.frames.has("first")).toBe(true);
+		expect(cache.frames.has("second")).toBe(true);
 		expect(cache.bitmaps.has("first")).toBe(false);
 		expect(first.close).toHaveBeenCalledOnce();
 		expect(cache.bitmaps.has("second")).toBe(true);
@@ -94,13 +98,13 @@ describe("display frame cache accounting", () => {
 		const cache = createDisplayFrameCaches<BitmapResource>(4 * 200, 16 * 25);
 
 		for (let index = 0; index < frames.length; index += 1) {
-			cache.blobs.set(String(index), new Blob([new Uint8Array(4)]));
+			cache.frames.set(String(index), displayFrame(new Blob([new Uint8Array(4)])));
 			cache.bitmaps.set(String(index), frames[index]);
 			expect(cache.bitmaps.bytes).toBeLessThanOrEqual(cache.bitmaps.maxBytes);
 		}
 		cache.bitmaps.clear();
 
-		expect(cache.blobs.size).toBe(200);
+		expect(cache.frames.size).toBe(200);
 		expect(cache.bitmaps.bytes).toBe(0);
 		expect(cache.bitmaps.size).toBe(0);
 		expect(frames.every((frame) => vi.mocked(frame.close).mock.calls.length === 1)).toBe(true);

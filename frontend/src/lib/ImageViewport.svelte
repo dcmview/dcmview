@@ -2,8 +2,9 @@
 	import { untrack } from "svelte";
 	import {
 		ApiError,
-		fetchDisplayFrameBlob,
+		fetchDisplayFrame,
 		isApiError,
+		type DisplayFrame,
 		type DisplayFrameWindowOptions,
 		type FileSummary,
 		type RawFrame,
@@ -170,6 +171,8 @@
 	// Raw, not a deep proxy: the frame is posted to the W/L worker, and a
 	// proxied metadata object cannot be structured-cloned.
 	let currentRawFrame = $state.raw<RawFrame | null>(null);
+	// The window the server rendered the displayed PNG with, if linear.
+	let shownDisplayWindow = $state.raw<ResolvedWindow | null>(null);
 	let rawWindowLevelFallbackByFile = $state<Record<number, boolean>>({});
 	const annotations = new AnnotationStore();
 
@@ -252,14 +255,18 @@
 	const renderWindowWidth = $derived(renderWindow.width);
 	const renderWindowPending = $derived(renderWindow.pending);
 
-	const displayWindow = $derived(
+	// The window of the image on screen. The raw path resolves its own; a
+	// server-rendered frame shows the window being dragged or requested, else
+	// the one the server reports rendering it with. Null when there is no
+	// linear window to show (color, VOI LUT).
+	const displayWindow = $derived<ResolvedWindow | null>(
 		pipelineMode === "overlay"
-			? overlay?.sourceFile.default_window
+			? shownDisplayWindow ?? (overlay?.sourceFile.default_window
 				? {
 					wc: overlay.sourceFile.default_window.center,
 					ww: overlay.sourceFile.default_window.width,
 				}
-				: { wc: 0, ww: 1 }
+				: null)
 			: pipelineMode === "diagnostic_wl" && currentRawFrame && directWindowing && directMap
 			? resolveMappedDisplayWindow(
 				currentRawFrame,
@@ -283,9 +290,9 @@
 				? { wc: liveWindowCenter, ww: liveWindowWidth }
 				: renderWindowCenter !== null && renderWindowWidth !== null
 				? { wc: renderWindowCenter, ww: renderWindowWidth }
-				: activeFile?.default_window
+				: shownDisplayWindow ?? (activeFile?.default_window
 					? { wc: activeFile.default_window.center, ww: activeFile.default_window.width }
-					: { wc: 0, ww: 1 },
+					: null),
 	);
 	// The window a mapped file is actually shown with, for its HUD and
 	// legend: the server's automatic window is recomputed from the samples.
@@ -496,11 +503,11 @@
 		frameIndex: number,
 		options: DisplayFrameWindowOptions = {},
 		signal?: AbortSignal,
-	): Promise<Blob> {
-		if (!options.unit) return fetchDisplayFrameBlob(fileIndex, frameIndex, options, signal);
+	): Promise<DisplayFrame> {
+		if (!options.unit) return fetchDisplayFrame(fileIndex, frameIndex, options, signal);
 		const mapping = await valueMappings.load(fileIndex, frameIndex);
 		signal?.throwIfAborted();
-		return fetchDisplayFrameBlob(fileIndex, frameIndex, frameDisplayWindowOptions(options, mapping), signal);
+		return fetchDisplayFrame(fileIndex, frameIndex, frameDisplayWindowOptions(options, mapping), signal);
 	}
 
 	function currentDisplayWindowOptions(): DisplayFrameWindowOptions {
@@ -638,18 +645,19 @@
 		const windowOptions = currentDisplayWindowOptions();
 		const cacheKey = displayFrames.key(fileIndex, frameIndex, windowOptions);
 		try {
-			const blobRequest = displayFrames.ensureBlob(fileIndex, frameIndex, windowOptions);
+			const frameRequest = displayFrames.ensureFrame(fileIndex, frameIndex, windowOptions);
 			trackForegroundRequest(
 				displayFrames.inFlight(cacheKey),
 				() => generation === requestGeneration,
 				(pending) => { loading = pending; },
 			);
-			const blob = await blobRequest;
+			const { blob, window } = await frameRequest;
 			if (generation !== requestGeneration || !usesDisplayPipeline()) return;
 			loading = false;
 			loadError = null;
 			await drawDisplayBlob(cacheKey, blob, generation);
 			if (generation !== requestGeneration || !usesDisplayPipeline()) return;
+			shownDisplayWindow = window;
 			rendered.mark(fileIndex, frameIndex);
 
 			displayFrames.startPrefetch(
@@ -676,16 +684,17 @@
 		displayFrames.enterScope(windowOptions);
 		loading = true;
 		try {
-			const blobs = await Promise.all([
-				displayFrames.ensureBlob(overlay.sourceFileIndex, overlay.sourceFrameIndex, windowOptions),
+			const [source, ...layerBlobs] = await Promise.all([
+				displayFrames.ensureFrame(overlay.sourceFileIndex, overlay.sourceFrameIndex, windowOptions),
 				...overlayLayerRequests(overlay).map(({ key, load }) => displayFrames.fetchInScope(key, windowOptions, load)),
 			]);
-			const [base, ...layers] = await Promise.all(blobs.map(decodeCanvasImage));
+			const [base, ...layers] = await Promise.all([source.blob, ...layerBlobs].map(decodeCanvasImage));
 			try {
 				if (generation !== requestGeneration || pipelineMode !== "overlay" || !canvasEl) return;
 				composeOverlayFrame(canvasEl, base, layers);
 				loading = false;
 				loadError = null;
+				shownDisplayWindow = source.window;
 				rendered.mark(activeFile.index, currentFrame);
 			} finally {
 				base.dispose();
@@ -897,7 +906,7 @@
 	});
 
 	$effect(() => {
-		if (pipelineMode !== "diagnostic_wl" || !currentRawFrame || !canvasEl || renderWindowPending) return;
+		if (pipelineMode !== "diagnostic_wl" || !currentRawFrame || !canvasEl || renderWindowPending || !displayWindow) return;
 		// displayWindow already resolved this frame's window; window changes do
 		// not invalidate in-flight renders, only frame, file, and mode changes do.
 		const frame = currentRawFrame;
@@ -1165,9 +1174,9 @@
 			switch (activeTool) {
 				case "window_level": {
 					if (pipelineMode === "diagnostic_wl" && !currentRawFrame) break;
-					const baseWindow = pipelineMode === "diagnostic_wl" && currentRawFrame
+					const baseWindow = (pipelineMode === "diagnostic_wl" && currentRawFrame
 						? displayWindow
-						: mappedWindow ?? displayWindow;
+						: mappedWindow ?? displayWindow) ?? { wc: 0, ww: 1 };
 					nextDragState = {
 						mode: "wl",
 						startX: event.clientX,
@@ -1455,7 +1464,7 @@
 					</span>
 				{:else if mappedScale}
 					<span class="mapped-window">W/L auto · {mappedScale.unit}</span>
-				{:else}
+				{:else if displayWindow}
 					<span>W: {Math.round(displayWindow.ww)} · C: {Math.round(displayWindow.wc)}</span>
 				{/if}
 				{#if activeTool === "window_level" && !activeFile.raw_windowing_compatible}

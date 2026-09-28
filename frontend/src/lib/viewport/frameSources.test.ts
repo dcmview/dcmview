@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { DisplayFrameWindowOptions } from "../../api";
+import type { DisplayFrame, DisplayFrameWindowOptions } from "../../api";
 import type { RawFrame } from "../../rawFrame";
 import { navigationFramesForFile } from "../seriesNavigation";
 import {
@@ -115,7 +115,11 @@ describe("RawFrameSource", () => {
 });
 
 describe("DisplayFrameSource", () => {
-	type Load = (file: number, frame: number, options: DisplayFrameWindowOptions, signal: AbortSignal) => Promise<Blob>;
+	type Load = (file: number, frame: number, options: DisplayFrameWindowOptions, signal: AbortSignal) => Promise<DisplayFrame>;
+
+	function png(blob: Blob = new Blob(["png"])): DisplayFrame {
+		return { blob, window: null };
+	}
 
 	function displaySource(load: Load, scope = { value: "tab:a" }) {
 		const onScopeChange = vi.fn();
@@ -128,14 +132,14 @@ describe("DisplayFrameSource", () => {
 		return { source, onScopeChange, scope };
 	}
 
-	it("shares a request per frame and serves the cached payload afterwards", async () => {
-		const load = vi.fn(async () => new Blob(["png"]));
+	it("shares a request per frame and serves the cached payload and its window afterwards", async () => {
+		const load = vi.fn(async () => ({ blob: new Blob(["png"]), window: { wc: 40, ww: 400 } }));
 		const { source } = displaySource(load);
 
-		const first = source.ensureBlob(1, 0, {});
-		expect(source.ensureBlob(1, 0, {})).toBe(first);
-		const blob = await first;
-		await expect(source.ensureBlob(1, 0, {})).resolves.toBe(blob);
+		const first = source.ensureFrame(1, 0, {});
+		expect(source.ensureFrame(1, 0, {})).toBe(first);
+		const frame = await first;
+		await expect(source.ensureFrame(1, 0, {})).resolves.toEqual({ blob: frame.blob, window: { wc: 40, ww: 400 } });
 		expect(load).toHaveBeenCalledOnce();
 	});
 
@@ -146,8 +150,8 @@ describe("DisplayFrameSource", () => {
 			return abortable(signal);
 		});
 
-		void source.ensureBlob(1, 0, {}).catch(() => {});
-		void source.ensureBlob(1, 1, {}).catch(() => {});
+		void source.ensureFrame(1, 0, {}).catch(() => {});
+		void source.ensureFrame(1, 1, {}).catch(() => {});
 
 		expect(signals.map((signal) => signal.aborted)).toEqual([false, false]);
 		expect(onScopeChange).toHaveBeenCalledOnce();
@@ -160,12 +164,12 @@ describe("DisplayFrameSource", () => {
 			return abortable(signal);
 		});
 
-		void source.ensureBlob(1, 0, {}).catch(() => {});
-		void source.ensureBlob(1, 0, { wc: 40, ww: 400, windowMode: "default" }).catch(() => {});
+		void source.ensureFrame(1, 0, {}).catch(() => {});
+		void source.ensureFrame(1, 0, { wc: 40, ww: 400, windowMode: "default" }).catch(() => {});
 		expect(signals.map((signal) => signal.aborted)).toEqual([true, false]);
 
 		scope.value = "tab:b";
-		void source.ensureBlob(1, 1, { wc: 40, ww: 400, windowMode: "default" }).catch(() => {});
+		void source.ensureFrame(1, 1, { wc: 40, ww: 400, windowMode: "default" }).catch(() => {});
 		expect(signals.map((signal) => signal.aborted)).toEqual([true, true, false]);
 		expect(onScopeChange).toHaveBeenCalledTimes(3);
 	});
@@ -174,25 +178,25 @@ describe("DisplayFrameSource", () => {
 		const signals: AbortSignal[] = [];
 		const load = vi.fn((_file: number, _frame: number, _options: DisplayFrameWindowOptions, signal: AbortSignal) => {
 			signals.push(signal);
-			return abortable<Blob>(signal);
+			return abortable<DisplayFrame>(signal);
 		});
 		const { source, onScopeChange } = displaySource(load);
 		const gray = { wc: 12, ww: 20, windowMode: "default" as const, unit: "Gy" };
 
-		void source.ensureBlob(1, 0, gray).catch(() => {});
-		void source.ensureBlob(1, 1, gray).catch(() => {});
+		void source.ensureFrame(1, 0, gray).catch(() => {});
+		void source.ensureFrame(1, 1, gray).catch(() => {});
 		expect(signals.map((signal) => signal.aborted)).toEqual([false, false]);
 		// The loader converts per frame, so it receives the unit.
 		expect(load.mock.calls[1].slice(0, 3)).toEqual([1, 1, gray]);
 		expect(source.key(1, 1, gray)).not.toBe(source.key(1, 1, { wc: 12, ww: 20, windowMode: "default" }));
 
-		void source.ensureBlob(1, 2, { ...gray, wc: 13 }).catch(() => {});
+		void source.ensureFrame(1, 2, { ...gray, wc: 13 }).catch(() => {});
 		expect(signals.map((signal) => signal.aborted)).toEqual([true, true, false]);
 		expect(onScopeChange).toHaveBeenCalledTimes(2);
 	});
 
 	it("aborts overlay fetches with their scope", () => {
-		const { source } = displaySource(async () => new Blob(["png"]));
+		const { source } = displaySource(async () => png());
 		let maskSignal!: AbortSignal;
 		void source.fetchInScope("seg:4:0", {}, (signal) => {
 			maskSignal = signal;
@@ -208,7 +212,7 @@ describe("DisplayFrameSource", () => {
 		const requested: number[] = [];
 		const { source } = displaySource(async (_file, frame) => {
 			requested.push(frame);
-			return new Blob(["png"]);
+			return png();
 		});
 		const frames = navigationFramesForFile(2, 8);
 		source.enterScope({});
@@ -226,7 +230,7 @@ describe("DisplayFrameSource", () => {
 		const requested = new Set<number>();
 		const { source } = displaySource(async (_file, frame) => {
 			requested.add(frame);
-			return new Blob(["png"]);
+			return png();
 		});
 		const frames = navigationFramesForFile(2, 200);
 		source.enterScope({});
@@ -243,11 +247,11 @@ describe("DisplayFrameSource", () => {
 		const signals = new Map<number, AbortSignal>();
 		const { source } = displaySource((_file, frame, _options, signal) => {
 			signals.set(frame, signal);
-			return abortable<Blob>(signal);
+			return abortable<DisplayFrame>(signal);
 		});
 		const frames = navigationFramesForFile(2, 200);
-		void source.ensureBlob(2, 0, {}).catch(() => {});
-		void source.ensureBlob(2, 150, {}).catch(() => {});
+		void source.ensureFrame(2, 0, {}).catch(() => {});
+		void source.ensureFrame(2, 150, {}).catch(() => {});
 		let overlaySignal: AbortSignal | undefined;
 		void source.fetchInScope("overlay", {}, (signal) => {
 			overlaySignal = signal;
@@ -266,7 +270,7 @@ describe("DisplayFrameSource", () => {
 		const requested: number[] = [];
 		const { source } = displaySource(async (_file, frame) => {
 			requested.push(frame);
-			return new Blob(["png"]);
+			return png();
 		});
 		const frames = navigationFramesForFile(2, 4);
 		source.enterScope({});
@@ -278,13 +282,13 @@ describe("DisplayFrameSource", () => {
 	});
 
 	it("drops cached payloads and resets rendered state when cleared", async () => {
-		const load = vi.fn(async () => new Blob(["png"]));
+		const load = vi.fn(async () => png());
 		const { source, onScopeChange } = displaySource(load);
-		await source.ensureBlob(1, 0, {});
+		await source.ensureFrame(1, 0, {});
 		onScopeChange.mockClear();
 
 		source.clear();
-		await source.ensureBlob(1, 0, {});
+		await source.ensureFrame(1, 0, {});
 
 		expect(load).toHaveBeenCalledTimes(2);
 		expect(onScopeChange).toHaveBeenCalledTimes(2);
@@ -294,7 +298,7 @@ describe("DisplayFrameSource", () => {
 		// An 8192 x 8192 frame decodes to 256 MiB of RGBA, twice the bitmap budget.
 		const side = 8192;
 		expect(side * side * 4).toBeGreaterThan(DISPLAY_BITMAP_CACHE_BYTE_BUDGET);
-		const payload = { size: DISPLAY_BLOB_CACHE_BYTE_BUDGET + 1 } as Blob;
+		const payload = png({ size: DISPLAY_BLOB_CACHE_BYTE_BUDGET + 1 } as Blob);
 		const load = vi.fn(async () => payload);
 		const decoded: Array<{ width: number; height: number; close: ReturnType<typeof vi.fn> }> = [];
 		vi.stubGlobal("createImageBitmap", vi.fn(async () => {
@@ -304,9 +308,9 @@ describe("DisplayFrameSource", () => {
 		}));
 		const { source } = displaySource(load);
 
-		const blob = await source.ensureBlob(1, 0, {});
-		expect(blob).toBe(payload);
-		await source.ensureBlob(1, 0, {});
+		const { blob } = await source.ensureFrame(1, 0, {});
+		expect(blob).toBe(payload.blob);
+		await source.ensureFrame(1, 0, {});
 		expect(load).toHaveBeenCalledTimes(2);
 
 		// Consumers of one decode share its bitmap until the last releases it.
@@ -328,10 +332,10 @@ describe("DisplayFrameSource", () => {
 	it("keeps caching frames that fit and leaves cached bitmaps to the tier", async () => {
 		const decode = vi.fn(async () => ({ width: 2, height: 2, close: vi.fn() }));
 		vi.stubGlobal("createImageBitmap", decode);
-		const { source } = displaySource(async () => new Blob(["png"]));
+		const { source } = displaySource(async () => png());
 		const key = source.key(1, 0, {});
 
-		const blob = await source.ensureBlob(1, 0, {});
+		const { blob } = await source.ensureFrame(1, 0, {});
 		const first = await source.decode(key, blob);
 		first.release();
 		const second = await source.decode(key, blob);

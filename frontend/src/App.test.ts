@@ -18,7 +18,7 @@ vi.mock("./api", async (importOriginal) => ({
 	})),
 	fetchAnnotations: vi.fn(async () => ({ num_roi: 0, roi_coords: [], roi_frames: [] })),
 	updateAnnotations: vi.fn(),
-	fetchDisplayFrameBlob: vi.fn(async () => new Blob(["png"], { type: "image/png" })),
+	fetchDisplayFrame: vi.fn(async () => ({ blob: new Blob(["png"], { type: "image/png" }), window: null })),
 	fetchRawFrame: vi.fn(async () => rawFrame()),
 	fetchFrameValueMapping: vi.fn(async (fileIndex: number, frameIndex: number) => ({
 		file_index: fileIndex,
