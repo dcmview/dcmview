@@ -12,6 +12,11 @@ diagnostic viewer.
 
 ### Added
 
+- Display frames take `unit` with `wc`/`ww` to window a frame's real-world
+  values. Cine in the unit of a LUT mapping (a Parametric Map or RWVM LUT,
+  non-monotonic ones included, or any mapping behind a Modality LUT) now
+  matches the still image exactly; it previously approximated the window on
+  stored values or fell back to each frame's default window.
 - `--filter` (and Python's `filters=`) accepts DICOM keywords such as
   `PatientID=` or `StudyInstanceUID=` as well as the snake_case names, in any
   case; an unknown field's error lists both spellings.

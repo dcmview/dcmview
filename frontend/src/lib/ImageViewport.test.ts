@@ -326,10 +326,16 @@ describe("ImageViewport window/level in real-world units", () => {
 		expect(fetchFrameValueMapping).toHaveBeenCalledWith(5, 2, expect.any(AbortSignal));
 	});
 
-	it("falls back to the default window on files without that unit", async () => {
+	it("shows the default window on files without that unit", async () => {
 		renderViewport({ windowCenter: 40, windowWidth: 100, windowUnit: "Gy" });
 
-		await waitFor(() => expect(fetchDisplayFrameBlob).toHaveBeenCalledWith(5, 0, {}, expect.any(AbortSignal)));
+		// The server shows the frame's default window for a unit it lacks.
+		await waitFor(() => expect(fetchDisplayFrameBlob).toHaveBeenCalledWith(
+			5,
+			0,
+			{ wc: 40, ww: 100, windowMode: "default", unit: "Gy" },
+			expect.any(AbortSignal),
+		));
 		expect(screen.getByText("W: 400 · C: 40")).toBeTruthy();
 		expect(screen.queryByRole("figure")).toBeNull();
 	});

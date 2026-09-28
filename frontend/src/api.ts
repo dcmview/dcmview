@@ -320,12 +320,13 @@ export function frameUrl(
 	wc?: number | null,
 	ww?: number | null,
 	windowMode?: WindowMode | null,
+	unit?: string | null,
 ): string {
 	// Full-dynamic windowing ignores explicit values, so they are not sent.
 	const query: FrameQuery =
 		windowMode === "full_dynamic"
 			? { mode: "full_dynamic" }
-			: { wc: wc ?? undefined, ww: ww ?? undefined };
+			: { wc: wc ?? undefined, ww: ww ?? undefined, unit: unit ?? undefined };
 	return endpointUrl(API_ENDPOINTS.fileFrame, { index: fileIndex, frame }, query);
 }
 
@@ -334,8 +335,10 @@ export interface DisplayFrameWindowOptions {
 	ww?: number | null;
 	windowMode?: WindowMode | null;
 	/**
-	 * Real-world unit of `wc`/`ww`. Such a window is converted through each
-	 * frame's own value mapping before a request; it is never sent as is.
+	 * Real-world unit of `wc`/`ww`. The viewer converts such a window
+	 * through each frame's own linear mapping where it can
+	 * (`frameDisplayWindowOptions`); otherwise the server windows the frame's
+	 * preferred mapping in this unit.
 	 */
 	unit?: string | null;
 }
@@ -366,8 +369,7 @@ export async function fetchDisplayFrameBlob(
 	options: DisplayFrameWindowOptions = {},
 	signal?: AbortSignal,
 ): Promise<Blob> {
-	if (options.unit) throw new Error("convert a real-world window to the frame's stored scale before requesting it");
-	const url = frameUrl(fileIndex, frame, options.wc, options.ww, options.windowMode);
+	const url = frameUrl(fileIndex, frame, options.wc, options.ww, options.windowMode, options.unit);
 	const response = await send(API_ENDPOINTS.fileFrame, url, { signal });
 	return response.blob();
 }

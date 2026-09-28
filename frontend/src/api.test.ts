@@ -122,6 +122,12 @@ describe("display frame URLs", () => {
 		expect(frameUrl(2, 7, 40, 80, "full_dynamic")).toBe(
 			"/api/file/2/frame/7?mode=full_dynamic",
 		);
+		expect(frameUrl(2, 7, 1.5, 3, "default", "SUV")).toBe(
+			"/api/file/2/frame/7?wc=1.5&ww=3&unit=SUV",
+		);
+		expect(frameUrl(2, 7, 1.5, 3, "full_dynamic", "SUV")).toBe(
+			"/api/file/2/frame/7?mode=full_dynamic",
+		);
 	});
 });
 
@@ -185,11 +191,11 @@ describe("fetch wrappers", () => {
 		unsubscribe();
 	});
 
-	it("never sends a real-world window as is", async () => {
-		const fetchMock = vi.fn();
+	it("sends a real-world window with its unit", async () => {
+		const fetchMock = vi.fn().mockResolvedValue(new Response(new Blob(), { status: 200 }));
 		vi.stubGlobal("fetch", fetchMock);
-		await expect(fetchDisplayFrameBlob(1, 0, { wc: 12, ww: 20, unit: "Gy" })).rejects.toThrow("real-world window");
-		expect(fetchMock).not.toHaveBeenCalled();
+		await fetchDisplayFrameBlob(1, 0, { wc: 12, ww: 20, unit: "Gy" });
+		expect(fetchMock.mock.calls[0][0]).toBe("/api/file/1/frame/0?wc=12&ww=20&unit=Gy");
 		expect(displayFrameWindowCacheKey({ wc: 12, ww: 20, windowMode: "default", unit: "Gy" }))
 			.toBe("default:12:20:Gy");
 	});

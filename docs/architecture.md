@@ -154,8 +154,12 @@ A real-world mapping also switches the window to its unit, and
 `WindowSettings` records a drag in that unit. Display requests keep the
 window in its unit (it is part of the fetch scope and cache key), and the
 viewport's display loader converts each frame, including prefetched and
-cine frames, through that frame's own mapping: exactly for a linear
-mapping, by the spanned stored range for a non-decreasing LUT. On the raw
+cine frames, through that frame's own linear mapping; a window no linear
+mapping expresses is sent with `unit`, and the server windows the frame's
+preferred mapping through the same per-stored-value table as the raw
+renderer (`render.rs` `encode_real_world_windowed_png`, decoded samples from
+the raw tier), or shows the frame's default window when that mapping has
+another unit. The display cache key includes the unit. On the raw
 path a linear mapping converts to the Modality scale the renderer windows,
 and a mapping with no linear window (a LUT, or one behind a Modality LUT)
 is windowed directly: the renderer's window LUT maps each stored value
@@ -362,8 +366,8 @@ masked to Bits Stored and signed values are extended from High Bit so unused
 allocated bits never affect display or raw consumers; one-bit pixels are
 expanded to one byte per sample. Float and double-float objects are pixel-renderable, but
 real-world-value mapping remains a separate semantic capability (the
-value-mapping endpoint and value overlays) rather than an implicit part of the
-display pipeline.
+value-mapping endpoint, value overlays, and display windows requested in a
+`unit`) rather than an implicit part of the display pipeline.
 
 The frontend uses raw frames for local interactive window/level when their
 single-channel 8- or 16-bit layout is supported by the browser renderer. For

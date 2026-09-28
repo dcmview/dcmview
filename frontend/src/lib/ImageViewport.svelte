@@ -227,7 +227,8 @@
 		if (overlay) return "overlay";
 		const rawFallback = rawWindowLevelFallbackByFile[activeFile.index] ?? false;
 		// Stills keep a window set in such a unit on the raw path, whatever
-		// the tool; cine plays display frames (see frameDisplayWindowOptions).
+		// the tool; cine plays display frames the server windows in that unit
+		// (see frameDisplayWindowOptions).
 		if (directWindowing && windowUnit !== null && !cinePlaying && !rawFallback && activeFile.raw_windowing_compatible) {
 			return "diagnostic_wl";
 		}
@@ -489,7 +490,8 @@
 	/**
 	 * A display frame request. A real-world window stays in its unit in the
 	 * fetch scope and cache key, and each frame (current, prefetched, or
-	 * played by cine) is converted through its own mapping here.
+	 * played by cine) is converted through its own linear mapping here, or
+	 * requested in that unit.
 	 */
 	async function loadDisplayFrame(
 		fileIndex: number,
