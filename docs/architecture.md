@@ -171,7 +171,9 @@ window of the image on screen. The raw path resolves that window itself; for
 a server-rendered frame it is the window being dragged or requested, else the
 one the display response reports (`X-Frame-Window-*`), kept with the cached
 PNG. A mapped file converts that window to its unit, so its legend needs no
-raw samples.
+raw samples. A frame requested in a real-world `unit` reports no window when
+that window applied; if it reports one, the server showed its default window
+instead, and the HUD shows that window rather than the unit legend.
 
 For SEG objects, `SemanticContextPanel` keeps Pixel Preview as the initial mode
 and publishes an explicit Semantic Context selection to `App.svelte`.
@@ -336,7 +338,9 @@ The contract is kept consistent by three layers:
   `X-Cache: MISS`.
 - Display responses of linearly windowed grayscale frames include the applied
   window as `X-Frame-Window-Center` and `X-Frame-Window-Width`, from the
-  cached render on a hit; color and VOI LUT frames include neither.
+  cached render on a hit; color and VOI LUT frames, and frames windowed in a
+  real-world `unit`, include neither. A `unit` window that cannot apply
+  reports the default window the frame is shown with.
 - Raw responses include all required `X-Frame-*` metadata headers. Default
   window headers are present only when the DICOM supplies a default window.
 - Unsupported transfer syntaxes are `422`, as are layouts the catalog marks

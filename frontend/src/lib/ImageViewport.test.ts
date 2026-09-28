@@ -354,6 +354,27 @@ describe("ImageViewport window/level in real-world units", () => {
 		expect(fetchDisplayFrame).not.toHaveBeenCalled();
 	});
 
+	it("labels a LUT-unit window the server applied in its unit", async () => {
+		fetchFrameValueMapping.mockResolvedValue(lutMapping());
+		// Too large for the browser, so the server windows it in its unit.
+		renderViewport({ file: fileSummary(5, { rows: 5000, columns: 5000 }), windowCenter: 40, windowWidth: 80, windowUnit: "ms" });
+
+		await waitFor(() => expect(fetchDisplayFrame).toHaveBeenCalledWith(
+			5, 0, { wc: 40, ww: 80, windowMode: "default", unit: "ms" }, expect.any(AbortSignal),
+		));
+		// No window reported: the unit window applied.
+		await screen.findByText("W: 80 · C: 40 ms");
+	});
+
+	it("shows the window the server fell back to when a LUT-unit window could not apply", async () => {
+		fetchFrameValueMapping.mockResolvedValue(lutMapping());
+		fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"]), window: { wc: 1.5, ww: 3 } });
+		renderViewport({ file: fileSummary(5, { rows: 5000, columns: 5000 }), windowCenter: 40, windowWidth: 80, windowUnit: "ms" });
+
+		await screen.findByText("W: 3 · C: 2");
+		expect(screen.queryByText(/ms$/)).toBeNull();
+	});
+
 	it("converts a real-world window to stored units before requesting the frame", async () => {
 		fetchFrameValueMapping.mockResolvedValue(adcMapping());
 		renderViewport({ windowCenter: 40, windowWidth: 100, windowUnit: "um2/s" });

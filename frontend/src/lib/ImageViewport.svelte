@@ -173,8 +173,10 @@
 	// Raw, not a deep proxy: the frame is posted to the W/L worker, and a
 	// proxied metadata object cannot be structured-cloned.
 	let currentRawFrame = $state.raw<RawFrame | null>(null);
-	// The window the server rendered the displayed PNG with, if linear.
+	// The window the server rendered the displayed PNG with, if linear, and
+	// whether that PNG was requested in a real-world unit.
 	let shownDisplayWindow = $state.raw<ResolvedWindow | null>(null);
+	let shownUnitRequest = $state(false);
 	let rawWindowLevelFallbackByFile = $state<Record<number, boolean>>({});
 	// Color files: neither path windows them, so a drag sends no previews.
 	let colorFiles = $state<Record<number, boolean>>({});
@@ -275,6 +277,10 @@
 	const renderWindowWidth = $derived(renderWindow.width);
 	const renderWindowPending = $derived(renderWindow.pending);
 
+	// A server frame requested in a real-world unit reports no window when the
+	// unit applied, and the default window it fell back to when it did not.
+	const unitWindowFallback = $derived(shownUnitRequest && shownDisplayWindow !== null);
+
 	// The window of the image on screen. The raw path resolves its own; a
 	// server-rendered frame shows the window being dragged or requested, else
 	// the one the server reports rendering it with. Null when there is no
@@ -323,12 +329,13 @@
 		const mapped = windowToMapped({ center: displayWindow.wc, width: displayWindow.ww }, mappedScale);
 		return { low, high, ...mapped, unit: mappedScale.unit, label: mappedScale.label };
 	});
-	// A LUT-unit window: the raw renderer's, or the one set while cine plays.
+	// A LUT-unit window: the raw renderer's, or the one a server frame was
+	// shown with; none when the server fell back to the default window.
 	const directLegend = $derived.by(() => {
 		if (!directMap || !directWindowing) return null;
 		const window = pipelineMode === "diagnostic_wl" && currentRawFrame
 			? displayWindow
-			: windowUnit !== null && windowCenter !== null && windowWidth !== null
+			: windowUnit !== null && windowCenter !== null && windowWidth !== null && !unitWindowFallback
 				? { wc: windowCenter, ww: windowWidth }
 				: null;
 		if (!window) return null;
@@ -515,6 +522,15 @@
 		return fetchDisplayFrame(fileIndex, frameIndex, frameDisplayWindowOptions(options, mapping), signal);
 	}
 
+	/**
+	 * Whether a display request goes out with `unit`: a real-world window the
+	 * frame's own linear mapping cannot convert (see `loadDisplayFrame`).
+	 */
+	function sendsUnit(fileIndex: number, frameIndex: number, options: DisplayFrameWindowOptions): boolean {
+		if (!options.unit) return false;
+		return Boolean(frameDisplayWindowOptions(options, valueMappings.forFrame(fileIndex, frameIndex)).unit);
+	}
+
 	function currentDisplayWindowOptions(): DisplayFrameWindowOptions {
 		if (pipelineMode === "overlay") return {};
 		if (windowUnit !== null && windowCenter !== null && windowWidth !== null) {
@@ -595,6 +611,7 @@
 			canvasEl.height = image.height;
 			ctx?.drawImage(image.source, 0, 0);
 			shownDisplayWindow = window;
+			shownUnitRequest = false;
 		} finally {
 			image.dispose();
 		}
@@ -694,6 +711,7 @@
 			await drawDisplayBlob(cacheKey, blob, generation);
 			if (generation !== requestGeneration || !usesDisplayPipeline()) return;
 			shownDisplayWindow = window;
+			shownUnitRequest = sendsUnit(fileIndex, frameIndex, windowOptions);
 			rendered.mark(fileIndex, frameIndex);
 
 			displayFrames.startPrefetch(
@@ -731,6 +749,7 @@
 				loading = false;
 				loadError = null;
 				shownDisplayWindow = source.window;
+				shownUnitRequest = false;
 				rendered.mark(activeFile.index, currentFrame);
 			} finally {
 				base.dispose();
