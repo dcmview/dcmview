@@ -396,14 +396,10 @@ mod tests {
         assert!(registry.status().scan_complete);
         assert_eq!(registry.status().file_count, 1);
         assert_eq!(registry.status().scanned, 1);
-        let records = registry.discovery_response_snapshot();
-        assert_eq!(records.len(), 1);
-        assert!(records[0].path.ends_with("scan.dcm"));
-        assert_eq!(
-            records[0].disposition,
-            loader::DiscoveryDisposition::Selected
+        assert!(
+            registry.discovery_response_snapshot().is_empty(),
+            "accepted files are counted, not listed as discovery records"
         );
-        assert_eq!(records[0].reason, loader::DiscoveryReason::ValidDicom);
         assert!(!shutdown.is_cancelled());
     }
 
