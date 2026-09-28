@@ -542,11 +542,14 @@ installation and VS Code Electron integration can also use network/cache state;
   complete HTTP boundary.
 - Generated DICOM fixtures exercise real discovery and codec paths. Integration
   tests do not mock the DICOM layer.
-- Discovery stops metadata parsing at the earliest standard pixel-data tag, then
-  walks element headers (inflating deflated data sets) to find the data set's
-  own top-level pixel element. Pixel elements nested in sequences, such as an
-  Icon Image Sequence, do not count. It
-  does not retain integer, float, or double-float pixel values in the catalog.
+- Discovery opens and parses each file once (`loader/entry.rs`
+  `read_discovery_header`): it builds the metadata object from the parser's
+  tokens up to the earliest standard pixel-data tag, exactly as
+  `OpenFileOptions::read_until(FLOAT_PIXEL_DATA)` would, then continues the
+  same parse to the data set's own top-level pixel element (deflated data sets
+  through their inflating adapter). Pixel elements nested in sequences, such
+  as an Icon Image Sequence, do not count. It does not retain integer, float,
+  or double-float pixel values in the catalog.
 - Frontend state helpers, controllers, cache policy, windowing, registry
   shaping, and API wrappers are tested as TypeScript modules. Component tests
   render `App.svelte` and `ImageViewport.svelte` in happy-dom with the API

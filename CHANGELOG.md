@@ -96,8 +96,10 @@ diagnostic viewer.
 - `--timeout` (and Python's `timeout=`) counts idle time from the end of the
   scan. It used to start at the first discovered file, so a long scan with no
   viewer open could end the process before the scan finished.
-- Discovery is much faster: 3000 small files scan in about 0.1 s instead of
-  3.2 s, and more threads now help rather than hurt.
+- Discovery is much faster: 3000 small files scan in about 0.05 s instead of
+  3.2 s, and more threads now help rather than hurt. Each file is opened and
+  its header parsed once, so files with large headers (multi-megabyte private
+  sequences) scan in about 60% of the time they took.
 - Large grayscale frames render with a quarter of the memory (an 8192x8192
   16-bit frame peaks at about 340 MB instead of 1.4 GB) and faster; automatic
   windows no longer sort every sample, on the server or in the browser.
