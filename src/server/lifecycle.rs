@@ -112,7 +112,7 @@ impl Drop for RequestActivityGuard {
 }
 
 /// Resolve when the server should stop: on a stop signal, when `external` is
-/// cancelled, or after `timeout` of idleness once the registry is ready.
+/// cancelled, or after `timeout` of idleness once the scan has finished.
 pub(crate) async fn wait_for_shutdown(
     activity: RequestActivity,
     registry: FileRegistry,
@@ -134,7 +134,7 @@ pub(crate) async fn wait_for_shutdown(
 }
 
 async fn idle_timeout(activity: RequestActivity, registry: FileRegistry, timeout: Duration) {
-    wait_until_registry_ready(&activity, &registry).await;
+    wait_until_scan_complete(&activity, &registry).await;
 
     loop {
         let changed = activity.changed();
@@ -164,13 +164,14 @@ async fn idle_timeout(activity: RequestActivity, registry: FileRegistry, timeout
     }
 }
 
-async fn wait_until_registry_ready(activity: &RequestActivity, registry: &FileRegistry) {
+/// Discovery progress is not request activity, so the idle clock starts only
+/// when the scan has finished; a long scan never counts as idleness.
+async fn wait_until_scan_complete(activity: &RequestActivity, registry: &FileRegistry) {
     loop {
         let changed = registry.changed();
         let mut changed = pin!(changed);
         changed.as_mut().enable();
-        let status = registry.status();
-        if status.file_count > 0 || status.scan_complete {
+        if registry.status().scan_complete {
             activity.mark_ready();
             return;
         }
@@ -248,7 +249,28 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn registry_readiness_starts_a_fresh_idle_baseline() {
+    async fn scan_in_progress_suppresses_idle_timeout_after_files_arrive() {
+        let registry = FileRegistry::new();
+        let task = tokio::spawn(idle_timeout(
+            RequestActivity::new(),
+            registry.clone(),
+            Duration::from_secs(5),
+        ));
+        settle().await;
+
+        registry.insert(crate::loader::test_entry(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/golden-uncompressed-u16-multiframe.dcm"),
+        ));
+        settle().await;
+        tokio::time::advance(Duration::from_secs(60)).await;
+        settle().await;
+        assert!(!task.is_finished());
+        task.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn scan_completion_starts_a_fresh_idle_baseline() {
         let registry = FileRegistry::new();
         let task = tokio::spawn(idle_timeout(
             RequestActivity::new(),
@@ -289,7 +311,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn zero_timeout_exits_as_soon_as_the_registry_is_ready() {
+    async fn zero_timeout_exits_as_soon_as_the_scan_completes() {
         idle_timeout(RequestActivity::new(), ready_registry(), Duration::ZERO).await;
     }
 }

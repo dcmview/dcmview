@@ -60,7 +60,7 @@ struct Cli {
     #[arg(
         long = "timeout",
         value_name = "SECONDS",
-        help = "Exit after this many seconds without API or browser requests"
+        help = "Exit after this many seconds without API or browser requests once the scan has finished"
     )]
     timeout: Option<u64>,
 

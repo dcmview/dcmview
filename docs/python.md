@@ -111,7 +111,7 @@ view(
 | `browser` | `True` | Open the system browser. Use `False` to print and capture the URL instead. |
 | `block` | `True` | Wait for the viewer to exit and return `None`. When `False`, return a shutdown handle. |
 | `recursive` | `True` | Recursively scan input directories. |
-| `timeout` | `None` | Exit after this many seconds without API or browser requests. |
+| `timeout` | `None` | Exit after this many seconds without API or browser requests once the scan has finished. |
 | `annotations` | `None` | Load an EMBED-style ROI annotation CSV into memory without modifying the file. |
 | `filters` | `None` | Iterable of `FIELD=VALUE` metadata filters. Values are forwarded as repeatable `--filter` flags and combined with AND semantics. |
 | `vscode_bridge` | `True` | Open the viewer in VS Code when run from a VS Code terminal or inside an open workspace folder. |

@@ -453,7 +453,7 @@ Normal server exit during incomplete discovery or annotation loading requests
 cancellation and remains a successful process outcome.
 
 `RequestActivity` tracks in-flight requests and a monotonic idle baseline.
-Idle timeout does not start while the registry is both empty and incomplete,
+Idle timeout does not start until the scan has finished,
 and graceful shutdown lets in-flight requests drain. The browser task
 is owned by `BoundServer::serve` and cleaned up on every normal return or
 error.

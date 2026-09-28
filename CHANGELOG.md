@@ -63,6 +63,9 @@ diagnostic viewer.
 
 ### Changed
 
+- `--timeout` (and Python's `timeout=`) counts idle time from the end of the
+  scan. It used to start at the first discovered file, so a long scan with no
+  viewer open could end the process before the scan finished.
 - Discovery is much faster: 3000 small files scan in about 0.1 s instead of
   3.2 s, and more threads now help rather than hurt.
 - Large grayscale frames render with a quarter of the memory (an 8192x8192

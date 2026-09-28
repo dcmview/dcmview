@@ -111,14 +111,12 @@ discovery work before the process exits.
 The whole directory tree is walked before the first file is inspected, so on a
 very large tree the first file appears only after the walk.
 
-### The viewer exits during a long scan with `--timeout`
+### The viewer exits sooner than `--timeout` suggests on a long scan
 
-Symptom: with `--timeout`, `dcmview` exits before a large scan finishes.
-
-Likely cause: the idle clock starts once the first file is registered, and
-discovery progress does not count as activity; only API and browser requests
-do. Open the viewer (or send any request) during the scan, or use a longer
-timeout.
+It does not: the idle clock starts when the scan finishes, so a scan of any
+length never counts toward `--timeout`. After that, only API and browser
+requests reset the clock, so a viewer left open without interaction still
+exits; use a longer timeout for that.
 
 ### Port already in use
 

@@ -23,7 +23,7 @@ dcmview [OPTIONS] <PATH> [PATH ...]
 | `-p, --port <PORT>` | `0` | Local HTTP port to bind. `0` asks the OS for an available port. |
 | `--host <ADDR>` | `127.0.0.1` | Local interface to bind. Keep the default for normal and SSH-forwarded use. |
 | `--no-browser` | `false` | Print the viewer URL instead of opening a browser automatically. |
-| `--timeout <SECONDS>` | none | Exit after this many seconds without API or browser requests. |
+| `--timeout <SECONDS>` | none | Exit after this many seconds without API or browser requests once the scan has finished. |
 | `--no-recursive` | `false` | Scan only the top level of input directories. |
 | `--annotations <CSV>` | none | Load EMBED-style ROI annotations from CSV without modifying the file. |
 | `--filter <FIELD=VALUE>` | none | Include only files whose metadata field contains the value; repeatable. |

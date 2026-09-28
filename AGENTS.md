@@ -493,7 +493,7 @@ dcmview [OPTIONS] <PATH> [PATH ...]
   -p, --port <u16>          default: 0 (auto-assign)
   --host <str>              default: 127.0.0.1
   --no-browser
-  --timeout <u64>           seconds; no timeout if absent
+  --timeout <u64>           idle seconds after the scan finishes; none if absent
   --no-recursive
   --annotations <csv>
   --filter <FIELD=VALUE>    repeatable metadata filter
@@ -594,7 +594,8 @@ default suite.
 - Files without pixel data appear with `has_pixels: false`; frame requests for
   them return 404.
 - Port `0` auto-assign reports the actual listener port.
-- `--timeout` exits after the configured idle period.
+- `--timeout` exits after the configured idle period, counted from scan
+  completion.
 - Mixed DICOM/non-DICOM discovery reports valid files and skip counts.
 - Annotation load, edit, validation, and CSV export preserve the EMBED-style
   contract.
