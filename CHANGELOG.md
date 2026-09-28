@@ -76,6 +76,8 @@ diagnostic viewer.
 
 ### Changed
 
+- Built on dicom-rs 0.10; JPEG XL frames now decode with jxl-oxide 0.12.
+  Frames, raw samples, tags and file metadata are unchanged.
 - Dragging the window on frames too large for the browser (over 20 Mpx) now
   updates the image during the drag from server-rendered previews, which are
   not cached; such frames no longer download their raw samples first.
