@@ -123,6 +123,13 @@ Scan a study directory recursively:
 dcmview ./study_dir
 ```
 
+Keep only matching files; fields take their snake_case name or DICOM keyword
+(`modality`/`Modality`, `patient_id`/`PatientID`, ...):
+
+```bash
+dcmview --filter Modality=CT --filter patient_id=phantom ./study_dir
+```
+
 Run without opening a browser, useful on a remote server:
 
 ```bash

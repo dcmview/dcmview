@@ -12,6 +12,9 @@ diagnostic viewer.
 
 ### Added
 
+- `--filter` (and Python's `filters=`) accepts DICOM keywords such as
+  `PatientID=` or `StudyInstanceUID=` as well as the snake_case names, in any
+  case; an unknown field's error lists both spellings.
 - `GET /api/file/{index}/frame/{frame}/raw/pixel?row=&column=` returns one
   pixel's stored samples as a 1x1 raw frame. The pixel readout uses it for
   frames too large to fetch whole, instead of downloading tens of megabytes to

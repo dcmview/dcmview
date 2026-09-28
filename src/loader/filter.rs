@@ -20,19 +20,38 @@ pub struct ScanFilter {
     pub value: String,
 }
 
-impl ScanFilter {
-    pub const VALID_FIELDS: &'static [&'static str] = &[
-        "patient_id",
-        "patient_name",
+/// Each filterable field with its two accepted spellings: the snake_case name
+/// (used when printing a filter) and the DICOM keyword. Both parse
+/// case-insensitively.
+const FIELDS: &[(ScanFilterField, &str, &str)] = &[
+    (ScanFilterField::PatientId, "patient_id", "PatientID"),
+    (ScanFilterField::PatientName, "patient_name", "PatientName"),
+    (
+        ScanFilterField::StudyDescription,
         "study_description",
-        "study_date",
-        "study_uid",
+        "StudyDescription",
+    ),
+    (ScanFilterField::StudyDate, "study_date", "StudyDate"),
+    (ScanFilterField::StudyUid, "study_uid", "StudyInstanceUID"),
+    (
+        ScanFilterField::SeriesDescription,
         "series_description",
+        "SeriesDescription",
+    ),
+    (
+        ScanFilterField::SeriesNumber,
         "series_number",
+        "SeriesNumber",
+    ),
+    (
+        ScanFilterField::SeriesUid,
         "series_uid",
-        "modality",
-    ];
+        "SeriesInstanceUID",
+    ),
+    (ScanFilterField::Modality, "modality", "Modality"),
+];
 
+impl ScanFilter {
     pub fn matches(&self, entry: &FileEntry) -> bool {
         let haystack = match self.field {
             ScanFilterField::PatientId => &entry.patient_id,
@@ -57,18 +76,11 @@ impl std::fmt::Display for ScanFilter {
 
 impl std::fmt::Display for ScanFilterField {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let field = match self {
-            ScanFilterField::PatientId => "patient_id",
-            ScanFilterField::PatientName => "patient_name",
-            ScanFilterField::StudyDescription => "study_description",
-            ScanFilterField::StudyDate => "study_date",
-            ScanFilterField::StudyUid => "study_uid",
-            ScanFilterField::SeriesDescription => "series_description",
-            ScanFilterField::SeriesNumber => "series_number",
-            ScanFilterField::SeriesUid => "series_uid",
-            ScanFilterField::Modality => "modality",
-        };
-        formatter.write_str(field)
+        let (_, name, _) = FIELDS
+            .iter()
+            .find(|(field, _, _)| field == self)
+            .expect("every filter field has a spelling");
+        formatter.write_str(name)
     }
 }
 
@@ -79,37 +91,83 @@ impl FromStr for ScanFilter {
         let (field, value) = raw
             .split_once('=')
             .ok_or_else(|| scan_filter_parse_error(raw))?;
-        let field_name = field.trim().to_ascii_lowercase();
-        let field = match field_name.as_str() {
-            "patient_id" => ScanFilterField::PatientId,
-            "patient_name" => ScanFilterField::PatientName,
-            "study_description" => ScanFilterField::StudyDescription,
-            "study_date" => ScanFilterField::StudyDate,
-            "study_uid" => ScanFilterField::StudyUid,
-            "series_description" => ScanFilterField::SeriesDescription,
-            "series_number" => ScanFilterField::SeriesNumber,
-            "series_uid" => ScanFilterField::SeriesUid,
-            "modality" => ScanFilterField::Modality,
-            _ => return Err(scan_filter_parse_error(raw)),
-        };
+        let field = field.trim();
+        let (field, _, _) = FIELDS
+            .iter()
+            .find(|(_, name, keyword)| {
+                field.eq_ignore_ascii_case(name) || field.eq_ignore_ascii_case(keyword)
+            })
+            .ok_or_else(|| scan_filter_parse_error(raw))?;
         let value = value.trim();
         if value.is_empty() {
             return Err(scan_filter_parse_error(raw));
         }
         Ok(Self {
-            field,
+            field: *field,
             value: value.to_string(),
         })
     }
 }
 
 fn scan_filter_parse_error(raw: &str) -> String {
+    let fields = FIELDS
+        .iter()
+        .map(|(_, name, keyword)| format!("{name} ({keyword})"))
+        .collect::<Vec<_>>()
+        .join(", ");
     format!(
-        "invalid scan filter `{raw}`; expected FIELD=VALUE where FIELD is one of: {}",
-        ScanFilter::VALID_FIELDS.join(", ")
+        "invalid scan filter `{raw}`; expected FIELD=VALUE where FIELD is one of: {fields} \
+         (case-insensitive)"
     )
 }
 
 pub(super) fn matches_filters(entry: &FileEntry, filters: &[ScanFilter]) -> bool {
     filters.iter().all(|filter| filter.matches(entry))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ScanFilter, ScanFilterField, FIELDS};
+
+    #[test]
+    fn both_spellings_parse_case_insensitively_and_print_snake_case() {
+        for (field, name, keyword) in FIELDS {
+            for spelling in [
+                name.to_string(),
+                keyword.to_string(),
+                keyword.to_ascii_uppercase(),
+                name.to_ascii_uppercase(),
+            ] {
+                let filter: ScanFilter = format!(" {spelling} = value ").parse().expect(&spelling);
+                assert_eq!(filter.field, *field);
+                assert_eq!(filter.to_string(), format!("{name}=value"));
+            }
+        }
+    }
+
+    #[test]
+    fn every_field_has_one_spelling_row() {
+        let fields = [
+            ScanFilterField::PatientId,
+            ScanFilterField::PatientName,
+            ScanFilterField::StudyDescription,
+            ScanFilterField::StudyDate,
+            ScanFilterField::StudyUid,
+            ScanFilterField::SeriesDescription,
+            ScanFilterField::SeriesNumber,
+            ScanFilterField::SeriesUid,
+            ScanFilterField::Modality,
+        ];
+        assert_eq!(FIELDS.len(), fields.len());
+        for field in fields {
+            assert_eq!(FIELDS.iter().filter(|(row, _, _)| *row == field).count(), 1);
+        }
+    }
+
+    #[test]
+    fn parse_error_lists_both_spellings() {
+        let error = "PatientBirthDate=1970".parse::<ScanFilter>().unwrap_err();
+        assert!(error.contains("patient_id (PatientID)"), "{error}");
+        assert!(error.contains("study_uid (StudyInstanceUID)"), "{error}");
+    }
 }

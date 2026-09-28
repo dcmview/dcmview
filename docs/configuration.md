@@ -28,10 +28,23 @@ dcmview [OPTIONS] <PATH> [PATH ...]
 | `--annotations <CSV>` | none | Load EMBED-style ROI annotations from CSV without modifying the file. |
 | `--filter <FIELD=VALUE>` | none | Include only files whose metadata field contains the value; repeatable. |
 
-Filter fields are `patient_id`, `patient_name`, `study_description`,
-`study_date`, `study_uid`, `series_description`, `series_number`,
-`series_uid`, and `modality`. Matching is case-insensitive substring matching;
-multiple filters are combined with AND semantics.
+Filter fields, by snake_case name or DICOM keyword (either spelling, any
+case):
+
+| Name | Keyword |
+|---|---|
+| `patient_id` | `PatientID` |
+| `patient_name` | `PatientName` |
+| `study_description` | `StudyDescription` |
+| `study_date` | `StudyDate` |
+| `study_uid` | `StudyInstanceUID` |
+| `series_description` | `SeriesDescription` |
+| `series_number` | `SeriesNumber` |
+| `series_uid` | `SeriesInstanceUID` |
+| `modality` | `Modality` |
+
+Matching is case-insensitive substring matching; multiple filters are combined
+with AND semantics.
 
 `--startup-json` and `--vscode-bridge-client` are hidden integration flags for
 wrappers and VS Code terminal interception. They are not part of the normal user

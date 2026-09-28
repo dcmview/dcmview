@@ -113,7 +113,7 @@ view(
 | `recursive` | `True` | Recursively scan input directories. |
 | `timeout` | `None` | Exit after this many seconds without API or browser requests once the scan has finished. |
 | `annotations` | `None` | Load an EMBED-style ROI annotation CSV into memory without modifying the file. |
-| `filters` | `None` | Iterable of `FIELD=VALUE` metadata filters. Values are forwarded as repeatable `--filter` flags and combined with AND semantics. |
+| `filters` | `None` | Iterable of `FIELD=VALUE` metadata filters, where `FIELD` is a snake_case name or DICOM keyword (`modality` or `Modality`; see the [configuration reference](configuration.md) for the list). Values are forwarded as repeatable `--filter` flags and combined with AND semantics. |
 | `vscode_bridge` | `True` | Open the viewer in VS Code when run from a VS Code terminal or inside an open workspace folder. |
 
 Filter fields are the same as the Rust CLI: `patient_id`, `patient_name`,
@@ -148,7 +148,7 @@ Metadata filters:
 ```python
 view(
     "./study_dir",
-    filters=["modality=CT", "patient_id=phantom"],
+    filters=["Modality=CT", "patient_id=phantom"],
 )
 ```
 
