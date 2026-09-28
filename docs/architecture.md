@@ -341,6 +341,18 @@ window mode. Full-dynamic mode ignores explicit window values. Raw cache keys
 include file and frame only. Cache locks are held for lookup or insertion, never
 while reading DICOM, decoding, rendering, or encoding.
 
+The raw cache is also the decoded tier of the display path: a display miss on a
+grayscale integer frame (8 or 16 bits, or one-bit) takes the frame's samples
+from the raw cache, decoding them there if needed, and windows them, so a frame
+is decoded once whatever windows it is shown with. `service.rs`
+`display_integer_layout` states, per codec, the container and signedness each
+display decoder windows those samples with (the raw metadata describes the wire
+and differs, for example JPEG Baseline's canonical unsigned samples); a unit
+test holds every fixture's result equal to its codec's display decoder. JPEG
+2000 only reuses a frame already in the raw cache, because its raw decode
+rejects component layouts that display still windows per sample. Any other
+frame, or a raw decode that fails, is decoded for display as before.
+
 Native display decoding supports monochrome integer samples at 1, 8, 16, and
 32 bits, Float Pixel Data, Double Float Pixel Data, 8-bit RGB in either planar
 configuration, YBR_FULL, YBR_FULL_422, and palette color. Native raw responses

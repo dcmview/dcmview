@@ -303,6 +303,7 @@ pub(super) async fn frame(
     let frame_response = pixels::load_frame(
         file,
         state.pixel_cache(),
+        state.raw_cache(),
         FrameRequest {
             frame,
             window_center: query.wc,

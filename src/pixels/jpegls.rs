@@ -203,6 +203,7 @@ mod tests {
         let display = load_frame(
             file.into(),
             new_cache(),
+            new_raw_cache(),
             FrameRequest {
                 frame: 0,
                 window_center: None,

@@ -362,6 +362,9 @@ requires an existing `frontend/dist/index.html`.
   values come directly from UI/query/DICOM inputs.
 - Display cache entries are budgeted by `FRAME_CACHE_MAX_BYTES`; raw cache
   entries are budgeted by `RAW_CACHE_MAX_BYTES`.
+- The raw cache is the display path's decoded tier for grayscale integer
+  frames (`pixels/service.rs` `raw_samples_for_display`); a new display
+  decoder's integer layout must be mirrored in `display_integer_layout`.
 - Tag trees are cached per file index in a bounded LRU behind private
   `AppState` methods. Tag reads parse only up to pixel data and describe the
   pixel element from its header, seeking past its value (a deflated data set

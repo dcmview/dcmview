@@ -66,6 +66,10 @@ diagnostic viewer.
 
 ### Changed
 
+- Grayscale display frames are windowed from decoded samples shared with the
+  raw-frame cache, so showing one frame with several windows (cine after a
+  window change, a server-side window drag) decodes it once; five windows on a
+  512x512 JPEG 2000 frame already fetched raw take 4 ms instead of 127 ms.
 - `/api/files` `discovery` lists only skipped and filtered paths (up to the
   256 most recent). Accepted files are already in `files`, and with them in
   the list a large scan pushed every skip reason out of it. The `scanned`,

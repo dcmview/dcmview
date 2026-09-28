@@ -2,6 +2,7 @@ use crate::api::contracts::{RawFrameMetadata, SupportState, WindowMode};
 use crate::types::{
     FileEntry, FrameCacheKey, NativePixelDataKind, RawFrameCacheKey, WindowRequest,
 };
+use anyhow::Context;
 use bytes::Bytes;
 use futures::FutureExt;
 use std::future::Future;
@@ -21,6 +22,7 @@ use super::jpeg2000::{decode_jp2_fragment_to_png, decode_raw_jp2_samples};
 use super::jpegls::{decode_jpeg_ls_to_png, decode_raw_jpeg_ls};
 use super::jpegxl::{decode_jpeg_xl_to_png, decode_raw_jpeg_xl};
 use super::native::{decode_uncompressed_to_png, read_raw_uncompressed};
+use super::render::{encode_windowed_luminance_png, LuminanceRenderOptions, StoredSamples};
 use super::rle::{decode_raw_rle, decode_rle_to_png};
 use super::syntax::{classify_pixel_support, codec_for_syntax, Codec, PixelSupportReason};
 
@@ -177,6 +179,7 @@ pub struct FrameResponse {
 pub async fn load_frame(
     file: Arc<FileEntry>,
     cache: Arc<Mutex<FrameCache>>,
+    raw_cache: Arc<Mutex<RawFrameCache>>,
     request: FrameRequest,
 ) -> PixelResult<FrameResponse> {
     if !file.has_pixels {
@@ -201,41 +204,194 @@ pub async fn load_frame(
         window.width(),
         window.mode(),
     );
+    let display = DisplayWindow {
+        frame: request.frame,
+        center: window.center(),
+        width: window.width(),
+        mode: window.mode(),
+    };
 
-    let (frame, center, width, mode) = (
-        request.frame,
-        window.center(),
-        window.width(),
-        window.mode(),
-    );
-    let (body, cache_hit) = cached_or_decoded(&cache, key, async move {
-        Ok(match codec {
-            Codec::DeflatedImageFrame => {
-                decode_deflated_binary_frame_to_png(file, frame, center, width, mode).await?
+    let cached = cache.lock().map_err(|_| cache_poisoned())?.get(&key);
+    let (body, cache_hit) = match cached {
+        Some(body) => (body, true),
+        None => match raw_samples_for_display(&file, codec, &raw_cache, display.frame).await {
+            Some((raw, layout)) => {
+                cached_or_decoded(&cache, key, window_raw_samples(file, raw, layout, display))
+                    .await?
             }
-            Codec::JpegBaseline | Codec::JpegLossless => {
-                decode_compressed_frame_to_png(codec, file, frame, center, width, mode)
-                    .await
-                    .map_err(PixelError::frame_decode)?
+            None => {
+                cached_or_decoded(&cache, key, decode_display_frame(codec, file, display)).await?
             }
-            Codec::Jpeg2000 => decode_jp2_fragment_to_png(file, frame, center, width, mode)
-                .await
-                .map_err(PixelError::frame_decode)?,
-            Codec::JpegXl => decode_jpeg_xl_to_png(file, frame, center, width, mode).await?,
-            Codec::JpegLs => decode_jpeg_ls_to_png(file, frame, center, width, mode).await?,
-            Codec::Native => decode_uncompressed_to_png(file, frame, center, width, mode)
-                .await
-                .map_err(PixelError::frame_decode)?,
-            Codec::Rle => decode_rle_to_png(file, frame, center, width, mode).await?,
-        })
-    })
-    .await?;
+        },
+    };
 
     Ok(FrameResponse {
         body,
         content_type: "image/png",
         cache_hit,
     })
+}
+
+#[derive(Clone, Copy)]
+struct DisplayWindow {
+    frame: u32,
+    center: Option<f64>,
+    width: Option<f64>,
+    mode: WindowMode,
+}
+
+/// Decodes and presents one display frame with the codec's own decoder.
+async fn decode_display_frame(
+    codec: Codec,
+    file: Arc<FileEntry>,
+    window: DisplayWindow,
+) -> PixelResult<Bytes> {
+    let DisplayWindow {
+        frame,
+        center,
+        width,
+        mode,
+    } = window;
+    Ok(match codec {
+        Codec::DeflatedImageFrame => {
+            decode_deflated_binary_frame_to_png(file, frame, center, width, mode).await?
+        }
+        Codec::JpegBaseline | Codec::JpegLossless => {
+            decode_compressed_frame_to_png(codec, file, frame, center, width, mode)
+                .await
+                .map_err(PixelError::frame_decode)?
+        }
+        Codec::Jpeg2000 => decode_jp2_fragment_to_png(file, frame, center, width, mode)
+            .await
+            .map_err(PixelError::frame_decode)?,
+        Codec::JpegXl => decode_jpeg_xl_to_png(file, frame, center, width, mode).await?,
+        Codec::JpegLs => decode_jpeg_ls_to_png(file, frame, center, width, mode).await?,
+        Codec::Native => decode_uncompressed_to_png(file, frame, center, width, mode)
+            .await
+            .map_err(PixelError::frame_decode)?,
+        Codec::Rle => decode_rle_to_png(file, frame, center, width, mode).await?,
+    })
+}
+
+/// Presents raw-tier samples exactly as the codec's display decoder presents
+/// the same decoded frame.
+async fn window_raw_samples(
+    file: Arc<FileEntry>,
+    (bytes, metadata): (Bytes, RawFrameMetadata),
+    (bits_allocated, signed): (u32, bool),
+    window: DisplayWindow,
+) -> PixelResult<Bytes> {
+    tokio::task::spawn_blocking(move || {
+        encode_windowed_luminance_png(
+            &file,
+            StoredSamples::Integer {
+                bytes: &bytes,
+                bits_allocated,
+                signed,
+            },
+            LuminanceRenderOptions {
+                frame: window.frame,
+                rows: metadata.rows,
+                columns: metadata.columns,
+                requested_wc: window.center,
+                requested_ww: window.width,
+                window_mode: window.mode,
+            },
+        )
+    })
+    .await
+    .context("display windowing task failed")
+    .and_then(|result| result)
+    .map_err(PixelError::frame_decode)
+}
+
+/// The decoded samples of a display frame from the raw tier, so a frame is
+/// decoded once whatever windows it is displayed with. Codecs whose raw decode
+/// succeeds whenever their grayscale display decode does are decoded through
+/// the raw cache (and fill it); JPEG 2000's raw path rejects components that
+/// do not fit the declared layout, which display still windows per sample, so
+/// it only reuses a frame the raw cache already holds rather than risk a
+/// second decode per request. `None` means decode for display as before.
+async fn raw_samples_for_display(
+    file: &Arc<FileEntry>,
+    codec: Codec,
+    raw_cache: &Arc<Mutex<RawFrameCache>>,
+    frame: u32,
+) -> Option<((Bytes, RawFrameMetadata), (u32, bool))> {
+    if !displays_grayscale(file, codec) {
+        return None;
+    }
+    let raw = if codec == Codec::Jpeg2000 {
+        let key = RawFrameCacheKey {
+            file_index: file.index,
+            frame,
+        };
+        raw_cache.lock().ok()?.get(&key)?
+    } else {
+        let raw = load_raw_frame(file.clone(), raw_cache.clone(), RawFrameRequest { frame })
+            .await
+            .ok()?;
+        (raw.body, raw.metadata)
+    };
+    let layout = display_integer_layout(file, codec, &raw.1)?;
+    Some((raw, layout))
+}
+
+/// Whether the file's display decode takes the grayscale integer path, judged
+/// from the catalog before decoding (`display_integer_layout` confirms it
+/// against the decoded frame).
+fn displays_grayscale(file: &FileEntry, codec: Codec) -> bool {
+    let monochrome = matches!(
+        file.photometric_interpretation
+            .trim()
+            .to_ascii_uppercase()
+            .as_str(),
+        "MONOCHROME1" | "MONOCHROME2"
+    );
+    file.samples_per_pixel == 1
+        && match codec {
+            Codec::Native => {
+                monochrome
+                    && matches!(
+                        file.series_metadata.native_pixel.pixel_data_kind,
+                        None | Some(NativePixelDataKind::Integer)
+                    )
+                    && matches!(file.bits_allocated, 1 | 8 | 16)
+            }
+            Codec::Rle => monochrome && matches!(file.pixel_representation, 0 | 1),
+            Codec::DeflatedImageFrame
+            | Codec::JpegBaseline
+            | Codec::JpegLossless
+            | Codec::JpegLs
+            | Codec::JpegXl
+            | Codec::Jpeg2000 => true,
+        }
+}
+
+/// The container width and signedness the codec's display decoder windows a
+/// decoded grayscale frame with, when those samples are exactly the raw
+/// body; `None` when display would not window this raw frame as integers.
+///
+/// Each arm mirrors that decoder's `StoredSamples::Integer` call; the raw
+/// metadata cannot be used as is, because it describes the wire (JPEG
+/// Baseline reports canonical unsigned samples, one-bit frames keep
+/// BitsAllocated 1 over one byte per sample).
+fn display_integer_layout(
+    file: &FileEntry,
+    codec: Codec,
+    metadata: &RawFrameMetadata,
+) -> Option<(u32, bool)> {
+    if metadata.samples_per_pixel != 1 {
+        return None;
+    }
+    let signed = file.pixel_representation == 1;
+    match (codec, metadata.bits_allocated) {
+        (Codec::Native | Codec::DeflatedImageFrame, 1) => Some((8, false)),
+        (Codec::DeflatedImageFrame, _) => None,
+        (Codec::JpegXl, 8) => Some((8, false)),
+        (_, bits @ (8 | 16)) => Some((bits, signed)),
+        _ => None,
+    }
 }
 
 /// Decodes run on the blocking pool; bounding them to the core count keeps
@@ -362,4 +518,63 @@ fn reject_unsupported_layout(file: &FileEntry, kind: FrameKind) -> PixelResult<(
 fn codec_or_unsupported(file: &FileEntry) -> PixelResult<Codec> {
     codec_for_syntax(&file.transfer_syntax_uid)
         .ok_or_else(|| PixelError::UnsupportedTransferSyntax(file.transfer_syntax_uid.clone()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pixels::new_raw_cache;
+
+    /// Every committed fixture whose display frame is windowed from the raw
+    /// tier renders exactly what its codec's display decoder renders.
+    #[tokio::test]
+    async fn raw_tier_display_matches_the_codec_display_decoder() {
+        let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let mut compared = 0;
+        for path in std::fs::read_dir(fixtures).expect("fixture directory") {
+            let path = path.expect("fixture entry").path();
+            if path.extension().is_none_or(|extension| extension != "dcm") {
+                continue;
+            }
+            let file = Arc::new(crate::loader::test_entry(&path));
+            let Some(codec) = codec_for_syntax(&file.transfer_syntax_uid) else {
+                continue;
+            };
+            if !file.has_pixels || reject_unsupported_layout(&file, FrameKind::Display).is_err() {
+                continue;
+            }
+            let raw_cache = new_raw_cache();
+            let _ = load_raw_frame(
+                file.clone(),
+                raw_cache.clone(),
+                RawFrameRequest { frame: 0 },
+            )
+            .await;
+            let Some((raw, layout)) = raw_samples_for_display(&file, codec, &raw_cache, 0).await
+            else {
+                continue;
+            };
+            for (center, width, mode) in [
+                (None, None, WindowMode::Default),
+                (Some(-600.0), Some(1500.0), WindowMode::Default),
+                (None, None, WindowMode::FullDynamic),
+            ] {
+                let window = DisplayWindow {
+                    frame: 0,
+                    center,
+                    width,
+                    mode,
+                };
+                let decoded = decode_display_frame(codec, file.clone(), window)
+                    .await
+                    .expect("display decode");
+                let windowed = window_raw_samples(file.clone(), raw.clone(), layout, window)
+                    .await
+                    .expect("raw-tier display");
+                assert_eq!(decoded, windowed, "{}", path.display());
+            }
+            compared += 1;
+        }
+        assert!(compared >= 15, "only {compared} fixtures took the raw tier");
+    }
 }

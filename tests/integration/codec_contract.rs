@@ -418,9 +418,14 @@ async fn jpeg2000_display_applies_rescale_before_every_window_mode() {
     ];
 
     for (request, expected_rows) in cases {
-        let response = pixels::load_frame(file.clone().into(), pixels::new_cache(), request)
-            .await
-            .expect("JPEG 2000 display decode");
+        let response = pixels::load_frame(
+            file.clone().into(),
+            pixels::new_cache(),
+            pixels::new_raw_cache(),
+            request,
+        )
+        .await
+        .expect("JPEG 2000 display decode");
         let rendered =
             image::load_from_memory_with_format(response.body.as_ref(), ImageFormat::Png)
                 .expect("display response should be PNG")
