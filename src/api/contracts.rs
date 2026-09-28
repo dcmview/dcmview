@@ -309,9 +309,12 @@ pub struct FileSummary {
     pub object_kind: String,
     pub support_state: SupportState,
     pub support_reason: Option<String>,
-    /// Whether client-side raw windowing preserves every declared presentation transform.
+    /// Whether client-side raw windowing preserves every declared presentation
+    /// transform. Always `true` now that the value mapping carries the
+    /// Modality and VOI LUTs and `presentation-layer` the shutter and overlays.
     pub raw_windowing_compatible: bool,
-    /// Stable explanation when the frontend must retain the server-rendered presentation path.
+    /// Explanation when the frontend must retain the server-rendered
+    /// presentation path; always `null` (see `raw_windowing_compatible`).
     pub raw_windowing_reason: Option<String>,
     /// Whether grayscale display frames carry a display shutter or overlay
     /// graphics, which `presentation-layer` draws for a raw-rendered frame.

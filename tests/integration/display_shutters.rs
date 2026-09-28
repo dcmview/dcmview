@@ -49,10 +49,10 @@ async fn shutter_fixture_frame(name: &str, frame: u32) -> (DynamicImage, Vec<u8>
     )
     .await
     .expect("discover shutter fixture");
-    // Client raw rendering cannot draw the shutter, so the viewer must keep
-    // the server presentation.
+    // The viewer draws the shutter over a browser-windowed frame from the
+    // presentation layer.
     let summary = dcmview::types::FileSummary::from(&report.files[0]);
-    assert!(!summary.raw_windowing_compatible, "{name}");
+    assert!(summary.presentation_layer, "{name}");
 
     let test_server = TestServer::new(server::router(support::app_state(report.files)));
     let display = test_server.get(&format!("/api/file/0/frame/{frame}")).await;

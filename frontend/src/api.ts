@@ -190,6 +190,17 @@ export function fetchSemanticContext(fileIndex: number): Promise<SemanticContext
 	return getJson(endpoint, endpointUrl(endpoint, { index: fileIndex }));
 }
 
+/** A grayscale frame's display shutter and overlay graphics, transparent elsewhere. */
+export async function fetchPresentationLayerBlob(
+	fileIndex: number,
+	frame: number,
+	signal?: AbortSignal,
+): Promise<Blob> {
+	const endpoint = API_ENDPOINTS.filePresentationLayer;
+	const response = await send(endpoint, endpointUrl(endpoint, { index: fileIndex, frame }), { signal });
+	return response.blob();
+}
+
 export async function fetchSegmentationOverlayBlob(
 	fileIndex: number,
 	frame: number,

@@ -71,6 +71,10 @@ diagnostic viewer.
 
 ### Changed
 
+- Window/level now updates live while dragging on files with a Modality LUT,
+  a VOI LUT, overlay planes or a display shutter, and on one-bit, 32-bit and
+  float frames: the browser windows them and draws the server's shutter and
+  overlay graphics on top. They used to change only when the drag ended.
 - Grayscale display frames are windowed from decoded samples shared with the
   raw-frame cache, so showing one frame with several windows (cine after a
   window change, a server-side window drag) decodes it once; five windows on a

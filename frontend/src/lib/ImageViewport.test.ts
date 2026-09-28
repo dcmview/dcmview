@@ -17,6 +17,7 @@ vi.mock("../api", async (importOriginal) => ({
 	fetchFrameValueMapping: vi.fn(),
 	fetchDoseOverlayBlob: vi.fn(),
 	fetchDoseOverlayValues: vi.fn(),
+	fetchPresentationLayerBlob: vi.fn(async () => new Blob(["png"], { type: "image/png" })),
 	updateAnnotations: vi.fn(),
 }));
 
@@ -141,6 +142,21 @@ describe("ImageViewport window/level path", () => {
 		await waitFor(() => expect(fetchDisplayFrameBlob).toHaveBeenCalled());
 		expect(fetchRawFrame).not.toHaveBeenCalled();
 		expect(screen.getByText("server presentation retained").getAttribute("title")).toBe("32-bit float");
+	});
+
+	it("draws the frame's shutter and overlays over the browser-windowed image", async () => {
+		renderViewport({ activeTool: "window_level", file: fileSummary(5, { presentation_layer: true }) });
+
+		await waitFor(() => expect(api.fetchPresentationLayerBlob).toHaveBeenCalledWith(5, 0, expect.any(AbortSignal)));
+		await waitFor(() => expect(drawOverlayLayer).toHaveBeenCalled());
+		expect(fetchDisplayFrameBlob).not.toHaveBeenCalled();
+	});
+
+	it("keeps server windowing when the file's value mapping cannot load", async () => {
+		fetchFrameValueMapping.mockRejectedValue(new Error("mapping unavailable"));
+		renderViewport({ activeTool: "window_level" });
+
+		await waitFor(() => expect(fetchDisplayFrameBlob).toHaveBeenCalledWith(5, 0, {}, expect.any(AbortSignal)));
 	});
 
 	it("falls back to server presentation when a raw frame is not renderable", async () => {

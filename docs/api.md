@@ -80,9 +80,11 @@ Poll while `scan_complete` is `false` if you need the complete file list.
 Each file summary carries identity and geometry fields plus
 `support_state` (`renderable`, `metadata_only`, or `unsupported`) and a stable
 `support_reason` such as `transfer_syntax.not_supported`. These describe what
-the viewer can do, not DICOM conformance. `raw_windowing_compatible` is `false`
-when client-side windowing would drop a presentation transform, and
-`raw_windowing_reason` then says why. `presentation_layer` is `true` when
+the viewer can do, not DICOM conformance. `raw_windowing_compatible` said
+whether client-side windowing would drop a presentation transform; the value
+mapping (Modality and VOI LUTs) and `presentation-layer` (shutter and overlays)
+now let a client reproduce every one, so it is always `true` and
+`raw_windowing_reason` always `null`. `presentation_layer` is `true` when
 grayscale display frames carry a display shutter or overlay graphics; neither
 depends on the window, so `presentation-layer` drawn over a frame windowed in
 the browser gives exactly the display frame for that window.

@@ -429,6 +429,9 @@ is cached between requests.
   calls in components when a typed wrapper belongs there.
 - The viewport supports two render paths: display PNG blobs for cine mode and
   raw-frame client-side rendering for interactive diagnostic/window-level work.
+  The raw path renders with the file's value mapping (float samples, Modality
+  and VOI LUTs) and draws the `presentation-layer` (shutter and overlays) over
+  the image, so every grayscale frame the browser can hold is windowed live.
 - Window/level interactions should avoid flooding requests: local raw rendering
   draws at most once per animation frame, and the server-windowing drag sends
   one request on release.

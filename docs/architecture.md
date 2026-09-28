@@ -369,11 +369,17 @@ real-world-value mapping remains a separate semantic capability (the
 value-mapping endpoint, value overlays, and display windows requested in a
 `unit`) rather than an implicit part of the display pipeline.
 
-The frontend uses raw frames for local interactive window/level when their
-single-channel 8- or 16-bit layout is supported by the browser renderer. For
-other server-renderable layouts (including one-bit, 32-bit, and floating-point
-samples), selecting the window/level tool falls back to parameterized display
-PNG requests instead of replacing the image with a raw-renderer error.
+The frontend uses raw frames for local interactive window/level for every
+single-channel frame up to `MAX_RENDER_PIXELS` (20 Mpx): 1-, 8- and 16-bit
+integers through a per-stored-value table, 32-bit integers and float samples
+one at a time. The renderer takes what the raw headers cannot say from the
+frame's value mapping (stored value type, Modality LUT, VOI LUT) and waits for
+it; a file whose value mapping cannot load keeps server windowing. For files
+with a display shutter or overlay planes (`presentation_layer`), the viewport
+draws the frame's `presentation-layer` on a canvas above the windowed image
+and below any value colorwash, which reproduces the server's display frame
+exactly because neither depends on the window. Color frames, and frames over
+the pixel limit, stay on parameterized display PNG requests.
 
 For supported 8-bit RGB display paths, a structurally valid source ICC profile
 is preserved in the PNG `iCCP` chunk. The profile may come from the top-level

@@ -60,11 +60,14 @@ export type ErrorResponse = { code: ApiErrorCode, error: string, };
 
 export type FileSummary = { index: number, path: string, label: string, patient_id: string, patient_name: string, study_instance_uid: string, study_date: string, study_description: string, series_instance_uid: string, series_number: string, series_description: string, modality: string, instance_number: string, sop_instance_uid: string, sop_class_uid: string, object_kind: string, support_state: SupportState, support_reason: string | null, 
 /**
- * Whether client-side raw windowing preserves every declared presentation transform.
+ * Whether client-side raw windowing preserves every declared presentation
+ * transform. Always `true` now that the value mapping carries the
+ * Modality and VOI LUTs and `presentation-layer` the shutter and overlays.
  */
 raw_windowing_compatible: boolean, 
 /**
- * Stable explanation when the frontend must retain the server-rendered presentation path.
+ * Explanation when the frontend must retain the server-rendered
+ * presentation path; always `null` (see `raw_windowing_compatible`).
  */
 raw_windowing_reason: string | null, 
 /**

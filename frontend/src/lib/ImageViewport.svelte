@@ -30,6 +30,7 @@
 		mappedUnitsPerStoredUnit,
 		resolveDisplayWindow,
 		resolveMappedDisplayWindow,
+		samplePresentation,
 		selectWindowingPipeline,
 		validateRenderableRawFrame,
 		type ResolvedWindow,
@@ -47,6 +48,7 @@
 		legendColors,
 		OverlayLayerCache,
 		overlayLayerRequests,
+		presentationLayerRequest,
 		valueOverlayLayerRequest,
 		valueOverlayValuesRequest,
 		type FrameOverlay,
@@ -184,6 +186,8 @@
 	});
 	const valueMappings = new ValueMappings();
 	const overlayLayers = new OverlayLayerCache();
+	const presentationLayers = new OverlayLayerCache();
+	let presentationLayerCanvas: HTMLCanvasElement | undefined = $state();
 	const overlayValues = new OverlayLayerCache<Float32Array>();
 	let overlayValueState = $state<{ key: string; state: OverlayValueState } | null>(null);
 	let valueOverlayCanvas: HTMLCanvasElement | undefined = $state();
@@ -235,6 +239,16 @@
 		return selectWindowingPipeline(activeTool === "window_level", rawFallback, activeFile.raw_windowing_compatible);
 	});
 
+	// The raw renderer reads what the raw headers cannot say (float samples,
+	// Modality and VOI LUTs) from the file's value mapping, and waits for it.
+	const rawPresentation = $derived.by(() => {
+		if (pipelineMode !== "diagnostic_wl" || !currentRawFrame) return null;
+		const mapping = valueMappings.forFrame(activeFile.index, currentFrame);
+		return mapping ? samplePresentation(currentRawFrame, mapping) : null;
+	});
+	// A browser-windowed frame gets its shutter and overlay graphics drawn over it.
+	const showsPresentationLayer = $derived(pipelineMode === "diagnostic_wl" && activeFile.presentation_layer);
+
 	// A window in real-world units converts through that mapping to the
 	// Modality scale that both render paths window.
 	const mappedScale = $derived(overlay ? null : mappedWindowScale(frameMapping));
@@ -279,6 +293,7 @@
 				renderWindowCenter,
 				renderWindowWidth,
 				windowMode,
+				rawPresentation ?? undefined,
 			)
 			: liveWindowCenter !== null && liveWindowWidth !== null
 				? { wc: liveWindowCenter, ww: liveWindowWidth }
@@ -895,18 +910,21 @@
 	});
 
 	$effect(() => {
-		if (pipelineMode !== "diagnostic_wl" || !currentRawFrame || !canvasEl || renderWindowPending) return;
+		const presentation = rawPresentation;
+		if (pipelineMode !== "diagnostic_wl" || !currentRawFrame || !canvasEl || renderWindowPending || !presentation) {
+			return;
+		}
 		// displayWindow already resolved this frame's window; window changes do
 		// not invalidate in-flight renders, only frame, file, and mode changes do.
 		const frame = currentRawFrame;
-		const { wc, ww } = displayWindow;
+		const { wc, ww, voiLut } = displayWindow;
 		const valueMap = directWindowing ? directMap : null;
 		const generation = wlRenderGeneration;
 		void wlRenderer.render(() => canvasEl, {
 			frame,
 			wc,
 			ww,
-			options: { valueMap },
+			options: { valueMap, presentation, voiLut },
 			isCurrent: () => generation === wlRenderGeneration
 				&& frame === currentRawFrame
 				&& pipelineMode === "diagnostic_wl",
@@ -926,6 +944,44 @@
 			return;
 		}
 		return untrack(() => valueMappings.ensureWhenSettled(fileIndex, frameIndex));
+	});
+
+	// Without any value mapping of the file, the raw renderer cannot tell
+	// how to present its samples, so the file keeps server windowing.
+	$effect(() => {
+		const fileIndex = activeFile.index;
+		if (pipelineMode !== "diagnostic_wl" || valueMappings.knownForFile(fileIndex)) return;
+		if (!valueMappings.failed(fileIndex, currentFrame)) return;
+		untrack(() => {
+			rawWindowLevelFallbackByFile = { ...rawWindowLevelFallbackByFile, [fileIndex]: true };
+		});
+	});
+
+	// Draws the displayed frame's shutter and overlay graphics over the
+	// browser-windowed image; the last layer stays until the next one loads,
+	// as the image does.
+	$effect(() => {
+		const canvas = presentationLayerCanvas;
+		if (!showsPresentationLayer || !canvas) return;
+		const request = presentationLayerRequest(activeFile.index, currentFrame);
+		let current = true;
+		presentationLayers.abortOthers(request.key);
+		presentationLayers.load(request)
+			.then(decodeCanvasImage)
+			.then((layer) => {
+				try {
+					if (current) drawOverlayLayer(canvas, layer);
+				} finally {
+					layer.dispose();
+				}
+			})
+			.catch((error: unknown) => {
+				if (!current || (error as Error).name === "AbortError") return;
+				loadError = (error as Error).message || "Failed to load the frame's shutter and overlays";
+			});
+		return () => {
+			current = false;
+		};
 	});
 
 	// Samples and the value mapping load once the cursor rests on a frame,
@@ -1026,6 +1082,7 @@
 		return () => {
 			stopProbe();
 			overlayLayers.clear();
+			presentationLayers.clear();
 			overlayValues.clear();
 			rawFrames.clear();
 			displayFrames.clear();
@@ -1402,6 +1459,9 @@
 				class="dicom-canvas"
 				data-capture-rendered={rendered.token}
 			></canvas>
+			{#if showsPresentationLayer}
+				<canvas bind:this={presentationLayerCanvas} class="layer-canvas" aria-hidden="true"></canvas>
+			{/if}
 			{#if valueOverlayVolume}
 				<canvas
 					bind:this={valueOverlayCanvas}
@@ -1450,6 +1510,8 @@
 					</span>
 				{:else if mappedScale}
 					<span class="mapped-window">W/L auto · {mappedScale.unit}</span>
+				{:else if displayWindow.voiLut}
+					<span>VOI LUT</span>
 				{:else}
 					<span>W: {Math.round(displayWindow.ww)} · C: {Math.round(displayWindow.wc)}</span>
 				{/if}
@@ -1528,6 +1590,7 @@
 		transform-origin: 0 0;
 		transition: transform 0.03s linear;
 	}
+	.layer-canvas,
 	.value-overlay-canvas {
 		position: absolute;
 		inset: 0;
