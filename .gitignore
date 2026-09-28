@@ -50,3 +50,6 @@ marketing-review/
 __pycache__/
 
 .DS_Store
+
+# local, uncommitted proposals, briefs and review notes
+docs/planned/

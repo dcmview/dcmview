@@ -83,9 +83,10 @@ would remove behavior, raise it as a question instead of acting.
   16-bit (and one-bit) single-sample frames. Frames with other samples show
   their default window for such a window on the server.
 
-`docs/planned/` temporarily holds uncommitted proposals, such as the JupyterLab
-integration and the original compatibility plan. They are not specs and not
-current behavior. Do not implement them unless the owner asks.
+`docs/planned/` is gitignored and holds local proposals, briefs and review
+notes, such as the JupyterLab integration and the original compatibility plan.
+They are not specs and not current behavior. Do not implement them unless the
+owner asks.
 
 ---
 
