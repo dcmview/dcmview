@@ -151,16 +151,12 @@ pub fn raw_pixel(
     Some((Bytes::from(body), pixel_metadata))
 }
 
-/// Pixel Padding bounds for a grayscale integer raw frame, so client-side
-/// windowing can exclude padding exactly as the display path does.
+/// Pixel Padding bounds (the float padding attributes for float pixel data)
+/// for a grayscale raw frame, so client-side windowing can exclude padding
+/// exactly as the display path does.
 fn raw_padding_bounds(file: &FileEntry, metadata: &RawFrameMetadata) -> Option<[f64; 2]> {
-    let native = &file.series_metadata.native_pixel;
-    let integer_pixels = matches!(
-        native.pixel_data_kind,
-        None | Some(NativePixelDataKind::Integer)
-    );
-    (metadata.samples_per_pixel == 1 && integer_pixels)
-        .then_some(native.pixel_padding)
+    (metadata.samples_per_pixel == 1)
+        .then_some(file.series_metadata.native_pixel.pixel_padding)
         .flatten()
 }
 

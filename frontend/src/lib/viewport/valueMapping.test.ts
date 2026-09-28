@@ -51,6 +51,7 @@ function mapping(overrides: Partial<FrameValueMapping> = {}): FrameValueMapping 
 		stored_value_type: "integer",
 		modality: { rescale_slope: 1, rescale_intercept: 0, rescale_type: null, lut: null },
 		real_world: [],
+		voi_lut: null,
 		...overrides,
 	};
 }
@@ -248,6 +249,7 @@ describe("pixel lookup helpers", () => {
 			stored_value_type: "integer",
 			modality: { rescale_slope: 1, rescale_intercept: -1024, lut: null },
 			real_world: [],
+			voi_lut: null,
 		});
 		expect(rawHeaderValueMapping(2, 1, frame(new Float32Array(4).buffer, { bitsAllocated: 32 }))).toBeNull();
 	});

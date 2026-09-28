@@ -283,6 +283,7 @@ export function rawHeaderValueMapping(
 		stored_value_type: bitsAllocated === 64 ? "float64" : "integer",
 		modality: { rescale_slope: rescaleSlope, rescale_intercept: rescaleIntercept, rescale_type: null, lut: null },
 		real_world: [],
+		voi_lut: null,
 	};
 }
 

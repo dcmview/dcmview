@@ -516,6 +516,20 @@ pub struct FrameValueMapping {
     /// Conversions of stored values into real-world units that apply to this
     /// frame, the preferred one first. Empty when none is declared.
     pub real_world: Vec<RealWorldValueMap>,
+    /// The VOI LUT the display path presents Modality values with in default
+    /// mode when no window is requested and no DICOM window is stored.
+    pub voi_lut: Option<VoiLookupTable>,
+}
+
+/// A VOI LUT: `values[clamp(trunc(modality) - first_value_mapped, 0,
+/// values.length - 1)]`, an output of `bits_per_entry` (8 or 16) bits that
+/// scales to 8 bits as `(output * 255 + max / 2) / max` in integers, where
+/// `max = 2^bits_per_entry - 1`.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct VoiLookupTable {
+    pub first_value_mapped: i32,
+    pub bits_per_entry: u16,
+    pub values: Vec<u16>,
 }
 
 /// The Modality transform the display pipeline applies to stored values

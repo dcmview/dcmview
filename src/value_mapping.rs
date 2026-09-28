@@ -12,7 +12,7 @@
 
 use crate::api::contracts::{
     FrameValueMapping, ModalityValueTransform, RealWorldValueMap, RealWorldValueTransform,
-    ValueLookupTable,
+    ValueLookupTable, VoiLookupTable,
 };
 use crate::dicom_values::{read_number, read_numbers, read_string, sequence_items};
 use crate::semantic::{rwvm_mapping, valid_mapping};
@@ -37,6 +37,7 @@ pub const RWVM_INSTANCE_SOURCE: &str = "rwvm_instance";
 pub struct FileValueMappings {
     stored_value_type: &'static str,
     modality: ModalityValueTransform,
+    voi_lut: Option<VoiLookupTable>,
     /// Mappings of every frame whose per-frame functional group declares none.
     default: Vec<RealWorldValueMap>,
     /// Per-frame functional group mappings; empty when no frame declares any.
@@ -112,6 +113,17 @@ impl FileValueMappings {
                         values: lut.entries.iter().copied().map(f64::from).collect(),
                     }),
             },
+            // The LUT selected_voi_lut accepts; it applies only without a
+            // requested or stored window.
+            voi_lut: native
+                .voi_lut
+                .as_ref()
+                .filter(|lut| !lut.entries.is_empty() && matches!(lut.bits_per_entry, 8 | 16))
+                .map(|lut| VoiLookupTable {
+                    first_value_mapped: lut.first_mapped_value,
+                    bits_per_entry: lut.bits_per_entry,
+                    values: lut.entries.clone(),
+                }),
             default,
             per_frame,
             instances: Vec::new(),
@@ -146,6 +158,7 @@ impl FileValueMappings {
             stored_value_type: self.stored_value_type.to_string(),
             modality: self.modality.clone(),
             real_world: self.real_world(frame).cloned().collect(),
+            voi_lut: self.voi_lut.clone(),
         }
     }
 }

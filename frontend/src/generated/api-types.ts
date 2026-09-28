@@ -115,7 +115,12 @@ stored_value_type: string, modality: ModalityValueTransform,
  * Conversions of stored values into real-world units that apply to this
  * frame, the preferred one first. Empty when none is declared.
  */
-real_world: Array<RealWorldValueMap>, };
+real_world: Array<RealWorldValueMap>, 
+/**
+ * The VOI LUT the display path presents Modality values with in default
+ * mode when no window is requested and no DICOM window is stored.
+ */
+voi_lut: VoiLookupTable | null, };
 
 export type HealthResponse = { status: string, viewer: ViewerIdentity, file_count: number, server_start_ms: number, };
 
@@ -329,6 +334,14 @@ export type TagValue = { "type": "string", value: string, } | { "type": "number"
 export type ValueLookupTable = { first_value_mapped: number, values: Array<number>, };
 
 export type ViewerIdentity = { name: string, version: string, build_target: string, build_profile: string, };
+
+/**
+ * A VOI LUT: `values[clamp(trunc(modality) - first_value_mapped, 0,
+ * values.length - 1)]`, an output of `bits_per_entry` (8 or 16) bits that
+ * scales to 8 bits as `(output * 255 + max / 2) / max` in integers, where
+ * `max = 2^bits_per_entry - 1`.
+ */
+export type VoiLookupTable = { first_value_mapped: number, bits_per_entry: number, values: Array<number>, };
 
 export type WindowMode = "default" | "full_dynamic";
 

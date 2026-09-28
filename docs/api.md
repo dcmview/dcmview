@@ -137,7 +137,7 @@ rendering. Metadata headers:
 | `X-Frame-Photometric-Interpretation` | Photometric interpretation for the renderer. |
 | `X-Frame-Rescale-Slope`, `X-Frame-Rescale-Intercept` | Modality rescale. |
 | `X-Frame-Default-Wc`, `X-Frame-Default-Ww` | Only when the file declares a default window. |
-| `X-Frame-Padding-Low`, `X-Frame-Padding-High` | Only for grayscale integer frames with Pixel Padding: the inclusive stored-value range to exclude from automatic windows and draw black. |
+| `X-Frame-Padding-Low`, `X-Frame-Padding-High` | Only for grayscale frames with Pixel Padding (Float or Double Float Pixel Padding for float pixel data): the inclusive stored-value range to exclude from automatic windows and draw black. |
 
 Transfer syntax coverage:
 
@@ -185,6 +185,12 @@ stored, modality, and real-world values out of a raw frame:
   `source_file_index`. The file's own mappings stay preferred. RWVM
   instances that a Parametric Map references itself are also summarized in
   its semantic context.
+- `voi_lut`: the VOI LUT (`first_value_mapped`, `bits_per_entry` of 8 or 16,
+  `values`) the display path presents Modality values with in default mode
+  when no window is requested and no DICOM window is stored; `null` without a
+  usable one. A value indexes it as `trunc(value) - first_value_mapped`,
+  clamped to the table, and the output scales to 8 bits as
+  `(output * 255 + max / 2) / max` in integers (`max = 2^bits_per_entry - 1`).
 
 ## Semantic Context, Overlays, And WSI
 

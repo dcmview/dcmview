@@ -40,6 +40,7 @@ function identityMapping(fileIndex = 5): api.FrameValueMapping {
 		stored_value_type: "integer",
 		modality: { rescale_slope: 1, rescale_intercept: 0, rescale_type: null, lut: null },
 		real_world: [],
+		voi_lut: null,
 	};
 }
 
@@ -190,6 +191,7 @@ describe("ImageViewport pixel readout", () => {
 			stored_value_type: "integer",
 			modality: { rescale_slope: 1, rescale_intercept: -1024, rescale_type: null, lut: null },
 			real_world: [],
+			voi_lut: null,
 		});
 		renderViewport();
 		const viewport = await screen.findByRole("application");
@@ -216,6 +218,7 @@ describe("ImageViewport pixel readout", () => {
 			stored_value_type: "integer",
 			modality: { rescale_slope: 1, rescale_intercept: 0, rescale_type: null, lut: null },
 			real_world: [],
+			voi_lut: null,
 		});
 		renderViewport();
 		const viewport = await screen.findByRole("application");
