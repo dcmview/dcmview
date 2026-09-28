@@ -62,6 +62,7 @@
 		overlayValueReadout,
 		PixelProbe,
 		pixelReadout,
+		probesSinglePixels,
 		type OverlayValueState,
 	} from "./viewport/pixelProbe.svelte";
 	import { RawFrameSource } from "./viewport/rawFrameSource";
@@ -299,7 +300,7 @@
 		if (!mappedScale) return null;
 		if (!needsWindowSamples) return displayWindow;
 		const samples = probe.samples(activeFile.index, currentFrame);
-		if (samples?.status !== "ready" || validateRenderableRawFrame(samples.frame) !== null) return null;
+		if (samples?.status !== "ready" || samples.at || validateRenderableRawFrame(samples.frame) !== null) return null;
 		return windowMode === "full_dynamic"
 			? computeFullDynamicWindow(samples.frame)
 			: computePercentileWindow(samples.frame);
@@ -932,9 +933,12 @@
 		if (!(probing || needsWindowSamples) || cinePlaying || !activeFile.has_pixels) return;
 		const { file, frameIndex } = probeTarget;
 		const displayed = pipelineMode === "diagnostic_wl" ? currentRawFrame : null;
+		const wholeFrame = needsWindowSamples;
+		// A frame read one pixel at a time follows the cursor.
+		const pixel = !wholeFrame && probesSinglePixels(file) ? probe.pixel : null;
 		return untrack(() => {
 			valueMappings.ensure(file.index, frameIndex);
-			return probe.track(file, frameIndex, displayed);
+			return probe.track(file, frameIndex, displayed, { pixel, wholeFrame });
 		});
 	});
 

@@ -96,6 +96,36 @@ describe("PixelProbe", () => {
 		}
 	});
 
+	it("reads a large frame one pixel at a time and answers only for that pixel", async () => {
+		vi.useFakeTimers();
+		try {
+			const large = fileSummary(7, { modality: "CR", rows: 4096, columns: 4096 });
+			const loadFrame = vi.fn(async () => rawFrame());
+			const onePixel = { ...rawFrame(1, 1, 16) };
+			const loadPixel = vi.fn(async () => onePixel);
+			const probe = new PixelProbe(source(loadFrame), vi.fn(), loadPixel);
+			const pixel = { row: 3000, column: 12 };
+
+			probe.track(large, 0, null, { pixel });
+			await vi.advanceTimersByTimeAsync(200);
+
+			expect(loadFrame).not.toHaveBeenCalled();
+			expect(loadPixel).toHaveBeenCalledWith(large.index, 0, pixel, expect.any(AbortSignal));
+			const samples = probe.samples(large.index, 0);
+			expect(samples).toEqual({ status: "ready", frame: onePixel, at: pixel });
+			const readout = (at: typeof pixel) => pixelReadout(input({ file: large, pixel: at, samples }));
+			expect(readout(pixel).values).toMatchObject({ kind: "grayscale", stored: "0" });
+			expect(readout({ row: 0, column: 0 })).toMatchObject({ values: null, note: "reading…" });
+
+			// Automatic windows still get the whole frame.
+			probe.track(large, 0, null, { wholeFrame: true });
+			await vi.advanceTimersByTimeAsync(200);
+			expect(loadFrame).toHaveBeenCalledOnce();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("asks native color files for their planar configuration once", async () => {
 		const loadTag = vi.fn(async () => ({ tag: "(0028,0006)", vr: "US", keyword: "PlanarConfiguration", value: { type: "number" as const, value: 1 } }));
 		const probe = new PixelProbe(source(vi.fn()), loadTag);

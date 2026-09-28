@@ -516,3 +516,81 @@ async fn raw_native_frame_ignores_nested_icon_pixel_data() {
         .collect::<Vec<_>>();
     assert_eq!(raw.body.as_ref(), expected.as_slice());
 }
+
+#[tokio::test]
+async fn raw_pixel_serves_one_pixels_samples_as_a_one_by_one_frame() {
+    let dir = tempdir().expect("temp dir");
+    let path = dir.path().join("raw-pixel.dcm");
+    support::write_uncompressed_u16_dicom(
+        &path,
+        "1.2.840.10008.1.2.1",
+        2,
+        2,
+        vec![0, 1000, 2000, 3000],
+        None,
+        None,
+    );
+    let mut entry = support::file_entry(path, "1.2.840.10008.1.2.1", 1);
+    entry.rows = 2;
+    entry.columns = 2;
+    let server = TestServer::new(server::router(support::app_state(vec![entry])));
+
+    let pixel = server
+        .get("/api/file/0/frame/0/raw/pixel?row=1&column=0")
+        .await;
+    pixel.assert_status_ok();
+    assert_eq!(pixel.as_bytes().as_ref(), 2000_u16.to_le_bytes());
+    assert_eq!(header_str(&pixel, "X-Frame-Rows"), "1");
+    assert_eq!(header_str(&pixel, "X-Frame-Columns"), "1");
+
+    server
+        .get("/api/file/0/frame/0/raw/pixel?row=2&column=0")
+        .await
+        .assert_status(axum::http::StatusCode::BAD_REQUEST);
+}
+
+#[test]
+fn raw_pixel_resolves_planar_and_subsampled_color_to_color_by_pixel() {
+    use dcmview::api::contracts::RawFrameMetadata;
+    use dcmview::pixels::{raw_pixel, RawFrameResponse};
+
+    let raw = |photometric: &str, body: Vec<u8>| RawFrameResponse {
+        body: body.into(),
+        metadata: RawFrameMetadata {
+            rows: 1,
+            columns: 2,
+            bits_allocated: 8,
+            pixel_representation: 0,
+            samples_per_pixel: 3,
+            photometric_interpretation: photometric.to_string(),
+            rescale_slope: 1.0,
+            rescale_intercept: 0.0,
+            default_wc: None,
+            default_ww: None,
+            padding_low: None,
+            padding_high: None,
+        },
+        cache_hit: false,
+    };
+    let mut planar = support::file_entry("planar.dcm".into(), "1.2.840.10008.1.2.1", 1);
+    planar.series_metadata.native_pixel.planar_configuration = Some(1);
+    // R R G G B B for two pixels.
+    let (body, metadata) =
+        raw_pixel(&planar, &raw("RGB", vec![10, 11, 20, 21, 30, 31]), 0, 1).expect("pixel");
+    assert_eq!(body.as_ref(), [11, 21, 31]);
+    assert_eq!(
+        (metadata.rows, metadata.columns, metadata.samples_per_pixel),
+        (1, 1, 3)
+    );
+
+    // Y0 Y1 Cb Cr for the pixel pair.
+    let interleaved = support::file_entry("ybr.dcm".into(), "1.2.840.10008.1.2.1", 1);
+    let (body, _) = raw_pixel(
+        &interleaved,
+        &raw("YBR_FULL_422", vec![50, 60, 128, 130]),
+        0,
+        1,
+    )
+    .expect("pixel");
+    assert_eq!(body.as_ref(), [60, 128, 130]);
+}

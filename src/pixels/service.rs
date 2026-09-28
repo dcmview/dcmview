@@ -89,6 +89,63 @@ pub async fn load_raw_frame(
     })
 }
 
+/// One pixel of a raw frame as a 1x1 raw frame: its samples in color-by-pixel
+/// order. The raw frame keeps the stored layout (planar native color, and
+/// native YBR_FULL_422 as Y0 Y1 Cb Cr per pixel pair), which is resolved here
+/// the way the viewer's readout resolves it. `None` outside the frame.
+pub fn raw_pixel(
+    file: &FileEntry,
+    raw: &RawFrameResponse,
+    row: u32,
+    column: u32,
+) -> Option<(Bytes, RawFrameMetadata)> {
+    let metadata = &raw.metadata;
+    if row >= metadata.rows || column >= metadata.columns {
+        return None;
+    }
+    let size = match metadata.bits_allocated {
+        1 | 8 => 1,
+        bits @ (16 | 32 | 64) => (bits / 8) as usize,
+        _ => return None,
+    };
+    let columns = metadata.columns as usize;
+    let pixel_count = metadata.rows as usize * columns;
+    let pixel = row as usize * columns + column as usize;
+    let samples = metadata.samples_per_pixel as usize;
+    let subsampled = metadata
+        .photometric_interpretation
+        .trim()
+        .eq_ignore_ascii_case("YBR_FULL_422")
+        && raw.body.len() == pixel_count * 2 * size;
+    let planar = file.series_metadata.native_pixel.planar_configuration == Some(1)
+        && codec_for_syntax(&file.transfer_syntax_uid) == Some(Codec::Native);
+    let indices: Vec<usize> = if samples == 1 {
+        vec![pixel]
+    } else if subsampled {
+        let pair = row as usize * columns * 2 + (column as usize / 2) * 4;
+        vec![pair + column as usize % 2, pair + 2, pair + 3]
+    } else if planar {
+        (0..samples)
+            .map(|sample| sample * pixel_count + pixel)
+            .collect()
+    } else {
+        (0..samples)
+            .map(|sample| pixel * samples + sample)
+            .collect()
+    };
+    let mut body = Vec::with_capacity(indices.len() * size);
+    for index in &indices {
+        body.extend_from_slice(raw.body.get(index * size..(index + 1) * size)?);
+    }
+    let pixel_metadata = RawFrameMetadata {
+        rows: 1,
+        columns: 1,
+        samples_per_pixel: indices.len() as u32,
+        ..metadata.clone()
+    };
+    Some((Bytes::from(body), pixel_metadata))
+}
+
 /// Pixel Padding bounds for a grayscale integer raw frame, so client-side
 /// windowing can exclude padding exactly as the display path does.
 fn raw_padding_bounds(file: &FileEntry, metadata: &RawFrameMetadata) -> Option<[f64; 2]> {

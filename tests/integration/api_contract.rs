@@ -189,6 +189,9 @@ async fn every_declared_endpoint_matches_its_runtime_contract() {
         if *endpoint == endpoints::FILE_TAG_SELECT {
             path.push_str("?path=%280028%2C0010%29");
         }
+        if *endpoint == endpoints::FILE_RAW_PIXEL {
+            path.push_str("?row=1&column=0");
+        }
         match endpoint.method {
             ApiMethod::Get => test_server.get(&path),
             ApiMethod::Put => test_server.put(&path).json(&annotation_body),

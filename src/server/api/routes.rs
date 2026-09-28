@@ -56,6 +56,7 @@ pub(crate) fn router(state: AppState) -> Router {
         .route(endpoints::FILE_WSI_CONTEXT.path, get(handlers::wsi_context))
         .route(endpoints::FILE_FRAME.path, get(handlers::frame))
         .route(endpoints::FILE_RAW_FRAME.path, get(handlers::raw_frame))
+        .route(endpoints::FILE_RAW_PIXEL.path, get(handlers::raw_pixel))
         .route(endpoints::FILE_TAGS.path, get(handlers::tags))
         .route(endpoints::FILE_TAG_SELECT.path, get(handlers::select_tag))
         .route(

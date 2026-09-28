@@ -38,7 +38,8 @@ pub(crate) use header::open_header;
 pub(crate) use native_layout::{NativeByteOrder, NativeFrameLayout};
 pub use segmentation::encode_segmentation_overlay_png;
 pub use service::{
-    load_frame, load_raw_frame, FrameRequest, FrameResponse, RawFrameRequest, RawFrameResponse,
+    load_frame, load_raw_frame, raw_pixel, FrameRequest, FrameResponse, RawFrameRequest,
+    RawFrameResponse,
 };
 pub use syntax::{
     classify_pixel_support, codec_for_syntax, Codec, PixelSupport, PixelSupportReason,

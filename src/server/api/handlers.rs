@@ -3,14 +3,15 @@ use super::overlays;
 use super::state::AppState;
 use crate::api::contracts::{
     DiscoveryResult, EmbedRoiAnnotations, FileSummary, FilesResponse, FrameInfo, FrameQuery,
-    FrameValueMapping, HealthResponse, ReferenceCatalogResponse, SemanticContextResponse, TagNode,
-    TagQuery, ViewerIdentity, WsiFrameContextResponse, CACHE_HEADER, CACHE_HIT, CACHE_MISS,
-    CSV_MEDIA_TYPE, EXPORT_CONTENT_DISPOSITION_HEADER, EXPORT_CONTENT_DISPOSITION_VALUE,
-    OCTET_STREAM_MEDIA_TYPE, RAW_FRAME_HEADER_BITS_ALLOCATED, RAW_FRAME_HEADER_COLUMNS,
-    RAW_FRAME_HEADER_DEFAULT_WC, RAW_FRAME_HEADER_DEFAULT_WW, RAW_FRAME_HEADER_PADDING_HIGH,
-    RAW_FRAME_HEADER_PADDING_LOW, RAW_FRAME_HEADER_PHOTOMETRIC_INTERPRETATION,
-    RAW_FRAME_HEADER_PIXEL_REPRESENTATION, RAW_FRAME_HEADER_RESCALE_INTERCEPT,
-    RAW_FRAME_HEADER_RESCALE_SLOPE, RAW_FRAME_HEADER_ROWS, RAW_FRAME_HEADER_SAMPLES_PER_PIXEL,
+    FrameValueMapping, HealthResponse, PixelQuery, ReferenceCatalogResponse,
+    SemanticContextResponse, TagNode, TagQuery, ViewerIdentity, WsiFrameContextResponse,
+    CACHE_HEADER, CACHE_HIT, CACHE_MISS, CSV_MEDIA_TYPE, EXPORT_CONTENT_DISPOSITION_HEADER,
+    EXPORT_CONTENT_DISPOSITION_VALUE, OCTET_STREAM_MEDIA_TYPE, RAW_FRAME_HEADER_BITS_ALLOCATED,
+    RAW_FRAME_HEADER_COLUMNS, RAW_FRAME_HEADER_DEFAULT_WC, RAW_FRAME_HEADER_DEFAULT_WW,
+    RAW_FRAME_HEADER_PADDING_HIGH, RAW_FRAME_HEADER_PADDING_LOW,
+    RAW_FRAME_HEADER_PHOTOMETRIC_INTERPRETATION, RAW_FRAME_HEADER_PIXEL_REPRESENTATION,
+    RAW_FRAME_HEADER_RESCALE_INTERCEPT, RAW_FRAME_HEADER_RESCALE_SLOPE, RAW_FRAME_HEADER_ROWS,
+    RAW_FRAME_HEADER_SAMPLES_PER_PIXEL,
 };
 use crate::pixels::{self, FrameRequest, RawFrameRequest};
 use crate::references::{self, ReferenceCandidate};
@@ -340,14 +341,44 @@ pub(super) async fn raw_frame(
         .await
         .map_err(|failure| error::gone_or(&source, error::pixel_error(failure)))?;
 
-    let meta = &raw_response.metadata;
-    let cache_header = if raw_response.cache_hit {
-        CACHE_HIT
-    } else {
-        CACHE_MISS
-    };
+    Ok(raw_response_with_headers(
+        raw_response.body,
+        &raw_response.metadata,
+        raw_response.cache_hit,
+    ))
+}
 
-    let mut response = Response::new(axum::body::Body::from(raw_response.body));
+pub(super) async fn raw_pixel(
+    State(state): State<AppState>,
+    path: Result<Path<(usize, u32)>, PathRejection>,
+    query: Result<Query<PixelQuery>, QueryRejection>,
+) -> Result<Response, ApiError> {
+    let Path((index, frame)) = path.map_err(error::path_rejection)?;
+    let Query(query) = query.map_err(error::query_rejection)?;
+    let file = registered_file(&state, index, "file")?;
+    let source = file.path.clone();
+    let raw = pixels::load_raw_frame(file.clone(), state.raw_cache(), RawFrameRequest { frame })
+        .await
+        .map_err(|failure| error::gone_or(&source, error::pixel_error(failure)))?;
+    let (body, metadata) =
+        pixels::raw_pixel(&file, &raw, query.row, query.column).ok_or_else(|| {
+            ApiError::bad_request(format!(
+                "pixel (row {}, column {}) is outside the {}x{} frame",
+                query.row, query.column, raw.metadata.rows, raw.metadata.columns
+            ))
+        })?;
+    Ok(raw_response_with_headers(body, &metadata, raw.cache_hit))
+}
+
+/// A raw-frame response: the samples, `X-Cache`, and the metadata headers.
+fn raw_response_with_headers(
+    body: bytes::Bytes,
+    meta: &crate::api::contracts::RawFrameMetadata,
+    cache_hit: bool,
+) -> Response {
+    let cache_header = if cache_hit { CACHE_HIT } else { CACHE_MISS };
+
+    let mut response = Response::new(axum::body::Body::from(body));
     let headers = response.headers_mut();
     headers.insert(CACHE_HEADER, HeaderValue::from_static(cache_header));
     headers.insert(
@@ -397,7 +428,7 @@ pub(super) async fn raw_frame(
         insert_header_if_valid(headers, RAW_FRAME_HEADER_PADDING_HIGH, high.to_string());
     }
 
-    Ok(response)
+    response
 }
 
 pub(super) async fn tags(

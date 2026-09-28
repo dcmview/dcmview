@@ -17,6 +17,7 @@ export const API_ENDPOINTS = {
 	fileWsiContext: { method: "GET", path: "/api/file/{index}/frame/{frame}/wsi-context" },
 	fileFrame: { method: "GET", path: "/api/file/{index}/frame/{frame}" },
 	fileRawFrame: { method: "GET", path: "/api/file/{index}/frame/{frame}/raw" },
+	fileRawPixel: { method: "GET", path: "/api/file/{index}/frame/{frame}/raw/pixel" },
 	fileTags: { method: "GET", path: "/api/file/{index}/tags" },
 	fileTagSelect: { method: "GET", path: "/api/file/{index}/tags/select" },
 	fileAnnotationsGet: { method: "GET", path: "/api/file/{index}/annotations" },
@@ -157,6 +158,11 @@ legend: OverlayLegend | null, };
  * Parametric-map-overlay query: the Parametric Map drawn on the path's frame.
  */
 export type ParametricMapOverlayQuery = { map: number, };
+
+/**
+ * Raw-pixel query: the zero-based image row and column.
+ */
+export type PixelQuery = { row: number, column: number, };
 
 export type RawFrameMetadata = { rows: number, columns: number, bitsAllocated: number, pixelRepresentation: number, samplesPerPixel: number, photometricInterpretation: string, rescaleSlope: number, rescaleIntercept: number, defaultWc: number | null, defaultWw: number | null, 
 /**

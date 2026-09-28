@@ -8,6 +8,7 @@ import type {
 	FrameValueMapping,
 	HealthResponse,
 	ParametricMapOverlayQuery,
+	PixelQuery,
 	RawFrameMetadata,
 	ReferenceCatalogResponse,
 	SemanticContextResponse,
@@ -68,7 +69,7 @@ type PathParams = { index?: number; frame?: number };
 function endpointUrl(
 	endpoint: Endpoint,
 	params: PathParams = {},
-	query?: FrameQuery | TagQuery | DoseOverlayQuery | ParametricMapOverlayQuery,
+	query?: FrameQuery | TagQuery | DoseOverlayQuery | ParametricMapOverlayQuery | PixelQuery,
 ): string {
 	const path = endpoint.path.replace(/\{(\w+)\}/g, (_, name: string) => {
 		const value = params[name as keyof PathParams];
@@ -431,6 +432,25 @@ export async function fetchRawFrame(
 ): Promise<RawFrame> {
 	const endpoint = API_ENDPOINTS.fileRawFrame;
 	const response = await send(endpoint, endpointUrl(endpoint, { index: fileIndex, frame }), {
+		signal,
+	});
+	const buffer = await response.arrayBuffer();
+	return { metadata: parseRawFrameMetadata(response.headers), buffer };
+}
+
+/**
+ * One pixel of a raw frame as a 1x1 raw frame, its samples in
+ * color-by-pixel order: the readout's source where a whole frame is too
+ * large to fetch for one value.
+ */
+export async function fetchRawPixel(
+	fileIndex: number,
+	frame: number,
+	pixel: PixelQuery,
+	signal?: AbortSignal,
+): Promise<RawFrame> {
+	const endpoint = API_ENDPOINTS.fileRawPixel;
+	const response = await send(endpoint, endpointUrl(endpoint, { index: fileIndex, frame }, pixel), {
 		signal,
 	});
 	const buffer = await response.arrayBuffer();
