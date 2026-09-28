@@ -112,6 +112,12 @@ samples are not such integers, is shown with its default window (steps 3 and
 4). `unit` without `wc` and `ww` is `400 invalid_window`; `mode=full_dynamic`
 ignores it.
 
+`preview=true` marks a window/level drag preview: it is served from the display
+cache when that window is already there, and otherwise rendered for this
+request alone, neither cached nor shared with concurrent requests, so a drag
+through many windows does not evict the frames cine and the settled window
+use.
+
 The display cache key includes file, frame, `wc`, `ww`, `mode`, and the unit
 of a real-world window (windows
 that render alike, such as `wc=-0` and `wc=0` or widths below 1, share a key);

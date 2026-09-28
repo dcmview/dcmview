@@ -22,6 +22,7 @@ async fn invalid_jp2_payload_surfaces_server_side_decode_error() {
             window_width: None,
             window_mode: dcmview::types::WindowMode::Default,
             real_world: None,
+            preview: false,
         },
     )
     .await
@@ -50,6 +51,7 @@ async fn invalid_jp2_codestream_surfaces_decode_context() {
             window_width: None,
             window_mode: dcmview::types::WindowMode::Default,
             real_world: None,
+            preview: false,
         },
     )
     .await
@@ -98,6 +100,7 @@ async fn jp2_grayscale_display_applies_the_shared_presentation_pipeline() {
             window_width: None,
             window_mode: dcmview::types::WindowMode::FullDynamic,
             real_world: None,
+            preview: false,
         },
     )
     .await

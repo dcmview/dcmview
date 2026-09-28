@@ -300,3 +300,45 @@ async fn default_and_full_dynamic_modes_occupy_independent_cache_slots() {
         "HIT"
     );
 }
+
+#[tokio::test]
+async fn drag_previews_read_but_never_fill_the_display_cache() {
+    let dir = tempdir().expect("temp dir");
+    let path = dir.path().join("server-preview-cache.dcm");
+    support::write_uncompressed_u16_dicom(
+        &path,
+        "1.2.840.10008.1.2.1",
+        2,
+        2,
+        vec![0, 1000, 2000, 3000],
+        None,
+        None,
+    );
+    let mut entry = support::file_entry(path, "1.2.840.10008.1.2.1", 1);
+    entry.rows = 2;
+    entry.columns = 2;
+    let test_server = TestServer::new(server::router(support::app_state(vec![entry])));
+    let cache_state = |response: &axum_test::TestResponse| {
+        response
+            .header("X-Cache")
+            .to_str()
+            .expect("cache")
+            .to_string()
+    };
+
+    let preview = "/api/file/0/frame/0?wc=1500&ww=3000&preview=true";
+    let settled = "/api/file/0/frame/0?wc=1500&ww=3000";
+    let first_preview = test_server.get(preview).await;
+    first_preview.assert_status_ok();
+    assert_eq!(cache_state(&first_preview), "MISS");
+    assert_eq!(cache_state(&test_server.get(preview).await), "MISS");
+
+    let first_settled = test_server.get(settled).await;
+    assert_eq!(
+        cache_state(&first_settled),
+        "MISS",
+        "a preview is not cached"
+    );
+    assert_eq!(first_settled.as_bytes(), first_preview.as_bytes());
+    assert_eq!(cache_state(&test_server.get(preview).await), "HIT");
+}

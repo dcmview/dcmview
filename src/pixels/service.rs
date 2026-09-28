@@ -170,6 +170,9 @@ pub struct FrameRequest {
     /// preferred real-world mapping, in the requested unit); `None` windows
     /// Modality values.
     pub real_world: Option<RealWorldValueMap>,
+    /// A window/level drag preview: served from the display cache when
+    /// present, otherwise rendered for this request alone and not cached.
+    pub preview: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -221,7 +224,8 @@ pub async fn load_frame(
         let raw = raw_samples_for_display(&file, codec, &raw_cache, display.frame, true).await;
         if let Some((raw, layout)) = raw {
             let render = window_real_world_samples(file, raw, layout, map, window, display.frame);
-            let (body, cache_hit) = cached_or_decoded(&cache, key, render).await?;
+            let (body, cache_hit) =
+                cached_or_rendered(&cache, key, request.preview, render).await?;
             return Ok(FrameResponse::png(body, cache_hit));
         }
         // Samples a real-world window cannot apply to show the default
@@ -238,11 +242,12 @@ pub async fn load_frame(
         None => match raw_samples_for_display(&file, codec, &raw_cache, display.frame, false).await
         {
             Some((raw, layout)) => {
-                cached_or_decoded(&cache, key, window_raw_samples(file, raw, layout, display))
-                    .await?
+                let render = window_raw_samples(file, raw, layout, display);
+                cached_or_rendered(&cache, key, request.preview, render).await?
             }
             None => {
-                cached_or_decoded(&cache, key, decode_display_frame(codec, file, display)).await?
+                let render = decode_display_frame(codec, file, display);
+                cached_or_rendered(&cache, key, request.preview, render).await?
             }
         },
     };
@@ -462,6 +467,26 @@ fn display_integer_layout(
         (_, bits @ (8 | 16)) => Some((bits, signed)),
         _ => None,
     }
+}
+
+/// The display frame for `key`: shared and cached like any frame, or for a
+/// preview rendered for this request alone. A drag sends one preview per
+/// window it passes through; caching them would evict the frames cine and
+/// the settled window need, and no other request will ask for them.
+async fn cached_or_rendered(
+    cache: &Arc<Mutex<FrameCache>>,
+    key: FrameCacheKey,
+    preview: bool,
+    render: impl Future<Output = PixelResult<Bytes>> + Send + 'static,
+) -> PixelResult<(Bytes, bool)> {
+    if !preview {
+        return cached_or_decoded(cache, key, render).await;
+    }
+    let _permit = DECODE_PERMITS
+        .acquire()
+        .await
+        .map_err(|_| PixelError::frame_decode(anyhow::anyhow!("decoder shut down")))?;
+    Ok((render.await?, false))
 }
 
 /// Decodes run on the blocking pool; bounding them to the core count keeps

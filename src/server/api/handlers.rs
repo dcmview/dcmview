@@ -336,6 +336,7 @@ pub(super) async fn frame(
             window_width,
             window_mode,
             real_world,
+            preview: query.preview.unwrap_or(false),
         },
     )
     .await

@@ -252,6 +252,7 @@ mod tests {
                     window_width: None,
                     window_mode: WindowMode::Default,
                     real_world: None,
+                    preview: false,
                 },
             )
             .await

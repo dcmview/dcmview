@@ -908,6 +908,9 @@ pub struct FrameQuery {
     /// preferred mapping has another unit, or whose samples are not 8- or
     /// 16-bit (or one-bit) integers, is shown with its default window.
     pub unit: Option<String>,
+    /// `true` for a window/level drag preview: served from the display cache
+    /// when present, otherwise rendered without being cached.
+    pub preview: Option<bool>,
 }
 
 /// Raw-pixel query: the zero-based image row and column.

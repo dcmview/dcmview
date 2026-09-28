@@ -27,6 +27,7 @@ async fn decodes_requested_jpeg_display_frame_to_png() {
         window_width: None,
         window_mode: dcmview::types::WindowMode::Default,
         real_world: None,
+        preview: false,
     };
 
     let first = load_frame(

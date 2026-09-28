@@ -97,7 +97,12 @@ export type FrameQuery = { wc?: number, ww?: number, mode?: WindowMode,
  * preferred mapping has another unit, or whose samples are not 8- or
  * 16-bit (or one-bit) integers, is shown with its default window.
  */
-unit?: string, };
+unit?: string, 
+/**
+ * `true` for a window/level drag preview: served from the display cache
+ * when present, otherwise rendered without being cached.
+ */
+preview?: boolean, };
 
 export type FrameRefSummary = { virtual_index: number, file_index: number, frame_index: number, sop_instance_uid: string, instance_number: number | null, position_along_normal_mm: number | null, };
 
