@@ -209,6 +209,7 @@ mod tests {
                 window_center: None,
                 window_width: None,
                 window_mode: WindowMode::FullDynamic,
+                real_world: None,
             },
         )
         .await

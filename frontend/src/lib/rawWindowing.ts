@@ -62,7 +62,9 @@ export function validateRenderableRawFrame(
 /**
  * Windows a raw frame into RGBA. With `valueMap`, the window applies to
  * that real-world mapping's values (a LUT mapping included) instead of
- * Modality values; stored values it does not map are drawn black.
+ * Modality values; stored values it does not map take the window's low end.
+ * The server's display frames with `unit` follow the same rules
+ * (tests/windowing-cases.json).
  */
 export function renderRawFrameToRgba(
 	frame: RawFrame,

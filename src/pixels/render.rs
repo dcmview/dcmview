@@ -1,5 +1,6 @@
-use crate::api::contracts::WindowMode;
+use crate::api::contracts::{RealWorldValueMap, WindowMode};
 use crate::types::FileEntry;
+use crate::value_mapping::map_value;
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use image::{ExtendedColorType, ImageEncoder};
@@ -47,12 +48,8 @@ pub(crate) fn encode_windowed_luminance_png(
     stored: StoredSamples<'_>,
     options: LuminanceRenderOptions,
 ) -> Result<Bytes> {
-    let padding = file
-        .series_metadata
-        .native_pixel
-        .pixel_padding
-        .map(|[low, high]| PixelPaddingRange::new(low, Some(high)));
-    let mut windowed = match stored {
+    let padding = pixel_padding(file);
+    let windowed = match stored {
         StoredSamples::Integer {
             bytes,
             bits_allocated,
@@ -60,12 +57,54 @@ pub(crate) fn encode_windowed_luminance_png(
         } => window_through_table(file, bytes, bits_allocated, signed, padding, &options)?,
         StoredSamples::Values(values) => window_each_sample(file, values, padding, &options)?,
     };
-    let LuminanceRenderOptions {
-        frame,
-        rows,
-        columns,
-        ..
-    } = options;
+    present_luminance(file, windowed, options.frame, options.rows, options.columns)
+}
+
+/// Renders 8- or 16-bit stored integers windowed over a real-world mapping's
+/// values instead of Modality values, the way the viewer's raw renderer
+/// windows them: `map` is applied to each stored value, the window follows
+/// the linear VOI function without the integer half-unit offsets (which
+/// assume Modality integers), and stored values the mapping does not cover
+/// are the window's low end. MONOCHROME1 inversion, Pixel Padding, shutter
+/// and overlays follow as for any grayscale frame.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn encode_real_world_windowed_png(
+    file: &FileEntry,
+    bytes: &[u8],
+    bits_allocated: u32,
+    signed: bool,
+    map: &RealWorldValueMap,
+    (center, width): (f64, f64),
+    frame: u32,
+    (rows, columns): (u32, u32),
+) -> Result<Bytes> {
+    let stored_value = stored_value_reader(bits_allocated, signed)?;
+    let width = width.max(1.0);
+    let low = center - width / 2.0;
+    let table = (0..1_usize << bits_allocated)
+        .map(|index| match map_value(map, stored_value(index)) {
+            Some(mapped) if mapped.is_finite() => {
+                (((mapped - low) / width).clamp(0.0, 1.0) * 255.0).round() as u8
+            }
+            _ => 0,
+        })
+        .collect::<Vec<_>>();
+    let padding = pixel_padding(file);
+    let is_padding =
+        |index: usize| padding.is_some_and(|range| range.contains(stored_value(index)));
+    let windowed = look_up_samples(file, table, is_padding, bytes, bits_allocated);
+    present_luminance(file, windowed, frame, rows, columns)
+}
+
+/// The steps after windowing that every grayscale frame shares: display
+/// shutter, overlay planes, and PNG encoding.
+fn present_luminance(
+    file: &FileEntry,
+    mut windowed: Vec<u8>,
+    frame: u32,
+    rows: u32,
+    columns: u32,
+) -> Result<Bytes> {
     shutter::apply_to_luminance(&mut windowed, file, frame, rows, columns);
     apply_overlay_planes(
         &mut windowed,
@@ -96,17 +135,7 @@ fn window_through_table(
     padding: Option<PixelPaddingRange>,
     options: &LuminanceRenderOptions,
 ) -> Result<Vec<u8>> {
-    let stored_value: fn(usize) -> f64 = match (bits_allocated, signed) {
-        (8, false) => |index| index as f64,
-        (8, true) => |index| f64::from(index as u8 as i8),
-        (16, false) => |index| index as f64,
-        (16, true) => |index| f64::from(index as u16 as i16),
-        _ => {
-            return Err(anyhow!(
-                "integer table windowing needs 8- or 16-bit samples"
-            ))
-        }
-    };
+    let stored_value = stored_value_reader(bits_allocated, signed)?;
     let native = &file.series_metadata.native_pixel;
     let rescaled = (0..1_usize << bits_allocated)
         .map(|index| {
@@ -121,7 +150,7 @@ fn window_through_table(
     let is_padding =
         |index: usize| padding.is_some_and(|range| range.contains(stored_value(index)));
 
-    let mut table = if let Some(voi_lut) = selected_voi_lut(
+    let table = if let Some(voi_lut) = selected_voi_lut(
         options.window_mode,
         options.requested_wc,
         options.requested_ww,
@@ -157,16 +186,57 @@ fn window_through_table(
             .map(|value| window_value(*value, window.center, window.width.max(1.0)))
             .collect()
     };
+    Ok(look_up_samples(
+        file,
+        table,
+        is_padding,
+        bytes,
+        bits_allocated,
+    ))
+}
+
+/// Finishes a per-stored-value table of windowed bytes (MONOCHROME1
+/// inversion, then Pixel Padding as black background whatever the
+/// photometric interpretation) and maps every sample through it.
+fn look_up_samples(
+    file: &FileEntry,
+    mut table: Vec<u8>,
+    is_padding: impl Fn(usize) -> bool,
+    bytes: &[u8],
+    bits_allocated: u32,
+) -> Vec<u8> {
     apply_monochrome1_inversion(&mut table, &file.photometric_interpretation);
-    // Padding is background: black whatever the photometric interpretation.
     for (index, entry) in table.iter_mut().enumerate() {
         if is_padding(index) {
             *entry = 0;
         }
     }
-    Ok(stored_indexes(bytes, bits_allocated)
+    stored_indexes(bytes, bits_allocated)
         .map(|index| table[index])
-        .collect())
+        .collect()
+}
+
+fn pixel_padding(file: &FileEntry) -> Option<PixelPaddingRange> {
+    file.series_metadata
+        .native_pixel
+        .pixel_padding
+        .map(|[low, high]| PixelPaddingRange::new(low, Some(high)))
+}
+
+/// The stored value of each table index (a sample's bit pattern in the 8- or
+/// 16-bit container).
+fn stored_value_reader(bits_allocated: u32, signed: bool) -> Result<fn(usize) -> f64> {
+    Ok(match (bits_allocated, signed) {
+        (8, false) => |index| index as f64,
+        (8, true) => |index| f64::from(index as u8 as i8),
+        (16, false) => |index| index as f64,
+        (16, true) => |index| f64::from(index as u16 as i16),
+        _ => {
+            return Err(anyhow!(
+                "integer table windowing needs 8- or 16-bit samples"
+            ))
+        }
+    })
 }
 
 /// Each sample's table index: its bit pattern in the 8- or 16-bit container.

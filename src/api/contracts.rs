@@ -864,13 +864,20 @@ pub struct HealthResponse {
 }
 
 /// Display-frame query. Explicit `wc`/`ww` must be sent together;
-/// `mode=full_dynamic` ignores them.
-#[derive(Debug, Clone, Copy, Deserialize, TS)]
+/// `mode=full_dynamic` ignores them (and `unit`).
+#[derive(Debug, Clone, Deserialize, TS)]
 #[ts(optional_fields)]
 pub struct FrameQuery {
     pub wc: Option<f64>,
     pub ww: Option<f64>,
     pub mode: Option<WindowMode>,
+    /// The real-world unit `wc`/`ww` are in, which requires both. The window
+    /// then applies to the values of the frame's preferred real-world
+    /// mapping (the first of its value mapping's `real_world`) when it has this
+    /// `unit_label`, as the viewer's raw renderer windows them; a frame whose
+    /// preferred mapping has another unit, or whose samples are not 8- or
+    /// 16-bit (or one-bit) integers, is shown with its default window.
+    pub unit: Option<String>,
 }
 
 /// Raw-pixel query: the zero-based image row and column.

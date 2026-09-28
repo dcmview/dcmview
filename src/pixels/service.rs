@@ -1,4 +1,4 @@
-use crate::api::contracts::{RawFrameMetadata, SupportState, WindowMode};
+use crate::api::contracts::{RawFrameMetadata, RealWorldValueMap, SupportState, WindowMode};
 use crate::types::{
     FileEntry, FrameCacheKey, NativePixelDataKind, RawFrameCacheKey, WindowRequest,
 };
@@ -22,7 +22,10 @@ use super::jpeg2000::{decode_jp2_fragment_to_png, decode_raw_jp2_samples};
 use super::jpegls::{decode_jpeg_ls_to_png, decode_raw_jpeg_ls};
 use super::jpegxl::{decode_jpeg_xl_to_png, decode_raw_jpeg_xl};
 use super::native::{decode_uncompressed_to_png, read_raw_uncompressed};
-use super::render::{encode_windowed_luminance_png, LuminanceRenderOptions, StoredSamples};
+use super::render::{
+    encode_real_world_windowed_png, encode_windowed_luminance_png, LuminanceRenderOptions,
+    StoredSamples,
+};
 use super::rle::{decode_raw_rle, decode_rle_to_png};
 use super::syntax::{classify_pixel_support, codec_for_syntax, Codec, PixelSupportReason};
 
@@ -167,6 +170,10 @@ pub struct FrameRequest {
     pub window_center: Option<f64>,
     pub window_width: Option<f64>,
     pub window_mode: WindowMode,
+    /// The mapping whose values an explicit window is in (the frame's
+    /// preferred real-world mapping, in the requested unit); `None` windows
+    /// Modality values.
+    pub real_world: Option<RealWorldValueMap>,
 }
 
 #[derive(Debug, Clone)]
@@ -197,24 +204,43 @@ pub async fn load_frame(
     .map_err(|error| PixelError::InvalidWindow(error.to_string()))?;
     let codec = codec_or_unsupported(&file)?;
     reject_unsupported_layout(&file, FrameKind::Display)?;
-    let key = FrameCacheKey::new(
-        file.index,
-        request.frame,
-        window.center(),
-        window.width(),
-        window.mode(),
-    );
-    let display = DisplayWindow {
+    let mut display = DisplayWindow {
         frame: request.frame,
         center: window.center(),
         width: window.width(),
         mode: window.mode(),
     };
 
+    let real_world_window = display
+        .center
+        .zip(display.width)
+        .filter(|_| display.mode == WindowMode::Default);
+    if let (Some(map), Some(window)) = (request.real_world, real_world_window) {
+        let key = display.cache_key(&file, Some(&map.unit_label));
+        if let Some(body) = cache.lock().map_err(|_| cache_poisoned())?.get(&key) {
+            return Ok(FrameResponse::png(body, true));
+        }
+        // A real-world window is applied to decoded integer samples, so
+        // JPEG 2000 decodes through the raw tier here too.
+        let raw = raw_samples_for_display(&file, codec, &raw_cache, display.frame, true).await;
+        if let Some((raw, layout)) = raw {
+            let render = window_real_world_samples(file, raw, layout, map, window, display.frame);
+            let (body, cache_hit) = cached_or_decoded(&cache, key, render).await?;
+            return Ok(FrameResponse::png(body, cache_hit));
+        }
+        // Samples a real-world window cannot apply to show the default
+        // window, as a frame without a mapping in that unit does.
+        display.center = None;
+        display.width = None;
+    }
+
+    let key = display.cache_key(&file, None);
+
     let cached = cache.lock().map_err(|_| cache_poisoned())?.get(&key);
     let (body, cache_hit) = match cached {
         Some(body) => (body, true),
-        None => match raw_samples_for_display(&file, codec, &raw_cache, display.frame).await {
+        None => match raw_samples_for_display(&file, codec, &raw_cache, display.frame, false).await
+        {
             Some((raw, layout)) => {
                 cached_or_decoded(&cache, key, window_raw_samples(file, raw, layout, display))
                     .await?
@@ -225,11 +251,17 @@ pub async fn load_frame(
         },
     };
 
-    Ok(FrameResponse {
-        body,
-        content_type: "image/png",
-        cache_hit,
-    })
+    Ok(FrameResponse::png(body, cache_hit))
+}
+
+impl FrameResponse {
+    fn png(body: Bytes, cache_hit: bool) -> Self {
+        Self {
+            body,
+            content_type: "image/png",
+            cache_hit,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -238,6 +270,19 @@ struct DisplayWindow {
     center: Option<f64>,
     width: Option<f64>,
     mode: WindowMode,
+}
+
+impl DisplayWindow {
+    fn cache_key(self, file: &FileEntry, unit: Option<&str>) -> FrameCacheKey {
+        FrameCacheKey::new(
+            file.index,
+            self.frame,
+            self.center,
+            self.width,
+            self.mode,
+            unit,
+        )
+    }
 }
 
 /// Decodes and presents one display frame with the codec's own decoder.
@@ -305,23 +350,52 @@ async fn window_raw_samples(
     .map_err(PixelError::frame_decode)
 }
 
+/// Presents raw-tier samples windowed over `map`'s real-world values.
+async fn window_real_world_samples(
+    file: Arc<FileEntry>,
+    (bytes, metadata): (Bytes, RawFrameMetadata),
+    (bits_allocated, signed): (u32, bool),
+    map: RealWorldValueMap,
+    window: (f64, f64),
+    frame: u32,
+) -> PixelResult<Bytes> {
+    tokio::task::spawn_blocking(move || {
+        encode_real_world_windowed_png(
+            &file,
+            &bytes,
+            bits_allocated,
+            signed,
+            &map,
+            window,
+            frame,
+            (metadata.rows, metadata.columns),
+        )
+    })
+    .await
+    .context("display windowing task failed")
+    .and_then(|result| result)
+    .map_err(PixelError::frame_decode)
+}
+
 /// The decoded samples of a display frame from the raw tier, so a frame is
 /// decoded once whatever windows it is displayed with. Codecs whose raw decode
 /// succeeds whenever their grayscale display decode does are decoded through
 /// the raw cache (and fill it); JPEG 2000's raw path rejects components that
 /// do not fit the declared layout, which display still windows per sample, so
-/// it only reuses a frame the raw cache already holds rather than risk a
-/// second decode per request. `None` means decode for display as before.
+/// unless `decode_jpeg2000` it only reuses a frame the raw cache already holds
+/// rather than risk a second decode per request. `None` means decode for
+/// display as before.
 async fn raw_samples_for_display(
     file: &Arc<FileEntry>,
     codec: Codec,
     raw_cache: &Arc<Mutex<RawFrameCache>>,
     frame: u32,
+    decode_jpeg2000: bool,
 ) -> Option<((Bytes, RawFrameMetadata), (u32, bool))> {
     if !displays_grayscale(file, codec) {
         return None;
     }
-    let raw = if codec == Codec::Jpeg2000 {
+    let raw = if codec == Codec::Jpeg2000 && !decode_jpeg2000 {
         let key = RawFrameCacheKey {
             file_index: file.index,
             frame,
@@ -550,7 +624,8 @@ mod tests {
                 RawFrameRequest { frame: 0 },
             )
             .await;
-            let Some((raw, layout)) = raw_samples_for_display(&file, codec, &raw_cache, 0).await
+            let Some((raw, layout)) =
+                raw_samples_for_display(&file, codec, &raw_cache, 0, false).await
             else {
                 continue;
             };

@@ -7,8 +7,10 @@ use super::support;
 use axum_test::{TestResponse, TestServer};
 use dcmview::loader::DiscoverOptions;
 use dcmview::server;
+use dicom_core::value::DataSetSequence;
 use dicom_core::{DataElement, PrimitiveValue, VR};
 use dicom_dictionary_std::tags;
+use dicom_object::InMemDicomObject;
 use image::ImageFormat;
 use serde::Deserialize;
 use std::path::Path;
@@ -31,7 +33,19 @@ struct WindowingCase {
     mode: String,
     wc: Option<f64>,
     ww: Option<f64>,
+    real_world: Option<RealWorld>,
     expected: Vec<u8>,
+}
+
+/// A Real World Value Mapping item the window is in the unit of.
+#[derive(Deserialize)]
+struct RealWorld {
+    unit: String,
+    first_value_mapped: u16,
+    last_value_mapped: u16,
+    lut: Option<Vec<f64>>,
+    slope: Option<f64>,
+    intercept: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -90,7 +104,59 @@ fn write_case_dicom(path: &Path, case: &WindowingCase) {
             ));
         }
     }
+    if let Some(mapping) = &case.real_world {
+        object.put(DataElement::new(
+            tags::REAL_WORLD_VALUE_MAPPING_SEQUENCE,
+            VR::SQ,
+            DataSetSequence::from(vec![real_world_item(mapping)]),
+        ));
+    }
     object.write_to_file(path).expect("write oracle DICOM");
+}
+
+fn real_world_item(mapping: &RealWorld) -> InMemDicomObject {
+    let units = InMemDicomObject::from_element_iter([
+        DataElement::new(tags::CODE_VALUE, VR::SH, mapping.unit.as_str()),
+        DataElement::new(tags::CODING_SCHEME_DESIGNATOR, VR::SH, "UCUM"),
+        DataElement::new(tags::CODE_MEANING, VR::LO, mapping.unit.as_str()),
+    ]);
+    let mut item = InMemDicomObject::from_element_iter([
+        DataElement::new(
+            tags::REAL_WORLD_VALUE_FIRST_VALUE_MAPPED,
+            VR::US,
+            PrimitiveValue::from(mapping.first_value_mapped),
+        ),
+        DataElement::new(
+            tags::REAL_WORLD_VALUE_LAST_VALUE_MAPPED,
+            VR::US,
+            PrimitiveValue::from(mapping.last_value_mapped),
+        ),
+        DataElement::new(
+            tags::MEASUREMENT_UNITS_CODE_SEQUENCE,
+            VR::SQ,
+            DataSetSequence::from(vec![units]),
+        ),
+    ]);
+    if let Some(lut) = &mapping.lut {
+        item.put(DataElement::new(
+            tags::REAL_WORLD_VALUE_LUT_DATA,
+            VR::FD,
+            PrimitiveValue::F64(lut.iter().copied().collect()),
+        ));
+    }
+    if let (Some(slope), Some(intercept)) = (mapping.slope, mapping.intercept) {
+        item.put(DataElement::new(
+            tags::REAL_WORLD_VALUE_SLOPE,
+            VR::FD,
+            PrimitiveValue::from(slope),
+        ));
+        item.put(DataElement::new(
+            tags::REAL_WORLD_VALUE_INTERCEPT,
+            VR::FD,
+            PrimitiveValue::from(intercept),
+        ));
+    }
+    item
 }
 
 fn display_url(case: &WindowingCase) -> String {
@@ -103,6 +169,9 @@ fn display_url(case: &WindowingCase) -> String {
     }
     if let Some(ww) = case.ww {
         query.push(format!("ww={ww}"));
+    }
+    if let Some(mapping) = &case.real_world {
+        query.push(format!("unit={}", mapping.unit));
     }
     if query.is_empty() {
         "/api/file/0/frame/0".to_string()
@@ -205,4 +274,41 @@ async fn loader_driven_display_frames_match_the_shared_windowing_oracle() {
         raw.assert_status_ok();
         assert_raw_transport(case, &raw);
     }
+}
+
+#[tokio::test]
+async fn a_window_in_another_unit_shows_the_default_window() {
+    let oracle = load_oracle();
+    let case = oracle
+        .cases
+        .iter()
+        .find(|case| case.real_world.is_some())
+        .expect("a real-world oracle case");
+    let dir = tempdir().expect("temp dir");
+    let path = dir.path().join("oracle.dcm");
+    write_case_dicom(&path, case);
+    let report = support::discover(
+        &[path],
+        DiscoverOptions {
+            recursive: false,
+            filters: Vec::new(),
+        },
+    )
+    .await
+    .expect("discover oracle DICOM");
+    let test_server = TestServer::new(server::router(support::app_state(report.files)));
+
+    let default = test_server.get("/api/file/0/frame/0").await;
+    let other_unit = test_server
+        .get("/api/file/0/frame/0?wc=45&ww=70&unit=Gy")
+        .await;
+    other_unit.assert_status_ok();
+    assert_eq!(other_unit.as_bytes(), default.as_bytes());
+
+    let without_window = test_server.get("/api/file/0/frame/0?unit=SUV").await;
+    without_window.assert_status_bad_request();
+    assert_eq!(
+        without_window.json::<serde_json::Value>()["code"],
+        "invalid_window"
+    );
 }

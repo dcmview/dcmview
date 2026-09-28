@@ -359,6 +359,9 @@ pub struct FrameCacheKey {
     pub window_center_bits: Option<u64>,
     pub window_width_bits: Option<u64>,
     pub window_mode: WindowMode,
+    /// The real-world unit an explicit window is in; `None` for Modality
+    /// values.
+    pub window_unit: Option<String>,
 }
 
 impl FrameCacheKey {
@@ -368,6 +371,7 @@ impl FrameCacheKey {
         window_center: Option<f64>,
         window_width: Option<f64>,
         window_mode: WindowMode,
+        window_unit: Option<&str>,
     ) -> Self {
         let (window_center, window_width) = match window_mode {
             WindowMode::Default => (window_center, window_width),
@@ -379,6 +383,7 @@ impl FrameCacheKey {
             window_center_bits: window_center.map(f64::to_bits),
             window_width_bits: window_width.map(f64::to_bits),
             window_mode,
+            window_unit: window_center.and(window_unit).map(str::to_string),
         }
     }
 }
@@ -491,18 +496,33 @@ mod tests {
 
     #[test]
     fn frame_cache_key_distinguishes_absent_and_explicit_window_params() {
-        let default_window = FrameCacheKey::new(0, 0, None, None, WindowMode::Default);
-        let explicit = FrameCacheKey::new(0, 0, Some(0.0), Some(1.0), WindowMode::Default);
+        let default_window = FrameCacheKey::new(0, 0, None, None, WindowMode::Default, None);
+        let explicit = FrameCacheKey::new(0, 0, Some(0.0), Some(1.0), WindowMode::Default, None);
+        let mapped =
+            FrameCacheKey::new(0, 0, Some(0.0), Some(1.0), WindowMode::Default, Some("Gy"));
 
         assert_ne!(default_window, explicit);
+        assert_ne!(explicit, mapped);
         assert_eq!(explicit.window_center_bits, Some(0));
         assert_eq!(explicit.window_width_bits, Some(1.0_f64.to_bits()));
+        assert_eq!(
+            FrameCacheKey::new(0, 0, None, None, WindowMode::Default, Some("Gy")),
+            default_window,
+            "a unit without a window is the default window"
+        );
     }
 
     #[test]
     fn full_dynamic_cache_key_ignores_explicit_window_values() {
-        let first = FrameCacheKey::new(0, 0, Some(10.0), Some(20.0), WindowMode::FullDynamic);
-        let second = FrameCacheKey::new(0, 0, Some(30.0), Some(40.0), WindowMode::FullDynamic);
+        let first = FrameCacheKey::new(0, 0, Some(10.0), Some(20.0), WindowMode::FullDynamic, None);
+        let second = FrameCacheKey::new(
+            0,
+            0,
+            Some(30.0),
+            Some(40.0),
+            WindowMode::FullDynamic,
+            Some("Gy"),
+        );
 
         assert_eq!(first, second);
         assert_eq!(first.window_center_bits, None);
@@ -535,7 +555,14 @@ mod tests {
         let key = |center: f64, width: f64| {
             let request = WindowRequest::new(Some(center), Some(width), WindowMode::Default)
                 .expect("valid window");
-            FrameCacheKey::new(0, 0, request.center(), request.width(), request.mode())
+            FrameCacheKey::new(
+                0,
+                0,
+                request.center(),
+                request.width(),
+                request.mode(),
+                None,
+            )
         };
         assert_eq!(key(-0.0, 0.25), key(0.0, 1.0));
         assert_ne!(key(0.0, 2.0), key(0.0, 1.0));

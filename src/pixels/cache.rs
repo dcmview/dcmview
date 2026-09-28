@@ -121,7 +121,7 @@ mod tests {
     use crate::api::contracts::WindowMode;
 
     fn frame_key(frame: u32) -> FrameCacheKey {
-        FrameCacheKey::new(0, frame, None, None, WindowMode::Default)
+        FrameCacheKey::new(0, frame, None, None, WindowMode::Default, None)
     }
 
     fn raw_key(frame: u32) -> RawFrameCacheKey {

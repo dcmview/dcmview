@@ -77,9 +77,18 @@ export type FrameInfo = { frame_count: number, rows: number, columns: number, tr
 
 /**
  * Display-frame query. Explicit `wc`/`ww` must be sent together;
- * `mode=full_dynamic` ignores them.
+ * `mode=full_dynamic` ignores them (and `unit`).
  */
-export type FrameQuery = { wc?: number, ww?: number, mode?: WindowMode, };
+export type FrameQuery = { wc?: number, ww?: number, mode?: WindowMode, 
+/**
+ * The real-world unit `wc`/`ww` are in, which requires both. The window
+ * then applies to the values of the frame's preferred real-world
+ * mapping (the first of its value mapping's `real_world`) when it has this
+ * `unit_label`, as the viewer's raw renderer windows them; a frame whose
+ * preferred mapping has another unit, or whose samples are not 8- or
+ * 16-bit (or one-bit) integers, is shown with its default window.
+ */
+unit?: string, };
 
 export type FrameRefSummary = { virtual_index: number, file_index: number, frame_index: number, sop_instance_uid: string, instance_number: number | null, position_along_normal_mm: number | null, };
 

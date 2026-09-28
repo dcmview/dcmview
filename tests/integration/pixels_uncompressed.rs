@@ -40,6 +40,7 @@ async fn decodes_uncompressed_png_and_tracks_window_cache_keys() {
             window_center: None,
             window_width: None,
             window_mode: dcmview::types::WindowMode::Default,
+            real_world: None,
         },
     )
     .await
@@ -62,6 +63,7 @@ async fn decodes_uncompressed_png_and_tracks_window_cache_keys() {
             window_center: None,
             window_width: None,
             window_mode: dcmview::types::WindowMode::Default,
+            real_world: None,
         },
     )
     .await
@@ -77,6 +79,7 @@ async fn decodes_uncompressed_png_and_tracks_window_cache_keys() {
             window_center: Some(800.0),
             window_width: Some(1000.0),
             window_mode: dcmview::types::WindowMode::Default,
+            real_world: None,
         },
     )
     .await
@@ -130,6 +133,7 @@ async fn native_overlay_composites_after_windowing_without_changing_raw_samples(
             window_center: None,
             window_width: None,
             window_mode: dcmview::types::WindowMode::Default,
+            real_world: None,
         },
     )
     .await
@@ -175,6 +179,7 @@ async fn prepared_native_overlay_composites_after_luts_and_preserves_raw_frame()
             window_center: None,
             window_width: None,
             window_mode: dcmview::types::WindowMode::Default,
+            real_world: None,
         },
     )
     .await
@@ -233,6 +238,7 @@ async fn native_rectangular_shutter_applies_after_monochrome1_and_preserves_raw_
             window_center: None,
             window_width: None,
             window_mode: dcmview::types::WindowMode::Default,
+            real_world: None,
         },
     )
     .await
@@ -276,6 +282,7 @@ async fn prepared_native_full_frame_shutter_preserves_windowed_pixels_and_raw_fr
             window_center: None,
             window_width: None,
             window_mode: dcmview::types::WindowMode::Default,
+            real_world: None,
         },
     )
     .await
@@ -326,6 +333,7 @@ async fn applies_big_endian_byte_order_for_uncompressed_pixels() {
             window_center: None,
             window_width: None,
             window_mode: dcmview::types::WindowMode::Default,
+            real_world: None,
         },
     )
     .await

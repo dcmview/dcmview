@@ -93,7 +93,21 @@ never returns compressed DICOM fragments. The window is chosen in this order:
 3. DICOM Window Center/Width.
 4. The current frame's 1st/99th percentile.
 
-The display cache key includes file, frame, `wc`, `ww`, and `mode` (windows
+`unit` (with `wc` and `ww`) puts the explicit window in a real-world unit: it
+applies to the values of the frame's preferred real-world mapping (the first
+entry of its `value-mapping` `real_world`) when that mapping's `unit_label` is
+`unit`, the way the viewer's raw renderer windows them: each stored value is
+mapped (a LUT mapping, non-monotonic ones included, or a linear one; the
+Modality transform is not applied), the window follows the LINEAR function
+without its integer half-unit offsets, and stored values outside the mapped
+range take the window's low end. The frame's samples must be 8- or 16-bit (or
+one-bit) integers. A frame whose preferred mapping has another unit, or whose
+samples are not such integers, is shown with its default window (steps 3 and
+4). `unit` without `wc` and `ww` is `400 invalid_window`; `mode=full_dynamic`
+ignores it.
+
+The display cache key includes file, frame, `wc`, `ww`, `mode`, and the unit
+of a real-world window (windows
 that render alike, such as `wc=-0` and `wc=0` or widths below 1, share a key);
 the raw cache key is file and frame only. Both endpoints send `X-Cache: HIT` or
 `X-Cache: MISS`. A request for a frame another request is already decoding
@@ -136,7 +150,8 @@ Transfer syntax coverage:
 | JPEG Extended (`.51`), JPEG 2000 lossy (`.91`), JPEG-LS Near-Lossless (`.81`), JPEG XL `.111`/`.112`, anything else | `422 unsupported_transfer_syntax` | `422` |
 
 Real World Value Mapping and RT Dose Grid Scaling are not applied to display
-or raw pixels, including float and double-float data; `value-mapping` tells the
+or raw pixels, including float and double-float data, except that a display
+window with `unit` is applied to mapped values; `value-mapping` tells the
 client how to convert them.
 
 ## Value Mapping

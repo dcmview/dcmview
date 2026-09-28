@@ -1,5 +1,5 @@
 {
-  "description": "Shared 8-bit display oracle for the server windowing pipeline (src/pixels/window.rs, src/pixels/render.rs) and the client raw-frame renderer (frontend/src/lib/rawWindowing.ts). Stored samples are one row of unsigned 16-bit values. Expected outputs follow PS3.3 C.11.2.1.2.1 LINEAR windowing of the rescaled values, rounded half up; MONOCHROME1 is 255 minus that quantized output (INVERSE presentation, C.11.6.1.2); Pixel Padding is excluded from automatic windows and drawn black. Window precedence: mode full_dynamic, then explicit wc/ww, then the DICOM window, then the 1st/99th percentile of the frame.",
+  "description": "Shared 8-bit display oracle for the server windowing pipeline (src/pixels/window.rs, src/pixels/render.rs) and the client raw-frame renderer (frontend/src/lib/rawWindowing.ts). Stored samples are one row of unsigned 16-bit values. Expected outputs follow PS3.3 C.11.2.1.2.1 LINEAR windowing of the rescaled values, rounded half up; MONOCHROME1 is 255 minus that quantized output (INVERSE presentation, C.11.6.1.2); Pixel Padding is excluded from automatic windows and drawn black. Window precedence: mode full_dynamic, then explicit wc/ww, then the DICOM window, then the 1st/99th percentile of the frame. A case with `real_world` windows that mapping's values instead (the server with `unit`, the client with the mapping): stored values go through the mapping (a LUT indexed from first_value_mapped, or slope and intercept), the window follows the LINEAR function without the integer half-unit offsets, clamped to [0, 1] and rounded half up, and stored values outside [first_value_mapped, last_value_mapped] take the window's low end before any MONOCHROME1 inversion.",
   "cases": [
     {
       "name": "explicit LINEAR window uses the half-unit boundaries",
@@ -182,6 +182,90 @@
       "wc": null,
       "ww": null,
       "expected": [0, 0, 255, 0]
+    },
+    {
+      "name": "real-world LUT window follows a non-monotonic mapping",
+      "stored": [1, 2, 3, 4, 5, 6],
+      "rescale_slope": 1,
+      "rescale_intercept": 0,
+      "photometric_interpretation": "MONOCHROME2",
+      "dicom_window": null,
+      "padding": null,
+      "mode": "default",
+      "wc": 45,
+      "ww": 70,
+      "real_world": {"unit": "SUV", "first_value_mapped": 1, "last_value_mapped": 5, "lut": [10, 50, 20, 80, 40]},
+      "expected": [0, 146, 36, 255, 109, 0]
+    },
+    {
+      "name": "real-world LUT window ignores the Modality rescale",
+      "stored": [1, 2, 3, 4, 5, 0],
+      "rescale_slope": 3,
+      "rescale_intercept": -100,
+      "photometric_interpretation": "MONOCHROME2",
+      "dicom_window": null,
+      "padding": null,
+      "mode": "default",
+      "wc": 45,
+      "ww": 70,
+      "real_world": {"unit": "SUV", "first_value_mapped": 1, "last_value_mapped": 5, "lut": [10, 50, 20, 80, 40]},
+      "expected": [0, 146, 36, 255, 109, 0]
+    },
+    {
+      "name": "MONOCHROME1 inverts a real-world window, unmapped values included",
+      "stored": [1, 2, 3, 4, 5, 6],
+      "rescale_slope": 1,
+      "rescale_intercept": 0,
+      "photometric_interpretation": "MONOCHROME1",
+      "dicom_window": null,
+      "padding": null,
+      "mode": "default",
+      "wc": 45,
+      "ww": 70,
+      "real_world": {"unit": "SUV", "first_value_mapped": 1, "last_value_mapped": 5, "lut": [10, 50, 20, 80, 40]},
+      "expected": [255, 109, 219, 0, 146, 255]
+    },
+    {
+      "name": "Pixel Padding is black in a real-world window",
+      "stored": [1, 2, 3, 4, 5],
+      "rescale_slope": 1,
+      "rescale_intercept": 0,
+      "photometric_interpretation": "MONOCHROME1",
+      "dicom_window": null,
+      "padding": {"value": 2, "range_limit": null},
+      "mode": "default",
+      "wc": 45,
+      "ww": 70,
+      "real_world": {"unit": "SUV", "first_value_mapped": 1, "last_value_mapped": 5, "lut": [10, 50, 20, 80, 40]},
+      "expected": [255, 0, 219, 0, 146]
+    },
+    {
+      "name": "real-world linear window has no half-unit offsets",
+      "stored": [0, 20, 40, 60],
+      "rescale_slope": 1,
+      "rescale_intercept": 0,
+      "photometric_interpretation": "MONOCHROME2",
+      "dicom_window": null,
+      "padding": null,
+      "mode": "default",
+      "wc": 5,
+      "ww": 20,
+      "real_world": {"unit": "ms", "first_value_mapped": 0, "last_value_mapped": 100, "slope": 0.5, "intercept": -10},
+      "expected": [0, 64, 191, 255]
+    },
+    {
+      "name": "real-world windows below one unit wide render one unit wide",
+      "stored": [1, 2, 3, 4],
+      "rescale_slope": 1,
+      "rescale_intercept": 0,
+      "photometric_interpretation": "MONOCHROME2",
+      "dicom_window": null,
+      "padding": null,
+      "mode": "default",
+      "wc": 30,
+      "ww": 0.5,
+      "real_world": {"unit": "SUV", "first_value_mapped": 1, "last_value_mapped": 5, "lut": [10, 50, 20, 80, 40]},
+      "expected": [0, 255, 0, 255]
     }
   ]
 }

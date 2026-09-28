@@ -386,6 +386,7 @@ async fn jpeg2000_display_applies_rescale_before_every_window_mode() {
                 window_center: Some(255.0),
                 window_width: Some(170.0),
                 window_mode: WindowMode::Default,
+                real_world: None,
             },
             [
                 255, 255, 255, 255, 255, 255, 205, 154, 103, 51, 0, 0, 0, 0, 0, 0,
@@ -397,6 +398,7 @@ async fn jpeg2000_display_applies_rescale_before_every_window_mode() {
                 window_center: None,
                 window_width: None,
                 window_mode: WindowMode::Default,
+                real_world: None,
             },
             [
                 255, 255, 255, 243, 217, 192, 166, 141, 115, 90, 64, 38, 13, 0, 0, 0,
@@ -410,6 +412,7 @@ async fn jpeg2000_display_applies_rescale_before_every_window_mode() {
                 window_center: Some(1.0),
                 window_width: Some(1.0),
                 window_mode: WindowMode::FullDynamic,
+                real_world: None,
             },
             [
                 255, 238, 221, 204, 187, 170, 153, 136, 119, 102, 85, 68, 51, 34, 17, 0,

@@ -124,8 +124,32 @@ type OracleCase = {
 	mode: WindowMode;
 	wc: number | null;
 	ww: number | null;
+	real_world?: {
+		unit: string;
+		first_value_mapped: number;
+		last_value_mapped: number;
+		lut?: number[];
+		slope?: number;
+		intercept?: number;
+	};
 	expected: number[];
 };
+
+function oracleValueMap(realWorld: NonNullable<OracleCase["real_world"]>): RealWorldValueMap {
+	return {
+		source: "real_world_value_mapping",
+		source_file_index: null,
+		label: null,
+		first_value_mapped: realWorld.first_value_mapped,
+		last_value_mapped: realWorld.last_value_mapped,
+		transform: realWorld.lut
+			? { kind: "lut", values: realWorld.lut }
+			: { kind: "linear", slope: realWorld.slope ?? 1, intercept: realWorld.intercept ?? 0 },
+		unit_label: realWorld.unit,
+		units: null,
+		quantity: null,
+	};
+}
 
 // The server runs the same cases through the loader and display endpoint in
 // tests/integration/windowing_oracle.rs, which also checks that the raw
@@ -143,16 +167,12 @@ describe("shared windowing oracle", () => {
 			paddingLow: padding && limit !== null ? Math.min(padding.value, limit) : null,
 			paddingHigh: padding && limit !== null ? Math.max(padding.value, limit) : null,
 		});
-		const { wc, ww } = resolveDisplayWindow(
-			frame,
-			null,
-			null,
-			oracleCase.wc,
-			oracleCase.ww,
-			oracleCase.mode,
-		);
+		const valueMap = oracleCase.real_world ? oracleValueMap(oracleCase.real_world) : null;
+		const { wc, ww } = valueMap
+			? resolveMappedDisplayWindow(frame, valueMap, null, null, oracleCase.wc, oracleCase.ww, oracleCase.mode)
+			: resolveDisplayWindow(frame, null, null, oracleCase.wc, oracleCase.ww, oracleCase.mode);
 
-		expect(grayValues(renderRawFrameToRgba(frame, wc, ww))).toEqual(oracleCase.expected);
+		expect(grayValues(renderRawFrameToRgba(frame, wc, ww, valueMap))).toEqual(oracleCase.expected);
 	});
 });
 
