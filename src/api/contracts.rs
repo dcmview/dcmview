@@ -170,6 +170,15 @@ pub mod endpoints {
         PNG_MEDIA_TYPE,
         ResponseHeaders::Cache,
     );
+    /// RGBA PNG of the display shutter fill and overlay graphics a grayscale
+    /// display frame carries, opaque where drawn and transparent elsewhere;
+    /// fully transparent when the file declares neither.
+    pub const FILE_PRESENTATION_LAYER: Endpoint = binary(
+        "filePresentationLayer",
+        "/file/{index}/frame/{frame}/presentation-layer",
+        PNG_MEDIA_TYPE,
+        ResponseHeaders::Cache,
+    );
     /// PNG colorwash of an RT Dose grid resampled onto the path's frame;
     /// query `DoseOverlayQuery`.
     pub const FILE_DOSE_OVERLAY: Endpoint = binary(
@@ -272,6 +281,7 @@ pub mod endpoints {
         FILE_REFERENCES,
         FILE_SEMANTIC_CONTEXT,
         FILE_SEGMENTATION_OVERLAY,
+        FILE_PRESENTATION_LAYER,
         FILE_DOSE_OVERLAY,
         FILE_DOSE_OVERLAY_VALUES,
         FILE_PARAMETRIC_MAP_OVERLAY,
@@ -315,10 +325,16 @@ pub struct FileSummary {
     pub object_kind: String,
     pub support_state: SupportState,
     pub support_reason: Option<String>,
-    /// Whether client-side raw windowing preserves every declared presentation transform.
+    /// Whether client-side raw windowing preserves every declared presentation
+    /// transform. Always `true` now that the value mapping carries the
+    /// Modality and VOI LUTs and `presentation-layer` the shutter and overlays.
     pub raw_windowing_compatible: bool,
-    /// Stable explanation when the frontend must retain the server-rendered presentation path.
+    /// Explanation when the frontend must retain the server-rendered
+    /// presentation path; always `null` (see `raw_windowing_compatible`).
     pub raw_windowing_reason: Option<String>,
+    /// Whether grayscale display frames carry a display shutter or overlay
+    /// graphics, which `presentation-layer` draws for a raw-rendered frame.
+    pub presentation_layer: bool,
     pub has_pixels: bool,
     pub frame_count: u32,
     pub rows: u32,
@@ -519,6 +535,20 @@ pub struct FrameValueMapping {
     /// Conversions of stored values into real-world units that apply to this
     /// frame, the preferred one first. Empty when none is declared.
     pub real_world: Vec<RealWorldValueMap>,
+    /// The VOI LUT the display path presents Modality values with in default
+    /// mode when no window is requested and no DICOM window is stored.
+    pub voi_lut: Option<VoiLookupTable>,
+}
+
+/// A VOI LUT: `values[clamp(trunc(modality) - first_value_mapped, 0,
+/// values.length - 1)]`, an output of `bits_per_entry` (8 or 16) bits that
+/// scales to 8 bits as `(output * 255 + max / 2) / max` in integers, where
+/// `max = 2^bits_per_entry - 1`.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct VoiLookupTable {
+    pub first_value_mapped: i32,
+    pub bits_per_entry: u16,
+    pub values: Vec<u16>,
 }
 
 /// The Modality transform the display pipeline applies to stored values
@@ -880,13 +910,23 @@ pub struct HealthResponse {
 }
 
 /// Display-frame query. Explicit `wc`/`ww` must be sent together;
-/// `mode=full_dynamic` ignores them.
-#[derive(Debug, Clone, Copy, Deserialize, TS)]
+/// `mode=full_dynamic` ignores them (and `unit`).
+#[derive(Debug, Clone, Deserialize, TS)]
 #[ts(optional_fields)]
 pub struct FrameQuery {
     pub wc: Option<f64>,
     pub ww: Option<f64>,
     pub mode: Option<WindowMode>,
+    /// The real-world unit `wc`/`ww` are in, which requires both. The window
+    /// then applies to the values of the frame's preferred real-world
+    /// mapping (the first of its value mapping's `real_world`) when it has this
+    /// `unit_label`, as the viewer's raw renderer windows them; a frame whose
+    /// preferred mapping has another unit, or whose samples are not 8- or
+    /// 16-bit (or one-bit) integers, is shown with its default window.
+    pub unit: Option<String>,
+    /// `true` for a window/level drag preview: served from the display cache
+    /// when present, otherwise rendered without being cached.
+    pub preview: Option<bool>,
 }
 
 /// Raw-pixel query: the zero-based image row and column.

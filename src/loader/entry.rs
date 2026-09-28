@@ -8,17 +8,19 @@ use crate::api::contracts::WindowPreset;
 use crate::dicom_values::{read_first_string, read_number, read_strings, sequence_items};
 use crate::pixels::{read_pixel_padding_range, NativeByteOrder, NativeFrameLayout};
 use crate::types::{FileEntry, NativePixelDataKind, NativePixelMetadata, SeriesMetadata};
-use anyhow::{Context, Result};
-use dicom_core::header::HasLength;
+use anyhow::{bail, Context, Result};
+use dicom_core::value::{DataSetSequence, InMemFragment, PixelFragmentSequence, Value};
+use dicom_core::VR;
 use dicom_dictionary_std::{tags, uids};
 use dicom_encoding::text::SpecificCharacterSet;
-use dicom_encoding::{TransferSyntax, TransferSyntaxIndex};
-use dicom_object::{FileMetaTable, OpenFileOptions};
-use dicom_parser::dataset::read::DataSetReader;
+use dicom_encoding::{Codec, TransferSyntax, TransferSyntaxIndex};
+use dicom_object::mem::InMemElement;
+use dicom_object::{FileMetaTable, InMemDicomObject};
+use dicom_parser::dataset::read::{DataSetReader, Result as ParserResult};
 use dicom_parser::dataset::DataToken;
 use dicom_transfer_syntax_registry::TransferSyntaxRegistry;
 use std::fs::File;
-use std::io::{self, Read, Seek};
+use std::io::{self, BufReader, Read};
 use std::path::Path;
 
 pub(super) enum EntryInspection {
@@ -27,17 +29,22 @@ pub(super) enum EntryInspection {
 }
 
 pub(super) fn build_entry(path: &Path) -> Result<EntryInspection> {
-    if !has_dicm_preamble(path)? {
-        return Ok(EntryInspection::Skipped(
-            DiscoveryReason::MissingPart10Preamble,
-        ));
-    }
-
-    let obj = match read_discovery_metadata(path) {
-        Ok(obj) => obj,
-        Err(_) => return Ok(EntryInspection::Skipped(DiscoveryReason::DicomParseFailed)),
+    let DiscoveryHeader {
+        object: obj,
+        odd_item_length,
+        pixels: pixel_header,
+    } = match read_discovery_header(path)? {
+        HeaderRead::NotPart10 => {
+            return Ok(EntryInspection::Skipped(
+                DiscoveryReason::MissingPart10Preamble,
+            ))
+        }
+        HeaderRead::ParseFailed => {
+            return Ok(EntryInspection::Skipped(DiscoveryReason::DicomParseFailed))
+        }
+        HeaderRead::Read(header) => *header,
     };
-    if !valid_discovery_structure(&obj) {
+    if odd_item_length || !valid_character_set(&obj) {
         return Ok(EntryInspection::Skipped(DiscoveryReason::DicomParseFailed));
     }
 
@@ -68,7 +75,8 @@ pub(super) fn build_entry(path: &Path) -> Result<EntryInspection> {
         .max(1);
     let photometric_interpretation = read_first_string(&obj, tags::PHOTOMETRIC_INTERPRETATION)
         .unwrap_or_else(|| "MONOCHROME2".to_string());
-    let pixel_header = find_pixel_data_header(path, &transfer_syntax_uid)?;
+    let pixel_header =
+        pixel_header.with_context(|| format!("failed to parse {}", path.display()))?;
     let pixel_data_kind = pixel_header.as_ref().map(|header| header.kind);
     let has_pixels = pixel_header.is_some();
     let frame_count = present_frame_count(
@@ -233,13 +241,12 @@ pub(super) fn build_entry(path: &Path) -> Result<EntryInspection> {
     })))
 }
 
-fn valid_discovery_structure(object: &dicom_object::DefaultDicomObject) -> bool {
-    let character_set_valid = object
+fn valid_character_set(object: &dicom_object::DefaultDicomObject) -> bool {
+    object
         .get(tags::SPECIFIC_CHARACTER_SET)
         .and_then(|element| element.to_str().ok())
         .map(|value| valid_specific_character_set(&value))
-        .unwrap_or(true);
-    character_set_valid && !has_odd_defined_item_length(object)
+        .unwrap_or(true)
 }
 
 fn valid_specific_character_set(value: &str) -> bool {
@@ -249,44 +256,201 @@ fn valid_specific_character_set(value: &str) -> bool {
     })
 }
 
-fn has_odd_defined_item_length(
-    object: &dicom_object::InMemDicomObject<dicom_dictionary_std::StandardDataDictionary>,
-) -> bool {
-    object.iter().any(|element| {
-        element.items().is_some_and(|items| {
-            items.iter().any(|item| {
-                item.length().get().is_some_and(|length| length % 2 != 0)
-                    || has_odd_defined_item_length(item)
-            })
-        })
+/// What discovery reads from one file: the data set up to, but excluding,
+/// Float Pixel Data, and the top-level pixel element's header.
+struct DiscoveryHeader {
+    object: dicom_object::DefaultDicomObject,
+    /// A sequence item before the pixel data declares an odd length, which a
+    /// conformant data set never does.
+    odd_item_length: bool,
+    /// The top-level pixel element, or why the file could not be walked to it.
+    pixels: Result<Option<PixelDataHeader>>,
+}
+
+enum HeaderRead {
+    NotPart10,
+    ParseFailed,
+    Read(Box<DiscoveryHeader>),
+}
+
+/// Opens and parses `path` once for everything discovery needs.
+///
+/// The metadata object is what `OpenFileOptions::read_until(FLOAT_PIXEL_DATA)`
+/// builds: float and double-float pixel data precede Pixel Data, so stopping
+/// at Float Pixel Data keeps every pixel payload out of the scan. That call
+/// drops the element it stopped at and reads through its own buffer, so the
+/// object is built here from the same parser's tokens instead, and the parse
+/// carries on from the stop token to the top-level pixel element's header.
+fn read_discovery_header(path: &Path) -> Result<HeaderRead> {
+    let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    let file_length = file
+        .metadata()
+        .with_context(|| format!("failed to stat {}", path.display()))?
+        .len();
+    let mut reader = BufReader::new(file);
+    let mut preamble = [0_u8; 132];
+    match reader.read_exact(&mut preamble) {
+        Ok(()) if &preamble[128..132] == b"DICM" => {}
+        Ok(()) => return Ok(HeaderRead::NotPart10),
+        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => {
+            return Ok(HeaderRead::NotPart10)
+        }
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to read {}", path.display()))
+        }
+    }
+    // The file meta reader expects the magic code.
+    reader
+        .seek_relative(-4)
+        .with_context(|| format!("failed to seek {}", path.display()))?;
+    let Ok(meta) = FileMetaTable::from_reader(&mut reader) else {
+        return Ok(HeaderRead::ParseFailed);
+    };
+    let Some(transfer_syntax) = TransferSyntaxRegistry.get(meta.transfer_syntax()) else {
+        return Ok(HeaderRead::ParseFailed);
+    };
+    // Deflated data sets are parsed through the syntax's own adapter, as
+    // dicom-object does.
+    Ok(match transfer_syntax.codec() {
+        Codec::Dataset(Some(adapter)) => parse_data_set(
+            adapter.adapt_reader(Box::new(reader)),
+            transfer_syntax,
+            meta,
+            file_length,
+        ),
+        Codec::Dataset(None) => HeaderRead::ParseFailed,
+        _ => parse_data_set(reader, transfer_syntax, meta, file_length),
     })
 }
 
-fn read_discovery_metadata(path: &Path) -> Result<dicom_object::DefaultDicomObject> {
-    Ok(OpenFileOptions::new()
-        // Float and double-float pixel data precede the conventional Pixel Data
-        // tag, so stopping there would materialize those payloads during scan.
-        .read_until(tags::FLOAT_PIXEL_DATA)
-        .open_file(path)?)
+/// Builds the discovery header from the data set after the file meta.
+fn parse_data_set(
+    source: impl Read,
+    transfer_syntax: &TransferSyntax,
+    meta: FileMetaTable,
+    file_length: u64,
+) -> HeaderRead {
+    let Ok(mut tokens) = DataSetReader::new_with_ts(source, transfer_syntax) else {
+        return HeaderRead::ParseFailed;
+    };
+    let mut odd_item_length = false;
+    let Ok((elements, stop)) = read_elements(&mut tokens, false, &mut odd_item_length) else {
+        return HeaderRead::ParseFailed;
+    };
+    let pixels = match stop {
+        Some(stop) => top_level_pixel_element(std::iter::once(Ok(stop)).chain(tokens)),
+        None => Ok(None),
+    };
+    HeaderRead::Read(Box::new(DiscoveryHeader {
+        object: InMemDicomObject::from_element_iter(elements).with_exact_meta(meta),
+        odd_item_length,
+        pixels: pixels.map(|element| {
+            element.map(|(kind, native_length)| PixelDataHeader {
+                kind,
+                native_length,
+                file_length,
+            })
+        }),
+    }))
 }
 
-fn has_dicm_preamble(path: &Path) -> Result<bool> {
-    let mut file =
-        File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
-    let mut preamble = [0_u8; 132];
-    match file.read_exact(&mut preamble) {
-        Ok(()) => Ok(&preamble[128..132] == b"DICM"),
-        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => Ok(false),
-        Err(error) => Err(error).with_context(|| format!("failed to read {}", path.display())),
+/// Builds data set elements from parser tokens the way dicom-object's
+/// builder does. At the top level it stops at the first element from Float
+/// Pixel Data on and returns that token unread; inside an item it reads to
+/// the item's end, nested pixel data included.
+fn read_elements<I>(
+    tokens: &mut I,
+    in_item: bool,
+    odd_item_length: &mut bool,
+) -> Result<(Vec<InMemElement>, Option<DataToken>)>
+where
+    I: Iterator<Item = ParserResult<DataToken>>,
+{
+    let mut elements = Vec::new();
+    while let Some(token) = tokens.next() {
+        let token = token?;
+        let tag = match &token {
+            DataToken::ElementHeader(header) => Some(header.tag),
+            DataToken::SequenceStart { tag, .. } => Some(*tag),
+            DataToken::PixelSequenceStart => Some(tags::PIXEL_DATA),
+            _ => None,
+        };
+        if !in_item && tag.is_some_and(|tag| tag >= tags::FLOAT_PIXEL_DATA) {
+            return Ok((elements, Some(token)));
+        }
+        let element = match token {
+            DataToken::ElementHeader(header) => {
+                match tokens.next().context("element has no value")?? {
+                    DataToken::PrimitiveValue(value) => InMemElement::new_with_len(
+                        header.tag,
+                        header.vr,
+                        header.len,
+                        Value::Primitive(value),
+                    ),
+                    token => bail!("unexpected token {token:?} for {}", header.tag),
+                }
+            }
+            DataToken::SequenceStart { tag, len } => {
+                let items = read_items(tokens, odd_item_length)?;
+                InMemElement::new_with_len(
+                    tag,
+                    VR::SQ,
+                    len,
+                    Value::Sequence(DataSetSequence::new(items, len)),
+                )
+            }
+            DataToken::PixelSequenceStart => {
+                InMemElement::new(tags::PIXEL_DATA, VR::OB, read_fragments(tokens)?)
+            }
+            DataToken::ItemEnd if in_item => return Ok((elements, None)),
+            token => bail!("unexpected token {token:?}"),
+        };
+        elements.push(element);
     }
+    Ok((elements, None))
 }
 
-/// The kind of the data set's own pixel data element, if it has one.
-///
-/// Walks element headers without reading pixel values and counts only
-/// top-level elements, so a pixel element nested in a sequence (an Icon Image
-/// Sequence, for example) or pixel-tag bytes inside another value never make
-/// a no-pixel object look like an image.
+fn read_items<I>(tokens: &mut I, odd_item_length: &mut bool) -> Result<Vec<InMemDicomObject>>
+where
+    I: Iterator<Item = ParserResult<DataToken>>,
+{
+    let mut items = Vec::new();
+    while let Some(token) = tokens.next() {
+        match token? {
+            DataToken::ItemStart { len } => {
+                *odd_item_length |= len.get().is_some_and(|length| length % 2 != 0);
+                let (elements, _) = read_elements(tokens, true, odd_item_length)?;
+                items.push(InMemDicomObject::from_element_iter(elements));
+            }
+            DataToken::SequenceEnd => return Ok(items),
+            token => bail!("unexpected token {token:?} in a sequence"),
+        }
+    }
+    bail!("data set ended inside a sequence")
+}
+
+/// Encapsulated pixel data nested in an item, collected as dicom-object does.
+fn read_fragments<I>(tokens: &mut I) -> Result<Value<InMemDicomObject, InMemFragment>>
+where
+    I: Iterator<Item = ParserResult<DataToken>>,
+{
+    let mut offset_table = None;
+    let mut fragments = Vec::new();
+    for token in tokens {
+        match token? {
+            DataToken::OffsetTable(table) => offset_table = Some(table),
+            DataToken::ItemValue(data) => fragments.push(data),
+            DataToken::ItemStart { .. } | DataToken::ItemEnd => {}
+            DataToken::SequenceEnd => break,
+            token => bail!("unexpected token {token:?} in pixel data"),
+        }
+    }
+    Ok(Value::PixelSequence(PixelFragmentSequence::new(
+        offset_table.unwrap_or_default(),
+        fragments,
+    )))
+}
+
 /// The top-level pixel element as discovery sees it, without reading pixel
 /// values.
 struct PixelDataHeader {
@@ -327,42 +491,14 @@ fn present_frame_count(
     u32::try_from(bound.max(1)).unwrap_or(u32::MAX)
 }
 
-fn find_pixel_data_header(
-    path: &Path,
-    transfer_syntax_uid: &str,
-) -> Result<Option<PixelDataHeader>> {
-    let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
-    let file_length = file
-        .metadata()
-        .with_context(|| format!("failed to stat {}", path.display()))?
-        .len();
-    let mut reader = io::BufReader::new(file);
-    reader
-        .seek(io::SeekFrom::Start(128))
-        .with_context(|| format!("failed to seek {}", path.display()))?;
-    FileMetaTable::from_reader(&mut reader)
-        .with_context(|| format!("failed to read file meta: {}", path.display()))?;
-    let transfer_syntax = TransferSyntaxRegistry
-        .get(transfer_syntax_uid)
-        .with_context(|| format!("unknown transfer syntax {transfer_syntax_uid}"))?;
-    let element = if transfer_syntax_uid == uids::DEFLATED_EXPLICIT_VR_LITTLE_ENDIAN {
-        top_level_pixel_element(flate2::read::DeflateDecoder::new(reader), transfer_syntax)
-    } else {
-        top_level_pixel_element(reader, transfer_syntax)
-    };
-    let element = element.with_context(|| format!("failed to parse {}", path.display()))?;
-    Ok(element.map(|(kind, native_length)| PixelDataHeader {
-        kind,
-        native_length,
-        file_length,
-    }))
-}
-
+/// The kind and native length of the data set's own pixel element, if any.
+///
+/// Counts only top-level elements, so a pixel element nested in a sequence
+/// (an Icon Image Sequence, for example) or pixel-tag bytes inside another
+/// value never make a no-pixel object look like an image.
 fn top_level_pixel_element(
-    source: impl Read,
-    transfer_syntax: &TransferSyntax,
+    tokens: impl Iterator<Item = ParserResult<DataToken>>,
 ) -> Result<Option<(NativePixelDataKind, Option<u32>)>> {
-    let tokens = DataSetReader::new_with_ts(source, transfer_syntax)?;
     let mut depth = 0_usize;
     for token in tokens {
         match token? {
@@ -409,11 +545,15 @@ fn build_label(patient_id: &str, modality: &str, study_date: &str, fallback: &st
 mod tests {
     use super::super::test_fixtures::base_object;
     use super::{
-        build_entry, read_discovery_metadata, valid_specific_character_set, EntryInspection,
+        build_entry, read_discovery_header, valid_specific_character_set, EntryInspection,
+        HeaderRead,
     };
+    use dicom_core::value::PixelFragmentSequence;
     use dicom_core::{DataElement, PrimitiveValue, Tag, VR};
     use dicom_dictionary_std::{tags, uids};
     use dicom_object::meta::FileMetaTableBuilder;
+    use dicom_object::{InMemDicomObject, OpenFileOptions};
+    use std::path::Path;
     use tempfile::tempdir;
 
     use crate::types::NativePixelDataKind;
@@ -505,104 +645,212 @@ mod tests {
         );
     }
 
-    #[test]
-    fn recognizes_float_and_double_float_pixel_elements() {
-        let directory = tempdir().expect("temp directory");
-        let cases = [
-            (
-                "float.dcm",
-                DataElement::new(
-                    Tag(0x7fe0, 0x0008),
-                    VR::OF,
-                    PrimitiveValue::F32(vec![0.0_f32, 1.0].into()),
-                ),
-                NativePixelDataKind::Float32,
-            ),
-            (
-                "double.dcm",
-                DataElement::new(
-                    Tag(0x7fe0, 0x0009),
-                    VR::OD,
-                    PrimitiveValue::F64(vec![0.0_f64, 1.0].into()),
-                ),
-                NativePixelDataKind::Float64,
-            ),
-        ];
-
-        for (name, pixel_element, expected_kind) in cases {
-            let path = directory.path().join(name);
-            let mut object = base_object();
-            object.put(pixel_element);
-            let object = object
-                .with_meta(
-                    FileMetaTableBuilder::new()
-                        .transfer_syntax(uids::EXPLICIT_VR_LITTLE_ENDIAN)
-                        .media_storage_sop_class_uid(uids::PARAMETRIC_MAP_STORAGE)
-                        .media_storage_sop_instance_uid("2.25.300"),
-                )
-                .expect("file meta");
-            object.write_to_file(&path).expect("write fixture");
-
-            let metadata = read_discovery_metadata(&path).expect("read discovery metadata");
-            let pixel_tag = match expected_kind {
-                NativePixelDataKind::Integer => tags::PIXEL_DATA,
-                NativePixelDataKind::Float32 => tags::FLOAT_PIXEL_DATA,
-                NativePixelDataKind::Float64 => tags::DOUBLE_FLOAT_PIXEL_DATA,
-            };
-            assert!(metadata.element(pixel_tag).is_err());
-
-            let EntryInspection::Selected(file) = build_entry(&path).expect("inspect fixture")
-            else {
-                panic!("fixture should be selected");
-            };
-            assert!(file.has_pixels);
-            assert_eq!(
-                file.series_metadata.native_pixel.pixel_data_kind,
-                Some(expected_kind)
-            );
-        }
-    }
-
-    #[test]
-    fn nested_icon_pixels_and_tag_bytes_do_not_count_as_pixel_data() {
-        let directory = tempdir().expect("temp directory");
-        let path = directory.path().join("icon-only.dcm");
-        let icon = dicom_object::InMemDicomObject::from_element_iter([
-            DataElement::new(tags::ROWS, VR::US, PrimitiveValue::from(1_u16)),
-            DataElement::new(tags::COLUMNS, VR::US, PrimitiveValue::from(1_u16)),
-            DataElement::new(
-                tags::PIXEL_DATA,
-                VR::OB,
-                PrimitiveValue::from(vec![0_u8, 0]),
-            ),
-        ]);
-        let mut object = base_object();
-        object.put(DataElement::new(
-            tags::ICON_IMAGE_SEQUENCE,
-            VR::SQ,
-            dicom_core::value::DataSetSequence::from(vec![icon]),
-        ));
-        // Little-endian (7FE0,0010) bytes inside an unrelated value.
-        object.put(DataElement::new(
-            Tag(0x0009, 0x1010),
-            VR::OB,
-            PrimitiveValue::from(vec![0xe0_u8, 0x7f, 0x10, 0x00]),
-        ));
+    fn write_object(path: &Path, object: InMemDicomObject, transfer_syntax: &str) {
         object
             .with_meta(
                 FileMetaTableBuilder::new()
-                    .transfer_syntax(uids::EXPLICIT_VR_LITTLE_ENDIAN)
-                    .media_storage_sop_class_uid(uids::SECONDARY_CAPTURE_IMAGE_STORAGE)
-                    .media_storage_sop_instance_uid("2.25.301"),
+                    .transfer_syntax(transfer_syntax)
+                    .media_storage_sop_class_uid(uids::ENHANCED_CT_IMAGE_STORAGE)
+                    .media_storage_sop_instance_uid("2.25.300"),
             )
             .expect("file meta")
-            .write_to_file(&path)
+            .write_to_file(path)
             .expect("write fixture");
+    }
 
-        let EntryInspection::Selected(file) = build_entry(&path).expect("inspect fixture") else {
-            panic!("fixture should be selected");
+    /// The single parse builds exactly the object dicom-object's
+    /// `read_until(FLOAT_PIXEL_DATA)` builds, and finds the pixel element the
+    /// former second walk found, for every kind of pixel data and syntax.
+    #[test]
+    fn one_parse_matches_read_until_and_finds_each_pixel_element() {
+        use NativePixelDataKind::{Float32, Float64, Integer};
+        let native = || {
+            DataElement::new(
+                tags::PIXEL_DATA,
+                VR::OW,
+                PrimitiveValue::U16(vec![1_u16; 8].into()),
+            )
         };
-        assert!(!file.has_pixels);
-        assert_eq!(file.series_metadata.native_pixel.pixel_data_kind, None);
+        let fragments = || {
+            DataElement::new(
+                tags::PIXEL_DATA,
+                VR::OB,
+                PixelFragmentSequence::new(
+                    Vec::<u32>::new(),
+                    vec![vec![0xff_u8, 0xd8, 0xff, 0xd9]],
+                ),
+            )
+        };
+        let icons = |pixel_data| {
+            DataElement::new(
+                tags::ICON_IMAGE_SEQUENCE,
+                VR::SQ,
+                dicom_core::value::DataSetSequence::from(vec![
+                    InMemDicomObject::from_element_iter([
+                        DataElement::new(tags::ROWS, VR::US, PrimitiveValue::from(1_u16)),
+                        pixel_data,
+                    ]),
+                ]),
+            )
+        };
+        let padding = || {
+            DataElement::new(
+                tags::DATA_SET_TRAILING_PADDING,
+                VR::OB,
+                PrimitiveValue::from(vec![0_u8; 4]),
+            )
+        };
+        let float = DataElement::new(
+            tags::FLOAT_PIXEL_DATA,
+            VR::OF,
+            PrimitiveValue::F32(vec![0.0_f32, 1.0].into()),
+        );
+        let double = DataElement::new(
+            tags::DOUBLE_FLOAT_PIXEL_DATA,
+            VR::OD,
+            PrimitiveValue::F64(vec![0.0_f64, 1.0].into()),
+        );
+        // Little-endian (7FE0,0010) bytes inside an unrelated value.
+        let tag_bytes = || {
+            DataElement::new(
+                Tag(0x0009, 0x1010),
+                VR::OB,
+                PrimitiveValue::from(vec![0xe0_u8, 0x7f, 0x10, 0x00]),
+            )
+        };
+        let (le, jpeg) = (uids::EXPLICIT_VR_LITTLE_ENDIAN, uids::JPEG_BASELINE8_BIT);
+        let words = Some((Integer, Some(16)));
+        let cases = [
+            ("explicit", le, vec![native()], words),
+            (
+                "implicit",
+                uids::IMPLICIT_VR_LITTLE_ENDIAN,
+                vec![native()],
+                words,
+            ),
+            ("big-endian", "1.2.840.10008.1.2.2", vec![native()], words),
+            (
+                "deflated",
+                uids::DEFLATED_EXPLICIT_VR_LITTLE_ENDIAN,
+                vec![native()],
+                words,
+            ),
+            ("float", le, vec![float], Some((Float32, Some(8)))),
+            ("double", le, vec![double], Some((Float64, Some(16)))),
+            (
+                "encapsulated",
+                jpeg,
+                vec![fragments()],
+                Some((Integer, None)),
+            ),
+            ("none", le, vec![], None),
+            ("padding only", le, vec![padding()], None),
+            (
+                "icon and tag bytes",
+                le,
+                vec![icons(native()), tag_bytes()],
+                None,
+            ),
+            (
+                "icon, pixels, padding",
+                le,
+                vec![icons(native()), native(), padding()],
+                words,
+            ),
+            (
+                "encapsulated icon",
+                jpeg,
+                vec![icons(fragments()), fragments()],
+                Some((Integer, None)),
+            ),
+        ];
+
+        let directory = tempdir().expect("temp directory");
+        for (name, transfer_syntax, elements, expected_pixels) in cases {
+            let path = directory.path().join(format!("{name}.dcm"));
+            let mut object = base_object();
+            for element in elements {
+                object.put(element);
+            }
+            write_object(&path, object, transfer_syntax);
+
+            let expected = OpenFileOptions::new()
+                .read_until(tags::FLOAT_PIXEL_DATA)
+                .open_file(&path)
+                .expect("dicom-object reads the fixture");
+            let HeaderRead::Read(header) = read_discovery_header(&path).expect("read header")
+            else {
+                panic!("{name} should parse");
+            };
+            // dicom-core never finds two undefined lengths equal, so compare
+            // the full debug form, which also shows every item's length.
+            assert_eq!(
+                format!("{:?}", *header.object),
+                format!("{:?}", *expected),
+                "{name}"
+            );
+            assert_eq!(
+                header.object.meta().transfer_syntax(),
+                expected.meta().transfer_syntax()
+            );
+            assert!(!header.odd_item_length, "{name}");
+            let pixels = header
+                .pixels
+                .expect("walk to the pixel element")
+                .map(|pixels| (pixels.kind, pixels.native_length));
+            assert_eq!(pixels, expected_pixels, "{name}");
+        }
+    }
+
+    /// Each way a file can fail keeps its own outcome: no Part 10 preamble,
+    /// an unparsable header (including an odd item length), or a data set
+    /// that breaks after the header, which fails the inspection.
+    #[test]
+    fn classifies_files_that_cannot_be_inspected() {
+        let directory = tempdir().expect("temp directory");
+        let part10 = |name: &str, data_set: &[u8]| {
+            let meta = FileMetaTableBuilder::new()
+                .transfer_syntax(uids::EXPLICIT_VR_LITTLE_ENDIAN)
+                .media_storage_sop_class_uid(uids::SECONDARY_CAPTURE_IMAGE_STORAGE)
+                .media_storage_sop_instance_uid("2.25.302")
+                .build()
+                .expect("file meta");
+            let mut bytes = vec![0_u8; 128];
+            bytes.extend_from_slice(b"DICM");
+            meta.write(&mut bytes).expect("write file meta");
+            bytes.extend_from_slice(data_set);
+            let path = directory.path().join(name);
+            std::fs::write(&path, bytes).expect("write fixture");
+            path
+        };
+        // (0040,0275) SQ, undefined length, holding one 11-byte item: an SH
+        // element with an odd, three-byte value.
+        let mut odd_item = vec![
+            0x40, 0x00, 0x75, 0x02, b'S', b'Q', 0, 0, 0xff, 0xff, 0xff, 0xff,
+        ];
+        odd_item.extend_from_slice(&[0xfe, 0xff, 0x00, 0xe0, 11, 0, 0, 0]);
+        odd_item.extend_from_slice(&[0x08, 0x00, 0x00, 0x01, b'S', b'H', 3, 0, b'A', b'B', b'C']);
+        odd_item.extend_from_slice(&[0xfe, 0xff, 0xdd, 0xe0, 0, 0, 0, 0]);
+        // (0008,0020) DA declaring 100 bytes of which the file holds two.
+        let cut_value = [0x08, 0x00, 0x20, 0x00, b'D', b'A', 100, 0, b'2', b'0'];
+        // Trailing padding that declares more bytes than the file holds.
+        let truncated_tail = [0xfc, 0xff, 0xfc, 0xff, b'O', b'B', 0, 0, 100, 0, 0, 0, 0, 0];
+
+        let short = directory.path().join("short.dcm");
+        std::fs::write(&short, b"DICM").expect("write fixture");
+        let skipped = |path: &Path| match build_entry(path).expect("inspect") {
+            EntryInspection::Skipped(reason) => reason.code(),
+            EntryInspection::Selected(_) => "selected",
+        };
+        assert_eq!(skipped(&short), "missing_part10_preamble");
+        assert_eq!(
+            skipped(&part10("cut-value.dcm", &cut_value)),
+            "dicom_parse_failed"
+        );
+        assert_eq!(
+            skipped(&part10("odd-item.dcm", &odd_item)),
+            "dicom_parse_failed"
+        );
+        assert!(build_entry(&part10("truncated-tail.dcm", &truncated_tail)).is_err());
     }
 }

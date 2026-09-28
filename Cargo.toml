@@ -20,13 +20,13 @@ remote-fixtures = ["dep:dicom-test-files"]
 
 [dependencies]
 # DICOM
-dicom-object = "0.9.1"
-dicom-core = "0.9.1"
-dicom-encoding = "0.9.1"
-dicom-dictionary-std = "0.9"
-dicom-parser = "0.9.1"
-dicom-transfer-syntax-registry = "0.9.1"
-dicom-pixeldata = { version = "0.9.1", features = ["charls", "image", "jpegxl", "native", "openjp2"] }
+dicom-object = "0.10.0"
+dicom-core = "0.10.0"
+dicom-encoding = "0.10.0"
+dicom-dictionary-std = "0.10.0"
+dicom-parser = "0.10.0"
+dicom-transfer-syntax-registry = "0.10.0"
+dicom-pixeldata = { version = "0.10.0", features = ["charls", "image", "jpegxl", "native", "openjp2"] }
 
 # Web server
 axum = { version = "0.8", features = ["macros"] }

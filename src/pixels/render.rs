@@ -1,11 +1,12 @@
-use crate::api::contracts::WindowMode;
+use crate::api::contracts::{RealWorldValueMap, WindowMode};
 use crate::types::{FileEntry, ResolvedWindow};
+use crate::value_mapping::map_value;
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use image::{ExtendedColorType, ImageEncoder};
 
 use super::color::{encode_rgb8_png_with_icc, png_encoder};
-use super::overlay::apply_overlay_planes;
+use super::overlay::{apply_overlay_planes, OVERLAY_PRESENTATION_VALUE};
 use super::shutter;
 use super::window::{
     apply_modality_transform, apply_padding_background, apply_voi_lut_if_selected, apply_window,
@@ -62,12 +63,8 @@ pub(crate) fn encode_windowed_luminance_png(
     stored: StoredSamples<'_>,
     options: LuminanceRenderOptions,
 ) -> Result<DisplayPng> {
-    let padding = file
-        .series_metadata
-        .native_pixel
-        .pixel_padding
-        .map(|[low, high]| PixelPaddingRange::new(low, Some(high)));
-    let (mut windowed, window) = match stored {
+    let padding = pixel_padding(file);
+    let (windowed, window) = match stored {
         StoredSamples::Integer {
             bytes,
             bits_allocated,
@@ -75,29 +72,114 @@ pub(crate) fn encode_windowed_luminance_png(
         } => window_through_table(file, bytes, bits_allocated, signed, padding, &options)?,
         StoredSamples::Values(values) => window_each_sample(file, values, padding, &options)?,
     };
-    let LuminanceRenderOptions {
+    let png = present_luminance(file, windowed, options.frame, options.rows, options.columns)?;
+    Ok(DisplayPng { png, window })
+}
+
+/// Renders 8- or 16-bit stored integers windowed over a real-world mapping's
+/// values instead of Modality values, the way the viewer's raw renderer
+/// windows them: `map` is applied to each stored value, the window follows
+/// the linear VOI function without the integer half-unit offsets (which
+/// assume Modality integers), and stored values the mapping does not cover
+/// are the window's low end. MONOCHROME1 inversion, Pixel Padding, shutter
+/// and overlays follow as for any grayscale frame.
+///
+/// The frame reports no window: a window over mapped values has no linear
+/// Modality equivalent, and the viewer knows the one it asked for.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn encode_real_world_windowed_png(
+    file: &FileEntry,
+    bytes: &[u8],
+    bits_allocated: u32,
+    signed: bool,
+    map: &RealWorldValueMap,
+    (center, width): (f64, f64),
+    frame: u32,
+    (rows, columns): (u32, u32),
+) -> Result<DisplayPng> {
+    let stored_value = stored_value_reader(bits_allocated, signed)?;
+    let width = width.max(1.0);
+    let low = center - width / 2.0;
+    let table = (0..1_usize << bits_allocated)
+        .map(|index| match map_value(map, stored_value(index)) {
+            Some(mapped) if mapped.is_finite() => {
+                (((mapped - low) / width).clamp(0.0, 1.0) * 255.0).round() as u8
+            }
+            _ => 0,
+        })
+        .collect::<Vec<_>>();
+    let padding = pixel_padding(file);
+    let is_padding =
+        |index: usize| padding.is_some_and(|range| range.contains(stored_value(index)));
+    let windowed = look_up_samples(file, table, is_padding, bytes, bits_allocated);
+    let png = present_luminance(file, windowed, frame, rows, columns)?;
+    Ok(DisplayPng { png, window: None })
+}
+
+/// The steps after windowing that every grayscale frame shares: the
+/// presentation graphics, then PNG encoding.
+fn present_luminance(
+    file: &FileEntry,
+    mut windowed: Vec<u8>,
+    frame: u32,
+    rows: u32,
+    columns: u32,
+) -> Result<Bytes> {
+    draw_presentation_graphics(&mut windowed, |gray| [gray], file, frame, rows, columns);
+    let mut encoded = Vec::new();
+    png_encoder(&mut encoded)
+        .write_image(&windowed, columns, rows, ExtendedColorType::L8)
+        .context("png encoding failed")?;
+    Ok(Bytes::from(encoded))
+}
+
+/// The graphics a grayscale display frame carries over its windowed values,
+/// as an RGBA PNG of the frame's size: shutter fill and overlay graphics are
+/// opaque gray, everything else transparent. Drawn over a frame windowed
+/// anywhere (the viewer's raw renderer), it gives exactly the display frame,
+/// since neither depends on the window.
+pub(crate) fn encode_presentation_layer_png(file: &FileEntry, frame: u32) -> Result<Bytes> {
+    let (rows, columns) = (file.rows, file.columns);
+    let pixels = (rows as usize)
+        .checked_mul(columns as usize)
+        .and_then(|count| count.checked_mul(4))
+        .ok_or_else(|| anyhow!("invalid image geometry"))?;
+    let mut layer = vec![0; pixels];
+    draw_presentation_graphics(
+        &mut layer,
+        |gray| [gray, gray, gray, 255],
+        file,
         frame,
         rows,
         columns,
-        ..
-    } = options;
-    shutter::apply_to_luminance(&mut windowed, file, frame, rows, columns);
+    );
+    let mut encoded = Vec::new();
+    png_encoder(&mut encoded)
+        .write_image(&layer, columns, rows, ExtendedColorType::Rgba8)
+        .context("png encoding failed")?;
+    Ok(Bytes::from(encoded))
+}
+
+/// Draws the display shutter (Shutter Presentation Value), then overlay
+/// planes (presentation value 255), each pixel as `pixel(gray)`. Neither
+/// depends on the window.
+fn draw_presentation_graphics<const N: usize>(
+    pixels: &mut [u8],
+    pixel: fn(u8) -> [u8; N],
+    file: &FileEntry,
+    frame: u32,
+    rows: u32,
+    columns: u32,
+) {
+    shutter::apply_to_luminance(pixels, pixel, file, frame, rows, columns);
     apply_overlay_planes(
-        &mut windowed,
+        pixels,
+        pixel(OVERLAY_PRESENTATION_VALUE),
         rows,
         columns,
         frame,
         &file.series_metadata.presentation.overlay_planes,
     );
-
-    let mut encoded = Vec::new();
-    png_encoder(&mut encoded)
-        .write_image(&windowed, columns, rows, ExtendedColorType::L8)
-        .context("png encoding failed")?;
-    Ok(DisplayPng {
-        png: Bytes::from(encoded),
-        window,
-    })
 }
 
 /// 8- and 16-bit frames: every step up to the displayed byte depends only on
@@ -114,17 +196,7 @@ fn window_through_table(
     padding: Option<PixelPaddingRange>,
     options: &LuminanceRenderOptions,
 ) -> Result<(Vec<u8>, Option<ResolvedWindow>)> {
-    let stored_value: fn(usize) -> f64 = match (bits_allocated, signed) {
-        (8, false) => |index| index as f64,
-        (8, true) => |index| f64::from(index as u8 as i8),
-        (16, false) => |index| index as f64,
-        (16, true) => |index| f64::from(index as u16 as i16),
-        _ => {
-            return Err(anyhow!(
-                "integer table windowing needs 8- or 16-bit samples"
-            ))
-        }
-    };
+    let stored_value = stored_value_reader(bits_allocated, signed)?;
     let native = &file.series_metadata.native_pixel;
     let rescaled = (0..1_usize << bits_allocated)
         .map(|index| {
@@ -139,7 +211,7 @@ fn window_through_table(
     let is_padding =
         |index: usize| padding.is_some_and(|range| range.contains(stored_value(index)));
 
-    let (mut table, window) = if let Some(voi_lut) = selected_voi_lut(
+    let (table, window) = if let Some(voi_lut) = selected_voi_lut(
         options.window_mode,
         options.requested_wc,
         options.requested_ww,
@@ -178,17 +250,52 @@ fn window_through_table(
             .collect();
         (table, Some(window))
     };
+    let windowed = look_up_samples(file, table, is_padding, bytes, bits_allocated);
+    Ok((windowed, window))
+}
+
+/// Finishes a per-stored-value table of windowed bytes (MONOCHROME1
+/// inversion, then Pixel Padding as black background whatever the
+/// photometric interpretation) and maps every sample through it.
+fn look_up_samples(
+    file: &FileEntry,
+    mut table: Vec<u8>,
+    is_padding: impl Fn(usize) -> bool,
+    bytes: &[u8],
+    bits_allocated: u32,
+) -> Vec<u8> {
     apply_monochrome1_inversion(&mut table, &file.photometric_interpretation);
-    // Padding is background: black whatever the photometric interpretation.
     for (index, entry) in table.iter_mut().enumerate() {
         if is_padding(index) {
             *entry = 0;
         }
     }
-    let windowed = stored_indexes(bytes, bits_allocated)
+    stored_indexes(bytes, bits_allocated)
         .map(|index| table[index])
-        .collect();
-    Ok((windowed, window))
+        .collect()
+}
+
+fn pixel_padding(file: &FileEntry) -> Option<PixelPaddingRange> {
+    file.series_metadata
+        .native_pixel
+        .pixel_padding
+        .map(|[low, high]| PixelPaddingRange::new(low, Some(high)))
+}
+
+/// The stored value of each table index (a sample's bit pattern in the 8- or
+/// 16-bit container).
+fn stored_value_reader(bits_allocated: u32, signed: bool) -> Result<fn(usize) -> f64> {
+    Ok(match (bits_allocated, signed) {
+        (8, false) => |index| index as f64,
+        (8, true) => |index| f64::from(index as u8 as i8),
+        (16, false) => |index| index as f64,
+        (16, true) => |index| f64::from(index as u16 as i16),
+        _ => {
+            return Err(anyhow!(
+                "integer table windowing needs 8- or 16-bit samples"
+            ))
+        }
+    })
 }
 
 /// The window as applied: a linear window is never narrower than one unit.

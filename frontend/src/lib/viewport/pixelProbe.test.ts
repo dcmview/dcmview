@@ -13,6 +13,7 @@ function ctMapping(): FrameValueMapping {
 		stored_value_type: "integer",
 		modality: { rescale_slope: 1, rescale_intercept: -1024, rescale_type: null, lut: null },
 		real_world: [],
+		voi_lut: null,
 	};
 }
 

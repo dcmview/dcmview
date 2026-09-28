@@ -191,7 +191,8 @@ def view(
 		block: Wait for the viewer process to exit when ``True``. When ``False``,
 			return a handle with ``url``, ``stop()``, and context-manager support.
 		recursive: Recursively scan input directories when ``True``.
-		timeout: Exit after this many seconds without API or browser requests.
+		timeout: Exit after this many seconds without API or browser requests
+			once the scan has finished.
 		annotations: Optional EMBED-style ROI annotation CSV to load in memory.
 		filters: Optional iterable of ``FIELD=VALUE`` metadata filters. Filters
 			are forwarded to the binary and combined with AND semantics.

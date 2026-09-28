@@ -27,8 +27,10 @@
 	import { fitImageToViewportHeight, imageDisplayGeometry } from "./imageGeometry";
 	import {
 		mappedUnitsPerStoredUnit,
+		MAX_RENDER_PIXELS,
 		resolveDisplayWindow,
 		resolveMappedDisplayWindow,
+		samplePresentation,
 		selectWindowingPipeline,
 		validateRenderableRawFrame,
 		type ResolvedWindow,
@@ -38,6 +40,7 @@
 	import type { ActiveTool } from "./viewerTools";
 	import { AnnotationStore } from "./viewport/annotationStore.svelte";
 	import { playDisplayCine } from "./viewport/displayCine";
+	import { LiveWindowPreview } from "./viewport/liveWindowPreview";
 	import { DisplayFrameSource } from "./viewport/displayFrameSource";
 	import {
 		composeOverlayFrame,
@@ -46,6 +49,7 @@
 		legendColors,
 		OverlayLayerCache,
 		overlayLayerRequests,
+		presentationLayerRequest,
 		valueOverlayLayerRequest,
 		valueOverlayValuesRequest,
 		type FrameOverlay,
@@ -169,9 +173,13 @@
 	// Raw, not a deep proxy: the frame is posted to the W/L worker, and a
 	// proxied metadata object cannot be structured-cloned.
 	let currentRawFrame = $state.raw<RawFrame | null>(null);
-	// The window the server rendered the displayed PNG with, if linear.
+	// The window the server rendered the displayed PNG with, if linear, and
+	// whether that PNG was requested in a real-world unit.
 	let shownDisplayWindow = $state.raw<ResolvedWindow | null>(null);
+	let shownUnitRequest = $state(false);
 	let rawWindowLevelFallbackByFile = $state<Record<number, boolean>>({});
+	// Color files: neither path windows them, so a drag sends no previews.
+	let colorFiles = $state<Record<number, boolean>>({});
 	const annotations = new AnnotationStore();
 
 	let prefetchConcurrency = $state(PREFETCH_CONCURRENCY);
@@ -185,6 +193,8 @@
 	});
 	const valueMappings = new ValueMappings();
 	const overlayLayers = new OverlayLayerCache();
+	const presentationLayers = new OverlayLayerCache();
+	let presentationLayerCanvas: HTMLCanvasElement | undefined = $state();
 	const overlayValues = new OverlayLayerCache<Float32Array>();
 	let overlayValueState = $state<{ key: string; state: OverlayValueState } | null>(null);
 	let valueOverlayCanvas: HTMLCanvasElement | undefined = $state();
@@ -226,14 +236,28 @@
 	);
 	const pipelineMode = $derived.by<PipelineMode>(() => {
 		if (overlay) return "overlay";
-		const rawFallback = rawWindowLevelFallbackByFile[activeFile.index] ?? false;
+		// Frames over the browser's limit stay on the server without first
+		// downloading their samples.
+		const rawFallback = (rawWindowLevelFallbackByFile[activeFile.index] ?? false)
+			|| activeFile.rows * activeFile.columns > MAX_RENDER_PIXELS;
 		// Stills keep a window set in such a unit on the raw path, whatever
-		// the tool; cine plays display frames (see frameDisplayWindowOptions).
+		// the tool; cine plays display frames the server windows in that unit
+		// (see frameDisplayWindowOptions).
 		if (directWindowing && windowUnit !== null && !cinePlaying && !rawFallback && activeFile.raw_windowing_compatible) {
 			return "diagnostic_wl";
 		}
 		return selectWindowingPipeline(activeTool === "window_level", rawFallback, activeFile.raw_windowing_compatible);
 	});
+
+	// The raw renderer reads what the raw headers cannot say (float samples,
+	// Modality and VOI LUTs) from the file's value mapping, and waits for it.
+	const rawPresentation = $derived.by(() => {
+		if (pipelineMode !== "diagnostic_wl" || !currentRawFrame) return null;
+		const mapping = valueMappings.forFrame(activeFile.index, currentFrame);
+		return mapping ? samplePresentation(currentRawFrame, mapping) : null;
+	});
+	// A browser-windowed frame gets its shutter and overlay graphics drawn over it.
+	const showsPresentationLayer = $derived(pipelineMode === "diagnostic_wl" && activeFile.presentation_layer);
 
 	// A window in real-world units converts through that mapping to the
 	// Modality scale that both render paths window.
@@ -252,6 +276,10 @@
 	const renderWindowCenter = $derived(renderWindow.center);
 	const renderWindowWidth = $derived(renderWindow.width);
 	const renderWindowPending = $derived(renderWindow.pending);
+
+	// A server frame requested in a real-world unit reports no window when the
+	// unit applied, and the default window it fell back to when it did not.
+	const unitWindowFallback = $derived(shownUnitRequest && shownDisplayWindow !== null);
 
 	// The window of the image on screen. The raw path resolves its own; a
 	// server-rendered frame shows the window being dragged or requested, else
@@ -283,6 +311,7 @@
 				renderWindowCenter,
 				renderWindowWidth,
 				windowMode,
+				rawPresentation ?? undefined,
 			)
 			: liveWindowCenter !== null && liveWindowWidth !== null
 				? { wc: liveWindowCenter, ww: liveWindowWidth }
@@ -300,12 +329,13 @@
 		const mapped = windowToMapped({ center: displayWindow.wc, width: displayWindow.ww }, mappedScale);
 		return { low, high, ...mapped, unit: mappedScale.unit, label: mappedScale.label };
 	});
-	// A LUT-unit window: the raw renderer's, or the one set while cine plays.
+	// A LUT-unit window: the raw renderer's, or the one a server frame was
+	// shown with; none when the server fell back to the default window.
 	const directLegend = $derived.by(() => {
 		if (!directMap || !directWindowing) return null;
 		const window = pipelineMode === "diagnostic_wl" && currentRawFrame
 			? displayWindow
-			: windowUnit !== null && windowCenter !== null && windowWidth !== null
+			: windowUnit !== null && windowCenter !== null && windowWidth !== null && !unitWindowFallback
 				? { wc: windowCenter, ww: windowWidth }
 				: null;
 		if (!window) return null;
@@ -477,7 +507,8 @@
 	/**
 	 * A display frame request. A real-world window stays in its unit in the
 	 * fetch scope and cache key, and each frame (current, prefetched, or
-	 * played by cine) is converted through its own mapping here.
+	 * played by cine) is converted through its own linear mapping here, or
+	 * requested in that unit.
 	 */
 	async function loadDisplayFrame(
 		fileIndex: number,
@@ -489,6 +520,15 @@
 		const mapping = await valueMappings.load(fileIndex, frameIndex);
 		signal?.throwIfAborted();
 		return fetchDisplayFrame(fileIndex, frameIndex, frameDisplayWindowOptions(options, mapping), signal);
+	}
+
+	/**
+	 * Whether a display request goes out with `unit`: a real-world window the
+	 * frame's own linear mapping cannot convert (see `loadDisplayFrame`).
+	 */
+	function sendsUnit(fileIndex: number, frameIndex: number, options: DisplayFrameWindowOptions): boolean {
+		if (!options.unit) return false;
+		return Boolean(frameDisplayWindowOptions(options, valueMappings.forFrame(fileIndex, frameIndex)).unit);
 	}
 
 	function currentDisplayWindowOptions(): DisplayFrameWindowOptions {
@@ -546,6 +586,37 @@
 		}
 	}
 
+	/**
+	 * Server-windowed previews of a drag over a frame the browser does not
+	 * window; the settled window is fetched as usual on release.
+	 */
+	const livePreview = new LiveWindowPreview({
+		load: ({ wc, ww }, signal) => fetchDisplayFrame(
+			activeFile.index,
+			currentFrame,
+			{ wc, ww, windowMode: "default", preview: true },
+			signal,
+		),
+		show: drawPreviewFrame,
+	});
+
+	async function drawPreviewFrame({ blob, window }: DisplayFrame): Promise<void> {
+		const isLive = () => dragState?.mode === "wl" && pipelineMode === "server_wl" && !!canvasEl;
+		if (!isLive()) return;
+		const image = await decodeCanvasImage(blob);
+		try {
+			if (!isLive() || !canvasEl) return;
+			const ctx = canvasEl.getContext("2d", { alpha: false });
+			canvasEl.width = image.width;
+			canvasEl.height = image.height;
+			ctx?.drawImage(image.source, 0, 0);
+			shownDisplayWindow = window;
+			shownUnitRequest = false;
+		} finally {
+			image.dispose();
+		}
+	}
+
 	function prefetchRawRing(direction: 1 | -1): void {
 		const prefetchScope = retainedScopeKey;
 		const frames = navigationFrames;
@@ -584,6 +655,7 @@
 			const validationError = validateRenderableRawFrame(rawFrame);
 			if (validationError) {
 				currentRawFrame = null;
+				if (rawFrame.metadata.samplesPerPixel !== 1) colorFiles = { ...colorFiles, [fileIndex]: true };
 				rawWindowLevelFallbackByFile = {
 					...rawWindowLevelFallbackByFile,
 					[fileIndex]: true,
@@ -639,6 +711,7 @@
 			await drawDisplayBlob(cacheKey, blob, generation);
 			if (generation !== requestGeneration || !usesDisplayPipeline()) return;
 			shownDisplayWindow = window;
+			shownUnitRequest = sendsUnit(fileIndex, frameIndex, windowOptions);
 			rendered.mark(fileIndex, frameIndex);
 
 			displayFrames.startPrefetch(
@@ -676,6 +749,7 @@
 				loading = false;
 				loadError = null;
 				shownDisplayWindow = source.window;
+				shownUnitRequest = false;
 				rendered.mark(activeFile.index, currentFrame);
 			} finally {
 				base.dispose();
@@ -775,9 +849,19 @@
 		displayFrames.resetScope();
 	});
 
+	// A window/level drag on a server-windowed frame shows server previews.
+	$effect(() => {
+		const wc = liveWindowCenter;
+		const ww = liveWindowWidth;
+		if (pipelineMode !== "server_wl" || dragState?.mode !== "wl" || wc === null || ww === null) return;
+		if (colorFiles[activeFile.index]) return;
+		untrack(() => livePreview.request({ wc, ww }));
+	});
+
 	$effect(() => {
 		if (!activeFile) return;
 		void activeFile.index;
+		livePreview.stop();
 		invalidateWindowLevelRenders();
 		currentRawFrame = null;
 		liveWindowCenter = null;
@@ -887,18 +971,21 @@
 	});
 
 	$effect(() => {
-		if (pipelineMode !== "diagnostic_wl" || !currentRawFrame || !canvasEl || renderWindowPending || !displayWindow) return;
+		const presentation = rawPresentation;
+		if (pipelineMode !== "diagnostic_wl" || !currentRawFrame || !canvasEl || renderWindowPending || !presentation || !displayWindow) {
+			return;
+		}
 		// displayWindow already resolved this frame's window; window changes do
 		// not invalidate in-flight renders, only frame, file, and mode changes do.
 		const frame = currentRawFrame;
-		const { wc, ww } = displayWindow;
+		const { wc, ww, voiLut } = displayWindow;
 		const valueMap = directWindowing ? directMap : null;
 		const generation = wlRenderGeneration;
 		void wlRenderer.render(() => canvasEl, {
 			frame,
 			wc,
 			ww,
-			valueMap,
+			options: { valueMap, presentation, voiLut },
 			isCurrent: () => generation === wlRenderGeneration
 				&& frame === currentRawFrame
 				&& pipelineMode === "diagnostic_wl",
@@ -918,6 +1005,44 @@
 			return;
 		}
 		return untrack(() => valueMappings.ensureWhenSettled(fileIndex, frameIndex));
+	});
+
+	// Without any value mapping of the file, the raw renderer cannot tell
+	// how to present its samples, so the file keeps server windowing.
+	$effect(() => {
+		const fileIndex = activeFile.index;
+		if (pipelineMode !== "diagnostic_wl" || valueMappings.knownForFile(fileIndex)) return;
+		if (!valueMappings.failed(fileIndex, currentFrame)) return;
+		untrack(() => {
+			rawWindowLevelFallbackByFile = { ...rawWindowLevelFallbackByFile, [fileIndex]: true };
+		});
+	});
+
+	// Draws the displayed frame's shutter and overlay graphics over the
+	// browser-windowed image; the last layer stays until the next one loads,
+	// as the image does.
+	$effect(() => {
+		const canvas = presentationLayerCanvas;
+		if (!showsPresentationLayer || !canvas) return;
+		const request = presentationLayerRequest(activeFile.index, currentFrame);
+		let current = true;
+		presentationLayers.abortOthers(request.key);
+		presentationLayers.load(request)
+			.then(decodeCanvasImage)
+			.then((layer) => {
+				try {
+					if (current) drawOverlayLayer(canvas, layer);
+				} finally {
+					layer.dispose();
+				}
+			})
+			.catch((error: unknown) => {
+				if (!current || (error as Error).name === "AbortError") return;
+				loadError = (error as Error).message || "Failed to load the frame's shutter and overlays";
+			});
+		return () => {
+			current = false;
+		};
 	});
 
 	// Samples and the value mapping load once the cursor rests on a frame;
@@ -1019,9 +1144,11 @@
 			destroyed = true;
 			stopProbe();
 			overlayLayers.clear();
+			presentationLayers.clear();
 			overlayValues.clear();
 			rawFrames.clear();
 			displayFrames.clear();
+			livePreview.stop();
 			wlRenderer.dispose();
 		};
 	});
@@ -1332,6 +1459,7 @@
 	}
 
 	function endDrag() {
+		livePreview.stop();
 		dragState = null;
 		annotations.endLiveEdit();
 	}
@@ -1393,6 +1521,9 @@
 				class="dicom-canvas"
 				data-capture-rendered={rendered.token}
 			></canvas>
+			{#if showsPresentationLayer}
+				<canvas bind:this={presentationLayerCanvas} class="layer-canvas" aria-hidden="true"></canvas>
+			{/if}
 			{#if valueOverlayVolume}
 				<canvas
 					bind:this={valueOverlayCanvas}
@@ -1441,6 +1572,8 @@
 					</span>
 				{:else if mappedScale}
 					<span class="mapped-window">W/L auto · {mappedScale.unit}</span>
+				{:else if displayWindow?.voiLut}
+					<span>VOI LUT</span>
 				{:else if displayWindow}
 					<span>W: {Math.round(displayWindow.ww)} · C: {Math.round(displayWindow.wc)}</span>
 				{/if}
@@ -1519,6 +1652,7 @@
 		transform-origin: 0 0;
 		transition: transform 0.03s linear;
 	}
+	.layer-canvas,
 	.value-overlay-canvas {
 		position: absolute;
 		inset: 0;

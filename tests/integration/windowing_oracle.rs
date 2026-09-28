@@ -7,8 +7,10 @@ use super::support;
 use axum_test::{TestResponse, TestServer};
 use dcmview::loader::DiscoverOptions;
 use dcmview::server;
+use dicom_core::value::DataSetSequence;
 use dicom_core::{DataElement, PrimitiveValue, VR};
 use dicom_dictionary_std::tags;
+use dicom_object::InMemDicomObject;
 use image::ImageFormat;
 use serde::Deserialize;
 use std::path::Path;
@@ -22,7 +24,9 @@ struct Oracle {
 #[derive(Deserialize)]
 struct WindowingCase {
     name: String,
-    stored: Vec<u16>,
+    /// `int32`, `float32` or `float64`; unsigned 16-bit when absent.
+    sample: Option<String>,
+    stored: Vec<f64>,
     rescale_slope: f64,
     rescale_intercept: f64,
     photometric_interpretation: String,
@@ -31,7 +35,54 @@ struct WindowingCase {
     mode: String,
     wc: Option<f64>,
     ww: Option<f64>,
+    real_world: Option<RealWorld>,
+    shutter: Option<Shutter>,
+    overlay: Option<Vec<u8>>,
+    layer: Option<Vec<Option<u8>>>,
+    modality_lut: Option<Lut>,
+    voi_lut: Option<Lut>,
     expected: Vec<u8>,
+}
+
+#[derive(Deserialize)]
+struct Lut {
+    first_value_mapped: u16,
+    bits: u16,
+    values: Vec<u16>,
+}
+
+fn lut_item(lut: &Lut) -> InMemDicomObject {
+    InMemDicomObject::from_element_iter([
+        DataElement::new(
+            tags::LUT_DESCRIPTOR,
+            VR::US,
+            PrimitiveValue::from([lut.values.len() as u16, lut.first_value_mapped, lut.bits]),
+        ),
+        DataElement::new(
+            tags::LUT_DATA,
+            VR::OW,
+            PrimitiveValue::U16(lut.values.iter().copied().collect()),
+        ),
+    ])
+}
+
+/// A rectangular shutter opening over one-based columns of the one-row frame.
+#[derive(Deserialize)]
+struct Shutter {
+    left: u16,
+    right: u16,
+    presentation_value: u16,
+}
+
+/// A Real World Value Mapping item the window is in the unit of.
+#[derive(Deserialize)]
+struct RealWorld {
+    unit: String,
+    first_value_mapped: u16,
+    last_value_mapped: u16,
+    lut: Option<Vec<f64>>,
+    slope: Option<f64>,
+    intercept: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -42,8 +93,24 @@ struct Window {
 
 #[derive(Deserialize)]
 struct Padding {
-    value: u16,
-    range_limit: Option<u16>,
+    value: f64,
+    range_limit: Option<f64>,
+}
+
+impl WindowingCase {
+    /// The stored samples as little-endian bytes of the case's sample type.
+    fn stored_le(&self) -> Vec<u8> {
+        self.stored
+            .iter()
+            .flat_map(|value| match self.sample.as_deref() {
+                None => (*value as u16).to_le_bytes().to_vec(),
+                Some("int32") => (*value as i32).to_le_bytes().to_vec(),
+                Some("float32") => (*value as f32).to_le_bytes().to_vec(),
+                Some("float64") => value.to_le_bytes().to_vec(),
+                Some(other) => panic!("unknown oracle sample type {other}"),
+            })
+            .collect()
+    }
 }
 
 fn load_oracle() -> Oracle {
@@ -59,13 +126,47 @@ fn write_case_dicom(path: &Path, case: &WindowingCase) {
         path,
         "1.2.840.10008.1.2.1",
         (1, case.stored.len() as u16),
-        case.stored.clone(),
+        vec![0; case.stored.len()],
         &case.photometric_interpretation,
         center.as_deref(),
         width.as_deref(),
     );
 
     let mut object = dicom_object::open_file(path).expect("reopen oracle DICOM");
+    let (bits, pixel_tag, pixel_vr) = match case.sample.as_deref() {
+        None => (16_u16, tags::PIXEL_DATA, VR::OW),
+        Some("int32") => (32, tags::PIXEL_DATA, VR::OB),
+        Some("float32") => (32, tags::FLOAT_PIXEL_DATA, VR::OF),
+        Some(_) => (64, tags::DOUBLE_FLOAT_PIXEL_DATA, VR::OD),
+    };
+    object.remove_element(tags::PIXEL_DATA);
+    object.put(DataElement::new(
+        pixel_tag,
+        pixel_vr,
+        PrimitiveValue::from(case.stored_le()),
+    ));
+    object.put(DataElement::new(
+        tags::BITS_ALLOCATED,
+        VR::US,
+        PrimitiveValue::from(bits),
+    ));
+    object.put(DataElement::new(
+        tags::BITS_STORED,
+        VR::US,
+        PrimitiveValue::from(bits),
+    ));
+    object.put(DataElement::new(
+        tags::HIGH_BIT,
+        VR::US,
+        PrimitiveValue::from(bits - 1),
+    ));
+    if case.sample.as_deref() == Some("int32") {
+        object.put(DataElement::new(
+            tags::PIXEL_REPRESENTATION,
+            VR::US,
+            PrimitiveValue::from(1_u16),
+        ));
+    }
     object.put(DataElement::new(
         tags::RESCALE_SLOPE,
         VR::DS,
@@ -77,20 +178,153 @@ fn write_case_dicom(path: &Path, case: &WindowingCase) {
         PrimitiveValue::from(case.rescale_intercept.to_string()),
     ));
     if let Some(padding) = &case.padding {
-        object.put(DataElement::new(
-            tags::PIXEL_PADDING_VALUE,
-            VR::US,
-            PrimitiveValue::from(padding.value),
-        ));
-        if let Some(limit) = padding.range_limit {
+        let values = [
+            (true, padding.value),
+            (false, padding.range_limit.unwrap_or(f64::NAN)),
+        ];
+        for (is_value, value) in values.into_iter().filter(|(_, value)| !value.is_nan()) {
+            let element = match case.sample.as_deref() {
+                Some("float32") => DataElement::new(
+                    if is_value {
+                        tags::FLOAT_PIXEL_PADDING_VALUE
+                    } else {
+                        tags::FLOAT_PIXEL_PADDING_RANGE_LIMIT
+                    },
+                    VR::FL,
+                    PrimitiveValue::from(value as f32),
+                ),
+                _ => DataElement::new(
+                    if is_value {
+                        tags::PIXEL_PADDING_VALUE
+                    } else {
+                        tags::PIXEL_PADDING_RANGE_LIMIT
+                    },
+                    VR::US,
+                    PrimitiveValue::from(value as u16),
+                ),
+            };
+            object.put(element);
+        }
+    }
+    for (tag, lut) in [
+        (tags::MODALITY_LUT_SEQUENCE, &case.modality_lut),
+        (tags::VOILUT_SEQUENCE, &case.voi_lut),
+    ] {
+        if let Some(lut) = lut {
             object.put(DataElement::new(
-                tags::PIXEL_PADDING_RANGE_LIMIT,
-                VR::US,
-                PrimitiveValue::from(limit),
+                tag,
+                VR::SQ,
+                DataSetSequence::from(vec![lut_item(lut)]),
             ));
         }
     }
+    if let Some(shutter) = &case.shutter {
+        for (tag, value) in [
+            (tags::SHUTTER_LEFT_VERTICAL_EDGE, shutter.left),
+            (tags::SHUTTER_RIGHT_VERTICAL_EDGE, shutter.right),
+            (tags::SHUTTER_UPPER_HORIZONTAL_EDGE, 1),
+            (tags::SHUTTER_LOWER_HORIZONTAL_EDGE, 1),
+        ] {
+            object.put(DataElement::new(tag, VR::IS, value.to_string()));
+        }
+        object.put(DataElement::new(tags::SHUTTER_SHAPE, VR::CS, "RECTANGULAR"));
+        object.put(DataElement::new(
+            tags::SHUTTER_PRESENTATION_VALUE,
+            VR::US,
+            PrimitiveValue::from(shutter.presentation_value),
+        ));
+    }
+    if let Some(bits) = &case.overlay {
+        let overlay = |element: u16| dicom_core::Tag(0x6000, element);
+        let mut words = vec![0_u16; bits.len().div_ceil(16)];
+        for (index, _) in bits.iter().enumerate().filter(|(_, bit)| **bit != 0) {
+            words[index / 16] |= 1 << (index % 16);
+        }
+        object.put(DataElement::new(
+            overlay(0x0010),
+            VR::US,
+            PrimitiveValue::from(1_u16),
+        ));
+        object.put(DataElement::new(
+            overlay(0x0011),
+            VR::US,
+            PrimitiveValue::from(bits.len() as u16),
+        ));
+        object.put(DataElement::new(overlay(0x0040), VR::CS, "G"));
+        object.put(DataElement::new(
+            overlay(0x0050),
+            VR::SS,
+            PrimitiveValue::from([1_i16, 1]),
+        ));
+        object.put(DataElement::new(
+            overlay(0x0100),
+            VR::US,
+            PrimitiveValue::from(1_u16),
+        ));
+        object.put(DataElement::new(
+            overlay(0x0102),
+            VR::US,
+            PrimitiveValue::from(0_u16),
+        ));
+        object.put(DataElement::new(
+            overlay(0x3000),
+            VR::OW,
+            PrimitiveValue::U16(words.into()),
+        ));
+    }
+    if let Some(mapping) = &case.real_world {
+        object.put(DataElement::new(
+            tags::REAL_WORLD_VALUE_MAPPING_SEQUENCE,
+            VR::SQ,
+            DataSetSequence::from(vec![real_world_item(mapping)]),
+        ));
+    }
     object.write_to_file(path).expect("write oracle DICOM");
+}
+
+fn real_world_item(mapping: &RealWorld) -> InMemDicomObject {
+    let units = InMemDicomObject::from_element_iter([
+        DataElement::new(tags::CODE_VALUE, VR::SH, mapping.unit.as_str()),
+        DataElement::new(tags::CODING_SCHEME_DESIGNATOR, VR::SH, "UCUM"),
+        DataElement::new(tags::CODE_MEANING, VR::LO, mapping.unit.as_str()),
+    ]);
+    let mut item = InMemDicomObject::from_element_iter([
+        DataElement::new(
+            tags::REAL_WORLD_VALUE_FIRST_VALUE_MAPPED,
+            VR::US,
+            PrimitiveValue::from(mapping.first_value_mapped),
+        ),
+        DataElement::new(
+            tags::REAL_WORLD_VALUE_LAST_VALUE_MAPPED,
+            VR::US,
+            PrimitiveValue::from(mapping.last_value_mapped),
+        ),
+        DataElement::new(
+            tags::MEASUREMENT_UNITS_CODE_SEQUENCE,
+            VR::SQ,
+            DataSetSequence::from(vec![units]),
+        ),
+    ]);
+    if let Some(lut) = &mapping.lut {
+        item.put(DataElement::new(
+            tags::REAL_WORLD_VALUE_LUT_DATA,
+            VR::FD,
+            PrimitiveValue::F64(lut.iter().copied().collect()),
+        ));
+    }
+    if let (Some(slope), Some(intercept)) = (mapping.slope, mapping.intercept) {
+        item.put(DataElement::new(
+            tags::REAL_WORLD_VALUE_SLOPE,
+            VR::FD,
+            PrimitiveValue::from(slope),
+        ));
+        item.put(DataElement::new(
+            tags::REAL_WORLD_VALUE_INTERCEPT,
+            VR::FD,
+            PrimitiveValue::from(intercept),
+        ));
+    }
+    item
 }
 
 fn display_url(case: &WindowingCase) -> String {
@@ -103,6 +337,9 @@ fn display_url(case: &WindowingCase) -> String {
     }
     if let Some(ww) = case.ww {
         query.push(format!("ww={ww}"));
+    }
+    if let Some(mapping) = &case.real_world {
+        query.push(format!("unit={}", mapping.unit));
     }
     if query.is_empty() {
         "/api/file/0/frame/0".to_string()
@@ -121,12 +358,11 @@ fn header_f64(response: &TestResponse, name: &str) -> Option<f64> {
 /// by the oracle, so both consumers window the same stored samples.
 fn assert_raw_transport(case: &WindowingCase, raw: &TestResponse) {
     let name = &case.name;
-    let stored_le = case
-        .stored
-        .iter()
-        .flat_map(|sample| sample.to_le_bytes())
-        .collect::<Vec<_>>();
-    assert_eq!(raw.as_bytes().as_ref(), stored_le, "{name}: raw samples");
+    assert_eq!(
+        raw.as_bytes().as_ref(),
+        case.stored_le(),
+        "{name}: raw samples"
+    );
     assert_eq!(
         raw.header("X-Frame-Photometric-Interpretation"),
         case.photometric_interpretation.as_str(),
@@ -155,10 +391,7 @@ fn assert_raw_transport(case: &WindowingCase, raw: &TestResponse) {
     );
     let padding = case.padding.as_ref().map(|padding| {
         let limit = padding.range_limit.unwrap_or(padding.value);
-        (
-            f64::from(padding.value.min(limit)),
-            f64::from(padding.value.max(limit)),
-        )
+        (padding.value.min(limit), padding.value.max(limit))
     });
     assert_eq!(
         (
@@ -204,5 +437,105 @@ async fn loader_driven_display_frames_match_the_shared_windowing_oracle() {
         let raw = test_server.get("/api/file/0/frame/0/raw").await;
         raw.assert_status_ok();
         assert_raw_transport(case, &raw);
+
+        // The client takes the LUTs from the frame's value mapping.
+        let mapping = test_server
+            .get("/api/file/0/frame/0/value-mapping")
+            .await
+            .json::<serde_json::Value>();
+        let modality_lut = case.modality_lut.as_ref().map(|lut| {
+            let values = lut.values.iter().copied().map(f64::from).collect::<Vec<_>>();
+            serde_json::json!({ "first_value_mapped": f64::from(lut.first_value_mapped), "values": values })
+        });
+        let voi_lut = case.voi_lut.as_ref().map(|lut| {
+            serde_json::json!({
+                "first_value_mapped": lut.first_value_mapped,
+                "bits_per_entry": lut.bits,
+                "values": lut.values,
+            })
+        });
+        assert_eq!(
+            mapping["modality"]["lut"],
+            modality_lut.unwrap_or_default(),
+            "{}: Modality LUT",
+            case.name
+        );
+        assert_eq!(
+            mapping["voi_lut"],
+            voi_lut.unwrap_or_default(),
+            "{}: VOI LUT",
+            case.name
+        );
+
+        // The layer the client composites over its raw render: gray and
+        // opaque where drawn, transparent elsewhere.
+        let layer = test_server
+            .get("/api/file/0/frame/0/presentation-layer")
+            .await;
+        layer.assert_status_ok();
+        let layer =
+            image::load_from_memory_with_format(layer.as_bytes().as_ref(), ImageFormat::Png)
+                .expect("presentation layer PNG")
+                .to_rgba8()
+                .into_raw();
+        let expected_layer = case
+            .layer
+            .clone()
+            .unwrap_or_else(|| vec![None; case.stored.len()])
+            .into_iter()
+            .flat_map(|gray| gray.map_or([0; 4], |gray| [gray, gray, gray, 255]))
+            .collect::<Vec<_>>();
+        assert_eq!(layer, expected_layer, "{}: presentation layer", case.name);
     }
+}
+
+#[tokio::test]
+async fn a_window_in_another_unit_shows_and_reports_the_default_window() {
+    let oracle = load_oracle();
+    let case = oracle
+        .cases
+        .iter()
+        .find(|case| case.real_world.is_some())
+        .expect("a real-world oracle case");
+    let dir = tempdir().expect("temp dir");
+    let path = dir.path().join("oracle.dcm");
+    write_case_dicom(&path, case);
+    let report = support::discover(
+        &[path],
+        DiscoverOptions {
+            recursive: false,
+            filters: Vec::new(),
+        },
+    )
+    .await
+    .expect("discover oracle DICOM");
+    let test_server = TestServer::new(server::router(support::app_state(report.files)));
+
+    let default = test_server.get("/api/file/0/frame/0").await;
+    let other_unit = test_server
+        .get("/api/file/0/frame/0?wc=45&ww=70&unit=Gy")
+        .await;
+    other_unit.assert_status_ok();
+    assert_eq!(other_unit.as_bytes(), default.as_bytes());
+    // The fallback reports the default window it applied, which tells the
+    // viewer its window was not; an applied real-world window reports none,
+    // having no linear Modality equivalent.
+    let window = |response: &TestResponse| {
+        (
+            header_f64(response, "X-Frame-Window-Center"),
+            header_f64(response, "X-Frame-Window-Width"),
+        )
+    };
+    assert!(window(&default).0.is_some());
+    assert_eq!(window(&other_unit), window(&default));
+    let applied = test_server.get(&display_url(case)).await;
+    applied.assert_status_ok();
+    assert_eq!(window(&applied), (None, None));
+
+    let without_window = test_server.get("/api/file/0/frame/0?unit=SUV").await;
+    without_window.assert_status_bad_request();
+    assert_eq!(
+        without_window.json::<serde_json::Value>()["code"],
+        "invalid_window"
+    );
 }

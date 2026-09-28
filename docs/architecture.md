@@ -154,8 +154,12 @@ A real-world mapping also switches the window to its unit, and
 `WindowSettings` records a drag in that unit. Display requests keep the
 window in its unit (it is part of the fetch scope and cache key), and the
 viewport's display loader converts each frame, including prefetched and
-cine frames, through that frame's own mapping: exactly for a linear
-mapping, by the spanned stored range for a non-decreasing LUT. On the raw
+cine frames, through that frame's own linear mapping; a window no linear
+mapping expresses is sent with `unit`, and the server windows the frame's
+preferred mapping through the same per-stored-value table as the raw
+renderer (`render.rs` `encode_real_world_windowed_png`, decoded samples from
+the raw tier), or shows the frame's default window when that mapping has
+another unit. The display cache key includes the unit. On the raw
 path a linear mapping converts to the Modality scale the renderer windows,
 and a mapping with no linear window (a LUT, or one behind a Modality LUT)
 is windowed directly: the renderer's window LUT maps each stored value
@@ -167,7 +171,9 @@ window of the image on screen. The raw path resolves that window itself; for
 a server-rendered frame it is the window being dragged or requested, else the
 one the display response reports (`X-Frame-Window-*`), kept with the cached
 PNG. A mapped file converts that window to its unit, so its legend needs no
-raw samples.
+raw samples. A frame requested in a real-world `unit` reports no window when
+that window applied; if it reports one, the server showed its default window
+instead, and the HUD shows that window rather than the unit legend.
 
 For SEG objects, `SemanticContextPanel` keeps Pixel Preview as the initial mode
 and publishes an explicit Semantic Context selection to `App.svelte`.
@@ -332,7 +338,9 @@ The contract is kept consistent by three layers:
   `X-Cache: MISS`.
 - Display responses of linearly windowed grayscale frames include the applied
   window as `X-Frame-Window-Center` and `X-Frame-Window-Width`, from the
-  cached render on a hit; color and VOI LUT frames include neither.
+  cached render on a hit; color and VOI LUT frames, and frames windowed in a
+  real-world `unit`, include neither. A `unit` window that cannot apply
+  reports the default window the frame is shown with.
 - Raw responses include all required `X-Frame-*` metadata headers. Default
   window headers are present only when the DICOM supplies a default window.
 - Unsupported transfer syntaxes are `422`, as are layouts the catalog marks
@@ -351,6 +359,18 @@ window mode. Full-dynamic mode ignores explicit window values. Raw cache keys
 include file and frame only. Cache locks are held for lookup or insertion, never
 while reading DICOM, decoding, rendering, or encoding.
 
+The raw cache is also the decoded tier of the display path: a display miss on a
+grayscale integer frame (8 or 16 bits, or one-bit) takes the frame's samples
+from the raw cache, decoding them there if needed, and windows them, so a frame
+is decoded once whatever windows it is shown with. `service.rs`
+`display_integer_layout` states, per codec, the container and signedness each
+display decoder windows those samples with (the raw metadata describes the wire
+and differs, for example JPEG Baseline's canonical unsigned samples); a unit
+test holds every fixture's result equal to its codec's display decoder. JPEG
+2000 only reuses a frame already in the raw cache, because its raw decode
+rejects component layouts that display still windows per sample. Any other
+frame, or a raw decode that fails, is decoded for display as before.
+
 Native display decoding supports monochrome integer samples at 1, 8, 16, and
 32 bits, Float Pixel Data, Double Float Pixel Data, 8-bit RGB in either planar
 configuration, YBR_FULL, YBR_FULL_422, and palette color. Native raw responses
@@ -360,14 +380,25 @@ masked to Bits Stored and signed values are extended from High Bit so unused
 allocated bits never affect display or raw consumers; one-bit pixels are
 expanded to one byte per sample. Float and double-float objects are pixel-renderable, but
 real-world-value mapping remains a separate semantic capability (the
-value-mapping endpoint and value overlays) rather than an implicit part of the
-display pipeline.
+value-mapping endpoint, value overlays, and display windows requested in a
+`unit`) rather than an implicit part of the display pipeline.
 
-The frontend uses raw frames for local interactive window/level when their
-single-channel 8- or 16-bit layout is supported by the browser renderer. For
-other server-renderable layouts (including one-bit, 32-bit, and floating-point
-samples), selecting the window/level tool falls back to parameterized display
-PNG requests instead of replacing the image with a raw-renderer error.
+The frontend uses raw frames for local interactive window/level for every
+single-channel frame up to `MAX_RENDER_PIXELS` (20 Mpx): 1-, 8- and 16-bit
+integers through a per-stored-value table, 32-bit integers and float samples
+one at a time. The renderer takes what the raw headers cannot say from the
+frame's value mapping (stored value type, Modality LUT, VOI LUT) and waits for
+it; a file whose value mapping cannot load keeps server windowing. For files
+with a display shutter or overlay planes (`presentation_layer`), the viewport
+draws the frame's `presentation-layer` on a canvas above the windowed image
+and below any value colorwash, which reproduces the server's display frame
+exactly because neither depends on the window. Color frames, and frames over
+the pixel limit, stay on parameterized display PNG requests; the latter go
+there without downloading their samples first. A window/level drag over such a
+frame shows server previews (`preview=true`, never cached): one request in
+flight, only the newest window queued behind it, all aborted when the drag
+ends, after which the settled window is fetched like any other. Color frames
+send none, since neither path windows them.
 
 For supported 8-bit RGB display paths, a structurally valid source ICC profile
 is preserved in the PNG `iCCP` chunk. The profile may come from the top-level
@@ -463,7 +494,7 @@ Normal server exit during incomplete discovery or annotation loading requests
 cancellation and remains a successful process outcome.
 
 `RequestActivity` tracks in-flight requests and a monotonic idle baseline.
-Idle timeout does not start while the registry is both empty and incomplete,
+Idle timeout does not start until the scan has finished,
 and graceful shutdown lets in-flight requests drain. The browser task
 is owned by `BoundServer::serve` and cleaned up on every normal return or
 error.
@@ -525,23 +556,29 @@ installation and VS Code Electron integration can also use network/cache state;
   complete HTTP boundary.
 - Generated DICOM fixtures exercise real discovery and codec paths. Integration
   tests do not mock the DICOM layer.
-- Discovery stops metadata parsing at the earliest standard pixel-data tag, then
-  walks element headers (inflating deflated data sets) to find the data set's
-  own top-level pixel element. Pixel elements nested in sequences, such as an
-  Icon Image Sequence, do not count. It
-  does not retain integer, float, or double-float pixel values in the catalog.
+- Discovery opens and parses each file once (`loader/entry.rs`
+  `read_discovery_header`): it builds the metadata object from the parser's
+  tokens up to the earliest standard pixel-data tag, exactly as
+  `OpenFileOptions::read_until(FLOAT_PIXEL_DATA)` would, then continues the
+  same parse to the data set's own top-level pixel element (deflated data sets
+  through their inflating adapter). Pixel elements nested in sequences, such
+  as an Icon Image Sequence, do not count. It does not retain integer, float,
+  or double-float pixel values in the catalog.
 - Frontend state helpers, controllers, cache policy, windowing, registry
   shaping, and API wrappers are tested as TypeScript modules. Component tests
   render `App.svelte` and `ImageViewport.svelte` in happy-dom with the API
   module mocked, covering per-tab view state, the keyboard guard, and the
   window/level render-path choice.
-- `tests/windowing-cases.json` is the shared windowing oracle: stored samples,
-  rescale, photometric interpretation, DICOM window, Pixel Padding, and the
-  request, with expected 8-bit output from PS3.3 C.11.2.1.2.1. The Rust
-  integration test writes each case as a DICOM file and runs it through the
-  loader, `AppState`, and the display and raw endpoints; `rawWindowing.test.ts`
-  renders the same cases client-side. Server and client windowing must agree
-  on every case.
+- `tests/windowing-cases.json` is the shared windowing oracle: stored samples
+  (unsigned 16-bit, or signed 32-bit, float and double float), rescale,
+  Modality and VOI LUTs, photometric interpretation, DICOM window, Pixel
+  Padding, a real-world mapping, a shutter or overlay with its presentation
+  layer, and the request, with expected 8-bit output from PS3.3 C.11.2.1.2.1.
+  The Rust integration test writes each case as a DICOM file and runs it
+  through the loader, `AppState`, and the display, raw, value-mapping and
+  presentation-layer endpoints; `rawWindowing.test.ts` renders the same cases
+  client-side with the value mapping's presentation and composites the layer.
+  Server and client windowing must agree on every case.
 - The `X-Cache` MISS-then-HIT sequence is asserted once per cached endpoint
   (display frame, raw frame) plus the display cache-key tests for window
   override and window mode; the runtime contract test checks every cached

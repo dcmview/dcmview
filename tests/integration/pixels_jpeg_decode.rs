@@ -2,7 +2,7 @@ use super::support;
 use axum::http::{header, HeaderValue};
 use axum_test::TestServer;
 use dcmview::loader::DiscoverOptions;
-use dcmview::pixels::{load_frame, new_cache, FrameRequest};
+use dcmview::pixels::{load_frame, new_cache, new_raw_cache, FrameRequest};
 use dcmview::server;
 use image::ImageFormat;
 use std::path::PathBuf;
@@ -26,11 +26,18 @@ async fn decodes_requested_jpeg_display_frame_to_png() {
         window_center: None,
         window_width: None,
         window_mode: dcmview::types::WindowMode::Default,
+        real_world: None,
+        preview: false,
     };
 
-    let first = load_frame(file.clone().into(), new_cache(), request(1))
-        .await
-        .expect("decoded JPEG frame 1");
+    let first = load_frame(
+        file.clone().into(),
+        new_cache(),
+        new_raw_cache(),
+        request(1),
+    )
+    .await
+    .expect("decoded JPEG frame 1");
     assert_eq!(first.content_type, "image/png");
     let first_image = image::load_from_memory_with_format(first.body.as_ref(), ImageFormat::Png)
         .expect("valid decoded JPEG PNG")
@@ -43,7 +50,7 @@ async fn decodes_requested_jpeg_display_frame_to_png() {
         "display endpoint must not return raw JPEG bytes"
     );
 
-    let other = load_frame(file.into(), new_cache(), request(0))
+    let other = load_frame(file.into(), new_cache(), new_raw_cache(), request(0))
         .await
         .expect("decoded JPEG frame 0");
     assert_ne!(

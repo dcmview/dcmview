@@ -11,29 +11,30 @@ import {
 	resolveMappedDisplayWindow,
 	selectWindowingPipeline,
 	validateRenderableRawFrame,
+	type SamplePresentation,
 } from "./rawWindowing";
 
 type MetadataOverrides = Partial<Omit<RawFrameMetadata, "rows" | "columns">>;
 
+/** `float` stores 32- and 64-bit samples as Float and Double Float Pixel Data. */
 function frameFromSamples(
 	samples: number[],
-	bitsAllocated: 8 | 16,
+	bitsAllocated: 8 | 16 | 32 | 64,
 	pixelRepresentation: 0 | 1,
 	overrides: MetadataOverrides = {},
+	float = false,
 ): RawFrame {
 	const bytesPerSample = bitsAllocated / 8;
 	const buffer = new ArrayBuffer(samples.length * bytesPerSample);
 	const view = new DataView(buffer);
+	const write = {
+		8: pixelRepresentation === 1 ? view.setInt8 : view.setUint8,
+		16: pixelRepresentation === 1 ? view.setInt16 : view.setUint16,
+		32: float ? view.setFloat32 : pixelRepresentation === 1 ? view.setInt32 : view.setUint32,
+		64: view.setFloat64,
+	}[bitsAllocated];
 	for (let index = 0; index < samples.length; index += 1) {
-		if (bitsAllocated === 8 && pixelRepresentation === 1) {
-			view.setInt8(index, samples[index]);
-		} else if (bitsAllocated === 8) {
-			view.setUint8(index, samples[index]);
-		} else if (pixelRepresentation === 1) {
-			view.setInt16(index * 2, samples[index], true);
-		} else {
-			view.setUint16(index * 2, samples[index], true);
-		}
+		write.call(view, index * bytesPerSample, samples[index], true);
 	}
 
 	return {
@@ -115,6 +116,7 @@ describe("renderRawFrameToRgba", () => {
 
 type OracleCase = {
 	name: string;
+	sample?: "int32" | "float32" | "float64";
 	stored: number[];
 	rescale_slope: number;
 	rescale_intercept: number;
@@ -124,8 +126,53 @@ type OracleCase = {
 	mode: WindowMode;
 	wc: number | null;
 	ww: number | null;
+	real_world?: {
+		unit: string;
+		first_value_mapped: number;
+		last_value_mapped: number;
+		lut?: number[];
+		slope?: number;
+		intercept?: number;
+	};
+	/** The presentation layer: a gray that replaces the render, or null. */
+	layer?: (number | null)[];
+	modality_lut?: OracleLut;
+	voi_lut?: OracleLut;
 	expected: number[];
 };
+
+type OracleLut = { first_value_mapped: number; bits: number; values: number[] };
+
+/** What the frame's value mapping would tell the client. */
+function oraclePresentation(oracleCase: OracleCase): SamplePresentation {
+	const { modality_lut: modality, voi_lut: voi } = oracleCase;
+	return {
+		storedValueType: oracleCase.sample?.startsWith("float") ? oracleCase.sample : "integer",
+		modality: {
+			rescale_slope: oracleCase.rescale_slope,
+			rescale_intercept: oracleCase.rescale_intercept,
+			rescale_type: null,
+			lut: modality ? { first_value_mapped: modality.first_value_mapped, values: modality.values } : null,
+		},
+		voiLut: voi ? { first_value_mapped: voi.first_value_mapped, bits_per_entry: voi.bits, values: voi.values } : null,
+	};
+}
+
+function oracleValueMap(realWorld: NonNullable<OracleCase["real_world"]>): RealWorldValueMap {
+	return {
+		source: "real_world_value_mapping",
+		source_file_index: null,
+		label: null,
+		first_value_mapped: realWorld.first_value_mapped,
+		last_value_mapped: realWorld.last_value_mapped,
+		transform: realWorld.lut
+			? { kind: "lut", values: realWorld.lut }
+			: { kind: "linear", slope: realWorld.slope ?? 1, intercept: realWorld.intercept ?? 0 },
+		unit_label: realWorld.unit,
+		units: null,
+		quantity: null,
+	};
+}
 
 // The server runs the same cases through the loader and display endpoint in
 // tests/integration/windowing_oracle.rs, which also checks that the raw
@@ -134,7 +181,10 @@ describe("shared windowing oracle", () => {
 	it.each(oracle.cases as OracleCase[])("$name", (oracleCase) => {
 		const { padding } = oracleCase;
 		const limit = padding?.range_limit ?? padding?.value ?? null;
-		const frame = frameFromSamples(oracleCase.stored, 16, 0, {
+		const [bits, representation, float] = oracleCase.sample
+			? ({ int32: [32, 1, false], float32: [32, 0, true], float64: [64, 0, true] } as const)[oracleCase.sample]
+			: ([16, 0, false] as const);
+		const frame = frameFromSamples(oracleCase.stored, bits, representation, {
 			photometricInterpretation: oracleCase.photometric_interpretation,
 			rescaleSlope: oracleCase.rescale_slope,
 			rescaleIntercept: oracleCase.rescale_intercept,
@@ -142,17 +192,37 @@ describe("shared windowing oracle", () => {
 			defaultWw: oracleCase.dicom_window?.width ?? null,
 			paddingLow: padding && limit !== null ? Math.min(padding.value, limit) : null,
 			paddingHigh: padding && limit !== null ? Math.max(padding.value, limit) : null,
-		});
-		const { wc, ww } = resolveDisplayWindow(
-			frame,
-			null,
-			null,
-			oracleCase.wc,
-			oracleCase.ww,
-			oracleCase.mode,
-		);
+		}, float);
+		const valueMap = oracleCase.real_world ? oracleValueMap(oracleCase.real_world) : null;
+		const presentation = oraclePresentation(oracleCase);
+		const { wc, ww, voiLut } = valueMap
+			? resolveMappedDisplayWindow(frame, valueMap, null, null, oracleCase.wc, oracleCase.ww, oracleCase.mode)
+			: resolveDisplayWindow(frame, null, null, oracleCase.wc, oracleCase.ww, oracleCase.mode, presentation);
 
-		expect(grayValues(renderRawFrameToRgba(frame, wc, ww))).toEqual(oracleCase.expected);
+		const layer = oracleCase.layer ?? [];
+		const composited = grayValues(renderRawFrameToRgba(frame, wc, ww, { valueMap, presentation, voiLut }))
+			.map((gray, index) => layer[index] ?? gray);
+		expect(composited).toEqual(oracleCase.expected);
+	});
+});
+
+describe("samples presented one at a time", () => {
+	const float = (storedValueType: string): SamplePresentation => ({
+		storedValueType,
+		modality: { rescale_slope: 1, rescale_intercept: 0, rescale_type: null, lut: null },
+		voiLut: null,
+	});
+
+	it("presents NaN float samples as the server casts them, before MONOCHROME1 inversion", () => {
+		const frame = frameFromSamples([Number.NaN, 0, 1], 32, 0, { photometricInterpretation: "MONOCHROME1" }, true);
+		expect(grayValues(renderRawFrameToRgba(frame, 0.5, 2, { presentation: float("float32") }))).toEqual([255, 127, 0]);
+		// The server's full range folds with f64::min/max, which skip NaN.
+		expect(computeFullDynamicWindow(frame, float("float32"))).toEqual({ wc: 0.5, ww: 1 });
+	});
+
+	it("windows one-bit samples, one per byte, as unsigned", () => {
+		const frame = frameFromSamples([0, 1, 1], 8, 0, { bitsAllocated: 1, pixelRepresentation: 1 });
+		expect(grayValues(renderRawFrameToRgba(frame, 0.5, 2))).toEqual([128, 255, 255]);
 	});
 });
 
@@ -290,9 +360,9 @@ describe("windowing a LUT real-world mapping on the raw path", () => {
 
 	it("windows the LUT's values, not the stored ones", () => {
 		// Window 0..16 ms: gray follows the squared LUT values; unmapped is black.
-		expect(grays(renderRawFrameToRgba(frame, 8, 16, lut))).toEqual([0, 16, 64, 143, 255, 0]);
+		expect(grays(renderRawFrameToRgba(frame, 8, 16, { valueMap: lut }))).toEqual([0, 16, 64, 143, 255, 0]);
 		// Window 4..9 ms clips below and above.
-		expect(grays(renderRawFrameToRgba(frame, 6.5, 5, lut))).toEqual([0, 0, 0, 255, 255, 0]);
+		expect(grays(renderRawFrameToRgba(frame, 6.5, 5, { valueMap: lut }))).toEqual([0, 0, 0, 255, 255, 0]);
 	});
 
 	it("resolves live, explicit, and automatic windows in mapped units", () => {

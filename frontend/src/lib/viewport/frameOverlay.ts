@@ -3,6 +3,7 @@ import {
 	fetchDoseOverlayValues,
 	fetchParametricMapOverlayBlob,
 	fetchParametricMapOverlayValues,
+	fetchPresentationLayerBlob,
 	fetchSegmentationOverlayBlob,
 	type FileSummary,
 	type OverlayLegend,
@@ -62,6 +63,17 @@ export function valueOverlayLayerRequest(
 		load: (signal) => kind === "rt_dose"
 			? fetchDoseOverlayBlob(fileIndex, frameIndex, volumeFileIndex, signal)
 			: fetchParametricMapOverlayBlob(fileIndex, frameIndex, volumeFileIndex, signal),
+	};
+}
+
+/**
+ * A frame's own shutter and overlay graphics, drawn over the frame when the
+ * browser windows it (server display frames already carry them).
+ */
+export function presentationLayerRequest(fileIndex: number, frameIndex: number): OverlayLayerRequest {
+	return {
+		key: `presentation:${fileIndex}:${frameIndex}`,
+		load: (signal) => fetchPresentationLayerBlob(fileIndex, frameIndex, signal),
 	};
 }
 

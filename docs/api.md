@@ -44,9 +44,10 @@ All paths are under `/api`; `{index}` is a file index from `/api/files` and
 | GET | `/file/{index}/info` | `FrameInfo` for one file. |
 | GET | `/file/{index}/references` | `ReferenceCatalogResponse`: declared DICOM relationships and their local matches. |
 | GET | `/file/{index}/semantic-context` | `SemanticContextResponse`: SEG, Parametric Map, or RT Dose context, or `not_applicable`. |
-| GET | `/file/{index}/frame/{frame}` | Display frame as `image/png`, with `X-Cache` and, for linearly windowed frames, `X-Frame-Window-Center`/`X-Frame-Window-Width`. Query: `wc`, `ww`, `mode`. |
+| GET | `/file/{index}/frame/{frame}` | Display frame as `image/png`, with `X-Cache` and, for linearly windowed frames, `X-Frame-Window-Center`/`X-Frame-Window-Width`. Query: `wc`, `ww`, `mode`, `unit`, `preview`. |
 | GET | `/file/{index}/frame/{frame}/raw` | Decoded samples as `application/octet-stream`, with `X-Cache` and `X-Frame-*` metadata headers. |
 | GET | `/file/{index}/frame/{frame}/raw/pixel?row=&column=` | One pixel of the raw frame as a 1x1 raw frame: its stored samples in color-by-pixel order (planar and subsampled YBR_FULL_422 resolved), with the same headers. `400` outside the frame. |
+| GET | `/file/{index}/frame/{frame}/presentation-layer` | The display shutter fill and overlay graphics of a grayscale display frame as an RGBA `image/png` of the frame's size, opaque gray where drawn and transparent elsewhere (fully transparent without a shutter or overlay), with `X-Cache`. |
 | GET | `/file/{index}/frame/{frame}/segmentation-overlay` | Transparent source-sized SEG mask as `image/png`, with `X-Cache`. |
 | GET | `/file/{index}/frame/{frame}/dose-overlay` | RT Dose colorwash sized to this frame as `image/png`, with `X-Cache`. Query: `dose` (RT Dose file index). |
 | GET | `/file/{index}/frame/{frame}/dose-overlay/values` | The same resampled dose as little-endian `f32` values, `application/octet-stream`, with `X-Cache`. Query: `dose`. |
@@ -72,16 +73,21 @@ Every success status is `200`.
 | `scanned` | Valid DICOM files accepted into the registry. |
 | `skipped` | Files that could not be read as supported DICOM objects. |
 | `filtered` | Readable files excluded by `--filter`. |
-| `discovery` | Up to 256 recent discovery entries (`path`, `disposition`, `reason`). Totals stay in the counters above. |
+| `discovery` | Up to 256 recent skipped or filtered paths (`path`, `disposition` of `skipped` or `filtered`, `reason`). Accepted files appear only in `files`; totals stay in the counters above. |
 
 Poll while `scan_complete` is `false` if you need the complete file list.
 
 Each file summary carries identity and geometry fields plus
 `support_state` (`renderable`, `metadata_only`, or `unsupported`) and a stable
 `support_reason` such as `transfer_syntax.not_supported`. These describe what
-the viewer can do, not DICOM conformance. `raw_windowing_compatible` is `false`
-when client-side windowing would drop a presentation transform, and
-`raw_windowing_reason` then says why.
+the viewer can do, not DICOM conformance. `raw_windowing_compatible` said
+whether client-side windowing would drop a presentation transform; the value
+mapping (Modality and VOI LUTs) and `presentation-layer` (shutter and overlays)
+now let a client reproduce every one, so it is always `true` and
+`raw_windowing_reason` always `null`. `presentation_layer` is `true` when
+grayscale display frames carry a display shutter or overlay graphics; neither
+depends on the window, so `presentation-layer` drawn over a frame windowed in
+the browser gives exactly the display frame for that window.
 
 ## Display And Raw Frames
 
@@ -93,18 +99,44 @@ never returns compressed DICOM fragments. The window is chosen in this order:
 3. DICOM Window Center/Width.
 4. The current frame's 1st/99th percentile.
 
-The display cache key includes file, frame, `wc`, `ww`, and `mode` (windows
+`unit` (with `wc` and `ww`) puts the explicit window in a real-world unit: it
+applies to the values of the frame's preferred real-world mapping (the first
+entry of its `value-mapping` `real_world`) when that mapping's `unit_label` is
+`unit`, the way the viewer's raw renderer windows them: each stored value is
+mapped (a LUT mapping, non-monotonic ones included, or a linear one; the
+Modality transform is not applied), the window follows the LINEAR function
+without its integer half-unit offsets, and stored values outside the mapped
+range take the window's low end. The frame's samples must be 8- or 16-bit (or
+one-bit) integers. A frame whose preferred mapping has another unit, or whose
+samples are not such integers, is shown with its default window (steps 3 and
+4). `unit` without `wc` and `ww` is `400 invalid_window`; `mode=full_dynamic`
+ignores it.
+
+`preview=true` marks a window/level drag preview: it is served from the display
+cache when that window is already there, and otherwise rendered for this
+request alone, neither cached nor shared with concurrent requests, so a drag
+through many windows does not evict the frames cine and the settled window
+use.
+
+The display cache key includes file, frame, `wc`, `ww`, `mode`, and the unit
+of a real-world window (windows
 that render alike, such as `wc=-0` and `wc=0` or widths below 1, share a key);
 the raw cache key is file and frame only. Both endpoints send `X-Cache: HIT` or
 `X-Cache: MISS`. A request for a frame another request is already decoding
 waits for that decode and reports `HIT`, and a decode whose client
-disconnected still fills the cache.
+disconnected still fills the cache. A display request can fill the raw cache
+too (grayscale frames are windowed from decoded samples kept there), so a raw
+request after a display request of the same frame may report `HIT`.
 
 A grayscale display frame windowed linearly reports the window it was
 rendered with, in Modality values, as `X-Frame-Window-Center` and
 `X-Frame-Window-Width` (the width at least 1, as applied), whichever step
-above chose it. Color frames and frames presented through a VOI LUT send
-neither.
+above chose it; a drag preview reports its window too. Color frames, frames
+presented through a VOI LUT, and frames windowed in a real-world `unit` send
+neither: a window over mapped values has no linear Modality equivalent. A
+`unit` request whose window could not be applied reports the default window it
+was shown with instead, so the pair's presence on a `unit` response means the
+requested window was not used.
 
 A file's `frame_count` in `/api/files` and `/api/series` is its Number of
 Frames bounded by the frames it can hold (the Per-frame Functional Groups items
@@ -123,7 +155,7 @@ rendering. Metadata headers:
 | `X-Frame-Photometric-Interpretation` | Photometric interpretation for the renderer. |
 | `X-Frame-Rescale-Slope`, `X-Frame-Rescale-Intercept` | Modality rescale. |
 | `X-Frame-Default-Wc`, `X-Frame-Default-Ww` | Only when the file declares a default window. |
-| `X-Frame-Padding-Low`, `X-Frame-Padding-High` | Only for grayscale integer frames with Pixel Padding: the inclusive stored-value range to exclude from automatic windows and draw black. |
+| `X-Frame-Padding-Low`, `X-Frame-Padding-High` | Only for grayscale frames with Pixel Padding (Float or Double Float Pixel Padding for float pixel data): the inclusive stored-value range to exclude from automatic windows and draw black. |
 
 Transfer syntax coverage:
 
@@ -140,7 +172,8 @@ Transfer syntax coverage:
 | JPEG Extended (`.51`), JPEG 2000 lossy (`.91`), JPEG-LS Near-Lossless (`.81`), JPEG XL `.111`/`.112`, anything else | `422 unsupported_transfer_syntax` | `422` |
 
 Real World Value Mapping and RT Dose Grid Scaling are not applied to display
-or raw pixels, including float and double-float data; `value-mapping` tells the
+or raw pixels, including float and double-float data, except that a display
+window with `unit` is applied to mapped values; `value-mapping` tells the
 client how to convert them.
 
 ## Value Mapping
@@ -170,6 +203,12 @@ stored, modality, and real-world values out of a raw frame:
   `source_file_index`. The file's own mappings stay preferred. RWVM
   instances that a Parametric Map references itself are also summarized in
   its semantic context.
+- `voi_lut`: the VOI LUT (`first_value_mapped`, `bits_per_entry` of 8 or 16,
+  `values`) the display path presents Modality values with in default mode
+  when no window is requested and no DICOM window is stored; `null` without a
+  usable one. A value indexes it as `trunc(value) - first_value_mapped`,
+  clamped to the table, and the output scales to 8 bits as
+  `(output * 255 + max / 2) / max` in integers (`max = 2^bits_per_entry - 1`).
 
 ## Semantic Context, Overlays, And WSI
 

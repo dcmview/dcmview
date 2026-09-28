@@ -204,11 +204,14 @@ mod tests {
             let display = load_frame(
                 file.clone().into(),
                 display_cache.clone(),
+                raw_cache.clone(),
                 FrameRequest {
                     frame,
                     window_center: None,
                     window_width: None,
                     window_mode: WindowMode::Default,
+                    real_world: None,
+                    preview: false,
                 },
             )
             .await

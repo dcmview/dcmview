@@ -77,14 +77,11 @@ would remove behavior, raise it as a question instead of acting.
 
 **Known gaps (intended work, not settled scope):**
 
-- **Cine approximates non-linear real-world windows.** A window in the unit
-  of a LUT mapping (or of a mapping behind a Modality LUT) is exact on the
-  raw path, which still frames use. Cine plays server display frames, which
-  window stored values only: a non-decreasing LUT behind a linear Modality
-  transform is windowed by the stored range its window spans (black and
-  white exact, grays between linear in stored values), and any other such
-  mapping plays with each frame's default window. The raw path, and so the
-  exact result, covers 8- and 16-bit single-sample frames only.
+- **Real-world windows need integer samples.** A window in the unit of a LUT
+  mapping (or of a mapping behind a Modality LUT) is exact on the raw path
+  and, through the display endpoint's `unit` query, in cine, for 8- and
+  16-bit (and one-bit) single-sample frames. Frames with other samples show
+  their default window for such a window on the server.
 
 `docs/planned/` temporarily holds uncommitted proposals, such as the JupyterLab
 integration and the original compatibility plan. They are not specs and not
@@ -362,6 +359,9 @@ requires an existing `frontend/dist/index.html`.
   values come directly from UI/query/DICOM inputs.
 - Display cache entries are budgeted by `FRAME_CACHE_MAX_BYTES`; raw cache
   entries are budgeted by `RAW_CACHE_MAX_BYTES`.
+- The raw cache is the display path's decoded tier for grayscale integer
+  frames (`pixels/service.rs` `raw_samples_for_display`); a new display
+  decoder's integer layout must be mirrored in `display_integer_layout`.
 - Tag trees are cached per file index in a bounded LRU behind private
   `AppState` methods. Tag reads parse only up to pixel data and describe the
   pixel element from its header, seeking past its value (a deflated data set
@@ -380,8 +380,10 @@ Window resolution order is:
 The display pipeline applies the Modality LUT or rescale before windowing for
 every grayscale path; 8- and 16-bit frames go through a per-stored-value lookup
 table and automatic windows come from a histogram of stored values. The
-frontend raw-frame renderer receives rescale metadata in headers and applies
-the same convention client-side.
+frontend raw-frame renderer (`rawWindowing.ts`) applies the same pipeline
+client-side from the raw headers and the frame's value mapping (stored value
+type, Modality LUT, VOI LUT): a per-stored-value table for 1-, 8- and 16-bit
+integers, one sample at a time for 32-bit and float samples.
 
 **Encapsulated frame access**
 
@@ -427,9 +429,14 @@ is cached between requests.
   calls in components when a typed wrapper belongs there.
 - The viewport supports two render paths: display PNG blobs for cine mode and
   raw-frame client-side rendering for interactive diagnostic/window-level work.
+  The raw path renders with the file's value mapping (float samples, Modality
+  and VOI LUTs) and draws the `presentation-layer` (shutter and overlays) over
+  the image, so every grayscale frame the browser can hold is windowed live.
 - Window/level interactions should avoid flooding requests: local raw rendering
-  draws at most once per animation frame, and the server-windowing drag sends
-  one request on release.
+  draws at most once per animation frame, and a drag over a server-windowed
+  frame (over `MAX_RENDER_PIXELS`) sends `preview` requests, one in flight and
+  only the newest window queued (`viewport/liveWindowPreview.ts`), which the
+  server never caches; the released window is fetched as usual.
 - Zoom and pan use canvas/CSS transform state and should not refetch frames.
 - Zoom/pan state is per open tab (navigation scope). Moving through a tab's
   frames, including the single-frame files of a stack, preserves the viewport
@@ -493,7 +500,7 @@ dcmview [OPTIONS] <PATH> [PATH ...]
   -p, --port <u16>          default: 0 (auto-assign)
   --host <str>              default: 127.0.0.1
   --no-browser
-  --timeout <u64>           seconds; no timeout if absent
+  --timeout <u64>           idle seconds after the scan finishes; none if absent
   --no-recursive
   --annotations <csv>
   --filter <FIELD=VALUE>    repeatable metadata filter
@@ -594,7 +601,8 @@ default suite.
 - Files without pixel data appear with `has_pixels: false`; frame requests for
   them return 404.
 - Port `0` auto-assign reports the actual listener port.
-- `--timeout` exits after the configured idle period.
+- `--timeout` exits after the configured idle period, counted from scan
+  completion.
 - Mixed DICOM/non-DICOM discovery reports valid files and skip counts.
 - Annotation load, edit, validation, and CSV export preserve the EMBED-style
   contract.

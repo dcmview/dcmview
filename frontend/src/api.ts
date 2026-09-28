@@ -190,6 +190,17 @@ export function fetchSemanticContext(fileIndex: number): Promise<SemanticContext
 	return getJson(endpoint, endpointUrl(endpoint, { index: fileIndex }));
 }
 
+/** A grayscale frame's display shutter and overlay graphics, transparent elsewhere. */
+export async function fetchPresentationLayerBlob(
+	fileIndex: number,
+	frame: number,
+	signal?: AbortSignal,
+): Promise<Blob> {
+	const endpoint = API_ENDPOINTS.filePresentationLayer;
+	const response = await send(endpoint, endpointUrl(endpoint, { index: fileIndex, frame }), { signal });
+	return response.blob();
+}
+
 export async function fetchSegmentationOverlayBlob(
 	fileIndex: number,
 	frame: number,
@@ -317,15 +328,14 @@ export function annotationsExportUrl(): string {
 export function frameUrl(
 	fileIndex: number,
 	frame: number,
-	wc?: number | null,
-	ww?: number | null,
-	windowMode?: WindowMode | null,
+	{ wc, ww, windowMode, unit, preview }: DisplayFrameWindowOptions = {},
 ): string {
 	// Full-dynamic windowing ignores explicit values, so they are not sent.
-	const query: FrameQuery =
+	const window: FrameQuery =
 		windowMode === "full_dynamic"
 			? { mode: "full_dynamic" }
-			: { wc: wc ?? undefined, ww: ww ?? undefined };
+			: { wc: wc ?? undefined, ww: ww ?? undefined, unit: unit ?? undefined };
+	const query: FrameQuery = preview ? { ...window, preview: true } : window;
 	return endpointUrl(API_ENDPOINTS.fileFrame, { index: fileIndex, frame }, query);
 }
 
@@ -334,10 +344,14 @@ export interface DisplayFrameWindowOptions {
 	ww?: number | null;
 	windowMode?: WindowMode | null;
 	/**
-	 * Real-world unit of `wc`/`ww`. Such a window is converted through each
-	 * frame's own value mapping before a request; it is never sent as is.
+	 * Real-world unit of `wc`/`ww`. The viewer converts such a window
+	 * through each frame's own linear mapping where it can
+	 * (`frameDisplayWindowOptions`); otherwise the server windows the frame's
+	 * preferred mapping in this unit.
 	 */
 	unit?: string | null;
+	/** A window/level drag preview, which the server does not cache. */
+	preview?: boolean;
 }
 
 export function displayFrameWindowCacheKey(
@@ -364,8 +378,10 @@ export function displayFrameCacheKey(
 export type DisplayFrame = {
 	blob: Blob;
 	/**
-	 * The linear window applied, in Modality values; null for color frames
-	 * and frames presented through a VOI LUT.
+	 * The linear window applied, in Modality values; null for color frames,
+	 * frames presented through a VOI LUT, and a window applied in a
+	 * real-world `unit`. A `unit` request that reports one was shown with
+	 * that default window instead.
 	 */
 	window: { wc: number; ww: number } | null;
 };
@@ -376,8 +392,7 @@ export async function fetchDisplayFrame(
 	options: DisplayFrameWindowOptions = {},
 	signal?: AbortSignal,
 ): Promise<DisplayFrame> {
-	if (options.unit) throw new Error("convert a real-world window to the frame's stored scale before requesting it");
-	const url = frameUrl(fileIndex, frame, options.wc, options.ww, options.windowMode);
+	const url = frameUrl(fileIndex, frame, options);
 	const response = await send(API_ENDPOINTS.fileFrame, url, { signal });
 	return { blob: await response.blob(), window: parseDisplayWindow(response.headers) };
 }

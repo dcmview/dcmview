@@ -138,7 +138,7 @@ async fn file_registry_serves_snapshots_while_scan_is_incomplete() {
     let discovered_path = entry.path.clone();
     registry.insert(entry);
     registry.record_discovery(DiscoveryRecord {
-        path: discovered_path.clone(),
+        path: discovered_path,
         disposition: DiscoveryDisposition::Selected,
         reason: DiscoveryReason::ValidDicom,
     });
@@ -147,11 +147,10 @@ async fn file_registry_serves_snapshots_while_scan_is_incomplete() {
     assert_eq!(mid_files["scan_complete"], false);
     assert_eq!(mid_files["scanned"], 1);
     assert_eq!(
-        mid_files["discovery"][0]["path"],
-        discovered_path.display().to_string()
+        mid_files["discovery"],
+        serde_json::json!([]),
+        "accepted files are listed as files, not as discovery records"
     );
-    assert_eq!(mid_files["discovery"][0]["disposition"], "selected");
-    assert_eq!(mid_files["discovery"][0]["reason"], "valid_dicom");
     let mid_file = &mid_files["files"].as_array().expect("files array")[0];
     assert_eq!(mid_file["index"], 0);
 
@@ -299,6 +298,56 @@ async fn default_and_full_dynamic_modes_occupy_independent_cache_slots() {
     assert_eq!(
         dynamic_second.header("X-Cache").to_str().expect("cache"),
         "HIT"
+    );
+}
+
+#[tokio::test]
+async fn drag_previews_read_but_never_fill_the_display_cache() {
+    let dir = tempdir().expect("temp dir");
+    let path = dir.path().join("server-preview-cache.dcm");
+    support::write_uncompressed_u16_dicom(
+        &path,
+        "1.2.840.10008.1.2.1",
+        2,
+        2,
+        vec![0, 1000, 2000, 3000],
+        None,
+        None,
+    );
+    let mut entry = support::file_entry(path, "1.2.840.10008.1.2.1", 1);
+    entry.rows = 2;
+    entry.columns = 2;
+    let test_server = TestServer::new(server::router(support::app_state(vec![entry])));
+    let cache_state = |response: &axum_test::TestResponse| {
+        response
+            .header("X-Cache")
+            .to_str()
+            .expect("cache")
+            .to_string()
+    };
+
+    let preview = "/api/file/0/frame/0?wc=1500&ww=3000&preview=true";
+    let settled = "/api/file/0/frame/0?wc=1500&ww=3000";
+    let first_preview = test_server.get(preview).await;
+    first_preview.assert_status_ok();
+    assert_eq!(cache_state(&first_preview), "MISS");
+    assert_eq!(cache_state(&test_server.get(preview).await), "MISS");
+
+    let first_settled = test_server.get(settled).await;
+    assert_eq!(
+        cache_state(&first_settled),
+        "MISS",
+        "a preview is not cached"
+    );
+    assert_eq!(first_settled.as_bytes(), first_preview.as_bytes());
+    assert_eq!(cache_state(&test_server.get(preview).await), "HIT");
+    // A preview reports the window it was rendered with, like any frame.
+    assert_eq!(
+        first_preview
+            .header(dcmview::api::contracts::DISPLAY_FRAME_HEADER_WINDOW_CENTER)
+            .to_str()
+            .expect("window header"),
+        "1500"
     );
 }
 

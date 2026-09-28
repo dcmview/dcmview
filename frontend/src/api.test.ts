@@ -116,11 +116,20 @@ describe("display frame cache keys", () => {
 describe("display frame URLs", () => {
 	it("sends explicit windows only outside full-dynamic mode", () => {
 		expect(frameUrl(2, 7)).toBe("/api/file/2/frame/7");
-		expect(frameUrl(2, 7, 40, 80, "default")).toBe(
+		expect(frameUrl(2, 7, { wc: 40, ww: 80, windowMode: "default" })).toBe(
 			"/api/file/2/frame/7?wc=40&ww=80",
 		);
-		expect(frameUrl(2, 7, 40, 80, "full_dynamic")).toBe(
+		expect(frameUrl(2, 7, { wc: 40, ww: 80, windowMode: "full_dynamic" })).toBe(
 			"/api/file/2/frame/7?mode=full_dynamic",
+		);
+		expect(frameUrl(2, 7, { wc: 1.5, ww: 3, windowMode: "default", unit: "SUV" })).toBe(
+			"/api/file/2/frame/7?wc=1.5&ww=3&unit=SUV",
+		);
+		expect(frameUrl(2, 7, { wc: 1.5, ww: 3, windowMode: "full_dynamic", unit: "SUV" })).toBe(
+			"/api/file/2/frame/7?mode=full_dynamic",
+		);
+		expect(frameUrl(2, 7, { wc: 40, ww: 80, preview: true })).toBe(
+			"/api/file/2/frame/7?wc=40&ww=80&preview=true",
 		);
 	});
 });
@@ -185,11 +194,11 @@ describe("fetch wrappers", () => {
 		unsubscribe();
 	});
 
-	it("never sends a real-world window as is", async () => {
-		const fetchMock = vi.fn();
+	it("sends a real-world window with its unit", async () => {
+		const fetchMock = vi.fn().mockResolvedValue(new Response(new Blob(), { status: 200 }));
 		vi.stubGlobal("fetch", fetchMock);
-		await expect(fetchDisplayFrame(1, 0, { wc: 12, ww: 20, unit: "Gy" })).rejects.toThrow("real-world window");
-		expect(fetchMock).not.toHaveBeenCalled();
+		await fetchDisplayFrame(1, 0, { wc: 12, ww: 20, unit: "Gy" });
+		expect(fetchMock.mock.calls[0][0]).toBe("/api/file/1/frame/0?wc=12&ww=20&unit=Gy");
 		expect(displayFrameWindowCacheKey({ wc: 12, ww: 20, windowMode: "default", unit: "Gy" }))
 			.toBe("default:12:20:Gy");
 	});

@@ -251,7 +251,6 @@ fn frame_geometry_value<const N: usize>(
 impl From<&FileEntry> for FileSummary {
     fn from(value: &FileEntry) -> Self {
         let support = crate::pixels::classify_pixel_support(value);
-        let raw_windowing_reason = raw_windowing_incompatibility(&value.series_metadata);
         Self {
             index: value.index,
             path: value.path.display().to_string(),
@@ -271,8 +270,13 @@ impl From<&FileEntry> for FileSummary {
             object_kind: crate::object_kind::classify_sop_class(&value.sop_class_uid).to_string(),
             support_state: support.state,
             support_reason: support.reason_id().map(ToString::to_string),
-            raw_windowing_compatible: raw_windowing_reason.is_none(),
-            raw_windowing_reason: raw_windowing_reason.map(ToString::to_string),
+            // The browser reproduces every presentation transform: Modality
+            // and VOI LUTs from the value mapping, shutter and overlays from
+            // the presentation layer.
+            raw_windowing_compatible: true,
+            raw_windowing_reason: None,
+            presentation_layer: !value.series_metadata.presentation.overlay_planes.is_empty()
+                || value.series_metadata.presentation.has_display_shutter(),
             has_pixels: value.has_pixels,
             frame_count: value.frame_count,
             rows: value.rows,
@@ -287,71 +291,6 @@ impl From<&FileEntry> for FileSummary {
     }
 }
 
-fn raw_windowing_incompatibility(metadata: &SeriesMetadata) -> Option<&'static str> {
-    if metadata.native_pixel.modality_lut.is_some() {
-        Some("client raw windowing is disabled because a Modality LUT is declared")
-    } else if metadata.native_pixel.voi_lut.is_some() {
-        Some("client raw windowing is disabled because a VOI LUT is declared")
-    } else if !metadata.presentation.overlay_planes.is_empty() {
-        Some("client raw windowing is disabled because an overlay plane is declared")
-    } else if metadata.presentation.has_display_shutter() {
-        Some("client raw windowing is disabled because a display shutter is declared")
-    } else {
-        None
-    }
-}
-
-#[cfg(test)]
-mod raw_windowing_tests {
-    use super::{
-        raw_windowing_incompatibility, DicomLut, DisplayShutter, OverlayPlane, SeriesMetadata,
-        ShutterShape,
-    };
-
-    #[test]
-    fn disables_raw_windowing_for_unrepresented_presentation_semantics() {
-        let mut metadata = SeriesMetadata::default();
-        assert_eq!(raw_windowing_incompatibility(&metadata), None);
-
-        metadata.native_pixel.voi_lut = Some(DicomLut {
-            first_mapped_value: 0,
-            bits_per_entry: 8,
-            entries: vec![0, 255],
-        });
-        assert!(raw_windowing_incompatibility(&metadata)
-            .expect("VOI LUT reason")
-            .contains("VOI LUT"));
-
-        metadata.native_pixel.voi_lut = None;
-        metadata.presentation.overlay_planes.push(OverlayPlane {
-            group: 0x6000,
-            rows: 1,
-            columns: 1,
-            origin: [1, 1],
-            overlay_type: "G".to_string(),
-            number_of_frames: 1,
-            image_frame_origin: 1,
-            data: vec![1],
-        });
-        assert!(raw_windowing_incompatibility(&metadata)
-            .expect("overlay reason")
-            .contains("overlay"));
-
-        metadata.presentation.overlay_planes.clear();
-        metadata.presentation.display_shutter = Some(DisplayShutter {
-            shapes: vec![ShutterShape::Circular {
-                center: [1, 1],
-                radius: 1,
-            }],
-            presentation_value: 0,
-            presentation_color_cielab: None,
-        });
-        assert!(raw_windowing_incompatibility(&metadata)
-            .expect("shutter reason")
-            .contains("display shutter"));
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FrameCacheKey {
     pub file_index: usize,
@@ -359,6 +298,9 @@ pub struct FrameCacheKey {
     pub window_center_bits: Option<u64>,
     pub window_width_bits: Option<u64>,
     pub window_mode: WindowMode,
+    /// The real-world unit an explicit window is in; `None` for Modality
+    /// values.
+    pub window_unit: Option<String>,
 }
 
 impl FrameCacheKey {
@@ -368,6 +310,7 @@ impl FrameCacheKey {
         window_center: Option<f64>,
         window_width: Option<f64>,
         window_mode: WindowMode,
+        window_unit: Option<&str>,
     ) -> Self {
         let (window_center, window_width) = match window_mode {
             WindowMode::Default => (window_center, window_width),
@@ -379,6 +322,7 @@ impl FrameCacheKey {
             window_center_bits: window_center.map(f64::to_bits),
             window_width_bits: window_width.map(f64::to_bits),
             window_mode,
+            window_unit: window_center.and(window_unit).map(str::to_string),
         }
     }
 }
@@ -491,18 +435,33 @@ mod tests {
 
     #[test]
     fn frame_cache_key_distinguishes_absent_and_explicit_window_params() {
-        let default_window = FrameCacheKey::new(0, 0, None, None, WindowMode::Default);
-        let explicit = FrameCacheKey::new(0, 0, Some(0.0), Some(1.0), WindowMode::Default);
+        let default_window = FrameCacheKey::new(0, 0, None, None, WindowMode::Default, None);
+        let explicit = FrameCacheKey::new(0, 0, Some(0.0), Some(1.0), WindowMode::Default, None);
+        let mapped =
+            FrameCacheKey::new(0, 0, Some(0.0), Some(1.0), WindowMode::Default, Some("Gy"));
 
         assert_ne!(default_window, explicit);
+        assert_ne!(explicit, mapped);
         assert_eq!(explicit.window_center_bits, Some(0));
         assert_eq!(explicit.window_width_bits, Some(1.0_f64.to_bits()));
+        assert_eq!(
+            FrameCacheKey::new(0, 0, None, None, WindowMode::Default, Some("Gy")),
+            default_window,
+            "a unit without a window is the default window"
+        );
     }
 
     #[test]
     fn full_dynamic_cache_key_ignores_explicit_window_values() {
-        let first = FrameCacheKey::new(0, 0, Some(10.0), Some(20.0), WindowMode::FullDynamic);
-        let second = FrameCacheKey::new(0, 0, Some(30.0), Some(40.0), WindowMode::FullDynamic);
+        let first = FrameCacheKey::new(0, 0, Some(10.0), Some(20.0), WindowMode::FullDynamic, None);
+        let second = FrameCacheKey::new(
+            0,
+            0,
+            Some(30.0),
+            Some(40.0),
+            WindowMode::FullDynamic,
+            Some("Gy"),
+        );
 
         assert_eq!(first, second);
         assert_eq!(first.window_center_bits, None);
@@ -535,7 +494,14 @@ mod tests {
         let key = |center: f64, width: f64| {
             let request = WindowRequest::new(Some(center), Some(width), WindowMode::Default)
                 .expect("valid window");
-            FrameCacheKey::new(0, 0, request.center(), request.width(), request.mode())
+            FrameCacheKey::new(
+                0,
+                0,
+                request.center(),
+                request.width(),
+                request.mode(),
+                None,
+            )
         };
         assert_eq!(key(-0.0, 0.25), key(0.0, 1.0));
         assert_ne!(key(0.0, 2.0), key(0.0, 1.0));
@@ -560,7 +526,8 @@ pub struct RawFrameCacheKey {
 pub struct OverlayCacheKey {
     pub overlay_file_index: usize,
     /// The SEG frame drawn; `None` for value overlays, which sample the
-    /// whole volume.
+    /// whole volume. A presentation layer (a file's own shutter and overlay
+    /// graphics) is keyed as a file overlaying its own frame.
     pub overlay_frame: Option<u32>,
     pub target_file_index: usize,
     pub target_frame: u32,

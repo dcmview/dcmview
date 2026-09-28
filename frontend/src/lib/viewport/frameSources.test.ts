@@ -82,7 +82,7 @@ describe("RawFrameSource", () => {
 	});
 
 	it("prefetches the ring around the position and caches only renderable frames", async () => {
-		const load = vi.fn(async (_file: number, frame: number) => rawFrame(frame === 2 ? 32 : 8));
+		const load = vi.fn(async (_file: number, frame: number) => rawFrame(frame === 2 ? 12 : 8));
 		const source = new RawFrameSource({ load, concurrency: () => 3 });
 		const frames = navigationFramesForFile(5, 4);
 

@@ -12,6 +12,19 @@ diagnostic viewer.
 
 ### Added
 
+- `GET /api/file/{index}/frame/{frame}/presentation-layer` returns a frame's
+  display shutter and overlay graphics as a transparent RGBA PNG;
+  `FileSummary.presentation_layer` says which files have one. The value
+  mapping gains `voi_lut`, and display frames take `preview=true` for drag
+  previews that are not cached.
+- Display frames take `unit` with `wc`/`ww` to window a frame's real-world
+  values. Cine in the unit of a LUT mapping (a Parametric Map or RWVM LUT,
+  non-monotonic ones included, or any mapping behind a Modality LUT) now
+  matches the still image exactly; it previously approximated the window on
+  stored values or fell back to each frame's default window.
+- `--filter` (and Python's `filters=`) accepts DICOM keywords such as
+  `PatientID=` or `StudyInstanceUID=` as well as the snake_case names, in any
+  case; an unknown field's error lists both spellings.
 - `GET /api/file/{index}/frame/{frame}/raw/pixel?row=&column=` returns one
   pixel's stored samples as a 1x1 raw frame. The pixel readout uses it for
   frames too large to fetch whole, instead of downloading tens of megabytes to
@@ -20,7 +33,11 @@ diagnostic viewer.
   `{"type":"scan_complete","file_count":N}`.
 - Display frames report the window they were rendered with in
   `X-Frame-Window-Center` and `X-Frame-Window-Width` (grayscale frames with a
-  linear window; not color or VOI LUT frames).
+  linear window; not color or VOI LUT frames, nor a window applied in a
+  real-world `unit`). When a `unit` window cannot apply to a frame (its
+  mapping has another unit, or its samples are not integers), the frame
+  reports the default window it was shown with, and the viewer shows that
+  window instead of the unit window.
 - The status bar says when the server can no longer be reached, with a Retry;
   a failed first load has a Retry too.
 - `RUST_LOG` now controls logging (for example `RUST_LOG=dcmview=debug` lists
@@ -66,8 +83,30 @@ diagnostic viewer.
 
 ### Changed
 
-- Discovery is much faster: 3000 small files scan in about 0.1 s instead of
-  3.2 s, and more threads now help rather than hurt.
+- Built on dicom-rs 0.10; JPEG XL frames now decode with jxl-oxide 0.12.
+  Frames, raw samples, tags and file metadata are unchanged.
+- Dragging the window on frames too large for the browser (over 20 Mpx) now
+  updates the image during the drag from server-rendered previews, which are
+  not cached; such frames no longer download their raw samples first.
+- Window/level now updates live while dragging on files with a Modality LUT,
+  a VOI LUT, overlay planes or a display shutter, and on one-bit, 32-bit and
+  float frames: the browser windows them and draws the server's shutter and
+  overlay graphics on top. They used to change only when the drag ended.
+- Grayscale display frames are windowed from decoded samples shared with the
+  raw-frame cache, so showing one frame with several windows (cine after a
+  window change, a server-side window drag) decodes it once; five windows on a
+  512x512 JPEG 2000 frame already fetched raw take 4 ms instead of 127 ms.
+- `/api/files` `discovery` lists only skipped and filtered paths (up to the
+  256 most recent). Accepted files are already in `files`, and with them in
+  the list a large scan pushed every skip reason out of it. The `scanned`,
+  `skipped` and `filtered` counters are unchanged.
+- `--timeout` (and Python's `timeout=`) counts idle time from the end of the
+  scan. It used to start at the first discovered file, so a long scan with no
+  viewer open could end the process before the scan finished.
+- Discovery is much faster: 3000 small files scan in about 0.05 s instead of
+  3.2 s, and more threads now help rather than hurt. Each file is opened and
+  its header parsed once, so files with large headers (multi-megabyte private
+  sequences) scan in about 60% of the time they took.
 - Large grayscale frames render with a quarter of the memory (an 8192x8192
   16-bit frame peaks at about 340 MB instead of 1.4 GB) and faster; automatic
   windows no longer sort every sample, on the server or in the browser.

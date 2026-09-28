@@ -51,6 +51,7 @@ function mapping(overrides: Partial<FrameValueMapping> = {}): FrameValueMapping 
 		stored_value_type: "integer",
 		modality: { rescale_slope: 1, rescale_intercept: 0, rescale_type: null, lut: null },
 		real_world: [],
+		voi_lut: null,
 		...overrides,
 	};
 }
@@ -248,6 +249,7 @@ describe("pixel lookup helpers", () => {
 			stored_value_type: "integer",
 			modality: { rescale_slope: 1, rescale_intercept: -1024, lut: null },
 			real_world: [],
+			voi_lut: null,
 		});
 		expect(rawHeaderValueMapping(2, 1, frame(new Float32Array(4).buffer, { bitsAllocated: 32 }))).toBeNull();
 	});
@@ -306,27 +308,16 @@ describe("frameDisplayWindowOptions", () => {
 		expect(frameDisplayWindowOptions(gray, dose(0.02))).toEqual({ wc: 600, ww: 1000, windowMode: "default" });
 	});
 
-	it("falls back to the frame's default window without a mapping in that unit", () => {
-		expect(frameDisplayWindowOptions(gray, null)).toEqual({});
-		expect(frameDisplayWindowOptions(gray, mapping({ real_world: [linearMap(0.5, 0)] }))).toEqual({});
-	});
-
-	it("windows a LUT mapping by the stored range its window spans", () => {
-		// Rendered = 2 × stored − 10; stored 100..104 map to 0, 1, 4, 9, 16 ms.
+	it("leaves a window no linear mapping expresses to the server, in its unit", () => {
+		// The server shows the default window when the preferred mapping has
+		// another unit, and windows a LUT mapping's values exactly.
 		const lut = mapping({
-			modality: { rescale_slope: 2, rescale_intercept: -10, rescale_type: null, lut: null },
-			real_world: [{
-				...linearMap(1, 0, { unit_label: "ms", first_value_mapped: 100, last_value_mapped: 104 }),
-				transform: { kind: "lut", values: [0, 1, 4, 9, 16] },
-			}],
-		});
-		// 1..9 ms is stored 101..103, rendered 192..196.
-		expect(frameDisplayWindowOptions({ wc: 5, ww: 8, unit: "ms" }, lut))
-			.toEqual({ wc: 194, ww: 4, windowMode: "default" });
-		const falling = mapping({
 			real_world: [{ ...linearMap(1, 0, { unit_label: "ms" }), transform: { kind: "lut", values: [4, 1, 0] } }],
 		});
-		expect(frameDisplayWindowOptions({ wc: 2, ww: 2, unit: "ms" }, falling)).toEqual({});
+		for (const frameMapping of [null, mapping({ real_world: [linearMap(0.5, 0)] }), lut]) {
+			expect(frameDisplayWindowOptions(gray, frameMapping)).toEqual(gray);
+		}
+		expect(frameDisplayWindowOptions({ unit: "Gy" }, lut)).toEqual({});
 	});
 
 	it("passes stored-scale windows through", () => {

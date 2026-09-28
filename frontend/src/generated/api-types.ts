@@ -9,6 +9,7 @@ export const API_ENDPOINTS = {
 	fileReferences: { method: "GET", path: "/api/file/{index}/references" },
 	fileSemanticContext: { method: "GET", path: "/api/file/{index}/semantic-context" },
 	fileSegmentationOverlay: { method: "GET", path: "/api/file/{index}/frame/{frame}/segmentation-overlay" },
+	filePresentationLayer: { method: "GET", path: "/api/file/{index}/frame/{frame}/presentation-layer" },
 	fileDoseOverlay: { method: "GET", path: "/api/file/{index}/frame/{frame}/dose-overlay" },
 	fileDoseOverlayValues: { method: "GET", path: "/api/file/{index}/frame/{frame}/dose-overlay/values" },
 	fileParametricMapOverlay: { method: "GET", path: "/api/file/{index}/frame/{frame}/parametric-map-overlay" },
@@ -64,13 +65,21 @@ export type ErrorResponse = { code: ApiErrorCode, error: string, };
 
 export type FileSummary = { index: number, path: string, label: string, patient_id: string, patient_name: string, study_instance_uid: string, study_date: string, study_description: string, series_instance_uid: string, series_number: string, series_description: string, modality: string, instance_number: string, sop_instance_uid: string, sop_class_uid: string, object_kind: string, support_state: SupportState, support_reason: string | null, 
 /**
- * Whether client-side raw windowing preserves every declared presentation transform.
+ * Whether client-side raw windowing preserves every declared presentation
+ * transform. Always `true` now that the value mapping carries the
+ * Modality and VOI LUTs and `presentation-layer` the shutter and overlays.
  */
 raw_windowing_compatible: boolean, 
 /**
- * Stable explanation when the frontend must retain the server-rendered presentation path.
+ * Explanation when the frontend must retain the server-rendered
+ * presentation path; always `null` (see `raw_windowing_compatible`).
  */
-raw_windowing_reason: string | null, has_pixels: boolean, frame_count: number, rows: number, columns: number, 
+raw_windowing_reason: string | null, 
+/**
+ * Whether grayscale display frames carry a display shutter or overlay
+ * graphics, which `presentation-layer` draws for a raw-rendered frame.
+ */
+presentation_layer: boolean, has_pixels: boolean, frame_count: number, rows: number, columns: number, 
 /**
  * Effective physical row-to-column pixel extent ratio.
  */
@@ -82,9 +91,23 @@ export type FrameInfo = { frame_count: number, rows: number, columns: number, tr
 
 /**
  * Display-frame query. Explicit `wc`/`ww` must be sent together;
- * `mode=full_dynamic` ignores them.
+ * `mode=full_dynamic` ignores them (and `unit`).
  */
-export type FrameQuery = { wc?: number, ww?: number, mode?: WindowMode, };
+export type FrameQuery = { wc?: number, ww?: number, mode?: WindowMode, 
+/**
+ * The real-world unit `wc`/`ww` are in, which requires both. The window
+ * then applies to the values of the frame's preferred real-world
+ * mapping (the first of its value mapping's `real_world`) when it has this
+ * `unit_label`, as the viewer's raw renderer windows them; a frame whose
+ * preferred mapping has another unit, or whose samples are not 8- or
+ * 16-bit (or one-bit) integers, is shown with its default window.
+ */
+unit?: string, 
+/**
+ * `true` for a window/level drag preview: served from the display cache
+ * when present, otherwise rendered without being cached.
+ */
+preview?: boolean, };
 
 export type FrameRefSummary = { virtual_index: number, file_index: number, frame_index: number, sop_instance_uid: string, instance_number: number | null, position_along_normal_mm: number | null, };
 
@@ -105,7 +128,12 @@ stored_value_type: string, modality: ModalityValueTransform,
  * Conversions of stored values into real-world units that apply to this
  * frame, the preferred one first. Empty when none is declared.
  */
-real_world: Array<RealWorldValueMap>, };
+real_world: Array<RealWorldValueMap>, 
+/**
+ * The VOI LUT the display path presents Modality values with in default
+ * mode when no window is requested and no DICOM window is stored.
+ */
+voi_lut: VoiLookupTable | null, };
 
 export type HealthResponse = { status: string, viewer: ViewerIdentity, file_count: number, server_start_ms: number, };
 
@@ -319,6 +347,14 @@ export type TagValue = { "type": "string", value: string, } | { "type": "number"
 export type ValueLookupTable = { first_value_mapped: number, values: Array<number>, };
 
 export type ViewerIdentity = { name: string, version: string, build_target: string, build_profile: string, };
+
+/**
+ * A VOI LUT: `values[clamp(trunc(modality) - first_value_mapped, 0,
+ * values.length - 1)]`, an output of `bits_per_entry` (8 or 16) bits that
+ * scales to 8 bits as `(output * 255 + max / 2) / max` in integers, where
+ * `max = 2^bits_per_entry - 1`.
+ */
+export type VoiLookupTable = { first_value_mapped: number, bits_per_entry: number, values: Array<number>, };
 
 export type WindowMode = "default" | "full_dynamic";
 

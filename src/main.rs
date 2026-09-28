@@ -21,7 +21,7 @@ Examples:
   dcmview --no-browser --host 127.0.0.1 --port 8010 ./study_dir
   ssh -L 8010:127.0.0.1:8010 user@remote
   dcmview --annotations ./rois.csv ./study_dir
-  dcmview --filter modality=CT --filter patient_id=phantom ./study_dir
+  dcmview --filter modality=CT --filter PatientID=phantom ./study_dir
 
 For remote use, run dcmview on the machine that has the DICOM files, keep the
 server bound to 127.0.0.1, and forward the chosen port over SSH."
@@ -60,7 +60,7 @@ struct Cli {
     #[arg(
         long = "timeout",
         value_name = "SECONDS",
-        help = "Exit after this many seconds without API or browser requests"
+        help = "Exit after this many seconds without API or browser requests once the scan has finished"
     )]
     timeout: Option<u64>,
 
@@ -81,7 +81,8 @@ struct Cli {
         long = "filter",
         value_name = "FIELD=VALUE",
         value_parser = parse_scan_filter,
-        help = "Include only files whose metadata field contains the value; repeatable"
+        help = "Include only files whose metadata field contains the value; repeatable. \
+                FIELD is a name such as patient_id or a DICOM keyword such as PatientID"
     )]
     filters: Vec<loader::ScanFilter>,
 

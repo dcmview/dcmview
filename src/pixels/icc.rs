@@ -245,11 +245,14 @@ mod tests {
             let response = super::super::service::load_frame(
                 entry.into(),
                 super::super::cache::new_cache(),
+                super::super::cache::new_raw_cache(),
                 super::super::service::FrameRequest {
                     frame,
                     window_center: None,
                     window_width: None,
                     window_mode: WindowMode::Default,
+                    real_world: None,
+                    preview: false,
                 },
             )
             .await

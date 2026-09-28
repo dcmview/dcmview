@@ -17,7 +17,7 @@ use crate::api::contracts::{
 use crate::pixels::{self, FrameRequest, RawFrameRequest};
 use crate::references::{self, ReferenceCandidate};
 use crate::server::tags;
-use crate::types::FileEntry;
+use crate::types::{FileEntry, WindowMode, WindowRequest};
 use crate::value_mapping::FileValueMappings;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
@@ -300,15 +300,44 @@ pub(super) async fn frame(
     let Query(query) = query.map_err(error::query_rejection)?;
     let file = registered_file(&state, index, "file")?;
     let source = file.path.clone();
+    let window_mode = query.mode.unwrap_or_default();
+
+    // A window in a real-world unit applies to the frame's preferred mapping
+    // (the one the viewer's raw renderer windows) when it has that unit;
+    // otherwise the frame shows its default window.
+    let mut window = (query.wc, query.ww, None);
+    if let (Some(unit), WindowMode::Default) = (query.unit, window_mode) {
+        let invalid =
+            |message: String| error::pixel_error(pixels::PixelError::InvalidWindow(message));
+        if query.wc.is_none() || query.ww.is_none() {
+            return Err(invalid("a window unit requires wc and ww".to_string()));
+        }
+        WindowRequest::new(query.wc, query.ww, window_mode)
+            .map_err(|failure| invalid(failure.to_string()))?;
+        let mappings = value_mappings_for(&state, file.clone())
+            .await
+            .map_err(|failure| {
+                error::gone_or(&source, ApiError::internal(format!("{failure:#}")))
+            })?;
+        let preferred = mappings.real_world(frame).next();
+        window = match preferred.filter(|map| map.unit_label == unit) {
+            Some(map) => (query.wc, query.ww, Some(map.clone())),
+            None => (None, None, None),
+        };
+    }
+    let (window_center, window_width, real_world) = window;
 
     let frame_response = pixels::load_frame(
         file,
         state.pixel_cache(),
+        state.raw_cache(),
         FrameRequest {
             frame,
-            window_center: query.wc,
-            window_width: query.ww,
-            window_mode: query.mode.unwrap_or_default(),
+            window_center,
+            window_width,
+            window_mode,
+            real_world,
+            preview: query.preview.unwrap_or(false),
         },
     )
     .await

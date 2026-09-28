@@ -1,5 +1,5 @@
 use super::support;
-use dcmview::pixels::{load_frame, new_cache, FrameRequest, PixelError};
+use dcmview::pixels::{load_frame, new_cache, new_raw_cache, FrameRequest, PixelError};
 use tempfile::tempdir;
 
 #[tokio::test]
@@ -15,11 +15,14 @@ async fn invalid_jp2_payload_surfaces_server_side_decode_error() {
     let error = load_frame(
         file.into(),
         new_cache(),
+        new_raw_cache(),
         FrameRequest {
             frame: 0,
             window_center: None,
             window_width: None,
             window_mode: dcmview::types::WindowMode::Default,
+            real_world: None,
+            preview: false,
         },
     )
     .await
@@ -41,11 +44,14 @@ async fn invalid_jp2_codestream_surfaces_decode_context() {
     let error = load_frame(
         file.into(),
         new_cache(),
+        new_raw_cache(),
         FrameRequest {
             frame: 0,
             window_center: None,
             window_width: None,
             window_mode: dcmview::types::WindowMode::Default,
+            real_world: None,
+            preview: false,
         },
     )
     .await
@@ -87,11 +93,14 @@ async fn jp2_grayscale_display_applies_the_shared_presentation_pipeline() {
     let frame = load_frame(
         file.into(),
         new_cache(),
+        new_raw_cache(),
         FrameRequest {
             frame: 0,
             window_center: None,
             window_width: None,
             window_mode: dcmview::types::WindowMode::FullDynamic,
+            real_world: None,
+            preview: false,
         },
     )
     .await

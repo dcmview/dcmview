@@ -29,15 +29,19 @@ async fn decodes_uncompressed_png_and_tracks_window_cache_keys() {
     });
 
     let cache = new_cache();
+    let raw_cache = new_raw_cache();
 
     let first = load_frame(
         entry.clone().into(),
         cache.clone(),
+        raw_cache.clone(),
         FrameRequest {
             frame: 0,
             window_center: None,
             window_width: None,
             window_mode: dcmview::types::WindowMode::Default,
+            real_world: None,
+            preview: false,
         },
     )
     .await
@@ -54,11 +58,14 @@ async fn decodes_uncompressed_png_and_tracks_window_cache_keys() {
     let second = load_frame(
         entry.clone().into(),
         cache.clone(),
+        raw_cache.clone(),
         FrameRequest {
             frame: 0,
             window_center: None,
             window_width: None,
             window_mode: dcmview::types::WindowMode::Default,
+            real_world: None,
+            preview: false,
         },
     )
     .await
@@ -68,11 +75,14 @@ async fn decodes_uncompressed_png_and_tracks_window_cache_keys() {
     let overridden = load_frame(
         entry.into(),
         cache,
+        raw_cache,
         FrameRequest {
             frame: 0,
             window_center: Some(800.0),
             window_width: Some(1000.0),
             window_mode: dcmview::types::WindowMode::Default,
+            real_world: None,
+            preview: false,
         },
     )
     .await
@@ -120,11 +130,14 @@ async fn native_overlay_composites_after_windowing_without_changing_raw_samples(
     let display = load_frame(
         entry.clone().into(),
         new_cache(),
+        new_raw_cache(),
         FrameRequest {
             frame: 0,
             window_center: None,
             window_width: None,
             window_mode: dcmview::types::WindowMode::Default,
+            real_world: None,
+            preview: false,
         },
     )
     .await
@@ -164,11 +177,14 @@ async fn prepared_native_overlay_composites_after_luts_and_preserves_raw_frame()
     let display = load_frame(
         entry.clone().into(),
         new_cache(),
+        new_raw_cache(),
         FrameRequest {
             frame: 0,
             window_center: None,
             window_width: None,
             window_mode: dcmview::types::WindowMode::Default,
+            real_world: None,
+            preview: false,
         },
     )
     .await
@@ -221,11 +237,14 @@ async fn native_rectangular_shutter_applies_after_monochrome1_and_preserves_raw_
     let display = load_frame(
         entry.clone().into(),
         new_cache(),
+        new_raw_cache(),
         FrameRequest {
             frame: 0,
             window_center: None,
             window_width: None,
             window_mode: dcmview::types::WindowMode::Default,
+            real_world: None,
+            preview: false,
         },
     )
     .await
@@ -263,11 +282,14 @@ async fn prepared_native_full_frame_shutter_preserves_windowed_pixels_and_raw_fr
     let display = load_frame(
         entry.clone().into(),
         new_cache(),
+        new_raw_cache(),
         FrameRequest {
             frame: 0,
             window_center: None,
             window_width: None,
             window_mode: dcmview::types::WindowMode::Default,
+            real_world: None,
+            preview: false,
         },
     )
     .await
@@ -312,11 +334,14 @@ async fn applies_big_endian_byte_order_for_uncompressed_pixels() {
     let response = load_frame(
         entry.into(),
         new_cache(),
+        new_raw_cache(),
         FrameRequest {
             frame: 0,
             window_center: None,
             window_width: None,
             window_mode: dcmview::types::WindowMode::Default,
+            real_world: None,
+            preview: false,
         },
     )
     .await
