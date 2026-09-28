@@ -563,7 +563,7 @@
 		const frames = navigationFrames;
 		const position = navigationPosition;
 		scheduleIdle(() => {
-			if (retainedScopeKey !== prefetchScope || pipelineMode !== "diagnostic_wl") return;
+			if (destroyed || retainedScopeKey !== prefetchScope || pipelineMode !== "diagnostic_wl") return;
 			rawFrames.prefetch(frames, position, direction);
 		});
 	}
@@ -1024,8 +1024,11 @@
 
 	$effect(() => observePrefetchConcurrency((concurrency) => { prefetchConcurrency = concurrency; }));
 
+	// Idle work scheduled before unmount must not restart prefetches after it.
+	let destroyed = false;
 	$effect(() => {
 		return () => {
+			destroyed = true;
 			stopProbe();
 			overlayLayers.clear();
 			overlayValues.clear();
