@@ -1,10 +1,10 @@
 export type PreviewWindow = { wc: number; ww: number };
 
-export type LiveWindowPreviewOptions = {
+export type LiveWindowPreviewOptions<Frame> = {
 	/** Fetches the server-windowed frame for one window. */
-	load: (window: PreviewWindow, signal: AbortSignal) => Promise<Blob>;
+	load: (window: PreviewWindow, signal: AbortSignal) => Promise<Frame>;
 	/** Draws a preview that arrived while the drag is still live. */
-	show: (blob: Blob) => Promise<void> | void;
+	show: (frame: Frame) => Promise<void> | void;
 };
 
 /**
@@ -14,13 +14,13 @@ export type LiveWindowPreviewOptions = {
  * in flight aborted when the drag ends. Previews reach the server marked as
  * such, so they are never cached there.
  */
-export class LiveWindowPreview {
-	readonly #load: LiveWindowPreviewOptions["load"];
-	readonly #show: LiveWindowPreviewOptions["show"];
+export class LiveWindowPreview<Frame> {
+	readonly #load: LiveWindowPreviewOptions<Frame>["load"];
+	readonly #show: LiveWindowPreviewOptions<Frame>["show"];
 	#inFlight: AbortController | null = null;
 	#queued: PreviewWindow | null = null;
 
-	constructor({ load, show }: LiveWindowPreviewOptions) {
+	constructor({ load, show }: LiveWindowPreviewOptions<Frame>) {
 		this.#load = load;
 		this.#show = show;
 	}
@@ -44,8 +44,8 @@ export class LiveWindowPreview {
 		const controller = new AbortController();
 		this.#inFlight = controller;
 		try {
-			const blob = await this.#load(window, controller.signal);
-			if (!controller.signal.aborted) await this.#show(blob);
+			const frame = await this.#load(window, controller.signal);
+			if (!controller.signal.aborted) await this.#show(frame);
 		} catch {
 			// A failed preview is skipped; the settled window is fetched on release.
 		}

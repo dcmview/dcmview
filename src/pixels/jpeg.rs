@@ -9,7 +9,8 @@ use super::color::color_samples_to_rgb8;
 use super::error::{PixelError, PixelResult};
 use super::pixeldata_frame::decode_frame;
 use super::render::{
-    encode_rgb8_display_png, encode_windowed_luminance_png, LuminanceRenderOptions, StoredSamples,
+    encode_rgb8_display_png, encode_windowed_luminance_png, DisplayPng, LuminanceRenderOptions,
+    StoredSamples,
 };
 use super::syntax::{Codec, ColorSamples};
 
@@ -21,7 +22,7 @@ pub(crate) async fn decode_compressed_frame_to_png(
     requested_wc: Option<f64>,
     requested_ww: Option<f64>,
     window_mode: WindowMode,
-) -> Result<Bytes> {
+) -> Result<DisplayPng> {
     task::spawn_blocking(move || {
         decode_compressed_frame_to_png_blocking(
             codec,
@@ -43,7 +44,7 @@ fn decode_compressed_frame_to_png_blocking(
     requested_wc: Option<f64>,
     requested_ww: Option<f64>,
     window_mode: WindowMode,
-) -> Result<Bytes> {
+) -> Result<DisplayPng> {
     let decoded = decode_frame(file, frame, "JPEG")?;
     if decoded.samples_per_pixel == 3 {
         if decoded.bits_allocated != 8 {
@@ -312,7 +313,7 @@ mod tests {
             WindowMode::Default,
         )
         .unwrap();
-        let display = image::load_from_memory(&png).unwrap().to_rgb8();
+        let display = image::load_from_memory(&png.png).unwrap().to_rgb8();
         assert_eq!(display.dimensions(), (2, 2));
         let display_pixels = display.into_raw();
         let display_pixels = display_pixels.chunks_exact(3).collect::<Vec<_>>();

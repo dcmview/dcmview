@@ -2,8 +2,9 @@
 	import { untrack } from "svelte";
 	import {
 		ApiError,
-		fetchDisplayFrameBlob,
+		fetchDisplayFrame,
 		isApiError,
+		type DisplayFrame,
 		type DisplayFrameWindowOptions,
 		type FileSummary,
 		type RawFrame,
@@ -25,8 +26,6 @@
 	import { canRunCinePlayback, type CineDirection, type CineMode } from "./cinePlayback";
 	import { fitImageToViewportHeight, imageDisplayGeometry } from "./imageGeometry";
 	import {
-		computeFullDynamicWindow,
-		computePercentileWindow,
 		mappedUnitsPerStoredUnit,
 		MAX_RENDER_PIXELS,
 		resolveDisplayWindow,
@@ -174,6 +173,8 @@
 	// Raw, not a deep proxy: the frame is posted to the W/L worker, and a
 	// proxied metadata object cannot be structured-cloned.
 	let currentRawFrame = $state.raw<RawFrame | null>(null);
+	// The window the server rendered the displayed PNG with, if linear.
+	let shownDisplayWindow = $state.raw<ResolvedWindow | null>(null);
 	let rawWindowLevelFallbackByFile = $state<Record<number, boolean>>({});
 	// Color files: neither path windows them, so a drag sends no previews.
 	let colorFiles = $state<Record<number, boolean>>({});
@@ -274,14 +275,18 @@
 	const renderWindowWidth = $derived(renderWindow.width);
 	const renderWindowPending = $derived(renderWindow.pending);
 
-	const displayWindow = $derived(
+	// The window of the image on screen. The raw path resolves its own; a
+	// server-rendered frame shows the window being dragged or requested, else
+	// the one the server reports rendering it with. Null when there is no
+	// linear window to show (color, VOI LUT).
+	const displayWindow = $derived<ResolvedWindow | null>(
 		pipelineMode === "overlay"
-			? overlay?.sourceFile.default_window
+			? shownDisplayWindow ?? (overlay?.sourceFile.default_window
 				? {
 					wc: overlay.sourceFile.default_window.center,
 					ww: overlay.sourceFile.default_window.width,
 				}
-				: { wc: 0, ww: 1 }
+				: null)
 			: pipelineMode === "diagnostic_wl" && currentRawFrame && directWindowing && directMap
 			? resolveMappedDisplayWindow(
 				currentRawFrame,
@@ -306,33 +311,16 @@
 				? { wc: liveWindowCenter, ww: liveWindowWidth }
 				: renderWindowCenter !== null && renderWindowWidth !== null
 				? { wc: renderWindowCenter, ww: renderWindowWidth }
-				: activeFile?.default_window
+				: shownDisplayWindow ?? (activeFile?.default_window
 					? { wc: activeFile.default_window.center, ww: activeFile.default_window.width }
-					: { wc: 0, ww: 1 },
+					: null),
 	);
-	// The window a mapped file is actually shown with, for its HUD and
-	// legend: the server's automatic window is recomputed from the samples.
-	const needsWindowSamples = $derived(
-		mappedScale !== null
-		&& pipelineMode !== "diagnostic_wl"
-		&& liveWindowCenter === null
-		&& renderWindowCenter === null
-		&& (windowMode === "full_dynamic" || !activeFile.default_window),
-	);
-	const mappedWindow = $derived.by<ResolvedWindow | null>(() => {
-		if (!mappedScale) return null;
-		if (!needsWindowSamples) return displayWindow;
-		const samples = probe.samples(activeFile.index, currentFrame);
-		if (samples?.status !== "ready" || samples.at || validateRenderableRawFrame(samples.frame) !== null) return null;
-		return windowMode === "full_dynamic"
-			? computeFullDynamicWindow(samples.frame)
-			: computePercentileWindow(samples.frame);
-	});
+	// A mapped file's legend: the window it is shown with, in its unit.
 	const mappedLegend = $derived.by(() => {
-		if (!mappedScale || !mappedWindow) return null;
-		const low = mappedScale.toMapped(mappedWindow.wc - mappedWindow.ww / 2);
-		const high = mappedScale.toMapped(mappedWindow.wc + mappedWindow.ww / 2);
-		const mapped = windowToMapped({ center: mappedWindow.wc, width: mappedWindow.ww }, mappedScale);
+		if (!mappedScale || !displayWindow) return null;
+		const low = mappedScale.toMapped(displayWindow.wc - displayWindow.ww / 2);
+		const high = mappedScale.toMapped(displayWindow.wc + displayWindow.ww / 2);
+		const mapped = windowToMapped({ center: displayWindow.wc, width: displayWindow.ww }, mappedScale);
 		return { low, high, ...mapped, unit: mappedScale.unit, label: mappedScale.label };
 	});
 	// A LUT-unit window: the raw renderer's, or the one set while cine plays.
@@ -520,11 +508,11 @@
 		frameIndex: number,
 		options: DisplayFrameWindowOptions = {},
 		signal?: AbortSignal,
-	): Promise<Blob> {
-		if (!options.unit) return fetchDisplayFrameBlob(fileIndex, frameIndex, options, signal);
+	): Promise<DisplayFrame> {
+		if (!options.unit) return fetchDisplayFrame(fileIndex, frameIndex, options, signal);
 		const mapping = await valueMappings.load(fileIndex, frameIndex);
 		signal?.throwIfAborted();
-		return fetchDisplayFrameBlob(fileIndex, frameIndex, frameDisplayWindowOptions(options, mapping), signal);
+		return fetchDisplayFrame(fileIndex, frameIndex, frameDisplayWindowOptions(options, mapping), signal);
 	}
 
 	function currentDisplayWindowOptions(): DisplayFrameWindowOptions {
@@ -551,11 +539,15 @@
 		if (!ctx) return;
 
 		if (typeof createImageBitmap === "function") {
-			const bitmap = await displayFrames.decode(key, blob);
-			if (generation !== requestGeneration || !canvasEl || !usesDisplayPipeline()) return;
-			canvasEl.width = bitmap.width;
-			canvasEl.height = bitmap.height;
-			ctx.drawImage(bitmap, 0, 0);
+			const { bitmap, release } = await displayFrames.decode(key, blob);
+			try {
+				if (generation !== requestGeneration || !canvasEl || !usesDisplayPipeline()) return;
+				canvasEl.width = bitmap.width;
+				canvasEl.height = bitmap.height;
+				ctx.drawImage(bitmap, 0, 0);
+			} finally {
+				release();
+			}
 			return;
 		}
 
@@ -583,16 +575,16 @@
 	 * window; the settled window is fetched as usual on release.
 	 */
 	const livePreview = new LiveWindowPreview({
-		load: ({ wc, ww }, signal) => fetchDisplayFrameBlob(
+		load: ({ wc, ww }, signal) => fetchDisplayFrame(
 			activeFile.index,
 			currentFrame,
 			{ wc, ww, windowMode: "default", preview: true },
 			signal,
 		),
-		show: drawPreviewBlob,
+		show: drawPreviewFrame,
 	});
 
-	async function drawPreviewBlob(blob: Blob): Promise<void> {
+	async function drawPreviewFrame({ blob, window }: DisplayFrame): Promise<void> {
 		const isLive = () => dragState?.mode === "wl" && pipelineMode === "server_wl" && !!canvasEl;
 		if (!isLive()) return;
 		const image = await decodeCanvasImage(blob);
@@ -602,6 +594,7 @@
 			canvasEl.width = image.width;
 			canvasEl.height = image.height;
 			ctx?.drawImage(image.source, 0, 0);
+			shownDisplayWindow = window;
 		} finally {
 			image.dispose();
 		}
@@ -612,7 +605,7 @@
 		const frames = navigationFrames;
 		const position = navigationPosition;
 		scheduleIdle(() => {
-			if (retainedScopeKey !== prefetchScope || pipelineMode !== "diagnostic_wl") return;
+			if (destroyed || retainedScopeKey !== prefetchScope || pipelineMode !== "diagnostic_wl") return;
 			rawFrames.prefetch(frames, position, direction);
 		});
 	}
@@ -688,18 +681,19 @@
 		const windowOptions = currentDisplayWindowOptions();
 		const cacheKey = displayFrames.key(fileIndex, frameIndex, windowOptions);
 		try {
-			const blobRequest = displayFrames.ensureBlob(fileIndex, frameIndex, windowOptions);
+			const frameRequest = displayFrames.ensureFrame(fileIndex, frameIndex, windowOptions);
 			trackForegroundRequest(
 				displayFrames.inFlight(cacheKey),
 				() => generation === requestGeneration,
 				(pending) => { loading = pending; },
 			);
-			const blob = await blobRequest;
+			const { blob, window } = await frameRequest;
 			if (generation !== requestGeneration || !usesDisplayPipeline()) return;
 			loading = false;
 			loadError = null;
 			await drawDisplayBlob(cacheKey, blob, generation);
 			if (generation !== requestGeneration || !usesDisplayPipeline()) return;
+			shownDisplayWindow = window;
 			rendered.mark(fileIndex, frameIndex);
 
 			displayFrames.startPrefetch(
@@ -726,16 +720,17 @@
 		displayFrames.enterScope(windowOptions);
 		loading = true;
 		try {
-			const blobs = await Promise.all([
-				displayFrames.ensureBlob(overlay.sourceFileIndex, overlay.sourceFrameIndex, windowOptions),
+			const [source, ...layerBlobs] = await Promise.all([
+				displayFrames.ensureFrame(overlay.sourceFileIndex, overlay.sourceFrameIndex, windowOptions),
 				...overlayLayerRequests(overlay).map(({ key, load }) => displayFrames.fetchInScope(key, windowOptions, load)),
 			]);
-			const [base, ...layers] = await Promise.all(blobs.map(decodeCanvasImage));
+			const [base, ...layers] = await Promise.all([source.blob, ...layerBlobs].map(decodeCanvasImage));
 			try {
 				if (generation !== requestGeneration || pipelineMode !== "overlay" || !canvasEl) return;
 				composeOverlayFrame(canvasEl, base, layers);
 				loading = false;
 				loadError = null;
+				shownDisplayWindow = source.window;
 				rendered.mark(activeFile.index, currentFrame);
 			} finally {
 				base.dispose();
@@ -958,7 +953,7 @@
 
 	$effect(() => {
 		const presentation = rawPresentation;
-		if (pipelineMode !== "diagnostic_wl" || !currentRawFrame || !canvasEl || renderWindowPending || !presentation) {
+		if (pipelineMode !== "diagnostic_wl" || !currentRawFrame || !canvasEl || renderWindowPending || !presentation || !displayWindow) {
 			return;
 		}
 		// displayWindow already resolved this frame's window; window changes do
@@ -1031,19 +1026,17 @@
 		};
 	});
 
-	// Samples and the value mapping load once the cursor rests on a frame,
-	// or when a mapped file's automatic window must be recomputed; cine
-	// playback skips them.
+	// Samples and the value mapping load once the cursor rests on a frame;
+	// cine playback skips them.
 	$effect(() => {
-		if (!(probing || needsWindowSamples) || cinePlaying || !activeFile.has_pixels) return;
+		if (!probing || cinePlaying || !activeFile.has_pixels) return;
 		const { file, frameIndex } = probeTarget;
 		const displayed = pipelineMode === "diagnostic_wl" ? currentRawFrame : null;
-		const wholeFrame = needsWindowSamples;
 		// A frame read one pixel at a time follows the cursor.
-		const pixel = !wholeFrame && probesSinglePixels(file) ? probe.pixel : null;
+		const pixel = probesSinglePixels(file) ? probe.pixel : null;
 		return untrack(() => {
 			valueMappings.ensure(file.index, frameIndex);
-			return probe.track(file, frameIndex, displayed, { pixel, wholeFrame });
+			return probe.track(file, frameIndex, displayed, { pixel });
 		});
 	});
 
@@ -1125,8 +1118,11 @@
 
 	$effect(() => observePrefetchConcurrency((concurrency) => { prefetchConcurrency = concurrency; }));
 
+	// Idle work scheduled before unmount must not restart prefetches after it.
+	let destroyed = false;
 	$effect(() => {
 		return () => {
+			destroyed = true;
 			stopProbe();
 			overlayLayers.clear();
 			presentationLayers.clear();
@@ -1265,9 +1261,7 @@
 			switch (activeTool) {
 				case "window_level": {
 					if (pipelineMode === "diagnostic_wl" && !currentRawFrame) break;
-					const baseWindow = pipelineMode === "diagnostic_wl" && currentRawFrame
-						? displayWindow
-						: mappedWindow ?? displayWindow;
+					const baseWindow = displayWindow ?? { wc: 0, ww: 1 };
 					nextDragState = {
 						mode: "wl",
 						startX: event.clientX,
@@ -1559,9 +1553,9 @@
 					</span>
 				{:else if mappedScale}
 					<span class="mapped-window">W/L auto · {mappedScale.unit}</span>
-				{:else if displayWindow.voiLut}
+				{:else if displayWindow?.voiLut}
 					<span>VOI LUT</span>
-				{:else}
+				{:else if displayWindow}
 					<span>W: {Math.round(displayWindow.ww)} · C: {Math.round(displayWindow.wc)}</span>
 				{/if}
 				{#if activeTool === "window_level" && !activeFile.raw_windowing_compatible}

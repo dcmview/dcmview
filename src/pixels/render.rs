@@ -1,5 +1,5 @@
 use crate::api::contracts::{RealWorldValueMap, WindowMode};
-use crate::types::FileEntry;
+use crate::types::{FileEntry, ResolvedWindow};
 use crate::value_mapping::map_value;
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
@@ -22,6 +22,21 @@ pub(crate) struct LuminanceRenderOptions {
     pub(crate) requested_wc: Option<f64>,
     pub(crate) requested_ww: Option<f64>,
     pub(crate) window_mode: WindowMode,
+}
+
+/// One encoded display frame.
+#[derive(Debug, Clone)]
+pub struct DisplayPng {
+    pub png: Bytes,
+    /// The linear window its luminance was presented with; `None` for color
+    /// frames and frames presented through a VOI LUT.
+    pub window: Option<ResolvedWindow>,
+}
+
+impl DisplayPng {
+    pub(crate) fn color(png: Bytes) -> Self {
+        Self { png, window: None }
+    }
 }
 
 /// One grayscale frame's stored values, as the presentation pipeline takes
@@ -47,9 +62,9 @@ pub(crate) fn encode_windowed_luminance_png(
     file: &FileEntry,
     stored: StoredSamples<'_>,
     options: LuminanceRenderOptions,
-) -> Result<Bytes> {
+) -> Result<DisplayPng> {
     let padding = pixel_padding(file);
-    let windowed = match stored {
+    let (windowed, window) = match stored {
         StoredSamples::Integer {
             bytes,
             bits_allocated,
@@ -57,7 +72,8 @@ pub(crate) fn encode_windowed_luminance_png(
         } => window_through_table(file, bytes, bits_allocated, signed, padding, &options)?,
         StoredSamples::Values(values) => window_each_sample(file, values, padding, &options)?,
     };
-    present_luminance(file, windowed, options.frame, options.rows, options.columns)
+    let png = present_luminance(file, windowed, options.frame, options.rows, options.columns)?;
+    Ok(DisplayPng { png, window })
 }
 
 /// Renders 8- or 16-bit stored integers windowed over a real-world mapping's
@@ -67,6 +83,9 @@ pub(crate) fn encode_windowed_luminance_png(
 /// assume Modality integers), and stored values the mapping does not cover
 /// are the window's low end. MONOCHROME1 inversion, Pixel Padding, shutter
 /// and overlays follow as for any grayscale frame.
+///
+/// The frame reports no window: a window over mapped values has no linear
+/// Modality equivalent, and the viewer knows the one it asked for.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn encode_real_world_windowed_png(
     file: &FileEntry,
@@ -77,7 +96,7 @@ pub(crate) fn encode_real_world_windowed_png(
     (center, width): (f64, f64),
     frame: u32,
     (rows, columns): (u32, u32),
-) -> Result<Bytes> {
+) -> Result<DisplayPng> {
     let stored_value = stored_value_reader(bits_allocated, signed)?;
     let width = width.max(1.0);
     let low = center - width / 2.0;
@@ -93,7 +112,8 @@ pub(crate) fn encode_real_world_windowed_png(
     let is_padding =
         |index: usize| padding.is_some_and(|range| range.contains(stored_value(index)));
     let windowed = look_up_samples(file, table, is_padding, bytes, bits_allocated);
-    present_luminance(file, windowed, frame, rows, columns)
+    let png = present_luminance(file, windowed, frame, rows, columns)?;
+    Ok(DisplayPng { png, window: None })
 }
 
 /// The steps after windowing that every grayscale frame shares: the
@@ -175,7 +195,7 @@ fn window_through_table(
     signed: bool,
     padding: Option<PixelPaddingRange>,
     options: &LuminanceRenderOptions,
-) -> Result<Vec<u8>> {
+) -> Result<(Vec<u8>, Option<ResolvedWindow>)> {
     let stored_value = stored_value_reader(bits_allocated, signed)?;
     let native = &file.series_metadata.native_pixel;
     let rescaled = (0..1_usize << bits_allocated)
@@ -191,17 +211,18 @@ fn window_through_table(
     let is_padding =
         |index: usize| padding.is_some_and(|range| range.contains(stored_value(index)));
 
-    let table = if let Some(voi_lut) = selected_voi_lut(
+    let (table, window) = if let Some(voi_lut) = selected_voi_lut(
         options.window_mode,
         options.requested_wc,
         options.requested_ww,
         file.default_window,
         native.voi_lut.as_ref(),
     ) {
-        rescaled
+        let table = rescaled
             .iter()
             .map(|value| voi_lut_value(voi_lut, *value))
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+        (table, None)
     } else {
         let mut counts = vec![0_u64; rescaled.len()];
         for index in stored_indexes(bytes, bits_allocated) {
@@ -221,19 +242,16 @@ fn window_through_table(
             file.default_window,
             &window_source,
         )
-        .ok_or_else(|| anyhow!("could not resolve window"))?;
-        rescaled
+        .ok_or_else(|| anyhow!("could not resolve window"))
+        .map(applied_window)?;
+        let table = rescaled
             .iter()
-            .map(|value| window_value(*value, window.center, window.width.max(1.0)))
-            .collect()
+            .map(|value| window_value(*value, window.center, window.width))
+            .collect();
+        (table, Some(window))
     };
-    Ok(look_up_samples(
-        file,
-        table,
-        is_padding,
-        bytes,
-        bits_allocated,
-    ))
+    let windowed = look_up_samples(file, table, is_padding, bytes, bits_allocated);
+    Ok((windowed, window))
 }
 
 /// Finishes a per-stored-value table of windowed bytes (MONOCHROME1
@@ -280,6 +298,14 @@ fn stored_value_reader(bits_allocated: u32, signed: bool) -> Result<fn(usize) ->
     })
 }
 
+/// The window as applied: a linear window is never narrower than one unit.
+fn applied_window(window: ResolvedWindow) -> ResolvedWindow {
+    ResolvedWindow {
+        width: window.width.max(1.0),
+        ..window
+    }
+}
+
 /// Each sample's table index: its bit pattern in the 8- or 16-bit container.
 fn stored_indexes(bytes: &[u8], bits_allocated: u32) -> impl Iterator<Item = usize> + '_ {
     let width = if bits_allocated == 8 { 1 } else { 2 };
@@ -314,7 +340,7 @@ fn window_each_sample(
     stored: &[f64],
     padding: Option<PixelPaddingRange>,
     options: &LuminanceRenderOptions,
-) -> Result<Vec<u8>> {
+) -> Result<(Vec<u8>, Option<ResolvedWindow>)> {
     let padding_mask = padding.map(|padding| padding.mask(stored));
     let native = &file.series_metadata.native_pixel;
     let rescaled = apply_modality_transform(
@@ -330,7 +356,7 @@ fn window_each_sample(
         .as_deref()
         .filter(|samples| !samples.is_empty())
         .unwrap_or(&rescaled);
-    let mut windowed = if let Some(values) = apply_voi_lut_if_selected(
+    let (mut windowed, window) = if let Some(values) = apply_voi_lut_if_selected(
         options.window_mode,
         options.requested_wc,
         options.requested_ww,
@@ -338,7 +364,7 @@ fn window_each_sample(
         native.voi_lut.as_ref(),
         &rescaled,
     ) {
-        values
+        (values, None)
     } else {
         let resolved_window = resolve_window_with_mode(
             options.window_mode,
@@ -347,19 +373,17 @@ fn window_each_sample(
             file.default_window,
             window_source,
         )
-        .ok_or_else(|| anyhow!("could not resolve window"))?;
-        apply_window(
-            &rescaled,
-            resolved_window.center,
-            resolved_window.width.max(1.0),
-        )
+        .ok_or_else(|| anyhow!("could not resolve window"))
+        .map(applied_window)?;
+        let windowed = apply_window(&rescaled, resolved_window.center, resolved_window.width);
+        (windowed, Some(resolved_window))
     };
     apply_monochrome1_inversion(&mut windowed, &file.photometric_interpretation);
     // Padding is background: black whatever the photometric interpretation.
     if let Some(mask) = padding_mask.as_deref() {
         apply_padding_background(&mut windowed, mask);
     }
-    Ok(windowed)
+    Ok((windowed, window))
 }
 
 /// Encodes one interleaved 8-bit RGB display frame as PNG. Every color
@@ -372,9 +396,9 @@ pub(crate) fn encode_rgb8_display_png(
     columns: u32,
     rows: u32,
     icc_profile: Option<Vec<u8>>,
-) -> Result<Bytes> {
+) -> Result<DisplayPng> {
     shutter::apply_to_rgb8(&mut rgb, file, frame, rows, columns);
-    encode_rgb8_png_with_icc(rgb, columns, rows, icc_profile)
+    encode_rgb8_png_with_icc(rgb, columns, rows, icc_profile).map(DisplayPng::color)
 }
 
 fn is_monochrome1(photometric_interpretation: &str) -> bool {

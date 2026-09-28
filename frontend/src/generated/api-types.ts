@@ -26,6 +26,11 @@ export const API_ENDPOINTS = {
 	annotationsExport: { method: "GET", path: "/api/annotations/export.csv" },
 } as const;
 
+export const DISPLAY_FRAME_HEADERS = {
+	windowCenter: "X-Frame-Window-Center",
+	windowWidth: "X-Frame-Window-Width",
+} as const;
+
 export const RAW_FRAME_HEADERS = {
 	rows: "X-Frame-Rows",
 	columns: "X-Frame-Columns",

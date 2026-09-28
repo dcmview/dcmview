@@ -1,6 +1,6 @@
 use crate::api::contracts::{RawFrameMetadata, RealWorldValueMap, SupportState, WindowMode};
 use crate::types::{
-    FileEntry, FrameCacheKey, NativePixelDataKind, RawFrameCacheKey, WindowRequest,
+    FileEntry, FrameCacheKey, NativePixelDataKind, RawFrameCacheKey, ResolvedWindow, WindowRequest,
 };
 use anyhow::Context;
 use bytes::Bytes;
@@ -23,8 +23,8 @@ use super::jpegls::{decode_jpeg_ls_to_png, decode_raw_jpeg_ls};
 use super::jpegxl::{decode_jpeg_xl_to_png, decode_raw_jpeg_xl};
 use super::native::{decode_uncompressed_to_png, read_raw_uncompressed};
 use super::render::{
-    encode_real_world_windowed_png, encode_windowed_luminance_png, LuminanceRenderOptions,
-    StoredSamples,
+    encode_real_world_windowed_png, encode_windowed_luminance_png, DisplayPng,
+    LuminanceRenderOptions, StoredSamples,
 };
 use super::rle::{decode_raw_rle, decode_rle_to_png};
 use super::syntax::{classify_pixel_support, codec_for_syntax, Codec, PixelSupportReason};
@@ -179,6 +179,8 @@ pub struct FrameRequest {
 pub struct FrameResponse {
     pub body: Bytes,
     pub content_type: &'static str,
+    /// The linear window the frame was presented with, if it has one.
+    pub window: Option<ResolvedWindow>,
     pub cache_hit: bool,
 }
 
@@ -216,20 +218,21 @@ pub async fn load_frame(
         .filter(|_| display.mode == WindowMode::Default);
     if let (Some(map), Some(window)) = (request.real_world, real_world_window) {
         let key = display.cache_key(&file, Some(&map.unit_label));
-        if let Some(body) = cache.lock().map_err(|_| cache_poisoned())?.get(&key) {
-            return Ok(FrameResponse::png(body, true));
+        if let Some(display) = cache.lock().map_err(|_| cache_poisoned())?.get(&key) {
+            return Ok(FrameResponse::png(display, true));
         }
         // A real-world window is applied to decoded integer samples, so
         // JPEG 2000 decodes through the raw tier here too.
         let raw = raw_samples_for_display(&file, codec, &raw_cache, display.frame, true).await;
         if let Some((raw, layout)) = raw {
             let render = window_real_world_samples(file, raw, layout, map, window, display.frame);
-            let (body, cache_hit) =
+            let (display, cache_hit) =
                 cached_or_rendered(&cache, key, request.preview, render).await?;
-            return Ok(FrameResponse::png(body, cache_hit));
+            return Ok(FrameResponse::png(display, cache_hit));
         }
         // Samples a real-world window cannot apply to show the default
-        // window, as a frame without a mapping in that unit does.
+        // window, as a frame without a mapping in that unit does, and report
+        // it, so the viewer can tell its window was not applied.
         display.center = None;
         display.width = None;
     }
@@ -237,8 +240,8 @@ pub async fn load_frame(
     let key = display.cache_key(&file, None);
 
     let cached = cache.lock().map_err(|_| cache_poisoned())?.get(&key);
-    let (body, cache_hit) = match cached {
-        Some(body) => (body, true),
+    let (display, cache_hit) = match cached {
+        Some(display) => (display, true),
         None => match raw_samples_for_display(&file, codec, &raw_cache, display.frame, false).await
         {
             Some((raw, layout)) => {
@@ -252,14 +255,15 @@ pub async fn load_frame(
         },
     };
 
-    Ok(FrameResponse::png(body, cache_hit))
+    Ok(FrameResponse::png(display, cache_hit))
 }
 
 impl FrameResponse {
-    fn png(body: Bytes, cache_hit: bool) -> Self {
+    fn png(display: DisplayPng, cache_hit: bool) -> Self {
         Self {
-            body,
+            body: display.png,
             content_type: "image/png",
+            window: display.window,
             cache_hit,
         }
     }
@@ -291,7 +295,7 @@ async fn decode_display_frame(
     codec: Codec,
     file: Arc<FileEntry>,
     window: DisplayWindow,
-) -> PixelResult<Bytes> {
+) -> PixelResult<DisplayPng> {
     let DisplayWindow {
         frame,
         center,
@@ -326,7 +330,7 @@ async fn window_raw_samples(
     (bytes, metadata): (Bytes, RawFrameMetadata),
     (bits_allocated, signed): (u32, bool),
     window: DisplayWindow,
-) -> PixelResult<Bytes> {
+) -> PixelResult<DisplayPng> {
     tokio::task::spawn_blocking(move || {
         encode_windowed_luminance_png(
             &file,
@@ -359,7 +363,7 @@ async fn window_real_world_samples(
     map: RealWorldValueMap,
     window: (f64, f64),
     frame: u32,
-) -> PixelResult<Bytes> {
+) -> PixelResult<DisplayPng> {
     tokio::task::spawn_blocking(move || {
         encode_real_world_windowed_png(
             &file,
@@ -477,8 +481,8 @@ async fn cached_or_rendered(
     cache: &Arc<Mutex<FrameCache>>,
     key: FrameCacheKey,
     preview: bool,
-    render: impl Future<Output = PixelResult<Bytes>> + Send + 'static,
-) -> PixelResult<(Bytes, bool)> {
+    render: impl Future<Output = PixelResult<DisplayPng>> + Send + 'static,
+) -> PixelResult<(DisplayPng, bool)> {
     if !preview {
         return cached_or_decoded(cache, key, render).await;
     }
@@ -667,7 +671,13 @@ mod tests {
                 let windowed = window_raw_samples(file.clone(), raw.clone(), layout, window)
                     .await
                     .expect("raw-tier display");
-                assert_eq!(decoded, windowed, "{}", path.display());
+                // The same image, reporting the same window.
+                assert_eq!(
+                    (decoded.png, decoded.window.map(|w| (w.center, w.width))),
+                    (windowed.png, windowed.window.map(|w| (w.center, w.width))),
+                    "{}",
+                    path.display()
+                );
             }
             compared += 1;
         }

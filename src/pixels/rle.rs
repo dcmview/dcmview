@@ -13,7 +13,8 @@ use super::header::open_header;
 use super::icc::select_icc_profile;
 use super::palette::palette_indices_to_rgb8;
 use super::render::{
-    encode_rgb8_display_png, encode_windowed_luminance_png, LuminanceRenderOptions, StoredSamples,
+    encode_rgb8_display_png, encode_windowed_luminance_png, DisplayPng, LuminanceRenderOptions,
+    StoredSamples,
 };
 use super::stored_bits::canonicalize_integer_samples;
 use super::syntax::{Codec, ColorSamples};
@@ -61,7 +62,7 @@ pub(crate) async fn decode_rle_to_png(
     requested_wc: Option<f64>,
     requested_ww: Option<f64>,
     window_mode: WindowMode,
-) -> PixelResult<Bytes> {
+) -> PixelResult<DisplayPng> {
     task::spawn_blocking(move || {
         decode_rle_to_png_blocking(&file, frame, requested_wc, requested_ww, window_mode)
     })
@@ -75,7 +76,7 @@ fn decode_rle_to_png_blocking(
     requested_wc: Option<f64>,
     requested_ww: Option<f64>,
     window_mode: WindowMode,
-) -> PixelResult<Bytes> {
+) -> PixelResult<DisplayPng> {
     let decoded = read_and_decode_frame(file, frame).map_err(PixelError::frame_decode)?;
     let photometric = file.photometric_interpretation.trim().to_ascii_uppercase();
 
@@ -364,7 +365,7 @@ fn encode_rgb_png(
     frame: u32,
     rgb: Vec<u8>,
     icc_profile: Option<Vec<u8>>,
-) -> PixelResult<Bytes> {
+) -> PixelResult<DisplayPng> {
     encode_rgb8_display_png(file, frame, rgb, file.columns, file.rows, icc_profile)
         .context("RLE RGB PNG encoding failed")
         .map_err(PixelError::frame_decode)
@@ -392,7 +393,7 @@ fn normalize_color_for_display(
         .map_err(PixelError::frame_decode)
 }
 
-fn encode_palette_png(file: &FileEntry, frame: u32, indices: &[u8]) -> PixelResult<Bytes> {
+fn encode_palette_png(file: &FileEntry, frame: u32, indices: &[u8]) -> PixelResult<DisplayPng> {
     let object = open_header(&file.path).map_err(PixelError::frame_decode)?;
     let rgb = palette_indices_to_rgb8(&object, indices, file.bits_allocated)
         .context("RLE palette lookup failed")
@@ -425,7 +426,7 @@ mod tests {
         let display = super::decode_rle_to_png(file.into(), 0, None, None, WindowMode::Default)
             .await
             .expect("render prepared RLE CR");
-        let pixels = image::load_from_memory(&display)
+        let pixels = image::load_from_memory(&display.png)
             .expect("decode prepared RLE PNG")
             .to_luma8()
             .into_raw();
@@ -560,7 +561,10 @@ mod tests {
 
         let png = decode_rle_to_png_blocking(&file, 0, None, None, WindowMode::Default).unwrap();
         assert_eq!(
-            image::load_from_memory(&png).unwrap().to_luma8().into_raw(),
+            image::load_from_memory(&png.png)
+                .unwrap()
+                .to_luma8()
+                .into_raw(),
             [0, 0, 0, 255]
         );
     }

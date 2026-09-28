@@ -21,7 +21,8 @@ use super::icc::select_icc_profile;
 use super::native_layout::{native_pixel_element_tag, NativeByteOrder, NativeFrameLayout};
 use super::palette::palette_indices_to_rgb8;
 use super::render::{
-    encode_rgb8_display_png, encode_windowed_luminance_png, LuminanceRenderOptions, StoredSamples,
+    encode_rgb8_display_png, encode_windowed_luminance_png, DisplayPng, LuminanceRenderOptions,
+    StoredSamples,
 };
 use super::stored_bits::canonicalize_integer_samples;
 use super::syntax::Codec;
@@ -32,7 +33,7 @@ pub(crate) async fn decode_uncompressed_to_png(
     requested_wc: Option<f64>,
     requested_ww: Option<f64>,
     window_mode: WindowMode,
-) -> Result<Bytes> {
+) -> Result<DisplayPng> {
     task::spawn_blocking(move || {
         decode_uncompressed_to_png_blocking(&file, frame, requested_wc, requested_ww, window_mode)
     })
@@ -46,7 +47,7 @@ fn decode_uncompressed_to_png_blocking(
     requested_wc: Option<f64>,
     requested_ww: Option<f64>,
     window_mode: WindowMode,
-) -> Result<Bytes> {
+) -> Result<DisplayPng> {
     let rows = file.rows;
     let columns = file.columns;
     let samples_per_pixel = file.samples_per_pixel.max(1);

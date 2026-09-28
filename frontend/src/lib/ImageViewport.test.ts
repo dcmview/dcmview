@@ -12,7 +12,7 @@ import { ViewStates } from "./viewport/viewStates.svelte";
 vi.mock("../api", async (importOriginal) => ({
 	...await importOriginal<typeof import("../api")>(),
 	fetchAnnotations: vi.fn(async () => ({ num_roi: 0, roi_coords: [], roi_frames: [] })),
-	fetchDisplayFrameBlob: vi.fn(async () => new Blob(["png"], { type: "image/png" })),
+	fetchDisplayFrame: vi.fn(async () => ({ blob: new Blob(["png"], { type: "image/png" }), window: null })),
 	fetchRawFrame: vi.fn(),
 	fetchFrameValueMapping: vi.fn(),
 	fetchDoseOverlayBlob: vi.fn(),
@@ -28,7 +28,7 @@ vi.mock("./viewport/frameOverlay", async (importOriginal) => ({
 	drawOverlayLayer: vi.fn(),
 }));
 
-const fetchDisplayFrameBlob = vi.mocked(api.fetchDisplayFrameBlob);
+const fetchDisplayFrame = vi.mocked(api.fetchDisplayFrame);
 const fetchRawFrame = vi.mocked(api.fetchRawFrame);
 const fetchFrameValueMapping = vi.mocked(api.fetchFrameValueMapping);
 const fetchDoseOverlayBlob = vi.mocked(api.fetchDoseOverlayBlob);
@@ -96,7 +96,8 @@ function renderViewport({
 }
 
 beforeEach(() => {
-	fetchDisplayFrameBlob.mockClear();
+	fetchDisplayFrame.mockReset();
+	fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"], { type: "image/png" }), window: null });
 	fetchRawFrame.mockReset();
 	fetchRawFrame.mockResolvedValue(rawFrame());
 	fetchFrameValueMapping.mockReset();
@@ -110,14 +111,46 @@ describe("ImageViewport window/level path", () => {
 	it("shows server-rendered PNGs outside the window/level tool", async () => {
 		renderViewport({ activeTool: "pan" });
 
-		await waitFor(() => expect(fetchDisplayFrameBlob).toHaveBeenCalledWith(5, 0, {}, expect.any(AbortSignal)));
+		await waitFor(() => expect(fetchDisplayFrame).toHaveBeenCalledWith(5, 0, {}, expect.any(AbortSignal)));
 		expect(fetchRawFrame).not.toHaveBeenCalled();
+	});
+
+	it("shows the window the server rendered a frame with when it chose it", async () => {
+		fetchDisplayFrame.mockResolvedValueOnce({ blob: new Blob(["png"]), window: { wc: 1499.5, ww: 2970 } });
+		renderViewport({ file: fileSummary(5, { default_window: null }) });
+
+		await screen.findByText("W: 2970 · C: 1500");
+	});
+
+	it("shows no window for a frame rendered without a linear one", async () => {
+		renderViewport({ file: fileSummary(5, { default_window: null }) });
+
+		await waitFor(() => expect(fetchDisplayFrame).toHaveBeenCalledOnce());
+		expect(screen.queryByText(/W: /)).toBeNull();
+	});
+
+	it("starts a server-windowed drag from the window the frame was rendered with", async () => {
+		fetchDisplayFrame.mockResolvedValueOnce({ blob: new Blob(["png"]), window: { wc: 1499.5, ww: 2970 } });
+		const onmanualwindowlevel = vi.fn();
+		renderViewport({
+			activeTool: "window_level",
+			file: fileSummary(5, { default_window: null, raw_windowing_compatible: false, raw_windowing_reason: "display shutter" }),
+			onmanualwindowlevel,
+		});
+		const viewport = await screen.findByRole("application");
+		await screen.findByText("W: 2970 · C: 1500");
+
+		await fireEvent.pointerDown(viewport, { button: 0, clientX: 10, clientY: 10, pointerId: 1 });
+		await fireEvent.pointerMove(viewport, { clientX: 20, clientY: 10, pointerId: 1 });
+		await fireEvent.pointerUp(viewport, { clientX: 20, clientY: 10, pointerId: 1 });
+
+		expect(onmanualwindowlevel).toHaveBeenCalledWith(1499.5, 3010, null);
 	});
 
 	it("requests the display window the viewer selected", async () => {
 		renderViewport({ activeTool: "pan", windowCenter: 60, windowWidth: 400 });
 
-		await waitFor(() => expect(fetchDisplayFrameBlob).toHaveBeenCalledWith(
+		await waitFor(() => expect(fetchDisplayFrame).toHaveBeenCalledWith(
 			5,
 			0,
 			{ wc: 60, ww: 400, windowMode: "default" },
@@ -129,7 +162,7 @@ describe("ImageViewport window/level path", () => {
 		renderViewport({ activeTool: "window_level" });
 
 		await waitFor(() => expect(fetchRawFrame).toHaveBeenCalledWith(5, 0, expect.any(AbortSignal)));
-		expect(fetchDisplayFrameBlob).not.toHaveBeenCalled();
+		expect(fetchDisplayFrame).not.toHaveBeenCalled();
 		expect(screen.queryByText("server presentation retained")).toBeNull();
 	});
 
@@ -139,7 +172,7 @@ describe("ImageViewport window/level path", () => {
 			file: fileSummary(5, { raw_windowing_compatible: false, raw_windowing_reason: "32-bit float" }),
 		});
 
-		await waitFor(() => expect(fetchDisplayFrameBlob).toHaveBeenCalled());
+		await waitFor(() => expect(fetchDisplayFrame).toHaveBeenCalled());
 		expect(fetchRawFrame).not.toHaveBeenCalled();
 		expect(screen.getByText("server presentation retained").getAttribute("title")).toBe("32-bit float");
 	});
@@ -149,25 +182,25 @@ describe("ImageViewport window/level path", () => {
 
 		await waitFor(() => expect(api.fetchPresentationLayerBlob).toHaveBeenCalledWith(5, 0, expect.any(AbortSignal)));
 		await waitFor(() => expect(drawOverlayLayer).toHaveBeenCalled());
-		expect(fetchDisplayFrameBlob).not.toHaveBeenCalled();
+		expect(fetchDisplayFrame).not.toHaveBeenCalled();
 	});
 
 	it("keeps server windowing when the file's value mapping cannot load", async () => {
 		fetchFrameValueMapping.mockRejectedValue(new Error("mapping unavailable"));
 		renderViewport({ activeTool: "window_level" });
 
-		await waitFor(() => expect(fetchDisplayFrameBlob).toHaveBeenCalledWith(5, 0, {}, expect.any(AbortSignal)));
+		await waitFor(() => expect(fetchDisplayFrame).toHaveBeenCalledWith(5, 0, {}, expect.any(AbortSignal)));
 	});
 
 	it("previews a drag on frames too large for the browser with server windows", async () => {
 		renderViewport({ activeTool: "window_level", file: fileSummary(5, { rows: 5000, columns: 5000 }) });
-		await waitFor(() => expect(fetchDisplayFrameBlob).toHaveBeenCalledWith(5, 0, {}, expect.any(AbortSignal)));
+		await waitFor(() => expect(fetchDisplayFrame).toHaveBeenCalledWith(5, 0, {}, expect.any(AbortSignal)));
 		const viewport = await screen.findByRole("application");
 
 		await fireEvent.pointerDown(viewport, { button: 0, clientX: 10, clientY: 10, pointerId: 1 });
 		await fireEvent.pointerMove(viewport, { clientX: 20, clientY: 10, pointerId: 1 });
 
-		await waitFor(() => expect(fetchDisplayFrameBlob).toHaveBeenCalledWith(
+		await waitFor(() => expect(fetchDisplayFrame).toHaveBeenCalledWith(
 			5,
 			0,
 			expect.objectContaining({ windowMode: "default", preview: true }),
@@ -181,13 +214,13 @@ describe("ImageViewport window/level path", () => {
 		renderViewport({ activeTool: "window_level" });
 
 		await waitFor(() => expect(fetchRawFrame).toHaveBeenCalledOnce());
-		await waitFor(() => expect(fetchDisplayFrameBlob).toHaveBeenCalledWith(5, 0, {}, expect.any(AbortSignal)));
+		await waitFor(() => expect(fetchDisplayFrame).toHaveBeenCalledWith(5, 0, {}, expect.any(AbortSignal)));
 	});
 
 	it("falls back to server presentation only when the raw endpoint refuses the layout", async () => {
 		fetchRawFrame.mockRejectedValue(new api.ApiError("unsupported layout", 422, "unsupported_pixel_layout"));
 		renderViewport({ activeTool: "window_level" });
-		await waitFor(() => expect(fetchDisplayFrameBlob).toHaveBeenCalledWith(5, 0, {}, expect.any(AbortSignal)));
+		await waitFor(() => expect(fetchDisplayFrame).toHaveBeenCalledWith(5, 0, {}, expect.any(AbortSignal)));
 	});
 
 	it("reports a failed raw request without giving up client windowing", async () => {
@@ -195,7 +228,7 @@ describe("ImageViewport window/level path", () => {
 		renderViewport({ activeTool: "window_level" });
 
 		expect(await screen.findByText("Failed to fetch")).toBeTruthy();
-		expect(fetchDisplayFrameBlob).not.toHaveBeenCalled();
+		expect(fetchDisplayFrame).not.toHaveBeenCalled();
 		expect(screen.queryByText("server presentation retained")).toBeNull();
 	});
 
@@ -204,7 +237,7 @@ describe("ImageViewport window/level path", () => {
 
 		expect(screen.getByText("No pixel data")).toBeTruthy();
 		await Promise.resolve();
-		expect(fetchDisplayFrameBlob).not.toHaveBeenCalled();
+		expect(fetchDisplayFrame).not.toHaveBeenCalled();
 		expect(fetchRawFrame).not.toHaveBeenCalled();
 	});
 });
@@ -318,7 +351,7 @@ describe("ImageViewport window/level in real-world units", () => {
 
 		await waitFor(() => expect(fetchRawFrame).toHaveBeenCalledWith(5, 0, expect.any(AbortSignal)));
 		await screen.findByText("W: 80 · C: 40 ms");
-		expect(fetchDisplayFrameBlob).not.toHaveBeenCalled();
+		expect(fetchDisplayFrame).not.toHaveBeenCalled();
 	});
 
 	it("converts a real-world window to stored units before requesting the frame", async () => {
@@ -326,15 +359,26 @@ describe("ImageViewport window/level in real-world units", () => {
 		renderViewport({ windowCenter: 40, windowWidth: 100, windowUnit: "um2/s" });
 
 		// mapped = 0.5 × stored − 10, so C 40 / W 100 um2/s is C 100 / W 200 stored.
-		await waitFor(() => expect(fetchDisplayFrameBlob).toHaveBeenCalledWith(
+		await waitFor(() => expect(fetchDisplayFrame).toHaveBeenCalledWith(
 			5,
 			0,
 			{ wc: 100, ww: 200, windowMode: "default" },
 			expect.any(AbortSignal),
 		));
-		expect(fetchDisplayFrameBlob).toHaveBeenCalledOnce();
+		expect(fetchDisplayFrame).toHaveBeenCalledOnce();
 		expect(screen.getByText(/W: 100 · C: 40 um2\/s/)).toBeTruthy();
 		expect(screen.getByRole("figure", { name: "ADC: -10 to 90 um2/s" })).toBeTruthy();
+	});
+
+	it("shows a mapped file's automatic window in its unit without fetching raw samples", async () => {
+		fetchFrameValueMapping.mockResolvedValue(adcMapping());
+		fetchDisplayFrame.mockResolvedValueOnce({ blob: new Blob(["png"]), window: { wc: 100, ww: 200 } });
+		renderViewport({ file: fileSummary(5, { default_window: null }) });
+
+		// mapped = 0.5 × stored − 10: C 100 / W 200 stored is C 40 / W 100 um2/s.
+		await screen.findByText(/W: 100 · C: 40 um2\/s/);
+		expect(screen.getByRole("figure", { name: "ADC: -10 to 90 um2/s" })).toBeTruthy();
+		expect(fetchRawFrame).not.toHaveBeenCalled();
 	});
 
 	it("converts the window through each frame's own mapping as frames change", async () => {
@@ -352,21 +396,23 @@ describe("ImageViewport window/level in real-world units", () => {
 		const file = fileSummary(5, { frame_count: 3 });
 		const view = renderViewport({ file, windowCenter: 30, windowWidth: 60, windowUnit: "um2/s" });
 
-		await waitFor(() => expect(fetchDisplayFrameBlob).toHaveBeenCalledWith(
+		await waitFor(() => expect(fetchDisplayFrame).toHaveBeenCalledWith(
 			5, 0, { wc: 60, ww: 120, windowMode: "default" }, expect.any(AbortSignal),
 		));
 		await view.rerender({ currentFrame: 2, navigationPosition: 2 });
-		await waitFor(() => expect(fetchDisplayFrameBlob).toHaveBeenCalledWith(
+		await waitFor(() => expect(fetchDisplayFrame).toHaveBeenCalledWith(
 			5, 2, { wc: 20, ww: 40, windowMode: "default" }, expect.any(AbortSignal),
 		));
 		expect(fetchFrameValueMapping).toHaveBeenCalledWith(5, 2, expect.any(AbortSignal));
 	});
 
 	it("shows the default window on files without that unit", async () => {
+		fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"]), window: { wc: 40, ww: 400 } });
 		renderViewport({ windowCenter: 40, windowWidth: 100, windowUnit: "Gy" });
 
-		// The server shows the frame's default window for a unit it lacks.
-		await waitFor(() => expect(fetchDisplayFrameBlob).toHaveBeenCalledWith(
+		// The server shows the frame's default window for a unit it lacks,
+		// and reports it.
+		await waitFor(() => expect(fetchDisplayFrame).toHaveBeenCalledWith(
 			5,
 			0,
 			{ wc: 40, ww: 100, windowMode: "default", unit: "Gy" },
@@ -418,7 +464,7 @@ describe("ImageViewport value overlays", () => {
 		await waitFor(() => expect(drawOverlayLayer).toHaveBeenCalledOnce());
 		expect(fetchDoseOverlayBlob).toHaveBeenCalledWith(5, 0, 9, expect.any(AbortSignal));
 		// The image underneath keeps its own render path and window.
-		expect(fetchDisplayFrameBlob).toHaveBeenCalledWith(5, 0, {}, expect.any(AbortSignal));
+		expect(fetchDisplayFrame).toHaveBeenCalledWith(5, 0, {}, expect.any(AbortSignal));
 		await waitFor(() => expect(layerCanvas()?.hidden).toBe(false));
 		expect(layerCanvas()?.style.opacity).toBe("0.4");
 		const legendFigure = screen.getByRole("figure", { name: "RT Dose: 0 to 23.3 Gy" });

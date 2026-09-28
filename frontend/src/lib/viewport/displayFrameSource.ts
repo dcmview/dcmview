@@ -1,7 +1,8 @@
 import {
 	displayFrameCacheKey,
 	displayFrameWindowCacheKey,
-	fetchDisplayFrameBlob,
+	fetchDisplayFrame,
+	type DisplayFrame,
 	type DisplayFrameWindowOptions,
 } from "../../api";
 import type { CineMode } from "../cinePlayback";
@@ -26,7 +27,7 @@ const CINE_LOOKAHEAD_FRAMES = 16;
 const PREFETCH_RESEED_DISTANCE = 6;
 
 export type DisplayFrameSourceOptions = {
-	load?: typeof fetchDisplayFrameBlob;
+	load?: typeof fetchDisplayFrame;
 	/** The navigation scope (open tab) whose frames are being fetched. */
 	navigationScope: () => string;
 	/** Parallel prefetch requests. */
@@ -38,26 +39,53 @@ export type DisplayFrameSourceOptions = {
 type PrefetchRun = { ctrl: AbortController; scopeKey: string; seedPosition: number; fullStack: boolean };
 
 /**
+ * A decoded display frame. `release` closes a bitmap the bitmap tier did not
+ * take once every consumer of its decode has released it; a cached bitmap
+ * belongs to the tier and `release` leaves it alone.
+ */
+export type DisplayBitmap = { bitmap: ImageBitmap; release: () => void };
+
+type SharedDecode = { bitmap: ImageBitmap; cached: boolean; leases: number };
+
+function leaseDecode(decode: SharedDecode): DisplayBitmap {
+	const { bitmap } = decode;
+	if (decode.cached) return { bitmap, release: () => {} };
+	decode.leases += 1;
+	let released = false;
+	return {
+		bitmap,
+		release: () => {
+			if (released) return;
+			released = true;
+			decode.leases -= 1;
+			if (decode.leases === 0) bitmap.close();
+		},
+	};
+}
+
+/**
  * Server-rendered display PNGs for the cine and server window/level paths.
  *
  * Requests belong to a fetch scope (navigation scope plus window options):
  * entering a new scope aborts the previous scope's requests and prefetch,
  * while navigation inside a scope never cancels reusable work. Payloads and
  * decoded bitmaps live in independent byte-budgeted LRU tiers that survive
- * scope changes until `clear`.
+ * scope changes until `clear`. A payload or bitmap larger than its tier's
+ * budget is still returned for the request that loaded it, just not cached.
  */
 export class DisplayFrameSource {
-	readonly #load: typeof fetchDisplayFrameBlob;
+	readonly #load: typeof fetchDisplayFrame;
 	readonly #navigationScope: () => string;
 	readonly #concurrency: () => number;
 	readonly #onScopeChange: () => void;
 	readonly #caches = createDisplayFrameCaches(DISPLAY_BLOB_CACHE_BYTE_BUDGET, DISPLAY_BITMAP_CACHE_BYTE_BUDGET);
-	readonly #requests = new SharedRequestRegistry<string, Blob>();
+	/** Frame requests and in-scope overlay fetches, by key. */
+	readonly #requests = new SharedRequestRegistry<string, unknown>();
 	/** `file:frame` of each frame request in flight, by request key. */
 	readonly #framesInFlight = new Map<string, string>();
 	// Keyed by payload identity, so a refetched payload never reuses an
 	// older payload's decode.
-	readonly #decodes = new SharedRequestRegistry<Blob, ImageBitmap>();
+	readonly #decodes = new SharedRequestRegistry<Blob, SharedDecode>();
 	#scopeKey: string | null = null;
 	#scopeEnteredAt = 0;
 	#prefetch: PrefetchRun | null = null;
@@ -65,7 +93,7 @@ export class DisplayFrameSource {
 	/** Where navigation last seeded a prefetch; the widened prefetch starts there. */
 	#lastSeed = 0;
 
-	constructor({ load = fetchDisplayFrameBlob, navigationScope, concurrency, onScopeChange }: DisplayFrameSourceOptions) {
+	constructor({ load = fetchDisplayFrame, navigationScope, concurrency, onScopeChange }: DisplayFrameSourceOptions) {
 		this.#load = load;
 		this.#navigationScope = navigationScope;
 		this.#concurrency = concurrency;
@@ -87,23 +115,23 @@ export class DisplayFrameSource {
 		this.#onScopeChange();
 	}
 
-	/** The cached payload, or the scope's shared request for it. */
-	ensureBlob(fileIndex: number, frameIndex: number, options: DisplayFrameWindowOptions): Promise<Blob> {
+	/** The cached frame, or the scope's shared request for it. */
+	ensureFrame(fileIndex: number, frameIndex: number, options: DisplayFrameWindowOptions): Promise<DisplayFrame> {
 		const key = this.key(fileIndex, frameIndex, options);
-		const cached = this.#caches.blobs.get(key);
+		const cached = this.#caches.frames.get(key);
 		if (cached) return Promise.resolve(cached);
-		const existing = this.#requests.get(key);
+		const existing = this.#requests.get(key) as Promise<DisplayFrame> | undefined;
 		if (existing) return existing;
 		this.enterScope(options);
 		return this.#requests.request(key, (signal) => {
 			this.#framesInFlight.set(key, `${fileIndex}:${frameIndex}`);
 			return this.#load(fileIndex, frameIndex, options, signal)
-				.then((blob) => {
-					if (!this.#caches.blobs.set(key, blob)) throw new Error("Display frame exceeded PNG cache budget");
-					return this.#caches.blobs.get(key) ?? blob;
+				.then((frame) => {
+					this.#caches.frames.set(key, frame);
+					return frame;
 				})
 				.finally(() => this.#framesInFlight.delete(key));
-		});
+		}) as Promise<DisplayFrame>;
 	}
 
 	/**
@@ -125,25 +153,26 @@ export class DisplayFrameSource {
 	 */
 	fetchInScope(key: string, options: DisplayFrameWindowOptions, load: (signal: AbortSignal) => Promise<Blob>): Promise<Blob> {
 		this.enterScope(options);
-		return this.#requests.request(key, load);
+		return this.#requests.request(key, load) as Promise<Blob>;
 	}
 
-	inFlight(key: string): Promise<Blob> | undefined {
+	inFlight(key: string): Promise<unknown> | undefined {
 		return this.#requests.get(key);
 	}
 
-	/** Decodes `blob` into the bitmap tier, reusing a cached or in-flight decode. */
-	decode(key: string, blob: Blob): Promise<ImageBitmap> {
+	/**
+	 * Decodes `blob`, reusing a cached or in-flight decode. The bitmap joins
+	 * the bitmap tier when `blob` is still `key`'s cached payload and fits the
+	 * budget; otherwise the caller gets it uncached and must `release` it.
+	 */
+	decode(key: string, blob: Blob): Promise<DisplayBitmap> {
 		const cached = this.#caches.bitmaps.get(key);
-		if (cached) return Promise.resolve(cached);
-		return this.#decodes.request(blob, () => createImageBitmap(blob).then((bitmap) => {
-			if (this.#caches.blobs.peek(key) === blob) {
-				if (this.#caches.bitmaps.set(key, bitmap)) return bitmap;
-				throw new Error("Decoded display frame exceeded bitmap cache budget");
-			}
-			bitmap.close();
-			throw new Error("display image decode superseded");
-		}));
+		if (cached) return Promise.resolve({ bitmap: cached, release: () => {} });
+		return this.#decodes.request(blob, () => createImageBitmap(blob).then((bitmap) => ({
+			bitmap,
+			cached: this.#caches.frames.peek(key)?.blob === blob && this.#caches.bitmaps.set(key, bitmap),
+			leases: 0,
+		}))).then(leaseDecode);
 	}
 
 	/**
@@ -161,6 +190,11 @@ export class DisplayFrameSource {
 		currentBlobSize: number,
 		cineMode: CineMode | null,
 	): void {
+		// Frames this large would be fetched only to be dropped again.
+		if (currentBlobSize > DISPLAY_BLOB_CACHE_BYTE_BUDGET) {
+			this.stopPrefetch();
+			return;
+		}
 		const dwellLeft = FULL_STACK_PREFETCH_DWELL_MS - (performance.now() - this.#scopeEnteredAt);
 		this.#lastSeed = position;
 		this.#seedPrefetch(frames, position, direction, options, currentBlobSize, cineMode, cineMode !== null || dwellLeft <= 0);
@@ -228,7 +262,7 @@ export class DisplayFrameSource {
 	clear(): void {
 		this.resetScope();
 		this.#decodes.abortAll();
-		this.#caches.blobs.clear();
+		this.#caches.frames.clear();
 		this.#caches.bitmaps.clear();
 		this.#onScopeChange();
 	}
@@ -265,9 +299,9 @@ export class DisplayFrameSource {
 				const frame = frames[position];
 				if (!frame) return;
 				const key = this.key(frame.file_index, frame.frame_index, options);
-				if (signal.aborted || this.#caches.blobs.has(key)) return;
+				if (signal.aborted || this.#caches.frames.has(key)) return;
 				try {
-					await this.ensureBlob(frame.file_index, frame.frame_index, options);
+					await this.ensureFrame(frame.file_index, frame.frame_index, options);
 				} catch {
 					// Ignore network/decode failures during prefetch.
 				}

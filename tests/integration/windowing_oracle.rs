@@ -490,7 +490,7 @@ async fn loader_driven_display_frames_match_the_shared_windowing_oracle() {
 }
 
 #[tokio::test]
-async fn a_window_in_another_unit_shows_the_default_window() {
+async fn a_window_in_another_unit_shows_and_reports_the_default_window() {
     let oracle = load_oracle();
     let case = oracle
         .cases
@@ -517,6 +517,20 @@ async fn a_window_in_another_unit_shows_the_default_window() {
         .await;
     other_unit.assert_status_ok();
     assert_eq!(other_unit.as_bytes(), default.as_bytes());
+    // The fallback reports the default window it applied, which tells the
+    // viewer its window was not; an applied real-world window reports none,
+    // having no linear Modality equivalent.
+    let window = |response: &TestResponse| {
+        (
+            header_f64(response, "X-Frame-Window-Center"),
+            header_f64(response, "X-Frame-Window-Width"),
+        )
+    };
+    assert!(window(&default).0.is_some());
+    assert_eq!(window(&other_unit), window(&default));
+    let applied = test_server.get(&display_url(case)).await;
+    applied.assert_status_ok();
+    assert_eq!(window(&applied), (None, None));
 
     let without_window = test_server.get("/api/file/0/frame/0?unit=SUV").await;
     without_window.assert_status_bad_request();

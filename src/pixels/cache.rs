@@ -1,4 +1,5 @@
 use super::error::PixelError;
+use super::render::DisplayPng;
 use crate::api::contracts::RawFrameMetadata;
 use crate::types::{FrameCacheKey, OverlayCacheKey, RawFrameCacheKey};
 use bytes::Bytes;
@@ -14,7 +15,7 @@ pub const RAW_CACHE_MAX_BYTES: usize = 384 * 1024 * 1024; // 384 MiB
 pub const OVERLAY_CACHE_MAX_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
 
 /// Encoded display frames keyed by file, frame, and window request.
-pub type FrameCache = BudgetedLru<FrameCacheKey, Bytes>;
+pub type FrameCache = BudgetedLru<FrameCacheKey, DisplayPng>;
 /// Decoded raw samples and their metadata keyed by file and frame.
 pub type RawFrameCache = BudgetedLru<RawFrameCacheKey, (Bytes, RawFrameMetadata)>;
 /// Encoded overlay PNGs keyed by overlay object (and SEG frame) and displayed frame.
@@ -28,6 +29,12 @@ pub trait FrameBody: Clone {
 impl FrameBody for Bytes {
     fn body_len(&self) -> usize {
         self.len()
+    }
+}
+
+impl FrameBody for DisplayPng {
+    fn body_len(&self) -> usize {
+        self.png.len()
     }
 }
 
@@ -148,6 +155,10 @@ mod tests {
         }
     }
 
+    fn png(len: usize) -> DisplayPng {
+        DisplayPng::color(Bytes::from(vec![0_u8; len]))
+    }
+
     fn contains<K: Hash + Eq, V: FrameBody>(cache: &BudgetedLru<K, V>, key: &K) -> bool {
         cache.entries.contains(key)
     }
@@ -159,9 +170,9 @@ mod tests {
         let key1 = frame_key(1);
         let key2 = frame_key(2);
 
-        cache.insert(key0.clone(), Bytes::from(vec![0_u8; 4]));
-        cache.insert(key1.clone(), Bytes::from(vec![1_u8; 4]));
-        cache.insert(key2.clone(), Bytes::from(vec![2_u8; 4]));
+        cache.insert(key0.clone(), png(4));
+        cache.insert(key1.clone(), png(4));
+        cache.insert(key2.clone(), png(4));
 
         assert!(
             !contains(&cache, &key0),
@@ -180,7 +191,7 @@ mod tests {
         let mut cache = FrameCache::new(8);
         let key0 = frame_key(0);
 
-        cache.insert(key0.clone(), Bytes::from(vec![0_u8; 9]));
+        cache.insert(key0.clone(), png(9));
 
         assert!(
             !contains(&cache, &key0),
@@ -217,8 +228,8 @@ mod tests {
         let mut cache = FrameCache::new(8);
         let key = frame_key(0);
 
-        cache.insert(key.clone(), Bytes::from(vec![0_u8; 6]));
-        cache.insert(key.clone(), Bytes::from(vec![1_u8; 3]));
+        cache.insert(key.clone(), png(6));
+        cache.insert(key.clone(), png(3));
 
         assert!(contains(&cache, &key));
         assert_eq!(cache.bytes, 3);

@@ -12,7 +12,8 @@ use super::error::{PixelError, PixelResult};
 use super::header::open_header;
 use super::icc::select_icc_profile;
 use super::render::{
-    encode_rgb8_display_png, encode_windowed_luminance_png, LuminanceRenderOptions, StoredSamples,
+    encode_rgb8_display_png, encode_windowed_luminance_png, DisplayPng, LuminanceRenderOptions,
+    StoredSamples,
 };
 use super::shutter;
 
@@ -22,7 +23,7 @@ pub(crate) async fn decode_jp2_fragment_to_png(
     requested_wc: Option<f64>,
     requested_ww: Option<f64>,
     window_mode: WindowMode,
-) -> Result<Bytes> {
+) -> Result<DisplayPng> {
     task::spawn_blocking(move || {
         decode_jp2_fragment_to_png_blocking(&file, frame, requested_wc, requested_ww, window_mode)
     })
@@ -36,7 +37,7 @@ fn decode_jp2_fragment_to_png_blocking(
     requested_wc: Option<f64>,
     requested_ww: Option<f64>,
     window_mode: WindowMode,
-) -> Result<Bytes> {
+) -> Result<DisplayPng> {
     let fragment = read_encapsulated_fragment_blocking(&file.path, frame)?;
 
     let jp2_image = jpeg2k::Image::from_bytes(&fragment)
@@ -128,7 +129,7 @@ fn decode_jp2_fragment_to_png_blocking(
         return Err(anyhow!("unsupported JP2 component layout"));
     }
 
-    Ok(Bytes::from(buffer.into_inner()))
+    Ok(DisplayPng::color(Bytes::from(buffer.into_inner())))
 }
 
 pub(crate) async fn decode_raw_jp2_samples(

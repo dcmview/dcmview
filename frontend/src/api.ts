@@ -18,7 +18,7 @@ import type {
 	WindowMode,
 	WsiFrameContextResponse,
 } from "./generated/api-types";
-import { API_ENDPOINTS, RAW_FRAME_HEADERS } from "./generated/api-types";
+import { API_ENDPOINTS, DISPLAY_FRAME_HEADERS, RAW_FRAME_HEADERS } from "./generated/api-types";
 import type { RawFrame } from "./rawFrame";
 
 export type {
@@ -374,15 +374,33 @@ export function displayFrameCacheKey(
 	return `${fileIndex}:${frame}:${displayFrameWindowCacheKey(options)}`;
 }
 
-export async function fetchDisplayFrameBlob(
+/** A display PNG and the window the server rendered it with. */
+export type DisplayFrame = {
+	blob: Blob;
+	/**
+	 * The linear window applied, in Modality values; null for color frames,
+	 * frames presented through a VOI LUT, and a window applied in a
+	 * real-world `unit`. A `unit` request that reports one was shown with
+	 * that default window instead.
+	 */
+	window: { wc: number; ww: number } | null;
+};
+
+export async function fetchDisplayFrame(
 	fileIndex: number,
 	frame: number,
 	options: DisplayFrameWindowOptions = {},
 	signal?: AbortSignal,
-): Promise<Blob> {
+): Promise<DisplayFrame> {
 	const url = frameUrl(fileIndex, frame, options);
 	const response = await send(API_ENDPOINTS.fileFrame, url, { signal });
-	return response.blob();
+	return { blob: await response.blob(), window: parseDisplayWindow(response.headers) };
+}
+
+function parseDisplayWindow(headers: Headers): DisplayFrame["window"] {
+	const wc = Number(headers.get(DISPLAY_FRAME_HEADERS.windowCenter) ?? Number.NaN);
+	const ww = Number(headers.get(DISPLAY_FRAME_HEADERS.windowWidth) ?? Number.NaN);
+	return Number.isFinite(wc) && Number.isFinite(ww) ? { wc, ww } : null;
 }
 
 function requiredHeader(headers: Headers, name: string): string {
