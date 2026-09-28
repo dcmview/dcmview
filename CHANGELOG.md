@@ -18,6 +18,9 @@ diagnostic viewer.
   read one value.
 - With `--startup-json`, a completed scan that found files prints
   `{"type":"scan_complete","file_count":N}`.
+- Display frames report the window they were rendered with in
+  `X-Frame-Window-Center` and `X-Frame-Window-Width` (grayscale frames with a
+  linear window; not color or VOI LUT frames).
 - The status bar says when the server can no longer be reached, with a Retry;
   a failed first load has a Retry too.
 - `RUST_LOG` now controls logging (for example `RUST_LOG=dcmview=debug` lists
@@ -126,6 +129,16 @@ diagnostic viewer.
 - A transient raw-frame failure no longer turns off client-side window/level
   for the rest of the session.
 - `dcmview ... | head` no longer panics on the closed pipe.
+- Server-rendered frames show the window they were actually drawn with. Files
+  without Window Center/Width showed "W: 1 · C: 0", Full Dynamic showed the
+  DICOM window instead of min/max, and a window/level drag on a file the
+  browser cannot window started from that placeholder. Frames with no linear
+  window (color, VOI LUT) no longer show a W/C value. Files with a real-world
+  unit (RT Dose, Real World Value Mapping) label their legend from the same
+  window instead of downloading the whole raw frame.
+- Display frames larger than the viewer's frame caches (above roughly 32
+  megapixels, such as an 8192x8192 image) are shown uncached instead of
+  failing with a cache budget error.
 
 - The tag panel's Value column no longer starts past the panel's right edge;
   the keyword column truncates first, so values stay visible at any panel

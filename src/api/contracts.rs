@@ -35,6 +35,19 @@ pub const RAW_FRAME_HEADER_DEFAULT_WW: &str = "X-Frame-Default-Ww";
 pub const RAW_FRAME_HEADER_PADDING_LOW: &str = "X-Frame-Padding-Low";
 pub const RAW_FRAME_HEADER_PADDING_HIGH: &str = "X-Frame-Padding-High";
 
+pub const DISPLAY_FRAME_HEADER_WINDOW_CENTER: &str = "X-Frame-Window-Center";
+pub const DISPLAY_FRAME_HEADER_WINDOW_WIDTH: &str = "X-Frame-Window-Width";
+
+/// Display-frame response headers, keyed by their name in the generated
+/// TypeScript table: the linear window the PNG was presented with, as center
+/// and width in Modality values. Both are sent for grayscale frames windowed
+/// linearly (requested, DICOM, or automatic) and neither for color frames or
+/// frames presented through a VOI LUT.
+pub const DISPLAY_FRAME_HEADERS: &[(&str, &str)] = &[
+    ("windowCenter", DISPLAY_FRAME_HEADER_WINDOW_CENTER),
+    ("windowWidth", DISPLAY_FRAME_HEADER_WINDOW_WIDTH),
+];
+
 /// Raw-frame response header carrying each serialized [`RawFrameMetadata`]
 /// field, keyed by that field's JSON name. The two padding headers are sent
 /// only when the file declares Pixel Padding, and the default window pair only
@@ -78,6 +91,9 @@ pub enum ResponseHeaders {
     None,
     /// [`CACHE_HEADER`] with [`CACHE_HIT`] or [`CACHE_MISS`].
     Cache,
+    /// [`CACHE_HEADER`] plus, when the frame has a linear window,
+    /// [`DISPLAY_FRAME_HEADERS`].
+    DisplayFrame,
     /// [`CACHE_HEADER`] plus [`RAW_FRAME_HEADERS`].
     RawFrame,
     /// [`EXPORT_CONTENT_DISPOSITION_HEADER`].
@@ -204,7 +220,7 @@ pub mod endpoints {
         "fileFrame",
         "/file/{index}/frame/{frame}",
         PNG_MEDIA_TYPE,
-        ResponseHeaders::Cache,
+        ResponseHeaders::DisplayFrame,
     );
     /// Decoded little-endian samples with `RawFrameMetadata` in headers.
     pub const FILE_RAW_FRAME: Endpoint = binary(

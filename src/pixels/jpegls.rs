@@ -7,7 +7,9 @@ use tokio::task;
 
 use super::error::{PixelError, PixelResult};
 use super::pixeldata_frame::{self, DecodedFrame};
-use super::render::{encode_windowed_luminance_png, LuminanceRenderOptions, StoredSamples};
+use super::render::{
+    encode_windowed_luminance_png, DisplayPng, LuminanceRenderOptions, StoredSamples,
+};
 
 pub(crate) async fn decode_jpeg_ls_to_png(
     file: Arc<FileEntry>,
@@ -15,7 +17,7 @@ pub(crate) async fn decode_jpeg_ls_to_png(
     requested_wc: Option<f64>,
     requested_ww: Option<f64>,
     window_mode: WindowMode,
-) -> PixelResult<Bytes> {
+) -> PixelResult<DisplayPng> {
     task::spawn_blocking(move || {
         let decoded = decode_frame(&file, frame).map_err(PixelError::frame_decode)?;
         if !matches!(decoded.bits_allocated, 8 | 16) {

@@ -15,9 +15,9 @@ function fakeDisplay() {
 		fetched,
 		display: {
 			key: (file: number, frame: number) => `${file}:${frame}`,
-			ensureBlob: vi.fn(async (file: number, frame: number) => {
+			ensureFrame: vi.fn(async (file: number, frame: number) => {
 				fetched.push(`${file}:${frame}`);
-				return new Blob(["png"]);
+				return { blob: new Blob(["png"]), window: null };
 			}),
 			decode: vi.fn(),
 		},

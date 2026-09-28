@@ -106,15 +106,14 @@ export class PixelProbe {
 	/**
 	 * Reads this frame's samples: `displayed` when the renderer already holds
 	 * them, else a cached or settled fetch. A frame too large to fetch for one
-	 * value is read at `pixel` only, unless `wholeFrame` (automatic windows
-	 * need every sample). Call untracked from an effect; returns the effect's
-	 * cleanup.
+	 * value is read at `pixel` only. Call untracked from an effect; returns
+	 * the effect's cleanup.
 	 */
 	track(
 		file: FileSummary,
 		frameIndex: number,
 		displayed: RawFrame | null,
-		{ pixel = null, wholeFrame = false }: { pixel?: ImagePixel | null; wholeFrame?: boolean } = {},
+		{ pixel = null }: { pixel?: ImagePixel | null } = {},
 	): (() => void) | undefined {
 		if (this.#unavailableFiles[file.index]) return undefined;
 		const key = frameKey(file.index, frameIndex);
@@ -123,12 +122,9 @@ export class PixelProbe {
 			this.#ready(file, key, known);
 			return undefined;
 		}
-		if (!wholeFrame && probesSinglePixels(file)) return this.#trackPixel(file, frameIndex, key, pixel);
+		if (probesSinglePixels(file)) return this.#trackPixel(file, frameIndex, key, pixel);
 		const current = this.#samples;
-		// A single-pixel read does not stand in for the whole frame.
-		const whole = current?.key === key && current.state.status !== "loading"
-			&& !(current.state.status === "ready" && current.state.at);
-		if (whole) return undefined;
+		if (current?.key === key && current.state.status !== "loading") return undefined;
 		if (current?.key !== key || current.state.status === "ready") {
 			this.#samples = { key, state: { status: "loading" } };
 		}

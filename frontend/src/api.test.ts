@@ -4,7 +4,7 @@ import {
 	displayFrameCacheKey,
 	displayFrameWindowCacheKey,
 	fetchDoseOverlayBlob,
-	fetchDisplayFrameBlob,
+	fetchDisplayFrame,
 	fetchDoseOverlayValues,
 	fetchFiles,
 	fetchRawFrame,
@@ -188,10 +188,23 @@ describe("fetch wrappers", () => {
 	it("never sends a real-world window as is", async () => {
 		const fetchMock = vi.fn();
 		vi.stubGlobal("fetch", fetchMock);
-		await expect(fetchDisplayFrameBlob(1, 0, { wc: 12, ww: 20, unit: "Gy" })).rejects.toThrow("real-world window");
+		await expect(fetchDisplayFrame(1, 0, { wc: 12, ww: 20, unit: "Gy" })).rejects.toThrow("real-world window");
 		expect(fetchMock).not.toHaveBeenCalled();
 		expect(displayFrameWindowCacheKey({ wc: 12, ww: 20, windowMode: "default", unit: "Gy" }))
 			.toBe("default:12:20:Gy");
+	});
+
+	it("reads the window a display frame was rendered with, when it has one", async () => {
+		const png = () => new Response(new Blob(["png"]), { status: 200, headers: { "Content-Type": "image/png" } });
+		const windowed = png();
+		windowed.headers.set("X-Frame-Window-Center", "1499.5");
+		windowed.headers.set("X-Frame-Window-Width", "2970");
+		vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(windowed).mockResolvedValueOnce(png()));
+
+		const frame = await fetchDisplayFrame(1, 0);
+		expect(frame.window).toEqual({ wc: 1499.5, ww: 2970 });
+		expect(await frame.blob.text()).toBe("png");
+		await expect(fetchDisplayFrame(2, 0)).resolves.toMatchObject({ window: null });
 	});
 
 	it("reads overlay values as little-endian f32 samples", async () => {

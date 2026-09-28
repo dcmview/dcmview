@@ -57,12 +57,13 @@ export class ByteBudgetLruCache<Key, Value> {
 		return record.value;
 	}
 
+	/**
+	 * Caches `value`, evicting least-recently-used entries to fit. A value
+	 * larger than the whole budget is not cached and stays the caller's.
+	 */
 	set(key: Key, value: Value): boolean {
 		const incomingBytes = this.#measuredBytes(value);
-		if (incomingBytes > this.#maxBytes) {
-			this.#dispose?.(value);
-			return false;
-		}
+		if (incomingBytes > this.#maxBytes) return false;
 
 		const previous = this.#entries.get(key);
 		if (previous) {
@@ -112,6 +113,8 @@ export class ByteBudgetLruCache<Key, Value> {
 	}
 }
 
+import type { DisplayFrame } from "../api";
+
 export type BitmapResource = {
 	width: number;
 	height: number;
@@ -123,18 +126,19 @@ export function decodedBitmapBytes(bitmap: Pick<BitmapResource, "width" | "heigh
 }
 
 export type DisplayFrameCaches<Bitmap extends BitmapResource = ImageBitmap> = {
-	blobs: ByteBudgetLruCache<string, Blob>;
+	/** PNG payloads with their render window, budgeted by PNG size. */
+	frames: ByteBudgetLruCache<string, DisplayFrame>;
 	bitmaps: ByteBudgetLruCache<string, Bitmap>;
 };
 
 export function createDisplayFrameCaches<Bitmap extends BitmapResource = ImageBitmap>(
-	blobMaxBytes: number,
+	frameMaxBytes: number,
 	bitmapMaxBytes: number,
 ): DisplayFrameCaches<Bitmap> {
 	return {
-		blobs: new ByteBudgetLruCache<string, Blob>({
-			maxBytes: blobMaxBytes,
-			sizeOf: (blob) => blob.size,
+		frames: new ByteBudgetLruCache<string, DisplayFrame>({
+			maxBytes: frameMaxBytes,
+			sizeOf: (frame) => frame.blob.size,
 		}),
 		bitmaps: new ByteBudgetLruCache<string, Bitmap>({
 			maxBytes: bitmapMaxBytes,

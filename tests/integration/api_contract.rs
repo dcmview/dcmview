@@ -5,8 +5,8 @@ use bytes::Bytes;
 use dcmview::annotations::{AnnotationStore, EmbedRoiAnnotations};
 use dcmview::api::contracts::{
     endpoints, ApiMethod, Endpoint, ResponseHeaders, API_PREFIX, CACHE_HEADER, CACHE_HIT,
-    CACHE_MISS, EXPORT_CONTENT_DISPOSITION_HEADER, EXPORT_CONTENT_DISPOSITION_VALUE,
-    RAW_FRAME_HEADERS,
+    CACHE_MISS, DISPLAY_FRAME_HEADERS, EXPORT_CONTENT_DISPOSITION_HEADER,
+    EXPORT_CONTENT_DISPOSITION_VALUE, RAW_FRAME_HEADERS,
 };
 use dcmview::server;
 use dcmview::types::WindowPreset;
@@ -452,10 +452,38 @@ fn assert_declared_response_headers(endpoint: &Endpoint, response: &TestResponse
         ResponseHeaders::None => {
             assert_no_cache_header(endpoint, response);
             assert_no_raw_frame_headers(endpoint, response);
+            assert_no_display_frame_headers(endpoint, response);
             assert_no_export_header(endpoint, response);
         }
         ResponseHeaders::Cache => {
             assert_cache_header(endpoint, response);
+            assert_no_raw_frame_headers(endpoint, response);
+            assert_no_display_frame_headers(endpoint, response);
+            assert_no_export_header(endpoint, response);
+        }
+        ResponseHeaders::DisplayFrame => {
+            assert_cache_header(endpoint, response);
+            // The window pair is sent together, as numbers, or not at all.
+            let window = DISPLAY_FRAME_HEADERS
+                .iter()
+                .map(|(_, name)| {
+                    response.maybe_header(*name).map(|value| {
+                        value
+                            .to_str()
+                            .ok()
+                            .and_then(|text| text.parse::<f64>().ok())
+                            .filter(|number| number.is_finite())
+                            .unwrap_or_else(|| {
+                                panic!("{} returned non-numeric {name}", endpoint.id)
+                            })
+                    })
+                })
+                .collect::<Vec<_>>();
+            assert!(
+                window.iter().all(Option::is_some) || window.iter().all(Option::is_none),
+                "{} returned half a display window",
+                endpoint.id
+            );
             assert_no_raw_frame_headers(endpoint, response);
             assert_no_export_header(endpoint, response);
         }
@@ -472,11 +500,13 @@ fn assert_declared_response_headers(endpoint: &Endpoint, response: &TestResponse
                     endpoint.id
                 );
             }
+            assert_no_display_frame_headers(endpoint, response);
             assert_no_export_header(endpoint, response);
         }
         ResponseHeaders::Export => {
             assert_no_cache_header(endpoint, response);
             assert_no_raw_frame_headers(endpoint, response);
+            assert_no_display_frame_headers(endpoint, response);
             assert_eq!(
                 response
                     .header(EXPORT_CONTENT_DISPOSITION_HEADER)
@@ -506,6 +536,16 @@ fn assert_no_cache_header(endpoint: &Endpoint, response: &TestResponse) {
         "{} unexpectedly returned {CACHE_HEADER}",
         endpoint.id
     );
+}
+
+fn assert_no_display_frame_headers(endpoint: &Endpoint, response: &TestResponse) {
+    for (_, name) in DISPLAY_FRAME_HEADERS {
+        assert!(
+            response.maybe_header(*name).is_none(),
+            "{} unexpectedly returned display-frame header {name}",
+            endpoint.id
+        );
+    }
 }
 
 fn assert_no_raw_frame_headers(endpoint: &Endpoint, response: &TestResponse) {

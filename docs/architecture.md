@@ -162,6 +162,13 @@ is windowed directly: the renderer's window LUT maps each stored value
 through it, and stills with such a window stay on that path in every tool.
 Files without a mapping keep the stored-unit path unchanged.
 
+The window HUD, the unit legend, and a window/level drag start from the
+window of the image on screen. The raw path resolves that window itself; for
+a server-rendered frame it is the window being dragged or requested, else the
+one the display response reports (`X-Frame-Window-*`), kept with the cached
+PNG. A mapped file converts that window to its unit, so its legend needs no
+raw samples.
+
 For SEG objects, `SemanticContextPanel` keeps Pixel Preview as the initial mode
 and publishes an explicit Semantic Context selection to `App.svelte`.
 `ImageViewport` composes the referenced display PNG with the transparent SEG
@@ -323,6 +330,9 @@ The contract is kept consistent by three layers:
   `text/csv; charset=utf-8`.
 - Every successful display or raw frame response includes `X-Cache: HIT` or
   `X-Cache: MISS`.
+- Display responses of linearly windowed grayscale frames include the applied
+  window as `X-Frame-Window-Center` and `X-Frame-Window-Width`, from the
+  cached render on a hit; color and VOI LUT frames include neither.
 - Raw responses include all required `X-Frame-*` metadata headers. Default
   window headers are present only when the DICOM supplies a default window.
 - Unsupported transfer syntaxes are `422`, as are layouts the catalog marks

@@ -1,6 +1,6 @@
 use crate::api::contracts::{RawFrameMetadata, SupportState, WindowMode};
 use crate::types::{
-    FileEntry, FrameCacheKey, NativePixelDataKind, RawFrameCacheKey, WindowRequest,
+    FileEntry, FrameCacheKey, NativePixelDataKind, RawFrameCacheKey, ResolvedWindow, WindowRequest,
 };
 use bytes::Bytes;
 use futures::FutureExt;
@@ -171,6 +171,8 @@ pub struct FrameRequest {
 pub struct FrameResponse {
     pub body: Bytes,
     pub content_type: &'static str,
+    /// The linear window the frame was presented with, if it has one.
+    pub window: Option<ResolvedWindow>,
     pub cache_hit: bool,
 }
 
@@ -208,7 +210,7 @@ pub async fn load_frame(
         window.width(),
         window.mode(),
     );
-    let (body, cache_hit) = cached_or_decoded(&cache, key, async move {
+    let (display, cache_hit) = cached_or_decoded(&cache, key, async move {
         Ok(match codec {
             Codec::DeflatedImageFrame => {
                 decode_deflated_binary_frame_to_png(file, frame, center, width, mode).await?
@@ -232,8 +234,9 @@ pub async fn load_frame(
     .await?;
 
     Ok(FrameResponse {
-        body,
+        body: display.png,
         content_type: "image/png",
+        window: display.window,
         cache_hit,
     })
 }

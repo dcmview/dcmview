@@ -301,3 +301,70 @@ async fn default_and_full_dynamic_modes_occupy_independent_cache_slots() {
         "HIT"
     );
 }
+
+#[tokio::test]
+async fn display_frame_reports_the_window_it_applied() {
+    use dcmview::api::contracts::{
+        WindowMode, DISPLAY_FRAME_HEADER_WINDOW_CENTER, DISPLAY_FRAME_HEADER_WINDOW_WIDTH,
+    };
+    use dcmview::pixels::resolve_window_with_mode;
+
+    // No Window Center/Width, so the default request is windowed from the
+    // frame's own samples.
+    let dir = tempdir().expect("temp dir");
+    let path = dir.path().join("server-window-headers.dcm");
+    let samples = [0_u16, 1000, 2000, 3000];
+    support::write_uncompressed_u16_dicom(
+        &path,
+        "1.2.840.10008.1.2.1",
+        2,
+        2,
+        samples.to_vec(),
+        None,
+        None,
+    );
+    let mut entry = support::file_entry(path, "1.2.840.10008.1.2.1", 1);
+    entry.rows = 2;
+    entry.columns = 2;
+    let test_server = TestServer::new(server::router(support::app_state(vec![entry])));
+    let values = samples.map(f64::from);
+
+    let automatic = resolve_window_with_mode(WindowMode::Default, None, None, None, &values)
+        .expect("percentile window");
+    let full_dynamic = resolve_window_with_mode(WindowMode::FullDynamic, None, None, None, &values)
+        .expect("min/max window");
+    for (query, center, width) in [
+        ("", automatic.center, automatic.width),
+        (
+            "?mode=full_dynamic",
+            full_dynamic.center,
+            full_dynamic.width,
+        ),
+        ("?wc=1200&ww=400", 1200.0, 400.0),
+    ] {
+        // A cached frame reports the same window as its first render.
+        for cache in ["MISS", "HIT"] {
+            let response = test_server
+                .get(&format!("/api/file/0/frame/0{query}"))
+                .await;
+            response.assert_status_ok();
+            assert_eq!(response.header("X-Cache").to_str().expect("cache"), cache);
+            let header = |name: &str| -> f64 {
+                response
+                    .header(name)
+                    .to_str()
+                    .expect("window header")
+                    .parse()
+                    .expect("numeric window header")
+            };
+            assert_eq!(
+                (
+                    header(DISPLAY_FRAME_HEADER_WINDOW_CENTER),
+                    header(DISPLAY_FRAME_HEADER_WINDOW_WIDTH)
+                ),
+                (center, width),
+                "window reported for {query:?} on a {cache}"
+            );
+        }
+    }
+}
