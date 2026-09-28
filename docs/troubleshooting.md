@@ -108,6 +108,18 @@ The file list updates while discovery is active and reports completion when the
 scan finishes. Normal server shutdown cancels and awaits any remaining
 discovery work before the process exits.
 
+The whole directory tree is walked before the first file is inspected, so on a
+very large tree the first file appears only after the walk.
+
+### The viewer exits during a long scan with `--timeout`
+
+Symptom: with `--timeout`, `dcmview` exits before a large scan finishes.
+
+Likely cause: the idle clock starts once the first file is registered, and
+discovery progress does not count as activity; only API and browser requests
+do. Open the viewer (or send any request) during the scan, or use a longer
+timeout.
+
 ### Port already in use
 
 Symptom: startup fails with an address-in-use error.

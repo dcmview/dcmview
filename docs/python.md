@@ -148,7 +148,7 @@ Metadata filters:
 ```python
 view(
     "./study_dir",
-    filters=["Modality=CT", "PatientID=phantom"],
+    filters=["modality=CT", "patient_id=phantom"],
 )
 ```
 

@@ -185,11 +185,12 @@ there, not in a decoder, so what is advertised is what is converted.
 |---|---|---|
 | JPEG Baseline | `1.2.840.10008.1.2.4.50` | Decode the requested frame server-side with `dicom-pixeldata`; PNG encode |
 | JPEG Lossless | `1.2.840.10008.1.2.4.57`, `.70` | Decode server-side with `dicom-pixeldata`; convert YBR_FULL components to RGB (the lossless process has no color transform); PNG encode |
-| JPEG 2000 Lossless | `1.2.840.10008.1.2.4.90` | Read encapsulated fragment with `DicomCollector`; decode via `jpeg2k`; PNG encode |
-| JPEG-LS Lossless | `1.2.840.10008.1.2.4.80` | Decode grayscale server-side with statically linked CharLS; PNG encode |
+| JPEG 2000 Lossless | `1.2.840.10008.1.2.4.90` | Read the frame's encapsulated fragments (`pixels/encapsulated.rs`); decode via `jpeg2k`; PNG encode |
+| JPEG-LS Lossless | `1.2.840.10008.1.2.4.80` | Decode 8- or 16-bit grayscale server-side with statically linked CharLS; PNG encode |
 | JPEG XL Lossless | `1.2.840.10008.1.2.4.110` | Decode server-side with `dicom-pixeldata`; RGB and YBR_RCT as decoded (the decoder inverts the RCT), YBR_FULL channels converted to RGB; PNG encode |
 | RLE Lossless | `1.2.840.10008.1.2.5` | Decode Annex G header/PackBits byte planes server-side; RGB, YBR_FULL, and full-resolution YBR_FULL_422 color; PNG encode |
-| Native dataset | Implicit LE, Explicit LE, Explicit BE, Deflated Explicit LE | Read decoded/native samples, rescale/window, PNG encode |
+| Deflated Image Frame Compression | `1.2.840.10008.1.2.8.1` | Inflate the one-bit monochrome frame (binary segmentations); window; PNG encode |
+| Native dataset | Implicit LE, Explicit LE, Explicit BE, Deflated Explicit LE | Read the requested frame's native samples (a deflated data set is inflated up to it), rescale/window, PNG encode |
 | JPEG Extended, JPEG 2000 lossy, JPEG-LS Near-Lossless, JPEG XL variants | `.51`, `.91`, `.81`, `.111`, `.112` | HTTP 422 unsupported transfer syntax |
 | Other | anything else | HTTP 422 unsupported transfer syntax |
 
@@ -363,7 +364,8 @@ requires an existing `frontend/dist/index.html`.
   entries are budgeted by `RAW_CACHE_MAX_BYTES`.
 - Tag trees are cached per file index in a bounded LRU behind private
   `AppState` methods. Tag reads parse only up to pixel data and describe the
-  pixel element from its header, never reading pixel values.
+  pixel element from its header, seeking past its value (a deflated data set
+  is inflated through it into a sink); pixel values are never kept.
 
 **Windowing**
 
@@ -375,16 +377,19 @@ Window resolution order is:
 3. DICOM Window Center/Width from loader metadata.
 4. 1st/99th percentile fallback from current-frame samples.
 
-The display pipeline applies rescale slope/intercept before windowing for
-uncompressed paths. The frontend raw-frame renderer receives rescale metadata in
-headers and applies the same convention client-side.
+The display pipeline applies the Modality LUT or rescale before windowing for
+every grayscale path; 8- and 16-bit frames go through a per-stored-value lookup
+table and automatic windows come from a histogram of stored values. The
+frontend raw-frame renderer receives rescale metadata in headers and applies
+the same convention client-side.
 
-**DICOM collector use**
+**Encapsulated frame access**
 
-JPEG 2000 display decoding reads encapsulated fragments through
-`DicomCollector`. The current implementation reads fragments sequentially up to
-the requested frame. Do not document or rely on a cached BOT/frame-offset index
-unless one is actually implemented.
+`pixels/encapsulated.rs` locates a frame for every encapsulated codec. With a
+valid Extended or Basic Offset Table it seeks to the frame's first item;
+without one it steps over item headers and reads only each fragment's end to
+find a JPEG end marker (RLE is one fragment per frame). No frame-offset index
+is cached between requests.
 
 **Annotations**
 
@@ -422,8 +427,9 @@ unless one is actually implemented.
   calls in components when a typed wrapper belongs there.
 - The viewport supports two render paths: display PNG blobs for cine mode and
   raw-frame client-side rendering for interactive diagnostic/window-level work.
-- Window/level interactions should avoid flooding requests; prefer local raw
-  rendering or debounced/networked updates depending on the mode being changed.
+- Window/level interactions should avoid flooding requests: local raw rendering
+  draws at most once per animation frame, and the server-windowing drag sends
+  one request on release.
 - Zoom and pan use canvas/CSS transform state and should not refetch frames.
 - Zoom/pan state is per open tab (navigation scope). Moving through a tab's
   frames, including the single-frame files of a stack, preserves the viewport

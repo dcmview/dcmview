@@ -64,7 +64,9 @@ The binary-private orchestration modules depend on the reusable library
 modules, not the reverse:
 
 1. `main.rs` owns the Clap shape and process exit only.
-2. `application.rs` owns dispatch and tracing initialization. It unwraps the
+2. `application.rs` owns dispatch and tracing initialization (`RUST_LOG`
+   overrides the default filter; logs go to stderr, since stdout carries the
+   `--startup-json` lines). It unwraps the
    hidden `--vscode-bridge-client <program> <args>...` form used by the terminal
    shims and the Python wrapper, then tries the VS Code bridge, then falls back
    to local startup in the same process. Bridge routing follows one rule for
@@ -72,17 +74,32 @@ modules, not the reverse:
    terminal) may use any live bridge; any other process routes only when its
    working directory is inside a registered workspace folder. A launch that
    reached a bridge without confirmation exits instead of starting a second,
-   local viewer. Only refused connections mark a registry entry stale.
+   local viewer. Before a launch, each endpoint is probed unauthenticated: the
+   bridge answers `401 {"error":"unauthorized"}`. Any other answer, a closed
+   connection, or a refused one marks the entry stale and removes it; no answer
+   in time falls through without removing it.
 3. `startup/mod.rs` validates local options and the annotation CSV header, constructs
    `FileRegistry`, `AnnotationStore`, `AppState`, and `ServerConfig`, binds the
    listener, starts discovery, serves, and joins discovery before returning.
 4. `startup/discovery.rs` translates loader events into registry updates, then
    owns the cancellable blocking annotation pass. It does not own HTTP routing.
+   The server announces its URL before discovery ends; with `--startup-json`
+   a completed scan that found files also prints
+   `{"type":"scan_complete","file_count":N}`, which the Python wrapper waits
+   for before returning a non-blocking handle. The loader walks every input
+   directory before inspecting candidates, bounds each file's `frame_count` by
+   the frames it can hold, and counts skips by reason for the summary.
 5. `server/runtime.rs` owns listener, browser, and graceful-shutdown
    resources. `server/api/` owns HTTP concerns. `server/catalog.rs` owns the
    progressive file registry.
 6. `pixels/service.rs` is the server-facing pixel boundary. Codec, cache,
-   rendering, and window modules remain below it. `pixels/native_layout.rs`
+   rendering, and window modules remain below it. A cache miss registers an
+   in-flight decode that later requests for the key await; the decode runs as
+   its own task and caches its result even if its client disconnected, and a
+   semaphore bounds concurrent decodes to the core count. The frame caches are
+   bounded by bytes only. Grayscale 8- and 16-bit frames are presented through
+   a per-stored-value lookup table (`render.rs`), with automatic windows from a
+   histogram of stored values. `pixels/native_layout.rs`
    validates native frame sizing and normalizes bit-packed, planar, subsampled,
    and endian-sensitive storage before display decoding. `pixels/overlay.rs`
    and `pixels/shutter.rs` own bounded native presentation compositing;
@@ -111,8 +128,11 @@ inside components.
 
 `App.svelte` owns the shared root state through controllers in
 `frontend/src/lib/app/` (catalog polling, tab and stack navigation, window
-settings, sidebar layout) and the per-tab `ViewStates` store (zoom, pan,
-orientation). One `svelte:window` keydown handler dispatches every global
+settings, value overlays, sidebar layout) and the per-tab `ViewStates` store
+(zoom, pan, orientation). Catalog polling applies a response only when the
+scan has moved, fetches the series catalog only when the file list or scan
+state changed, and backs off to 2 s while nothing changes. A request that
+cannot reach the server marks it disconnected in the status bar. One `svelte:window` keydown handler dispatches every global
 shortcut through `lib/keyboardShortcuts.ts`. Keyed fetches share and abort
 in-flight requests through `lib/keyedAsyncResource.ts`. `ImageViewport`
 composes units in `frontend/src/lib/viewport/`: raw and display frame sources,
@@ -124,6 +144,9 @@ transform math, including the client-to-image-pixel mapping.
 The pixel readout reads the frame on screen: the samples the window/level
 renderer already holds, or a raw frame fetched through the shared raw-frame
 source once the cursor rests, converted with that frame's `value-mapping`.
+Frames too large to fetch for one value (over 4 Mpx, or over 0.25 Mpx that the
+raw renderer cannot window and so does not cache) are read one pixel at a time
+through `raw/pixel`, unless the renderer already holds them.
 With a value overlay shown it adds the overlay's value from the frame's
 `/values` grid, fetched once per frame while the cursor is on the image.
 
@@ -174,13 +197,19 @@ resources are keyed by source file/frame identity but retained for the logical
 tab lifetime, so crossing a source-file boundary does not clear already loaded
 frames. Raw foreground and prefetch consumers share one in-flight request per
 source frame; consumer navigation does not cancel reusable work, while logical
-tab teardown aborts the request registry. Display resources use independent
-byte-budgeted LRU tiers: a 320 MiB compressed PNG payload cache and a 128 MiB
-decoded RGBA bitmap working set. Bitmap eviction closes only the decoded browser
-resource and preserves its PNG for local re-decoding. Background display
-prefetch fills the PNG tier without eagerly decoding every frame. These byte
-budgets are the only active-stack discard policy; near-frame prefetch does not
-prune previously visited frames. Cine resolves logical positions to source
+tab teardown aborts the request registry. Raw frames live in a 256 MiB
+byte-budgeted LRU. Display resources use independent byte-budgeted LRU tiers:
+a 320 MiB compressed PNG payload cache and a 128 MiB decoded RGBA bitmap
+working set. Bitmap eviction closes only the decoded browser resource and
+preserves its PNG for local re-decoding. The tiers are keyed by source frame
+and survive tab switches (a switch aborts only the previous tab's requests),
+so returning to a tab is served from cache. Background display prefetch fills
+the PNG tier without eagerly decoding every frame: a new tab is prefetched
+within 48 frames of the current one, and the whole stack once the viewer has
+stayed on it 1.5 s or cine plays. Navigation aborts frame requests outside
+that neighbourhood, and held arrow keys step at most every 60 ms (frames) or
+150 ms (files). These byte budgets are the only discard policy; near-frame
+prefetch does not prune previously visited frames. Cine resolves logical positions to source
 frames and uses the same prepare-then-render cache path as manual navigation.
 
 ## Executable HTTP Contract
@@ -296,9 +325,12 @@ The contract is kept consistent by three layers:
   `X-Cache: MISS`.
 - Raw responses include all required `X-Frame-*` metadata headers. Default
   window headers are present only when the DICOM supplies a default window.
-- Unsupported transfer syntaxes and raw layouts are `422`; missing pixels and
-  out-of-range frames are `404`; decode failures are request-scoped `500`
-  responses and do not stop the server.
+- Unsupported transfer syntaxes are `422`, as are layouts the catalog marks
+  unsupported: for display frames any such layout, for raw frames only invalid
+  geometry or numeric precision (raw frames still serve, for example, palette
+  indices). Missing pixels, out-of-range frames and files deleted after
+  discovery are `404`; decode failures are request-scoped `500` responses,
+  logged to stderr, and do not stop the server.
 - DICOMDIR is recognized by Media Storage Directory SOP Class and skipped with
   the stable `unsupported_media_directory` discovery reason while recursive
   discovery continues for ordinary objects. File-set hierarchy parsing and
@@ -370,16 +402,27 @@ order; non-conforming files with reversed 16-bit planes are not silently
 reinterpreted.
 
 JPEG-LS Lossless `.80` uses the vendored CharLS build through
-`dicom-pixeldata`; the supported path is 8-bit grayscale, while `.81` remains
+`dicom-pixeldata`; the supported path is 8- or 16-bit grayscale, while `.81` remains
 unsupported. JPEG XL Lossless `.110` uses the pure-Rust codec graph and retains
 all interleaved channels in both PNG and raw output; YBR_RCT frames are RGB
 once the decoder inverts the codestream's reversible color transform, and
 three-channel frames labelled YBR_FULL are converted to RGB for display. `.111` and `.112`
 remain unsupported until independently exercised. JPEG Lossless has no color
 transform in its codestream, so YBR_FULL components are converted to RGB after
-decoding, while JPEG Baseline relies on the decoder's own YCbCr conversion. Deflated Explicit VR Little
-Endian is a dataset encoding and routes through the native layout pipeline
-after `dicom-object` inflates the dataset.
+decoding, while JPEG Baseline relies on the decoder's own YCbCr conversion.
+JPEG, JPEG-LS and JPEG XL share one dicom-pixeldata frame decode
+(`pixels/pixeldata_frame.rs`). Deflated Explicit VR Little Endian is a dataset
+encoding and routes through the native layout pipeline: the inflated stream is
+parsed to the pixel element and inflated up to the requested frame, keeping
+only that frame. Deflated Image Frame Compression (`.8.1`) carries one-bit
+monochrome frames, such as binary segmentations, each deflated on its own.
+
+Encapsulated frames are located by `pixels/encapsulated.rs` for every
+encapsulated codec: the header is walked once for Number of Frames and the
+Extended Offset Table, and with a valid Extended or Basic Offset Table the
+reader seeks to the frame's first item; without one it steps over item
+headers, reading only each fragment's end to find a JPEG end marker (RLE has
+one fragment per frame).
 
 See [the HTTP API reference](api.md) for endpoint payloads and headers.
 
