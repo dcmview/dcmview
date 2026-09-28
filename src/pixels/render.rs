@@ -1,5 +1,5 @@
 use crate::api::contracts::WindowMode;
-use crate::types::FileEntry;
+use crate::types::{FileEntry, ResolvedWindow};
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use image::{ExtendedColorType, ImageEncoder};
@@ -21,6 +21,21 @@ pub(crate) struct LuminanceRenderOptions {
     pub(crate) requested_wc: Option<f64>,
     pub(crate) requested_ww: Option<f64>,
     pub(crate) window_mode: WindowMode,
+}
+
+/// One encoded display frame.
+#[derive(Debug, Clone)]
+pub struct DisplayPng {
+    pub png: Bytes,
+    /// The linear window its luminance was presented with; `None` for color
+    /// frames and frames presented through a VOI LUT.
+    pub window: Option<ResolvedWindow>,
+}
+
+impl DisplayPng {
+    pub(crate) fn color(png: Bytes) -> Self {
+        Self { png, window: None }
+    }
 }
 
 /// One grayscale frame's stored values, as the presentation pipeline takes
@@ -46,13 +61,13 @@ pub(crate) fn encode_windowed_luminance_png(
     file: &FileEntry,
     stored: StoredSamples<'_>,
     options: LuminanceRenderOptions,
-) -> Result<Bytes> {
+) -> Result<DisplayPng> {
     let padding = file
         .series_metadata
         .native_pixel
         .pixel_padding
         .map(|[low, high]| PixelPaddingRange::new(low, Some(high)));
-    let mut windowed = match stored {
+    let (mut windowed, window) = match stored {
         StoredSamples::Integer {
             bytes,
             bits_allocated,
@@ -79,7 +94,10 @@ pub(crate) fn encode_windowed_luminance_png(
     png_encoder(&mut encoded)
         .write_image(&windowed, columns, rows, ExtendedColorType::L8)
         .context("png encoding failed")?;
-    Ok(Bytes::from(encoded))
+    Ok(DisplayPng {
+        png: Bytes::from(encoded),
+        window,
+    })
 }
 
 /// 8- and 16-bit frames: every step up to the displayed byte depends only on
@@ -95,7 +113,7 @@ fn window_through_table(
     signed: bool,
     padding: Option<PixelPaddingRange>,
     options: &LuminanceRenderOptions,
-) -> Result<Vec<u8>> {
+) -> Result<(Vec<u8>, Option<ResolvedWindow>)> {
     let stored_value: fn(usize) -> f64 = match (bits_allocated, signed) {
         (8, false) => |index| index as f64,
         (8, true) => |index| f64::from(index as u8 as i8),
@@ -121,17 +139,18 @@ fn window_through_table(
     let is_padding =
         |index: usize| padding.is_some_and(|range| range.contains(stored_value(index)));
 
-    let mut table = if let Some(voi_lut) = selected_voi_lut(
+    let (mut table, window) = if let Some(voi_lut) = selected_voi_lut(
         options.window_mode,
         options.requested_wc,
         options.requested_ww,
         file.default_window,
         native.voi_lut.as_ref(),
     ) {
-        rescaled
+        let table = rescaled
             .iter()
             .map(|value| voi_lut_value(voi_lut, *value))
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+        (table, None)
     } else {
         let mut counts = vec![0_u64; rescaled.len()];
         for index in stored_indexes(bytes, bits_allocated) {
@@ -151,11 +170,13 @@ fn window_through_table(
             file.default_window,
             &window_source,
         )
-        .ok_or_else(|| anyhow!("could not resolve window"))?;
-        rescaled
+        .ok_or_else(|| anyhow!("could not resolve window"))
+        .map(applied_window)?;
+        let table = rescaled
             .iter()
-            .map(|value| window_value(*value, window.center, window.width.max(1.0)))
-            .collect()
+            .map(|value| window_value(*value, window.center, window.width))
+            .collect();
+        (table, Some(window))
     };
     apply_monochrome1_inversion(&mut table, &file.photometric_interpretation);
     // Padding is background: black whatever the photometric interpretation.
@@ -164,9 +185,18 @@ fn window_through_table(
             *entry = 0;
         }
     }
-    Ok(stored_indexes(bytes, bits_allocated)
+    let windowed = stored_indexes(bytes, bits_allocated)
         .map(|index| table[index])
-        .collect())
+        .collect();
+    Ok((windowed, window))
+}
+
+/// The window as applied: a linear window is never narrower than one unit.
+fn applied_window(window: ResolvedWindow) -> ResolvedWindow {
+    ResolvedWindow {
+        width: window.width.max(1.0),
+        ..window
+    }
 }
 
 /// Each sample's table index: its bit pattern in the 8- or 16-bit container.
@@ -203,7 +233,7 @@ fn window_each_sample(
     stored: &[f64],
     padding: Option<PixelPaddingRange>,
     options: &LuminanceRenderOptions,
-) -> Result<Vec<u8>> {
+) -> Result<(Vec<u8>, Option<ResolvedWindow>)> {
     let padding_mask = padding.map(|padding| padding.mask(stored));
     let native = &file.series_metadata.native_pixel;
     let rescaled = apply_modality_transform(
@@ -219,7 +249,7 @@ fn window_each_sample(
         .as_deref()
         .filter(|samples| !samples.is_empty())
         .unwrap_or(&rescaled);
-    let mut windowed = if let Some(values) = apply_voi_lut_if_selected(
+    let (mut windowed, window) = if let Some(values) = apply_voi_lut_if_selected(
         options.window_mode,
         options.requested_wc,
         options.requested_ww,
@@ -227,7 +257,7 @@ fn window_each_sample(
         native.voi_lut.as_ref(),
         &rescaled,
     ) {
-        values
+        (values, None)
     } else {
         let resolved_window = resolve_window_with_mode(
             options.window_mode,
@@ -236,19 +266,17 @@ fn window_each_sample(
             file.default_window,
             window_source,
         )
-        .ok_or_else(|| anyhow!("could not resolve window"))?;
-        apply_window(
-            &rescaled,
-            resolved_window.center,
-            resolved_window.width.max(1.0),
-        )
+        .ok_or_else(|| anyhow!("could not resolve window"))
+        .map(applied_window)?;
+        let windowed = apply_window(&rescaled, resolved_window.center, resolved_window.width);
+        (windowed, Some(resolved_window))
     };
     apply_monochrome1_inversion(&mut windowed, &file.photometric_interpretation);
     // Padding is background: black whatever the photometric interpretation.
     if let Some(mask) = padding_mask.as_deref() {
         apply_padding_background(&mut windowed, mask);
     }
-    Ok(windowed)
+    Ok((windowed, window))
 }
 
 /// Encodes one interleaved 8-bit RGB display frame as PNG. Every color
@@ -261,9 +289,9 @@ pub(crate) fn encode_rgb8_display_png(
     columns: u32,
     rows: u32,
     icc_profile: Option<Vec<u8>>,
-) -> Result<Bytes> {
+) -> Result<DisplayPng> {
     shutter::apply_to_rgb8(&mut rgb, file, frame, rows, columns);
-    encode_rgb8_png_with_icc(rgb, columns, rows, icc_profile)
+    encode_rgb8_png_with_icc(rgb, columns, rows, icc_profile).map(DisplayPng::color)
 }
 
 fn is_monochrome1(photometric_interpretation: &str) -> bool {

@@ -9,7 +9,8 @@ use super::color::color_samples_to_rgb8;
 use super::error::{PixelError, PixelResult};
 use super::pixeldata_frame::{self, DecodedFrame};
 use super::render::{
-    encode_rgb8_display_png, encode_windowed_luminance_png, LuminanceRenderOptions, StoredSamples,
+    encode_rgb8_display_png, encode_windowed_luminance_png, DisplayPng, LuminanceRenderOptions,
+    StoredSamples,
 };
 use super::syntax::{Codec, ColorSamples};
 
@@ -19,7 +20,7 @@ pub(crate) async fn decode_jpeg_xl_to_png(
     requested_wc: Option<f64>,
     requested_ww: Option<f64>,
     window_mode: WindowMode,
-) -> PixelResult<Bytes> {
+) -> PixelResult<DisplayPng> {
     task::spawn_blocking(move || {
         let decoded = decode_frame(&file, frame).map_err(PixelError::frame_decode)?;
         match (decoded.bits_allocated, decoded.samples_per_pixel) {
@@ -143,7 +144,7 @@ fn encode_monochrome(
     requested_wc: Option<f64>,
     requested_ww: Option<f64>,
     window_mode: WindowMode,
-) -> PixelResult<Bytes> {
+) -> PixelResult<DisplayPng> {
     encode_windowed_luminance_png(
         file,
         samples,
@@ -288,7 +289,7 @@ mod tests {
         let png = decode_jpeg_xl_to_png(file.into(), 0, None, None, WindowMode::Default)
             .await
             .unwrap();
-        let rendered = image::load_from_memory(&png).unwrap().to_rgb8();
+        let rendered = image::load_from_memory(&png.png).unwrap().to_rgb8();
         assert_eq!(rendered.dimensions(), (2, 2));
         assert_eq!(rendered.into_raw(), RGB_QUADRANTS);
     }

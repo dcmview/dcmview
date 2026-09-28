@@ -44,7 +44,7 @@ All paths are under `/api`; `{index}` is a file index from `/api/files` and
 | GET | `/file/{index}/info` | `FrameInfo` for one file. |
 | GET | `/file/{index}/references` | `ReferenceCatalogResponse`: declared DICOM relationships and their local matches. |
 | GET | `/file/{index}/semantic-context` | `SemanticContextResponse`: SEG, Parametric Map, or RT Dose context, or `not_applicable`. |
-| GET | `/file/{index}/frame/{frame}` | Display frame as `image/png`, with `X-Cache`. Query: `wc`, `ww`, `mode`. |
+| GET | `/file/{index}/frame/{frame}` | Display frame as `image/png`, with `X-Cache` and, for linearly windowed frames, `X-Frame-Window-Center`/`X-Frame-Window-Width`. Query: `wc`, `ww`, `mode`. |
 | GET | `/file/{index}/frame/{frame}/raw` | Decoded samples as `application/octet-stream`, with `X-Cache` and `X-Frame-*` metadata headers. |
 | GET | `/file/{index}/frame/{frame}/raw/pixel?row=&column=` | One pixel of the raw frame as a 1x1 raw frame: its stored samples in color-by-pixel order (planar and subsampled YBR_FULL_422 resolved), with the same headers. `400` outside the frame. |
 | GET | `/file/{index}/frame/{frame}/segmentation-overlay` | Transparent source-sized SEG mask as `image/png`, with `X-Cache`. |
@@ -99,6 +99,12 @@ the raw cache key is file and frame only. Both endpoints send `X-Cache: HIT` or
 `X-Cache: MISS`. A request for a frame another request is already decoding
 waits for that decode and reports `HIT`, and a decode whose client
 disconnected still fills the cache.
+
+A grayscale display frame windowed linearly reports the window it was
+rendered with, in Modality values, as `X-Frame-Window-Center` and
+`X-Frame-Window-Width` (the width at least 1, as applied), whichever step
+above chose it. Color frames and frames presented through a VOI LUT send
+neither.
 
 A file's `frame_count` in `/api/files` and `/api/series` is its Number of
 Frames bounded by the frames it can hold (the Per-frame Functional Groups items

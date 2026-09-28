@@ -323,6 +323,9 @@ The contract is kept consistent by three layers:
   `text/csv; charset=utf-8`.
 - Every successful display or raw frame response includes `X-Cache: HIT` or
   `X-Cache: MISS`.
+- Display responses of linearly windowed grayscale frames include the applied
+  window as `X-Frame-Window-Center` and `X-Frame-Window-Width`, from the
+  cached render on a hit; color and VOI LUT frames include neither.
 - Raw responses include all required `X-Frame-*` metadata headers. Default
   window headers are present only when the DICOM supplies a default window.
 - Unsupported transfer syntaxes are `422`, as are layouts the catalog marks

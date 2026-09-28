@@ -7,7 +7,8 @@ use dcmview::api::contracts::{
     endpoints, DoseOverlayQuery, EmbedRoiAnnotations, ErrorResponse, FilesResponse, FrameInfo,
     FrameQuery, FrameValueMapping, HealthResponse, ParametricMapOverlayQuery, PixelQuery,
     RawFrameMetadata, ReferenceCatalogResponse, SemanticContextResponse, SeriesCatalogResponse,
-    TagNode, TagQuery, WsiFrameContextResponse, API_PREFIX, RAW_FRAME_HEADERS,
+    TagNode, TagQuery, WsiFrameContextResponse, API_PREFIX, DISPLAY_FRAME_HEADERS,
+    RAW_FRAME_HEADERS,
 };
 use std::any::TypeId;
 use std::collections::{BTreeMap, HashSet};
@@ -85,6 +86,12 @@ fn render() -> String {
             endpoint.path
         )
         .expect("write to string");
+    }
+    out.push_str("} as const;\n\n");
+
+    out.push_str("export const DISPLAY_FRAME_HEADERS = {\n");
+    for (field, name) in DISPLAY_FRAME_HEADERS {
+        writeln!(out, "\t{field}: \"{name}\",").expect("write to string");
     }
     out.push_str("} as const;\n\n");
 

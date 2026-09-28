@@ -5,7 +5,8 @@ use crate::api::contracts::{
     DiscoveryResult, EmbedRoiAnnotations, FileSummary, FilesResponse, FrameInfo, FrameQuery,
     FrameValueMapping, HealthResponse, PixelQuery, ReferenceCatalogResponse,
     SemanticContextResponse, TagNode, TagQuery, ViewerIdentity, WsiFrameContextResponse,
-    CACHE_HEADER, CACHE_HIT, CACHE_MISS, CSV_MEDIA_TYPE, EXPORT_CONTENT_DISPOSITION_HEADER,
+    CACHE_HEADER, CACHE_HIT, CACHE_MISS, CSV_MEDIA_TYPE, DISPLAY_FRAME_HEADER_WINDOW_CENTER,
+    DISPLAY_FRAME_HEADER_WINDOW_WIDTH, EXPORT_CONTENT_DISPOSITION_HEADER,
     EXPORT_CONTENT_DISPOSITION_VALUE, OCTET_STREAM_MEDIA_TYPE, RAW_FRAME_HEADER_BITS_ALLOCATED,
     RAW_FRAME_HEADER_COLUMNS, RAW_FRAME_HEADER_DEFAULT_WC, RAW_FRAME_HEADER_DEFAULT_WW,
     RAW_FRAME_HEADER_PADDING_HIGH, RAW_FRAME_HEADER_PADDING_LOW,
@@ -326,6 +327,19 @@ pub(super) async fn frame(
         header::CONTENT_TYPE,
         HeaderValue::from_static(frame_response.content_type),
     );
+    if let Some(window) = frame_response.window {
+        let headers = response.headers_mut();
+        insert_header_if_valid(
+            headers,
+            DISPLAY_FRAME_HEADER_WINDOW_CENTER,
+            window.center.to_string(),
+        );
+        insert_header_if_valid(
+            headers,
+            DISPLAY_FRAME_HEADER_WINDOW_WIDTH,
+            window.width.to_string(),
+        );
+    }
     Ok(response)
 }
 

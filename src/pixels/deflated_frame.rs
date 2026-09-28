@@ -8,7 +8,9 @@ use std::sync::Arc;
 use tokio::task;
 
 use super::error::{PixelError, PixelResult};
-use super::render::{encode_windowed_luminance_png, LuminanceRenderOptions, StoredSamples};
+use super::render::{
+    encode_windowed_luminance_png, DisplayPng, LuminanceRenderOptions, StoredSamples,
+};
 
 pub(crate) const DEFLATED_IMAGE_FRAME_UID: &str = "1.2.840.10008.1.2.8.1";
 
@@ -24,7 +26,7 @@ pub(crate) async fn decode_deflated_binary_frame_to_png(
     requested_wc: Option<f64>,
     requested_ww: Option<f64>,
     window_mode: WindowMode,
-) -> PixelResult<Bytes> {
+) -> PixelResult<DisplayPng> {
     validate_binary_layout(&file)
         .map_err(|error| PixelError::UnsupportedLayout(error.to_string()))?;
     task::spawn_blocking(move || {
