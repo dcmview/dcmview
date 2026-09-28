@@ -126,6 +126,9 @@ diagnostic viewer.
 - A transient raw-frame failure no longer turns off client-side window/level
   for the rest of the session.
 - `dcmview ... | head` no longer panics on the closed pipe.
+- Display frames larger than the viewer's frame caches (above roughly 32
+  megapixels, such as an 8192x8192 image) are shown uncached instead of
+  failing with a cache budget error.
 
 - The tag panel's Value column no longer starts past the panel's right edge;
   the keyword column truncates first, so values stay visible at any panel
