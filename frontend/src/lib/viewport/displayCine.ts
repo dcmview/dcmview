@@ -59,6 +59,7 @@ export async function playDisplayCine({
 			return display.ensureBlob(frame.file_index, frame.frame_index, windowOptions)
 				.then((blob) => typeof createImageBitmap === "function"
 					? display.decode(display.key(frame.file_index, frame.frame_index, windowOptions), blob)
+						.then((decoded) => decoded.release())
 					: undefined);
 		},
 		presentFrame: async (step, stepSignal) => {

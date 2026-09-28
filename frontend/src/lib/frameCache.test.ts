@@ -42,7 +42,7 @@ describe("ByteBudgetLruCache", () => {
 		expect(cache.bytes).toBe(8);
 	});
 
-	it("rejects oversized entries without replacing a cached value", () => {
+	it("rejects oversized entries without replacing a cached value or disposing either", () => {
 		const dispose = vi.fn();
 		const cache = new ByteBudgetLruCache<string, { bytes: number }>({
 			maxBytes: 4,
@@ -55,7 +55,7 @@ describe("ByteBudgetLruCache", () => {
 
 		expect(cache.set("frame", oversized)).toBe(false);
 		expect(cache.peek("frame")).toBe(retained);
-		expect(dispose).toHaveBeenCalledWith(oversized);
+		expect(dispose).not.toHaveBeenCalled();
 	});
 });
 

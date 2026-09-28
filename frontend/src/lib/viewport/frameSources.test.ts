@@ -2,7 +2,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DisplayFrameWindowOptions } from "../../api";
 import type { RawFrame } from "../../rawFrame";
 import { navigationFramesForFile } from "../seriesNavigation";
-import { DisplayFrameSource, FULL_STACK_PREFETCH_DWELL_MS } from "./displayFrameSource";
+import {
+	DISPLAY_BITMAP_CACHE_BYTE_BUDGET,
+	DISPLAY_BLOB_CACHE_BYTE_BUDGET,
+	DisplayFrameSource,
+	FULL_STACK_PREFETCH_DWELL_MS,
+} from "./displayFrameSource";
 import { RawFrameSource } from "./rawFrameSource";
 
 function rawFrame(bitsAllocated = 8): RawFrame {
@@ -37,6 +42,7 @@ async function flush(): Promise<void> {
 
 afterEach(() => {
 	vi.useRealTimers();
+	vi.unstubAllGlobals();
 });
 
 describe("RawFrameSource", () => {
@@ -282,5 +288,56 @@ describe("DisplayFrameSource", () => {
 
 		expect(load).toHaveBeenCalledTimes(2);
 		expect(onScopeChange).toHaveBeenCalledTimes(2);
+	});
+
+	it("returns frames over a tier's budget uncached instead of failing them", async () => {
+		// An 8192 x 8192 frame decodes to 256 MiB of RGBA, twice the bitmap budget.
+		const side = 8192;
+		expect(side * side * 4).toBeGreaterThan(DISPLAY_BITMAP_CACHE_BYTE_BUDGET);
+		const payload = { size: DISPLAY_BLOB_CACHE_BYTE_BUDGET + 1 } as Blob;
+		const load = vi.fn(async () => payload);
+		const decoded: Array<{ width: number; height: number; close: ReturnType<typeof vi.fn> }> = [];
+		vi.stubGlobal("createImageBitmap", vi.fn(async () => {
+			const bitmap = { width: side, height: side, close: vi.fn() };
+			decoded.push(bitmap);
+			return bitmap;
+		}));
+		const { source } = displaySource(load);
+
+		const blob = await source.ensureBlob(1, 0, {});
+		expect(blob).toBe(payload);
+		await source.ensureBlob(1, 0, {});
+		expect(load).toHaveBeenCalledTimes(2);
+
+		// Consumers of one decode share its bitmap until the last releases it.
+		const key = source.key(1, 0, {});
+		const [shown, prepared] = await Promise.all([source.decode(key, blob), source.decode(key, blob)]);
+		expect(shown.bitmap).toBe(decoded[0]);
+		expect(prepared.bitmap).toBe(decoded[0]);
+		prepared.release();
+		expect(decoded[0].close).not.toHaveBeenCalled();
+		shown.release();
+		shown.release();
+		expect(decoded[0].close).toHaveBeenCalledOnce();
+
+		const again = await source.decode(key, blob);
+		expect(again.bitmap).toBe(decoded[1]);
+		again.release();
+	});
+
+	it("keeps caching frames that fit and leaves cached bitmaps to the tier", async () => {
+		const decode = vi.fn(async () => ({ width: 2, height: 2, close: vi.fn() }));
+		vi.stubGlobal("createImageBitmap", decode);
+		const { source } = displaySource(async () => new Blob(["png"]));
+		const key = source.key(1, 0, {});
+
+		const blob = await source.ensureBlob(1, 0, {});
+		const first = await source.decode(key, blob);
+		first.release();
+		const second = await source.decode(key, blob);
+
+		expect(second.bitmap).toBe(first.bitmap);
+		expect(decode).toHaveBeenCalledOnce();
+		expect(vi.mocked(first.bitmap.close)).not.toHaveBeenCalled();
 	});
 });

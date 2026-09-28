@@ -527,11 +527,15 @@
 		if (!ctx) return;
 
 		if (typeof createImageBitmap === "function") {
-			const bitmap = await displayFrames.decode(key, blob);
-			if (generation !== requestGeneration || !canvasEl || !usesDisplayPipeline()) return;
-			canvasEl.width = bitmap.width;
-			canvasEl.height = bitmap.height;
-			ctx.drawImage(bitmap, 0, 0);
+			const { bitmap, release } = await displayFrames.decode(key, blob);
+			try {
+				if (generation !== requestGeneration || !canvasEl || !usesDisplayPipeline()) return;
+				canvasEl.width = bitmap.width;
+				canvasEl.height = bitmap.height;
+				ctx.drawImage(bitmap, 0, 0);
+			} finally {
+				release();
+			}
 			return;
 		}
 

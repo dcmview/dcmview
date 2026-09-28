@@ -57,12 +57,13 @@ export class ByteBudgetLruCache<Key, Value> {
 		return record.value;
 	}
 
+	/**
+	 * Caches `value`, evicting least-recently-used entries to fit. A value
+	 * larger than the whole budget is not cached and stays the caller's.
+	 */
 	set(key: Key, value: Value): boolean {
 		const incomingBytes = this.#measuredBytes(value);
-		if (incomingBytes > this.#maxBytes) {
-			this.#dispose?.(value);
-			return false;
-		}
+		if (incomingBytes > this.#maxBytes) return false;
 
 		const previous = this.#entries.get(key);
 		if (previous) {
