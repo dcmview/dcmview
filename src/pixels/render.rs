@@ -6,7 +6,7 @@ use bytes::Bytes;
 use image::{ExtendedColorType, ImageEncoder};
 
 use super::color::{encode_rgb8_png_with_icc, png_encoder};
-use super::overlay::apply_overlay_planes;
+use super::overlay::{apply_overlay_planes, OVERLAY_PRESENTATION_VALUE};
 use super::shutter;
 use super::window::{
     apply_modality_transform, apply_padding_background, apply_voi_lut_if_selected, apply_window,
@@ -96,8 +96,8 @@ pub(crate) fn encode_real_world_windowed_png(
     present_luminance(file, windowed, frame, rows, columns)
 }
 
-/// The steps after windowing that every grayscale frame shares: display
-/// shutter, overlay planes, and PNG encoding.
+/// The steps after windowing that every grayscale frame shares: the
+/// presentation graphics, then PNG encoding.
 fn present_luminance(
     file: &FileEntry,
     mut windowed: Vec<u8>,
@@ -105,20 +105,61 @@ fn present_luminance(
     rows: u32,
     columns: u32,
 ) -> Result<Bytes> {
-    shutter::apply_to_luminance(&mut windowed, file, frame, rows, columns);
-    apply_overlay_planes(
-        &mut windowed,
-        rows,
-        columns,
-        frame,
-        &file.series_metadata.presentation.overlay_planes,
-    );
-
+    draw_presentation_graphics(&mut windowed, |gray| [gray], file, frame, rows, columns);
     let mut encoded = Vec::new();
     png_encoder(&mut encoded)
         .write_image(&windowed, columns, rows, ExtendedColorType::L8)
         .context("png encoding failed")?;
     Ok(Bytes::from(encoded))
+}
+
+/// The graphics a grayscale display frame carries over its windowed values,
+/// as an RGBA PNG of the frame's size: shutter fill and overlay graphics are
+/// opaque gray, everything else transparent. Drawn over a frame windowed
+/// anywhere (the viewer's raw renderer), it gives exactly the display frame,
+/// since neither depends on the window.
+pub(crate) fn encode_presentation_layer_png(file: &FileEntry, frame: u32) -> Result<Bytes> {
+    let (rows, columns) = (file.rows, file.columns);
+    let pixels = (rows as usize)
+        .checked_mul(columns as usize)
+        .and_then(|count| count.checked_mul(4))
+        .ok_or_else(|| anyhow!("invalid image geometry"))?;
+    let mut layer = vec![0; pixels];
+    draw_presentation_graphics(
+        &mut layer,
+        |gray| [gray, gray, gray, 255],
+        file,
+        frame,
+        rows,
+        columns,
+    );
+    let mut encoded = Vec::new();
+    png_encoder(&mut encoded)
+        .write_image(&layer, columns, rows, ExtendedColorType::Rgba8)
+        .context("png encoding failed")?;
+    Ok(Bytes::from(encoded))
+}
+
+/// Draws the display shutter (Shutter Presentation Value), then overlay
+/// planes (presentation value 255), each pixel as `pixel(gray)`. Neither
+/// depends on the window.
+fn draw_presentation_graphics<const N: usize>(
+    pixels: &mut [u8],
+    pixel: fn(u8) -> [u8; N],
+    file: &FileEntry,
+    frame: u32,
+    rows: u32,
+    columns: u32,
+) {
+    shutter::apply_to_luminance(pixels, pixel, file, frame, rows, columns);
+    apply_overlay_planes(
+        pixels,
+        pixel(OVERLAY_PRESENTATION_VALUE),
+        rows,
+        columns,
+        frame,
+        &file.series_metadata.presentation.overlay_planes,
+    );
 }
 
 /// 8- and 16-bit frames: every step up to the displayed byte depends only on

@@ -1,9 +1,12 @@
 use crate::types::OverlayPlane;
 
-const DEFAULT_OVERLAY_PRESENTATION_VALUE: u8 = 255;
+/// The gray level overlay graphics are drawn with.
+pub(crate) const OVERLAY_PRESENTATION_VALUE: u8 = 255;
 
-pub(crate) fn apply_overlay_planes(
-    samples: &mut [u8],
+/// Sets every pixel (`N` interleaved bytes) under a set overlay bit to `pixel`.
+pub(crate) fn apply_overlay_planes<const N: usize>(
+    pixels: &mut [u8],
+    pixel: [u8; N],
     image_rows: u32,
     image_columns: u32,
     frame: u32,
@@ -11,8 +14,8 @@ pub(crate) fn apply_overlay_planes(
 ) {
     for plane in planes {
         for_each_set_pixel(plane, image_rows, image_columns, frame, |index| {
-            if let Some(sample) = samples.get_mut(index) {
-                *sample = DEFAULT_OVERLAY_PRESENTATION_VALUE;
+            if let Some(target) = pixels.get_mut(index * N..(index + 1) * N) {
+                target.copy_from_slice(&pixel);
             }
         });
     }
@@ -93,22 +96,22 @@ mod tests {
     #[test]
     fn composites_prepared_lsb_first_diagonal_after_luminance_rendering() {
         let mut samples = vec![10, 20, 30, 40];
-        apply_overlay_planes(&mut samples, 2, 2, 0, &[plane([1, 1], vec![0x0009])]);
+        apply_overlay_planes(&mut samples, [255], 2, 2, 0, &[plane([1, 1], vec![0x0009])]);
         assert_eq!(samples, [255, 20, 30, 255]);
     }
 
     #[test]
     fn clips_signed_origins_and_respects_overlay_frame_placement() {
         let mut clipped = vec![10, 20, 30, 40];
-        apply_overlay_planes(&mut clipped, 2, 2, 0, &[plane([0, 0], vec![0x0009])]);
+        apply_overlay_planes(&mut clipped, [255], 2, 2, 0, &[plane([0, 0], vec![0x0009])]);
         assert_eq!(clipped, [255, 20, 30, 40]);
 
         let mut future = plane([1, 1], vec![0x000f]);
         future.image_frame_origin = 2;
         let mut samples = vec![10, 20, 30, 40];
-        apply_overlay_planes(&mut samples, 2, 2, 0, &[future.clone()]);
+        apply_overlay_planes(&mut samples, [255], 2, 2, 0, &[future.clone()]);
         assert_eq!(samples, [10, 20, 30, 40]);
-        apply_overlay_planes(&mut samples, 2, 2, 1, &[future]);
+        apply_overlay_planes(&mut samples, [255], 2, 2, 1, &[future]);
         assert_eq!(samples, [255, 255, 255, 255]);
     }
 }

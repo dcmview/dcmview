@@ -9,6 +9,7 @@ export const API_ENDPOINTS = {
 	fileReferences: { method: "GET", path: "/api/file/{index}/references" },
 	fileSemanticContext: { method: "GET", path: "/api/file/{index}/semantic-context" },
 	fileSegmentationOverlay: { method: "GET", path: "/api/file/{index}/frame/{frame}/segmentation-overlay" },
+	filePresentationLayer: { method: "GET", path: "/api/file/{index}/frame/{frame}/presentation-layer" },
 	fileDoseOverlay: { method: "GET", path: "/api/file/{index}/frame/{frame}/dose-overlay" },
 	fileDoseOverlayValues: { method: "GET", path: "/api/file/{index}/frame/{frame}/dose-overlay/values" },
 	fileParametricMapOverlay: { method: "GET", path: "/api/file/{index}/frame/{frame}/parametric-map-overlay" },
@@ -65,7 +66,12 @@ raw_windowing_compatible: boolean,
 /**
  * Stable explanation when the frontend must retain the server-rendered presentation path.
  */
-raw_windowing_reason: string | null, has_pixels: boolean, frame_count: number, rows: number, columns: number, 
+raw_windowing_reason: string | null, 
+/**
+ * Whether grayscale display frames carry a display shutter or overlay
+ * graphics, which `presentation-layer` draws for a raw-rendered frame.
+ */
+presentation_layer: boolean, has_pixels: boolean, frame_count: number, rows: number, columns: number, 
 /**
  * Effective physical row-to-column pixel extent ratio.
  */

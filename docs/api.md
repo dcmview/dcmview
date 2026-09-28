@@ -44,9 +44,10 @@ All paths are under `/api`; `{index}` is a file index from `/api/files` and
 | GET | `/file/{index}/info` | `FrameInfo` for one file. |
 | GET | `/file/{index}/references` | `ReferenceCatalogResponse`: declared DICOM relationships and their local matches. |
 | GET | `/file/{index}/semantic-context` | `SemanticContextResponse`: SEG, Parametric Map, or RT Dose context, or `not_applicable`. |
-| GET | `/file/{index}/frame/{frame}` | Display frame as `image/png`, with `X-Cache`. Query: `wc`, `ww`, `mode`. |
+| GET | `/file/{index}/frame/{frame}` | Display frame as `image/png`, with `X-Cache`. Query: `wc`, `ww`, `mode`, `unit`. |
 | GET | `/file/{index}/frame/{frame}/raw` | Decoded samples as `application/octet-stream`, with `X-Cache` and `X-Frame-*` metadata headers. |
 | GET | `/file/{index}/frame/{frame}/raw/pixel?row=&column=` | One pixel of the raw frame as a 1x1 raw frame: its stored samples in color-by-pixel order (planar and subsampled YBR_FULL_422 resolved), with the same headers. `400` outside the frame. |
+| GET | `/file/{index}/frame/{frame}/presentation-layer` | The display shutter fill and overlay graphics of a grayscale display frame as an RGBA `image/png` of the frame's size, opaque gray where drawn and transparent elsewhere (fully transparent without a shutter or overlay), with `X-Cache`. |
 | GET | `/file/{index}/frame/{frame}/segmentation-overlay` | Transparent source-sized SEG mask as `image/png`, with `X-Cache`. |
 | GET | `/file/{index}/frame/{frame}/dose-overlay` | RT Dose colorwash sized to this frame as `image/png`, with `X-Cache`. Query: `dose` (RT Dose file index). |
 | GET | `/file/{index}/frame/{frame}/dose-overlay/values` | The same resampled dose as little-endian `f32` values, `application/octet-stream`, with `X-Cache`. Query: `dose`. |
@@ -81,7 +82,10 @@ Each file summary carries identity and geometry fields plus
 `support_reason` such as `transfer_syntax.not_supported`. These describe what
 the viewer can do, not DICOM conformance. `raw_windowing_compatible` is `false`
 when client-side windowing would drop a presentation transform, and
-`raw_windowing_reason` then says why.
+`raw_windowing_reason` then says why. `presentation_layer` is `true` when
+grayscale display frames carry a display shutter or overlay graphics; neither
+depends on the window, so `presentation-layer` drawn over a frame windowed in
+the browser gives exactly the display frame for that window.
 
 ## Display And Raw Frames
 

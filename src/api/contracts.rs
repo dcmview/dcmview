@@ -154,6 +154,15 @@ pub mod endpoints {
         PNG_MEDIA_TYPE,
         ResponseHeaders::Cache,
     );
+    /// RGBA PNG of the display shutter fill and overlay graphics a grayscale
+    /// display frame carries, opaque where drawn and transparent elsewhere;
+    /// fully transparent when the file declares neither.
+    pub const FILE_PRESENTATION_LAYER: Endpoint = binary(
+        "filePresentationLayer",
+        "/file/{index}/frame/{frame}/presentation-layer",
+        PNG_MEDIA_TYPE,
+        ResponseHeaders::Cache,
+    );
     /// PNG colorwash of an RT Dose grid resampled onto the path's frame;
     /// query `DoseOverlayQuery`.
     pub const FILE_DOSE_OVERLAY: Endpoint = binary(
@@ -256,6 +265,7 @@ pub mod endpoints {
         FILE_REFERENCES,
         FILE_SEMANTIC_CONTEXT,
         FILE_SEGMENTATION_OVERLAY,
+        FILE_PRESENTATION_LAYER,
         FILE_DOSE_OVERLAY,
         FILE_DOSE_OVERLAY_VALUES,
         FILE_PARAMETRIC_MAP_OVERLAY,
@@ -303,6 +313,9 @@ pub struct FileSummary {
     pub raw_windowing_compatible: bool,
     /// Stable explanation when the frontend must retain the server-rendered presentation path.
     pub raw_windowing_reason: Option<String>,
+    /// Whether grayscale display frames carry a display shutter or overlay
+    /// graphics, which `presentation-layer` draws for a raw-rendered frame.
+    pub presentation_layer: bool,
     pub has_pixels: bool,
     pub frame_count: u32,
     pub rows: u32,

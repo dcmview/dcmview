@@ -132,6 +132,8 @@ type OracleCase = {
 		slope?: number;
 		intercept?: number;
 	};
+	/** The presentation layer: a gray that replaces the render, or null. */
+	layer?: (number | null)[];
 	expected: number[];
 };
 
@@ -172,7 +174,10 @@ describe("shared windowing oracle", () => {
 			? resolveMappedDisplayWindow(frame, valueMap, null, null, oracleCase.wc, oracleCase.ww, oracleCase.mode)
 			: resolveDisplayWindow(frame, null, null, oracleCase.wc, oracleCase.ww, oracleCase.mode);
 
-		expect(grayValues(renderRawFrameToRgba(frame, wc, ww, valueMap))).toEqual(oracleCase.expected);
+		const layer = oracleCase.layer ?? [];
+		const composited = grayValues(renderRawFrameToRgba(frame, wc, ww, valueMap))
+			.map((gray, index) => layer[index] ?? gray);
+		expect(composited).toEqual(oracleCase.expected);
 	});
 });
 

@@ -96,6 +96,39 @@ pub(super) async fn segmentation_overlay(
     Ok(overlay_response(png, false, OverlayEncoding::Png))
 }
 
+/// The frame's own shutter and overlay graphics, for a frame windowed in the
+/// browser.
+pub(super) async fn presentation_layer(
+    State(state): State<AppState>,
+    path: Result<Path<(usize, u32)>, PathRejection>,
+) -> Result<Response, ApiError> {
+    let Path((index, frame)) = path.map_err(error::path_rejection)?;
+    let file = registered_file(&state, index, "file")?;
+    if !file.has_pixels {
+        return Err(error::pixel_error(PixelError::NoPixelData {
+            file_index: index,
+        }));
+    }
+    PixelError::ensure_frame(frame, file.frame_count).map_err(error::pixel_error)?;
+    // A file's own frame as overlay and target: no SEG is its own source.
+    let key = OverlayCacheKey {
+        overlay_file_index: index,
+        overlay_frame: Some(frame),
+        target_file_index: index,
+        target_frame: frame,
+        encoding: OverlayEncoding::Png,
+    };
+    if let Some(png) = state.cached_overlay(&key) {
+        return Ok(overlay_response(png, true, OverlayEncoding::Png));
+    }
+    let png = task::spawn_blocking(move || pixels::encode_presentation_layer_png(&file, frame))
+        .await
+        .map_err(|error| ApiError::internal(format!("presentation layer task failed: {error}")))?
+        .map_err(|error| ApiError::internal(format!("{error:#}")))?;
+    state.cache_overlay(key, png.clone());
+    Ok(overlay_response(png, false, OverlayEncoding::Png))
+}
+
 pub(super) async fn dose_overlay(
     State(state): State<AppState>,
     path: Result<Path<(usize, u32)>, PathRejection>,

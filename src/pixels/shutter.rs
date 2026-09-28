@@ -37,17 +37,18 @@ fn file_shutter(
     Some((shutter, target))
 }
 
-/// Applies the file's shutter to an 8-bit grayscale display frame with the
-/// Shutter Presentation Value.
-pub(crate) fn apply_to_luminance(
-    samples: &mut [u8],
+/// Applies the file's shutter to a grayscale display frame with the Shutter
+/// Presentation Value, drawn as `pixel(gray)` (`N` interleaved bytes).
+pub(crate) fn apply_to_luminance<const N: usize>(
+    pixels: &mut [u8],
+    pixel: impl Fn(u8) -> [u8; N],
     file: &FileEntry,
     frame: u32,
     rows: u32,
     columns: u32,
 ) {
     if let Some((shutter, target)) = file_shutter(file, frame, rows, columns) {
-        fill_outside_opening(samples, &[luminance_fill(shutter)], target, shutter);
+        fill_outside_opening(pixels, &pixel(luminance_fill(shutter)), target, shutter);
     }
 }
 

@@ -273,6 +273,8 @@ impl From<&FileEntry> for FileSummary {
             support_reason: support.reason_id().map(ToString::to_string),
             raw_windowing_compatible: raw_windowing_reason.is_none(),
             raw_windowing_reason: raw_windowing_reason.map(ToString::to_string),
+            presentation_layer: !value.series_metadata.presentation.overlay_planes.is_empty()
+                || value.series_metadata.presentation.has_display_shutter(),
             has_pixels: value.has_pixels,
             frame_count: value.frame_count,
             rows: value.rows,
@@ -587,7 +589,8 @@ pub struct RawFrameCacheKey {
 pub struct OverlayCacheKey {
     pub overlay_file_index: usize,
     /// The SEG frame drawn; `None` for value overlays, which sample the
-    /// whole volume.
+    /// whole volume. A presentation layer (a file's own shutter and overlay
+    /// graphics) is keyed as a file overlaying its own frame.
     pub overlay_frame: Option<u32>,
     pub target_file_index: usize,
     pub target_frame: u32,
