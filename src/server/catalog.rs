@@ -32,7 +32,8 @@ pub struct FileRegistry {
 struct FileRegistryInner {
     files: Vec<Arc<FileEntry>>,
     summaries: Vec<FileSummary>,
-    /// The most recent discovery records, bounded to what the API returns.
+    /// The most recent skipped and filtered records, bounded to what the API
+    /// returns; accepted files are already listed as files.
     recent_discovery: VecDeque<DiscoveryRecord>,
     scanned: usize,
     skipped: usize,
@@ -95,10 +96,12 @@ impl FileRegistry {
             DiscoveryDisposition::Skipped => inner.skipped += 1,
             DiscoveryDisposition::Filtered => inner.filtered += 1,
         }
-        if inner.recent_discovery.len() == DISCOVERY_RESPONSE_MAX_RECORDS {
-            inner.recent_discovery.pop_front();
+        if record.disposition != DiscoveryDisposition::Selected {
+            if inner.recent_discovery.len() == DISCOVERY_RESPONSE_MAX_RECORDS {
+                inner.recent_discovery.pop_front();
+            }
+            inner.recent_discovery.push_back(record);
         }
-        inner.recent_discovery.push_back(record);
         drop(inner);
         self.notify.notify_waiters();
     }
@@ -176,7 +179,7 @@ impl FileRegistry {
         Ok(json)
     }
 
-    /// The most recent discovery records, sorted by path.
+    /// The most recent skipped and filtered records, sorted by path.
     pub fn discovery_response_snapshot(&self) -> Vec<DiscoveryRecord> {
         let mut records = Vec::from(self.read().recent_discovery.clone());
         records.sort();
@@ -424,7 +427,7 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn discovery_ledger_is_memory_only_sorted_and_updates_counts() {
+    fn discovery_ledger_keeps_skipped_and_filtered_records_and_counts_all() {
         let registry = FileRegistry::new();
         registry.record_discovery(DiscoveryRecord {
             path: PathBuf::from("/scan/z-invalid.bin"),
@@ -449,14 +452,12 @@ mod tests {
                 .map(|record| record.path.as_path())
                 .collect::<Vec<_>>(),
             vec![
-                std::path::Path::new("/scan/a-selected.dcm"),
                 std::path::Path::new("/scan/m-filtered.dcm"),
                 std::path::Path::new("/scan/z-invalid.bin"),
             ]
         );
-        assert_eq!(records[0].reason.code(), "valid_dicom");
-        assert_eq!(records[1].reason.code(), "filter_mismatch");
-        assert_eq!(records[2].reason.code(), "missing_part10_preamble");
+        assert_eq!(records[0].reason.code(), "filter_mismatch");
+        assert_eq!(records[1].reason.code(), "missing_part10_preamble");
 
         let status = registry.status();
         assert_eq!(status.scanned, 1);
@@ -474,8 +475,8 @@ mod tests {
         for index in 0..DISCOVERY_RESPONSE_MAX_RECORDS + 2 {
             registry.record_discovery(DiscoveryRecord {
                 path: PathBuf::from(format!("/scan/{index:04}.dcm")),
-                disposition: DiscoveryDisposition::Selected,
-                reason: DiscoveryReason::ValidDicom,
+                disposition: DiscoveryDisposition::Skipped,
+                reason: DiscoveryReason::DicomParseFailed,
             });
         }
 
@@ -490,7 +491,7 @@ mod tests {
             ))
         );
         assert_eq!(
-            registry.status().scanned,
+            registry.status().skipped,
             DISCOVERY_RESPONSE_MAX_RECORDS + 2,
             "counts cover every record even though only recent ones are kept"
         );

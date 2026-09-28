@@ -63,6 +63,10 @@ diagnostic viewer.
 
 ### Changed
 
+- `/api/files` `discovery` lists only skipped and filtered paths (up to the
+  256 most recent). Accepted files are already in `files`, and with them in
+  the list a large scan pushed every skip reason out of it. The `scanned`,
+  `skipped` and `filtered` counters are unchanged.
 - `--timeout` (and Python's `timeout=`) counts idle time from the end of the
   scan. It used to start at the first discovered file, so a long scan with no
   viewer open could end the process before the scan finished.

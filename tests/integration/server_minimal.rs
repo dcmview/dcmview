@@ -138,7 +138,7 @@ async fn file_registry_serves_snapshots_while_scan_is_incomplete() {
     let discovered_path = entry.path.clone();
     registry.insert(entry);
     registry.record_discovery(DiscoveryRecord {
-        path: discovered_path.clone(),
+        path: discovered_path,
         disposition: DiscoveryDisposition::Selected,
         reason: DiscoveryReason::ValidDicom,
     });
@@ -147,11 +147,10 @@ async fn file_registry_serves_snapshots_while_scan_is_incomplete() {
     assert_eq!(mid_files["scan_complete"], false);
     assert_eq!(mid_files["scanned"], 1);
     assert_eq!(
-        mid_files["discovery"][0]["path"],
-        discovered_path.display().to_string()
+        mid_files["discovery"],
+        serde_json::json!([]),
+        "accepted files are listed as files, not as discovery records"
     );
-    assert_eq!(mid_files["discovery"][0]["disposition"], "selected");
-    assert_eq!(mid_files["discovery"][0]["reason"], "valid_dicom");
     let mid_file = &mid_files["files"].as_array().expect("files array")[0];
     assert_eq!(mid_file["index"], 0);
 

@@ -72,7 +72,7 @@ Every success status is `200`.
 | `scanned` | Valid DICOM files accepted into the registry. |
 | `skipped` | Files that could not be read as supported DICOM objects. |
 | `filtered` | Readable files excluded by `--filter`. |
-| `discovery` | Up to 256 recent discovery entries (`path`, `disposition`, `reason`). Totals stay in the counters above. |
+| `discovery` | Up to 256 recent skipped or filtered paths (`path`, `disposition` of `skipped` or `filtered`, `reason`). Accepted files appear only in `files`; totals stay in the counters above. |
 
 Poll while `scan_complete` is `false` if you need the complete file list.
 
