@@ -28,6 +28,8 @@ The committed corpus is intentionally small and synthetic:
 - `golden-parametric-map-u16-linear.dcm` with
   `golden-parametric-map-mr-source-z{0,1}.dcm`
 - `golden-rwvm-ct-hounsfield.dcm`
+- `golden-seg-{binary,binary-valued-fractional,fractional}.dcm`, each with
+  its matching `golden-seg-<kind>-source.dcm`
 
 The goal is stable decoding and contract coverage. The large single-frame JPEG
 fixture keeps file size small while exercising realistic viewport geometry.
@@ -64,3 +66,10 @@ The Real World Value Mapping instance has no pixel data. Its one Referenced
 Image Real World Value Mapping item maps the z = 0 RT Dose CT slice, without
 Referenced Frame Number, to Hounsfield units (`stored - 1024`), so the
 value-mapping endpoint must report it for that slice and not the others.
+
+The SEG pairs have two 2x2 frames, with explicit source-frame references and
+matching patient geometry. BINARY samples are bit-packed; the binary-valued
+FRACTIONAL object declares maximum 255 but contains only 0/1. The genuine
+FRACTIONAL object's first frame also contains only 0/1, while its second has
+0, 64, 128, and 255. This distinguishes object-level fallback from per-frame
+normalization and preserves meaningful fractional opacity across frames.

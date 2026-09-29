@@ -198,6 +198,10 @@ diagnostic viewer.
 
 ### Fixed
 
+- FRACTIONAL SEGs that declare a maximum above 1 but store only 0/1 across
+  the complete object now draw as binary masks, with a Semantic Context
+  warning. Genuine fractional opacity and ordinary pixel previews are unchanged.
+
 - Cine resumes after returning to a cached tab. Closing a tab discards its
   zoom, pan, and orientation, so reopening it starts fitted.
 - Presets replace a preceding live W/L drag, and a manual drag leaves Full

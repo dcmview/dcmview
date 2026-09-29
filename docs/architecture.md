@@ -328,7 +328,14 @@ The contract is kept consistent by three layers:
   Unavailable semantic mappings return `422 semantic_mapping_unavailable`.
   Like the value overlays in `server/api/overlays.rs`, the encoded PNG is
   cached per SEG frame and resolved source frame, and `X-Cache` reports that
-  cache.
+  cache. Discovery inspects candidate FRACTIONAL SEGs with a maximum above 1
+  on its blocking workers, one decoded frame at a time. Only an object whose
+  complete declared frame set contains exclusively 0/1 samples receives the
+  binary fallback. `SeriesMetadata.binary_fractional_seg_maximum` retains the
+  verdict for the file's lifetime, independently of request caches; errors or
+  incomplete frames preserve the declared interpretation. Overlay planning
+  uses this verdict, and SEG context reports it through `warnings` without
+  changing the declared attributes or ordinary display/raw frames.
 - `/api/file/{index}/frame/{frame}/dose-overlay?dose=` and
   `.../parametric-map-overlay?map=` (`server/api/overlays.rs`) draw an RT Dose
   grid or Parametric Map on a displayed frame in its Frame of Reference. The

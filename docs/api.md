@@ -234,7 +234,16 @@ mapping record per frame with `mapping_method`, `mapping_status`
 zero-based `source_frames`. A mapping comes from an explicit per-frame
 derivation source or, failing that, from compatible patient geometry (same
 Frame of Reference, positions, orientation, and spacing); source and SEG
-matrices may differ in size.
+matrices may differ in size. SEG context also includes `warnings: string[]`,
+empty when there is nothing to report. Declared `segmentation_type`,
+`segmentation_fractional_type`, and `maximum_fractional_value` remain unchanged.
+
+A FRACTIONAL SEG with Maximum Fractional Value above 1 whose stored samples
+across the entire object are all 0 or 1 is drawn as BINARY. Its context warns:
+“Declared FRACTIONAL (maximum N) but stores only 0 and 1; shown as binary”.
+Discovery computes and caches this interpretation before serving the object;
+a binary-valued frame within a genuine fractional object does not trigger it.
+Ordinary display/raw frames and genuine fractional overlays are unchanged.
 
 `segmentation-overlay` renders only a frame whose mapping resolved. Binary
 samples are a mask, fractional samples are scaled by Maximum Fractional Value,
