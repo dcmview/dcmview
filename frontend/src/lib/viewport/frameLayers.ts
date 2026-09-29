@@ -20,12 +20,12 @@ export class FrameLayers {
 	readonly #presentations = new OverlayLayerCache();
 
 	/** Unknown coverage on a prefetched frame is answered by the overlay endpoint. */
-	async value(overlay: ValueOverlay | null, fileIndex: number, frameIndex: number, covers?: boolean): Promise<LayerPayload> {
+	async value(overlay: ValueOverlay | null, fileIndex: number, frameIndex: number, covers?: boolean, signal?: AbortSignal): Promise<LayerPayload> {
 		if (!overlay) return NONE;
 		const request = valueOverlayLayerRequest(overlay, fileIndex, frameIndex);
 		if (covers === false) return { key: request.key, status: "not_covering", blob: null };
 		try {
-			return { key: request.key, status: "shown", blob: await this.#values.load(request) };
+			return { key: request.key, status: "shown", blob: await this.#values.load(request, signal) };
 		} catch (error) {
 			if ((error as Error).name === "AbortError") throw error;
 			return { key: request.key, status: isApiError(error, "overlay_not_covering_frame") ? "not_covering" : "error", blob: null };

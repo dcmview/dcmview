@@ -204,12 +204,12 @@
 		concurrency: () => prefetchConcurrency,
 		prepare: (fileIndex, frameIndex, signal) => Promise.all([
 			valueMappings.load(fileIndex, frameIndex, signal),
-			warmValueLayer(fileIndex, frameIndex),
+			warmValueLayer(fileIndex, frameIndex, signal),
 		]),
 	});
 	const displayFrames = new DisplayFrameSource({
 		load: loadDisplayFrame,
-		prepare: (fileIndex, frameIndex, signal) => Promise.all([valueMappings.load(fileIndex, frameIndex, signal), warmValueLayer(fileIndex, frameIndex)]),
+		prepare: (fileIndex, frameIndex, signal) => Promise.all([valueMappings.load(fileIndex, frameIndex, signal), warmValueLayer(fileIndex, frameIndex, signal)]),
 		navigationScope: () => navigationScopeKey,
 		concurrency: () => prefetchConcurrency,
 		onScopeChange: () => rendered.reset(),
@@ -405,9 +405,9 @@
 		};
 	});
 
-	function warmValueLayer(fileIndex: number, frameIndex: number) {
+	function warmValueLayer(fileIndex: number, frameIndex: number, signal?: AbortSignal) {
 		const covers = fileIndex === activeFile.index && frameIndex === currentFrame ? shownValueOverlay?.coversFrame : undefined;
-		return frameLayers.value(shownValueOverlay, fileIndex, frameIndex, covers);
+		return frameLayers.value(shownValueOverlay, fileIndex, frameIndex, covers, signal);
 	}
 
 	function frameTarget(file: FileSummary, frameIndex: number, segmentation: FrameOverlay | null = null): FrameTarget {

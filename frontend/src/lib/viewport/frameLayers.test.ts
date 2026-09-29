@@ -13,6 +13,20 @@ vi.mock("./frameOverlay", async (original) => ({ ...await original<typeof import
 const overlay = { kind: "rt_dose", volumeFileIndex: 9, coversFrame: true } as ValueOverlay;
 
 describe("FrameLayers", () => {
+	it("propagates cancellation from colorwash prefetch", async () => {
+		let requestSignal!: AbortSignal;
+		vi.mocked(fetchDoseOverlayBlob).mockImplementation((_file, _frame, _volume, signal) => {
+			requestSignal = signal!;
+			return new Promise((_resolve, reject) => signal!.addEventListener("abort", () => reject(new DOMException("cancelled", "AbortError"))));
+		});
+		const controller = new AbortController();
+		const pending = new FrameLayers().value(overlay, 1, 2, undefined, controller.signal);
+		controller.abort();
+		await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+		expect(requestSignal.aborted).toBe(true);
+		vi.mocked(fetchDoseOverlayBlob).mockClear();
+	});
+
 	it("shares prefetched colorwash payloads and waits for both layers before presentation", async () => {
 		const valueBlob = new Blob(["dose"]);
 		let finish!: (blob: Blob) => void;
