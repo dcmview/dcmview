@@ -2,10 +2,11 @@ use super::error;
 use super::handlers;
 use super::overlays;
 use super::state::AppState;
-use crate::api::contracts::{endpoints, API_PREFIX};
+use crate::api::contracts::{endpoints, API_PREFIX, SERVER_INSTANCE_HEADER};
 use crate::server::web;
 use crate::server::RequestActivity;
 use axum::extract::{Request, State};
+use axum::http::{HeaderName, HeaderValue};
 use axum::middleware::{self, Next};
 use axum::response::Response;
 use axum::routing::get;
@@ -17,6 +18,8 @@ use tower_http::cors::CorsLayer;
 
 pub(crate) fn router(state: AppState) -> Router {
     let activity = state.activity().clone();
+    let instance = HeaderValue::from_str(&state.server_start_ms().to_string())
+        .expect("integer server identity");
     // Methods here must match `endpoints::ALL`; tests/integration/api_contract.rs
     // requests every declared endpoint with its declared method.
     let api = Router::new()
@@ -84,6 +87,7 @@ pub(crate) fn router(state: AppState) -> Router {
             activity,
             track_request_activity,
         ))
+        .layer(middleware::from_fn_with_state(instance, identify_server))
         .layer(compression())
         .with_state(state);
 
@@ -119,6 +123,23 @@ async fn track_request_activity(
     let response = next.run(request).await;
     if let Some(error::ServerErrorMessage(message)) = response.extensions().get() {
         tracing::warn!(%method, %uri, status = response.status().as_u16(), "{message}");
+    }
+    response
+}
+
+/// The outer layer also covers API fallbacks and extractor/method errors.
+async fn identify_server(
+    State(instance): State<HeaderValue>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let is_api = request.uri().path() == API_PREFIX || request.uri().path().starts_with("/api/");
+    let mut response = next.run(request).await;
+    if is_api {
+        response.headers_mut().insert(
+            HeaderName::from_bytes(SERVER_INSTANCE_HEADER.as_bytes()).expect("static header name"),
+            instance,
+        );
     }
     response
 }

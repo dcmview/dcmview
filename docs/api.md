@@ -8,6 +8,13 @@ The server is unauthenticated. Keep it bound to loopback and use SSH forwarding
 for remote work. Responses can expose DICOM metadata, file paths, annotations,
 and pixel data.
 
+Every API response, including errors and unknown API routes, includes
+`X-Server-Instance`: the server's Unix-millisecond start time, identical to
+`server_start_ms` in the files and health responses. Clients with a loaded
+catalog must discard that session when a later response carries a different
+identity. The viewer reloads the page in that case; detection remains driven
+by ordinary requests, without keepalive polling.
+
 ## Source Of Truth
 
 `src/api/contracts.rs` defines every endpoint (`endpoints::ALL`: method, path,

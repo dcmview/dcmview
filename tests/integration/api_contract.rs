@@ -6,7 +6,7 @@ use dcmview::annotations::{AnnotationStore, EmbedRoiAnnotations};
 use dcmview::api::contracts::{
     endpoints, ApiMethod, Endpoint, ResponseHeaders, API_PREFIX, CACHE_HEADER, CACHE_HIT,
     CACHE_MISS, DISPLAY_FRAME_HEADERS, EXPORT_CONTENT_DISPOSITION_HEADER,
-    EXPORT_CONTENT_DISPOSITION_VALUE, RAW_FRAME_HEADERS,
+    EXPORT_CONTENT_DISPOSITION_VALUE, RAW_FRAME_HEADERS, SERVER_INSTANCE_HEADER,
 };
 use dcmview::server;
 use dcmview::types::WindowPreset;
@@ -449,6 +449,15 @@ fn assert_json_error(name: &str, response: &TestResponse, expected_status: Statu
 }
 
 fn assert_declared_response_headers(endpoint: &Endpoint, response: &TestResponse) {
+    assert!(
+        response
+            .header(SERVER_INSTANCE_HEADER)
+            .to_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap()
+            > 0
+    );
     match endpoint.response_headers {
         ResponseHeaders::None => {
             assert_no_cache_header(endpoint, response);
@@ -624,4 +633,40 @@ async fn color_display_omits_the_applied_window_header() {
             );
         }
     }
+}
+
+#[tokio::test]
+async fn server_identity_header_covers_success_errors_and_fallbacks() {
+    let app = TestServer::new(server::router(support::app_state(vec![])));
+    let files = app.get("/api/files").await;
+    let identity = files.json::<Value>()["server_start_ms"]
+        .as_u64()
+        .unwrap()
+        .to_string();
+    files.assert_header(SERVER_INSTANCE_HEADER, identity.as_str());
+    for path in [
+        "/api",
+        "/api/",
+        "/api/unknown",
+        "/api/file/not-an-index/tags",
+        "/api/file/99/info",
+        "/api/health",
+    ] {
+        app.get(path)
+            .await
+            .assert_header(SERVER_INSTANCE_HEADER, identity.as_str());
+    }
+    app.post("/api/files")
+        .await
+        .assert_header(SERVER_INSTANCE_HEADER, identity.as_str());
+    app.put("/api/file/0/annotations")
+        .text("bad JSON")
+        .await
+        .assert_header(SERVER_INSTANCE_HEADER, identity.as_str());
+    assert!(app
+        .get("/")
+        .await
+        .headers()
+        .get(SERVER_INSTANCE_HEADER)
+        .is_none());
 }

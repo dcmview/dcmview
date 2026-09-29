@@ -15,6 +15,10 @@ pub const PNG_MEDIA_TYPE: &str = "image/png";
 pub const OCTET_STREAM_MEDIA_TYPE: &str = "application/octet-stream";
 pub const CSV_MEDIA_TYPE: &str = "text/csv; charset=utf-8";
 
+/// Unix-millisecond server start identity on every API response, including errors.
+pub const SERVER_INSTANCE_HEADER: &str = "X-Server-Instance";
+pub const API_RESPONSE_HEADERS: &[(&str, &str)] = &[("serverInstance", SERVER_INSTANCE_HEADER)];
+
 pub const CACHE_HEADER: &str = "X-Cache";
 pub const CACHE_HIT: &str = "HIT";
 pub const CACHE_MISS: &str = "MISS";
@@ -107,7 +111,7 @@ impl ApiMethod {
     }
 }
 
-/// Contract-specific response headers an endpoint sends on success.
+/// Endpoint-specific headers on success, in addition to [`API_RESPONSE_HEADERS`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResponseHeaders {
     None,
@@ -122,7 +126,8 @@ pub enum ResponseHeaders {
     Export,
 }
 
-/// One HTTP endpoint. Every endpoint answers errors with [`ErrorResponse`].
+/// One HTTP endpoint. Every response carries [`API_RESPONSE_HEADERS`], and
+/// every endpoint answers errors with [`ErrorResponse`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Endpoint {
     /// Stable camelCase key of this endpoint in the generated TypeScript table.
