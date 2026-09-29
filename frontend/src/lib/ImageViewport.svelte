@@ -28,8 +28,6 @@
 	import {
 		mappedUnitsPerStoredUnit,
 		MAX_RENDER_PIXELS,
-		resolveDisplayWindow,
-		resolveMappedDisplayWindow,
 		samplePresentation,
 		selectWindowingPipeline,
 		validateRenderableRawFrame,
@@ -70,6 +68,7 @@
 	} from "./viewport/pixelProbe.svelte";
 	import { RawFrameSource } from "./viewport/rawFrameSource";
 	import { RenderedFrames } from "./viewport/renderedFrames.svelte";
+	import { resolveWindow } from "./viewport/resolveWindow";
 	import RoiList from "./viewport/RoiList.svelte";
 	import RoiLabels from "./viewport/RoiLabels.svelte";
 	import RoiOverlay from "./viewport/RoiOverlay.svelte";
@@ -92,7 +91,6 @@
 		frameDisplayWindowOptions,
 		mappedWindowScale,
 		pixelAt,
-		windowToMapped,
 		windowToRender,
 	} from "./viewport/valueMapping";
 	import { ValueMappings } from "./viewport/valueMappings.svelte";
@@ -102,7 +100,7 @@
 	type PipelineMode = "cine" | "diagnostic_wl" | "server_wl" | "overlay";
 	type DragState =
 		| { mode: "pan"; startX: number; startY: number; baseTx: number; baseTy: number }
-		| { mode: "wl"; startX: number; startY: number; baseCenter: number; baseWidth: number; step: number }
+		| { mode: "wl"; startX: number; startY: number; baseCenter: number; baseWidth: number; step: number; unit: string | null }
 		| { mode: "zoom_drag"; startY: number; baseScale: number; anchor: ZoomAnchor }
 		| { mode: "scroll_drag"; startY: number; baseFrame: number }
 		| { mode: "draw_roi"; start: ImagePoint; current: ImagePoint }
@@ -175,7 +173,7 @@
 	let currentRawFrame = $state.raw<RawFrame | null>(null);
 	// The window the server rendered the displayed PNG with, if linear, and
 	// whether that PNG was requested in a real-world unit.
-	let shownDisplayWindow = $state.raw<ResolvedWindow | null>(null);
+	let shownDisplay = $state.raw<Pick<DisplayFrame, "window" | "appliedWindow"> | null>(null);
 	let shownUnitRequest = $state(false);
 	let rawWindowLevelFallbackByFile = $state<Record<number, boolean>>({});
 	// Color files: neither path windows them, so a drag sends no previews.
@@ -277,78 +275,42 @@
 	const renderWindowWidth = $derived(renderWindow.width);
 	const renderWindowPending = $derived(renderWindow.pending);
 
-	// A server frame requested in a real-world unit reports no window when the
-	// unit applied, and the default window it fell back to when it did not.
-	const unitWindowFallback = $derived(shownUnitRequest && shownDisplayWindow !== null);
-
-	// The window of the image on screen. The raw path resolves its own; a
-	// server-rendered frame shows the window being dragged or requested, else
-	// the one the server reports rendering it with. Null when there is no
-	// linear window to show (color, VOI LUT).
-	const displayWindow = $derived<ResolvedWindow | null>(
-		pipelineMode === "overlay"
-			? shownDisplayWindow ?? (overlay?.sourceFile.default_window
-				? {
-					wc: overlay.sourceFile.default_window.center,
-					ww: overlay.sourceFile.default_window.width,
-				}
-				: null)
-			: pipelineMode === "diagnostic_wl" && currentRawFrame && directWindowing && directMap
-			? resolveMappedDisplayWindow(
-				currentRawFrame,
-				directMap,
-				liveWindowCenter,
-				liveWindowWidth,
-				windowUnit === null ? null : windowCenter,
-				windowUnit === null ? null : windowWidth,
-				windowMode,
-			)
-			: pipelineMode === "diagnostic_wl" && currentRawFrame
-			? resolveDisplayWindow(
-				currentRawFrame,
-				liveWindowCenter,
-				liveWindowWidth,
-				renderWindowCenter,
-				renderWindowWidth,
-				windowMode,
-				rawPresentation ?? undefined,
-			)
-			: liveWindowCenter !== null && liveWindowWidth !== null
-				? { wc: liveWindowCenter, ww: liveWindowWidth }
-				: renderWindowCenter !== null && renderWindowWidth !== null
-				? { wc: renderWindowCenter, ww: renderWindowWidth }
-				: shownDisplayWindow ?? (activeFile?.default_window
-					? { wc: activeFile.default_window.center, ww: activeFile.default_window.width }
-					: null),
-	);
-	// A mapped file's legend: the window it is shown with, in its unit.
-	const mappedLegend = $derived.by(() => {
-		if (!mappedScale || !displayWindow) return null;
-		const low = mappedScale.toMapped(displayWindow.wc - displayWindow.ww / 2);
-		const high = mappedScale.toMapped(displayWindow.wc + displayWindow.ww / 2);
-		const mapped = windowToMapped({ center: displayWindow.wc, width: displayWindow.ww }, mappedScale);
-		return { low, high, ...mapped, unit: mappedScale.unit, label: mappedScale.label };
+	const resolvedWindow = $derived(resolveWindow({
+		raw: pipelineMode === "diagnostic_wl" ? currentRawFrame : null,
+		mapping: overlay ? null : frameMapping,
+		requested: windowCenter !== null && windowWidth !== null
+			? { window: { wc: windowCenter, ww: windowWidth }, unit: windowUnit } : null,
+		live: dragState?.mode === "wl" && liveWindowCenter !== null && liveWindowWidth !== null
+			? { window: { wc: liveWindowCenter, ww: liveWindowWidth }, unit: dragState.unit } : null,
+		mode: windowMode,
+		defaultWindow: overlay?.sourceFile.default_window ?? activeFile.default_window,
+		server: shownDisplay,
+		unitRequest: shownUnitRequest,
+	}));
+	const displayWindow = $derived(resolvedWindow.window);
+	// Convert only for the worker; HUD, drag and legend share the resolved unit.
+	const rawRenderWindow = $derived.by(() => {
+		if (!displayWindow) return null;
+		if (resolvedWindow.unit && mappedScale?.unit === resolvedWindow.unit) {
+			const converted = windowToRender({ center: displayWindow.wc, width: displayWindow.ww }, mappedScale);
+			return { wc: converted.center, ww: converted.width };
+		}
+		return displayWindow;
 	});
-	// A LUT-unit window: the raw renderer's, or the one a server frame was
-	// shown with; none when the server fell back to the default window.
-	const directLegend = $derived.by(() => {
-		if (!directMap || !directWindowing) return null;
-		const window = pipelineMode === "diagnostic_wl" && currentRawFrame
-			? displayWindow
-			: windowUnit !== null && windowCenter !== null && windowWidth !== null && !unitWindowFallback
-				? { wc: windowCenter, ww: windowWidth }
-				: null;
-		if (!window) return null;
+	const windowLegend = $derived.by(() => {
+		if (!displayWindow || !resolvedWindow.unit) return null;
 		return {
-			center: window.wc,
-			width: window.ww,
-			low: window.wc - window.ww / 2,
-			high: window.wc + window.ww / 2,
-			unit: directMap.unit_label,
-			label: directMap.label,
+			center: displayWindow.wc, width: displayWindow.ww,
+			low: displayWindow.wc - displayWindow.ww / 2,
+			high: displayWindow.wc + displayWindow.ww / 2,
+			unit: resolvedWindow.unit, label: frameMapping?.real_world[0]?.label ?? null,
 		};
 	});
-	const windowLegend = $derived(mappedLegend ?? directLegend);
+	const windowColors = $derived.by(() => {
+		const mono1 = currentRawFrame?.metadata.photometricInterpretation.trim().toUpperCase() === "MONOCHROME1";
+		const decreasing = mappedScale !== null && mappedScale.ratio < 0;
+		return mono1 !== decreasing ? ["#fff", "#000"] : ["#000", "#fff"];
+	});
 
 	// The colorwash layer depends only on which volume is shown and whether
 	// it covers the frame; opacity is applied to the drawn layer.
@@ -591,16 +553,16 @@
 	 * window; the settled window is fetched as usual on release.
 	 */
 	const livePreview = new LiveWindowPreview({
-		load: ({ wc, ww }, signal) => fetchDisplayFrame(
+		load: ({ wc, ww }, signal) => loadDisplayFrame(
 			activeFile.index,
 			currentFrame,
-			{ wc, ww, windowMode: "default", preview: true },
+			{ wc, ww, windowMode: "default", unit: dragState?.mode === "wl" ? dragState.unit : null, preview: true },
 			signal,
 		),
 		show: drawPreviewFrame,
 	});
 
-	async function drawPreviewFrame({ blob, window }: DisplayFrame): Promise<void> {
+	async function drawPreviewFrame({ blob, window, appliedWindow }: DisplayFrame): Promise<void> {
 		const isLive = () => dragState?.mode === "wl" && pipelineMode === "server_wl" && !!canvasEl;
 		if (!isLive()) return;
 		const image = await decodeCanvasImage(blob);
@@ -610,8 +572,8 @@
 			canvasEl.width = image.width;
 			canvasEl.height = image.height;
 			ctx?.drawImage(image.source, 0, 0);
-			shownDisplayWindow = window;
-			shownUnitRequest = false;
+			shownDisplay = { window, appliedWindow };
+			shownUnitRequest = dragState?.mode === "wl" && !!dragState.unit && !mappedScale;
 		} finally {
 			image.dispose();
 		}
@@ -704,13 +666,13 @@
 				() => generation === requestGeneration,
 				(pending) => { loading = pending; },
 			);
-			const { blob, window } = await frameRequest;
+			const { blob, window, appliedWindow } = await frameRequest;
 			if (generation !== requestGeneration || !usesDisplayPipeline()) return;
 			loading = false;
 			loadError = null;
 			await drawDisplayBlob(cacheKey, blob, generation);
 			if (generation !== requestGeneration || !usesDisplayPipeline()) return;
-			shownDisplayWindow = window;
+			shownDisplay = { window, appliedWindow };
 			shownUnitRequest = sendsUnit(fileIndex, frameIndex, windowOptions);
 			rendered.mark(fileIndex, frameIndex);
 
@@ -748,7 +710,7 @@
 				composeOverlayFrame(canvasEl, base, layers);
 				loading = false;
 				loadError = null;
-				shownDisplayWindow = source.window;
+				shownDisplay = { window: source.window, appliedWindow: source.appliedWindow };
 				shownUnitRequest = false;
 				rendered.mark(activeFile.index, currentFrame);
 			} finally {
@@ -849,12 +811,24 @@
 		displayFrames.resetScope();
 	});
 
+	// An explicit selection supersedes an in-progress local drag as well as
+	// its last preview. A released drag is already cleared by endDrag.
+	$effect(() => {
+		void windowCenter;
+		void windowWidth;
+		void windowUnit;
+		void windowMode;
+		untrack(() => {
+			if (dragState?.mode === "wl") endDrag();
+		});
+	});
+
 	// A window/level drag on a server-windowed frame shows server previews.
 	$effect(() => {
 		const wc = liveWindowCenter;
 		const ww = liveWindowWidth;
 		if (pipelineMode !== "server_wl" || dragState?.mode !== "wl" || wc === null || ww === null) return;
-		if (colorFiles[activeFile.index]) return;
+		if (resolvedWindow.source === "color" || colorFiles[activeFile.index]) return;
 		untrack(() => livePreview.request({ wc, ww }));
 	});
 
@@ -864,6 +838,8 @@
 		livePreview.stop();
 		invalidateWindowLevelRenders();
 		currentRawFrame = null;
+		shownDisplay = null;
+		shownUnitRequest = false;
 		liveWindowCenter = null;
 		liveWindowWidth = null;
 		untrack(() => setSelectedRoi(null));
@@ -972,13 +948,13 @@
 
 	$effect(() => {
 		const presentation = rawPresentation;
-		if (pipelineMode !== "diagnostic_wl" || !currentRawFrame || !canvasEl || renderWindowPending || !presentation || !displayWindow) {
+		if (pipelineMode !== "diagnostic_wl" || !currentRawFrame || !canvasEl || renderWindowPending || !presentation || !rawRenderWindow) {
 			return;
 		}
 		// displayWindow already resolved this frame's window; window changes do
 		// not invalidate in-flight renders, only frame, file, and mode changes do.
 		const frame = currentRawFrame;
-		const { wc, ww, voiLut } = displayWindow;
+		const { wc, ww, voiLut } = rawRenderWindow;
 		const valueMap = directWindowing ? directMap : null;
 		const generation = wlRenderGeneration;
 		void wlRenderer.render(() => canvasEl, {
@@ -1279,7 +1255,7 @@
 			let nextDragState: DragState = null;
 			switch (activeTool) {
 				case "window_level": {
-					if (pipelineMode === "diagnostic_wl" && !currentRawFrame) break;
+					if (resolvedWindow.source === "color" || (pipelineMode === "diagnostic_wl" ? !currentRawFrame : !shownDisplay)) break;
 					const baseWindow = displayWindow ?? { wc: 0, ww: 1 };
 					nextDragState = {
 						mode: "wl",
@@ -1288,9 +1264,10 @@
 						baseCenter: baseWindow.wc,
 						baseWidth: baseWindow.ww,
 						// A LUT window drags in mapped units, scaled to move like a stored one.
-						step: pipelineMode === "diagnostic_wl" && directWindowing && directMap
-							? mappedUnitsPerStoredUnit(directMap)
+						step: resolvedWindow.unit && frameMapping?.real_world[0]
+							? mappedScale ? Math.abs(mappedScale.ratio) : mappedUnitsPerStoredUnit(frameMapping.real_world[0])
 							: 1,
+						unit: resolvedWindow.unit,
 					};
 					liveWindowCenter = baseWindow.wc;
 					liveWindowWidth = baseWindow.ww;
@@ -1427,14 +1404,7 @@
 			target.releasePointerCapture(event.pointerId);
 		}
 		if (dragState?.mode === "wl" && liveWindowCenter !== null && liveWindowWidth !== null) {
-			if (pipelineMode === "diagnostic_wl" && directWindowing && directMap) {
-				onmanualwindowlevel(liveWindowCenter, liveWindowWidth, directMap.unit_label);
-			} else if (mappedScale) {
-				const mapped = windowToMapped({ center: liveWindowCenter, width: liveWindowWidth }, mappedScale);
-				onmanualwindowlevel(mapped.center, mapped.width, mappedScale.unit);
-			} else {
-				onmanualwindowlevel(liveWindowCenter, liveWindowWidth, null);
-			}
+			onmanualwindowlevel(liveWindowCenter, liveWindowWidth, dragState.unit);
 		}
 		if (dragState?.mode === "draw_roi") {
 			const coord = canonicalRect(dragState.start, dragState.current, imageRows, imageColumns);
@@ -1459,6 +1429,8 @@
 	}
 
 	function endDrag() {
+		liveWindowCenter = null;
+		liveWindowWidth = null;
 		livePreview.stop();
 		dragState = null;
 		annotations.endLiveEdit();
@@ -1570,9 +1542,7 @@
 					<span class="mapped-window">
 						W: {formatValue(windowLegend.width)} · C: {formatValue(windowLegend.center)} {windowLegend.unit}
 					</span>
-				{:else if mappedScale}
-					<span class="mapped-window">W/L auto · {mappedScale.unit}</span>
-				{:else if displayWindow?.voiLut}
+				{:else if resolvedWindow.source === "voi_lut"}
 					<span>VOI LUT</span>
 				{:else if displayWindow}
 					<span>W: {Math.round(displayWindow.ww)} · C: {Math.round(displayWindow.wc)}</span>
@@ -1618,7 +1588,7 @@
 						unit={windowLegend.unit}
 						low={windowLegend.low}
 						high={windowLegend.high}
-						colors={["#000", "#fff"]}
+						colors={windowColors}
 					/>
 				{/if}
 			</div>

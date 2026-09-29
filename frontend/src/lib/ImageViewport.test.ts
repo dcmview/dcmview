@@ -193,8 +193,9 @@ describe("ImageViewport window/level path", () => {
 	});
 
 	it("previews a drag on frames too large for the browser with server windows", async () => {
+		fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"]), window: { wc: 70, ww: 400 }, appliedWindow: "linear" });
 		renderViewport({ activeTool: "window_level", file: fileSummary(5, { rows: 5000, columns: 5000 }) });
-		await waitFor(() => expect(fetchDisplayFrame).toHaveBeenCalledWith(5, 0, {}, expect.any(AbortSignal)));
+		await screen.findByText("W: 400 · C: 70");
 		const viewport = await screen.findByRole("application");
 
 		await fireEvent.pointerDown(viewport, { button: 0, clientX: 10, clientY: 10, pointerId: 1 });
@@ -356,14 +357,23 @@ describe("ImageViewport window/level in real-world units", () => {
 
 	it("labels a LUT-unit window the server applied in its unit", async () => {
 		fetchFrameValueMapping.mockResolvedValue(lutMapping());
+		fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"]), window: null, appliedWindow: "real_world" });
 		// Too large for the browser, so the server windows it in its unit.
 		renderViewport({ file: fileSummary(5, { rows: 5000, columns: 5000 }), windowCenter: 40, windowWidth: 80, windowUnit: "ms" });
 
 		await waitFor(() => expect(fetchDisplayFrame).toHaveBeenCalledWith(
 			5, 0, { wc: 40, ww: 80, windowMode: "default", unit: "ms" }, expect.any(AbortSignal),
 		));
-		// No window reported: the unit window applied.
+		// The applied-window header confirms that the requested unit was used.
 		await screen.findByText("W: 80 · C: 40 ms");
+	});
+
+	it("labels a server VOI fallback instead of claiming that a requested LUT unit applied", async () => {
+		fetchFrameValueMapping.mockResolvedValue(lutMapping());
+		fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"]), window: null, appliedWindow: "voi_lut" });
+		renderViewport({ file: fileSummary(5, { rows: 5000, columns: 5000 }), windowCenter: 40, windowWidth: 80, windowUnit: "ms" });
+		await screen.findByText("VOI LUT");
+		expect(screen.queryByText(/W: .*ms/)).toBeNull();
 	});
 
 	it("shows the window the server fell back to when a LUT-unit window could not apply", async () => {
@@ -377,6 +387,7 @@ describe("ImageViewport window/level in real-world units", () => {
 
 	it("converts a real-world window to stored units before requesting the frame", async () => {
 		fetchFrameValueMapping.mockResolvedValue(adcMapping());
+		fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"]), window: { wc: 100, ww: 200 }, appliedWindow: "linear" });
 		renderViewport({ windowCenter: 40, windowWidth: 100, windowUnit: "um2/s" });
 
 		// mapped = 0.5 × stored − 10, so C 40 / W 100 um2/s is C 100 / W 200 stored.
@@ -534,5 +545,57 @@ describe("ImageViewport value overlays", () => {
 		renderViewport({ valueOverlay: dose() });
 
 		expect(await screen.findByText("Overlay unavailable for this frame")).toBeTruthy();
+	});
+});
+
+// F11 suspects are reproduced before changing their resolution paths.
+describe("ImageViewport window presentation consistency", () => {
+	it("releases a manual window so a later preset and reset take effect", async () => {
+		const { rerender } = renderViewport({ activeTool: "window_level" });
+		await screen.findByText("W: 1 · C: 1");
+		const viewport = screen.getByRole("application");
+		await fireEvent.pointerDown(viewport, { button: 0, clientX: 10, clientY: 10, pointerId: 1 });
+		await fireEvent.pointerMove(viewport, { clientX: 20, clientY: 10, pointerId: 1 });
+		await fireEvent.pointerUp(viewport, { pointerId: 1 });
+		await rerender({ windowCenter: 40, windowWidth: 80 });
+		await screen.findByText("W: 80 · C: 40");
+		await rerender({ windowCenter: null, windowWidth: null });
+		await screen.findByText("W: 1 · C: 1");
+	});
+
+	it("starts a server LUT-unit drag in the displayed unit", async () => {
+		fetchFrameValueMapping.mockResolvedValue(lutMapping());
+		fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"]), window: null, appliedWindow: "real_world" });
+		const onmanualwindowlevel = vi.fn();
+		renderViewport({ activeTool: "window_level", file: fileSummary(5, { rows: 5000, columns: 5000 }),
+			windowCenter: 40, windowWidth: 80, windowUnit: "ms", onmanualwindowlevel });
+		await screen.findByText("W: 80 · C: 40 ms");
+		const viewport = screen.getByRole("application");
+		await fireEvent.pointerDown(viewport, { button: 0, clientX: 10, clientY: 10, pointerId: 1 });
+		await fireEvent.pointerMove(viewport, { clientX: 20, clientY: 10, pointerId: 1 });
+		await fireEvent.pointerUp(viewport, { clientX: 20, clientY: 10, pointerId: 1 });
+		expect(onmanualwindowlevel).toHaveBeenCalledWith(40, 1280, "ms");
+		expect(fetchDisplayFrame).toHaveBeenCalledWith(5, 0, expect.objectContaining({ unit: "ms", preview: true }), expect.any(AbortSignal));
+	});
+
+	it("inverts a mapped MONOCHROME1 legend with the pixels", async () => {
+		const frame = rawFrame();
+		frame.metadata.photometricInterpretation = "MONOCHROME1";
+		fetchRawFrame.mockResolvedValue(frame);
+		fetchFrameValueMapping.mockResolvedValue(adcMapping());
+		renderViewport({ activeTool: "window_level" });
+		const legend = await screen.findByRole("figure", { name: /ADC:/ });
+		expect(legend.querySelector(".bar")?.getAttribute("style")).toContain("#fff, #000");
+	});
+
+	it("does not preview or label a color frame that starts on server windowing", async () => {
+		renderViewport({ activeTool: "window_level", file: fileSummary(5, { raw_windowing_compatible: false }) });
+		await waitFor(() => expect(fetchDisplayFrame).toHaveBeenCalledOnce());
+		const viewport = screen.getByRole("application");
+		await fireEvent.pointerDown(viewport, { button: 0, clientX: 10, clientY: 10, pointerId: 1 });
+		await fireEvent.pointerMove(viewport, { clientX: 20, clientY: 10, pointerId: 1 });
+		await fireEvent.pointerUp(viewport, { clientX: 20, clientY: 10, pointerId: 1 });
+		expect(fetchDisplayFrame).toHaveBeenCalledOnce();
+		expect(screen.queryByText(/W: /)).toBeNull();
 	});
 });

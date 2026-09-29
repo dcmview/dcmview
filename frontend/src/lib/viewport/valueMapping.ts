@@ -347,7 +347,8 @@ export function frameDisplayWindowOptions(
 	const scale = mappedWindowScale(mapping);
 	if (scale?.unit === options.unit) {
 		const stored = windowToRender({ center: options.wc, width: options.ww }, scale);
-		return { wc: stored.center, ww: stored.width, windowMode: "default" };
+		const { unit: _unit, ...rest } = options;
+		return { ...rest, wc: stored.center, ww: stored.width, windowMode: "default" };
 	}
-	return { wc: options.wc, ww: options.ww, windowMode: "default", unit: options.unit };
+	return { ...options, windowMode: "default" };
 }

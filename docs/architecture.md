@@ -166,12 +166,14 @@ is windowed directly: the renderer's window LUT maps each stored value
 through it, and stills with such a window stay on that path in every tool.
 Files without a mapping keep the stored-unit path unchanged.
 
-The window HUD, the unit legend, and a window/level drag start from the
-window of the image on screen. The raw path resolves that window itself; for
-a server-rendered frame it is the window being dragged or requested, else the
-one the display response reports (`X-Frame-Window-*`), kept with the cached
-PNG. A mapped file converts that window to its unit, so its legend needs no
-raw samples. The cached `DisplayPng` carries an `AppliedWindow` enum: Linear with its
+The viewport's pure `viewport/resolveWindow.ts` selects the displayed window,
+unit, and source for the HUD and legends. Live drags supersede automatic
+presentation; released drags and explicit selections clear their local preview.
+Server unit labels require `X-Frame-Window-Applied: real_world`; `voi_lut`
+and color responses never inherit the requested unit. Manual settings always
+leave Full Dynamic and preset mode, including files without a default window.
+
+The cached `DisplayPng` carries an `AppliedWindow` enum: Linear with its
 Modality window, RealWorld, VoiLut, or Color. `X-Frame-Window-Applied` is
 `linear`, `real_world`, or `voi_lut` for grayscale; color omits it. A unit
 window is confirmed only by `real_world`, including when a fallback uses a
