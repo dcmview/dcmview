@@ -388,7 +388,9 @@ mod tests {
         file.rewind().unwrap();
         let mut reader = BufReader::new(file);
         let error = super::read_basic_offset_table(&mut reader).unwrap_err();
-        assert!(error.to_string().contains("encapsulated fragment is truncated"));
+        assert!(error
+            .to_string()
+            .contains("encapsulated fragment is truncated"));
         assert_eq!(reader.stream_position().unwrap(), 8);
     }
 
