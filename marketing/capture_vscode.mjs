@@ -70,7 +70,7 @@ async function waitForRendered(frame, fileIndex = null) {
 async function advanceViewerFrame(frame) {
 	const canvas = frame.locator("canvas.dicom-canvas");
 	const before = await canvas.getAttribute("data-capture-rendered");
-	const position = frame.locator("[data-capture-position]");
+	const position = frame.getByRole("slider", { name: "Image position" });
 	await position.evaluate((input) => {
 		if (!(input instanceof HTMLInputElement)) throw new Error("capture position is not an input");
 		const maximum = Number(input.max);
