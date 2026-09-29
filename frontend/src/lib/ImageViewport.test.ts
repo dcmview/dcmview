@@ -615,7 +615,7 @@ describe("ImageViewport window presentation consistency", () => {
 		await fireEvent.pointerMove(viewport, { clientX: 20, clientY: 10, pointerId: 1 });
 		await fireEvent.pointerUp(viewport, { clientX: 20, clientY: 10, pointerId: 1 });
 		expect(fetchDisplayFrame).toHaveBeenCalledOnce();
-		expect(screen.queryByText(/W: /)).toBeNull();
+		await waitFor(() => expect(screen.queryByText(/W: /)).toBeNull());
 	});
 });
 
@@ -669,6 +669,74 @@ describe("F11 remaining confirmations", () => {
 
 
 describe("ImageViewport frame presentation", () => {
+	function canvasContext() {
+		const context = { clearRect: vi.fn(), putImageData: vi.fn(), drawImage: vi.fn(),
+			createImageData: (w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4) }) };
+		const spy = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(context as unknown as CanvasRenderingContext2D);
+		return { context, restore: () => spy.mockRestore() };
+	}
+
+	it.each(["pan", "window_level"] as const)("holds pixels, colorwash, and label until the next colorwash is ready with %s", async (activeTool) => {
+		const { context, restore } = canvasContext();
+		vi.stubGlobal("createImageBitmap", vi.fn(async () => ({ width: 64, height: 64, close: vi.fn() })));
+		const painted = activeTool === "pan" ? context.drawImage : context.putImageData;
+		let finish!: (blob: Blob) => void;
+		fetchDoseOverlayBlob.mockImplementation(async (file) => file === 5 ? new Blob(["first"]) : new Promise((resolve) => { finish = resolve; }));
+		fetchFrameValueMapping.mockImplementation(async (file) => identityMapping(file));
+		const valueOverlay: frameOverlay.ValueOverlay = { kind: "rt_dose", volumeFileIndex: 9, title: "Dose", opacity: 0.4, coversFrame: true,
+			legend: { unit_label: "Gy", units: null, min_value: 0, max_value: 10, transparent_at_or_below: 0,
+				colormap: "viridis", color_stops: [[68, 1, 84], [253, 231, 37]] } };
+		try {
+			const { rerender } = renderViewport({ activeTool, valueOverlay });
+			await waitFor(() => expect(painted).toHaveBeenCalledOnce());
+			const layer = document.querySelector<HTMLCanvasElement>(".value-overlay-canvas")!;
+			expect(layer.hidden).toBe(false);
+			expect(screen.getByText("image 1 / 1")).toBeTruthy();
+			await rerender({ activeFile: fileSummary(6), navigationPosition: 1, navigationFrameCount: 2 });
+			await waitFor(() => expect(fetchDoseOverlayBlob).toHaveBeenCalledWith(6, 0, 9, expect.any(AbortSignal)));
+			expect(painted).toHaveBeenCalledOnce();
+			expect(drawOverlayLayer).toHaveBeenCalledOnce();
+			expect(layer.hidden).toBe(false);
+			expect(screen.getByText("image 1 / 1")).toBeTruthy();
+			await act(() => finish(new Blob(["second"])));
+			await screen.findByText("image 2 / 2");
+			expect(painted).toHaveBeenCalledTimes(2);
+			expect(drawOverlayLayer).toHaveBeenCalledTimes(2);
+			expect(layer.hidden).toBe(false);
+		} finally { restore(); vi.unstubAllGlobals(); }
+	});
+
+	it("keeps the base image and reports a failed presentation layer", async () => {
+		const { context, restore } = canvasContext();
+		vi.mocked(api.fetchPresentationLayerBlob).mockRejectedValueOnce(new api.ApiError("injected failure", 500, "pixel_decode_failed"));
+		try {
+			renderViewport({ activeTool: "window_level", file: fileSummary(5, { presentation_layer: true }) });
+			await screen.findByText("Presentation layer unavailable");
+			expect(context.putImageData).toHaveBeenCalledOnce();
+			expect(document.querySelector(".dicom-canvas")).toBeTruthy();
+			expect(screen.queryByText("injected failure")).toBeNull();
+		} finally { restore(); }
+	});
+
+	it("waits for a float64 frame's own mapping after displaying float32", async () => {
+		const { context, restore } = canvasContext();
+		let finish!: (mapping: api.FrameValueMapping) => void;
+		fetchRawFrame.mockImplementation(async (file) => rawFrame(64, 64, file === 5 ? 32 : 64));
+		fetchFrameValueMapping.mockImplementation(async (file) => file === 5
+			? { ...identityMapping(file), stored_value_type: "float32" }
+			: new Promise((resolve) => { finish = resolve; }));
+		try {
+			const { rerender } = renderViewport({ activeTool: "window_level" });
+			await waitFor(() => expect(context.putImageData).toHaveBeenCalledOnce());
+			await rerender({ activeFile: fileSummary(6), navigationPosition: 1, navigationFrameCount: 2 });
+			await waitFor(() => expect(fetchFrameValueMapping).toHaveBeenCalledWith(6, 0, expect.any(AbortSignal)));
+			expect(context.putImageData).toHaveBeenCalledOnce();
+			await act(() => finish({ ...identityMapping(6), stored_value_type: "float64" }));
+			await screen.findByText("image 2 / 2");
+			expect(context.putImageData).toHaveBeenCalledTimes(2);
+		} finally { restore(); }
+	});
+
 	it("keeps the painted image while the next file's raw frame is pending", async () => {
 		const context = {
 			clearRect: vi.fn(), putImageData: vi.fn(), drawImage: vi.fn(),
