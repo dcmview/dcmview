@@ -29,6 +29,8 @@ export class Catalog {
 	series = $state.raw<SeriesCatalogResponse | null>(null);
 	/** Set when the first load fails; later failures retry quietly. */
 	loadError = $state<string | null>(null);
+	/** References can change only when a file arrives or discovery finishes. */
+	readonly referenceRevision = $derived(`${this.files?.files.length ?? 0}|${this.files?.scan_complete ?? false}`);
 	readonly filesById = $derived<ReadonlyMap<number, FileSummary>>(indexFilesById(this.files?.files ?? []));
 
 	apply(files: FilesResponse, series: SeriesCatalogResponse): void {

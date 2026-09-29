@@ -344,7 +344,7 @@
 								/>
 							{/if}
 							<ReferenceNavigator bind:this={references}
-								scanProgress={[catalog.files.files.length, catalog.files.scanned, catalog.files.skipped, catalog.files.filtered, catalog.files.scan_complete].join("|")}
+								scanProgress={catalog.referenceRevision}
 								fileIndex={activeFile.index}
 								files={catalog.files.files}
 								onopenreference={(fileIndex, frameIndex) => tabs.openReference(fileIndex, frameIndex)}
