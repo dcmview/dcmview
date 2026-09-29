@@ -44,11 +44,11 @@ function chooseFile(files, scene) {
 async function waitForViewerFrame(window) {
 	const deadline = Date.now() + 90_000;
 	while (Date.now() < deadline) {
-		const frame = window.frames().find((candidate) => /^http:\/\/(127\.0\.0\.1|localhost):\d+\/$/.test(candidate.url()));
+		const frame = window.frames().find((candidate) => /^http:\/\/(127\.0\.0\.1|localhost):\d+\/(?:\?[^#]*)?$/.test(candidate.url()));
 		if (frame) return frame;
 		await window.waitForTimeout(250);
 	}
-	throw new Error("VS Code webview did not load the dcmview frame");
+	throw new Error(`VS Code webview did not load the dcmview frame: ${window.frames().map(frame => frame.url()).join(", ")}`);
 }
 
 async function waitForRendered(frame, fileIndex = null) {
@@ -250,6 +250,7 @@ async function main() {
 		const context = browser.contexts()[0];
 		if (!context) throw new Error("VS Code CDP exposed no browser context");
 		const window = context.pages()[0] ?? await context.waitForEvent("page", { timeout: 30_000 });
+		await window.setViewportSize({ width: scene.viewport.width, height: scene.viewport.height });
 		await window.waitForTimeout(2_000);
 		await window.addStyleTag({ content: ".monaco-hover { display: none !important; }" });
 		const walkthrough = scene.walkthrough;
