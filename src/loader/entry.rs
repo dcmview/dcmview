@@ -28,7 +28,16 @@ pub(super) enum EntryInspection {
     Skipped(DiscoveryReason),
 }
 
+#[cfg(test)]
 pub(super) fn build_entry(path: &Path) -> Result<EntryInspection> {
+    build_entry_selected(path, &|_| true, &|| Ok(()))
+}
+
+pub(super) fn build_entry_selected(
+    path: &Path,
+    selected: &impl Fn(&FileEntry) -> bool,
+    check_active: &impl Fn() -> Result<()>,
+) -> Result<EntryInspection> {
     let DiscoveryHeader {
         object: obj,
         odd_item_length,
@@ -242,14 +251,16 @@ pub(super) fn build_entry(path: &Path) -> Result<EntryInspection> {
     };
     // Discovery already runs on blocking workers. Retain only the verdict,
     // never the decoded masks, and finish before publishing this entry.
-    if entry.sop_class_uid == uids::SEGMENTATION_STORAGE
+    if selected(&entry)
+        && entry.sop_class_uid == uids::SEGMENTATION_STORAGE
         && read_first_string(&obj, tags::SEGMENTATION_TYPE).as_deref() == Some("FRACTIONAL")
         && read_number::<u32>(&obj, tags::NUMBER_OF_FRAMES).unwrap_or(1) == entry.frame_count
     {
         if let Some(maximum) =
             read_number::<u32>(&obj, tags::MAXIMUM_FRACTIONAL_VALUE).filter(|maximum| *maximum > 1)
         {
-            match crate::pixels::segmentation_has_only_binary_samples(&entry) {
+            check_active()?;
+            match crate::pixels::segmentation_has_only_binary_samples(&entry, &obj, check_active) {
                 Ok(true) => entry.series_metadata.binary_fractional_seg_maximum = Some(maximum),
                 Ok(false) => {}
                 Err(error) => tracing::warn!(path = %path.display(), %error,
@@ -257,6 +268,7 @@ pub(super) fn build_entry(path: &Path) -> Result<EntryInspection> {
             }
         }
     }
+    check_active()?;
     Ok(EntryInspection::Selected(Box::new(entry)))
 }
 
@@ -562,6 +574,121 @@ fn build_label(patient_id: &str, modality: &str, study_date: &str, fallback: &st
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn fractional_seg_inspection_filters_before_samples_and_honours_cancellation() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/golden-seg-binary-valued-fractional.dcm");
+        let checks = std::cell::Cell::new(0);
+        let selected = std::cell::Cell::new(false);
+        let check = || {
+            assert!(selected.get(), "filter must run before sample inspection");
+            checks.set(checks.get() + 1);
+            Ok(())
+        };
+        let EntryInspection::Selected(entry) = super::build_entry_selected(
+            &fixture,
+            &|_| {
+                selected.set(true);
+                false
+            },
+            &check,
+        )
+        .unwrap() else {
+            panic!("fixture");
+        };
+        assert_eq!(
+            checks.get(),
+            1,
+            "filtered objects must not walk pixel samples"
+        );
+        assert_eq!(entry.series_metadata.binary_fractional_seg_maximum, None);
+        checks.set(0);
+        let error = super::build_entry_selected(&fixture, &|_| true, &|| {
+            checks.set(checks.get() + 1);
+            anyhow::ensure!(checks.get() < 10, "cancel sample inspection");
+            Ok(())
+        })
+        .err()
+        .expect("cancelled inspection must not publish an entry");
+        assert!(error.to_string().contains("cancel sample inspection"));
+    }
+
+    #[test]
+    fn fractional_seg_streams_native_deflated_and_encapsulated_samples() {
+        use std::io::Write;
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/golden-seg-binary-valued-fractional.dcm");
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("seg.dcm");
+        for syntax in [
+            uids::EXPLICIT_VR_LITTLE_ENDIAN,
+            uids::DEFLATED_EXPLICIT_VR_LITTLE_ENDIAN,
+            uids::RLE_LOSSLESS,
+            "1.2.840.10008.1.2.8.1",
+        ] {
+            for last in [1_u8, 2] {
+                let mut object = dicom_object::open_file(&fixture).unwrap();
+                object.update_meta(|meta| meta.transfer_syntax = syntax.to_owned());
+                if syntax == uids::RLE_LOSSLESS {
+                    let fragments = [1, last].map(|value| {
+                        let mut encoded = vec![0; 64];
+                        encoded[..4].copy_from_slice(&1_u32.to_le_bytes());
+                        encoded[4..8].copy_from_slice(&64_u32.to_le_bytes());
+                        encoded.extend_from_slice(&[3, 0, 1, 0, value, 0x80]);
+                        encoded
+                    });
+                    object.put(DataElement::new(
+                        tags::PIXEL_DATA,
+                        VR::OB,
+                        PixelFragmentSequence::new_fragments(fragments.to_vec()),
+                    ));
+                } else if syntax == "1.2.840.10008.1.2.8.1" {
+                    for (tag, value) in [
+                        (tags::BITS_ALLOCATED, 1_u16),
+                        (tags::BITS_STORED, 1),
+                        (tags::HIGH_BIT, 0),
+                    ] {
+                        object.put(DataElement::new(tag, VR::US, PrimitiveValue::from(value)));
+                    }
+                    let fragments = [0b0101, 0b1010].map(|value| {
+                        let mut encoded = flate2::write::DeflateEncoder::new(
+                            Vec::new(),
+                            flate2::Compression::default(),
+                        );
+                        encoded.write_all(&[value]).unwrap();
+                        let mut bytes = encoded.finish().unwrap();
+                        if bytes.len() % 2 != 0 {
+                            bytes.push(0);
+                        }
+                        bytes
+                    });
+                    object.put(DataElement::new(
+                        tags::PIXEL_DATA,
+                        VR::OB,
+                        PixelFragmentSequence::new_fragments(fragments.to_vec()),
+                    ));
+                } else {
+                    object.put(DataElement::new(
+                        tags::PIXEL_DATA,
+                        VR::OB,
+                        PrimitiveValue::U8(vec![0, 1, 1, 0, 0, 1, 0, last].into()),
+                    ));
+                }
+                object.write_to_file(&path).unwrap();
+                let entry = crate::loader::test_entry(&path);
+                let expected = if last == 1 || syntax == "1.2.840.10008.1.2.8.1" {
+                    Some(255)
+                } else {
+                    None
+                };
+                assert_eq!(
+                    entry.series_metadata.binary_fractional_seg_maximum, expected,
+                    "{syntax}, last {last}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn fractional_seg_inspection_is_cached_and_requires_all_declared_frames() {
         use dicom_core::{DataElement, PrimitiveValue, VR};

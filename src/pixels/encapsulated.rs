@@ -60,57 +60,106 @@ const SEQUENCE_DELIMITER: Tag = Tag(0xFFFE, 0xE0DD);
 /// bytes to find where a compressed frame ends (RLE has one fragment per
 /// frame), so earlier frames are never read into memory.
 pub(crate) fn read_encapsulated_fragment_blocking(path: &PathBuf, frame: u32) -> Result<Bytes> {
-    let file =
-        File::open(path).with_context(|| format!("failed to open DICOM: {}", path.display()))?;
-    let mut reader = BufReader::new(file);
-    reader.seek(SeekFrom::Start(128))?;
-    let meta = FileMetaTable::from_reader(&mut reader)
-        .with_context(|| format!("failed to read file meta: {}", path.display()))?;
-    let transfer_syntax_uid = meta
-        .transfer_syntax()
-        .trim_end_matches('\0')
-        .trim()
-        .to_string();
-    let transfer_syntax = TransferSyntaxRegistry
-        .get(&transfer_syntax_uid)
-        .with_context(|| format!("unknown transfer syntax {transfer_syntax_uid}"))?;
-    let header = walk_to_pixel_sequence(&mut reader, transfer_syntax)?;
-    let frame_count = header.frame_count.max(1);
-    if frame >= frame_count {
-        return Err(anyhow!("frame out of range"));
-    }
+    EncapsulatedFrames::open(path, &|| Ok(()))?.read_frame(frame)
+}
 
-    let basic_offsets = read_basic_offset_table(&mut reader)?;
-    let first_fragment = reader.stream_position()?;
-    let offsets = if !header.extended_offsets.is_empty() {
-        validate_offset_table(
-            "Extended Offset Table",
-            &header.extended_offsets,
+/// An object-local cursor: a single header walk, then sequential frame reads.
+/// Random frame requests retain the same offset-table and marker fallback rules.
+pub(super) struct EncapsulatedFrames {
+    reader: BufReader<File>,
+    offsets: Option<Vec<u64>>,
+    extended_lengths: Vec<u64>,
+    first_fragment: u64,
+    frame_count: u32,
+    next_frame: u32,
+    one_fragment_per_frame: bool,
+}
+
+impl EncapsulatedFrames {
+    pub(super) fn open(path: &PathBuf, check_active: &impl Fn() -> Result<()>) -> Result<Self> {
+        let file = File::open(path)
+            .with_context(|| format!("failed to open DICOM: {}", path.display()))?;
+        let mut reader = BufReader::new(file);
+        reader.seek(SeekFrom::Start(128))?;
+        let meta = FileMetaTable::from_reader(&mut reader)
+            .with_context(|| format!("failed to read file meta: {}", path.display()))?;
+        let transfer_syntax_uid = meta
+            .transfer_syntax()
+            .trim_end_matches('\0')
+            .trim()
+            .to_string();
+        let transfer_syntax = TransferSyntaxRegistry
+            .get(&transfer_syntax_uid)
+            .with_context(|| format!("unknown transfer syntax {transfer_syntax_uid}"))?;
+        let header = walk_to_pixel_sequence(&mut reader, transfer_syntax, check_active)?;
+        let frame_count = header.frame_count.max(1);
+
+        let basic_offsets = read_basic_offset_table(&mut reader)?;
+        let first_fragment = reader.stream_position()?;
+        let offsets = if !header.extended_offsets.is_empty() {
+            validate_offset_table(
+                "Extended Offset Table",
+                &header.extended_offsets,
+                frame_count,
+            )?;
+            Some(header.extended_offsets)
+        } else if basic_offsets.is_empty() {
+            None
+        } else {
+            validate_offset_table("Basic Offset Table", &basic_offsets, frame_count)?;
+            Some(basic_offsets)
+        };
+
+        Ok(Self {
+            reader,
+            offsets,
+            extended_lengths: header.extended_lengths,
+            first_fragment,
             frame_count,
-        )?;
-        Some(header.extended_offsets)
-    } else if basic_offsets.is_empty() {
-        None
-    } else {
-        validate_offset_table("Basic Offset Table", &basic_offsets, frame_count)?;
-        Some(basic_offsets)
-    };
-
-    if let Some(offsets) = offsets.as_deref() {
-        let index = usize::try_from(frame).context("frame index overflow")?;
-        let start = offsets[index];
-        let end = offsets.get(index + 1).copied();
-        let encoded_length = header.extended_lengths.get(index).copied();
-        reader.seek(SeekFrom::Start(
-            first_fragment
-                .checked_add(start)
-                .context("encapsulated item offset overflow")?,
-        ))?;
-        return read_frame_at_offset(&mut reader, start, end, encoded_length);
+            next_frame: 0,
+            one_fragment_per_frame: matches!(
+                transfer_syntax_uid.as_str(),
+                dicom_dictionary_std::uids::RLE_LOSSLESS
+                    | super::deflated_frame::DEFLATED_IMAGE_FRAME_UID
+            ),
+        })
     }
 
-    let one_fragment_per_frame = transfer_syntax_uid == dicom_dictionary_std::uids::RLE_LOSSLESS;
-    read_frame_without_offsets(&mut reader, frame, frame_count, one_fragment_per_frame)
+    pub(super) fn read_frame(&mut self, frame: u32) -> Result<Bytes> {
+        anyhow::ensure!(frame < self.frame_count, "frame out of range");
+        let result = {
+            if let Some(offsets) = self.offsets.as_deref() {
+                let index = usize::try_from(frame).context("frame index overflow")?;
+                let start = offsets[index];
+                let end = offsets.get(index + 1).copied();
+                let encoded_length = self.extended_lengths.get(index).copied();
+                self.reader.seek(SeekFrom::Start(
+                    self.first_fragment
+                        .checked_add(start)
+                        .context("encapsulated item offset overflow")?,
+                ))?;
+                read_frame_at_offset(&mut self.reader, start, end, encoded_length)
+            } else {
+                if frame != self.next_frame {
+                    self.reader.seek(SeekFrom::Start(self.first_fragment))?;
+                }
+                read_frame_without_offsets(
+                    &mut self.reader,
+                    if frame == self.next_frame { 0 } else { frame },
+                    if frame == self.next_frame {
+                        self.frame_count - frame
+                    } else {
+                        self.frame_count
+                    },
+                    self.one_fragment_per_frame,
+                )
+            }
+        };
+        if result.is_ok() {
+            self.next_frame = frame + 1;
+        }
+        result
+    }
 }
 
 struct EncapsulatedHeader {
@@ -125,6 +174,7 @@ struct EncapsulatedHeader {
 fn walk_to_pixel_sequence(
     reader: &mut BufReader<File>,
     transfer_syntax: &dicom_encoding::TransferSyntax,
+    check_active: &impl Fn() -> Result<()>,
 ) -> Result<EncapsulatedHeader> {
     let mut header = EncapsulatedHeader {
         frame_count: 1,
@@ -134,6 +184,7 @@ fn walk_to_pixel_sequence(
     let mut parser = LazyDataSetReader::new_with_ts(&mut *reader, transfer_syntax)?;
     let mut depth = 0_usize;
     while let Some(token) = parser.advance() {
+        check_active()?;
         match token? {
             LazyDataToken::PixelSequenceStart if depth == 0 => return Ok(header),
             LazyDataToken::SequenceStart { .. } | LazyDataToken::PixelSequenceStart => depth += 1,
@@ -521,6 +572,17 @@ mod tests {
             .write_to_file(&path)
             .unwrap();
 
+        let mut frames = super::EncapsulatedFrames::open(&path, &|| Ok(())).unwrap();
+        for _ in 0..2 {
+            assert_eq!(
+                frames.read_frame(0).unwrap().as_ref(),
+                &[1, 2, 3, 0xFF, 0xD9, 0]
+            );
+            assert_eq!(
+                frames.read_frame(1).unwrap().as_ref(),
+                &[4, 5, 6, 0xFF, 0xD9, 0]
+            );
+        }
         assert_eq!(
             read_encapsulated_fragment_blocking(&path, 1)
                 .unwrap()

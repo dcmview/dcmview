@@ -22,6 +22,14 @@ pub(super) struct DecodedFrame {
 /// Decodes only `frame` of `file`; `codec` names the codec in errors.
 pub(super) fn decode_frame(file: &FileEntry, frame: u32, codec: &str) -> Result<DecodedFrame> {
     let (object, frame_in_object) = open_for_frame_decode(file, frame)?;
+    decode_object(&object, frame_in_object, codec)
+}
+
+pub(super) fn decode_object(
+    object: &dicom_object::DefaultDicomObject,
+    frame_in_object: u32,
+    codec: &str,
+) -> Result<DecodedFrame> {
     // The result holds just the requested frame, at index 0.
     let decoded = object
         .decode_pixel_data_frame(frame_in_object)
@@ -45,6 +53,6 @@ pub(super) fn decode_frame(file: &FileEntry, frame: u32, codec: &str) -> Result<
         columns: decoded.columns(),
         bits_allocated,
         samples_per_pixel: u32::from(decoded.samples_per_pixel()),
-        icc_profile: select_icc_profile(&object),
+        icc_profile: select_icc_profile(object),
     })
 }

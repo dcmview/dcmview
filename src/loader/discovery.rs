@@ -1,4 +1,4 @@
-use super::entry::{build_entry, EntryInspection};
+use super::entry::{build_entry_selected, EntryInspection};
 use super::filter::{matches_filters, ScanFilter};
 use crate::types::FileEntry;
 use anyhow::{Context, Result};
@@ -277,7 +277,13 @@ fn discover_progressive_blocking(
         .try_for_each_with(events.clone(), |events, candidate| {
             ensure_discovery_active(events, cancellation)?;
 
-            match build_entry(candidate) {
+            let inspected = build_entry_selected(
+                candidate,
+                &|entry| matches_filters(entry, &options.filters),
+                &|| ensure_discovery_active(events, cancellation).map_err(Into::into),
+            );
+            ensure_discovery_active(events, cancellation)?;
+            match inspected {
                 Ok(EntryInspection::Selected(entry))
                     if matches_filters(&entry, &options.filters) =>
                 {

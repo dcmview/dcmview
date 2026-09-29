@@ -84,6 +84,14 @@ pub(super) fn decode_binary_frame(file: &FileEntry, frame: u32) -> Result<Decode
             file.path.display()
         )
     })?;
+    decode_object(file, &object, frame)
+}
+
+pub(super) fn decode_object(
+    file: &FileEntry,
+    object: &dicom_object::DefaultDicomObject,
+    frame: u32,
+) -> Result<DecodedBinaryFrame> {
     let decoded = object
         .decode_pixel_data_frame(frame)
         .context("Deflated Image Frame adapter decode failed")?;
