@@ -141,14 +141,21 @@ pub(crate) async fn decode_raw_jp2_samples(
         .map_err(|error| PixelError::raw_decode(anyhow!("raw JP2 decode task failed: {error}")))?
 }
 
-fn decode_raw_jp2_samples_blocking(
+pub(super) fn decode_raw_jp2_samples_blocking(
     file: &FileEntry,
     frame: u32,
 ) -> PixelResult<(Bytes, RawFrameMetadata)> {
     let fragment =
         read_encapsulated_fragment_blocking(&file.path, frame).map_err(PixelError::raw_decode)?;
 
-    let jp2_image = jpeg2k::Image::from_bytes(&fragment)
+    decode_raw_fragment(file, &fragment)
+}
+
+pub(super) fn decode_raw_fragment(
+    file: &FileEntry,
+    fragment: &[u8],
+) -> PixelResult<(Bytes, RawFrameMetadata)> {
+    let jp2_image = jpeg2k::Image::from_bytes(fragment)
         .map_err(anyhow::Error::from)
         .context("failed to decode JP2 fragment for raw samples")
         .map_err(PixelError::raw_decode)?;

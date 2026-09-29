@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { fireEvent, render, screen, waitFor } from "@testing-library/svelte";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/svelte";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "../api";
 import { fileSummary, rawFrame } from "../testing/fixtures";
@@ -8,14 +8,18 @@ import * as frameOverlay from "./viewport/frameOverlay";
 import { navigationFramesForFile } from "./seriesNavigation";
 import type { ActiveTool } from "./viewerTools";
 import { ViewStates } from "./viewport/viewStates.svelte";
+import { reactiveProps } from "../testing/reactiveProps.svelte";
+import type { ComponentProps } from "svelte";
 
 vi.mock("../api", async (importOriginal) => ({
 	...await importOriginal<typeof import("../api")>(),
 	fetchAnnotations: vi.fn(async () => ({ num_roi: 0, roi_coords: [], roi_frames: [] })),
-	fetchDisplayFrame: vi.fn(async () => ({ blob: new Blob(["png"], { type: "image/png" }), window: null })),
+	fetchDisplayFrame: vi.fn(async () => ({ blob: new Blob(["png"], { type: "image/png" }), window: null, appliedWindow: null })),
 	fetchRawFrame: vi.fn(),
 	fetchFrameValueMapping: vi.fn(),
+	fetchSelectedTag: vi.fn(),
 	fetchDoseOverlayBlob: vi.fn(),
+	fetchSegmentationOverlayBlob: vi.fn(async () => new Blob(["seg"])),
 	fetchDoseOverlayValues: vi.fn(),
 	fetchPresentationLayerBlob: vi.fn(async () => new Blob(["png"], { type: "image/png" })),
 	updateAnnotations: vi.fn(),
@@ -70,8 +74,10 @@ function renderViewport({
 	windowUnit = null as string | null,
 	onmanualwindowlevel = vi.fn(),
 	valueOverlay = null as frameOverlay.ValueOverlay | null,
+	overlay = null as frameOverlay.FrameOverlay | null,
+	onnavigationchange = vi.fn() as (position: number) => void,
 } = {}) {
-	return render(ImageViewport, {
+	const state = reactiveProps<ComponentProps<typeof ImageViewport>>({
 		activeFile: file,
 		currentFrame: 0,
 		windowCenter,
@@ -88,20 +94,26 @@ function renderViewport({
 		navigationFrames: navigationFramesForFile(file.index, file.frame_count),
 		navigationScopeKey: `file:${file.index}`,
 		navigationPosition: 0,
-		onnavigationchange: vi.fn(),
+		onnavigationchange,
 		onreset: vi.fn(),
 		onmanualwindowlevel,
 		valueOverlay,
+		overlay,
 	});
+	const view = render(ImageViewport, { props: state.props });
+	return { ...view, rerender: async (props: Partial<ComponentProps<typeof ImageViewport>>) => act(() => state.update(props)) };
 }
 
 beforeEach(() => {
+	vi.mocked(api.fetchAnnotations).mockReset().mockResolvedValue({ num_roi: 0, roi_coords: [], roi_frames: [] });
+	vi.mocked(api.updateAnnotations).mockReset().mockImplementation(async (_file, annotations) => annotations);
 	fetchDisplayFrame.mockReset();
-	fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"], { type: "image/png" }), window: null });
+	fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"], { type: "image/png" }), window: null, appliedWindow: null });
 	fetchRawFrame.mockReset();
 	fetchRawFrame.mockResolvedValue(rawFrame());
 	fetchFrameValueMapping.mockReset();
 	fetchFrameValueMapping.mockResolvedValue(identityMapping());
+	vi.mocked(api.fetchSelectedTag).mockResolvedValue({ tag: "(0028,0004)", keyword: "PhotometricInterpretation", vr: "CS", value: { type: "string", value: "MONOCHROME2" } });
 	fetchDoseOverlayBlob.mockReset();
 	fetchDoseOverlayBlob.mockResolvedValue(new Blob(["png"], { type: "image/png" }));
 	drawOverlayLayer.mockClear();
@@ -116,7 +128,7 @@ describe("ImageViewport window/level path", () => {
 	});
 
 	it("shows the window the server rendered a frame with when it chose it", async () => {
-		fetchDisplayFrame.mockResolvedValueOnce({ blob: new Blob(["png"]), window: { wc: 1499.5, ww: 2970 } });
+		fetchDisplayFrame.mockResolvedValueOnce({ blob: new Blob(["png"]), window: { wc: 1499.5, ww: 2970 }, appliedWindow: "linear" });
 		renderViewport({ file: fileSummary(5, { default_window: null }) });
 
 		await screen.findByText("W: 2970 · C: 1500");
@@ -130,7 +142,7 @@ describe("ImageViewport window/level path", () => {
 	});
 
 	it("starts a server-windowed drag from the window the frame was rendered with", async () => {
-		fetchDisplayFrame.mockResolvedValueOnce({ blob: new Blob(["png"]), window: { wc: 1499.5, ww: 2970 } });
+		fetchDisplayFrame.mockResolvedValueOnce({ blob: new Blob(["png"]), window: { wc: 1499.5, ww: 2970 }, appliedWindow: "linear" });
 		const onmanualwindowlevel = vi.fn();
 		renderViewport({
 			activeTool: "window_level",
@@ -193,8 +205,9 @@ describe("ImageViewport window/level path", () => {
 	});
 
 	it("previews a drag on frames too large for the browser with server windows", async () => {
+		fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"]), window: { wc: 70, ww: 400 }, appliedWindow: "linear" });
 		renderViewport({ activeTool: "window_level", file: fileSummary(5, { rows: 5000, columns: 5000 }) });
-		await waitFor(() => expect(fetchDisplayFrame).toHaveBeenCalledWith(5, 0, {}, expect.any(AbortSignal)));
+		await screen.findByText("W: 400 · C: 70");
 		const viewport = await screen.findByRole("application");
 
 		await fireEvent.pointerDown(viewport, { button: 0, clientX: 10, clientY: 10, pointerId: 1 });
@@ -356,34 +369,44 @@ describe("ImageViewport window/level in real-world units", () => {
 
 	it("labels a LUT-unit window the server applied in its unit", async () => {
 		fetchFrameValueMapping.mockResolvedValue(lutMapping());
+		fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"]), window: null, appliedWindow: "real_world" });
 		// Too large for the browser, so the server windows it in its unit.
 		renderViewport({ file: fileSummary(5, { rows: 5000, columns: 5000 }), windowCenter: 40, windowWidth: 80, windowUnit: "ms" });
 
 		await waitFor(() => expect(fetchDisplayFrame).toHaveBeenCalledWith(
 			5, 0, { wc: 40, ww: 80, windowMode: "default", unit: "ms" }, expect.any(AbortSignal),
 		));
-		// No window reported: the unit window applied.
+		// The applied-window header confirms that the requested unit was used.
 		await screen.findByText("W: 80 · C: 40 ms");
+	});
+
+	it("labels a server VOI fallback instead of claiming that a requested LUT unit applied", async () => {
+		fetchFrameValueMapping.mockResolvedValue(lutMapping());
+		fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"]), window: null, appliedWindow: "voi_lut" });
+		renderViewport({ file: fileSummary(5, { rows: 5000, columns: 5000 }), windowCenter: 40, windowWidth: 80, windowUnit: "ms" });
+		await screen.findByText("VOI LUT");
+		expect(screen.queryByText(/W: .*ms/)).toBeNull();
 	});
 
 	it("shows the window the server fell back to when a LUT-unit window could not apply", async () => {
 		fetchFrameValueMapping.mockResolvedValue(lutMapping());
-		fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"]), window: { wc: 1.5, ww: 3 } });
+		fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"]), window: { wc: 1.5, ww: 3 }, appliedWindow: "linear" });
 		renderViewport({ file: fileSummary(5, { rows: 5000, columns: 5000 }), windowCenter: 40, windowWidth: 80, windowUnit: "ms" });
 
-		await screen.findByText("W: 3 · C: 2");
+		await screen.findByText("W: 3 · C: 1.5");
 		expect(screen.queryByText(/ms$/)).toBeNull();
 	});
 
-	it("converts a real-world window to stored units before requesting the frame", async () => {
+	it("converts a real-world window to an exact equivalent before requesting the frame", async () => {
 		fetchFrameValueMapping.mockResolvedValue(adcMapping());
+		fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"]), window: { wc: 100.5, ww: 201 }, appliedWindow: "linear" });
 		renderViewport({ windowCenter: 40, windowWidth: 100, windowUnit: "um2/s" });
 
-		// mapped = 0.5 × stored − 10, so C 40 / W 100 um2/s is C 100 / W 200 stored.
+		// C 100.5 / W 201 cancels integer LINEAR offsets for the physical C 40 / W 100.
 		await waitFor(() => expect(fetchDisplayFrame).toHaveBeenCalledWith(
 			5,
 			0,
-			{ wc: 100, ww: 200, windowMode: "default" },
+			{ wc: 100.5, ww: 201, windowMode: "default" },
 			expect.any(AbortSignal),
 		));
 		expect(fetchDisplayFrame).toHaveBeenCalledOnce();
@@ -393,7 +416,7 @@ describe("ImageViewport window/level in real-world units", () => {
 
 	it("shows a mapped file's automatic window in its unit without fetching raw samples", async () => {
 		fetchFrameValueMapping.mockResolvedValue(adcMapping());
-		fetchDisplayFrame.mockResolvedValueOnce({ blob: new Blob(["png"]), window: { wc: 100, ww: 200 } });
+		fetchDisplayFrame.mockResolvedValueOnce({ blob: new Blob(["png"]), window: { wc: 100, ww: 200 }, appliedWindow: "linear" });
 		renderViewport({ file: fileSummary(5, { default_window: null }) });
 
 		// mapped = 0.5 × stored − 10: C 100 / W 200 stored is C 40 / W 100 um2/s.
@@ -418,17 +441,17 @@ describe("ImageViewport window/level in real-world units", () => {
 		const view = renderViewport({ file, windowCenter: 30, windowWidth: 60, windowUnit: "um2/s" });
 
 		await waitFor(() => expect(fetchDisplayFrame).toHaveBeenCalledWith(
-			5, 0, { wc: 60, ww: 120, windowMode: "default" }, expect.any(AbortSignal),
+			5, 0, { wc: 60.5, ww: 121, windowMode: "default" }, expect.any(AbortSignal),
 		));
 		await view.rerender({ currentFrame: 2, navigationPosition: 2 });
 		await waitFor(() => expect(fetchDisplayFrame).toHaveBeenCalledWith(
-			5, 2, { wc: 20, ww: 40, windowMode: "default" }, expect.any(AbortSignal),
+			5, 2, { wc: 20.5, ww: 41, windowMode: "default" }, expect.any(AbortSignal),
 		));
 		expect(fetchFrameValueMapping).toHaveBeenCalledWith(5, 2, expect.any(AbortSignal));
 	});
 
 	it("shows the default window on files without that unit", async () => {
-		fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"]), window: { wc: 40, ww: 400 } });
+		fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"]), window: { wc: 40, ww: 400 }, appliedWindow: "linear" });
 		renderViewport({ windowCenter: 40, windowWidth: 100, windowUnit: "Gy" });
 
 		// The server shows the frame's default window for a unit it lacks,
@@ -534,5 +557,429 @@ describe("ImageViewport value overlays", () => {
 		renderViewport({ valueOverlay: dose() });
 
 		expect(await screen.findByText("Overlay unavailable for this frame")).toBeTruthy();
+	});
+});
+
+// F11 suspects are reproduced before changing their resolution paths.
+describe("ImageViewport window presentation consistency", () => {
+	it("releases a manual window so a later preset and reset take effect", async () => {
+		const { rerender } = renderViewport({ activeTool: "window_level" });
+		await screen.findByText("W: 1 · C: 0.5");
+		const viewport = screen.getByRole("application");
+		await fireEvent.pointerDown(viewport, { button: 0, clientX: 10, clientY: 10, pointerId: 1 });
+		await fireEvent.pointerMove(viewport, { clientX: 20, clientY: 10, pointerId: 1 });
+		await fireEvent.pointerUp(viewport, { pointerId: 1 });
+		await rerender({ windowCenter: 40, windowWidth: 80 });
+		await screen.findByText("W: 80 · C: 40");
+		await rerender({ windowCenter: null, windowWidth: null });
+		await screen.findByText("W: 1 · C: 0.5");
+	});
+
+	it("starts a server LUT-unit drag in the displayed unit", async () => {
+		fetchFrameValueMapping.mockResolvedValue(lutMapping());
+		fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"]), window: null, appliedWindow: "real_world" });
+		const onmanualwindowlevel = vi.fn();
+		renderViewport({ activeTool: "window_level", file: fileSummary(5, { rows: 5000, columns: 5000 }),
+			windowCenter: 40, windowWidth: 80, windowUnit: "ms", onmanualwindowlevel });
+		await screen.findByText("W: 80 · C: 40 ms");
+		const viewport = screen.getByRole("application");
+		await fireEvent.pointerDown(viewport, { button: 0, clientX: 10, clientY: 10, pointerId: 1 });
+		await fireEvent.pointerMove(viewport, { clientX: 20, clientY: 10, pointerId: 1 });
+		await fireEvent.pointerUp(viewport, { clientX: 20, clientY: 10, pointerId: 1 });
+		expect(onmanualwindowlevel).toHaveBeenCalledWith(40, 1280, "ms");
+		expect(fetchDisplayFrame).toHaveBeenCalledWith(5, 0, expect.objectContaining({ unit: "ms", preview: true }), expect.any(AbortSignal));
+	});
+
+	it("inverts a mapped MONOCHROME1 legend with the pixels", async () => {
+		const frame = rawFrame();
+		frame.metadata.photometricInterpretation = "MONOCHROME1";
+		fetchRawFrame.mockResolvedValue(frame);
+		fetchFrameValueMapping.mockResolvedValue(adcMapping());
+		renderViewport({ activeTool: "window_level" });
+		const legend = await screen.findByRole("figure", { name: /ADC:/ });
+		await waitFor(() => expect(legend.querySelector(".bar")?.getAttribute("style")).toContain("#fff, #000"));
+	});
+
+	it("inverts a mapped MONOCHROME1 legend on the display path without downloading raw samples", async () => {
+		fetchFrameValueMapping.mockResolvedValue(adcMapping());
+		fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"]), window: { wc: 100, ww: 200 }, appliedWindow: "linear" });
+		vi.mocked(api.fetchSelectedTag).mockResolvedValue({ tag: "(0028,0004)", keyword: "PhotometricInterpretation", vr: "CS", value: { type: "string", value: "MONOCHROME1" } });
+		renderViewport();
+		const legend = await screen.findByRole("figure", { name: /ADC:/ });
+		await waitFor(() => expect(legend.querySelector(".bar")?.getAttribute("style")).toContain("#fff, #000"));
+		expect(fetchRawFrame).not.toHaveBeenCalled();
+	});
+
+	it("does not preview or label a color frame that starts on server windowing", async () => {
+		renderViewport({ activeTool: "window_level", file: fileSummary(5, { raw_windowing_compatible: false }) });
+		await waitFor(() => expect(fetchDisplayFrame).toHaveBeenCalledOnce());
+		const viewport = screen.getByRole("application");
+		await fireEvent.pointerDown(viewport, { button: 0, clientX: 10, clientY: 10, pointerId: 1 });
+		await fireEvent.pointerMove(viewport, { clientX: 20, clientY: 10, pointerId: 1 });
+		await fireEvent.pointerUp(viewport, { clientX: 20, clientY: 10, pointerId: 1 });
+		expect(fetchDisplayFrame).toHaveBeenCalledOnce();
+		await waitFor(() => expect(screen.queryByText(/W: /)).toBeNull());
+	});
+});
+
+
+describe("F11 remaining confirmations", () => {
+	it("keeps a loaded SEG layer across catalog replacement and presets", async () => {
+		const load = vi.mocked(api.fetchSegmentationOverlayBlob);
+		load.mockClear();
+		const file = fileSummary(5);
+		const overlay: frameOverlay.FrameOverlay = { kind: "segmentation", segmentationFileIndex: 5,
+			segmentationFrameIndex: 0, sourceFileIndex: 6, sourceFrameIndex: 0, sourceFile: fileSummary(6) };
+		const { rerender } = renderViewport({ file, overlay });
+		await waitFor(() => expect(load).toHaveBeenCalledOnce());
+		await rerender({ activeFile: { ...file }, overlay: { ...overlay, sourceFile: { ...overlay.sourceFile } } });
+		await rerender({ windowCenter: 40, windowWidth: 80 });
+		expect(load).toHaveBeenCalledOnce();
+	});
+
+	it("aborts unit-window mapping prefetch when its display scope is abandoned", async () => {
+		let pendingSignal: AbortSignal | undefined;
+		fetchFrameValueMapping.mockImplementation(async (fileIndex, frameIndex, signal) => {
+			if (fileIndex === 5 && frameIndex > 0) {
+				pendingSignal = signal;
+				return new Promise(() => {});
+			}
+			return { ...lutMapping(), file_index: fileIndex, frame_index: frameIndex };
+		});
+		fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"]), window: null, appliedWindow: "real_world" });
+		const { rerender } = renderViewport({ file: fileSummary(5, { rows: 5000, columns: 5000, frame_count: 2 }),
+			windowCenter: 40, windowWidth: 80, windowUnit: "ms" });
+		await waitFor(() => expect(pendingSignal).toBeDefined());
+		expect(pendingSignal?.aborted).toBe(false);
+		await rerender({ windowUnit: null, windowCenter: 40, windowWidth: 80 });
+		expect(pendingSignal?.aborted).toBe(true);
+	});
+
+	it("does not attribute held raw samples to a frame still loading", async () => {
+		const frame = rawFrame(); new Uint8Array(frame.buffer).fill(123);
+		fetchRawFrame.mockImplementation(async (_file, index) => index === 0 ? frame : new Promise(() => {}));
+		fetchFrameValueMapping.mockImplementation(async (file, index) => ({ ...identityMapping(file), frame_index: index }));
+		const { rerender } = renderViewport({ activeTool: "window_level", file: fileSummary(5, { frame_count: 2 }) });
+		await fireEvent.pointerMove(screen.getByRole("application"), { clientX: 10.5, clientY: 20.5 });
+		const readout = await screen.findByRole("status", { name: "Pixel value under cursor" });
+		await waitFor(() => expect(readout.textContent).toContain("stored 123"));
+		await rerender({ currentFrame: 1, navigationPosition: 1 });
+		await waitFor(() => expect(fetchFrameValueMapping).toHaveBeenCalledWith(5, 1, expect.any(AbortSignal)));
+		expect(readout.textContent).toContain("frame 2");
+		expect(readout.textContent).not.toContain("stored 123");
+	});
+});
+
+
+describe("ImageViewport frame presentation", () => {
+	function canvasContext() {
+		const context = { clearRect: vi.fn(), putImageData: vi.fn(), drawImage: vi.fn(),
+			createImageData: (w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4) }) };
+		const spy = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(context as unknown as CanvasRenderingContext2D);
+		return { context, restore: () => spy.mockRestore() };
+	}
+
+	it("presents a display image before its delayed mapping and then updates its legend", async () => {
+		const { context, restore } = canvasContext();
+		vi.stubGlobal("createImageBitmap", vi.fn(async () => ({ width: 64, height: 64, close: vi.fn() })));
+		let finish!: (mapping: api.FrameValueMapping) => void;
+		fetchFrameValueMapping.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+		fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"]), window: { wc: 100, ww: 200 }, appliedWindow: "linear" });
+		renderViewport();
+		await waitFor(() => expect(context.drawImage).toHaveBeenCalled());
+		expect(screen.queryByRole("figure", { name: /ADC:/ })).toBeNull();
+		await waitFor(() => expect(finish).toBeDefined());
+		await act(() => finish(adcMapping()));
+		await screen.findByRole("figure", { name: /ADC:/ });
+		await screen.findByText("W: 100 · C: 40 um2/s");
+		expect(fetchRawFrame).not.toHaveBeenCalled();
+		restore();
+	});
+
+	it.each([false, true])("drags a small float window on its own scale (identity RWVM: %s)", async (mapped) => {
+		const { context, restore } = canvasContext();
+		const frame = rawFrame(64, 64, 32);
+		new Float32Array(frame.buffer).set(Array.from({ length: 4096 }, (_, i) => 0.0005 + (i % 28) * 0.0001));
+		fetchRawFrame.mockResolvedValue(frame);
+		fetchFrameValueMapping.mockResolvedValue({ ...identityMapping(), stored_value_type: "float32",
+			real_world: mapped ? [{ ...adcMapping().real_world[0], unit_label: "mm2/s", transform: { kind: "linear", slope: 1, intercept: 0 } }] : [] });
+		const onmanualwindowlevel = vi.fn();
+		try {
+			renderViewport({ activeTool: "window_level", file: fileSummary(5, { default_window: null }), onmanualwindowlevel });
+			await waitFor(() => expect(context.putImageData).toHaveBeenCalled());
+			const viewport = screen.getByRole("application");
+			for (const dx of [1, -1000]) {
+				await fireEvent.pointerDown(viewport, { button: 0, clientX: 10, clientY: 10, pointerId: 1 });
+				await fireEvent.pointerMove(viewport, { clientX: 10 + dx, clientY: 11, pointerId: 1 });
+				await fireEvent.pointerUp(viewport, { clientX: 10 + dx, clientY: 11, pointerId: 1 });
+				const [center, width, unit] = onmanualwindowlevel.mock.lastCall!;
+				expect(center).toBeGreaterThan(0.001);
+				expect(center).toBeLessThan(0.003);
+				expect(width).toBeGreaterThan(0);
+				expect(width).toBeLessThan(dx === 1 ? 0.01 : 0.0001);
+				expect(unit).toBe(mapped ? "mm2/s" : null);
+			}
+		} finally { restore(); }
+	});
+
+	it("drags a fractionally rescaled window by one stored unit", async () => {
+		const { context, restore } = canvasContext();
+		const frame = rawFrame(64, 64, 16);
+		new Uint16Array(frame.buffer).set(Array.from({ length: 4096 }, (_, i) => i % 101));
+		fetchRawFrame.mockResolvedValue(frame);
+		fetchFrameValueMapping.mockResolvedValue({ ...identityMapping(),
+			modality: { rescale_slope: 0.0001, rescale_intercept: 0, rescale_type: null, lut: null } });
+		const onmanualwindowlevel = vi.fn();
+		try {
+			renderViewport({ activeTool: "window_level", file: fileSummary(5, { default_window: null }), onmanualwindowlevel });
+			await waitFor(() => expect(context.putImageData).toHaveBeenCalled());
+			const viewport = screen.getByRole("application");
+			for (const [dx, maximum] of [[1, 0.02], [-1000, 0.0001]]) {
+				await fireEvent.pointerDown(viewport, { button: 0, clientX: 10, clientY: 10, pointerId: 1 });
+				await fireEvent.pointerMove(viewport, { clientX: 10 + dx, clientY: 10, pointerId: 1 });
+				await fireEvent.pointerUp(viewport, { clientX: 10 + dx, clientY: 10, pointerId: 1 });
+				const [center, width] = onmanualwindowlevel.mock.lastCall!;
+				expect(center).toBeGreaterThan(0);
+				expect(center).toBeLessThan(0.01);
+				expect(width).toBeGreaterThan(0);
+				expect(width).toBeLessThanOrEqual(maximum);
+			}
+		} finally { restore(); }
+	});
+
+	it("keeps an integer drag's one-unit minimum", async () => {
+		const { context, restore } = canvasContext();
+		const onmanualwindowlevel = vi.fn();
+		try {
+			renderViewport({ activeTool: "window_level", onmanualwindowlevel });
+			await waitFor(() => expect(context.putImageData).toHaveBeenCalled());
+			const viewport = screen.getByRole("application");
+			await fireEvent.pointerDown(viewport, { button: 0, clientX: 10, clientY: 10, pointerId: 1 });
+			await fireEvent.pointerMove(viewport, { clientX: -1000, clientY: 10, pointerId: 1 });
+			await fireEvent.pointerUp(viewport, { pointerId: 1 });
+			expect(onmanualwindowlevel.mock.lastCall?.[1]).toBe(1);
+		} finally { restore(); }
+	});
+
+	it("shows a carried sub-unit window on integer samples as the one unit it applies", async () => {
+		const { context, restore } = canvasContext();
+		try {
+			renderViewport({ activeTool: "window_level", windowCenter: 40, windowWidth: 0.3 });
+			await waitFor(() => expect(context.putImageData).toHaveBeenCalled());
+			await screen.findByText("W: 1 · C: 40");
+		} finally { restore(); }
+	});
+
+	it.each(["next file", "next frame", "mid-drag file"])("does not edit held ROIs while the %s is pending", async (destination) => {
+		const { context, restore } = canvasContext();
+		const changesFile = destination !== "next frame";
+		vi.stubGlobal("createImageBitmap", vi.fn(async () => ({ width: 64, height: 64, close: vi.fn() })));
+		let finish!: (frame: api.DisplayFrame) => void;
+		fetchDisplayFrame.mockImplementation(async (file, frame) => file === 5 && frame === 0
+			? { blob: new Blob(["first"]), window: null, appliedWindow: null }
+			: new Promise((resolve) => { finish = resolve; }));
+		fetchFrameValueMapping.mockImplementation(async (file, frame) => ({ ...identityMapping(file), frame_index: frame }));
+		vi.mocked(api.fetchAnnotations).mockImplementation(async (file) => ({ num_roi: 1,
+			roi_coords: [file === 5 ? [2, 2, 20, 20] : [30, 30, 50, 50]], roi_frames: [] }));
+		try {
+			const view = renderViewport({ activeTool: "annotate_rect", file: fileSummary(5, { frame_count: 2 }) });
+			await waitFor(() => expect(context.drawImage).toHaveBeenCalledOnce());
+			await fireEvent.click(await screen.findByRole("button", { name: "#1" }));
+			if (destination === "mid-drag file") {
+				await fireEvent.pointerDown(screen.getByRole("application"), { button: 0, clientX: 10, clientY: 10, pointerId: 1 });
+			}
+			await view.rerender(changesFile
+				? { activeFile: fileSummary(6), currentFrame: 0, navigationPosition: 1 }
+				: { currentFrame: 1, navigationPosition: 1 });
+			await waitFor(() => expect(fetchDisplayFrame).toHaveBeenCalledWith(changesFile ? 6 : 5,
+				changesFile ? 0 : 1, expect.anything(), expect.any(AbortSignal)));
+			const viewport = screen.getByRole("application");
+			if (destination !== "mid-drag file") await fireEvent.pointerDown(viewport, { button: 0, clientX: 10, clientY: 10, pointerId: 1 });
+			await fireEvent.pointerMove(viewport, { clientX: 15, clientY: 15, pointerId: 1 });
+			await fireEvent.pointerUp(viewport, { clientX: 15, clientY: 15, pointerId: 1 });
+			await fireEvent.click(screen.getByRole("button", { name: "#1" }));
+			await act(() => view.component.deleteSelectedRoi());
+			for (const name of ["Current", "All", "Delete"]) {
+				const button = screen.queryByRole("button", { name });
+				if (button) await fireEvent.click(button);
+			}
+			expect(api.updateAnnotations).not.toHaveBeenCalled();
+			expect(context.drawImage).toHaveBeenCalledOnce();
+			await act(() => finish({ blob: new Blob(["next"]), window: null, appliedWindow: null }));
+			await waitFor(() => expect(context.drawImage).toHaveBeenCalledTimes(2));
+			await fireEvent.click(screen.getByRole("button", { name: "#1" }));
+			await act(() => view.component.deleteSelectedRoi());
+			await waitFor(() => expect(api.updateAnnotations).toHaveBeenCalledWith(changesFile ? 6 : 5,
+				{ num_roi: 0, roi_coords: [], roi_frames: [] }));
+		} finally { restore(); vi.unstubAllGlobals(); }
+	});
+
+	it.each(["pan", "window_level"] as const)("holds pixels, colorwash, and label until the next colorwash is ready with %s", async (activeTool) => {
+		const { context, restore } = canvasContext();
+		vi.stubGlobal("createImageBitmap", vi.fn(async () => ({ width: 64, height: 64, close: vi.fn() })));
+		const painted = activeTool === "pan" ? context.drawImage : context.putImageData;
+		let finish!: (blob: Blob) => void;
+		fetchDoseOverlayBlob.mockImplementation(async (file) => file === 5 ? new Blob(["first"]) : new Promise((resolve) => { finish = resolve; }));
+		fetchFrameValueMapping.mockImplementation(async (file) => identityMapping(file));
+		const valueOverlay: frameOverlay.ValueOverlay = { kind: "rt_dose", volumeFileIndex: 9, title: "Dose", opacity: 0.4, coversFrame: true,
+			legend: { unit_label: "Gy", units: null, min_value: 0, max_value: 10, transparent_at_or_below: 0,
+				colormap: "viridis", color_stops: [[68, 1, 84], [253, 231, 37]] } };
+		try {
+			const { rerender } = renderViewport({ activeTool, valueOverlay });
+			await waitFor(() => expect(painted).toHaveBeenCalledOnce());
+			const layer = document.querySelector<HTMLCanvasElement>(".value-overlay-canvas")!;
+			expect(layer.hidden).toBe(false);
+			expect(screen.getByText("image 1 / 1")).toBeTruthy();
+			await rerender({ activeFile: fileSummary(6), navigationPosition: 1, navigationFrameCount: 2 });
+			await waitFor(() => expect(fetchDoseOverlayBlob).toHaveBeenCalledWith(6, 0, 9, expect.any(AbortSignal)));
+			expect(painted).toHaveBeenCalledOnce();
+			expect(drawOverlayLayer).toHaveBeenCalledOnce();
+			expect(layer.hidden).toBe(false);
+			expect(screen.getByText("image 1 / 1")).toBeTruthy();
+			await act(() => finish(new Blob(["second"])));
+			await screen.findByText("image 2 / 2");
+			expect(painted).toHaveBeenCalledTimes(2);
+			expect(drawOverlayLayer).toHaveBeenCalledTimes(2);
+			expect(layer.hidden).toBe(false);
+		} finally { restore(); vi.unstubAllGlobals(); }
+	});
+
+	it("keeps the base image and reports a failed presentation layer", async () => {
+		const { context, restore } = canvasContext();
+		vi.mocked(api.fetchPresentationLayerBlob).mockRejectedValueOnce(new api.ApiError("injected failure", 500, "pixel_decode_failed"));
+		try {
+			renderViewport({ activeTool: "window_level", file: fileSummary(5, { presentation_layer: true }) });
+			await screen.findByText("Presentation layer unavailable");
+			expect(context.putImageData).toHaveBeenCalledOnce();
+			expect(document.querySelector(".dicom-canvas")).toBeTruthy();
+			expect(screen.queryByText("injected failure")).toBeNull();
+		} finally { restore(); }
+	});
+
+	it("waits for a float64 frame's own mapping after displaying float32", async () => {
+		const { context, restore } = canvasContext();
+		let finish!: (mapping: api.FrameValueMapping) => void;
+		fetchRawFrame.mockImplementation(async (file) => rawFrame(64, 64, file === 5 ? 32 : 64));
+		fetchFrameValueMapping.mockImplementation(async (file) => file === 5
+			? { ...identityMapping(file), stored_value_type: "float32" }
+			: new Promise((resolve) => { finish = resolve; }));
+		try {
+			const { rerender } = renderViewport({ activeTool: "window_level" });
+			await waitFor(() => expect(context.putImageData).toHaveBeenCalledOnce());
+			await rerender({ activeFile: fileSummary(6), navigationPosition: 1, navigationFrameCount: 2 });
+			await waitFor(() => expect(fetchFrameValueMapping).toHaveBeenCalledWith(6, 0, expect.any(AbortSignal)));
+			expect(context.putImageData).toHaveBeenCalledOnce();
+			await act(() => finish({ ...identityMapping(6), stored_value_type: "float64" }));
+			await screen.findByText("image 2 / 2");
+			expect(context.putImageData).toHaveBeenCalledTimes(2);
+		} finally { restore(); }
+	});
+
+	it("keeps the painted image while the next file's raw frame is pending", async () => {
+		const context = {
+			clearRect: vi.fn(), putImageData: vi.fn(), drawImage: vi.fn(),
+			createImageData: (w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4) }),
+		};
+		const canvas = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(context as unknown as CanvasRenderingContext2D);
+		try {
+			fetchRawFrame.mockImplementation(async (file) => file === 5 ? rawFrame() : new Promise(() => {}));
+			fetchFrameValueMapping.mockImplementation(async (file) => identityMapping(file));
+			const { rerender } = renderViewport({ activeTool: "window_level" });
+			await waitFor(() => expect(context.putImageData).toHaveBeenCalled());
+			context.clearRect.mockClear();
+			await rerender({ activeFile: fileSummary(6) });
+			await waitFor(() => expect(fetchRawFrame).toHaveBeenCalledWith(6, 0, expect.any(AbortSignal)));
+			expect(context.clearRect).not.toHaveBeenCalled();
+		} finally { canvas.mockRestore(); }
+	});
+});
+
+
+describe("W/L cine", () => {
+	it.each([
+		["automatic", null, null, null, (frame: number) => `W: ${100 * (frame + 1)} · C: ${50 * (frame + 1)} um2/s`],
+		["explicit", 30, 60, "um2/s", () => "W: 60 · C: 30 um2/s"],
+	])("keeps each frame's real-world unit on the HUD through cine (%s window)", async (_name, windowCenter, windowWidth, windowUnit, expected) => {
+		// Frame f maps stored values with slope (f + 1) / 2 um2/s; the server
+		// applies stored C 100 / W 200 unless a unit window is converted.
+		fetchFrameValueMapping.mockImplementation(async (fileIndex, frameIndex) => {
+			const base = adcMapping();
+			return { ...base, file_index: fileIndex, frame_index: frameIndex,
+				real_world: [{ ...base.real_world[0], transform: { kind: "linear", slope: (frameIndex + 1) / 2, intercept: 0 } }] };
+		});
+		fetchDisplayFrame.mockImplementation(async (_file, _frame, options) => ({ blob: new Blob(["png"]),
+			window: options?.wc != null && options.ww != null ? { wc: options.wc, ww: options.ww } : { wc: 100, ww: 200 }, appliedWindow: "linear" }));
+		const context = { clearRect: vi.fn(), putImageData: vi.fn(), drawImage: vi.fn() };
+		const canvas = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(context as unknown as CanvasRenderingContext2D);
+		vi.stubGlobal("createImageBitmap", vi.fn(async () => ({ width: 64, height: 64, close: vi.fn() })));
+		const shown: Array<[number, string]> = [];
+		let frame = 0;
+		const hud = () => [...document.querySelectorAll(".hud .overlay span")].map((span) => span.textContent?.trim()).find((text) => text?.startsWith("W:")) ?? "";
+		const view = renderViewport({ file: fileSummary(5, { frame_count: 4 }), windowCenter, windowWidth, windowUnit,
+			onnavigationchange: (position) => {
+				// Cine steps only once the previous frame is presented.
+				shown.push([frame, hud()]);
+				frame = position;
+				void view.rerender({ currentFrame: position, navigationPosition: position });
+			} });
+		await screen.findByText(expected(0));
+		await view.rerender({ cineFps: 60, cinePlaying: true });
+		await waitFor(() => expect(shown.length).toBeGreaterThanOrEqual(9), { timeout: 3000 });
+		await view.rerender({ cinePlaying: false });
+		expect(shown).toEqual(shown.map(([index]) => [index, expected(index)]));
+		expect(new Set(shown.map(([index]) => index))).toEqual(new Set([0, 1, 2, 3]));
+		canvas.mockRestore();
+	});
+
+	it("pauses with pending cine metadata and resumes a drawable raw frame", async () => {
+		const context = { createImageData: (w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4) }),
+			putImageData: vi.fn(), drawImage: vi.fn(), clearRect: vi.fn() };
+		const canvas = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(context as unknown as CanvasRenderingContext2D);
+		vi.stubGlobal("createImageBitmap", vi.fn(async () => ({ width: 64, height: 64, close: vi.fn() })));
+		const pending = new Map<number, AbortSignal>();
+		const mapping = (file: number, frame: number) => ({ ...identityMapping(file), frame_index: frame,
+			real_world: [{ ...adcMapping().real_world[0], unit_label: "HU", transform: { kind: "linear" as const, slope: 1, intercept: 0 } }] });
+		fetchFrameValueMapping.mockImplementation(async (file, frame, signal) => {
+			if (frame < 12) return mapping(file, frame);
+			if (frame === 35) { await new Promise((resolve) => setTimeout(resolve, 30)); return mapping(file, frame); }
+			pending.set(frame, signal!);
+			return new Promise((_resolve, reject) => signal!.addEventListener("abort", () => reject(new DOMException("cancelled", "AbortError")), { once: true }));
+		});
+		fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"]), window: { wc: 40, ww: 80 }, appliedWindow: "linear" });
+		const onmanualwindowlevel = vi.fn();
+		const { rerender } = renderViewport({ activeTool: "window_level", file: fileSummary(5, { frame_count: 300 }),
+			windowCenter: 40, windowWidth: 80, windowUnit: "HU", onmanualwindowlevel });
+		await waitFor(() => expect(context.putImageData).toHaveBeenCalled());
+		await rerender({ cinePlaying: true });
+		await waitFor(() => expect(pending.size).toBeGreaterThan(0));
+		await rerender({ currentFrame: 35, navigationPosition: 35 });
+		context.putImageData.mockClear();
+		await rerender({ cinePlaying: false });
+		await waitFor(() => expect(context.putImageData).toHaveBeenCalled());
+		const viewport = screen.getByRole("application");
+		await fireEvent.pointerDown(viewport, { button: 0, clientX: 10, clientY: 10, pointerId: 1 });
+		await fireEvent.pointerMove(viewport, { clientX: 20, clientY: 10, pointerId: 1 });
+		await fireEvent.pointerUp(viewport, { clientX: 20, clientY: 10, pointerId: 1 });
+		expect(onmanualwindowlevel).toHaveBeenCalledWith(40, 120, "HU");
+		canvas.mockRestore();
+	});
+
+	it("plays display frames with the current window and returns to raw windowing when paused", async () => {
+		fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"]), window: { wc: 40, ww: 80 }, appliedWindow: "linear" });
+		const onmanualwindowlevel = vi.fn();
+		const { rerender } = renderViewport({ activeTool: "window_level", file: fileSummary(5, { frame_count: 3 }),
+			windowCenter: 40, windowWidth: 80, onmanualwindowlevel });
+		await screen.findByText("W: 80 · C: 40");
+		await waitFor(() => expect(fetchRawFrame).toHaveBeenCalled());
+		await rerender({ cinePlaying: true });
+		await waitFor(() => expect(fetchDisplayFrame).toHaveBeenCalledWith(5, 0, { wc: 40, ww: 80, windowMode: "default" }, expect.any(AbortSignal)));
+		await rerender({ cinePlaying: false });
+		await screen.findByText("W: 80 · C: 40");
+		const viewport = screen.getByRole("application");
+		await fireEvent.pointerDown(viewport, { button: 0, clientX: 10, clientY: 10, pointerId: 1 });
+		await fireEvent.pointerMove(viewport, { clientX: 20, clientY: 10, pointerId: 1 });
+		await fireEvent.pointerUp(viewport, { clientX: 20, clientY: 10, pointerId: 1 });
+		expect(onmanualwindowlevel).toHaveBeenCalled();
+		expect(fetchDisplayFrame.mock.calls.some((call) => call[2]?.preview)).toBe(false);
 	});
 });

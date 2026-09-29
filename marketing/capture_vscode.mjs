@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
 import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
@@ -44,11 +45,11 @@ function chooseFile(files, scene) {
 async function waitForViewerFrame(window) {
 	const deadline = Date.now() + 90_000;
 	while (Date.now() < deadline) {
-		const frame = window.frames().find((candidate) => /^http:\/\/(127\.0\.0\.1|localhost):\d+\/$/.test(candidate.url()));
+		const frame = window.frames().find((candidate) => /^http:\/\/(127\.0\.0\.1|localhost):\d+\/(?:\?[^#]*)?$/.test(candidate.url()));
 		if (frame) return frame;
 		await window.waitForTimeout(250);
 	}
-	throw new Error("VS Code webview did not load the dcmview frame");
+	throw new Error(`VS Code webview did not load the dcmview frame: ${window.frames().map(frame => frame.url()).join(", ")}`);
 }
 
 async function waitForRendered(frame, fileIndex = null) {
@@ -65,12 +66,20 @@ async function waitForRendered(frame, fileIndex = null) {
 		{ timeout: 60_000 },
 	);
 	await frame.evaluate(() => document.fonts.ready);
+	await waitForViewerTags(frame);
+}
+
+async function waitForViewerTags(frame) {
+	if (await frame.getByRole("searchbox", { name: "Filter tags" }).isVisible()) {
+		await frame.getByRole("button", { name: "Copy (0008,0016) SOPClassUID", exact: true })
+			.waitFor({ state: "visible", timeout: 45_000 });
+	}
 }
 
 async function advanceViewerFrame(frame) {
 	const canvas = frame.locator("canvas.dicom-canvas");
 	const before = await canvas.getAttribute("data-capture-rendered");
-	const position = frame.locator("[data-capture-position]");
+	const position = frame.getByRole("slider", { name: "Image position" });
 	await position.evaluate((input) => {
 		if (!(input instanceof HTMLInputElement)) throw new Error("capture position is not an input");
 		const maximum = Number(input.max);
@@ -86,6 +95,7 @@ async function advanceViewerFrame(frame) {
 		before,
 		{ timeout: 60_000 },
 	);
+	await waitForViewerTags(frame);
 }
 
 async function availablePort() {
@@ -199,6 +209,34 @@ async function encodeGif(frameRoot, output, fps) {
 	});
 }
 
+async function setEditorTheme(settingsPath, theme) {
+	await writeFile(settingsPath, `${JSON.stringify({
+		"window.menuStyle": "custom",
+		"workbench.colorTheme": theme === "dark" ? "Default Dark Modern" : "Default Light Modern",
+	}, null, 2)}\n`, "utf8");
+}
+
+async function waitForEditorTheme(window, theme) {
+	await window.waitForFunction((expected) =>
+		document.querySelector(".monaco-workbench")?.classList.contains(expected === "dark" ? "vs-dark" : "vs"),
+		theme, { timeout: 30_000 });
+}
+
+async function assertViewerFollowsEditor(window, frame, settingsPath, initialTheme) {
+	// This is the real Electron webview, including its initial URL and the
+	// extension's live theme messages. Do not override the viewer's DOM/theme.
+	assert.equal(new URL(frame.url()).searchParams.get("theme"), initialTheme);
+	const checks = [];
+	for (const [index, theme] of [initialTheme, initialTheme === "dark" ? "light" : "dark", initialTheme].entries()) {
+		if (index > 0) await setEditorTheme(settingsPath, theme);
+		await waitForEditorTheme(window, theme);
+		await frame.waitForFunction((expected) => document.documentElement.dataset.theme === expected,
+			theme, { timeout: 30_000 });
+		checks.push(`${index === 0 ? "initial" : "switch"}-${theme}`);
+	}
+	return checks;
+}
+
 async function main() {
 	const args = parseArguments(process.argv.slice(2));
 	const scene = JSON.parse(await readFile(args.scene, "utf8"));
@@ -216,11 +254,9 @@ async function main() {
 	await symlink(seriesDirectory, path.join(workspaceRoot, workspaceSeriesName), "dir");
 	const userDataDirectory = path.join(scratch, "user-data");
 	await mkdir(path.join(userDataDirectory, "User"), { recursive: true });
-	await writeFile(
-		path.join(userDataDirectory, "User", "settings.json"),
-		`${JSON.stringify({ "window.menuStyle": "custom" }, null, 2)}\n`,
-		"utf8",
-	);
+	const settingsPath = path.join(userDataDirectory, "User", "settings.json");
+	assert.ok(scene.theme === "dark" || scene.theme === "light");
+	await setEditorTheme(settingsPath, scene.theme);
 	const cdpPort = await availablePort();
 	const code = spawn(executablePath, [
 			workspaceRoot,
@@ -250,7 +286,9 @@ async function main() {
 		const context = browser.contexts()[0];
 		if (!context) throw new Error("VS Code CDP exposed no browser context");
 		const window = context.pages()[0] ?? await context.waitForEvent("page", { timeout: 30_000 });
+		await window.setViewportSize({ width: scene.viewport.width, height: scene.viewport.height });
 		await window.waitForTimeout(2_000);
+		await waitForEditorTheme(window, scene.theme);
 		await window.addStyleTag({ content: ".monaco-hover { display: none !important; }" });
 		const walkthrough = scene.walkthrough;
 		if (scene.kind !== "gif" || typeof walkthrough !== "object" || walkthrough === null) {
@@ -284,6 +322,7 @@ async function main() {
 		await openAction.click();
 		await window.mouse.move(1200, 40);
 		const frame = await waitForViewerFrame(window);
+		const themeChecks = await assertViewerFollowsEditor(window, frame, settingsPath, scene.theme);
 		await frame.addStyleTag({ content: `
 			*, *::before, *::after { animation: none !important; transition: none !important; caret-color: transparent !important; }
 			.status { display: none !important; }
@@ -305,7 +344,17 @@ async function main() {
 		await button.waitFor({ state: "visible", timeout: 30_000 });
 		await button.click();
 		await waitForRendered(frame, file.index);
+		// The outer Explorer already supplies navigation in this walkthrough.
+		// Collapse the viewer's duplicate navigator through its actual control
+		// so the image and tags both fit within the editor's narrower viewport.
+		await frame.getByRole("button", { name: "Collapse file navigator", exact: true }).click();
+		await frame.getByRole("button", { name: "Expand file navigator", exact: true }).waitFor();
 		await setCaption(window, "Inspect and cine through the study inside VS Code");
+		await window.locator("[data-dcmview-capture-caption]").evaluate((caption) => {
+			// Keep the walkthrough caption over the outer Explorer, clear of
+			// the viewer's scrubber and playback controls.
+			Object.assign(caption.style, { left: "176px", maxWidth: "290px", width: "290px", fontSize: "14px" });
+		});
 		for (let index = 0; index < viewerFrames; index += 1) {
 			if (index > 0 && index % 2 === 0) {
 				await advanceViewerFrame(frame);
@@ -328,6 +377,7 @@ async function main() {
 			patient_ids: [...new Set(catalog.files.map((candidate) => candidate.patient_id).filter(Boolean))].sort(),
 			visible_text_sha256: createHash("sha256").update(visibleText).digest("hex"),
 			vscode_version: vscodeVersion,
+			theme_checks: themeChecks,
 			node_version: process.version,
 			ffmpeg_version: execFileSync(ffmpegPath, ["-version"], { encoding: "utf8" }).split(/\r?\n/, 1)[0],
 			captured_frames: frameNumber,

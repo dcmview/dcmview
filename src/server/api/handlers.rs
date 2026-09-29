@@ -5,11 +5,11 @@ use crate::api::contracts::{
     DiscoveryResult, EmbedRoiAnnotations, FileSummary, FilesResponse, FrameInfo, FrameQuery,
     FrameValueMapping, HealthResponse, PixelQuery, ReferenceCatalogResponse,
     SemanticContextResponse, TagNode, TagQuery, ViewerIdentity, WsiFrameContextResponse,
-    CACHE_HEADER, CACHE_HIT, CACHE_MISS, CSV_MEDIA_TYPE, DISPLAY_FRAME_HEADER_WINDOW_CENTER,
-    DISPLAY_FRAME_HEADER_WINDOW_WIDTH, EXPORT_CONTENT_DISPOSITION_HEADER,
-    EXPORT_CONTENT_DISPOSITION_VALUE, OCTET_STREAM_MEDIA_TYPE, RAW_FRAME_HEADER_BITS_ALLOCATED,
-    RAW_FRAME_HEADER_COLUMNS, RAW_FRAME_HEADER_DEFAULT_WC, RAW_FRAME_HEADER_DEFAULT_WW,
-    RAW_FRAME_HEADER_PADDING_HIGH, RAW_FRAME_HEADER_PADDING_LOW,
+    CACHE_HEADER, CACHE_HIT, CACHE_MISS, CSV_MEDIA_TYPE, DISPLAY_FRAME_HEADER_WINDOW_APPLIED,
+    DISPLAY_FRAME_HEADER_WINDOW_CENTER, DISPLAY_FRAME_HEADER_WINDOW_WIDTH,
+    EXPORT_CONTENT_DISPOSITION_HEADER, EXPORT_CONTENT_DISPOSITION_VALUE, OCTET_STREAM_MEDIA_TYPE,
+    RAW_FRAME_HEADER_BITS_ALLOCATED, RAW_FRAME_HEADER_COLUMNS, RAW_FRAME_HEADER_DEFAULT_WC,
+    RAW_FRAME_HEADER_DEFAULT_WW, RAW_FRAME_HEADER_PADDING_HIGH, RAW_FRAME_HEADER_PADDING_LOW,
     RAW_FRAME_HEADER_PHOTOMETRIC_INTERPRETATION, RAW_FRAME_HEADER_PIXEL_REPRESENTATION,
     RAW_FRAME_HEADER_RESCALE_INTERCEPT, RAW_FRAME_HEADER_RESCALE_SLOPE, RAW_FRAME_HEADER_ROWS,
     RAW_FRAME_HEADER_SAMPLES_PER_PIXEL,
@@ -356,7 +356,13 @@ pub(super) async fn frame(
         header::CONTENT_TYPE,
         HeaderValue::from_static(frame_response.content_type),
     );
-    if let Some(window) = frame_response.window {
+    if let Some(kind) = frame_response.window.kind() {
+        response.headers_mut().insert(
+            DISPLAY_FRAME_HEADER_WINDOW_APPLIED,
+            HeaderValue::from_static(kind.as_str()),
+        );
+    }
+    if let pixels::AppliedWindow::Linear(window) = frame_response.window {
         let headers = response.headers_mut();
         insert_header_if_valid(
             headers,

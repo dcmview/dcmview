@@ -998,6 +998,10 @@ def publish_media(args: argparse.Namespace) -> None:
 		REPO_ROOT / "vscode" / "README.md", extension_gallery, anchor="## Supported Platforms"
 	)
 
+	if args.repo_only:
+		print("published the approved media set to this repository; dcmview-docs sync deferred")
+		return
+
 	docs_repo = args.docs_repo.resolve()
 	docs_index = docs_repo / "src" / "content" / "docs" / "index.mdx"
 	if not docs_index.is_file():
@@ -1084,7 +1088,12 @@ def build_parser() -> argparse.ArgumentParser:
 	)
 	add_capture_manifest_arguments(publish)
 	publish.add_argument("--bundle", type=Path, default=DEFAULT_REVIEW_ROOT / "current")
-	publish.add_argument("--docs-repo", type=Path, default=REPO_ROOT.parent / "dcmview-docs")
+	destination = publish.add_mutually_exclusive_group()
+	destination.add_argument("--docs-repo", type=Path, default=REPO_ROOT.parent / "dcmview-docs")
+	destination.add_argument(
+		"--repo-only", action="store_true",
+		help="Publish only this repository's media and galleries; defer dcmview-docs sync",
+	)
 	publish.add_argument("--tag", required=True)
 	publish.add_argument("--approve", action="store_true")
 	publish.set_defaults(offline=False)

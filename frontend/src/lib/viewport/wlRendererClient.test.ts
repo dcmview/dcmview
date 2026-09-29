@@ -98,11 +98,13 @@ describe("WlRendererClient", () => {
 		const canvas = fakeCanvas();
 		const frame = rawFrame(2, 3);
 
+		const committed: number[] = [];
 		// A window drag: one request per pointer move.
-		const renders = [10, 20, 30].map((wc) => client.render(() => canvas, { frame, wc, ww: 40, isCurrent: () => true }));
+		const renders = [10, 20, 30].map((wc) => client.render(() => canvas, { frame, wc, ww: 40, isCurrent: () => true, onRendered: () => { expect(canvas.ctx.putImageData).toHaveBeenCalledOnce(); committed.push(wc); } }));
 		await Promise.all(renders);
 
 		expect(canvas.ctx.putImageData).toHaveBeenCalledOnce();
+		expect(committed).toEqual([30]);
 	});
 
 	it("sends a frame to the worker once and only the window per render", async () => {
@@ -126,7 +128,8 @@ describe("WlRendererClient", () => {
 		const { worker, client } = workerClient();
 		const canvas = fakeCanvas();
 		const frame = rawFrame();
-		const request = (wc: number): WlRenderRequest => ({ frame, wc, ww: 10, isCurrent: () => true });
+		const committed: number[] = [];
+		const request = (wc: number): WlRenderRequest => ({ frame, wc, ww: 10, isCurrent: () => true, onRendered: () => committed.push(wc) });
 
 		const running = client.render(() => canvas, request(1));
 		void client.render(() => canvas, request(2));
@@ -137,19 +140,22 @@ describe("WlRendererClient", () => {
 		await running;
 
 		expect(worker.renders().map(({ wc }) => wc)).toEqual([1, 3]);
+		expect(committed).toEqual([1, 3]);
 	});
 
 	it("drops a render that was superseded while the worker ran", async () => {
 		const { worker, client } = workerClient();
 		const canvas = fakeCanvas();
 		let current = true;
+		const onRendered = vi.fn();
 
-		const running = client.render(() => canvas, { frame: rawFrame(), wc: 1, ww: 2, isCurrent: () => current });
+		const running = client.render(() => canvas, { frame: rawFrame(), wc: 1, ww: 2, isCurrent: () => current, onRendered });
 		current = false;
 		const bitmap = worker.respond(worker.renders()[0].id);
 		await running;
 
 		expect(bitmap.close).toHaveBeenCalledOnce();
+		expect(onRendered).not.toHaveBeenCalled();
 		expect(canvas.ctx.drawImage).not.toHaveBeenCalled();
 	});
 

@@ -26,9 +26,14 @@ export const API_ENDPOINTS = {
 	annotationsExport: { method: "GET", path: "/api/annotations/export.csv" },
 } as const;
 
+export const API_RESPONSE_HEADERS = {
+	serverInstance: "X-Server-Instance",
+} as const;
+
 export const DISPLAY_FRAME_HEADERS = {
 	windowCenter: "X-Frame-Window-Center",
 	windowWidth: "X-Frame-Window-Width",
+	windowApplied: "X-Frame-Window-Applied",
 } as const;
 
 export const RAW_FRAME_HEADERS = {
@@ -134,6 +139,11 @@ real_world: Array<RealWorldValueMap>,
  * mode when no window is requested and no DICOM window is stored.
  */
 voi_lut: VoiLookupTable | null, };
+
+/**
+ * How a grayscale display PNG was presented, reported in its applied-window header.
+ */
+export type FrameWindowApplied = "linear" | "real_world" | "voi_lut";
 
 export type HealthResponse = { status: string, viewer: ViewerIdentity, file_count: number, server_start_ms: number, };
 
@@ -311,7 +321,7 @@ display_color: [number, number, number],
  */
 display_color_source: string, };
 
-export type SegmentationContext = { segmentation_type: string | null, segmentation_fractional_type: string | null, maximum_fractional_value: number | null, segments: Array<SegmentSummary>, frame_mappings: Array<SegmentFrameMapping>, references: Array<ReferenceSummary>, overlay: OverlayEligibility, };
+export type SegmentationContext = { warnings: Array<string>, segmentation_type: string | null, segmentation_fractional_type: string | null, maximum_fractional_value: number | null, segments: Array<SegmentSummary>, frame_mappings: Array<SegmentFrameMapping>, references: Array<ReferenceSummary>, overlay: OverlayEligibility, };
 
 export type SemanticContext = { "kind": "segmentation" } & SegmentationContext | { "kind": "parametric_map" } & ParametricMapContext | { "kind": "rt_dose" } & RtDoseContext | { "kind": "not_applicable", reason: string, };
 

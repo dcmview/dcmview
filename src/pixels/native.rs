@@ -486,7 +486,7 @@ pub(crate) async fn read_raw_uncompressed(
         .context("raw uncompressed read task failed")?
 }
 
-fn read_raw_uncompressed_blocking(
+pub(super) fn read_raw_uncompressed_blocking(
     file: &FileEntry,
     frame: u32,
 ) -> Result<(Bytes, RawFrameMetadata)> {

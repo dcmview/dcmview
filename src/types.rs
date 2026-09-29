@@ -160,6 +160,8 @@ pub struct FileEntry {
 
 #[derive(Debug, Clone, Default)]
 pub struct SeriesMetadata {
+    /// Discovery-time verdict for a binary-valued FRACTIONAL SEG; retains its declared maximum.
+    pub binary_fractional_seg_maximum: Option<u32>,
     pub native_pixel: NativePixelMetadata,
     pub presentation: PresentationMetadata,
     pub frame_of_reference_uid: String,
@@ -358,11 +360,11 @@ impl WindowRequest {
             }
         }
 
-        // Requests that render identically share a cache key: -0 is 0, and
-        // the LINEAR function treats every width below 1 as 1.
+        // Signed zero renders identically. Preserve sub-unit widths: their
+        // meaning depends on the samples and mapping, unknown at validation.
         Ok(Self {
             center: center.map(|center| center + 0.0),
-            width: width.map(|width| width.max(1.0)),
+            width,
             mode,
         })
     }
@@ -503,12 +505,13 @@ mod tests {
                 None,
             )
         };
-        assert_eq!(key(-0.0, 0.25), key(0.0, 1.0));
+        assert_eq!(key(-0.0, 0.25), key(0.0, 0.25));
+        assert_ne!(key(0.0, 0.25), key(0.0, 1.0));
         assert_ne!(key(0.0, 2.0), key(0.0, 1.0));
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedWindow {
     pub center: f64,
     pub width: f64,

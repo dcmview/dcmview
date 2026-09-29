@@ -6,7 +6,7 @@ use dcmview::annotations::{AnnotationStore, EmbedRoiAnnotations};
 use dcmview::api::contracts::{
     endpoints, ApiMethod, Endpoint, ResponseHeaders, API_PREFIX, CACHE_HEADER, CACHE_HIT,
     CACHE_MISS, DISPLAY_FRAME_HEADERS, EXPORT_CONTENT_DISPOSITION_HEADER,
-    EXPORT_CONTENT_DISPOSITION_VALUE, RAW_FRAME_HEADERS,
+    EXPORT_CONTENT_DISPOSITION_VALUE, RAW_FRAME_HEADERS, SERVER_INSTANCE_HEADER,
 };
 use dcmview::server;
 use dcmview::types::WindowPreset;
@@ -449,6 +449,15 @@ fn assert_json_error(name: &str, response: &TestResponse, expected_status: Statu
 }
 
 fn assert_declared_response_headers(endpoint: &Endpoint, response: &TestResponse) {
+    assert!(
+        response
+            .header(SERVER_INSTANCE_HEADER)
+            .to_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap()
+            > 0
+    );
     match endpoint.response_headers {
         ResponseHeaders::None => {
             assert_no_cache_header(endpoint, response);
@@ -467,6 +476,7 @@ fn assert_declared_response_headers(endpoint: &Endpoint, response: &TestResponse
             // The window pair is sent together, as numbers, or not at all.
             let window = DISPLAY_FRAME_HEADERS
                 .iter()
+                .filter(|(field, _)| *field != "windowApplied")
                 .map(|(_, name)| {
                     response.maybe_header(*name).map(|value| {
                         value
@@ -485,6 +495,15 @@ fn assert_declared_response_headers(endpoint: &Endpoint, response: &TestResponse
                 "{} returned half a display window",
                 endpoint.id
             );
+            let applied =
+                response.maybe_header(dcmview::api::contracts::DISPLAY_FRAME_HEADER_WINDOW_APPLIED);
+            match applied.as_ref().and_then(|value| value.to_str().ok()) {
+                Some("linear") => assert!(window.iter().all(Option::is_some)),
+                Some("real_world" | "voi_lut") | None => {
+                    assert!(window.iter().all(Option::is_none))
+                }
+                Some(other) => panic!("invalid applied window: {other}"),
+            }
             assert_no_raw_frame_headers(endpoint, response);
             assert_no_export_header(endpoint, response);
         }
@@ -588,4 +607,138 @@ fn assert_object_keys(value: &Value, expected: &[&str]) {
     expected.sort_unstable();
 
     assert_eq!(actual, expected);
+}
+
+#[tokio::test]
+async fn color_display_omits_the_applied_window_header() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/golden-rle-ybr-full-422-u8-single-frame.dcm");
+    let report = support::discover(
+        &[path],
+        dcmview::loader::DiscoverOptions {
+            recursive: false,
+            filters: Vec::new(),
+        },
+    )
+    .await
+    .expect("discover color fixture");
+    let test_server = TestServer::new(server::router(support::app_state(report.files)));
+    for _ in 0..2 {
+        let response = test_server.get("/api/file/0/frame/0").await;
+        response.assert_status_ok();
+        for (_, name) in DISPLAY_FRAME_HEADERS {
+            assert!(
+                response.maybe_header(*name).is_none(),
+                "color frame sent {name}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn every_response_forbids_mime_sniffing() {
+    let app = TestServer::new(server::router(support::app_state(vec![])));
+    let responses = [
+        app.get("/").await,
+        app.get("/assets/missing.js").await,
+        app.get("/elsewhere").await,
+        app.get("/api/files").await,
+        app.get("/api/unknown").await,
+        app.get("/api/annotations/export.csv").await,
+        app.post("/api/files").await,
+        app.put("/api/file/0/annotations").text("bad JSON").await,
+    ];
+    for response in responses {
+        response.assert_header(header::X_CONTENT_TYPE_OPTIONS, "nosniff");
+    }
+}
+
+#[tokio::test]
+async fn server_identity_header_covers_success_errors_and_fallbacks() {
+    let app = TestServer::new(server::router(support::app_state(vec![])));
+    let files = app.get("/api/files").await;
+    let identity = files.json::<Value>()["server_start_ms"]
+        .as_u64()
+        .unwrap()
+        .to_string();
+    files.assert_header(SERVER_INSTANCE_HEADER, identity.as_str());
+    for path in [
+        "/api",
+        "/api/",
+        "/api/unknown",
+        "/api/file/not-an-index/tags",
+        "/api/file/99/info",
+        "/api/health",
+    ] {
+        app.get(path)
+            .await
+            .assert_header(SERVER_INSTANCE_HEADER, identity.as_str());
+    }
+    app.post("/api/files")
+        .await
+        .assert_header(SERVER_INSTANCE_HEADER, identity.as_str());
+    app.put("/api/file/0/annotations")
+        .text("bad JSON")
+        .await
+        .assert_header(SERVER_INSTANCE_HEADER, identity.as_str());
+    assert!(app
+        .get("/")
+        .await
+        .headers()
+        .get(SERVER_INSTANCE_HEADER)
+        .is_none());
+}
+
+#[tokio::test]
+async fn segmentation_context_always_includes_a_string_array_of_warnings() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    for name in ["binary", "fractional", "binary-valued-fractional"] {
+        let report = support::discover(
+            &[root.join(format!("golden-seg-{name}.dcm"))],
+            dcmview::loader::DiscoverOptions {
+                recursive: true,
+                filters: vec![],
+            },
+        )
+        .await
+        .unwrap();
+        let server = TestServer::new(server::router(support::app_state(report.files)));
+        let response = server.get("/api/file/0/semantic-context").await;
+        response.assert_status_ok();
+        response.assert_header(header::CONTENT_TYPE, "application/json");
+        let value: Value = response.json();
+        let context = &value["context"];
+        assert_eq!(context["kind"], "segmentation");
+        let warnings = context["warnings"]
+            .as_array()
+            .expect("required warnings array");
+        assert!(warnings.iter().all(Value::is_string));
+        assert_eq!(
+            warnings.len(),
+            usize::from(name == "binary-valued-fractional")
+        );
+        // The additive field leaves the declared attributes and existing shape intact.
+        let keys: std::collections::BTreeSet<_> = context
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                "kind",
+                "warnings",
+                "segmentation_type",
+                "segmentation_fractional_type",
+                "maximum_fractional_value",
+                "segments",
+                "frame_mappings",
+                "references",
+                "overlay"
+            ]
+            .into_iter()
+            .collect()
+        );
+    }
 }

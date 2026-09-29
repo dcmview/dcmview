@@ -64,8 +64,10 @@ at the end of this checklist.
 
 - [ ] Set the release version consistently in `Cargo.toml`, `pyproject.toml`,
       `frontend/package.json`, and `vscode/package.json`.
-- [ ] Regenerate the affected Cargo and npm lockfiles; do not hand-edit resolved
-      dependency records.
+- [ ] Regenerate `Cargo.lock`, `frontend/package-lock.json`, and
+      `vscode/package-lock.json`; do not hand-edit resolved dependency records.
+      The version check covers the root package in Cargo.lock and both the
+      top-level and root-package versions in each npm lockfile.
 - [ ] Check canonical package-version parity and the proposed tag:
 
   ```bash

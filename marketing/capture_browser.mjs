@@ -63,12 +63,19 @@ async function waitForRendered(page, expectedFileIndex = null, expectedFrameInde
 		{ timeout: 45_000 },
 	);
 	await page.evaluate(() => document.fonts.ready);
+	await waitForTags(page);
+}
+
+async function waitForTags(page) {
+	// Pixel rendering can finish before the tag tree (notably for WSI).
+	await page.getByRole("button", { name: "Copy (0008,0016) SOPClassUID", exact: true })
+		.waitFor({ state: "visible", timeout: 45_000 });
 }
 
 async function advanceFrame(page, step = 1) {
 	for (let count = 0; count < step; count += 1) {
 		const before = await renderedToken(page);
-		const position = page.locator("[data-capture-position]");
+		const position = page.getByRole("slider", { name: "Image position" });
 		await position.evaluate((input) => {
 			if (!(input instanceof HTMLInputElement)) throw new Error("capture position is not an input");
 			const maximum = Number(input.max);
@@ -87,6 +94,7 @@ async function advanceFrame(page, step = 1) {
 			before,
 			{ timeout: 45_000 },
 		);
+		await waitForTags(page);
 	}
 }
 
@@ -95,7 +103,7 @@ async function seekWithinFile(page, file, frameIndex) {
 	if (frameIndex >= file.frame_count) {
 		throw new Error(`requested frame ${frameIndex} exceeds file frame count ${file.frame_count}`);
 	}
-	const position = page.locator("[data-capture-position]");
+	const position = page.getByRole("slider", { name: "Image position" });
 	await position.evaluate((input, offset) => {
 		if (!(input instanceof HTMLInputElement)) throw new Error("capture position is not an input");
 		input.value = String(Number(input.value) + offset);

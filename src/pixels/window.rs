@@ -1,6 +1,50 @@
 use crate::api::contracts::{WindowMode, WindowPreset};
-use crate::types::{DicomLut, NativePixelDataKind, ResolvedWindow};
+use crate::types::{DicomLut, FileEntry, NativePixelDataKind, ResolvedWindow};
 use dicom_dictionary_std::tags;
+
+/// Integer Modality values use DICOM LINEAR's half-unit boundaries. Float
+/// samples and fractional rescale values use the continuous window function.
+#[derive(Clone, Copy)]
+pub(crate) enum WindowFunction {
+    Linear,
+    Exact,
+}
+
+impl WindowFunction {
+    pub(crate) fn for_file(file: &FileEntry) -> Self {
+        let native = &file.series_metadata.native_pixel;
+        if matches!(
+            native.pixel_data_kind,
+            Some(NativePixelDataKind::Float32 | NativePixelDataKind::Float64)
+        ) || (native.modality_lut.is_none()
+            && (file.rescale_slope.fract() != 0.0 || file.rescale_intercept.fract() != 0.0))
+        {
+            Self::Exact
+        } else {
+            Self::Linear
+        }
+    }
+
+    pub(crate) fn applied(self, window: ResolvedWindow) -> ResolvedWindow {
+        ResolvedWindow {
+            width: match self {
+                Self::Linear => window.width.max(1.0),
+                Self::Exact => window.width,
+            },
+            ..window
+        }
+    }
+
+    pub(crate) fn value(self, sample: f64, window: &ResolvedWindow) -> u8 {
+        match self {
+            Self::Linear => window_value(sample, window.center, window.width),
+            Self::Exact => (((sample - (window.center - window.width / 2.0)) / window.width)
+                .clamp(0.0, 1.0)
+                * 255.0)
+                .round() as u8,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct PixelPaddingRange {
@@ -151,7 +195,7 @@ pub fn resolve_window(
     samples: &[f64],
 ) -> Option<ResolvedWindow> {
     requested_or_stored_window(requested_wc, requested_ww, default_window)
-        .or_else(|| percentile_window(samples))
+        .or_else(|| percentile_window(samples, WindowFunction::Linear))
 }
 
 fn requested_or_stored_window(
@@ -203,25 +247,30 @@ impl ValueDistribution {
     }
 
     /// The window `percentile_window` computes over the same samples.
-    fn percentile_window(&self) -> Option<ResolvedWindow> {
+    fn percentile_window(&self, function: WindowFunction) -> Option<ResolvedWindow> {
         if self.is_empty() {
             return None;
         }
         let total = self.total as f64;
         let low = self.value_at(((total * 0.01).floor() as u64).min(self.total - 1));
         let high = self.value_at(((total * 0.99).ceil() as u64).min(self.total - 1));
-        Some(span_window(low, high))
+        Some(span_window(low, high, function))
     }
 
-    fn full_dynamic_window(&self) -> Option<ResolvedWindow> {
+    fn full_dynamic_window(&self, function: WindowFunction) -> Option<ResolvedWindow> {
         let (low, _) = self.entries.first()?;
         let (high, _) = self.entries.last()?;
-        Some(span_window(*low, *high))
+        Some(span_window(*low, *high, function))
     }
 }
 
-fn span_window(low: f64, high: f64) -> ResolvedWindow {
-    let width = (high - low).max(1.0);
+fn span_window(low: f64, high: f64, function: WindowFunction) -> ResolvedWindow {
+    let span = high - low;
+    let width = match function {
+        WindowFunction::Linear => span.max(1.0),
+        WindowFunction::Exact if span > 0.0 => span,
+        WindowFunction::Exact => 1.0,
+    };
     ResolvedWindow {
         center: low + width / 2.0,
         width,
@@ -235,25 +284,26 @@ pub(crate) fn resolve_window_from_distribution(
     requested_ww: Option<f64>,
     default_window: Option<WindowPreset>,
     distribution: &ValueDistribution,
+    function: WindowFunction,
 ) -> Option<ResolvedWindow> {
     match mode {
         WindowMode::Default => {
             requested_or_stored_window(requested_wc, requested_ww, default_window)
-                .or_else(|| distribution.percentile_window())
+                .or_else(|| distribution.percentile_window(function))
         }
-        WindowMode::FullDynamic => distribution.full_dynamic_window(),
+        WindowMode::FullDynamic => distribution.full_dynamic_window(function),
     }
 }
 
 /// Computes window from the true min/max of frame samples (full dynamic range).
 /// Ignores explicit wc/ww params and DICOM default_window tags.
-fn full_dynamic_window(samples: &[f64]) -> Option<ResolvedWindow> {
+fn full_dynamic_window(samples: &[f64], function: WindowFunction) -> Option<ResolvedWindow> {
     if samples.is_empty() {
         return None;
     }
     let min = samples.iter().cloned().fold(f64::INFINITY, f64::min);
     let max = samples.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-    Some(span_window(min, max))
+    Some(span_window(min, max, function))
 }
 
 /// Resolves window using the specified mode.
@@ -266,13 +316,34 @@ pub fn resolve_window_with_mode(
     default_window: Option<WindowPreset>,
     samples: &[f64],
 ) -> Option<ResolvedWindow> {
+    resolve_window_with_function(
+        mode,
+        requested_wc,
+        requested_ww,
+        default_window,
+        samples,
+        WindowFunction::Linear,
+    )
+}
+
+pub(crate) fn resolve_window_with_function(
+    mode: WindowMode,
+    requested_wc: Option<f64>,
+    requested_ww: Option<f64>,
+    default_window: Option<WindowPreset>,
+    samples: &[f64],
+    function: WindowFunction,
+) -> Option<ResolvedWindow> {
     match mode {
-        WindowMode::Default => resolve_window(requested_wc, requested_ww, default_window, samples),
-        WindowMode::FullDynamic => full_dynamic_window(samples),
+        WindowMode::Default => {
+            requested_or_stored_window(requested_wc, requested_ww, default_window)
+                .or_else(|| percentile_window(samples, function))
+        }
+        WindowMode::FullDynamic => full_dynamic_window(samples, function),
     }
 }
 
-fn percentile_window(samples: &[f64]) -> Option<ResolvedWindow> {
+fn percentile_window(samples: &[f64], function: WindowFunction) -> Option<ResolvedWindow> {
     if samples.is_empty() {
         return None;
     }
@@ -284,7 +355,7 @@ fn percentile_window(samples: &[f64]) -> Option<ResolvedWindow> {
         (((values.len() as f64) * 0.99).ceil() as usize).min(values.len().saturating_sub(1));
     let low = values[p1_idx.min(values.len().saturating_sub(1))];
     let high = values[p99_idx];
-    Some(span_window(low, high))
+    Some(span_window(low, high, function))
 }
 
 pub fn apply_window(samples: &[f64], center: f64, width: f64) -> Vec<u8> {

@@ -1,112 +1,134 @@
 {
   "artifacts": [
     {
-      "bytes": 1198188,
+      "bytes": 1098641,
       "height": 900,
       "path": "mr-seg-cine.gif",
       "scene_id": "mr-seg-cine",
       "series_instance_uid": "1.3.6.1.4.1.14519.5.2.1.7695.4164.197935705864255073412256526155",
-      "sha256": "a82e00878a356251137be9769dd14c7d3e1af838b846c948c0c81a3ccd29e757",
+      "sha256": "8c321570f4500dc5bb114f54253cfd13628a2b636a2b8e77a277bc80a4f26098",
       "source_group": "01-mr-seg",
       "width": 1440
     },
     {
-      "bytes": 5396085,
+      "bytes": 5564897,
       "height": 900,
       "path": "chest-ct-cine.gif",
       "scene_id": "chest-ct-cine",
       "series_instance_uid": "1.3.6.1.4.1.14519.5.2.1.9999.103.1892998694410640266017914996862",
-      "sha256": "bd761f1731c8ab21530f307976808633a5e4c247f33c91c68c71fbf52e307ead",
+      "sha256": "18a7cce7e5291f5fb2962479bdf9d572918a2670360b22c55dd682615320df5b",
       "source_group": "02-chest-ct",
       "width": 1440
     },
     {
-      "bytes": 731679,
+      "bytes": 705562,
       "height": 900,
       "path": "radiograph.png",
       "scene_id": "radiograph",
       "series_instance_uid": "1.3.6.1.4.1.14519.5.2.1.9999.103.7387851802783238061375077795803",
-      "sha256": "57cd4d6e91daf085ca713b9e0696b04dde19090e33e74cb4bbe3294e85affa40",
+      "sha256": "ff010dcd4e01c912ab794facdee9e6f768c5b213e1d02abc481f38ecb7bf3f60",
       "source_group": "03-radiograph",
       "width": 1440
     },
     {
-      "bytes": 450024,
+      "bytes": 499063,
       "height": 900,
       "path": "mammography.gif",
       "scene_id": "mammography",
       "series_instance_uid": "1.3.6.1.4.1.14519.5.2.1.1239.1759.817188338697704141156927137894",
-      "sha256": "621895016413e8087840425f812f92c7ce864bf4655b2d371ff7e7d773543043",
+      "sha256": "7371e7d0f5da86137c416c757e262215559b3a4f819b4cec1b62d67710c4c7bb",
       "source_group": "04-mammography",
       "width": 1440
     },
     {
-      "bytes": 1572971,
+      "bytes": 1503283,
       "height": 900,
       "path": "pet-cine.gif",
       "scene_id": "pet-cine",
       "series_instance_uid": "1.3.6.1.4.1.14519.5.2.1.153050364328304867324655664137435456205",
-      "sha256": "616f5dc7391905072a8e49e5e1e78ff63f96ab6b75f9f07b44aa8606f7864be9",
+      "sha256": "70e90b5a787e07a37677c640564cbd6773830693bb6abb154b1a0d4447d3fd46",
       "source_group": "05-pet",
       "width": 1440
     },
     {
-      "bytes": 3452325,
+      "bytes": 3833322,
       "height": 900,
       "path": "ultrasound-cine.gif",
       "scene_id": "ultrasound-cine",
       "series_instance_uid": "1.3.6.1.4.1.14519.5.2.1.1.78620393996990384206084905721745347693",
-      "sha256": "cf7221c18f1f10658d08d0aa590fc175b32c2813f683ad6899689e8575423cd3",
+      "sha256": "2124973d3293d562340d9d987ff45690599ac1a3a26caf062de9634c679efbbf",
       "source_group": "06-ultrasound",
       "width": 1440
     },
     {
-      "bytes": 288230,
+      "bytes": 284098,
       "height": 900,
       "path": "rt-dose-context.png",
       "scene_id": "rt-dose-context",
       "series_instance_uid": "1.3.6.1.4.1.14519.5.2.1.118532755654767959890619646384959953910",
-      "sha256": "22b6d57cf29264255ba2a5be49f9e2b0d6e309813c1e36171f2479667d64b117",
+      "sha256": "cf33d2a0d60ee20e4172f4656670f3e73ba0c1362c806ada947a998bbfef1f06",
       "source_group": "07-rt-dose",
       "width": 1440
     },
     {
-      "bytes": 399817,
+      "bytes": 410658,
       "height": 900,
       "path": "wsi-context.png",
       "scene_id": "wsi-context",
       "series_instance_uid": "1.3.6.1.4.1.5962.99.1.2218940421.790215425.1720205891589.4.0",
-      "sha256": "11ecea7545a3a4541f7f88a6c376ca49764dadd892f916d0981a5c0f0825d8ef",
+      "sha256": "54b69a2daea452d1bacd505f75695da475d32fb340e11e431f3f9ea17a820165",
       "source_group": "08-wsi",
       "width": 1440
     },
     {
-      "bytes": 1155998,
+      "bytes": 1552674,
       "height": 900,
       "path": "vscode-workflow.gif",
       "scene_id": "vscode-workflow",
       "series_instance_uid": "1.3.6.1.4.1.14519.5.2.1.9999.103.1892998694410640266017914996862",
-      "sha256": "6d3746a7879d667001a9edd6ab7b0dcdc916f18facf2515fbf59119271107c87",
+      "sha256": "bcef5d1b1ad9d3dfa864e16bff0d7cdf6cf9bf0bb896737511e994427ea020b3",
       "source_group": "02-chest-ct",
       "width": 1440
     }
   ],
   "capture_input_paths": [
     "frontend/src/App.svelte",
+    "frontend/src/App.test.ts",
     "frontend/src/api.test.ts",
     "frontend/src/api.ts",
     "frontend/src/generated/api-types.ts",
     "frontend/src/lib/FileNavigator.svelte",
     "frontend/src/lib/FrameSlider.svelte",
+    "frontend/src/lib/FrameSlider.test.ts",
     "frontend/src/lib/ImageViewport.svelte",
+    "frontend/src/lib/ImageViewport.test.ts",
     "frontend/src/lib/OpenImageTabs.svelte",
+    "frontend/src/lib/ReferenceEdge.svelte",
     "frontend/src/lib/ReferenceNavigator.svelte",
+    "frontend/src/lib/ReferenceNavigator.test.ts",
     "frontend/src/lib/SemanticContextPanel.svelte",
+    "frontend/src/lib/SemanticContextPanel.test.ts",
     "frontend/src/lib/StatusBar.svelte",
     "frontend/src/lib/TagPanel.svelte",
+    "frontend/src/lib/TagPanel.test.ts",
+    "frontend/src/lib/ValueOverlayBar.svelte",
+    "frontend/src/lib/ValueOverlayBar.test.ts",
     "frontend/src/lib/ViewerToolbar.svelte",
     "frontend/src/lib/WsiTileContext.svelte",
+    "frontend/src/lib/WsiTileContext.test.ts",
+    "frontend/src/lib/annotationGeometry.test.ts",
     "frontend/src/lib/annotationGeometry.ts",
+    "frontend/src/lib/app/catalog.svelte.ts",
+    "frontend/src/lib/app/catalog.test.ts",
+    "frontend/src/lib/app/sidebarLayout.svelte.ts",
+    "frontend/src/lib/app/tabNavigation.svelte.ts",
+    "frontend/src/lib/app/tabNavigation.test.ts",
+    "frontend/src/lib/app/theme.test.ts",
+    "frontend/src/lib/app/theme.ts",
+    "frontend/src/lib/app/valueOverlays.svelte.ts",
+    "frontend/src/lib/app/valueOverlays.test.ts",
+    "frontend/src/lib/app/windowSettings.svelte.ts",
+    "frontend/src/lib/app/windowSettings.test.ts",
     "frontend/src/lib/cinePlayback.test.ts",
     "frontend/src/lib/cinePlayback.ts",
     "frontend/src/lib/fileRegistry.test.ts",
@@ -119,8 +141,11 @@
     "frontend/src/lib/frameCache.ts",
     "frontend/src/lib/imageGeometry.test.ts",
     "frontend/src/lib/imageGeometry.ts",
+    "frontend/src/lib/keyboardShortcuts.test.ts",
+    "frontend/src/lib/keyboardShortcuts.ts",
     "frontend/src/lib/keyedAsyncResource.test.ts",
     "frontend/src/lib/keyedAsyncResource.ts",
+    "frontend/src/lib/objectIcons.ts",
     "frontend/src/lib/prefetchPolicy.test.ts",
     "frontend/src/lib/prefetchPolicy.ts",
     "frontend/src/lib/rawWindowing.test.ts",
@@ -135,17 +160,64 @@
     "frontend/src/lib/semanticPresentation.ts",
     "frontend/src/lib/seriesNavigation.test.ts",
     "frontend/src/lib/seriesNavigation.ts",
-    "frontend/src/lib/sharedRequestRegistry.test.ts",
-    "frontend/src/lib/sharedRequestRegistry.ts",
     "frontend/src/lib/tagRows.test.ts",
     "frontend/src/lib/tagRows.ts",
+    "frontend/src/lib/ui/Button.svelte",
+    "frontend/src/lib/ui/ButtonGroup.svelte",
+    "frontend/src/lib/ui/Icon.svelte",
+    "frontend/src/lib/ui/Range.svelte",
+    "frontend/src/lib/ui/SearchField.svelte",
+    "frontend/src/lib/ui/SegmentedControl.svelte",
+    "frontend/src/lib/ui/Select.svelte",
+    "frontend/src/lib/ui/StatusBadge.svelte",
+    "frontend/src/lib/ui/icons.ts",
     "frontend/src/lib/viewerTools.ts",
+    "frontend/src/lib/viewport/PixelReadout.svelte",
+    "frontend/src/lib/viewport/RoiLabels.svelte",
+    "frontend/src/lib/viewport/RoiList.svelte",
+    "frontend/src/lib/viewport/RoiOverlay.svelte",
+    "frontend/src/lib/viewport/ValueLegend.svelte",
+    "frontend/src/lib/viewport/ZoomControls.svelte",
+    "frontend/src/lib/viewport/annotationStore.svelte.ts",
+    "frontend/src/lib/viewport/annotationStore.test.ts",
+    "frontend/src/lib/viewport/displayCine.test.ts",
+    "frontend/src/lib/viewport/displayCine.ts",
+    "frontend/src/lib/viewport/displayFrameSource.ts",
+    "frontend/src/lib/viewport/frameLayers.test.ts",
+    "frontend/src/lib/viewport/frameLayers.ts",
+    "frontend/src/lib/viewport/frameOverlay.test.ts",
+    "frontend/src/lib/viewport/frameOverlay.ts",
+    "frontend/src/lib/viewport/frameSources.test.ts",
+    "frontend/src/lib/viewport/liveWindowPreview.test.ts",
+    "frontend/src/lib/viewport/liveWindowPreview.ts",
+    "frontend/src/lib/viewport/pixelProbe.svelte.ts",
+    "frontend/src/lib/viewport/pixelProbe.test.ts",
+    "frontend/src/lib/viewport/prefetchScheduling.ts",
+    "frontend/src/lib/viewport/rawFrameSource.ts",
+    "frontend/src/lib/viewport/renderedFrames.svelte.ts",
+    "frontend/src/lib/viewport/renderedFrames.test.ts",
+    "frontend/src/lib/viewport/resolveWindow.test.ts",
+    "frontend/src/lib/viewport/resolveWindow.ts",
+    "frontend/src/lib/viewport/roiEditing.test.ts",
+    "frontend/src/lib/viewport/roiEditing.ts",
+    "frontend/src/lib/viewport/valueMapping.test.ts",
+    "frontend/src/lib/viewport/valueMapping.ts",
+    "frontend/src/lib/viewport/valueMappings.svelte.ts",
+    "frontend/src/lib/viewport/valueMappings.test.ts",
+    "frontend/src/lib/viewport/viewStates.svelte.ts",
+    "frontend/src/lib/viewport/viewTransform.test.ts",
+    "frontend/src/lib/viewport/viewTransform.ts",
+    "frontend/src/lib/viewport/wlRendererClient.test.ts",
+    "frontend/src/lib/viewport/wlRendererClient.ts",
     "frontend/src/lib/workers/wlRenderer.worker.ts",
     "frontend/src/lib/workers/wlRendererProtocol.ts",
     "frontend/src/lib/wsiMinimap.test.ts",
     "frontend/src/lib/wsiMinimap.ts",
     "frontend/src/main.ts",
     "frontend/src/rawFrame.ts",
+    "frontend/src/testing/fixtures.ts",
+    "frontend/src/testing/reactiveProps.svelte.ts",
+    "frontend/src/theme.css",
     "marketing/capture_browser.mjs",
     "marketing/capture_vscode.mjs",
     "marketing/captures.json",
@@ -158,23 +230,33 @@
     "src/pixels/segmentation.rs",
     "src/semantic.rs",
     "vscode/package.json",
+    "vscode/src/binary.ts",
+    "vscode/src/bridgeRegistry.ts",
+    "vscode/src/bridgeServer.ts",
+    "vscode/src/commands.ts",
+    "vscode/src/customEditor.ts",
     "vscode/src/extension.ts",
+    "vscode/src/output.ts",
+    "vscode/src/settings.ts",
+    "vscode/src/terminalInterception.ts",
     "vscode/src/test/runTest.ts",
     "vscode/src/test/suite/extension.test.ts",
-    "vscode/src/test/suite/index.ts"
+    "vscode/src/test/suite/index.ts",
+    "vscode/src/test/suite/viewer.test.ts",
+    "vscode/src/viewerSessions.ts"
   ],
-  "capture_inputs_sha256": "b3948e6041ec60a28404ac0a923b027a9209e1938ceca68e593c43499b022e2a",
-  "captured_at_utc": "2026-09-01T01:24:59+00:00",
+  "capture_inputs_sha256": "5e68a6a6c91f4e383768c66c5d4495deb7567d21f9e48924462be6662d3a12d0",
+  "captured_at_utc": "2026-09-29T13:22:20+00:00",
   "captures_manifest_sha256": "afdf2b4ec006289d5f336d232ab67977318fc187771e046b24fa8c76d32bcdec",
-  "dcmview_version": "0.2.12",
-  "git_commit": "db16cec48838d6b76238889bee49d4d9f7b1e44b",
+  "dcmview_version": "0.3.0",
+  "git_commit": "5c0b9d3c17d5488a8a27a2e83f9a6138b28ed4f7",
   "git_dirty": false,
   "reports": [
     {
       "browser_version": "151.0.7922.34",
       "ffmpeg_version": "ffmpeg version 6.0 Copyright (c) 2000-2023 the FFmpeg developers",
-      "file_index": 92,
-      "node_version": "v24.12.0",
+      "file_index": 120,
+      "node_version": "v26.8.2",
       "patient_ids": [
         "ACRIN-6698-234723"
       ],
@@ -186,13 +268,13 @@
         "height": 900,
         "width": 1440
       },
-      "visible_text_sha256": "59b7552297a6baf80f3bcf9e6ff27b256f23c6be71a63bce00f8fd4484154427"
+      "visible_text_sha256": "c7439c759987e6f0e747e874a557e5f06295f40e27736fd0684874a04d738ff6"
     },
     {
       "browser_version": "151.0.7922.34",
       "ffmpeg_version": "ffmpeg version 6.0 Copyright (c) 2000-2023 the FFmpeg developers",
-      "file_index": 4,
-      "node_version": "v24.12.0",
+      "file_index": 8,
+      "node_version": "v26.8.2",
       "patient_ids": [
         "COVID-19-AR-16406502"
       ],
@@ -204,13 +286,13 @@
         "height": 900,
         "width": 1440
       },
-      "visible_text_sha256": "c8e19ec5b1360a2c3cf75e54eb87930718698869e63112b830e1c5f3addb1ca1"
+      "visible_text_sha256": "a048a188f64ec3c7c639b353bc9c42bf0f9a57082de104769aa3191571b79b4e"
     },
     {
       "browser_version": "151.0.7922.34",
       "ffmpeg_version": null,
       "file_index": 0,
-      "node_version": "v24.12.0",
+      "node_version": "v26.8.2",
       "patient_ids": [
         "COVID-19-AR-16406502"
       ],
@@ -222,13 +304,13 @@
         "height": 900,
         "width": 1440
       },
-      "visible_text_sha256": "9702cdd99e6c628088c46ef9fa2ae553e3a89996113bda8fd419841c72635373"
+      "visible_text_sha256": "aedd225cf08b2831d7500a35f55b80c6ecf7fbaa728fbbff504234e6b4bc96cf"
     },
     {
       "browser_version": "151.0.7922.34",
       "ffmpeg_version": "ffmpeg version 6.0 Copyright (c) 2000-2023 the FFmpeg developers",
-      "file_index": 2,
-      "node_version": "v24.12.0",
+      "file_index": 1,
+      "node_version": "v26.8.2",
       "patient_ids": [
         "D1-0021"
       ],
@@ -240,13 +322,13 @@
         "height": 900,
         "width": 1440
       },
-      "visible_text_sha256": "7f3c84e85bbed9280b7e9bec6a0bd974d9b2f90f56c6b5f01623db5ed47b64a2"
+      "visible_text_sha256": "e7d2b9c5ea224c77131253acfc69bcb925ccfe5543141910a270005be580928a"
     },
     {
       "browser_version": "151.0.7922.34",
       "ffmpeg_version": "ffmpeg version 6.0 Copyright (c) 2000-2023 the FFmpeg developers",
-      "file_index": 65,
-      "node_version": "v24.12.0",
+      "file_index": 126,
+      "node_version": "v26.8.2",
       "patient_ids": [
         "PSMA_f77011649a56cf08"
       ],
@@ -258,13 +340,13 @@
         "height": 900,
         "width": 1440
       },
-      "visible_text_sha256": "e825cf7f1a3e37d910900f37bc5319374a3c9077625ea134ce60b2f804801ea4"
+      "visible_text_sha256": "5f55835febcc96db189f779a7bb647580e89c0a698bf97f2eead49c1417a8f4e"
     },
     {
       "browser_version": "151.0.7922.34",
       "ffmpeg_version": "ffmpeg version 6.0 Copyright (c) 2000-2023 the FFmpeg developers",
-      "file_index": 8,
-      "node_version": "v24.12.0",
+      "file_index": 4,
+      "node_version": "v26.8.2",
       "patient_ids": [
         "MSB-07848"
       ],
@@ -276,13 +358,13 @@
         "height": 900,
         "width": 1440
       },
-      "visible_text_sha256": "50fc6e705e2de2c6e57f5b245c80adb426248ccf17181274446b417b989664ca"
+      "visible_text_sha256": "5771c8ea0c8f56dc59d40ed90b8b8e22c457e895797fe9ed98441734022a1828"
     },
     {
       "browser_version": "151.0.7922.34",
       "ffmpeg_version": null,
-      "file_index": 114,
-      "node_version": "v24.12.0",
+      "file_index": 90,
+      "node_version": "v26.8.2",
       "patient_ids": [
         "VS-SEG-131"
       ],
@@ -294,13 +376,13 @@
         "height": 900,
         "width": 1440
       },
-      "visible_text_sha256": "47ca80898acdba05f003cc8462c1fa9f26b1f6eb7be03e4749fc342e2a5009a7"
+      "visible_text_sha256": "4393e3cea5dc0e2df1bd8aa18da00b4d1771ac544a75c1372f4b0c1a5e89bcdd"
     },
     {
       "browser_version": "151.0.7922.34",
       "ffmpeg_version": null,
       "file_index": 0,
-      "node_version": "v24.12.0",
+      "node_version": "v26.8.2",
       "patient_ids": [
         "GTEX-17HHY"
       ],
@@ -312,25 +394,30 @@
         "height": 900,
         "width": 1440
       },
-      "visible_text_sha256": "8335c3e42930f8dccb922b15fc6cf26998738bbe65c4e147ab464db6920db52d"
+      "visible_text_sha256": "91206f22308b6783c85203c1fb0e7e9a955606d208908ff0fdd7911eb02a917c"
     },
     {
       "captured_frames": 48,
       "ffmpeg_version": "ffmpeg version 6.0 Copyright (c) 2000-2023 the FFmpeg developers",
-      "file_index": 55,
-      "node_version": "v24.12.0",
+      "file_index": 0,
+      "node_version": "v26.8.2",
       "patient_ids": [
         "COVID-19-AR-16406502"
       ],
       "scene_id": "vscode-workflow",
       "series_instance_uid": "1.3.6.1.4.1.14519.5.2.1.9999.103.1892998694410640266017914996862",
       "sop_instance_uid": "1.3.6.1.4.1.14519.5.2.1.9999.103.1900628769149549795905756834745",
+      "theme_checks": [
+        "initial-dark",
+        "switch-light",
+        "switch-dark"
+      ],
       "viewport": {
         "device_scale_factor": 1,
         "height": 900,
         "width": 1440
       },
-      "visible_text_sha256": "9f00a92ca3589865eb281c570dbe6b79d6b3cef8cc4eda800ab2e40d1c016f71",
+      "visible_text_sha256": "172836178b858b8be8ba7145b887d17f9d4cf4397193142554dd838e790c6cef",
       "vscode_version": "1.103.2"
     }
   ],

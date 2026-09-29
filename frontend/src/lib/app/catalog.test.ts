@@ -25,6 +25,21 @@ async function settle(ms: number): Promise<void> {
 }
 
 describe("Catalog.poll", () => {
+	it("refreshes references for arrivals and completion, not filtered progress", () => {
+		const catalog = new Catalog();
+		const series = { series: [], scan_complete: false };
+		catalog.apply(filesResponse(1, false), series);
+		const revision = catalog.referenceRevision;
+		catalog.apply({ ...filesResponse(1, false), scanned: 200, skipped: 100, filtered: 99 }, series);
+		expect(catalog.referenceRevision).toBe(revision);
+		expect(catalog.files?.filtered).toBe(99);
+		catalog.apply(filesResponse(2, false), series);
+		expect(catalog.referenceRevision).not.toBe(revision);
+		const arrived = catalog.referenceRevision;
+		catalog.apply(filesResponse(2, true), { ...series, scan_complete: true });
+		expect(catalog.referenceRevision).not.toBe(arrived);
+	});
+
 	afterEach(() => {
 		vi.useRealTimers();
 		vi.resetAllMocks();

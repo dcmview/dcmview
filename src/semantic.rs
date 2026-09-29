@@ -149,7 +149,15 @@ pub fn segmentation_overlay_plan(
         source_file_index: resolved_source.file_index,
         source_frame_index: resolved_source.frame_index,
         target_to_segmentation,
-        segmentation_type,
+        segmentation_type: if source
+            .series_metadata
+            .binary_fractional_seg_maximum
+            .is_some()
+        {
+            "BINARY".to_string()
+        } else {
+            segmentation_type
+        },
         maximum_fractional_value: context.maximum_fractional_value,
         color,
     })
@@ -332,6 +340,9 @@ fn segmentation_context(
         segment_closure_valid,
     );
     SegmentationContext {
+        warnings: source.series_metadata.binary_fractional_seg_maximum.map(|maximum| {
+            format!("Declared FRACTIONAL (maximum {maximum}) but every stored value is 0 or 1; shown as binary")
+        }).into_iter().collect(),
         segmentation_type: read_string(object, tags::SEGMENTATION_TYPE),
         segmentation_fractional_type: read_string(object, tags::SEGMENTATION_FRACTIONAL_TYPE),
         maximum_fractional_value: read_number(object, tags::MAXIMUM_FRACTIONAL_VALUE),

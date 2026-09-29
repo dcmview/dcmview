@@ -4,6 +4,7 @@
 	import ButtonGroup from "./ui/ButtonGroup.svelte";
 	import SegmentedControl from "./ui/SegmentedControl.svelte";
 	import Select from "./ui/Select.svelte";
+	import Range from "./ui/Range.svelte";
 
 	let {
 		totalFrames,
@@ -58,15 +59,16 @@
 
 {#if totalFrames > 1}
 	<div class="slider">
-		<input
-			type="range"
-			hidden
-			data-capture-position
-			min="0"
-			max={Math.max(0, totalFrames - 1)}
-			value={currentPosition}
-			oninput={(event) => onpositionchange(Number(event.currentTarget.value))}
-		/>
+		<div class="scrubber">
+			<Range
+				aria-label="Image position"
+				aria-valuetext={`Image ${currentPosition + 1} of ${totalFrames}`}
+				min="0"
+				max={Math.max(0, totalFrames - 1)}
+				value={currentPosition}
+				oninput={(event) => { cinePlaying = false; onpositionchange(Number(event.currentTarget.value)); }}
+			/>
+		</div>
 		<ButtonGroup label="Playback">
 			<Button icon="prev" onclick={() => step(-1)} aria-label="Previous image" />
 			<Button
@@ -104,6 +106,11 @@
 		background: var(--paper);
 		border-top: 1px solid var(--line);
 		color: var(--text);
+	}
+
+	.scrubber {
+		flex: 1 1 160px;
+		min-width: 100px;
 	}
 
 	.position {

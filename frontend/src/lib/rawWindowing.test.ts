@@ -215,7 +215,7 @@ describe("samples presented one at a time", () => {
 
 	it("presents NaN float samples as the server casts them, before MONOCHROME1 inversion", () => {
 		const frame = frameFromSamples([Number.NaN, 0, 1], 32, 0, { photometricInterpretation: "MONOCHROME1" }, true);
-		expect(grayValues(renderRawFrameToRgba(frame, 0.5, 2, { presentation: float("float32") }))).toEqual([255, 127, 0]);
+		expect(grayValues(renderRawFrameToRgba(frame, 0.5, 2, { presentation: float("float32") }))).toEqual([255, 191, 64]);
 		// The server's full range folds with f64::min/max, which skip NaN.
 		expect(computeFullDynamicWindow(frame, float("float32"))).toEqual({ wc: 0.5, ww: 1 });
 	});
@@ -309,6 +309,21 @@ describe("raw window resolution", () => {
 			wc: 15,
 			ww: 30,
 		});
+	});
+
+	it("reports an integer frame's sub-unit window as applied and keeps continuous sub-unit widths", () => {
+		// A manual window carried at its relative width can fall below one unit.
+		const integer = frameFromSamples([0, 1, 2, 3], 16, 0);
+		expect(resolveDisplayWindow(integer, null, null, 1.5, 0.3, "default")).toEqual({ wc: 1.5, ww: 1 });
+		expect(resolveDisplayWindow(integer, 1.5, 0.3, null, null, "default")).toEqual({ wc: 1.5, ww: 1 });
+		const presentation = (slope: number, storedValueType = "integer"): SamplePresentation => ({ storedValueType,
+			modality: { rescale_slope: slope, rescale_intercept: 0, rescale_type: null, lut: null }, voiLut: null });
+		// Fractional rescale and float samples are continuous.
+		expect(resolveDisplayWindow(integer, null, null, 0.0015, 0.0008, "default", presentation(0.001)))
+			.toEqual({ wc: 0.0015, ww: 0.0008 });
+		const float = frameFromSamples([0.0005, 0.0014, 0.0023, 0.0032], 32, 0, {}, true);
+		expect(resolveDisplayWindow(float, null, null, 0.0015, 0.0008, "default", presentation(1, "float")))
+			.toEqual({ wc: 0.0015, ww: 0.0008 });
 	});
 });
 

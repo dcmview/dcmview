@@ -57,6 +57,43 @@ describe("frame overlays", () => {
 });
 
 describe("value overlays", () => {
+	it("caches noncoverage but retries transient failures", async () => {
+		const cache = new OverlayLayerCache();
+		const missing = new api.ApiError("outside", 404, "overlay_not_covering_frame");
+		const load = vi.fn().mockRejectedValueOnce(missing).mockResolvedValue(new Blob(["png"]));
+		for (let pass = 0; pass < 3; pass++) await expect(cache.load({ key: "missing", load })).rejects.toBe(missing);
+		expect(load).toHaveBeenCalledOnce();
+		cache.clear();
+		await expect(cache.load({ key: "missing", load })).resolves.toBeInstanceOf(Blob);
+		const failure = vi.fn().mockRejectedValueOnce(new api.ApiError("retry", 500, null)).mockResolvedValue(new Blob());
+		await expect(cache.load({ key: "retry", load: failure })).rejects.toMatchObject({ status: 500 });
+		await expect(cache.load({ key: "retry", load: failure })).resolves.toBeInstanceOf(Blob);
+	});
+
+	it("cancels abandoned prefetch without cancelling a foreground consumer", async () => {
+		const cache = new OverlayLayerCache();
+		const signals: AbortSignal[] = [];
+		const load = vi.fn((signal: AbortSignal) => {
+			signals.push(signal);
+			return new Promise<Blob>((_resolve, reject) => signal.addEventListener("abort", () => reject(new DOMException("cancelled", "AbortError"))));
+		});
+		const prefetch = new AbortController();
+		const foreground = new AbortController();
+		const first = cache.load({ key: "shared", load }, prefetch.signal);
+		const second = cache.load({ key: "shared", load }, foreground.signal);
+		prefetch.abort();
+		await expect(first).rejects.toMatchObject({ name: "AbortError" });
+		expect(signals[0].aborted).toBe(false);
+		foreground.abort();
+		await expect(second).rejects.toMatchObject({ name: "AbortError" });
+		expect(signals[0].aborted).toBe(true);
+		const next = new AbortController();
+		const third = cache.load({ key: "shared", load }, next.signal);
+		expect(load).toHaveBeenCalledTimes(2);
+		next.abort();
+		await expect(third).rejects.toMatchObject({ name: "AbortError" });
+	});
+
 	it("keys one colorwash layer per volume and displayed frame, from the volume's endpoint", async () => {
 		const signal = new AbortController().signal;
 		const dose = valueOverlayLayerRequest({ kind: "rt_dose", volumeFileIndex: 9 }, 5, 2);

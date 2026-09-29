@@ -24,11 +24,16 @@ const TOOL_KEYS = new Map<string, ActiveTool>(
 	TOOL_ORDER.map((tool) => [TOOL_SHORTCUTS[tool].toLowerCase(), tool]),
 );
 
-/** Text entry and form controls keep their keys; shortcuts never fire there. */
+function isRangeTarget(target: EventTarget | null): boolean {
+	const element = target as Partial<HTMLInputElement> | null;
+	return element?.tagName === "INPUT" && element.type === "range";
+}
+
+/** Text entry and select controls keep their keys. */
 export function isEditableTarget(target: EventTarget | null): boolean {
 	const element = target as Partial<HTMLElement> | null;
 	if (!element || typeof element.tagName !== "string") return false;
-	return element.isContentEditable === true || ["INPUT", "TEXTAREA", "SELECT"].includes(element.tagName);
+	return element.isContentEditable === true || !isRangeTarget(target) && ["INPUT", "TEXTAREA", "SELECT"].includes(element.tagName);
 }
 
 /**
@@ -39,6 +44,7 @@ export function isEditableTarget(target: EventTarget | null): boolean {
 export function shortcutFor(event: ShortcutKeyEvent, context: ShortcutContext): ShortcutAction | null {
 	if (event.key === "Escape" && context.drawerOpen) return { type: "close-drawer" };
 	if (isEditableTarget(event.target)) return null;
+	if (isRangeTarget(event.target) && event.key.startsWith("Arrow")) return null;
 
 	const modified = event.altKey || event.ctrlKey || event.metaKey || event.shiftKey;
 	if ((event.key === "ArrowUp" || event.key === "ArrowDown") && !modified) {

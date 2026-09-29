@@ -24,7 +24,7 @@ import {
 } from '../../bridgeServer';
 import { collectFileSystemPaths } from '../../commands';
 import { posixShim, windowsShim } from '../../terminalInterception';
-import { parseStartupLine, waitForStartup, waitForStartupOrTerminate } from '../../viewerSessions';
+import { parseStartupLine, viewerUrl, waitForStartup, waitForStartupOrTerminate } from '../../viewerSessions';
 
 class FakeChild extends EventEmitter {
   readonly stdout = new EventEmitter();
@@ -52,6 +52,25 @@ const extensionManifest = JSON.parse(
 );
 
 suite('dcmview extension', () => {
+  test('viewer URLs preserve forwarded queries and expose an ordinary theme parameter', () => {
+    for (const theme of ['dark', 'light'] as const) {
+      const local = viewerUrl(vscode.Uri.parse('http://127.0.0.1:51234/'), theme);
+      assert.strictEqual(local.href, `http://127.0.0.1:51234/?theme=${theme}`);
+      // An external URI already owns its query. Uri.parse would decode %2B
+      // before this helper receives it; keep that encoded query explicit.
+      const forwarded = viewerUrl(vscode.Uri.from({
+        scheme: 'https', authority: 'viewer.example', path: '/proxy/view er',
+        query: 'token=a%2Bb%3Dc&scope=one&scope=two&theme=old', fragment: 'frame',
+      }), theme);
+      assert.strictEqual(forwarded.origin, 'https://viewer.example');
+      assert.strictEqual(forwarded.pathname, '/proxy/view%20er');
+      assert.strictEqual(forwarded.searchParams.get('token'), 'a+b=c');
+      assert.deepStrictEqual(forwarded.searchParams.getAll('scope'), ['one', 'two']);
+      assert.deepStrictEqual(forwarded.searchParams.getAll('theme'), [theme]);
+      assert.strictEqual(forwarded.hash, '#frame');
+    }
+  });
+
   test('parses structured startup events', () => {
     const url = parseStartupLine(
       '{"type":"server_started","url":"http://127.0.0.1:51234","host":"127.0.0.1","port":51234}',

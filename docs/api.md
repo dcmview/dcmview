@@ -8,6 +8,17 @@ The server is unauthenticated. Keep it bound to loopback and use SSH forwarding
 for remote work. Responses can expose DICOM metadata, file paths, annotations,
 and pixel data.
 
+Every API response, including errors and unknown API routes, includes
+`X-Server-Instance`: the server's Unix-millisecond start time, identical to
+`server_start_ms` in the files and health responses. Clients with a loaded
+catalog must discard that session when a later response carries a different
+identity. The viewer reloads the page in that case; detection remains driven
+by ordinary requests, without keepalive polling.
+
+Every response, including the viewer page, assets, and errors, carries
+`X-Content-Type-Options: nosniff`, so a browser never reinterprets raw
+samples, JSON, or CSV that quote file contents as another document type.
+
 ## Source Of Truth
 
 `src/api/contracts.rs` defines every endpoint (`endpoints::ALL`: method, path,
@@ -35,6 +46,11 @@ debug-api` enables permissive CORS for debugging from another origin only.
 
 All paths are under `/api`; `{index}` is a file index from `/api/files` and
 `{frame}` a zero-based frame. Static assets are served at `/` and `/assets/*`.
+
+The viewer loads its assets and calls the API with URLs relative to its page
+(`assets/...`, `api/...`), so a reverse proxy can serve it under a path prefix
+such as `/user/alice/proxy/8888/`. The proxy strips the prefix before forwarding
+and redirects the bare prefix to its trailing-slash form.
 
 | Method | Path | Success response |
 |---|---|---|
@@ -130,13 +146,21 @@ request after a display request of the same frame may report `HIT`.
 
 A grayscale display frame windowed linearly reports the window it was
 rendered with, in Modality values, as `X-Frame-Window-Center` and
-`X-Frame-Window-Width` (the width at least 1, as applied), whichever step
+`X-Frame-Window-Width` (the width as applied), whichever step
 above chose it; a drag preview reports its window too. Color frames, frames
 presented through a VOI LUT, and frames windowed in a real-world `unit` send
 neither: a window over mapped values has no linear Modality equivalent. A
 `unit` request whose window could not be applied reports the default window it
-was shown with instead, so the pair's presence on a `unit` response means the
-requested window was not used.
+was shown with instead.
+
+`X-Frame-Window-Applied` identifies the presentation on every grayscale display
+response, including cache hits and previews: `linear` for a Modality window,
+`real_world` for an applied unit window, or `voi_lut` for a VOI LUT. It is
+omitted for color frames. Only `real_world` confirms a requested unit window
+was applied; a fallback can report either `linear` (with center/width) or
+`voi_lut` (without them). Integer Modality windows retain a width floor of 1;
+float, fractional Modality and real-world windows use the continuous function
+without that floor.
 
 A file's `frame_count` in `/api/files` and `/api/series` is its Number of
 Frames bounded by the frames it can hold (the Per-frame Functional Groups items
@@ -219,7 +243,17 @@ mapping record per frame with `mapping_method`, `mapping_status`
 zero-based `source_frames`. A mapping comes from an explicit per-frame
 derivation source or, failing that, from compatible patient geometry (same
 Frame of Reference, positions, orientation, and spacing); source and SEG
-matrices may differ in size.
+matrices may differ in size. SEG context also includes `warnings: string[]`,
+empty when there is nothing to report. Declared `segmentation_type`,
+`segmentation_fractional_type`, and `maximum_fractional_value` remain unchanged.
+
+A FRACTIONAL SEG with Maximum Fractional Value above 1 whose stored samples
+across the entire object are all 0 or 1 is drawn as BINARY. Its context warns:
+“Declared FRACTIONAL (maximum N) but every stored value is 0 or 1; shown as
+binary”.
+Discovery computes and caches this interpretation before serving the object;
+a binary-valued frame within a genuine fractional object does not trigger it.
+Ordinary display/raw frames and genuine fractional overlays are unchanged.
 
 `segmentation-overlay` renders only a frame whose mapping resolved. Binary
 samples are a mask, fractional samples are scaled by Maximum Fractional Value,

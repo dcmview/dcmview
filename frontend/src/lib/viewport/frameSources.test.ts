@@ -95,6 +95,27 @@ describe("RawFrameSource", () => {
 		expect(source.cached(5, 2)).toBeUndefined();
 	});
 
+	it("prepares the raw ring's mappings even when its samples are cached", async () => {
+		const load = vi.fn(async () => rawFrame());
+		const prepare = vi.fn(async (_file: number, _frame: number, _signal: AbortSignal) => {});
+		const source = new RawFrameSource({ load, prepare, concurrency: () => 3 });
+		for (let frame = 0; frame < 4; frame++) source.store(5, frame, rawFrame());
+		source.prefetch(navigationFramesForFile(5, 4), 0, 1);
+		await flush();
+		expect(prepare.mock.calls.map(([, frame]) => frame).sort()).toEqual([1, 2, 3]);
+		expect(load).not.toHaveBeenCalled();
+	});
+
+	it("cancels mapping preparation with its abandoned raw request", async () => {
+		let signal: AbortSignal | undefined;
+		const source = new RawFrameSource({ load: async () => rawFrame(), concurrency: () => 1,
+			prepare: (_file, _frame, nextSignal) => { signal = nextSignal; return abortable(nextSignal); } });
+		const pending = source.ensure(1, 0);
+		source.abortAll();
+		await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+		expect(signal?.aborted).toBe(true);
+	});
+
 	it("abandons a replaced prefetch between batches", async () => {
 		const requested: number[] = [];
 		const source = new RawFrameSource({
@@ -115,10 +136,77 @@ describe("RawFrameSource", () => {
 });
 
 describe("DisplayFrameSource", () => {
+	it("prefetches companion layers across already cached display frames", async () => {
+		const load = vi.fn(async () => png());
+		const prepare = vi.fn(async (_file: number, _frame: number) => {});
+		const source = new DisplayFrameSource({ load, prepare,
+			navigationScope: () => "tab", concurrency: () => 3, onScopeChange: vi.fn() });
+		for (let frame = 0; frame < 4; frame++) await source.ensureFrame(1, frame, {});
+		prepare.mockClear(); load.mockClear();
+		source.startPrefetch(navigationFramesForFile(1, 4), 0, 1, {}, 3, "loop");
+		await flush();
+		expect(prepare.mock.calls.map(([, frame]) => frame).sort()).toEqual([1, 2, 3]);
+		expect(load).not.toHaveBeenCalled();
+	});
+
+	it("waits for companion layers even when the display PNG is cached", async () => {
+		const load = vi.fn(async (): Promise<DisplayFrame> => ({ blob: new Blob(["png"]), window: null, appliedWindow: null }));
+		let prepared: Promise<void> = Promise.resolve();
+		const source = new DisplayFrameSource({ load, prepare: () => prepared,
+			navigationScope: () => "tab", concurrency: () => 1, onScopeChange: vi.fn() });
+		await source.ensureFrame(1, 0, {});
+		let finish!: () => void;
+		prepared = new Promise(resolve => { finish = resolve; });
+		const ready = vi.fn();
+		const pending = source.ensureFrame(1, 0, {}).then(ready);
+		await flush();
+		expect(ready).not.toHaveBeenCalled();
+		finish(); await pending;
+		expect(ready).toHaveBeenCalledOnce();
+		expect(load).toHaveBeenCalledOnce();
+	});
+
+	it("readies frame metadata for prefetch and cine, even for cached PNGs, but not for a foreground frame", async () => {
+		const load = vi.fn(async (): Promise<DisplayFrame> => ({ blob: new Blob(["png"]), window: null, appliedWindow: null }));
+		const finishers = new Map<number, () => void>();
+		const loadMetadata = vi.fn((_file: number, frame: number) => new Promise<void>(resolve => { finishers.set(frame, resolve); }));
+		const source = new DisplayFrameSource({ load, loadMetadata,
+			navigationScope: () => "tab", concurrency: () => 3, onScopeChange: vi.fn() });
+		// A foreground frame is presented without waiting for its metadata.
+		for (let frame = 0; frame < 4; frame++) await source.ensureFrame(1, frame, {});
+		expect(loadMetadata).not.toHaveBeenCalled();
+
+		// Metadata evicted since (a stack longer than the mapping cache) loads
+		// again with the cached PNG, and cine waits for it.
+		const ready = vi.fn();
+		const cine = source.ensureReady(1, 0, {}).then(ready);
+		source.startPrefetch(navigationFramesForFile(1, 4), 0, 1, {}, 3, "loop");
+		await flush();
+		expect(loadMetadata.mock.calls.map(([, frame]) => frame).sort()).toEqual([0, 1, 2, 3]);
+		expect(ready).not.toHaveBeenCalled();
+		finishers.get(0)!(); await cine;
+		expect(ready).toHaveBeenCalledOnce();
+		expect(load).toHaveBeenCalledTimes(4);
+	});
+
+	it("readies metadata only for the prefetch neighbourhood of a long stack", async () => {
+		const load = vi.fn(async (): Promise<DisplayFrame> => ({ blob: new Blob(["png"]), window: null, appliedWindow: null }));
+		const loadMetadata = vi.fn(async (_file: number, _frame: number) => {});
+		const source = new DisplayFrameSource({ load, loadMetadata,
+			navigationScope: () => "tab", concurrency: () => 50, onScopeChange: vi.fn() });
+		source.enterScope({});
+		source.startPrefetch(navigationFramesForFile(1, 200), 100, 1, {}, 3, "loop");
+		await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(199));
+		const frames = loadMetadata.mock.calls.map(([, frame]) => frame);
+		expect(Math.min(...frames)).toBe(52);
+		expect(Math.max(...frames)).toBe(148);
+		expect(frames).toHaveLength(96);
+	});
+
 	type Load = (file: number, frame: number, options: DisplayFrameWindowOptions, signal: AbortSignal) => Promise<DisplayFrame>;
 
 	function png(blob: Blob = new Blob(["png"])): DisplayFrame {
-		return { blob, window: null };
+		return { blob, window: null, appliedWindow: null };
 	}
 
 	function displaySource(load: Load, scope = { value: "tab:a" }) {
@@ -133,13 +221,13 @@ describe("DisplayFrameSource", () => {
 	}
 
 	it("shares a request per frame and serves the cached payload and its window afterwards", async () => {
-		const load = vi.fn(async () => ({ blob: new Blob(["png"]), window: { wc: 40, ww: 400 } }));
+		const load = vi.fn(async () => ({ blob: new Blob(["png"]), window: { wc: 40, ww: 400 }, appliedWindow: "linear" as const }));
 		const { source } = displaySource(load);
 
 		const first = source.ensureFrame(1, 0, {});
 		expect(source.ensureFrame(1, 0, {})).toBe(first);
 		const frame = await first;
-		await expect(source.ensureFrame(1, 0, {})).resolves.toEqual({ blob: frame.blob, window: { wc: 40, ww: 400 } });
+		await expect(source.ensureFrame(1, 0, {})).resolves.toEqual({ blob: frame.blob, window: { wc: 40, ww: 400 }, appliedWindow: "linear" });
 		expect(load).toHaveBeenCalledOnce();
 	});
 

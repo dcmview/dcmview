@@ -25,25 +25,25 @@ loopback binding and SSH forwarding for remote workflows.
 
 ### Cine playback and semantic context
 
-![Chest CT cine playback in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.2.12/media/marketing/chest-ct-cine.gif)
+![Chest CT cine playback in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.3.0/media/marketing/chest-ct-cine.gif)
 
-![DICOM SEG semantic overlay in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.2.12/media/marketing/mr-seg-cine.gif)
+![DICOM SEG semantic overlay in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.3.0/media/marketing/mr-seg-cine.gif)
 
 ### Modality coverage
 
-![Chest radiograph in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.2.12/media/marketing/radiograph.png)
+![Chest radiograph in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.3.0/media/marketing/radiograph.png)
 
-![Mammography study in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.2.12/media/marketing/mammography.gif)
+![Mammography study in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.3.0/media/marketing/mammography.gif)
 
-![PET cine playback in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.2.12/media/marketing/pet-cine.gif)
+![PET cine playback in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.3.0/media/marketing/pet-cine.gif)
 
-![Ultrasound cine playback in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.2.12/media/marketing/ultrasound-cine.gif)
+![Ultrasound cine playback in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.3.0/media/marketing/ultrasound-cine.gif)
 
-![RT Dose semantic context in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.2.12/media/marketing/rt-dose-context.png)
+![RT Dose semantic context in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.3.0/media/marketing/rt-dose-context.png)
 
-![DICOM whole-slide microscopy context in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.2.12/media/marketing/wsi-context.png)
+![DICOM whole-slide microscopy context in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.3.0/media/marketing/wsi-context.png)
 
-[Source imagery attribution](https://raw.githubusercontent.com/dcmview/dcmview/v0.2.12/media/marketing/ATTRIBUTION.md)
+[Source imagery attribution](https://raw.githubusercontent.com/dcmview/dcmview/v0.3.0/media/marketing/ATTRIBUTION.md)
 <!-- dcmview-marketing:end -->
 
 ## Why use it?
@@ -175,6 +175,10 @@ http://localhost:8888
 
 You can also let `dcmview` use an auto-assigned port by omitting `--port`; copy
 the printed port into your SSH command.
+
+The viewer also works behind a reverse proxy that serves it under a path
+prefix, such as a Jupyter proxy route. The proxy must strip the prefix before
+forwarding and serve the page with a trailing slash (`.../8888/`).
 
 The HTTP server is unauthenticated. It binds to `127.0.0.1` by default. If you
 bind to `0.0.0.0` or another public interface, use your own network access

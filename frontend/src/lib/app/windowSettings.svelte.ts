@@ -62,12 +62,10 @@ export class WindowSettings {
 		this.center = center;
 		this.width = width;
 		this.unit = unit;
-		if (unit !== null) {
-			this.#manual = null;
-			this.mode = "default";
-			this.presetId = "default";
-			return;
-		}
+		this.mode = "default";
+		this.presetId = "default";
+		this.#manual = null;
+		if (unit !== null) return;
 		if (fileIndex === null || !Number.isFinite(center) || !Number.isFinite(width) || width <= 0) return;
 		const base = usableWindow(this.#defaultWindow(fileIndex));
 		if (!base) {
@@ -78,8 +76,6 @@ export class WindowSettings {
 			centerOffsetRatio: (center - base.center) / base.width,
 			widthRatio: width / base.width,
 		};
-		this.mode = "default";
-		this.presetId = "default";
 	}
 
 	/** Re-applies a manual adjustment to a newly active file's default window. */
@@ -88,7 +84,10 @@ export class WindowSettings {
 		const base = usableWindow(this.#defaultWindow(fileIndex));
 		if (!base) return;
 		this.center = base.center + this.#manual.centerOffsetRatio * base.width;
-		this.width = Math.max(1, this.#manual.widthRatio * base.width);
+		// Only the frame knows whether its values are integers: there LINEAR
+		// applies, and the HUD reports, at least one unit (resolveDisplayWindow
+		// and the server); continuous values keep a sub-unit width.
+		this.width = Math.max(Number.MIN_VALUE, this.#manual.widthRatio * base.width);
 		this.mode = "default";
 	}
 

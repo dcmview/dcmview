@@ -23,6 +23,16 @@ describe("isEditableTarget", () => {
 });
 
 describe("shortcutFor", () => {
+	it("keeps range arrows native while allowing playback and tool shortcuts", () => {
+		const target = { tagName: "INPUT", type: "range" } as unknown as EventTarget;
+		expect(isEditableTarget(target)).toBe(false);
+		expect(shortcutFor(press(" ", { target }), idle)).toEqual({ type: "toggle-cine" });
+		expect(shortcutFor(press("w", { target }), idle)).toEqual({ type: "select-tool", tool: "window_level" });
+		for (const key of ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]) {
+			expect(shortcutFor(press(key, { target }), idle)).toBeNull();
+		}
+	});
+
 	it("selects tools by their toolbar letters, in either case", () => {
 		expect(shortcutFor(press("w"), idle)).toEqual({ type: "select-tool", tool: "window_level" });
 		expect(shortcutFor(press("P"), idle)).toEqual({ type: "select-tool", tool: "pan" });

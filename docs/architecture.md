@@ -132,7 +132,14 @@ settings, value overlays, sidebar layout) and the per-tab `ViewStates` store
 (zoom, pan, orientation). Catalog polling applies a response only when the
 scan has moved, fetches the series catalog only when the file list or scan
 state changed, and backs off to 2 s while nothing changes. A request that
-cannot reach the server marks it disconnected in the status bar. One `svelte:window` keydown handler dispatches every global
+cannot reach the server marks it disconnected in the status bar. Retry checks
+health against the loaded catalog's server identity: a replaced server reloads
+the page, while the same server resumes polling and retries failed active
+resources. Every API response, including errors, carries `X-Server-Instance`;
+`api.ts` rejects a differing identity before parsing its payload and App
+reloads. No background health polling is added. Reference lists refresh as
+discovery progresses and completes. Closing a tab forgets its zoom, pan and
+orientation; switching between open tabs preserves them. One `svelte:window` keydown handler dispatches every global
 shortcut through `lib/keyboardShortcuts.ts`. Keyed fetches share and abort
 in-flight requests through `lib/keyedAsyncResource.ts`. `ImageViewport`
 composes units in `frontend/src/lib/viewport/`: raw and display frame sources,
@@ -140,6 +147,20 @@ the window/level worker client, rendered-frame tracking for cine pacing,
 per-frame overlay layers, the ROI annotation store and components, the
 pixel probe and value-mapping conversions behind the readout, and the view
 transform math, including the client-to-image-pixel mapping.
+
+The viewport retains the last complete presentation until its replacement is
+ready. `viewport/frameLayers.ts` shares cached colorwash and presentation
+payloads and owns decoded layers for each prepared frame. Raw and display
+prefetches also warm value mappings and colorwash. A raw frame carries its
+own mapping through the worker draw; the completed draw commits its layers,
+window, and frame label together. Display frames await their colorwash before
+drawing and committing. Display prefetch (within its 48-frame neighbourhood,
+inside the 128-frame mapping cache) and cine also wait for each frame's
+value mapping (reloading one the mapping cache evicted), so the HUD and legend
+keep that frame's real-world unit; a frame navigated to directly is drawn
+without waiting, and its HUD and legend update when its mapping arrives. A failed presentation layer leaves the base image
+visible with an unavailable note. Cine advances only after that complete
+presentation is marked rendered.
 
 The pixel readout reads the frame on screen: the samples the window/level
 renderer already holds, or a raw frame fetched through the shared raw-frame
@@ -154,7 +175,10 @@ A real-world mapping also switches the window to its unit, and
 `WindowSettings` records a drag in that unit. Display requests keep the
 window in its unit (it is part of the fetch scope and cache key), and the
 viewport's display loader converts each frame, including prefetched and
-cine frames, through that frame's own linear mapping; a window no linear
+cine frames, through that frame's own linear mapping. For integer Modality
+LINEAR, the converted window adds 0.5 to its center and 1 to its width to
+cancel the half-unit terms and preserve the continuous physical transfer
+function; the displayed unit window reverses that adjustment. A window no linear
 mapping expresses is sent with `unit`, and the server windows the frame's
 preferred mapping through the same per-stored-value table as the raw
 renderer (`render.rs` `encode_real_world_windowed_png`, decoded samples from
@@ -166,14 +190,22 @@ is windowed directly: the renderer's window LUT maps each stored value
 through it, and stills with such a window stay on that path in every tool.
 Files without a mapping keep the stored-unit path unchanged.
 
-The window HUD, the unit legend, and a window/level drag start from the
-window of the image on screen. The raw path resolves that window itself; for
-a server-rendered frame it is the window being dragged or requested, else the
-one the display response reports (`X-Frame-Window-*`), kept with the cached
-PNG. A mapped file converts that window to its unit, so its legend needs no
-raw samples. A frame requested in a real-world `unit` reports no window when
-that window applied; if it reports one, the server showed its default window
-instead, and the HUD shows that window rather than the unit legend.
+The viewport's pure `viewport/resolveWindow.ts` selects the displayed window,
+unit, and source for the HUD and legends. Live drags supersede automatic
+presentation; released drags and explicit selections clear their local preview.
+Server unit labels require `X-Frame-Window-Applied: real_world`; `voi_lut`
+and color responses never inherit the requested unit. Manual settings always
+leave Full Dynamic and preset mode, including files without a default window.
+Play while W/L is selected uses display frames with the current window and
+returns to interactive raw rendering when paused. The visible Image position
+scrubber in `FrameSlider`, using `lib/ui/Range`, pauses playback when seeking.
+Browser and VS Code media capture drive this same accessible control.
+
+The cached `DisplayPng` carries an `AppliedWindow` enum: Linear with its
+Modality window, RealWorld, VoiLut, or Color. `X-Frame-Window-Applied` is
+`linear`, `real_world`, or `voi_lut` for grayscale; color omits it. A unit
+window is confirmed only by `real_world`, including when a fallback uses a
+VOI LUT and therefore reports no center/width.
 
 For SEG objects, `SemanticContextPanel` keeps Pixel Preview as the initial mode
 and publishes an explicit Semantic Context selection to `App.svelte`.
@@ -300,7 +332,18 @@ The contract is kept consistent by three layers:
   Unavailable semantic mappings return `422 semantic_mapping_unavailable`.
   Like the value overlays in `server/api/overlays.rs`, the encoded PNG is
   cached per SEG frame and resolved source frame, and `X-Cache` reports that
-  cache.
+  cache. Discovery inspects candidate FRACTIONAL SEGs with a maximum above 1
+  on its blocking workers after filters match. Native samples are streamed in
+  bounded chunks (deflated datasets are inflated once); encapsulated samples
+  reuse one header and sequential frame cursor, retaining at most one decoded
+  frame. Inspection checks discovery cancellation while walking metadata and
+  between chunks/frames. Only an object whose
+  complete declared frame set contains exclusively 0/1 samples receives the
+  binary fallback. `SeriesMetadata.binary_fractional_seg_maximum` retains the
+  verdict for the file's lifetime, independently of request caches; errors or
+  incomplete frames preserve the declared interpretation. Overlay planning
+  uses this verdict, and SEG context reports it through `warnings` without
+  changing the declared attributes or ordinary display/raw frames.
 - `/api/file/{index}/frame/{frame}/dose-overlay?dose=` and
   `.../parametric-map-overlay?map=` (`server/api/overlays.rs`) draw an RT Dose
   grid or Parametric Map on a displayed frame in its Frame of Reference. The
@@ -410,7 +453,13 @@ color-space transformation, and it does not change decoded RGB samples or raw
 frame responses.
 
 For native monochrome display, Modality LUT or rescale precedes VOI LUT or
-windowing, followed by MONOCHROME1 presentation inversion. Modality and VOI
+windowing, followed by MONOCHROME1 presentation inversion. Integer Modality values
+use LINEAR half-unit boundaries and a minimum width of one. Float samples,
+fractional Modality rescale values, and real-world windows use the continuous
+window function without that floor; automatic Modality windows preserve any positive
+span and use width one only for a constant frame. `pixels/window.rs` chooses
+this function, mirrored by `rawWindowing.ts` and the shared oracle. Sub-unit
+cache widths are normalized only after the integer Modality path is known. Modality and VOI
 LUT sequences accept the standard 8-bit and 16-bit entry depths, including
 byte-packed 8-bit LUT Data. The display shutter then replaces every pixel
 outside its opening with the encoded P-value (Shutter Presentation Value, else
@@ -556,14 +605,16 @@ installation and VS Code Electron integration can also use network/cache state;
   complete HTTP boundary.
 - Generated DICOM fixtures exercise real discovery and codec paths. Integration
   tests do not mock the DICOM layer.
-- Discovery opens and parses each file once (`loader/entry.rs`
+- Discovery builds each file's catalog metadata in one parse (`loader/entry.rs`
   `read_discovery_header`): it builds the metadata object from the parser's
   tokens up to the earliest standard pixel-data tag, exactly as
   `OpenFileOptions::read_until(FLOAT_PIXEL_DATA)` would, then continues the
   same parse to the data set's own top-level pixel element (deflated data sets
   through their inflating adapter). Pixel elements nested in sequences, such
   as an Icon Image Sequence, do not count. It does not retain integer, float,
-  or double-float pixel values in the catalog.
+  or double-float pixel values in the catalog. Selected candidate FRACTIONAL
+  SEGs additionally receive the bounded sample inspection described above; this
+  is one pixel-stream pass per object, not a header parse per frame.
 - Frontend state helpers, controllers, cache policy, windowing, registry
   shaping, and API wrappers are tested as TypeScript modules. Component tests
   render `App.svelte` and `ImageViewport.svelte` in happy-dom with the API

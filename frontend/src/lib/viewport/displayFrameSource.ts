@@ -28,6 +28,13 @@ const PREFETCH_RESEED_DISTANCE = 6;
 
 export type DisplayFrameSourceOptions = {
 	load?: typeof fetchDisplayFrame;
+	/** Prepare a frame’s companion layers, including when its PNG is cached. */
+	prepare?: (fileIndex: number, frameIndex: number, signal: AbortSignal) => Promise<unknown>;
+	/**
+	 * Load a frame’s metadata (its value mapping) alongside it. Prefetch and
+	 * cine wait for it (`ensureReady`); a foreground `ensureFrame` does not.
+	 */
+	loadMetadata?: (fileIndex: number, frameIndex: number, signal: AbortSignal) => Promise<unknown>;
 	/** The navigation scope (open tab) whose frames are being fetched. */
 	navigationScope: () => string;
 	/** Parallel prefetch requests. */
@@ -75,6 +82,8 @@ function leaseDecode(decode: SharedDecode): DisplayBitmap {
  */
 export class DisplayFrameSource {
 	readonly #load: typeof fetchDisplayFrame;
+	readonly #prepare: DisplayFrameSourceOptions["prepare"];
+	readonly #loadMetadata: DisplayFrameSourceOptions["loadMetadata"];
 	readonly #navigationScope: () => string;
 	readonly #concurrency: () => number;
 	readonly #onScopeChange: () => void;
@@ -93,8 +102,10 @@ export class DisplayFrameSource {
 	/** Where navigation last seeded a prefetch; the widened prefetch starts there. */
 	#lastSeed = 0;
 
-	constructor({ load = fetchDisplayFrame, navigationScope, concurrency, onScopeChange }: DisplayFrameSourceOptions) {
+	constructor({ load = fetchDisplayFrame, prepare, loadMetadata, navigationScope, concurrency, onScopeChange }: DisplayFrameSourceOptions) {
 		this.#load = load;
+		this.#prepare = prepare;
+		this.#loadMetadata = loadMetadata;
 		this.#navigationScope = navigationScope;
 		this.#concurrency = concurrency;
 		this.#onScopeChange = onScopeChange;
@@ -117,21 +128,44 @@ export class DisplayFrameSource {
 
 	/** The cached frame, or the scope's shared request for it. */
 	ensureFrame(fileIndex: number, frameIndex: number, options: DisplayFrameWindowOptions): Promise<DisplayFrame> {
+		// Establish the scope before even a cache hit can be presented. Otherwise
+		// starting cine after a tab return resets the frame already on screen.
+		this.enterScope(options);
 		const key = this.key(fileIndex, frameIndex, options);
 		const cached = this.#caches.frames.get(key);
-		if (cached) return Promise.resolve(cached);
+		if (cached && !this.#prepare) return Promise.resolve(cached);
 		const existing = this.#requests.get(key) as Promise<DisplayFrame> | undefined;
 		if (existing) return existing;
-		this.enterScope(options);
 		return this.#requests.request(key, (signal) => {
 			this.#framesInFlight.set(key, `${fileIndex}:${frameIndex}`);
-			return this.#load(fileIndex, frameIndex, options, signal)
-				.then((frame) => {
+			return Promise.all([
+				cached ?? this.#load(fileIndex, frameIndex, options, signal),
+				this.#prepare?.(fileIndex, frameIndex, signal),
+			])
+				.then(([frame]) => {
 					this.#caches.frames.set(key, frame);
 					return frame;
 				})
 				.finally(() => this.#framesInFlight.delete(key));
 		}) as Promise<DisplayFrame>;
+	}
+
+	/**
+	 * The frame once its metadata has loaded too. Prefetch and cine wait here,
+	 * so a frame they bring up is shown with its own value mapping (and those
+	 * small requests are paced with the frames'), while a foreground
+	 * `ensureFrame` presents its pixels without waiting for metadata.
+	 */
+	ensureReady(fileIndex: number, frameIndex: number, options: DisplayFrameWindowOptions): Promise<DisplayFrame> {
+		const frame = this.ensureFrame(fileIndex, frameIndex, options);
+		const loadMetadata = this.#loadMetadata;
+		if (!loadMetadata) return frame;
+		const key = `metadata:${this.key(fileIndex, frameIndex, options)}`;
+		const metadata = this.#requests.request(key, (signal) => {
+			this.#framesInFlight.set(key, `${fileIndex}:${frameIndex}`);
+			return loadMetadata(fileIndex, frameIndex, signal).finally(() => this.#framesInFlight.delete(key));
+		});
+		return Promise.all([frame, metadata]).then(([loaded]) => loaded);
 	}
 
 	/**
@@ -299,9 +333,13 @@ export class DisplayFrameSource {
 				const frame = frames[position];
 				if (!frame) return;
 				const key = this.key(frame.file_index, frame.frame_index, options);
-				if (signal.aborted || this.#caches.frames.has(key)) return;
+				// Metadata only for the neighbourhood: readying a whole long stack's
+				// mappings would cycle them through their cache (128 frames) and
+				// evict the ones about to be shown.
+				const withMetadata = Math.abs(position - startPosition) <= DISPLAY_NEAR_PREFETCH_DISTANCE;
+				if (signal.aborted || (!this.#prepare && !(withMetadata && this.#loadMetadata) && this.#caches.frames.has(key))) return;
 				try {
-					await this.ensureFrame(frame.file_index, frame.frame_index, options);
+					await (withMetadata ? this.ensureReady : this.ensureFrame).call(this, frame.file_index, frame.frame_index, options);
 				} catch {
 					// Ignore network/decode failures during prefetch.
 				}

@@ -15,6 +15,10 @@ pub const PNG_MEDIA_TYPE: &str = "image/png";
 pub const OCTET_STREAM_MEDIA_TYPE: &str = "application/octet-stream";
 pub const CSV_MEDIA_TYPE: &str = "text/csv; charset=utf-8";
 
+/// Unix-millisecond server start identity on every API response, including errors.
+pub const SERVER_INSTANCE_HEADER: &str = "X-Server-Instance";
+pub const API_RESPONSE_HEADERS: &[(&str, &str)] = &[("serverInstance", SERVER_INSTANCE_HEADER)];
+
 pub const CACHE_HEADER: &str = "X-Cache";
 pub const CACHE_HIT: &str = "HIT";
 pub const CACHE_MISS: &str = "MISS";
@@ -37,15 +41,37 @@ pub const RAW_FRAME_HEADER_PADDING_HIGH: &str = "X-Frame-Padding-High";
 
 pub const DISPLAY_FRAME_HEADER_WINDOW_CENTER: &str = "X-Frame-Window-Center";
 pub const DISPLAY_FRAME_HEADER_WINDOW_WIDTH: &str = "X-Frame-Window-Width";
+pub const DISPLAY_FRAME_HEADER_WINDOW_APPLIED: &str = "X-Frame-Window-Applied";
+
+/// How a grayscale display PNG was presented, reported in its applied-window header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum FrameWindowApplied {
+    Linear,
+    RealWorld,
+    VoiLut,
+}
+
+impl FrameWindowApplied {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Linear => "linear",
+            Self::RealWorld => "real_world",
+            Self::VoiLut => "voi_lut",
+        }
+    }
+}
 
 /// Display-frame response headers, keyed by their name in the generated
 /// TypeScript table: the linear window the PNG was presented with, as center
 /// and width in Modality values. Both are sent for grayscale frames windowed
 /// linearly (requested, DICOM, or automatic) and neither for color frames or
-/// frames presented through a VOI LUT.
+/// frames presented through a VOI LUT. The applied kind is sent for every
+/// grayscale frame, and omitted for color frames.
 pub const DISPLAY_FRAME_HEADERS: &[(&str, &str)] = &[
     ("windowCenter", DISPLAY_FRAME_HEADER_WINDOW_CENTER),
     ("windowWidth", DISPLAY_FRAME_HEADER_WINDOW_WIDTH),
+    ("windowApplied", DISPLAY_FRAME_HEADER_WINDOW_APPLIED),
 ];
 
 /// Raw-frame response header carrying each serialized [`RawFrameMetadata`]
@@ -85,7 +111,7 @@ impl ApiMethod {
     }
 }
 
-/// Contract-specific response headers an endpoint sends on success.
+/// Endpoint-specific headers on success, in addition to [`API_RESPONSE_HEADERS`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResponseHeaders {
     None,
@@ -100,7 +126,8 @@ pub enum ResponseHeaders {
     Export,
 }
 
-/// One HTTP endpoint. Every endpoint answers errors with [`ErrorResponse`].
+/// One HTTP endpoint. Every response carries [`API_RESPONSE_HEADERS`], and
+/// every endpoint answers errors with [`ErrorResponse`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Endpoint {
     /// Stable camelCase key of this endpoint in the generated TypeScript table.
@@ -422,6 +449,8 @@ pub struct CodedConceptSummary {
 
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct SegmentationContext {
+    // Interpretation warnings; empty when the declared samples need no fallback.
+    pub warnings: Vec<String>,
     pub segmentation_type: Option<String>,
     pub segmentation_fractional_type: Option<String>,
     pub maximum_fractional_value: Option<u32>,

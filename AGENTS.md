@@ -77,15 +77,21 @@ would remove behavior, raise it as a question instead of acting.
 
 **Known gaps (intended work, not settled scope):**
 
+- **VOI LUT Function is not interpreted.** DICOM VOI LUT Function
+  (0028,1056), including `LINEAR_EXACT` and `SIGMOID`, is currently ignored.
+  Supporting these declared functions is deferred until after v0.3.0. The
+  exact window formula used for non-integer samples and real-world units does
+  not imply support for this attribute.
 - **Real-world windows need integer samples.** A window in the unit of a LUT
   mapping (or of a mapping behind a Modality LUT) is exact on the raw path
   and, through the display endpoint's `unit` query, in cine, for 8- and
   16-bit (and one-bit) single-sample frames. Frames with other samples show
   their default window for such a window on the server.
 
-`docs/planned/` temporarily holds uncommitted proposals, such as the JupyterLab
-integration and the original compatibility plan. They are not specs and not
-current behavior. Do not implement them unless the owner asks.
+`docs/planned/` is gitignored and holds local proposals, briefs and review
+notes, such as the original compatibility plan.
+They are not specs and not current behavior. Do not implement them unless the
+owner asks.
 
 ---
 
@@ -240,7 +246,7 @@ dcmview/
 |   |       |-- viewport/             ImageViewport units: frame sources, W/L
 |   |       |                         worker client, view state, overlays, ROIs
 |   |       |-- ui/                   Bea · dcmview controls: Button, ButtonGroup,
-|   |       |                         SegmentedControl, Select, SearchField,
+|   |       |                         SegmentedControl, Select, Range, SearchField,
 |   |       |                         StatusBadge, Icon and its line icons
 |   |       |-- FileNavigator.svelte
 |   |       |-- OpenImageTabs.svelte
@@ -454,7 +460,7 @@ is cached between requests.
   Pixel values come from `viewport/pixelProbe.svelte.ts` and the per-frame
   `value-mapping` conversions in `viewport/valueMapping.ts`.
 - No external CSS frameworks. Use scoped Svelte styles.
-- Use the `lib/ui` controls for buttons, segmented choices, selects, search
+- Use the `lib/ui` controls for buttons, segmented choices, selects, ranges, search
   fields and status badges, and `lib/ui/icons.ts` for icons; do not draw
   glyphs with text characters or restyle controls per component.
 - Theme tokens are the Bea · dcmview design system's, in `src/theme.css`:

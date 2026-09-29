@@ -77,6 +77,11 @@
 	function shown(value: string | number | null | undefined): string {
 		return value === null || value === undefined || value === "" ? "not declared" : String(value);
 	}
+
+	export function retryFailedLoads(): void {
+		const key: TileKey = `${fileIndex}:${frame}`;
+		if (tiles.get(key).status === "error") void tiles.reload(key).catch(() => {});
+	}
 </script>
 
 <section class="wsi-context" aria-label="Whole slide tile position">

@@ -14,8 +14,8 @@ use super::render::{
 
 pub(crate) const DEFLATED_IMAGE_FRAME_UID: &str = "1.2.840.10008.1.2.8.1";
 
-struct DecodedBinaryFrame {
-    samples: Vec<u8>,
+pub(super) struct DecodedBinaryFrame {
+    pub(super) samples: Vec<u8>,
     rows: u32,
     columns: u32,
 }
@@ -77,13 +77,21 @@ pub(crate) async fn decode_raw_deflated_binary_frame(
     })?
 }
 
-fn decode_binary_frame(file: &FileEntry, frame: u32) -> Result<DecodedBinaryFrame> {
+pub(super) fn decode_binary_frame(file: &FileEntry, frame: u32) -> Result<DecodedBinaryFrame> {
     let object = open_file(&file.path).with_context(|| {
         format!(
             "failed to open Deflated Image Frame DICOM: {}",
             file.path.display()
         )
     })?;
+    decode_object(file, &object, frame)
+}
+
+pub(super) fn decode_object(
+    file: &FileEntry,
+    object: &dicom_object::DefaultDicomObject,
+    frame: u32,
+) -> Result<DecodedBinaryFrame> {
     let decoded = object
         .decode_pixel_data_frame(frame)
         .context("Deflated Image Frame adapter decode failed")?;

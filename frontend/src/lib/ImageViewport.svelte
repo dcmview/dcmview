@@ -1,12 +1,15 @@
 <script lang="ts">
-	import { untrack } from "svelte";
+	import { tick, untrack } from "svelte";
 	import {
 		ApiError,
 		fetchDisplayFrame,
+		fetchSelectedTag,
 		isApiError,
 		type DisplayFrame,
 		type DisplayFrameWindowOptions,
+		type EmbedRoiAnnotations,
 		type FileSummary,
+		type FrameValueMapping,
 		type RawFrame,
 		type WindowMode,
 	} from "../api";
@@ -15,7 +18,6 @@
 		canonicalRect,
 		deleteRoi,
 		moveCoord,
-		normalizeAnnotationsForEdit,
 		resizeCoord,
 		setRoiFrameScope,
 		updateRoiCoord,
@@ -26,14 +28,12 @@
 	import { canRunCinePlayback, type CineDirection, type CineMode } from "./cinePlayback";
 	import { fitImageToViewportHeight, imageDisplayGeometry } from "./imageGeometry";
 	import {
+		hasIntegerModality,
 		mappedUnitsPerStoredUnit,
 		MAX_RENDER_PIXELS,
-		resolveDisplayWindow,
-		resolveMappedDisplayWindow,
 		samplePresentation,
 		selectWindowingPipeline,
 		validateRenderableRawFrame,
-		type ResolvedWindow,
 	} from "./rawWindowing";
 	import { trackForegroundRequest } from "./requestIndicator";
 	import type { NavigationFrameRef } from "./seriesNavigation";
@@ -49,8 +49,6 @@
 		legendColors,
 		OverlayLayerCache,
 		overlayLayerRequests,
-		presentationLayerRequest,
-		valueOverlayLayerRequest,
 		valueOverlayValuesRequest,
 		type FrameOverlay,
 		type ValueOverlay,
@@ -70,6 +68,8 @@
 	} from "./viewport/pixelProbe.svelte";
 	import { RawFrameSource } from "./viewport/rawFrameSource";
 	import { RenderedFrames } from "./viewport/renderedFrames.svelte";
+	import { resolveWindow, type WindowResolution } from "./viewport/resolveWindow";
+	import { FrameLayers, type PreparedFrameLayers, type LayerStatus } from "./viewport/frameLayers";
 	import RoiList from "./viewport/RoiList.svelte";
 	import RoiLabels from "./viewport/RoiLabels.svelte";
 	import RoiOverlay from "./viewport/RoiOverlay.svelte";
@@ -89,10 +89,10 @@
 	import ValueLegend from "./viewport/ValueLegend.svelte";
 	import {
 		formatValue,
+		formatWindow,
 		frameDisplayWindowOptions,
 		mappedWindowScale,
 		pixelAt,
-		windowToMapped,
 		windowToRender,
 	} from "./viewport/valueMapping";
 	import { ValueMappings } from "./viewport/valueMappings.svelte";
@@ -102,7 +102,7 @@
 	type PipelineMode = "cine" | "diagnostic_wl" | "server_wl" | "overlay";
 	type DragState =
 		| { mode: "pan"; startX: number; startY: number; baseTx: number; baseTy: number }
-		| { mode: "wl"; startX: number; startY: number; baseCenter: number; baseWidth: number; step: number }
+		| { mode: "wl"; startX: number; startY: number; baseCenter: number; baseWidth: number; step: number; unit: string | null }
 		| { mode: "zoom_drag"; startY: number; baseScale: number; anchor: ZoomAnchor }
 		| { mode: "scroll_drag"; startY: number; baseFrame: number }
 		| { mode: "draw_roi"; start: ImagePoint; current: ImagePoint }
@@ -163,6 +163,7 @@
 	} = $props();
 
 	let dragState = $state<DragState>(null);
+	let roiDragTarget: { fileIndex: number; frameIndex: number; original: EmbedRoiAnnotations | null } | null = null;
 	let loading = $state(false);
 	let loadError = $state<string | null>(null);
 	let liveWindowCenter = $state<number | null>(null);
@@ -172,10 +173,27 @@
 	let canvasEl: HTMLCanvasElement | undefined = $state();
 	// Raw, not a deep proxy: the frame is posted to the W/L worker, and a
 	// proxied metadata object cannot be structured-cloned.
-	let currentRawFrame = $state.raw<RawFrame | null>(null);
+	type FrameTarget = {
+		file: FileSummary; frameIndex: number; position: number; totalFrames: number; scope: string;
+		imageFile: FileSummary; imageFrameIndex: number; segmentation: boolean;
+	};
+	type PreparedRaw = { target: FrameTarget; frame: RawFrame; mapping: FrameValueMapping; layers: PreparedFrameLayers; generation: number };
+	type PresentedFrame = {
+		target: FrameTarget; raw: RawFrame | null; mapping: FrameValueMapping | null; window: WindowResolution;
+		valueOverlay: ValueOverlay | null; presentation: LayerStatus;
+	};
+	let preparedRaw = $state.raw<PreparedRaw | null>(null);
+	let presented = $state.raw<PresentedFrame | null>(null);
+	const presentedMatchesActive = $derived(presented?.target.file.index === activeFile.index
+		&& presented?.target.frameIndex === currentFrame && presented?.target.scope === navigationScopeKey);
+	const currentRawFrame = $derived(preparedRaw?.frame ?? null);
+	const currentRawFrameKey = $derived(preparedRaw ? `${preparedRaw.target.file.index}:${preparedRaw.target.frameIndex}` : "");
+	const rawMatchesRequest = $derived(preparedRaw?.target.file.index === activeFile.index
+		&& preparedRaw?.target.frameIndex === currentFrame && preparedRaw?.target.scope === navigationScopeKey);
+	let displayPhotometric = $state.raw<{ fileIndex: number; value: string } | null>(null);
 	// The window the server rendered the displayed PNG with, if linear, and
 	// whether that PNG was requested in a real-world unit.
-	let shownDisplayWindow = $state.raw<ResolvedWindow | null>(null);
+	let shownDisplay = $state.raw<Pick<DisplayFrame, "window" | "appliedWindow"> | null>(null);
 	let shownUnitRequest = $state(false);
 	let rawWindowLevelFallbackByFile = $state<Record<number, boolean>>({});
 	// Color files: neither path windows them, so a drag sends no previews.
@@ -184,16 +202,27 @@
 
 	let prefetchConcurrency = $state(PREFETCH_CONCURRENCY);
 	const rendered = new RenderedFrames();
-	const rawFrames = new RawFrameSource({ concurrency: () => prefetchConcurrency });
+	const rawFrames = new RawFrameSource({
+		concurrency: () => prefetchConcurrency,
+		prepare: (fileIndex, frameIndex, signal) => Promise.all([
+			valueMappings.load(fileIndex, frameIndex, signal),
+			warmValueLayer(fileIndex, frameIndex, signal),
+		]),
+	});
 	const displayFrames = new DisplayFrameSource({
 		load: loadDisplayFrame,
+		prepare: (fileIndex, frameIndex, signal) => warmValueLayer(fileIndex, frameIndex, signal),
+		// Prefetched and cine frames carry their own mapping, so the HUD and
+		// legend keep a real-world unit on every frame; a foreground frame is
+		// presented first and its HUD follows its mapping.
+		loadMetadata: (fileIndex, frameIndex, signal) => valueMappings.load(fileIndex, frameIndex, signal),
 		navigationScope: () => navigationScopeKey,
 		concurrency: () => prefetchConcurrency,
 		onScopeChange: () => rendered.reset(),
 	});
 	const valueMappings = new ValueMappings();
-	const overlayLayers = new OverlayLayerCache();
-	const presentationLayers = new OverlayLayerCache();
+	const frameLayers = new FrameLayers();
+	const segmentationLayers = new OverlayLayerCache();
 	let presentationLayerCanvas: HTMLCanvasElement | undefined = $state();
 	const overlayValues = new OverlayLayerCache<Float32Array>();
 	let overlayValueState = $state<{ key: string; state: OverlayValueState } | null>(null);
@@ -222,7 +251,7 @@
 	const isDragging = $derived(dragState !== null);
 	// The displayed frame's value mapping (or the file's latest while that
 	// frame's loads) decides whether the window is in real-world units.
-	const frameMapping = $derived(valueMappings.forFrame(activeFile.index, currentFrame));
+	const frameMapping = $derived(rawMatchesRequest ? preparedRaw!.mapping : valueMappings.forFrame(activeFile.index, currentFrame));
 	// A real-world mapping with no linear stored window (a LUT mapping, or
 	// any mapping behind a Modality LUT) is windowed directly by the raw
 	// renderer, from its automatic window or one set in its unit. A window
@@ -236,6 +265,7 @@
 	);
 	const pipelineMode = $derived.by<PipelineMode>(() => {
 		if (overlay) return "overlay";
+		if (cinePlaying) return "cine";
 		// Frames over the browser's limit stay on the server without first
 		// downloading their samples.
 		const rawFallback = (rawWindowLevelFallbackByFile[activeFile.index] ?? false)
@@ -251,13 +281,7 @@
 
 	// The raw renderer reads what the raw headers cannot say (float samples,
 	// Modality and VOI LUTs) from the file's value mapping, and waits for it.
-	const rawPresentation = $derived.by(() => {
-		if (pipelineMode !== "diagnostic_wl" || !currentRawFrame) return null;
-		const mapping = valueMappings.forFrame(activeFile.index, currentFrame);
-		return mapping ? samplePresentation(currentRawFrame, mapping) : null;
-	});
-	// A browser-windowed frame gets its shutter and overlay graphics drawn over it.
-	const showsPresentationLayer = $derived(pipelineMode === "diagnostic_wl" && activeFile.presentation_layer);
+	const rawPresentation = $derived(preparedRaw ? samplePresentation(preparedRaw.frame, preparedRaw.mapping) : null);
 
 	// A window in real-world units converts through that mapping to the
 	// Modality scale that both render paths window.
@@ -277,78 +301,45 @@
 	const renderWindowWidth = $derived(renderWindow.width);
 	const renderWindowPending = $derived(renderWindow.pending);
 
-	// A server frame requested in a real-world unit reports no window when the
-	// unit applied, and the default window it fell back to when it did not.
-	const unitWindowFallback = $derived(shownUnitRequest && shownDisplayWindow !== null);
-
-	// The window of the image on screen. The raw path resolves its own; a
-	// server-rendered frame shows the window being dragged or requested, else
-	// the one the server reports rendering it with. Null when there is no
-	// linear window to show (color, VOI LUT).
-	const displayWindow = $derived<ResolvedWindow | null>(
-		pipelineMode === "overlay"
-			? shownDisplayWindow ?? (overlay?.sourceFile.default_window
-				? {
-					wc: overlay.sourceFile.default_window.center,
-					ww: overlay.sourceFile.default_window.width,
-				}
-				: null)
-			: pipelineMode === "diagnostic_wl" && currentRawFrame && directWindowing && directMap
-			? resolveMappedDisplayWindow(
-				currentRawFrame,
-				directMap,
-				liveWindowCenter,
-				liveWindowWidth,
-				windowUnit === null ? null : windowCenter,
-				windowUnit === null ? null : windowWidth,
-				windowMode,
-			)
-			: pipelineMode === "diagnostic_wl" && currentRawFrame
-			? resolveDisplayWindow(
-				currentRawFrame,
-				liveWindowCenter,
-				liveWindowWidth,
-				renderWindowCenter,
-				renderWindowWidth,
-				windowMode,
-				rawPresentation ?? undefined,
-			)
-			: liveWindowCenter !== null && liveWindowWidth !== null
-				? { wc: liveWindowCenter, ww: liveWindowWidth }
-				: renderWindowCenter !== null && renderWindowWidth !== null
-				? { wc: renderWindowCenter, ww: renderWindowWidth }
-				: shownDisplayWindow ?? (activeFile?.default_window
-					? { wc: activeFile.default_window.center, ww: activeFile.default_window.width }
-					: null),
-	);
-	// A mapped file's legend: the window it is shown with, in its unit.
-	const mappedLegend = $derived.by(() => {
-		if (!mappedScale || !displayWindow) return null;
-		const low = mappedScale.toMapped(displayWindow.wc - displayWindow.ww / 2);
-		const high = mappedScale.toMapped(displayWindow.wc + displayWindow.ww / 2);
-		const mapped = windowToMapped({ center: displayWindow.wc, width: displayWindow.ww }, mappedScale);
-		return { low, high, ...mapped, unit: mappedScale.unit, label: mappedScale.label };
+	const resolvedWindow = $derived(resolveWindow({
+		raw: pipelineMode === "diagnostic_wl" && rawMatchesRequest ? currentRawFrame : null,
+		mapping: overlay ? null : frameMapping,
+		requested: windowCenter !== null && windowWidth !== null
+			? { window: { wc: windowCenter, ww: windowWidth }, unit: windowUnit } : null,
+		live: dragState?.mode === "wl" && liveWindowCenter !== null && liveWindowWidth !== null
+			? { window: { wc: liveWindowCenter, ww: liveWindowWidth }, unit: dragState.unit } : null,
+		mode: windowMode,
+		defaultWindow: overlay?.sourceFile.default_window ?? activeFile.default_window,
+		server: shownDisplay,
+		unitRequest: shownUnitRequest,
+	}));
+	const displayWindow = $derived(resolvedWindow.window);
+	const hudWindow = $derived(presented?.window ?? resolvedWindow);
+	// Convert only for the worker; HUD, drag and legend share the resolved unit.
+	const rawRenderWindow = $derived.by(() => {
+		if (!displayWindow) return null;
+		if (resolvedWindow.unit && mappedScale?.unit === resolvedWindow.unit) {
+			const converted = windowToRender({ center: displayWindow.wc, width: displayWindow.ww }, mappedScale, resolvedWindow.source === "live" || resolvedWindow.source === "explicit" && windowUnit !== null);
+			return { wc: converted.center, ww: converted.width };
+		}
+		return displayWindow;
 	});
-	// A LUT-unit window: the raw renderer's, or the one a server frame was
-	// shown with; none when the server fell back to the default window.
-	const directLegend = $derived.by(() => {
-		if (!directMap || !directWindowing) return null;
-		const window = pipelineMode === "diagnostic_wl" && currentRawFrame
-			? displayWindow
-			: windowUnit !== null && windowCenter !== null && windowWidth !== null && !unitWindowFallback
-				? { wc: windowCenter, ww: windowWidth }
-				: null;
-		if (!window) return null;
-		return {
-			center: window.wc,
-			width: window.ww,
-			low: window.wc - window.ww / 2,
-			high: window.wc + window.ww / 2,
-			unit: directMap.unit_label,
-			label: directMap.label,
-		};
+	const windowLegend = $derived.by(() => {
+		const { window, unit } = hudWindow;
+		if (!window || !unit) return null;
+		return { center: window.wc, width: window.ww, low: window.wc - window.ww / 2,
+			high: window.wc + window.ww / 2, unit,
+			label: (presented?.mapping ?? frameMapping)?.real_world[0]?.label ?? null };
 	});
-	const windowLegend = $derived(mappedLegend ?? directLegend);
+	const windowColors = $derived.by(() => {
+		const fileIndex = presented?.target.imageFile.index ?? activeFile.index;
+		const raw = presented?.raw ?? (rawMatchesRequest ? currentRawFrame : null);
+		const photometric = raw?.metadata.photometricInterpretation
+			?? (displayPhotometric?.fileIndex === fileIndex ? displayPhotometric.value : "");
+		const mono1 = photometric.trim().toUpperCase() === "MONOCHROME1";
+		const scale = mappedWindowScale(presented?.mapping ?? frameMapping);
+		return mono1 !== (scale !== null && scale.ratio < 0) ? ["#fff", "#000"] : ["#000", "#fff"];
+	});
 
 	// The colorwash layer depends only on which volume is shown and whether
 	// it covers the frame; opacity is applied to the drawn layer.
@@ -357,10 +348,11 @@
 		shownValueOverlay ? `${shownValueOverlay.kind}:${shownValueOverlay.volumeFileIndex}` : null,
 	);
 	const valueOverlayCovers = $derived(shownValueOverlay?.coversFrame ?? false);
+	const displayedValueOverlay = $derived(presented ? presented.valueOverlay : shownValueOverlay);
 	const valueOverlayCaption = $derived.by(() => {
-		if (!shownValueOverlay) return null;
-		const { legend } = shownValueOverlay;
-		if (!valueOverlayCovers || valueOverlayState?.status === "not_covering") return "Not covering this frame";
+		if (!displayedValueOverlay) return null;
+		const { legend } = displayedValueOverlay;
+		if (valueOverlayState?.status === "not_covering") return "Not covering this frame";
 		if (valueOverlayState?.status === "error") return "Overlay unavailable for this frame";
 		return legend.transparent_at_or_below === null
 			? null
@@ -370,30 +362,14 @@
 	const activeAnnotations = $derived(annotations.annotations(activeFile.index));
 	const annotationsReady = $derived(annotations.ready(activeFile.index));
 	const selectedRoiIndex = $derived(annotations.selected(activeFile.index));
-	const imageRows = $derived(
-		pipelineMode === "overlay" && overlay
-			? overlay.sourceFile.rows
-			: pipelineMode === "diagnostic_wl" && currentRawFrame
-			? currentRawFrame.metadata.rows
-			: activeFile?.rows ?? 0,
-	);
-	const imageColumns = $derived(
-		pipelineMode === "overlay" && overlay
-			? overlay.sourceFile.columns
-			: pipelineMode === "diagnostic_wl" && currentRawFrame
-			? currentRawFrame.metadata.columns
-			: activeFile?.columns ?? 0,
-	);
-	const displayGeometry = $derived(
-		imageDisplayGeometry(
-			imageRows,
-			imageColumns,
-			overlay?.sourceFile.pixel_aspect_ratio ?? activeFile?.pixel_aspect_ratio,
-		),
-	);
+	const imageRows = $derived(presented?.raw?.metadata.rows ?? presented?.target.imageFile.rows ?? activeFile.rows);
+	const imageColumns = $derived(presented?.raw?.metadata.columns ?? presented?.target.imageFile.columns ?? activeFile.columns);
+	const displayGeometry = $derived(imageDisplayGeometry(imageRows, imageColumns,
+		presented?.target.imageFile.pixel_aspect_ratio ?? overlay?.sourceFile.pixel_aspect_ratio ?? activeFile.pixel_aspect_ratio));
+
 	const transformCss = $derived(layerTransformCss(activeTransform, orientation, displayGeometry));
 	const visibleRois = $derived(
-		overlay ? [] : roisOnFrame(activeAnnotations, currentFrame),
+		overlay ? [] : roisOnFrame(annotations.annotations(presented?.target.file.index ?? activeFile.index), presented?.target.frameIndex ?? currentFrame),
 	);
 	const draftRoi = $derived(
 		dragState?.mode === "draw_roi"
@@ -403,11 +379,11 @@
 
 	// The readout reads the image on screen: a SEG overlay's source frame,
 	// otherwise the active file's frame.
-	const probeTarget = $derived(
-		overlay
-			? { file: overlay.sourceFile, frameIndex: overlay.sourceFrameIndex }
-			: { file: activeFile, frameIndex: currentFrame },
-	);
+	const probeTarget = $derived(presented
+		? { file: presented.target.imageFile, frameIndex: presented.target.imageFrameIndex }
+		: overlay ? { file: overlay.sourceFile, frameIndex: overlay.sourceFrameIndex }
+		: { file: activeFile, frameIndex: currentFrame });
+
 	const probing = $derived(probe.pixel !== null);
 	const readout = $derived.by(() => {
 		const pixel = probe.pixel;
@@ -423,19 +399,42 @@
 			planarConfiguration: (frame) => probe.planarConfiguration(file, frame),
 			paused: cinePlaying,
 		});
-		if (!shownValueOverlay || cinePlaying) return values;
-		const key = valueOverlayValuesRequest(shownValueOverlay, activeFile.index, currentFrame).key;
-		const state: OverlayValueState = !valueOverlayCovers
+		if (!displayedValueOverlay || cinePlaying) return values;
+		const key = valueOverlayValuesRequest(displayedValueOverlay, file.index, frameIndex).key;
+		const state: OverlayValueState = valueOverlayState?.status === "not_covering"
 			? { status: "not_covering" }
 			: overlayValueState?.key === key ? overlayValueState.state : { status: "loading" };
-		const label = shownValueOverlay.kind === "rt_dose" ? "dose" : "map";
+		const label = displayedValueOverlay.kind === "rt_dose" ? "dose" : "map";
 		return {
 			...values,
-			overlay: overlayValueReadout(label, shownValueOverlay.legend.unit_label, pixel, activeFile.columns, state),
+			overlay: overlayValueReadout(label, displayedValueOverlay.legend.unit_label, pixel, file.columns, state),
 		};
 	});
 
+	function warmValueLayer(fileIndex: number, frameIndex: number, signal?: AbortSignal) {
+		const covers = fileIndex === activeFile.index && frameIndex === currentFrame ? shownValueOverlay?.coversFrame : undefined;
+		return frameLayers.value(shownValueOverlay, fileIndex, frameIndex, covers, signal);
+	}
+
+	function frameTarget(file: FileSummary, frameIndex: number, segmentation: FrameOverlay | null = null): FrameTarget {
+		return { file, frameIndex, position: navigationPosition, totalFrames: navigationFrameCount, scope: navigationScopeKey,
+			imageFile: segmentation?.sourceFile ?? file, imageFrameIndex: segmentation?.sourceFrameIndex ?? frameIndex,
+			segmentation: segmentation !== null };
+	}
+
+	function commitFrame(target: FrameTarget, window: WindowResolution, layers: PreparedFrameLayers,
+		raw: RawFrame | null, mapping: FrameValueMapping | null, value: ValueOverlay | null): void {
+		if (presentationLayerCanvas && layers.presentation.image) drawOverlayLayer(presentationLayerCanvas, layers.presentation.image);
+		if (valueOverlayCanvas && layers.value.image) drawOverlayLayer(valueOverlayCanvas, layers.value.image);
+		valueOverlayState = layers.value.status === "none" ? null : { key: layers.value.key, status: layers.value.status };
+		presented = { target, window, raw, mapping, valueOverlay: value, presentation: layers.presentation.status };
+		rendered.mark(target.file.index, target.frameIndex);
+		loading = false;
+		loadError = null;
+	}
+
 	function setSelectedRoi(index: number | null) {
+		if (index !== null && !presentedMatchesActive) return;
 		annotations.select(activeFile.index, index);
 	}
 
@@ -481,13 +480,13 @@
 
 	/** Deletes the selected ROI on this file; App's keyboard dispatcher calls it. */
 	export function deleteSelectedRoi() {
-		if (selectedRoiIndex === null || !activeAnnotations) return;
+		if (!presentedMatchesActive || selectedRoiIndex === null || !activeAnnotations) return;
 		const next = deleteRoi(activeAnnotations, selectedRoiIndex, activeFile.frame_count);
 		annotations.commit(activeFile.index, next, null);
 	}
 
 	function setSelectedScope(scope: "current" | "all") {
-		if (selectedRoiIndex === null || !activeAnnotations) return;
+		if (!presentedMatchesActive || selectedRoiIndex === null || !activeAnnotations) return;
 		const next = setRoiFrameScope(activeAnnotations, selectedRoiIndex, scope, currentFrame, activeFile.frame_count);
 		annotations.commit(activeFile.index, next, selectedRoiIndex);
 	}
@@ -517,7 +516,7 @@
 		signal?: AbortSignal,
 	): Promise<DisplayFrame> {
 		if (!options.unit) return fetchDisplayFrame(fileIndex, frameIndex, options, signal);
-		const mapping = await valueMappings.load(fileIndex, frameIndex);
+		const mapping = await valueMappings.load(fileIndex, frameIndex, signal);
 		signal?.throwIfAborted();
 		return fetchDisplayFrame(fileIndex, frameIndex, frameDisplayWindowOptions(options, mapping), signal);
 	}
@@ -591,16 +590,16 @@
 	 * window; the settled window is fetched as usual on release.
 	 */
 	const livePreview = new LiveWindowPreview({
-		load: ({ wc, ww }, signal) => fetchDisplayFrame(
+		load: ({ wc, ww }, signal) => loadDisplayFrame(
 			activeFile.index,
 			currentFrame,
-			{ wc, ww, windowMode: "default", preview: true },
+			{ wc, ww, windowMode: "default", unit: dragState?.mode === "wl" ? dragState.unit : null, preview: true },
 			signal,
 		),
 		show: drawPreviewFrame,
 	});
 
-	async function drawPreviewFrame({ blob, window }: DisplayFrame): Promise<void> {
+	async function drawPreviewFrame({ blob, window, appliedWindow }: DisplayFrame): Promise<void> {
 		const isLive = () => dragState?.mode === "wl" && pipelineMode === "server_wl" && !!canvasEl;
 		if (!isLive()) return;
 		const image = await decodeCanvasImage(blob);
@@ -610,8 +609,9 @@
 			canvasEl.width = image.width;
 			canvasEl.height = image.height;
 			ctx?.drawImage(image.source, 0, 0);
-			shownDisplayWindow = window;
-			shownUnitRequest = false;
+			shownDisplay = { window, appliedWindow };
+			shownUnitRequest = dragState?.mode === "wl" && !!dragState.unit && !mappedScale;
+			if (presented) presented = { ...presented, window: resolvedWindow };
 		} finally {
 			image.dispose();
 		}
@@ -627,66 +627,38 @@
 		});
 	}
 
-	async function loadRawFrameAndRender(
-		fileIndex: number,
-		frameIndex: number,
-		generation: number,
-		direction: 1 | -1,
-	): Promise<void> {
-		const cached = rawFrames.cached(fileIndex, frameIndex);
-		if (cached) {
-			currentRawFrame = cached;
-			loading = false;
-			loadError = null;
-			prefetchRawRing(direction);
-			return;
-		}
-
+	async function loadRawFrameAndRender(fileIndex: number, frameIndex: number, generation: number, direction: 1 | -1): Promise<void> {
+		const target = frameTarget(activeFile, frameIndex);
+		const value = shownValueOverlay;
+		let layers: PreparedFrameLayers | null = null;
+		let retired = false;
+		const layerRequest = frameLayers.prepare(target.file, frameIndex, true, value).then((prepared) => {
+			if (retired) prepared.dispose(); else layers = prepared;
+			return prepared;
+		});
 		try {
-			const rawFrameRequest = rawFrames.ensure(fileIndex, frameIndex);
-			trackForegroundRequest(
-				rawFrames.inFlight(fileIndex, frameIndex),
-				() => generation === requestGeneration,
-				(pending) => { loading = pending; },
-			);
-			const rawFrame = await rawFrameRequest;
+			const rawRequest = rawFrames.ensure(fileIndex, frameIndex);
+			const pending = Promise.all([rawRequest, valueMappings.load(fileIndex, frameIndex), layerRequest]);
+			trackForegroundRequest(pending, () => generation === requestGeneration, (pending) => { loading = pending; });
+			const [frame, mapping, preparedLayers] = await pending;
+			layers = preparedLayers;
 			if (generation !== requestGeneration || pipelineMode !== "diagnostic_wl") return;
-			loading = false;
-			const validationError = validateRenderableRawFrame(rawFrame);
-			if (validationError) {
-				currentRawFrame = null;
-				if (rawFrame.metadata.samplesPerPixel !== 1) colorFiles = { ...colorFiles, [fileIndex]: true };
-				rawWindowLevelFallbackByFile = {
-					...rawWindowLevelFallbackByFile,
-					[fileIndex]: true,
-				};
+			if (validateRenderableRawFrame(frame) || !mapping) {
+				if (frame.metadata.samplesPerPixel !== 1) colorFiles = { ...colorFiles, [fileIndex]: true };
+				rawWindowLevelFallbackByFile = { ...rawWindowLevelFallbackByFile, [fileIndex]: true };
 				return;
 			}
-			rawFrames.store(fileIndex, frameIndex, rawFrame);
-			currentRawFrame = rawFrame;
-			loading = false;
-			loadError = null;
+			rawFrames.store(fileIndex, frameIndex, frame);
+			preparedRaw = { target, frame, mapping, layers, generation };
+			layers = null; // Owned by preparedRaw until its replacement is drawn/discarded.
 			prefetchRawRing(direction);
 		} catch (error) {
-			if ((error as Error).name === "AbortError") {
-				if (generation === requestGeneration) loading = false;
-				return;
-			}
-			if (generation !== requestGeneration || pipelineMode !== "diagnostic_wl") return;
+			if ((error as Error).name === "AbortError" || generation !== requestGeneration) return;
 			loading = false;
-			currentRawFrame = null;
-			// Only a layout the raw endpoint cannot serve moves the file to
-			// server windowing for good; a dropped request or a failed frame is
-			// this frame's error, and the next frame tries raw samples again.
 			if (error instanceof ApiError && error.status === 422) {
-				rawWindowLevelFallbackByFile = {
-					...rawWindowLevelFallbackByFile,
-					[fileIndex]: true,
-				};
-			} else {
-				loadError = (error as Error).message || "Failed to load frame";
-			}
-		}
+				rawWindowLevelFallbackByFile = { ...rawWindowLevelFallbackByFile, [fileIndex]: true };
+			} else loadError = (error as Error).message || "Failed to load frame";
+		} finally { retired = true; layers?.dispose(); }
 	}
 
 	async function loadDisplayFrameAndRender(
@@ -697,6 +669,14 @@
 	): Promise<void> {
 		const windowOptions = currentDisplayWindowOptions();
 		const cacheKey = displayFrames.key(fileIndex, frameIndex, windowOptions);
+		const target = frameTarget(activeFile, frameIndex);
+		const value = shownValueOverlay;
+		let layers: PreparedFrameLayers | null = null;
+		let retired = false;
+		const layerRequest = frameLayers.prepare(target.file, frameIndex, false, value).then((prepared) => {
+			if (retired) prepared.dispose(); else layers = prepared;
+			return prepared;
+		});
 		try {
 			const frameRequest = displayFrames.ensureFrame(fileIndex, frameIndex, windowOptions);
 			trackForegroundRequest(
@@ -704,15 +684,20 @@
 				() => generation === requestGeneration,
 				(pending) => { loading = pending; },
 			);
-			const { blob, window } = await frameRequest;
+			const [{ blob, window, appliedWindow }, preparedLayers] = await Promise.all([frameRequest, layerRequest]);
+			layers = preparedLayers;
 			if (generation !== requestGeneration || !usesDisplayPipeline()) return;
 			loading = false;
 			loadError = null;
 			await drawDisplayBlob(cacheKey, blob, generation);
 			if (generation !== requestGeneration || !usesDisplayPipeline()) return;
-			shownDisplayWindow = window;
+			shownDisplay = { window, appliedWindow };
 			shownUnitRequest = sendsUnit(fileIndex, frameIndex, windowOptions);
-			rendered.mark(fileIndex, frameIndex);
+			const mapping = valueMappings.get(fileIndex, frameIndex);
+			const windowResolution = resolveWindow({ raw: null, mapping, mode: windowMode,
+				requested: windowOptions.wc != null && windowOptions.ww != null ? { window: { wc: windowOptions.wc, ww: windowOptions.ww }, unit: windowOptions.unit ?? null } : null,
+				live: null, defaultWindow: target.file.default_window, server: { window, appliedWindow }, unitRequest: shownUnitRequest });
+			commitFrame(target, windowResolution, layers, null, mapping, value);
 
 			displayFrames.startPrefetch(
 				navigationFrames,
@@ -728,19 +713,23 @@
 			loading = false;
 			loadError = (error as Error).message || "Failed to load frame";
 			cinePlaying = false;
-		}
+		} finally { retired = true; layers?.dispose(); }
 	}
 
 	/** Composes an overlay's layers over its source frame's display image. */
 	async function loadOverlayAndRender(overlay: FrameOverlay, generation: number): Promise<void> {
 		// Overlays sit on the source's default presentation.
 		const windowOptions: DisplayFrameWindowOptions = {};
+		const target = frameTarget(activeFile, currentFrame, overlay);
 		displayFrames.enterScope(windowOptions);
 		loading = true;
 		try {
 			const [source, ...layerBlobs] = await Promise.all([
 				displayFrames.ensureFrame(overlay.sourceFileIndex, overlay.sourceFrameIndex, windowOptions),
-				...overlayLayerRequests(overlay).map(({ key, load }) => displayFrames.fetchInScope(key, windowOptions, load)),
+				...overlayLayerRequests(overlay).map((request) => {
+					segmentationLayers.abortOthers(request.key);
+					return segmentationLayers.load(request);
+				}),
 			]);
 			const [base, ...layers] = await Promise.all([source.blob, ...layerBlobs].map(decodeCanvasImage));
 			try {
@@ -748,9 +737,13 @@
 				composeOverlayFrame(canvasEl, base, layers);
 				loading = false;
 				loadError = null;
-				shownDisplayWindow = source.window;
+				shownDisplay = { window: source.window, appliedWindow: source.appliedWindow };
 				shownUnitRequest = false;
-				rendered.mark(activeFile.index, currentFrame);
+				presented = { target, raw: null, mapping: null, valueOverlay: null, presentation: "none",
+					window: resolveWindow({ raw: null, mapping: null, requested: null, live: null, mode: "default",
+						defaultWindow: overlay.sourceFile.default_window, server: source, unitRequest: false }) };
+				valueOverlayState = null;
+				rendered.mark(target.file.index, target.frameIndex);
 			} finally {
 				base.dispose();
 				for (const layer of layers) layer.dispose();
@@ -849,12 +842,45 @@
 		displayFrames.resetScope();
 	});
 
+	// An explicit selection supersedes an in-progress local drag as well as
+	// its last preview. A released drag is already cleared by endDrag.
+	$effect(() => {
+		void windowCenter;
+		void windowWidth;
+		void windowUnit;
+		void windowMode;
+		untrack(() => {
+			if (dragState?.mode === "wl") endDrag();
+		});
+	});
+
+	// Display PNGs contain no raw headers. Read just the polarity tag when a
+	// mapped legend needs it, rather than downloading a frame's samples.
+	$effect(() => {
+		if (!resolvedWindow.unit || pipelineMode === "diagnostic_wl") return;
+		const fileIndex = activeFile.index;
+		if (untrack(() => displayPhotometric?.fileIndex) === fileIndex) return;
+		const controller = new AbortController();
+		void fetchSelectedTag(fileIndex, { path: "(0028,0004)" }, controller.signal)
+			.then(({ value }) => {
+				if (!controller.signal.aborted && value.type === "string") {
+					displayPhotometric = { fileIndex, value: value.value };
+				}
+			}).catch(() => {});
+		return () => controller.abort();
+	});
+
+	$effect(() => {
+		const prepared = preparedRaw;
+		return () => prepared?.layers.dispose();
+	});
+
 	// A window/level drag on a server-windowed frame shows server previews.
 	$effect(() => {
 		const wc = liveWindowCenter;
 		const ww = liveWindowWidth;
 		if (pipelineMode !== "server_wl" || dragState?.mode !== "wl" || wc === null || ww === null) return;
-		if (colorFiles[activeFile.index]) return;
+		if (resolvedWindow.source === "color" || colorFiles[activeFile.index]) return;
 		untrack(() => livePreview.request({ wc, ww }));
 	});
 
@@ -863,24 +889,30 @@
 		void activeFile.index;
 		livePreview.stop();
 		invalidateWindowLevelRenders();
-		currentRawFrame = null;
+		shownDisplay = null;
+		shownUnitRequest = false;
 		liveWindowCenter = null;
 		liveWindowWidth = null;
 		untrack(() => setSelectedRoi(null));
-		clearCanvas();
+		// Keep the previous pixels until the replacement is ready to draw.
 	});
 
 	$effect(() => {
 		const mode = pipelineMode;
-		requestGeneration += 1;
-		if (mode !== "diagnostic_wl") {
-			rawFrames.stopPrefetch();
-			invalidateWindowLevelRenders();
-			liveWindowCenter = null;
-			liveWindowWidth = null;
-		} else {
-			displayFrames.resetScope();
-		}
+		// Aborting display requests updates mapping snapshots synchronously.
+		// Those snapshots must not become dependencies of this mode transition:
+		// their next completion would invalidate the newly prepared raw frame.
+		untrack(() => {
+			requestGeneration += 1;
+			if (mode !== "diagnostic_wl") {
+				rawFrames.stopPrefetch();
+				invalidateWindowLevelRenders();
+				liveWindowCenter = null;
+				liveWindowWidth = null;
+			} else {
+				displayFrames.resetScope();
+			}
+		});
 	});
 
 	$effect(() => {
@@ -936,7 +968,8 @@
 		const frameIndex = currentFrame;
 		const direction = untrack(() => frameDirectionTo(frameIndex));
 		if (!activeFile?.has_pixels) {
-			currentRawFrame = null;
+			preparedRaw = null;
+			presented = null;
 			loading = false;
 			loadError = null;
 			clearCanvas();
@@ -945,9 +978,11 @@
 
 		const mode = pipelineMode;
 		const activeOverlay = overlay;
+		void valueOverlayVolume;
+		void valueOverlayCovers;
 		const fileIndex = activeFile.index;
 		const generation = ++requestGeneration;
-		if (mode !== "diagnostic_wl") {
+		if (mode !== "diagnostic_wl" && mode !== "overlay") {
 			// Server-rendered frames bake in the window, so window changes refetch.
 			// A real-world window is converted per frame by loadDisplayFrame.
 			void windowCenter;
@@ -961,24 +996,25 @@
 			rawFrames.abortFar(navigationFrames, navigationPosition);
 			displayFrames.abortFar(navigationFrames, navigationPosition);
 		});
-		if (mode === "overlay" && activeOverlay) {
-			void loadOverlayAndRender(activeOverlay, generation);
-		} else if (mode === "diagnostic_wl") {
-			void loadRawFrameAndRender(fileIndex, frameIndex, generation, direction);
-		} else {
-			void loadDisplayFrameAndRender(fileIndex, frameIndex, generation, direction);
-		}
+		untrack(() => {
+			if (mode === "overlay" && activeOverlay) void loadOverlayAndRender(activeOverlay, generation);
+			else if (mode === "diagnostic_wl") void loadRawFrameAndRender(fileIndex, frameIndex, generation, direction);
+			else void loadDisplayFrameAndRender(fileIndex, frameIndex, generation, direction);
+		});
 	});
 
 	$effect(() => {
 		const presentation = rawPresentation;
-		if (pipelineMode !== "diagnostic_wl" || !currentRawFrame || !canvasEl || renderWindowPending || !presentation || !displayWindow) {
+		if (pipelineMode !== "diagnostic_wl" || !rawMatchesRequest || !preparedRaw || !currentRawFrame || !canvasEl || renderWindowPending || !presentation || !rawRenderWindow) {
 			return;
 		}
 		// displayWindow already resolved this frame's window; window changes do
 		// not invalidate in-flight renders, only frame, file, and mode changes do.
+		const prepared = preparedRaw;
 		const frame = currentRawFrame;
-		const { wc, ww, voiLut } = displayWindow;
+		const resolution = resolvedWindow;
+		const value = shownValueOverlay;
+		const { wc, ww, voiLut } = rawRenderWindow;
 		const valueMap = directWindowing ? directMap : null;
 		const generation = wlRenderGeneration;
 		void wlRenderer.render(() => canvasEl, {
@@ -987,8 +1023,9 @@
 			ww,
 			options: { valueMap, presentation, voiLut },
 			isCurrent: () => generation === wlRenderGeneration
-				&& frame === currentRawFrame
+				&& prepared === preparedRaw && prepared.generation === requestGeneration
 				&& pipelineMode === "diagnostic_wl",
+			onRendered: () => commitFrame(prepared.target, resolution, prepared.layers, frame, prepared.mapping, value),
 		});
 	});
 
@@ -1007,6 +1044,18 @@
 		return untrack(() => valueMappings.ensureWhenSettled(fileIndex, frameIndex));
 	});
 
+	// A display PNG is already windowed and can be presented before metadata
+	// settles. Update only its matching HUD/legend when its own mapping arrives;
+	// never hold scrolling pixels behind a metadata round trip.
+	$effect(() => {
+		const frame = presented;
+		if (!frame || frame.raw || !presentedMatchesActive || !usesDisplayPipeline()) return;
+		const mapping = valueMappings.get(activeFile.index, currentFrame);
+		if (!mapping || mapping === frame.mapping) return;
+		const window = resolvedWindow;
+		untrack(() => { presented = { ...frame, mapping, window }; });
+	});
+
 	// Without any value mapping of the file, the raw renderer cannot tell
 	// how to present its samples, so the file keeps server windowing.
 	$effect(() => {
@@ -1018,39 +1067,12 @@
 		});
 	});
 
-	// Draws the displayed frame's shutter and overlay graphics over the
-	// browser-windowed image; the last layer stays until the next one loads,
-	// as the image does.
-	$effect(() => {
-		const canvas = presentationLayerCanvas;
-		if (!showsPresentationLayer || !canvas) return;
-		const request = presentationLayerRequest(activeFile.index, currentFrame);
-		let current = true;
-		presentationLayers.abortOthers(request.key);
-		presentationLayers.load(request)
-			.then(decodeCanvasImage)
-			.then((layer) => {
-				try {
-					if (current) drawOverlayLayer(canvas, layer);
-				} finally {
-					layer.dispose();
-				}
-			})
-			.catch((error: unknown) => {
-				if (!current || (error as Error).name === "AbortError") return;
-				loadError = (error as Error).message || "Failed to load the frame's shutter and overlays";
-			});
-		return () => {
-			current = false;
-		};
-	});
-
 	// Samples and the value mapping load once the cursor rests on a frame;
 	// cine playback skips them.
 	$effect(() => {
 		if (!probing || cinePlaying || !activeFile.has_pixels) return;
 		const { file, frameIndex } = probeTarget;
-		const displayed = pipelineMode === "diagnostic_wl" ? currentRawFrame : null;
+		const displayed = presented?.raw ?? (currentRawFrameKey === `${file.index}:${frameIndex}` ? currentRawFrame : null);
 		// A frame read one pixel at a time follows the cursor.
 		const pixel = probesSinglePixels(file) ? probe.pixel : null;
 		return untrack(() => {
@@ -1059,61 +1081,14 @@
 		});
 	});
 
-	// Fetches the displayed frame's colorwash and draws it on its own canvas.
-	// A frame the volume does not reach shows no layer and a legend note.
-	$effect(() => {
-		const volume = valueOverlayVolume;
-		const covers = valueOverlayCovers;
-		const canvas = valueOverlayCanvas;
-		const fileIndex = activeFile.index;
-		const frameIndex = currentFrame;
-		const shown = untrack(() => shownValueOverlay);
-		if (!volume || !shown) {
-			valueOverlayState = null;
-			return;
-		}
-		const request = valueOverlayLayerRequest(shown, fileIndex, frameIndex);
-		const key = request.key;
-		if (!covers) {
-			valueOverlayState = { key, status: "not_covering" };
-			return;
-		}
-		if (!canvas) return;
-		let current = true;
-		valueOverlayState = { key, status: "loading" };
-		overlayLayers.abortOthers(key);
-		overlayLayers.load(request)
-			.then(decodeCanvasImage)
-			.then((layer) => {
-				try {
-					if (!current) return;
-					drawOverlayLayer(canvas, layer);
-					valueOverlayState = { key, status: "shown" };
-				} finally {
-					layer.dispose();
-				}
-			})
-			.catch((error: unknown) => {
-				if (!current || (error as Error).name === "AbortError") return;
-				valueOverlayState = {
-					key,
-					status: isApiError(error, "overlay_not_covering_frame") ? "not_covering" : "error",
-				};
-			});
-		return () => {
-			current = false;
-		};
-	});
-
 	// While the cursor is on the image, the shown colorwash's values for the
 	// displayed frame load once, for the readout.
 	$effect(() => {
-		const volume = valueOverlayVolume;
-		const covers = valueOverlayCovers;
-		const fileIndex = activeFile.index;
-		const frameIndex = currentFrame;
-		const shown = untrack(() => shownValueOverlay);
-		if (!probing || cinePlaying || !volume || !covers || !shown) return;
+		const shown = displayedValueOverlay;
+		const covers = valueOverlayState?.status === "shown";
+		const { file, frameIndex } = probeTarget;
+		const fileIndex = file.index;
+		if (!probing || cinePlaying || !covers || !shown) return;
 		const request = valueOverlayValuesRequest(shown, fileIndex, frameIndex);
 		const { key } = request;
 		let current = true;
@@ -1142,9 +1117,11 @@
 	$effect(() => {
 		return () => {
 			destroyed = true;
+			requestGeneration += 1;
+			invalidateWindowLevelRenders();
 			stopProbe();
-			overlayLayers.clear();
-			presentationLayers.clear();
+			frameLayers.clear();
+			segmentationLayers.clear();
 			overlayValues.clear();
 			rawFrames.clear();
 			displayFrames.clear();
@@ -1152,6 +1129,32 @@
 			wlRenderer.dispose();
 		};
 	});
+
+	/** Retry failed requests without discarding successful frames or unsaved ROIs. */
+	export async function retryFailedLoads(): Promise<void> {
+		const fileIndex = activeFile.index;
+		const frameIndex = currentFrame;
+		if (annotations.error(fileIndex)) {
+			if (annotations.ready(fileIndex)) annotations.retrySave(fileIndex);
+			else annotations.retryLoad(fileIndex);
+		}
+		const mappingFailed = valueMappings.failed(fileIndex, frameIndex);
+		if (!loadError && !mappingFailed && presented?.presentation !== "error" && valueOverlayState?.status !== "error") return;
+		loadError = null;
+		const generation = ++requestGeneration;
+		if (mappingFailed) {
+			await valueMappings.load(fileIndex, frameIndex);
+			if (generation !== requestGeneration) return;
+			const { [fileIndex]: _fallback, ...rest } = rawWindowLevelFallbackByFile;
+			rawWindowLevelFallbackByFile = rest;
+		}
+		// An error placeholder removes the canvas; restore it before drawing.
+		await tick();
+		if (generation !== requestGeneration || !activeFile.has_pixels) return;
+		if (pipelineMode === "overlay" && overlay) await loadOverlayAndRender(overlay, generation);
+		else if (pipelineMode === "diagnostic_wl") await loadRawFrameAndRender(fileIndex, frameIndex, generation, frameDirection);
+		else await loadDisplayFrameAndRender(fileIndex, frameIndex, generation, frameDirection);
+	}
 
 	/** Refits the image and drops any in-progress window/level or drag. */
 	export function resetView(): void {
@@ -1250,6 +1253,29 @@
 		scheduleProbe(event.clientX, event.clientY);
 	}
 
+	function windowDragStep(baseWindow: { wc: number; ww: number }): number {
+		if (frameMapping && frameMapping.stored_value_type !== "integer") {
+			// Continuous samples have no one-unit quantum. Use the data range,
+			// independent of the manual window, to keep subsequent drags stable.
+			const automatic = resolveWindow({
+				raw: rawMatchesRequest ? currentRawFrame : null,
+				mapping: frameMapping, requested: null, live: null,
+				mode: "full_dynamic", defaultWindow: activeFile.default_window,
+				server: shownDisplay, unitRequest: false,
+			}).window ?? baseWindow;
+			return Math.max(Number.MIN_VALUE, Math.abs(automatic.wc) * Number.EPSILON, automatic.ww / 256);
+		}
+		if (resolvedWindow.unit && frameMapping?.real_world[0]) {
+			return mappedScale ? Math.abs(mappedScale.ratio) : mappedUnitsPerStoredUnit(frameMapping.real_world[0]);
+		}
+		// One stored unit: a fractional rescale steps by its slope, not by whole Modality units.
+		if (frameMapping && !hasIntegerModality(frameMapping.stored_value_type, frameMapping.modality)) {
+			const slope = Math.abs(frameMapping.modality.rescale_slope);
+			if (Number.isFinite(slope) && slope > 0) return slope;
+		}
+		return 1;
+	}
+
 	function onPointerDown(event: PointerEvent) {
 		if (!activeFile || !activeFile.has_pixels) return;
 		if (isViewportChromeTarget(event.target)) return;
@@ -1279,7 +1305,8 @@
 			let nextDragState: DragState = null;
 			switch (activeTool) {
 				case "window_level": {
-					if (pipelineMode === "diagnostic_wl" && !currentRawFrame) break;
+					if (presented && (presented.target.file.index !== activeFile.index || presented.target.frameIndex !== currentFrame)) break;
+					if (resolvedWindow.source === "color" || (pipelineMode === "diagnostic_wl" ? !currentRawFrame : !shownDisplay)) break;
 					const baseWindow = displayWindow ?? { wc: 0, ww: 1 };
 					nextDragState = {
 						mode: "wl",
@@ -1287,10 +1314,8 @@
 						startY: event.clientY,
 						baseCenter: baseWindow.wc,
 						baseWidth: baseWindow.ww,
-						// A LUT window drags in mapped units, scaled to move like a stored one.
-						step: pipelineMode === "diagnostic_wl" && directWindowing && directMap
-							? mappedUnitsPerStoredUnit(directMap)
-							: 1,
+						step: windowDragStep(baseWindow),
+						unit: resolvedWindow.unit,
 					};
 					liveWindowCenter = baseWindow.wc;
 					liveWindowWidth = baseWindow.ww;
@@ -1318,9 +1343,10 @@
 					}
 					break;
 				case "annotate_rect": {
-					if (!annotationsReady) break;
+					if (!presentedMatchesActive || !annotationsReady) break;
 					const point = pointFromPointer(event);
 					if (!point) break;
+					roiDragTarget = { fileIndex: activeFile.index, frameIndex: currentFrame, original: activeAnnotations };
 					event.preventDefault();
 					const hit = hitTestRoi(visibleRois, point, activeTransform.scale);
 					if (hit) {
@@ -1352,6 +1378,7 @@
 			stopProbe();
 		}
 		if (!activeFile || !dragState) return;
+		if (cancelMismatchedRoiDrag()) return;
 
 		if (dragState.mode === "pan") {
 			const dx = event.clientX - dragState.startX;
@@ -1426,15 +1453,9 @@
 		if (target.hasPointerCapture(event.pointerId)) {
 			target.releasePointerCapture(event.pointerId);
 		}
+		if (cancelMismatchedRoiDrag()) return;
 		if (dragState?.mode === "wl" && liveWindowCenter !== null && liveWindowWidth !== null) {
-			if (pipelineMode === "diagnostic_wl" && directWindowing && directMap) {
-				onmanualwindowlevel(liveWindowCenter, liveWindowWidth, directMap.unit_label);
-			} else if (mappedScale) {
-				const mapped = windowToMapped({ center: liveWindowCenter, width: liveWindowWidth }, mappedScale);
-				onmanualwindowlevel(mapped.center, mapped.width, mappedScale.unit);
-			} else {
-				onmanualwindowlevel(liveWindowCenter, liveWindowWidth, null);
-			}
+			onmanualwindowlevel(liveWindowCenter, liveWindowWidth, dragState.unit);
 		}
 		if (dragState?.mode === "draw_roi") {
 			const coord = canonicalRect(dragState.start, dragState.current, imageRows, imageColumns);
@@ -1449,18 +1470,26 @@
 		endDrag();
 	}
 
+	function cancelMismatchedRoiDrag(): boolean {
+		if (!roiDragTarget || (presentedMatchesActive && roiDragTarget.fileIndex === activeFile.index
+			&& roiDragTarget.frameIndex === currentFrame)) return false;
+		onPointerCancel();
+		return true;
+	}
+
 	function onPointerCancel() {
-		if (dragState?.mode === "move_roi" || dragState?.mode === "resize_roi") {
-			const editable = normalizeAnnotationsForEdit(activeAnnotations, activeFile.frame_count);
-			const next = updateRoiCoord(editable, dragState.roiIndex, dragState.original, activeFile.frame_count);
-			annotations.showDraft(activeFile.index, next);
+		if (roiDragTarget?.original) {
+			annotations.showDraft(roiDragTarget.fileIndex, roiDragTarget.original);
 		}
 		endDrag();
 	}
 
 	function endDrag() {
+		liveWindowCenter = null;
+		liveWindowWidth = null;
 		livePreview.stop();
 		dragState = null;
+		roiDragTarget = null;
 		annotations.endLiveEdit();
 	}
 
@@ -1521,15 +1550,13 @@
 				class="dicom-canvas"
 				data-capture-rendered={rendered.token}
 			></canvas>
-			{#if showsPresentationLayer}
-				<canvas bind:this={presentationLayerCanvas} class="layer-canvas" aria-hidden="true"></canvas>
-			{/if}
-			{#if valueOverlayVolume}
+			<canvas bind:this={presentationLayerCanvas} class="layer-canvas" hidden={presented?.presentation !== "shown"} aria-hidden="true"></canvas>
+			{#if valueOverlayVolume || displayedValueOverlay}
 				<canvas
 					bind:this={valueOverlayCanvas}
 					class="value-overlay-canvas"
 					hidden={valueOverlayState?.status !== "shown"}
-					style:opacity={shownValueOverlay?.opacity ?? 0}
+					style:opacity={shownValueOverlay?.opacity ?? displayedValueOverlay?.opacity ?? 0}
 					aria-hidden="true"
 				></canvas>
 			{/if}
@@ -1559,23 +1586,25 @@
 				<PixelReadout {readout} />
 			{/if}
 			<div class="overlay">
-				{#if overlay?.kind === "segmentation"}
-					<span>SEG overlay {overlay.segmentationFrameIndex + 1} / {activeFile.frame_count}</span>
-					<span>source frame {overlay.sourceFrameIndex + 1}</span>
+				{#if presented?.target.segmentation}
+					<span>SEG overlay {presented.target.frameIndex + 1} / {presented.target.file.frame_count}</span>
+					<span>source frame {presented.target.imageFrameIndex + 1}</span>
 				{:else}
-					<span>image {navigationPosition + 1} / {navigationFrameCount}</span>
-					<span>source frame {currentFrame + 1} / {activeFile.frame_count}</span>
+					<span>image {(presented?.target.position ?? navigationPosition) + 1} / {presented?.target.totalFrames ?? navigationFrameCount}</span>
+					<span>source frame {(presented?.target.frameIndex ?? currentFrame) + 1} / {presented?.target.file.frame_count ?? activeFile.frame_count}</span>
 				{/if}
 				{#if windowLegend}
 					<span class="mapped-window">
 						W: {formatValue(windowLegend.width)} · C: {formatValue(windowLegend.center)} {windowLegend.unit}
 					</span>
-				{:else if mappedScale}
-					<span class="mapped-window">W/L auto · {mappedScale.unit}</span>
-				{:else if displayWindow?.voiLut}
+				{:else if hudWindow.source === "voi_lut"}
 					<span>VOI LUT</span>
-				{:else if displayWindow}
-					<span>W: {Math.round(displayWindow.ww)} · C: {Math.round(displayWindow.wc)}</span>
+				{:else if hudWindow.window}
+					{@const shown = formatWindow(hudWindow.window)}
+					<span>W: {shown.width} · C: {shown.center}</span>
+				{/if}
+				{#if presented?.presentation === "error"}
+					<span>Presentation layer unavailable</span>
 				{/if}
 				{#if activeTool === "window_level" && !activeFile.raw_windowing_compatible}
 					<span class="presentation-path" title={activeFile.raw_windowing_reason ?? undefined}>server presentation retained</span>
@@ -1600,15 +1629,15 @@
 				onrevert={() => annotations.rollback(activeFile.index)}
 			/>
 		{/if}
-		{#if windowLegend || shownValueOverlay}
+		{#if windowLegend || displayedValueOverlay}
 			<div class="legends">
-				{#if shownValueOverlay}
+				{#if displayedValueOverlay}
 					<ValueLegend
-						title={shownValueOverlay.title}
-						unit={shownValueOverlay.legend.unit_label}
-						low={shownValueOverlay.legend.min_value}
-						high={shownValueOverlay.legend.max_value}
-						colors={legendColors(shownValueOverlay.legend)}
+						title={displayedValueOverlay.title}
+						unit={displayedValueOverlay.legend.unit_label}
+						low={displayedValueOverlay.legend.min_value}
+						high={displayedValueOverlay.legend.max_value}
+						colors={legendColors(displayedValueOverlay.legend)}
 						caption={valueOverlayCaption}
 					/>
 				{/if}
@@ -1618,7 +1647,7 @@
 						unit={windowLegend.unit}
 						low={windowLegend.low}
 						high={windowLegend.high}
-						colors={["#000", "#fff"]}
+						colors={windowColors}
 					/>
 				{/if}
 			</div>
@@ -1661,6 +1690,7 @@
 		image-rendering: pixelated;
 		pointer-events: none;
 	}
+	.layer-canvas[hidden],
 	.value-overlay-canvas[hidden] {
 		display: none;
 	}

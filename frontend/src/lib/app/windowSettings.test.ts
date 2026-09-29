@@ -36,6 +36,14 @@ describe("WindowSettings", () => {
 		expect(state(window)).toMatchObject({ center: 1100, width: 200, mode: "default" });
 	});
 
+	it("carries sub-unit widths without imposing an integer floor", () => {
+		const window = new WindowSettings((index) => ({ center: index * 0.001, width: index * 0.002 }));
+		window.recordManual(1, 0.0015, 0.0004);
+		window.followFile(2);
+		expect(window.center).toBeCloseTo(0.003);
+		expect(window.width).toBeCloseTo(0.0008);
+	});
+
 	it("does not carry a window without a usable default on either side", () => {
 		const window = settings();
 		window.recordManual(3, 50, 60);
@@ -58,6 +66,15 @@ describe("WindowSettings", () => {
 		window.reset();
 		window.followFile(2);
 		expect(state(window)).toEqual({ center: null, width: null, mode: "default", presetId: "default" });
+	});
+
+	it.each([3, null])("leaves Full Dynamic and presets on a manual window without a default (%s)", (fileIndex) => {
+		const window = settings();
+		for (const preset of ["full_dynamic", "brain"]) {
+			window.selectPreset(preset);
+			window.recordManual(fileIndex, 0.2, 0.1);
+			expect(state(window)).toEqual({ center: 0.2, width: 0.1, mode: "default", presetId: "default" });
+		}
 	});
 
 	it("carries a real-world window to the next file unchanged", () => {

@@ -161,10 +161,14 @@ pub(crate) async fn decode_raw_rle(
     .map_err(|error| PixelError::raw_decode(anyhow!("raw RLE decode task failed: {error}")))?
 }
 
-fn read_and_decode_frame(file: &FileEntry, frame: u32) -> Result<Vec<u8>> {
+pub(super) fn read_and_decode_frame(file: &FileEntry, frame: u32) -> Result<Vec<u8>> {
     let fragment = read_encapsulated_fragment_blocking(&file.path, frame)?;
+    decode_fragment(file, &fragment)
+}
+
+pub(super) fn decode_fragment(file: &FileEntry, fragment: &[u8]) -> Result<Vec<u8>> {
     let mut decoded = decode_rle_frame(
-        fragment.as_ref(),
+        fragment,
         file.rows,
         file.columns,
         file.samples_per_pixel,

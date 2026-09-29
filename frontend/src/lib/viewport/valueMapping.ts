@@ -178,6 +178,20 @@ export function formatValue(value: number): string {
 	return String(Number(value.toPrecision(5)));
 }
 
+/**
+ * A window without a unit, with decimals that resolve a hundredth of its
+ * width: windows 10 or wider read as integers, and the sub-unit windows of
+ * float or fractionally rescaled data keep their digits instead of reading 0.
+ */
+export function formatWindow(window: { wc: number; ww: number }): { width: string; center: string } {
+	const decimals = window.ww >= 10 || !(window.ww > 0) ? 0 : Math.min(8, Math.ceil(-Math.log10(window.ww)) + 2);
+	const format = (value: number) => {
+		if (!Number.isFinite(value)) return String(value);
+		return decimals === 0 ? String(Math.round(value)) : String(Number(value.toFixed(decimals)));
+	};
+	return { width: format(window.ww), center: format(window.wc) };
+}
+
 export type ValueWithUnit = { value: string; unit: string | null; label?: string | null };
 
 /** Which real-world mapping a readout used, out of how many the frame has. */
@@ -300,6 +314,8 @@ export type MappedWindowScale = {
 	toRender: (mapped: number) => number;
 	/** Mapped units per render unit; negative when the mapping inverts the scale. */
 	ratio: number;
+	/** The renderer uses integer LINEAR half-unit boundaries. */
+	integerLinear: boolean;
 };
 
 export function mappedWindowScale(mapping: FrameValueMapping | null): MappedWindowScale | null {
@@ -315,6 +331,7 @@ export function mappedWindowScale(mapping: FrameValueMapping | null): MappedWind
 		unit: map.unit_label,
 		label: map.label,
 		ratio,
+		integerLinear: mapping.stored_value_type === "integer" && Number.isInteger(slope) && Number.isInteger(intercept),
 		toMapped: (render) => ratio * (render - intercept) + mappedIntercept,
 		toRender: (mapped) => (mapped - mappedIntercept) / ratio + intercept,
 	};
@@ -322,12 +339,18 @@ export function mappedWindowScale(mapping: FrameValueMapping | null): MappedWind
 
 export type WindowValues = { center: number; width: number };
 
-export function windowToMapped(window: WindowValues, scale: MappedWindowScale): WindowValues {
-	return { center: scale.toMapped(window.center), width: window.width * Math.abs(scale.ratio) };
+export function windowToMapped(window: WindowValues, scale: MappedWindowScale, exact = false): WindowValues {
+	const offset = exact && scale.integerLinear ? 1 : 0;
+	return { center: scale.toMapped(window.center - offset / 2), width: (window.width - offset) * Math.abs(scale.ratio) };
 }
 
-export function windowToRender(window: WindowValues, scale: MappedWindowScale): WindowValues {
-	return { center: scale.toRender(window.center), width: window.width / Math.abs(scale.ratio) };
+export function windowToRender(window: WindowValues, scale: MappedWindowScale, exact = false): WindowValues {
+	// Express a continuous physical window through integer LINEAR without
+	// changing its transfer function: C' = C + 0.5 and W' = W + 1 cancel
+	// LINEAR's half-unit and width-minus-one terms. Float/fractional Modality
+	// renderers already use the continuous formula and need no adjustment.
+	const offset = exact && scale.integerLinear ? 1 : 0;
+	return { center: scale.toRender(window.center) + offset / 2, width: window.width / Math.abs(scale.ratio) + offset };
 }
 
 /**
@@ -346,8 +369,9 @@ export function frameDisplayWindowOptions(
 	if (options.wc == null || options.ww == null) return {};
 	const scale = mappedWindowScale(mapping);
 	if (scale?.unit === options.unit) {
-		const stored = windowToRender({ center: options.wc, width: options.ww }, scale);
-		return { wc: stored.center, ww: stored.width, windowMode: "default" };
+		const stored = windowToRender({ center: options.wc, width: options.ww }, scale, true);
+		const { unit: _unit, ...rest } = options;
+		return { ...rest, wc: stored.center, ww: stored.width, windowMode: "default" };
 	}
-	return { wc: options.wc, ww: options.ww, windowMode: "default", unit: options.unit };
+	return { ...options, windowMode: "default" };
 }

@@ -1,4 +1,5 @@
 import {
+	ApiError, isApiError,
 	fetchDoseOverlayBlob,
 	fetchDoseOverlayValues,
 	fetchParametricMapOverlayBlob,
@@ -100,18 +101,50 @@ export const VALUE_OVERLAY_CACHE_BYTES = 32 * 1024 * 1024;
 
 /** Value overlay payloads: one shared request per key, recent ones cached. */
 export class OverlayLayerCache<Value extends Blob | Float32Array = Blob> {
-	readonly #cache = new ByteBudgetLruCache<string, Value>({
+	readonly #cache = new ByteBudgetLruCache<string, Value | ApiError>({
 		maxBytes: VALUE_OVERLAY_CACHE_BYTES,
-		sizeOf: (value) => (value instanceof Blob ? value.size : value.byteLength),
+		sizeOf: (value) => value instanceof ApiError ? 256 : value instanceof Blob ? value.size : value.byteLength,
 	});
 	readonly #requests = new SharedRequestRegistry<string, Value>();
+	readonly #consumers = new Map<string, Set<symbol>>();
 
-	load({ key, load }: OverlayRequest<Value>): Promise<Value> {
+	load({ key, load }: OverlayRequest<Value>, signal?: AbortSignal): Promise<Value> {
+		const aborted = () => new DOMException("Overlay request cancelled", "AbortError");
+		if (signal?.aborted) return Promise.reject(aborted());
 		const cached = this.#cache.get(key);
-		if (cached) return Promise.resolve(cached);
-		return this.#requests.request(key, load).then((value) => {
-			this.#cache.set(key, value);
-			return value;
+		if (cached) return cached instanceof ApiError ? Promise.reject(cached) : Promise.resolve(cached);
+		const consumers = this.#consumers.get(key) ?? new Set<symbol>();
+		const consumer = Symbol();
+		consumers.add(consumer);
+		this.#consumers.set(key, consumers);
+		const pending = this.#requests.request(key, async (requestSignal) => {
+			try {
+				const value = await load(requestSignal);
+				if (!requestSignal.aborted) this.#cache.set(key, value);
+				return value;
+			} catch (error) {
+				if (!requestSignal.aborted && error instanceof ApiError && isApiError(error, "overlay_not_covering_frame") && error.status === 404) {
+					this.#cache.set(key, error);
+				}
+				throw error;
+			}
+		});
+		return new Promise((resolve, reject) => {
+			let settled = false;
+			const finish = (cancelled = false) => {
+				if (settled) return false;
+				settled = true;
+				signal?.removeEventListener("abort", abort);
+				consumers.delete(consumer);
+				if (consumers.size === 0 && this.#consumers.get(key) === consumers) {
+					this.#consumers.delete(key);
+					if (cancelled) this.#requests.abort(key);
+				}
+				return true;
+			};
+			const abort = () => { if (finish(true)) reject(aborted()); };
+			signal?.addEventListener("abort", abort, { once: true });
+			pending.then((value) => { if (finish()) resolve(value); }, (error) => { if (finish()) reject(error); });
 		});
 	}
 
