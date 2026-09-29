@@ -33,6 +33,11 @@ pub(crate) fn segmentation_has_only_binary_samples(
     }
     let mut frames = super::encapsulated::EncapsulatedFrames::open(&file.path, check_active)?;
     let mut object = object.clone();
+    // PixelDecoder builds presentation vectors from every functional group on
+    // each call. This object is used only to decode stored samples; none of
+    // those per-frame rescale/VOI vectors participates in the binary verdict.
+    // Keep them out of the decoder view so encapsulated scans are linear too.
+    object.remove_element(dicom_dictionary_std::tags::PER_FRAME_FUNCTIONAL_GROUPS_SEQUENCE);
     object.put(dicom_core::DataElement::new(
         dicom_dictionary_std::tags::NUMBER_OF_FRAMES,
         dicom_core::VR::IS,

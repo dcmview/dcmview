@@ -624,6 +624,7 @@ mod tests {
             uids::EXPLICIT_VR_LITTLE_ENDIAN,
             uids::DEFLATED_EXPLICIT_VR_LITTLE_ENDIAN,
             uids::RLE_LOSSLESS,
+            uids::JPEG_BASELINE8_BIT,
             "1.2.840.10008.1.2.8.1",
         ] {
             for last in [1_u8, 2] {
@@ -636,6 +637,22 @@ mod tests {
                         encoded[4..8].copy_from_slice(&64_u32.to_le_bytes());
                         encoded.extend_from_slice(&[3, 0, 1, 0, value, 0x80]);
                         encoded
+                    });
+                    object.put(DataElement::new(
+                        tags::PIXEL_DATA,
+                        VR::OB,
+                        PixelFragmentSequence::new_fragments(fragments.to_vec()),
+                    ));
+                } else if syntax == uids::JPEG_BASELINE8_BIT {
+                    let fragments = [0, if last == 1 { 0 } else { 128 }].map(|value| {
+                        let mut bytes = Vec::new();
+                        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 100)
+                            .encode(&[value; 4], 2, 2, image::ExtendedColorType::L8)
+                            .unwrap();
+                        if bytes.len() % 2 != 0 {
+                            bytes.push(0);
+                        }
+                        bytes
                     });
                     object.put(DataElement::new(
                         tags::PIXEL_DATA,
