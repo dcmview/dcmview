@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+## 0.3.0 - 2026-09-28
+
+- Terminal commands and Python calls route into VS Code when they carry its
+  bridge environment or run inside a registered workspace folder; otherwise
+  they open locally. Python and terminal shims share the binary's routing rule,
+  including notebook kernels that only see the bridge registry.
+- Slow viewer launches wait up to 120 seconds. An unconfirmed launch exits
+  instead of opening a second local viewer, and stale bridge entries are
+  probed before launch so a reused port does not block opening an image.
+- The Bea · dcmview restyle adds outlined controls, line icons, clearer
+  hierarchy and status indicators, and bundled Inter and JetBrains Mono fonts
+  for consistent offline rendering.
+- The cursor readout reports stored, Modality, and real-world values. RT Dose
+  and Parametric Map colorwash overlays provide opacity controls, units, and
+  overlaid values; W/L can operate in mapped units. SEG recommended colors,
+  WSI companion navigation, and expanded RT Dose context are also included.
+- A visible image-position scrubber supports keyboard and mouse seeking at
+  narrow webview widths too. W/L cine uses the current window and returns to
+  interactive windowing when paused; cached tabs resume playback correctly.
+- Frame images, colorwash, presentation layers, mappings, and labels now switch
+  together without black flashes. Layer errors keep the image visible with a
+  note, and float32/float64 file transitions retain the correct mapping.
+- Presets replace preceding W/L drags, manual drags leave Full Dynamic, and
+  sub-unit non-integer windows retain their contrast. The applied window drives
+  both the HUD and legend; ROI outlines, handles, and labels keep their screen
+  size through zoom and orientation changes.
+- Retry recovers failed resources or reloads a replaced server's catalog.
+  References refresh during discovery, closing a tab discards its view state,
+  and tag buttons support Enter/Space without starting cine.
+- The bundled API adds `X-Frame-Window-Applied` for grayscale display frames and
+  `X-Server-Instance` on every response, allowing the viewer to identify the
+  applied presentation and detect a replacement server before using its data.
+- MONOCHROME1 padding stays black, stop signals work immediately after the URL
+  appears, and corrupt encapsulated fragment lengths fail before allocation.
+- Removed `--tunnel`, `--tunnel-host`, and `--tunnel-port` and the corresponding
+  Python arguments. Forward the remote loopback port with the printed `ssh -L`
+  command from your local machine, or use the existing Remote-SSH workflow.
 - The viewer follows the editor's colour theme: light themes open it light,
   dark and high-contrast themes dark, and switching themes updates open
   viewers without reloading them.
