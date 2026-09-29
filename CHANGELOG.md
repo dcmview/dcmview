@@ -105,6 +105,8 @@ diagnostic viewer.
 
 ### Changed
 
+- Every HTTP response carries `X-Content-Type-Options: nosniff`, so browsers
+  never reinterpret raw samples, JSON, or CSV that quote file contents.
 - The viewer requests its assets and the API with page-relative URLs, so a
   reverse proxy can serve it under a path prefix. The server's routes and the
   documented `/api` paths are unchanged.

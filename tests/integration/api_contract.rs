@@ -636,6 +636,24 @@ async fn color_display_omits_the_applied_window_header() {
 }
 
 #[tokio::test]
+async fn every_response_forbids_mime_sniffing() {
+    let app = TestServer::new(server::router(support::app_state(vec![])));
+    let responses = [
+        app.get("/").await,
+        app.get("/assets/missing.js").await,
+        app.get("/elsewhere").await,
+        app.get("/api/files").await,
+        app.get("/api/unknown").await,
+        app.get("/api/annotations/export.csv").await,
+        app.post("/api/files").await,
+        app.put("/api/file/0/annotations").text("bad JSON").await,
+    ];
+    for response in responses {
+        response.assert_header(header::X_CONTENT_TYPE_OPTIONS, "nosniff");
+    }
+}
+
+#[tokio::test]
 async fn server_identity_header_covers_success_errors_and_fallbacks() {
     let app = TestServer::new(server::router(support::app_state(vec![])));
     let files = app.get("/api/files").await;

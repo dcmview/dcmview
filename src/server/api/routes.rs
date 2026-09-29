@@ -6,7 +6,7 @@ use crate::api::contracts::{endpoints, API_PREFIX, SERVER_INSTANCE_HEADER};
 use crate::server::web;
 use crate::server::RequestActivity;
 use axum::extract::{Request, State};
-use axum::http::{HeaderName, HeaderValue};
+use axum::http::{header, HeaderName, HeaderValue};
 use axum::middleware::{self, Next};
 use axum::response::Response;
 use axum::routing::get;
@@ -88,6 +88,7 @@ pub(crate) fn router(state: AppState) -> Router {
             track_request_activity,
         ))
         .layer(middleware::from_fn_with_state(instance, identify_server))
+        .layer(middleware::map_response(forbid_mime_sniffing))
         .layer(compression())
         .with_state(state);
 
@@ -124,6 +125,17 @@ async fn track_request_activity(
     if let Some(error::ServerErrorMessage(message)) = response.extensions().get() {
         tracing::warn!(%method, %uri, status = response.status().as_u16(), "{message}");
     }
+    response
+}
+
+/// Browsers must use each response's declared type: raw frames return DICOM
+/// sample bytes verbatim, and tag JSON and the annotation CSV quote values
+/// from files, so none of them may be sniffed into a renderable document.
+async fn forbid_mime_sniffing(mut response: Response) -> Response {
+    response.headers_mut().insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
     response
 }
 

@@ -15,6 +15,10 @@ catalog must discard that session when a later response carries a different
 identity. The viewer reloads the page in that case; detection remains driven
 by ordinary requests, without keepalive polling.
 
+Every response, including the viewer page, assets, and errors, carries
+`X-Content-Type-Options: nosniff`, so a browser never reinterprets raw
+samples, JSON, or CSV that quote file contents as another document type.
+
 ## Source Of Truth
 
 `src/api/contracts.rs` defines every endpoint (`endpoints::ALL`: method, path,
