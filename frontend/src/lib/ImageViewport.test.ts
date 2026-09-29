@@ -844,22 +844,31 @@ describe("ImageViewport frame presentation", () => {
 
 
 describe("W/L cine", () => {
+	it("prefetches ordinary display frames without fetching every mapping", async () => {
+		const { rerender } = renderViewport({ file: fileSummary(5, { frame_count: 300 }) });
+		await rerender({ cinePlaying: true });
+		await waitFor(() => expect(fetchDisplayFrame.mock.calls.length).toBeGreaterThan(15));
+		expect(fetchFrameValueMapping.mock.calls.every((call) => call[1] === 0)).toBe(true);
+	});
+
 	it("pauses with pending cine metadata and resumes a drawable raw frame", async () => {
 		const context = { createImageData: (w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4) }),
 			putImageData: vi.fn(), drawImage: vi.fn(), clearRect: vi.fn() };
 		const canvas = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(context as unknown as CanvasRenderingContext2D);
 		vi.stubGlobal("createImageBitmap", vi.fn(async () => ({ width: 64, height: 64, close: vi.fn() })));
 		const pending = new Map<number, AbortSignal>();
+		const mapping = (file: number, frame: number) => ({ ...identityMapping(file), frame_index: frame,
+			real_world: [{ ...adcMapping().real_world[0], unit_label: "HU", transform: { kind: "linear" as const, slope: 1, intercept: 0 } }] });
 		fetchFrameValueMapping.mockImplementation(async (file, frame, signal) => {
-			if (frame < 12) return { ...identityMapping(file), frame_index: frame };
-			if (frame === 35) { await new Promise((resolve) => setTimeout(resolve, 30)); return { ...identityMapping(file), frame_index: frame }; }
+			if (frame < 12) return mapping(file, frame);
+			if (frame === 35) { await new Promise((resolve) => setTimeout(resolve, 30)); return mapping(file, frame); }
 			pending.set(frame, signal!);
 			return new Promise((_resolve, reject) => signal!.addEventListener("abort", () => reject(new DOMException("cancelled", "AbortError")), { once: true }));
 		});
 		fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"]), window: { wc: 40, ww: 80 }, appliedWindow: "linear" });
 		const onmanualwindowlevel = vi.fn();
 		const { rerender } = renderViewport({ activeTool: "window_level", file: fileSummary(5, { frame_count: 300 }),
-			windowCenter: 40, windowWidth: 80, onmanualwindowlevel });
+			windowCenter: 40, windowWidth: 80, windowUnit: "HU", onmanualwindowlevel });
 		await waitFor(() => expect(context.putImageData).toHaveBeenCalled());
 		await rerender({ cinePlaying: true });
 		await waitFor(() => expect(pending.size).toBeGreaterThan(0));
@@ -871,7 +880,7 @@ describe("W/L cine", () => {
 		await fireEvent.pointerDown(viewport, { button: 0, clientX: 10, clientY: 10, pointerId: 1 });
 		await fireEvent.pointerMove(viewport, { clientX: 20, clientY: 10, pointerId: 1 });
 		await fireEvent.pointerUp(viewport, { clientX: 20, clientY: 10, pointerId: 1 });
-		expect(onmanualwindowlevel).toHaveBeenCalledWith(40, 120, null);
+		expect(onmanualwindowlevel).toHaveBeenCalledWith(40, 120, "HU");
 		canvas.mockRestore();
 	});
 

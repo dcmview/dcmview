@@ -209,7 +209,9 @@
 	});
 	const displayFrames = new DisplayFrameSource({
 		load: loadDisplayFrame,
-		prepare: (fileIndex, frameIndex, signal) => Promise.all([valueMappings.load(fileIndex, frameIndex, signal), warmValueLayer(fileIndex, frameIndex, signal)]),
+		// Ordinary display/cine prefetch needs no value mapping. Unit windows
+		// load their mapping in loadDisplayFrame; raw prefetch keeps its ±10 ring.
+		prepare: (fileIndex, frameIndex, signal) => warmValueLayer(fileIndex, frameIndex, signal),
 		navigationScope: () => navigationScopeKey,
 		concurrency: () => prefetchConcurrency,
 		onScopeChange: () => rendered.reset(),
@@ -678,7 +680,11 @@
 				() => generation === requestGeneration,
 				(pending) => { loading = pending; },
 			);
-			const [{ blob, window, appliedWindow }, preparedLayers] = await Promise.all([frameRequest, layerRequest]);
+			const [{ blob, window, appliedWindow }, preparedLayers] = await Promise.all([frameRequest, layerRequest,
+				// The resting frame needs its own mapping for the HUD/legend; passing
+				// cine frames and ordinary display prefetch do not.
+				cinePlaying ? null : valueMappings.load(fileIndex, frameIndex),
+			]);
 			layers = preparedLayers;
 			if (generation !== requestGeneration || !usesDisplayPipeline()) return;
 			loading = false;
