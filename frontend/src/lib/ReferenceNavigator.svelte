@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from "svelte";
 	import {
 		fetchReferences,
 		type FileSummary,
@@ -8,6 +9,7 @@
 		ensureWhenSettled,
 		KeyedAsyncResource,
 		METADATA_CACHE_FILES,
+		METADATA_SETTLE_MS,
 		type AsyncResourceSnapshot,
 	} from "./keyedAsyncResource";
 	import ReferenceEdge from "./ReferenceEdge.svelte";
@@ -16,10 +18,13 @@
 	let {
 		fileIndex,
 		files,
+		scanProgress,
 		onopenreference,
 	}: {
 		fileIndex: number;
 		files: FileSummary[];
+		/** Catalog discovery counters and completion, independent of the active file. */
+		scanProgress: string;
 		onopenreference: (fileIndex: number, frameIndex: number) => void;
 	} = $props();
 
@@ -35,7 +40,20 @@
 	const activeResource = $derived(resourcesByFile[fileIndex]);
 	const references = $derived(activeResource?.value?.references ?? []);
 
-	$effect(() => ensureWhenSettled(resources, fileIndex));
+	const loadedProgress = new Map<number, string>();
+	$effect(() => {
+		const index = fileIndex;
+		const progress = scanProgress;
+		return untrack(() => {
+			if (loadedProgress.get(index) === progress) return ensureWhenSettled(resources, index);
+			resources.abortOthers(index);
+			const timer = setTimeout(() => {
+				loadedProgress.set(index, progress);
+				void resources.reload(index).catch(() => {});
+			}, METADATA_SETTLE_MS);
+			return () => clearTimeout(timer);
+		});
+	});
 
 	function retry() {
 		void resources.reload(fileIndex).catch(() => {});
