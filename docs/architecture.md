@@ -132,7 +132,14 @@ settings, value overlays, sidebar layout) and the per-tab `ViewStates` store
 (zoom, pan, orientation). Catalog polling applies a response only when the
 scan has moved, fetches the series catalog only when the file list or scan
 state changed, and backs off to 2 s while nothing changes. A request that
-cannot reach the server marks it disconnected in the status bar. One `svelte:window` keydown handler dispatches every global
+cannot reach the server marks it disconnected in the status bar. Retry checks
+health against the loaded catalog's server identity: a replaced server reloads
+the page, while the same server resumes polling and retries failed active
+resources. Every API response, including errors, carries `X-Server-Instance`;
+`api.ts` rejects a differing identity before parsing its payload and App
+reloads. No background health polling is added. Reference lists refresh as
+discovery progresses and completes. Closing a tab forgets its zoom, pan and
+orientation; switching between open tabs preserves them. One `svelte:window` keydown handler dispatches every global
 shortcut through `lib/keyboardShortcuts.ts`. Keyed fetches share and abort
 in-flight requests through `lib/keyedAsyncResource.ts`. `ImageViewport`
 composes units in `frontend/src/lib/viewport/`: raw and display frame sources,
