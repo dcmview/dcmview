@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { untrack } from "svelte";
+	import { tick, untrack } from "svelte";
 	import {
 		ApiError,
 		fetchDisplayFrame,
@@ -1101,6 +1101,32 @@
 			wlRenderer.dispose();
 		};
 	});
+
+	/** Retry failed requests without discarding successful frames or unsaved ROIs. */
+	export async function retryFailedLoads(): Promise<void> {
+		const fileIndex = activeFile.index;
+		const frameIndex = currentFrame;
+		if (annotations.error(fileIndex)) {
+			if (annotations.ready(fileIndex)) annotations.retrySave(fileIndex);
+			else annotations.retryLoad(fileIndex);
+		}
+		const mappingFailed = valueMappings.failed(fileIndex, frameIndex);
+		if (!loadError && !mappingFailed && presented?.presentation !== "error" && valueOverlayState?.status !== "error") return;
+		loadError = null;
+		const generation = ++requestGeneration;
+		if (mappingFailed) {
+			await valueMappings.load(fileIndex, frameIndex);
+			if (generation !== requestGeneration) return;
+			const { [fileIndex]: _fallback, ...rest } = rawWindowLevelFallbackByFile;
+			rawWindowLevelFallbackByFile = rest;
+		}
+		// An error placeholder removes the canvas; restore it before drawing.
+		await tick();
+		if (generation !== requestGeneration || !activeFile.has_pixels) return;
+		if (pipelineMode === "overlay" && overlay) await loadOverlayAndRender(overlay, generation);
+		else if (pipelineMode === "diagnostic_wl") await loadRawFrameAndRender(fileIndex, frameIndex, generation, frameDirection);
+		else await loadDisplayFrameAndRender(fileIndex, frameIndex, generation, frameDirection);
+	}
 
 	/** Refits the image and drops any in-progress window/level or drag. */
 	export function resetView(): void {

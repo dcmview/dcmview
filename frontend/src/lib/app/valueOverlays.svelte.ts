@@ -180,6 +180,14 @@ export class ValueOverlays {
 		}
 	}
 
+	/** Re-read failed volume contexts without changing the selected overlay. */
+	retryFailedLoads(fileIndex: number | null): void {
+		if (fileIndex === null) return;
+		for (const volume of this.#volumesNear(fileIndex)) {
+			if (this.#contexts.get(volume.index).status === "error") void this.#contexts.reload(volume.index).catch(() => {});
+		}
+	}
+
 	/** Volumes covering a frame of the active tab (`frames`) or file. */
 	candidatesFor(fileIndex: number, frames: readonly NavigationFrameRef[]): ValueOverlayCandidate[] {
 		const scopeFiles = new Set(frames.map((frame) => frame.file_index)).add(fileIndex);

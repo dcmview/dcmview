@@ -189,6 +189,11 @@
 		const source = activeTagResource?.value ?? [];
 		return flattenTagRows(source, `f${fileIndex}`, expandedSequences, filter);
 	});
+
+	export function retryFailedLoads(): void {
+		const key = fileIndex;
+		if (tagResources.get(key).status === "error") void tagResources.reload(key).catch(() => {});
+	}
 </script>
 
 <aside class="panel">

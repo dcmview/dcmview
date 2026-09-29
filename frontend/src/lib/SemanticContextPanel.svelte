@@ -85,6 +85,14 @@
 	function display(value: string | number | null | undefined): string {
 		return value === null || value === undefined || value === "" ? "Not declared" : String(value);
 	}
+
+	export function retryFailedLoads(): void {
+		const index = fileIndex;
+		if (contexts.get(index).status !== "error") return;
+		void contexts.reload(index).then((result) => {
+			if (fileIndex === index) oncontextchange?.(result);
+		}).catch(() => {});
+	}
 </script>
 
 <section class="semantic-panel" aria-label="Object interpretation">

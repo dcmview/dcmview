@@ -74,6 +74,10 @@
 	let semanticResponse = $state<SemanticContextResponse | null>(null);
 	let viewport = $state<ReturnType<typeof ImageViewport>>();
 	let frameSlider = $state<ReturnType<typeof FrameSlider>>();
+	let tagPanel = $state<ReturnType<typeof TagPanel>>();
+	let references = $state<ReturnType<typeof ReferenceNavigator>>();
+	let semanticPanel = $state<ReturnType<typeof SemanticContextPanel>>();
+	let wsiContext = $state<ReturnType<typeof WsiTileContext>>();
 
 	const activeFile = $derived(tabs.activeFile);
 	const frameOverlay = $derived.by<FrameOverlay | null>(() => {
@@ -192,6 +196,23 @@
 		catalog.loadError = null;
 		stopPolling = catalog.poll(() => tabs.syncCatalog(catalog.files?.files[0]?.index ?? null));
 	}
+	async function retryServer(): Promise<void> {
+		try {
+			const health = await fetchHealth();
+			if (catalog.files && health.server_start_ms !== catalog.files.server_start_ms) {
+				window.location.reload();
+				return;
+			}
+			loadCatalog();
+			void viewport?.retryFailedLoads();
+			tagPanel?.retryFailedLoads();
+			references?.retryFailedLoads();
+			semanticPanel?.retryFailedLoads();
+			wsiContext?.retryFailedLoads();
+			valueOverlays.retryFailedLoads(tabs.activeFileIndex);
+		} catch { /* Reachability stays failed; Retry remains available. */ }
+	}
+
 	onMount(() => {
 		loadCatalog();
 		return () => stopPolling?.();
@@ -315,14 +336,14 @@
 									onopacity={(opacity) => valueOverlays.setOpacity(opacity)}
 								/>
 							{/if}
-							<ReferenceNavigator
+							<ReferenceNavigator bind:this={references}
 								fileIndex={activeFile.index}
 								files={catalog.files.files}
 								onopenreference={(fileIndex, frameIndex) => tabs.openReference(fileIndex, frameIndex)}
 							/>
 						</div>
 						{#if supportsSemanticContext(activeFile.object_kind, activeFile.sop_class_uid)}
-							<SemanticContextPanel
+							<SemanticContextPanel bind:this={semanticPanel}
 								fileIndex={activeFile.index}
 								currentFrame={tabs.currentFrame}
 								files={catalog.files.files}
@@ -333,7 +354,7 @@
 							/>
 						{/if}
 						{#if activeFile.object_kind === "whole_slide_microscopy"}
-							<WsiTileContext
+							<WsiTileContext bind:this={wsiContext}
 								fileIndex={activeFile.index}
 								frame={tabs.currentFrame}
 								files={catalog.files.files}
@@ -417,7 +438,7 @@
 					{#if activeFile === null}
 						<div class="tag-empty">No file selected</div>
 					{:else}
-						<TagPanel fileIndex={activeFile.index} />
+						<TagPanel bind:this={tagPanel} fileIndex={activeFile.index} />
 					{/if}
 				{/if}
 			</aside>
@@ -426,7 +447,7 @@
 			serverStartMs={catalog.files.server_start_ms}
 			fileCount={catalog.files.files.length}
 			reachable={serverReachable}
-			onretry={() => void fetchHealth().catch(() => {})}
+			onretry={() => void retryServer()}
 		/>
 	</main>
 {/if}

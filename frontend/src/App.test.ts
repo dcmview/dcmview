@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { fireEvent, render, screen, waitFor } from "@testing-library/svelte";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/svelte";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "./api";
 import App from "./App.svelte";
@@ -9,6 +9,8 @@ import { emptySeriesCatalog, fileSummary, filesResponse, rawFrame } from "./test
 vi.mock("./api", async (importOriginal) => ({
 	...await importOriginal<typeof import("./api")>(),
 	fetchFiles: vi.fn(),
+	fetchHealth: vi.fn(),
+	onReachabilityChange: vi.fn(() => () => {}),
 	fetchSeries: vi.fn(),
 	fetchTags: vi.fn(async () => []),
 	fetchReferences: vi.fn(async (fileIndex: number) => ({
@@ -238,5 +240,36 @@ describe("App value overlays", () => {
 		await waitFor(() => expect(api.fetchDoseOverlayBlob).toHaveBeenCalledWith(0, 0, DOSE.index, expect.any(AbortSignal)));
 		expect(toggle.getAttribute("aria-pressed")).toBe("true");
 		expect(await screen.findByRole("figure", { name: "RT Dose · PLAN: 0 to 23.3 Gy" })).toBeTruthy();
+	});
+});
+
+
+describe("server retry", () => {
+	async function disconnect() {
+		const calls = vi.mocked(api.onReachabilityChange).mock.calls;
+		const listen = calls[calls.length - 1][0];
+		await act(() => listen(false));
+	}
+
+	it("reloads instead of reusing file indices when health reports another server", async () => {
+		const reload = vi.spyOn(window.location, "reload").mockImplementation(() => {});
+		try {
+			await renderApp();
+			vi.mocked(api.fetchHealth).mockResolvedValue({ status: "ok", viewer: { name: "dcmview", version: "test", build_target: "test", build_profile: "test" }, file_count: 1, server_start_ms: 999 });
+			await disconnect();
+			await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+			await waitFor(() => expect(reload).toHaveBeenCalledOnce());
+		} finally { reload.mockRestore(); }
+	});
+
+	it("retries a failed frame on the same server and removes its error placeholder", async () => {
+		vi.mocked(api.fetchDisplayFrame).mockRejectedValueOnce(new api.ApiError("frame was unreachable", 0, null));
+		await renderApp();
+		await screen.findByText("frame was unreachable");
+		vi.mocked(api.fetchHealth).mockResolvedValue({ status: "ok", viewer: { name: "dcmview", version: "test", build_target: "test", build_profile: "test" }, file_count: 2, server_start_ms: 0 });
+		await disconnect();
+		await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+		await waitFor(() => expect(screen.queryByText("frame was unreachable")).toBeNull());
+		await waitFor(() => expect(document.querySelector(".dicom-canvas")?.getAttribute("data-capture-rendered")).toBe("0:0"));
 	});
 });

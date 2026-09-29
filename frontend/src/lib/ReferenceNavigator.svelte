@@ -40,6 +40,11 @@
 	function retry() {
 		void resources.reload(fileIndex).catch(() => {});
 	}
+
+	export function retryFailedLoads(): void {
+		const key = fileIndex;
+		if (resources.get(key).status === "error") void resources.reload(key).catch(() => {});
+	}
 </script>
 
 <!-- Shown only when there is something to act on: references, or a failed load to retry. -->
