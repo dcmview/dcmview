@@ -51,42 +51,42 @@
       "width": 1440
     },
     {
-      "bytes": 3832977,
+      "bytes": 3833322,
       "height": 900,
       "path": "ultrasound-cine.gif",
       "scene_id": "ultrasound-cine",
       "series_instance_uid": "1.3.6.1.4.1.14519.5.2.1.1.78620393996990384206084905721745347693",
-      "sha256": "41759436c1429e14a3c07159ecd84995c8b2bea604dbe60c1d18c22332970352",
+      "sha256": "2124973d3293d562340d9d987ff45690599ac1a3a26caf062de9634c679efbbf",
       "source_group": "06-ultrasound",
       "width": 1440
     },
     {
-      "bytes": 284227,
+      "bytes": 284098,
       "height": 900,
       "path": "rt-dose-context.png",
       "scene_id": "rt-dose-context",
       "series_instance_uid": "1.3.6.1.4.1.14519.5.2.1.118532755654767959890619646384959953910",
-      "sha256": "bc1a1953491149eabe2dbc4caa5cd2e1659eac6a045a668421c77601feaf8db4",
+      "sha256": "cf33d2a0d60ee20e4172f4656670f3e73ba0c1362c806ada947a998bbfef1f06",
       "source_group": "07-rt-dose",
       "width": 1440
     },
     {
-      "bytes": 413205,
+      "bytes": 410658,
       "height": 900,
       "path": "wsi-context.png",
       "scene_id": "wsi-context",
       "series_instance_uid": "1.3.6.1.4.1.5962.99.1.2218940421.790215425.1720205891589.4.0",
-      "sha256": "d6f0d15f7f3979a1c2937b86bb2b54642309d1ae1891d5982ae0b405ee7e3d99",
+      "sha256": "54b69a2daea452d1bacd505f75695da475d32fb340e11e431f3f9ea17a820165",
       "source_group": "08-wsi",
       "width": 1440
     },
     {
-      "bytes": 1549980,
+      "bytes": 1552674,
       "height": 900,
       "path": "vscode-workflow.gif",
       "scene_id": "vscode-workflow",
       "series_instance_uid": "1.3.6.1.4.1.14519.5.2.1.9999.103.1892998694410640266017914996862",
-      "sha256": "402a6412c6fb988e28d7b5bf1de834a698b18a1e29f737f4fdc1d2b36311ef99",
+      "sha256": "bcef5d1b1ad9d3dfa864e16bff0d7cdf6cf9bf0bb896737511e994427ea020b3",
       "source_group": "02-chest-ct",
       "width": 1440
     }
@@ -245,11 +245,11 @@
     "vscode/src/test/suite/viewer.test.ts",
     "vscode/src/viewerSessions.ts"
   ],
-  "capture_inputs_sha256": "ec7cb5f175d44147bddf92f562efc03c24e0fc8023afa6d10969ab58b1f81b39",
-  "captured_at_utc": "2026-09-29T05:23:03+00:00",
+  "capture_inputs_sha256": "5e68a6a6c91f4e383768c66c5d4495deb7567d21f9e48924462be6662d3a12d0",
+  "captured_at_utc": "2026-09-29T13:22:20+00:00",
   "captures_manifest_sha256": "afdf2b4ec006289d5f336d232ab67977318fc187771e046b24fa8c76d32bcdec",
   "dcmview_version": "0.3.0",
-  "git_commit": "81425828d8c42e7cbfb2bc2d5bb81ef1ab1b88a5",
+  "git_commit": "5c0b9d3c17d5488a8a27a2e83f9a6138b28ed4f7",
   "git_dirty": false,
   "reports": [
     {
@@ -273,7 +273,7 @@
     {
       "browser_version": "151.0.7922.34",
       "ffmpeg_version": "ffmpeg version 6.0 Copyright (c) 2000-2023 the FFmpeg developers",
-      "file_index": 7,
+      "file_index": 8,
       "node_version": "v26.8.2",
       "patient_ids": [
         "COVID-19-AR-16406502"
@@ -327,7 +327,7 @@
     {
       "browser_version": "151.0.7922.34",
       "ffmpeg_version": "ffmpeg version 6.0 Copyright (c) 2000-2023 the FFmpeg developers",
-      "file_index": 32,
+      "file_index": 126,
       "node_version": "v26.8.2",
       "patient_ids": [
         "PSMA_f77011649a56cf08"
@@ -345,7 +345,7 @@
     {
       "browser_version": "151.0.7922.34",
       "ffmpeg_version": "ffmpeg version 6.0 Copyright (c) 2000-2023 the FFmpeg developers",
-      "file_index": 8,
+      "file_index": 4,
       "node_version": "v26.8.2",
       "patient_ids": [
         "MSB-07848"
@@ -363,7 +363,7 @@
     {
       "browser_version": "151.0.7922.34",
       "ffmpeg_version": null,
-      "file_index": 110,
+      "file_index": 90,
       "node_version": "v26.8.2",
       "patient_ids": [
         "VS-SEG-131"
@@ -376,12 +376,12 @@
         "height": 900,
         "width": 1440
       },
-      "visible_text_sha256": "b147e309174f5cdc84b6d87223ec8e5228d50f8cf8d55a3936947d275fdfd130"
+      "visible_text_sha256": "4393e3cea5dc0e2df1bd8aa18da00b4d1771ac544a75c1372f4b0c1a5e89bcdd"
     },
     {
       "browser_version": "151.0.7922.34",
       "ffmpeg_version": null,
-      "file_index": 1,
+      "file_index": 0,
       "node_version": "v26.8.2",
       "patient_ids": [
         "GTEX-17HHY"
@@ -394,12 +394,12 @@
         "height": 900,
         "width": 1440
       },
-      "visible_text_sha256": "266c4c790fbdb846b83d8429a4f08b5f0eb963c721cdcb95b77917844f0edc4c"
+      "visible_text_sha256": "91206f22308b6783c85203c1fb0e7e9a955606d208908ff0fdd7911eb02a917c"
     },
     {
       "captured_frames": 48,
       "ffmpeg_version": "ffmpeg version 6.0 Copyright (c) 2000-2023 the FFmpeg developers",
-      "file_index": 1,
+      "file_index": 0,
       "node_version": "v26.8.2",
       "patient_ids": [
         "COVID-19-AR-16406502"
