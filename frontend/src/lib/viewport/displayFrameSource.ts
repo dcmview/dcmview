@@ -333,9 +333,13 @@ export class DisplayFrameSource {
 				const frame = frames[position];
 				if (!frame) return;
 				const key = this.key(frame.file_index, frame.frame_index, options);
-				if (signal.aborted || (!this.#prepare && !this.#loadMetadata && this.#caches.frames.has(key))) return;
+				// Metadata only for the neighbourhood: readying a whole long stack's
+				// mappings would cycle them through their cache (128 frames) and
+				// evict the ones about to be shown.
+				const withMetadata = Math.abs(position - startPosition) <= DISPLAY_NEAR_PREFETCH_DISTANCE;
+				if (signal.aborted || (!this.#prepare && !(withMetadata && this.#loadMetadata) && this.#caches.frames.has(key))) return;
 				try {
-					await this.ensureReady(frame.file_index, frame.frame_index, options);
+					await (withMetadata ? this.ensureReady : this.ensureFrame).call(this, frame.file_index, frame.frame_index, options);
 				} catch {
 					// Ignore network/decode failures during prefetch.
 				}

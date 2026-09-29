@@ -154,7 +154,8 @@ payloads and owns decoded layers for each prepared frame. Raw and display
 prefetches also warm value mappings and colorwash. A raw frame carries its
 own mapping through the worker draw; the completed draw commits its layers,
 window, and frame label together. Display frames await their colorwash before
-drawing and committing. Display prefetch and cine also wait for each frame's
+drawing and committing. Display prefetch (within its 48-frame neighbourhood,
+inside the 128-frame mapping cache) and cine also wait for each frame's
 value mapping (reloading one the mapping cache evicted), so the HUD and legend
 keep that frame's real-world unit; a frame navigated to directly is drawn
 without waiting, and its HUD and legend update when its mapping arrives. A failed presentation layer leaves the base image

@@ -189,6 +189,20 @@ describe("DisplayFrameSource", () => {
 		expect(load).toHaveBeenCalledTimes(4);
 	});
 
+	it("readies metadata only for the prefetch neighbourhood of a long stack", async () => {
+		const load = vi.fn(async (): Promise<DisplayFrame> => ({ blob: new Blob(["png"]), window: null, appliedWindow: null }));
+		const loadMetadata = vi.fn(async (_file: number, _frame: number) => {});
+		const source = new DisplayFrameSource({ load, loadMetadata,
+			navigationScope: () => "tab", concurrency: () => 50, onScopeChange: vi.fn() });
+		source.enterScope({});
+		source.startPrefetch(navigationFramesForFile(1, 200), 100, 1, {}, 3, "loop");
+		await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(199));
+		const frames = loadMetadata.mock.calls.map(([, frame]) => frame);
+		expect(Math.min(...frames)).toBe(52);
+		expect(Math.max(...frames)).toBe(148);
+		expect(frames).toHaveLength(96);
+	});
+
 	type Load = (file: number, frame: number, options: DisplayFrameWindowOptions, signal: AbortSignal) => Promise<DisplayFrame>;
 
 	function png(blob: Blob = new Blob(["png"])): DisplayFrame {
