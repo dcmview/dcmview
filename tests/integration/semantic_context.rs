@@ -37,17 +37,14 @@ async fn fractional_seg_binary_fallback_is_object_wide_and_preserves_preview() {
     ] {
         let path = root.join(format!("golden-seg-{name}.dcm"));
         let files = support::discover(
-            &[
-                path.clone(),
-                root.join(format!("golden-seg-{name}-source.dcm")),
-            ],
+            std::slice::from_ref(&root),
             dcmview::loader::DiscoverOptions {
                 recursive: true,
                 filters: vec![],
             },
         )
         .await
-        .expect("discover committed SEG/source pair")
+        .expect("discover SEG/source pair alongside every committed fixture")
         .files;
         let seg = files.iter().find(|file| file.path == path).expect("SEG");
         let index = seg.index;

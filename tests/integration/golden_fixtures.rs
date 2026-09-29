@@ -13,6 +13,39 @@ fn fixture_path(name: &str) -> PathBuf {
         .join(name)
 }
 
+#[test]
+fn committed_fixtures_have_unique_sop_instance_uids() {
+    let mut seen = std::collections::HashMap::new();
+    for entry in std::fs::read_dir(fixture_path("")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|value| value.to_str()) != Some("dcm") {
+            continue;
+        }
+        let object = dicom_object::OpenFileOptions::new()
+            .read_until(dicom_dictionary_std::tags::FLOAT_PIXEL_DATA)
+            .open_file(&path)
+            .unwrap();
+        let uid = object
+            .element(dicom_dictionary_std::tags::SOP_INSTANCE_UID)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .into_owned();
+        assert!(
+            !uid.is_empty(),
+            "{} has no SOP Instance UID",
+            path.display()
+        );
+        if let Some(previous) = seen.insert(uid.clone(), path.clone()) {
+            panic!(
+                "duplicate SOP Instance UID {uid}: {} and {}",
+                previous.display(),
+                path.display()
+            );
+        }
+    }
+}
+
 fn decode_u16_le(bytes: &[u8]) -> Vec<u16> {
     bytes
         .chunks_exact(2)

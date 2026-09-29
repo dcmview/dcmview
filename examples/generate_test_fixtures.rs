@@ -177,9 +177,9 @@ fn write_segmentation_fixtures(dir: &Path) {
         ),
         (2, "binary", "BINARY", vec![0, 1, 1, 0, 1, 0, 0, 1]),
     ] {
-        let source_uid = format!("2.25.200020{}", case * 2);
-        let seg_uid = format!("2.25.200020{}", case * 2 + 1);
-        let for_uid = format!("2.25.200021{case}");
+        let source_uid = format!("2.25.200030{}", case * 2);
+        let seg_uid = format!("2.25.200030{}", case * 2 + 1);
+        let for_uid = format!("2.25.200032{case}");
         let positions = || {
             (0..2)
                 .map(|frame| {
