@@ -171,6 +171,7 @@
 	// Raw, not a deep proxy: the frame is posted to the W/L worker, and a
 	// proxied metadata object cannot be structured-cloned.
 	let currentRawFrame = $state.raw<RawFrame | null>(null);
+	let currentRawFrameKey = $state("");
 	// The window the server rendered the displayed PNG with, if linear, and
 	// whether that PNG was requested in a real-world unit.
 	let shownDisplay = $state.raw<Pick<DisplayFrame, "window" | "appliedWindow"> | null>(null);
@@ -192,6 +193,7 @@
 	const valueMappings = new ValueMappings();
 	const overlayLayers = new OverlayLayerCache();
 	const presentationLayers = new OverlayLayerCache();
+	const segmentationLayers = new OverlayLayerCache();
 	let presentationLayerCanvas: HTMLCanvasElement | undefined = $state();
 	const overlayValues = new OverlayLayerCache<Float32Array>();
 	let overlayValueState = $state<{ key: string; state: OverlayValueState } | null>(null);
@@ -479,7 +481,7 @@
 		signal?: AbortSignal,
 	): Promise<DisplayFrame> {
 		if (!options.unit) return fetchDisplayFrame(fileIndex, frameIndex, options, signal);
-		const mapping = await valueMappings.load(fileIndex, frameIndex);
+		const mapping = await valueMappings.load(fileIndex, frameIndex, signal);
 		signal?.throwIfAborted();
 		return fetchDisplayFrame(fileIndex, frameIndex, frameDisplayWindowOptions(options, mapping), signal);
 	}
@@ -598,6 +600,7 @@
 		const cached = rawFrames.cached(fileIndex, frameIndex);
 		if (cached) {
 			currentRawFrame = cached;
+			currentRawFrameKey = `${fileIndex}:${frameIndex}`;
 			loading = false;
 			loadError = null;
 			prefetchRawRing(direction);
@@ -626,6 +629,7 @@
 			}
 			rawFrames.store(fileIndex, frameIndex, rawFrame);
 			currentRawFrame = rawFrame;
+			currentRawFrameKey = `${fileIndex}:${frameIndex}`;
 			loading = false;
 			loadError = null;
 			prefetchRawRing(direction);
@@ -702,7 +706,10 @@
 		try {
 			const [source, ...layerBlobs] = await Promise.all([
 				displayFrames.ensureFrame(overlay.sourceFileIndex, overlay.sourceFrameIndex, windowOptions),
-				...overlayLayerRequests(overlay).map(({ key, load }) => displayFrames.fetchInScope(key, windowOptions, load)),
+				...overlayLayerRequests(overlay).map((request) => {
+					segmentationLayers.abortOthers(request.key);
+					return segmentationLayers.load(request);
+				}),
 			]);
 			const [base, ...layers] = await Promise.all([source.blob, ...layerBlobs].map(decodeCanvasImage));
 			try {
@@ -923,7 +930,7 @@
 		const activeOverlay = overlay;
 		const fileIndex = activeFile.index;
 		const generation = ++requestGeneration;
-		if (mode !== "diagnostic_wl") {
+		if (mode !== "diagnostic_wl" && mode !== "overlay") {
 			// Server-rendered frames bake in the window, so window changes refetch.
 			// A real-world window is converted per frame by loadDisplayFrame.
 			void windowCenter;
@@ -1026,7 +1033,8 @@
 	$effect(() => {
 		if (!probing || cinePlaying || !activeFile.has_pixels) return;
 		const { file, frameIndex } = probeTarget;
-		const displayed = pipelineMode === "diagnostic_wl" ? currentRawFrame : null;
+		const displayed = pipelineMode === "diagnostic_wl" && currentRawFrameKey === `${file.index}:${frameIndex}`
+			? currentRawFrame : null;
 		// A frame read one pixel at a time follows the cursor.
 		const pixel = probesSinglePixels(file) ? probe.pixel : null;
 		return untrack(() => {
@@ -1121,6 +1129,7 @@
 			stopProbe();
 			overlayLayers.clear();
 			presentationLayers.clear();
+			segmentationLayers.clear();
 			overlayValues.clear();
 			rawFrames.clear();
 			displayFrames.clear();

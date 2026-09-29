@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { fireEvent, render, screen, waitFor } from "@testing-library/svelte";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/svelte";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "../api";
 import { fileSummary, rawFrame } from "../testing/fixtures";
@@ -8,6 +8,8 @@ import * as frameOverlay from "./viewport/frameOverlay";
 import { navigationFramesForFile } from "./seriesNavigation";
 import type { ActiveTool } from "./viewerTools";
 import { ViewStates } from "./viewport/viewStates.svelte";
+import { reactiveProps } from "../testing/reactiveProps.svelte";
+import type { ComponentProps } from "svelte";
 
 vi.mock("../api", async (importOriginal) => ({
 	...await importOriginal<typeof import("../api")>(),
@@ -16,6 +18,7 @@ vi.mock("../api", async (importOriginal) => ({
 	fetchRawFrame: vi.fn(),
 	fetchFrameValueMapping: vi.fn(),
 	fetchDoseOverlayBlob: vi.fn(),
+	fetchSegmentationOverlayBlob: vi.fn(async () => new Blob(["seg"])),
 	fetchDoseOverlayValues: vi.fn(),
 	fetchPresentationLayerBlob: vi.fn(async () => new Blob(["png"], { type: "image/png" })),
 	updateAnnotations: vi.fn(),
@@ -70,8 +73,9 @@ function renderViewport({
 	windowUnit = null as string | null,
 	onmanualwindowlevel = vi.fn(),
 	valueOverlay = null as frameOverlay.ValueOverlay | null,
+	overlay = null as frameOverlay.FrameOverlay | null,
 } = {}) {
-	return render(ImageViewport, {
+	const state = reactiveProps<ComponentProps<typeof ImageViewport>>({
 		activeFile: file,
 		currentFrame: 0,
 		windowCenter,
@@ -92,7 +96,10 @@ function renderViewport({
 		onreset: vi.fn(),
 		onmanualwindowlevel,
 		valueOverlay,
+		overlay,
 	});
+	const view = render(ImageViewport, { props: state.props });
+	return { ...view, rerender: async (props: Partial<ComponentProps<typeof ImageViewport>>) => act(() => state.update(props)) };
 }
 
 beforeEach(() => {
@@ -597,5 +604,53 @@ describe("ImageViewport window presentation consistency", () => {
 		await fireEvent.pointerUp(viewport, { clientX: 20, clientY: 10, pointerId: 1 });
 		expect(fetchDisplayFrame).toHaveBeenCalledOnce();
 		expect(screen.queryByText(/W: /)).toBeNull();
+	});
+});
+
+
+describe("F11 remaining confirmations", () => {
+	it("keeps a loaded SEG layer across catalog replacement and presets", async () => {
+		const load = vi.mocked(api.fetchSegmentationOverlayBlob);
+		load.mockClear();
+		const file = fileSummary(5);
+		const overlay: frameOverlay.FrameOverlay = { kind: "segmentation", segmentationFileIndex: 5,
+			segmentationFrameIndex: 0, sourceFileIndex: 6, sourceFrameIndex: 0, sourceFile: fileSummary(6) };
+		const { rerender } = renderViewport({ file, overlay });
+		await waitFor(() => expect(load).toHaveBeenCalledOnce());
+		await rerender({ activeFile: { ...file }, overlay: { ...overlay, sourceFile: { ...overlay.sourceFile } } });
+		await rerender({ windowCenter: 40, windowWidth: 80 });
+		expect(load).toHaveBeenCalledOnce();
+	});
+
+	it("aborts unit-window mapping prefetch when its display scope is abandoned", async () => {
+		let pendingSignal: AbortSignal | undefined;
+		fetchFrameValueMapping.mockImplementation(async (fileIndex, frameIndex, signal) => {
+			if (fileIndex === 5 && frameIndex > 0) {
+				pendingSignal = signal;
+				return new Promise(() => {});
+			}
+			return { ...lutMapping(), file_index: fileIndex, frame_index: frameIndex };
+		});
+		fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"]), window: null, appliedWindow: "real_world" });
+		const { rerender } = renderViewport({ file: fileSummary(5, { rows: 5000, columns: 5000, frame_count: 2 }),
+			windowCenter: 40, windowWidth: 80, windowUnit: "ms" });
+		await waitFor(() => expect(pendingSignal).toBeDefined());
+		expect(pendingSignal?.aborted).toBe(false);
+		await rerender({ windowUnit: null, windowCenter: 40, windowWidth: 80 });
+		expect(pendingSignal?.aborted).toBe(true);
+	});
+
+	it("does not attribute held raw samples to a frame still loading", async () => {
+		const frame = rawFrame(); new Uint8Array(frame.buffer).fill(123);
+		fetchRawFrame.mockImplementation(async (_file, index) => index === 0 ? frame : new Promise(() => {}));
+		fetchFrameValueMapping.mockImplementation(async (file, index) => ({ ...identityMapping(file), frame_index: index }));
+		const { rerender } = renderViewport({ activeTool: "window_level", file: fileSummary(5, { frame_count: 2 }) });
+		await fireEvent.pointerMove(screen.getByRole("application"), { clientX: 10.5, clientY: 20.5 });
+		const readout = await screen.findByRole("status", { name: "Pixel value under cursor" });
+		await waitFor(() => expect(readout.textContent).toContain("stored 123"));
+		await rerender({ currentFrame: 1, navigationPosition: 1 });
+		await waitFor(() => expect(fetchFrameValueMapping).toHaveBeenCalledWith(5, 1, expect.any(AbortSignal)));
+		expect(readout.textContent).toContain("frame 2");
+		expect(readout.textContent).not.toContain("stored 123");
 	});
 });
