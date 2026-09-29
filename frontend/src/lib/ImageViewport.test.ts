@@ -75,6 +75,7 @@ function renderViewport({
 	onmanualwindowlevel = vi.fn(),
 	valueOverlay = null as frameOverlay.ValueOverlay | null,
 	overlay = null as frameOverlay.FrameOverlay | null,
+	onnavigationchange = vi.fn() as (position: number) => void,
 } = {}) {
 	const state = reactiveProps<ComponentProps<typeof ImageViewport>>({
 		activeFile: file,
@@ -93,7 +94,7 @@ function renderViewport({
 		navigationFrames: navigationFramesForFile(file.index, file.frame_count),
 		navigationScopeKey: `file:${file.index}`,
 		navigationPosition: 0,
-		onnavigationchange: vi.fn(),
+		onnavigationchange,
 		onreset: vi.fn(),
 		onmanualwindowlevel,
 		valueOverlay,
@@ -861,11 +862,39 @@ describe("ImageViewport frame presentation", () => {
 
 
 describe("W/L cine", () => {
-	it("prefetches ordinary display frames without fetching every mapping", async () => {
-		const { rerender } = renderViewport({ file: fileSummary(5, { frame_count: 300 }) });
-		await rerender({ cinePlaying: true });
-		await waitFor(() => expect(fetchDisplayFrame.mock.calls.length).toBeGreaterThan(15));
-		expect(fetchFrameValueMapping.mock.calls.every((call) => call[1] === 0)).toBe(true);
+	it.each([
+		["automatic", null, null, null, (frame: number) => `W: ${100 * (frame + 1)} · C: ${50 * (frame + 1)} um2/s`],
+		["explicit", 30, 60, "um2/s", () => "W: 60 · C: 30 um2/s"],
+	])("keeps each frame's real-world unit on the HUD through cine (%s window)", async (_name, windowCenter, windowWidth, windowUnit, expected) => {
+		// Frame f maps stored values with slope (f + 1) / 2 um2/s; the server
+		// applies stored C 100 / W 200 unless a unit window is converted.
+		fetchFrameValueMapping.mockImplementation(async (fileIndex, frameIndex) => {
+			const base = adcMapping();
+			return { ...base, file_index: fileIndex, frame_index: frameIndex,
+				real_world: [{ ...base.real_world[0], transform: { kind: "linear", slope: (frameIndex + 1) / 2, intercept: 0 } }] };
+		});
+		fetchDisplayFrame.mockImplementation(async (_file, _frame, options) => ({ blob: new Blob(["png"]),
+			window: options?.wc != null && options.ww != null ? { wc: options.wc, ww: options.ww } : { wc: 100, ww: 200 }, appliedWindow: "linear" }));
+		const context = { clearRect: vi.fn(), putImageData: vi.fn(), drawImage: vi.fn() };
+		const canvas = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(context as unknown as CanvasRenderingContext2D);
+		vi.stubGlobal("createImageBitmap", vi.fn(async () => ({ width: 64, height: 64, close: vi.fn() })));
+		const shown: Array<[number, string]> = [];
+		let frame = 0;
+		const hud = () => [...document.querySelectorAll(".hud .overlay span")].map((span) => span.textContent?.trim()).find((text) => text?.startsWith("W:")) ?? "";
+		const view = renderViewport({ file: fileSummary(5, { frame_count: 4 }), windowCenter, windowWidth, windowUnit,
+			onnavigationchange: (position) => {
+				// Cine steps only once the previous frame is presented.
+				shown.push([frame, hud()]);
+				frame = position;
+				void view.rerender({ currentFrame: position, navigationPosition: position });
+			} });
+		await screen.findByText(expected(0));
+		await view.rerender({ cineFps: 60, cinePlaying: true });
+		await waitFor(() => expect(shown.length).toBeGreaterThanOrEqual(9), { timeout: 3000 });
+		await view.rerender({ cinePlaying: false });
+		expect(shown).toEqual(shown.map(([index]) => [index, expected(index)]));
+		expect(new Set(shown.map(([index]) => index))).toEqual(new Set([0, 1, 2, 3]));
+		canvas.mockRestore();
 	});
 
 	it("pauses with pending cine metadata and resumes a drawable raw frame", async () => {

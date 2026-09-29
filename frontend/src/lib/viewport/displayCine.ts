@@ -16,7 +16,7 @@ export type DisplayCineOptions = {
 	mode: CineMode;
 	fps: number;
 	windowOptions: DisplayFrameWindowOptions;
-	display: Pick<DisplayFrameSource, "ensureFrame" | "decode" | "key">;
+	display: Pick<DisplayFrameSource, "ensureReady" | "decode" | "key">;
 	rendered: Pick<RenderedFrames, "waitFor">;
 	signal: AbortSignal;
 	/** Moves the view to `position`; playback resumes once that frame is presented. */
@@ -25,7 +25,7 @@ export type DisplayCineOptions = {
 
 /**
  * Plays display frames paced by actual presentation: each next frame is
- * fetched and decoded while the interval elapses, then shown, and playback
+ * fetched with its metadata and decoded while the interval elapses, then shown, and playback
  * waits for the canvas to present it before scheduling the next one.
  * Resolves when `signal` aborts or a frame is never presented.
  */
@@ -56,7 +56,7 @@ export async function playDisplayCine({
 		prepareFrame: (position) => {
 			const frame = navigationFrameAtPosition(frames, position);
 			if (!frame) return Promise.reject(new Error("logical cine frame is unavailable"));
-			return display.ensureFrame(frame.file_index, frame.frame_index, windowOptions)
+			return display.ensureReady(frame.file_index, frame.frame_index, windowOptions)
 				.then(({ blob }) => typeof createImageBitmap === "function"
 					? display.decode(display.key(frame.file_index, frame.frame_index, windowOptions), blob)
 						.then((decoded) => decoded.release())

@@ -209,9 +209,11 @@
 	});
 	const displayFrames = new DisplayFrameSource({
 		load: loadDisplayFrame,
-		// Ordinary display/cine prefetch needs no value mapping. Unit windows
-		// load their mapping in loadDisplayFrame; raw prefetch keeps its ±10 ring.
 		prepare: (fileIndex, frameIndex, signal) => warmValueLayer(fileIndex, frameIndex, signal),
+		// Prefetched and cine frames carry their own mapping, so the HUD and
+		// legend keep a real-world unit on every frame; a foreground frame is
+		// presented first and its HUD follows its mapping.
+		loadMetadata: (fileIndex, frameIndex, signal) => valueMappings.load(fileIndex, frameIndex, signal),
 		navigationScope: () => navigationScopeKey,
 		concurrency: () => prefetchConcurrency,
 		onScopeChange: () => rendered.reset(),

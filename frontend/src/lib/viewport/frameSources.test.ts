@@ -166,6 +166,29 @@ describe("DisplayFrameSource", () => {
 		expect(load).toHaveBeenCalledOnce();
 	});
 
+	it("readies frame metadata for prefetch and cine, even for cached PNGs, but not for a foreground frame", async () => {
+		const load = vi.fn(async (): Promise<DisplayFrame> => ({ blob: new Blob(["png"]), window: null, appliedWindow: null }));
+		const finishers = new Map<number, () => void>();
+		const loadMetadata = vi.fn((_file: number, frame: number) => new Promise<void>(resolve => { finishers.set(frame, resolve); }));
+		const source = new DisplayFrameSource({ load, loadMetadata,
+			navigationScope: () => "tab", concurrency: () => 3, onScopeChange: vi.fn() });
+		// A foreground frame is presented without waiting for its metadata.
+		for (let frame = 0; frame < 4; frame++) await source.ensureFrame(1, frame, {});
+		expect(loadMetadata).not.toHaveBeenCalled();
+
+		// Metadata evicted since (a stack longer than the mapping cache) loads
+		// again with the cached PNG, and cine waits for it.
+		const ready = vi.fn();
+		const cine = source.ensureReady(1, 0, {}).then(ready);
+		source.startPrefetch(navigationFramesForFile(1, 4), 0, 1, {}, 3, "loop");
+		await flush();
+		expect(loadMetadata.mock.calls.map(([, frame]) => frame).sort()).toEqual([0, 1, 2, 3]);
+		expect(ready).not.toHaveBeenCalled();
+		finishers.get(0)!(); await cine;
+		expect(ready).toHaveBeenCalledOnce();
+		expect(load).toHaveBeenCalledTimes(4);
+	});
+
 	type Load = (file: number, frame: number, options: DisplayFrameWindowOptions, signal: AbortSignal) => Promise<DisplayFrame>;
 
 	function png(blob: Blob = new Blob(["png"])): DisplayFrame {
