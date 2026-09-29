@@ -66,6 +66,14 @@ async function waitForRendered(frame, fileIndex = null) {
 		{ timeout: 60_000 },
 	);
 	await frame.evaluate(() => document.fonts.ready);
+	await waitForViewerTags(frame);
+}
+
+async function waitForViewerTags(frame) {
+	if (await frame.getByRole("searchbox", { name: "Filter tags" }).isVisible()) {
+		await frame.getByRole("button", { name: "Copy (0008,0016) SOPClassUID", exact: true })
+			.waitFor({ state: "visible", timeout: 45_000 });
+	}
 }
 
 async function advanceViewerFrame(frame) {
@@ -87,6 +95,7 @@ async function advanceViewerFrame(frame) {
 		before,
 		{ timeout: 60_000 },
 	);
+	await waitForViewerTags(frame);
 }
 
 async function availablePort() {
@@ -335,7 +344,17 @@ async function main() {
 		await button.waitFor({ state: "visible", timeout: 30_000 });
 		await button.click();
 		await waitForRendered(frame, file.index);
+		// The outer Explorer already supplies navigation in this walkthrough.
+		// Collapse the viewer's duplicate navigator through its actual control
+		// so the image and tags both fit within the editor's narrower viewport.
+		await frame.getByRole("button", { name: "Collapse file navigator", exact: true }).click();
+		await frame.getByRole("button", { name: "Expand file navigator", exact: true }).waitFor();
 		await setCaption(window, "Inspect and cine through the study inside VS Code");
+		await window.locator("[data-dcmview-capture-caption]").evaluate((caption) => {
+			// Keep the walkthrough caption over the outer Explorer, clear of
+			// the viewer's scrubber and playback controls.
+			Object.assign(caption.style, { left: "176px", maxWidth: "290px", width: "290px", fontSize: "14px" });
+		});
 		for (let index = 0; index < viewerFrames; index += 1) {
 			if (index > 0 && index % 2 === 0) {
 				await advanceViewerFrame(frame);
