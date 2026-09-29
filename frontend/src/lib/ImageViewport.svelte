@@ -7,6 +7,7 @@
 		isApiError,
 		type DisplayFrame,
 		type DisplayFrameWindowOptions,
+		type EmbedRoiAnnotations,
 		type FileSummary,
 		type FrameValueMapping,
 		type RawFrame,
@@ -17,7 +18,6 @@
 		canonicalRect,
 		deleteRoi,
 		moveCoord,
-		normalizeAnnotationsForEdit,
 		resizeCoord,
 		setRoiFrameScope,
 		updateRoiCoord,
@@ -161,6 +161,7 @@
 	} = $props();
 
 	let dragState = $state<DragState>(null);
+	let roiDragTarget: { fileIndex: number; frameIndex: number; original: EmbedRoiAnnotations | null } | null = null;
 	let loading = $state(false);
 	let loadError = $state<string | null>(null);
 	let liveWindowCenter = $state<number | null>(null);
@@ -181,6 +182,8 @@
 	};
 	let preparedRaw = $state.raw<PreparedRaw | null>(null);
 	let presented = $state.raw<PresentedFrame | null>(null);
+	const presentedMatchesActive = $derived(presented?.target.file.index === activeFile.index
+		&& presented?.target.frameIndex === currentFrame && presented?.target.scope === navigationScopeKey);
 	const currentRawFrame = $derived(preparedRaw?.frame ?? null);
 	const currentRawFrameKey = $derived(preparedRaw ? `${preparedRaw.target.file.index}:${preparedRaw.target.frameIndex}` : "");
 	const rawMatchesRequest = $derived(preparedRaw?.target.file.index === activeFile.index
@@ -425,6 +428,7 @@
 	}
 
 	function setSelectedRoi(index: number | null) {
+		if (index !== null && !presentedMatchesActive) return;
 		annotations.select(activeFile.index, index);
 	}
 
@@ -470,13 +474,13 @@
 
 	/** Deletes the selected ROI on this file; App's keyboard dispatcher calls it. */
 	export function deleteSelectedRoi() {
-		if (selectedRoiIndex === null || !activeAnnotations) return;
+		if (!presentedMatchesActive || selectedRoiIndex === null || !activeAnnotations) return;
 		const next = deleteRoi(activeAnnotations, selectedRoiIndex, activeFile.frame_count);
 		annotations.commit(activeFile.index, next, null);
 	}
 
 	function setSelectedScope(scope: "current" | "all") {
-		if (selectedRoiIndex === null || !activeAnnotations) return;
+		if (!presentedMatchesActive || selectedRoiIndex === null || !activeAnnotations) return;
 		const next = setRoiFrameScope(activeAnnotations, selectedRoiIndex, scope, currentFrame, activeFile.frame_count);
 		annotations.commit(activeFile.index, next, selectedRoiIndex);
 	}
@@ -1296,9 +1300,10 @@
 					}
 					break;
 				case "annotate_rect": {
-					if (!annotationsReady) break;
+					if (!presentedMatchesActive || !annotationsReady) break;
 					const point = pointFromPointer(event);
 					if (!point) break;
+					roiDragTarget = { fileIndex: activeFile.index, frameIndex: currentFrame, original: activeAnnotations };
 					event.preventDefault();
 					const hit = hitTestRoi(visibleRois, point, activeTransform.scale);
 					if (hit) {
@@ -1330,6 +1335,7 @@
 			stopProbe();
 		}
 		if (!activeFile || !dragState) return;
+		if (cancelMismatchedRoiDrag()) return;
 
 		if (dragState.mode === "pan") {
 			const dx = event.clientX - dragState.startX;
@@ -1404,6 +1410,7 @@
 		if (target.hasPointerCapture(event.pointerId)) {
 			target.releasePointerCapture(event.pointerId);
 		}
+		if (cancelMismatchedRoiDrag()) return;
 		if (dragState?.mode === "wl" && liveWindowCenter !== null && liveWindowWidth !== null) {
 			onmanualwindowlevel(liveWindowCenter, liveWindowWidth, dragState.unit);
 		}
@@ -1420,11 +1427,16 @@
 		endDrag();
 	}
 
+	function cancelMismatchedRoiDrag(): boolean {
+		if (!roiDragTarget || (presentedMatchesActive && roiDragTarget.fileIndex === activeFile.index
+			&& roiDragTarget.frameIndex === currentFrame)) return false;
+		onPointerCancel();
+		return true;
+	}
+
 	function onPointerCancel() {
-		if (dragState?.mode === "move_roi" || dragState?.mode === "resize_roi") {
-			const editable = normalizeAnnotationsForEdit(activeAnnotations, activeFile.frame_count);
-			const next = updateRoiCoord(editable, dragState.roiIndex, dragState.original, activeFile.frame_count);
-			annotations.showDraft(activeFile.index, next);
+		if (roiDragTarget?.original) {
+			annotations.showDraft(roiDragTarget.fileIndex, roiDragTarget.original);
 		}
 		endDrag();
 	}
@@ -1434,6 +1446,7 @@
 		liveWindowWidth = null;
 		livePreview.stop();
 		dragState = null;
+		roiDragTarget = null;
 		annotations.endLiveEdit();
 	}
 

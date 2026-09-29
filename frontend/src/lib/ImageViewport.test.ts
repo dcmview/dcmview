@@ -104,6 +104,8 @@ function renderViewport({
 }
 
 beforeEach(() => {
+	vi.mocked(api.fetchAnnotations).mockReset().mockResolvedValue({ num_roi: 0, roi_coords: [], roi_frames: [] });
+	vi.mocked(api.updateAnnotations).mockReset().mockImplementation(async (_file, annotations) => annotations);
 	fetchDisplayFrame.mockReset();
 	fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"], { type: "image/png" }), window: null, appliedWindow: null });
 	fetchRawFrame.mockReset();
@@ -675,6 +677,50 @@ describe("ImageViewport frame presentation", () => {
 		const spy = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(context as unknown as CanvasRenderingContext2D);
 		return { context, restore: () => spy.mockRestore() };
 	}
+
+	it.each(["next file", "next frame", "mid-drag file"])("does not edit held ROIs while the %s is pending", async (destination) => {
+		const { context, restore } = canvasContext();
+		const changesFile = destination !== "next frame";
+		vi.stubGlobal("createImageBitmap", vi.fn(async () => ({ width: 64, height: 64, close: vi.fn() })));
+		let finish!: (frame: api.DisplayFrame) => void;
+		fetchDisplayFrame.mockImplementation(async (file, frame) => file === 5 && frame === 0
+			? { blob: new Blob(["first"]), window: null, appliedWindow: null }
+			: new Promise((resolve) => { finish = resolve; }));
+		fetchFrameValueMapping.mockImplementation(async (file, frame) => ({ ...identityMapping(file), frame_index: frame }));
+		vi.mocked(api.fetchAnnotations).mockImplementation(async (file) => ({ num_roi: 1,
+			roi_coords: [file === 5 ? [2, 2, 20, 20] : [30, 30, 50, 50]], roi_frames: [] }));
+		try {
+			const view = renderViewport({ activeTool: "annotate_rect", file: fileSummary(5, { frame_count: 2 }) });
+			await waitFor(() => expect(context.drawImage).toHaveBeenCalledOnce());
+			await fireEvent.click(await screen.findByRole("button", { name: "#1" }));
+			if (destination === "mid-drag file") {
+				await fireEvent.pointerDown(screen.getByRole("application"), { button: 0, clientX: 10, clientY: 10, pointerId: 1 });
+			}
+			await view.rerender(changesFile
+				? { activeFile: fileSummary(6), currentFrame: 0, navigationPosition: 1 }
+				: { currentFrame: 1, navigationPosition: 1 });
+			await waitFor(() => expect(fetchDisplayFrame).toHaveBeenCalledWith(changesFile ? 6 : 5,
+				changesFile ? 0 : 1, expect.anything(), expect.any(AbortSignal)));
+			const viewport = screen.getByRole("application");
+			if (destination !== "mid-drag file") await fireEvent.pointerDown(viewport, { button: 0, clientX: 10, clientY: 10, pointerId: 1 });
+			await fireEvent.pointerMove(viewport, { clientX: 15, clientY: 15, pointerId: 1 });
+			await fireEvent.pointerUp(viewport, { clientX: 15, clientY: 15, pointerId: 1 });
+			await fireEvent.click(screen.getByRole("button", { name: "#1" }));
+			await act(() => view.component.deleteSelectedRoi());
+			for (const name of ["Current", "All", "Delete"]) {
+				const button = screen.queryByRole("button", { name });
+				if (button) await fireEvent.click(button);
+			}
+			expect(api.updateAnnotations).not.toHaveBeenCalled();
+			expect(context.drawImage).toHaveBeenCalledOnce();
+			await act(() => finish({ blob: new Blob(["next"]), window: null, appliedWindow: null }));
+			await waitFor(() => expect(context.drawImage).toHaveBeenCalledTimes(2));
+			await fireEvent.click(screen.getByRole("button", { name: "#1" }));
+			await act(() => view.component.deleteSelectedRoi());
+			await waitFor(() => expect(api.updateAnnotations).toHaveBeenCalledWith(changesFile ? 6 : 5,
+				{ num_roi: 0, roi_coords: [], roi_frames: [] }));
+		} finally { restore(); vi.unstubAllGlobals(); }
+	});
 
 	it.each(["pan", "window_level"] as const)("holds pixels, colorwash, and label until the next colorwash is ready with %s", async (activeTool) => {
 		const { context, restore } = canvasContext();
