@@ -304,8 +304,8 @@ describe("frameDisplayWindowOptions", () => {
 	});
 
 	it("converts a real-world window through each frame's own mapping", () => {
-		expect(frameDisplayWindowOptions(gray, dose(0.01))).toEqual({ wc: 1200, ww: 2000, windowMode: "default" });
-		expect(frameDisplayWindowOptions(gray, dose(0.02))).toEqual({ wc: 600, ww: 1000, windowMode: "default" });
+		expect(frameDisplayWindowOptions(gray, dose(0.01))).toEqual({ wc: 1200.5, ww: 2001, windowMode: "default" });
+		expect(frameDisplayWindowOptions(gray, dose(0.02))).toEqual({ wc: 600.5, ww: 1001, windowMode: "default" });
 	});
 
 	it("leaves a window no linear mapping expresses to the server, in its unit", () => {

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { FrameValueMapping } from "../../api";
+import { renderRawFrameToRgba, samplePresentation } from "../rawWindowing";
+import { frameDisplayWindowOptions, mappedWindowScale, windowToRender } from "./valueMapping";
 import { rawFrame } from "../../testing/fixtures";
 import { resolveWindow, type WindowInput } from "./resolveWindow";
 
@@ -53,6 +55,23 @@ describe("resolveWindow", () => {
 		[null, null, { window: null, unit: null, source: "color" }],
 	] as const)("trusts only the server's real_world confirmation (%s)", (appliedWindow, window, expected) => {
 		expect(resolveWindow({ ...input, raw: null, mapping: mapped, requested: { window: { wc: 0.15, ww: 0.2 }, unit: "ms" }, unitRequest: true, server: { appliedWindow, window } })).toEqual(expected);
+	});
+
+	it("preserves continuous gray levels through a sub-unit linear unit conversion", () => {
+		const raw = rawFrame(1, 4); new Uint8Array(raw.buffer).set([0, 1, 2, 3]);
+		const linear: FrameValueMapping = { ...mapped, real_world: [{ ...mapped.real_world[0], transform: { kind: "linear", slope: 0.1, intercept: 0 } }] };
+		const choice = { window: { wc: 0.15, ww: 0.2 }, unit: "ms" };
+		const scale = mappedWindowScale(linear)!;
+		const window = windowToRender({ center: choice.window.wc, width: choice.window.ww }, scale, true);
+		const rgba = renderRawFrameToRgba(raw, window.center, window.width, { presentation: samplePresentation(raw, linear) });
+		expect([0, 1, 2, 3].map(i => rgba[i * 4])).toEqual([0, 64, 191, 255]);
+		const options = frameDisplayWindowOptions({ wc: 0.15, ww: 0.2, unit: "ms" }, linear);
+		expect(options).toEqual({ wc: window.center, ww: window.width, windowMode: "default" });
+		expect(resolveWindow({ ...input, raw: null, mapping: linear, requested: choice,
+			server: { window: { wc: window.center, ww: window.width }, appliedWindow: "linear" } })).toMatchObject({ unit: "ms" });
+		const resolved = resolveWindow({ ...input, raw, mapping: linear, requested: choice });
+		expect(resolved.window?.wc).toBeCloseTo(0.15);
+		expect(resolved.window?.ww).toBeCloseTo(0.2);
 	});
 
 	it("never assigns a scalar window to raw color samples", () => {

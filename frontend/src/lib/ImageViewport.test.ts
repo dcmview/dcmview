@@ -392,16 +392,16 @@ describe("ImageViewport window/level in real-world units", () => {
 		expect(screen.queryByText(/ms$/)).toBeNull();
 	});
 
-	it("converts a real-world window to stored units before requesting the frame", async () => {
+	it("converts a real-world window to an exact equivalent before requesting the frame", async () => {
 		fetchFrameValueMapping.mockResolvedValue(adcMapping());
-		fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"]), window: { wc: 100, ww: 200 }, appliedWindow: "linear" });
+		fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"]), window: { wc: 100.5, ww: 201 }, appliedWindow: "linear" });
 		renderViewport({ windowCenter: 40, windowWidth: 100, windowUnit: "um2/s" });
 
-		// mapped = 0.5 × stored − 10, so C 40 / W 100 um2/s is C 100 / W 200 stored.
+		// C 100.5 / W 201 cancels integer LINEAR offsets for the physical C 40 / W 100.
 		await waitFor(() => expect(fetchDisplayFrame).toHaveBeenCalledWith(
 			5,
 			0,
-			{ wc: 100, ww: 200, windowMode: "default" },
+			{ wc: 100.5, ww: 201, windowMode: "default" },
 			expect.any(AbortSignal),
 		));
 		expect(fetchDisplayFrame).toHaveBeenCalledOnce();
@@ -436,11 +436,11 @@ describe("ImageViewport window/level in real-world units", () => {
 		const view = renderViewport({ file, windowCenter: 30, windowWidth: 60, windowUnit: "um2/s" });
 
 		await waitFor(() => expect(fetchDisplayFrame).toHaveBeenCalledWith(
-			5, 0, { wc: 60, ww: 120, windowMode: "default" }, expect.any(AbortSignal),
+			5, 0, { wc: 60.5, ww: 121, windowMode: "default" }, expect.any(AbortSignal),
 		));
 		await view.rerender({ currentFrame: 2, navigationPosition: 2 });
 		await waitFor(() => expect(fetchDisplayFrame).toHaveBeenCalledWith(
-			5, 2, { wc: 20, ww: 40, windowMode: "default" }, expect.any(AbortSignal),
+			5, 2, { wc: 20.5, ww: 41, windowMode: "default" }, expect.any(AbortSignal),
 		));
 		expect(fetchFrameValueMapping).toHaveBeenCalledWith(5, 2, expect.any(AbortSignal));
 	});

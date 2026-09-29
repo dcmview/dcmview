@@ -294,7 +294,7 @@
 	const rawRenderWindow = $derived.by(() => {
 		if (!displayWindow) return null;
 		if (resolvedWindow.unit && mappedScale?.unit === resolvedWindow.unit) {
-			const converted = windowToRender({ center: displayWindow.wc, width: displayWindow.ww }, mappedScale);
+			const converted = windowToRender({ center: displayWindow.wc, width: displayWindow.ww }, mappedScale, resolvedWindow.source === "live" || resolvedWindow.source === "explicit" && windowUnit !== null);
 			return { wc: converted.center, ww: converted.width };
 		}
 		return displayWindow;

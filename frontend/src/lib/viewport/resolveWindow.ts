@@ -22,11 +22,11 @@ export function resolveWindow(input: WindowInput): WindowResolution {
 	const { raw, mapping, requested, live, mode, server } = input;
 	const map = mapping?.real_world[0];
 	const scale = mappedWindowScale(mapping);
-	const mapped = (window: ResolvedWindow | null, source: WindowSource): WindowResolution => {
+	const mapped = (window: ResolvedWindow | null, source: WindowSource, exact = false): WindowResolution => {
 		if (!window) return { window: null, unit: null, source };
 		if (window.voiLut) return { window, unit: null, source: "voi_lut" };
 		if (!scale) return { window, unit: null, source };
-		const value = windowToMapped({ center: window.wc, width: window.ww }, scale);
+		const value = windowToMapped({ center: window.wc, width: window.ww }, scale, exact);
 		return { window: { wc: value.center, ww: value.width }, unit: scale.unit, source };
 	};
 	// Color has no scalar window, even if the toolbar has a preset selected.
@@ -48,11 +48,11 @@ export function resolveWindow(input: WindowInput): WindowResolution {
 			return { window, unit: map.unit_label, source };
 		}
 		const converted = request?.unit && scale
-			? windowToRender({ center: request.window.wc, width: request.window.ww }, scale) : null;
+			? windowToRender({ center: request.window.wc, width: request.window.ww }, scale, true) : null;
 		const window = resolveDisplayWindow(raw, null, null,
 			converted?.center ?? request?.window.wc ?? null,
 			converted?.width ?? request?.window.ww ?? null, mode, samplePresentation(raw, mapping));
-		return mapped(window, source);
+		return mapped(window, source, source === "explicit" && Boolean(request?.unit));
 	}
 	if (server) {
 		if (server.appliedWindow === "voi_lut") return { window: null, unit: null, source: "voi_lut" };
@@ -60,7 +60,7 @@ export function resolveWindow(input: WindowInput): WindowResolution {
 			if (server.appliedWindow === "real_world" && requested?.unit) return { ...requested, source: "real_world" };
 			return { window: server.window, unit: null, source: "fallback" };
 		}
-		return mapped(server.window, "server");
+		return mapped(server.window, "server", Boolean(requested?.unit));
 	}
 	const fallback = input.defaultWindow;
 	return mapped(fallback ? { wc: fallback.center, ww: fallback.width } : null, "pending");

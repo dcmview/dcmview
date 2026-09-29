@@ -154,7 +154,10 @@ A real-world mapping also switches the window to its unit, and
 `WindowSettings` records a drag in that unit. Display requests keep the
 window in its unit (it is part of the fetch scope and cache key), and the
 viewport's display loader converts each frame, including prefetched and
-cine frames, through that frame's own linear mapping; a window no linear
+cine frames, through that frame's own linear mapping. For integer Modality
+LINEAR, the converted window adds 0.5 to its center and 1 to its width to
+cancel the half-unit terms and preserve the continuous physical transfer
+function; the displayed unit window reverses that adjustment. A window no linear
 mapping expresses is sent with `unit`, and the server windows the frame's
 preferred mapping through the same per-stored-value table as the raw
 renderer (`render.rs` `encode_real_world_windowed_png`, decoded samples from
