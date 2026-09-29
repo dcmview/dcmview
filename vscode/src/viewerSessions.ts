@@ -107,9 +107,7 @@ async function startSessionInPanel(
       throw new Error('dcmview panel closed before startup completed.');
     }
     const theme = viewerTheme(vscode.window.activeColorTheme.kind);
-    const viewerUri = externalUri.with({
-      query: [externalUri.query, `theme=${theme}`].filter(Boolean).join('&'),
-    });
+    const viewerUri = viewerUrl(externalUri, theme);
     panel.webview.html = webviewHtml(panel.webview, viewerUri);
     const themeListener = vscode.window.onDidChangeActiveColorTheme((colorTheme) => {
       void panel.webview.postMessage({ type: THEME_MESSAGE_TYPE, theme: viewerTheme(colorTheme.kind) });
@@ -312,9 +310,15 @@ function viewerTheme(kind: vscode.ColorThemeKind): 'light' | 'dark' {
     : 'dark';
 }
 
-function webviewHtml(webview: vscode.Webview, externalUri: vscode.Uri): string {
-  const iframeSrc = escapeHtml(externalUri.toString());
-  const origin = `${externalUri.scheme}://${externalUri.authority}`;
+export function viewerUrl(externalUri: vscode.Uri, theme: 'light' | 'dark'): URL {
+  const url = new URL(externalUri.toString(true));
+  url.searchParams.set('theme', theme);
+  return url;
+}
+
+function webviewHtml(webview: vscode.Webview, externalUrl: URL): string {
+  const iframeSrc = escapeHtml(externalUrl.href);
+  const origin = externalUrl.origin;
   const frameOrigin = escapeHtml(origin);
   const nonce = crypto.randomBytes(16).toString('base64');
   const csp = [
