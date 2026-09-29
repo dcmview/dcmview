@@ -1,6 +1,6 @@
 import { fetchFrameValueMapping, type FrameValueMapping } from "../../api";
 import {
-	ensureWhenSettled,
+	METADATA_SETTLE_MS,
 	KeyedAsyncResource,
 	type AsyncResourceSnapshot,
 } from "../keyedAsyncResource";
@@ -31,6 +31,7 @@ export class ValueMappings {
 	/** The most recent mapping loaded for each file, while a frame's own loads. */
 	#latestByFile = $state.raw<Record<number, FrameValueMapping | undefined>>({});
 	readonly #resource: KeyedAsyncResource<FrameKey, FrameValueMapping>;
+	readonly #consumers = new Map<FrameKey, Set<symbol>>();
 
 	constructor(load: typeof fetchFrameValueMapping = fetchFrameValueMapping) {
 		this.#resource = new KeyedAsyncResource<FrameKey, FrameValueMapping>({
@@ -71,12 +72,34 @@ export class ValueMappings {
 
 	/** Loads this frame's mapping now. */
 	ensure(fileIndex: number, frameIndex: number): void {
-		void this.#resource.ensure(frameKey(fileIndex, frameIndex)).catch(() => {});
+		void this.load(fileIndex, frameIndex);
 	}
 
-	/** This frame's mapping, loading it if needed; null when it cannot load. */
-	load(fileIndex: number, frameIndex: number): Promise<FrameValueMapping | null> {
-		return this.#resource.ensure(frameKey(fileIndex, frameIndex)).catch(() => null);
+	/** Share a mapping until all its consumers cancel or the request settles. */
+	load(fileIndex: number, frameIndex: number, signal?: AbortSignal): Promise<FrameValueMapping | null> {
+		if (signal?.aborted) return Promise.resolve(null);
+		const key = frameKey(fileIndex, frameIndex);
+		const consumers = this.#consumers.get(key) ?? new Set<symbol>();
+		const consumer = Symbol();
+		consumers.add(consumer);
+		this.#consumers.set(key, consumers);
+		return new Promise((resolve) => {
+			let settled = false;
+			const finish = (value: FrameValueMapping | null, cancelled = false) => {
+				if (settled) return;
+				settled = true;
+				signal?.removeEventListener("abort", abort);
+				consumers.delete(consumer);
+				if (consumers.size === 0) {
+					this.#consumers.delete(key);
+					if (cancelled && this.#resource.get(key).status === "loading") this.#resource.invalidate(key);
+				}
+				resolve(value);
+			};
+			const abort = () => finish(null, true);
+			signal?.addEventListener("abort", abort, { once: true });
+			void this.#resource.ensure(key).then((value) => finish(value), () => finish(null));
+		});
 	}
 
 	/**
@@ -84,6 +107,12 @@ export class ValueMappings {
 	 * so cine and fast scrolling skip passing frames. Returns the cleanup.
 	 */
 	ensureWhenSettled(fileIndex: number, frameIndex: number): (() => void) | undefined {
-		return ensureWhenSettled(this.#resource, frameKey(fileIndex, frameIndex));
+		const controller = new AbortController();
+		const load = () => void this.load(fileIndex, frameIndex, controller.signal);
+		const timer = this.get(fileIndex, frameIndex) ? (load(), undefined) : setTimeout(load, METADATA_SETTLE_MS);
+		return () => {
+			clearTimeout(timer);
+			controller.abort();
+		};
 	}
 }
