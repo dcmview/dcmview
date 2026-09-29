@@ -7,6 +7,63 @@ use super::color::png_encoder;
 
 use super::{PixelError, PixelResult};
 
+/// Inspect the entire object on a discovery worker, holding at most one decoded
+/// frame. A later fractional sample prevents fallback even on binary edge slices.
+/// Decode failures must never turn a partially inspected object into a mask.
+pub(crate) fn segmentation_has_only_binary_samples(
+    file: &crate::types::FileEntry,
+) -> anyhow::Result<bool> {
+    use super::syntax::{codec_for_syntax, Codec};
+    use anyhow::{ensure, Context};
+    if !file.has_pixels
+        || file.frame_count == 0
+        || file.samples_per_pixel != 1
+        || !matches!(file.bits_allocated, 1 | 8)
+        || file.pixel_representation != 0
+    {
+        return Ok(false);
+    }
+    let codec = codec_for_syntax(&file.transfer_syntax_uid).context("unsupported SEG codec")?;
+    let expected = usize::try_from(u64::from(file.rows) * u64::from(file.columns))?;
+    ensure!(expected > 0, "empty SEG frame");
+    for frame in 0..file.frame_count {
+        let samples: Bytes = match codec {
+            Codec::Native => super::native::read_raw_uncompressed_blocking(file, frame)?.0,
+            Codec::Rle => super::rle::read_and_decode_frame(file, frame)?.into(),
+            Codec::Jpeg2000 => {
+                let (bytes, metadata) =
+                    super::jpeg2000::decode_raw_jp2_samples_blocking(file, frame)?;
+                ensure!(
+                    metadata.rows == file.rows
+                        && metadata.columns == file.columns
+                        && metadata.bits_allocated <= 8,
+                    "unexpected decoded SEG layout"
+                );
+                bytes
+            }
+            Codec::DeflatedImageFrame => super::deflated_frame::decode_binary_frame(file, frame)?
+                .samples
+                .into(),
+            Codec::JpegBaseline | Codec::JpegLossless | Codec::JpegLs | Codec::JpegXl => {
+                let decoded = super::pixeldata_frame::decode_frame(file, frame, "SEG")?;
+                ensure!(
+                    decoded.rows == file.rows
+                        && decoded.columns == file.columns
+                        && decoded.bits_allocated == 8
+                        && decoded.samples_per_pixel == 1,
+                    "unexpected decoded SEG layout"
+                );
+                decoded.bytes.into()
+            }
+        };
+        ensure!(samples.len() == expected, "incomplete SEG frame");
+        if samples.iter().any(|value| *value > 1) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 pub fn encode_segmentation_overlay_png(
     samples: &Bytes,
     metadata: &RawFrameMetadata,

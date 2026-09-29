@@ -170,7 +170,7 @@ pub(super) fn build_entry(path: &Path) -> Result<EntryInspection> {
         .unwrap_or_else(|| path.to_string_lossy().to_string());
     let label = build_label(&patient_id, &modality, &study_date, &fallback_label);
 
-    Ok(EntryInspection::Selected(Box::new(FileEntry {
+    let mut entry = FileEntry {
         index: 0,
         path: path.to_path_buf(),
         label,
@@ -187,6 +187,7 @@ pub(super) fn build_entry(path: &Path) -> Result<EntryInspection> {
         sop_instance_uid,
         sop_class_uid,
         series_metadata: Box::new(SeriesMetadata {
+            binary_fractional_seg_maximum: None,
             native_pixel: NativePixelMetadata {
                 planar_configuration,
                 bits_stored,
@@ -238,7 +239,25 @@ pub(super) fn build_entry(path: &Path) -> Result<EntryInspection> {
         rescale_intercept,
         transfer_syntax_uid,
         default_window,
-    })))
+    };
+    // Discovery already runs on blocking workers. Retain only the verdict,
+    // never the decoded masks, and finish before publishing this entry.
+    if entry.sop_class_uid == uids::SEGMENTATION_STORAGE
+        && read_first_string(&obj, tags::SEGMENTATION_TYPE).as_deref() == Some("FRACTIONAL")
+        && read_number::<u32>(&obj, tags::NUMBER_OF_FRAMES).unwrap_or(1) == entry.frame_count
+    {
+        if let Some(maximum) =
+            read_number::<u32>(&obj, tags::MAXIMUM_FRACTIONAL_VALUE).filter(|maximum| *maximum > 1)
+        {
+            match crate::pixels::segmentation_has_only_binary_samples(&entry) {
+                Ok(true) => entry.series_metadata.binary_fractional_seg_maximum = Some(maximum),
+                Ok(false) => {}
+                Err(error) => tracing::warn!(path = %path.display(), %error,
+                    "could not inspect fractional SEG samples; retaining declared interpretation"),
+            }
+        }
+    }
+    Ok(EntryInspection::Selected(Box::new(entry)))
 }
 
 fn valid_character_set(object: &dicom_object::DefaultDicomObject) -> bool {
@@ -543,6 +562,55 @@ fn build_label(patient_id: &str, modality: &str, study_date: &str, fallback: &st
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn fractional_seg_inspection_is_cached_and_requires_all_declared_frames() {
+        use dicom_core::{DataElement, PrimitiveValue, VR};
+        use dicom_dictionary_std::tags;
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/golden-seg-binary-valued-fractional.dcm");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("seg.dcm");
+        for (maximum, samples, expected) in [
+            (255_u16, vec![0, 1, 1, 0, 1, 0, 0, 1], Some(255)),
+            (255, vec![0; 8], Some(255)),
+            (1, vec![0, 1, 1, 0, 1, 0, 0, 1], None),
+            (255, vec![0, 1, 1, 0, 0, 0, 0, 2], None),
+            (255, vec![0, 1, 1, 0], None),
+        ] {
+            let mut object = dicom_object::open_file(&fixture).unwrap();
+            object.put(DataElement::new(
+                tags::MAXIMUM_FRACTIONAL_VALUE,
+                VR::US,
+                PrimitiveValue::from(maximum),
+            ));
+            object.put(DataElement::new(
+                tags::PIXEL_DATA,
+                VR::OB,
+                PrimitiveValue::U8(samples.into()),
+            ));
+            object.write_to_file(&path).unwrap();
+            let entry = crate::loader::test_entry(&path);
+            assert_eq!(
+                entry.series_metadata.binary_fractional_seg_maximum,
+                expected
+            );
+            std::fs::remove_file(&path).unwrap();
+            // A clone retains the verdict without any file access or lazy initialization.
+            assert_eq!(
+                entry.clone().series_metadata.binary_fractional_seg_maximum,
+                expected
+            );
+        }
+        std::fs::copy(&fixture, &path).unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_len(file.metadata().unwrap().len() - 2).unwrap();
+        let entry = crate::loader::test_entry(&path);
+        assert_eq!(
+            entry.series_metadata.binary_fractional_seg_maximum, None,
+            "a truncated final frame cannot promote the complete-looking first frame"
+        );
+    }
+
     use super::super::test_fixtures::base_object;
     use super::{
         build_entry, read_discovery_header, valid_specific_character_set, EntryInspection,

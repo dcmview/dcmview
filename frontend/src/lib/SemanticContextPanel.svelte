@@ -138,6 +138,7 @@
 					<span>Fractional type <b>{display(response.context.segmentation_fractional_type)}</b></span>
 					<span>Current frame segment <b>{display(currentSegmentMapping?.segment_number)}</b></span>
 				</div>
+				{#each response.context.warnings as warning}<p class="reason">{warning}</p>{/each}
 				{#each response.context.segments as segment (segment.number)}
 					{@const unused = unusedRecommendedColor(segment)}
 					<div class="item">

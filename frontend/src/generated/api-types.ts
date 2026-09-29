@@ -321,7 +321,7 @@ display_color: [number, number, number],
  */
 display_color_source: string, };
 
-export type SegmentationContext = { segmentation_type: string | null, segmentation_fractional_type: string | null, maximum_fractional_value: number | null, segments: Array<SegmentSummary>, frame_mappings: Array<SegmentFrameMapping>, references: Array<ReferenceSummary>, overlay: OverlayEligibility, };
+export type SegmentationContext = { warnings: Array<string>, segmentation_type: string | null, segmentation_fractional_type: string | null, maximum_fractional_value: number | null, segments: Array<SegmentSummary>, frame_mappings: Array<SegmentFrameMapping>, references: Array<ReferenceSummary>, overlay: OverlayEligibility, };
 
 export type SemanticContext = { "kind": "segmentation" } & SegmentationContext | { "kind": "parametric_map" } & ParametricMapContext | { "kind": "rt_dose" } & RtDoseContext | { "kind": "not_applicable", reason: string, };
 

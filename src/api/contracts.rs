@@ -449,6 +449,8 @@ pub struct CodedConceptSummary {
 
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct SegmentationContext {
+    // Interpretation warnings; empty when the declared samples need no fallback.
+    pub warnings: Vec<String>,
     pub segmentation_type: Option<String>,
     pub segmentation_fractional_type: Option<String>,
     pub maximum_fractional_value: Option<u32>,

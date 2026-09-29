@@ -141,7 +141,7 @@ pub(crate) async fn decode_raw_jp2_samples(
         .map_err(|error| PixelError::raw_decode(anyhow!("raw JP2 decode task failed: {error}")))?
 }
 
-fn decode_raw_jp2_samples_blocking(
+pub(super) fn decode_raw_jp2_samples_blocking(
     file: &FileEntry,
     frame: u32,
 ) -> PixelResult<(Bytes, RawFrameMetadata)> {

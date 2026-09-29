@@ -14,6 +14,105 @@ const SEG_STORAGE: &str = "1.2.840.10008.5.1.4.1.1.66.4";
 const RT_DOSE_STORAGE: &str = "1.2.840.10008.5.1.4.1.1.481.2";
 const CT_STORAGE: &str = "1.2.840.10008.5.1.4.1.1.2";
 
+/// Real discovery must classify the complete SEG before any overlay request.
+#[tokio::test]
+async fn fractional_seg_binary_fallback_is_object_wide_and_preserves_preview() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    for (name, expected_alphas, raw_frames) in [
+        (
+            "binary-valued-fractional",
+            [[0, 178, 178, 0], [178, 0, 0, 178]],
+            [[0, 1, 1, 0], [1, 0, 0, 1]],
+        ),
+        (
+            "fractional",
+            [[0, 0, 0, 0], [0, 51, 102, 204]],
+            [[0, 1, 1, 0], [0, 64, 128, 255]],
+        ),
+        (
+            "binary",
+            [[0, 178, 178, 0], [178, 0, 0, 178]],
+            [[0, 1, 1, 0], [1, 0, 0, 1]],
+        ),
+    ] {
+        let path = root.join(format!("golden-seg-{name}.dcm"));
+        let files = support::discover(
+            &[
+                path.clone(),
+                root.join(format!("golden-seg-{name}-source.dcm")),
+            ],
+            dcmview::loader::DiscoverOptions {
+                recursive: true,
+                filters: vec![],
+            },
+        )
+        .await
+        .expect("discover committed SEG/source pair")
+        .files;
+        let seg = files.iter().find(|file| file.path == path).expect("SEG");
+        let index = seg.index;
+        let server = TestServer::new(server::router(support::app_state(files)));
+        for frame in 0..2 {
+            let route = format!("/api/file/{index}/frame/{frame}/segmentation-overlay");
+            let response = server.get(&route).await;
+            response.assert_status_ok();
+            response.assert_header(header::CONTENT_TYPE, "image/png");
+            response.assert_header("X-Cache", "MISS");
+            let image = image::load_from_memory(response.as_bytes())
+                .unwrap()
+                .to_rgba8();
+            assert_eq!(image.dimensions(), (2, 2));
+            let alphas: Vec<_> = image.pixels().map(|pixel| pixel.0[3]).collect();
+            assert_eq!(alphas, expected_alphas[frame], "{name} frame {frame}");
+            let repeat = server.get(&route).await;
+            repeat.assert_header("X-Cache", "HIT");
+            assert_eq!(response.as_bytes(), repeat.as_bytes());
+            let raw = server
+                .get(&format!("/api/file/{index}/frame/{frame}/raw"))
+                .await;
+            raw.assert_status_ok();
+            assert_eq!(
+                raw.as_bytes().as_ref(),
+                raw_frames[frame],
+                "unchanged stored samples"
+            );
+        }
+        let response = server
+            .get(&format!("/api/file/{index}/semantic-context"))
+            .await;
+        response.assert_status_ok();
+        let context: Value = response.json();
+        assert_eq!(context["pixel_preview_preserves_stored_values"], true);
+        let context = &context["context"];
+        assert_eq!(
+            context["segmentation_type"],
+            if name == "binary" {
+                "BINARY"
+            } else {
+                "FRACTIONAL"
+            }
+        );
+        assert_eq!(
+            context["maximum_fractional_value"],
+            if name == "binary" {
+                Value::Null
+            } else {
+                serde_json::json!(255)
+            }
+        );
+        assert_eq!(
+            context["warnings"],
+            if name == "binary-valued-fractional" {
+                serde_json::json!([
+                    "Declared FRACTIONAL (maximum 255) but stores only 0 and 1; shown as binary"
+                ])
+            } else {
+                serde_json::json!([])
+            }
+        );
+    }
+}
+
 #[tokio::test]
 async fn segmentation_context_reports_segment_closure_and_validated_overlay() {
     let dir = tempdir().expect("temp dir");

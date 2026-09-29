@@ -160,6 +160,8 @@ pub struct FileEntry {
 
 #[derive(Debug, Clone, Default)]
 pub struct SeriesMetadata {
+    /// Discovery-time verdict for a binary-valued FRACTIONAL SEG; retains its declared maximum.
+    pub binary_fractional_seg_maximum: Option<u32>,
     pub native_pixel: NativePixelMetadata,
     pub presentation: PresentationMetadata,
     pub frame_of_reference_uid: String,

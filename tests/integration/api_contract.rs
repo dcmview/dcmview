@@ -670,3 +670,57 @@ async fn server_identity_header_covers_success_errors_and_fallbacks() {
         .get(SERVER_INSTANCE_HEADER)
         .is_none());
 }
+
+#[tokio::test]
+async fn segmentation_context_always_includes_a_string_array_of_warnings() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    for name in ["binary", "fractional", "binary-valued-fractional"] {
+        let report = support::discover(
+            &[root.join(format!("golden-seg-{name}.dcm"))],
+            dcmview::loader::DiscoverOptions {
+                recursive: true,
+                filters: vec![],
+            },
+        )
+        .await
+        .unwrap();
+        let server = TestServer::new(server::router(support::app_state(report.files)));
+        let response = server.get("/api/file/0/semantic-context").await;
+        response.assert_status_ok();
+        response.assert_header(header::CONTENT_TYPE, "application/json");
+        let value: Value = response.json();
+        let context = &value["context"];
+        assert_eq!(context["kind"], "segmentation");
+        let warnings = context["warnings"]
+            .as_array()
+            .expect("required warnings array");
+        assert!(warnings.iter().all(Value::is_string));
+        assert_eq!(
+            warnings.len(),
+            usize::from(name == "binary-valued-fractional")
+        );
+        // The additive field leaves the declared attributes and existing shape intact.
+        let keys: std::collections::BTreeSet<_> = context
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                "kind",
+                "warnings",
+                "segmentation_type",
+                "segmentation_fractional_type",
+                "maximum_fractional_value",
+                "segments",
+                "frame_mappings",
+                "references",
+                "overlay"
+            ]
+            .into_iter()
+            .collect()
+        );
+    }
+}

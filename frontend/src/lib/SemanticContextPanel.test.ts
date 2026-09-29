@@ -120,6 +120,7 @@ function segmentationContext(): SemanticContextResponse {
 		pixel_preview_preserves_stored_values: true,
 		context: {
 			kind: "segmentation",
+			warnings: [],
 			segmentation_type: "BINARY",
 			segmentation_fractional_type: null,
 			maximum_fractional_value: null,
@@ -150,6 +151,22 @@ function segmentationContext(): SemanticContextResponse {
 }
 
 describe("SemanticContextPanel SEG section", () => {
+	it("shows the binary interpretation warning without replacing declared metadata", async () => {
+		const response = segmentationContext();
+		if (response.context.kind !== "segmentation") throw new Error("SEG fixture");
+		response.context.segmentation_type = "FRACTIONAL";
+		response.context.segmentation_fractional_type = "OCCUPANCY";
+		response.context.maximum_fractional_value = 255;
+		const warning = "Declared FRACTIONAL (maximum 255) but stores only 0 and 1; shown as binary";
+		response.context.warnings = [warning];
+		fetchSemanticContext.mockResolvedValue(response);
+		render(SemanticContextPanel, { fileIndex: SEG.index, currentFrame: 0, files: [SEG], onopenreference: vi.fn() });
+		await showSemanticContext();
+		expect(screen.getByText(warning)).toBeTruthy();
+		expect(screen.getByText("FRACTIONAL")).toBeTruthy();
+		expect(screen.getByText("OCCUPANCY")).toBeTruthy();
+	});
+
 	it("shows the overlay color the server applies and any unused recommended color", async () => {
 		fetchSemanticContext.mockResolvedValue(segmentationContext());
 		const { container } = render(SemanticContextPanel, {
