@@ -10,7 +10,7 @@ diagnostic viewer.
 
 ## Unreleased
 
-## 0.3.0 - 2026-09-28
+## 0.3.0 - 2026-09-29
 
 ### Added
 

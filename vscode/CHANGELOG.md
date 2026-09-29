@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## 0.3.0 - 2026-09-28
+## 0.3.0 - 2026-09-29
 
 - Terminal commands and Python calls route into VS Code when they carry its
   bridge environment or run inside a registered workspace folder; otherwise
