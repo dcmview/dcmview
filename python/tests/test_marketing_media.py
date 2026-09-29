@@ -4,6 +4,7 @@ import importlib.util
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts" / "marketing_media.py"
@@ -192,6 +193,43 @@ class MarketingMediaSourceTests(unittest.TestCase):
 			marketing_media.viewer_gallery(
 				{}, asset_base="https://example.test/media", attribution_url="/attribution"
 			)
+
+	def test_repo_only_publication_never_touches_the_sibling_repository(self) -> None:
+		with tempfile.TemporaryDirectory() as directory:
+			root = Path(directory) / "dcmview"
+			root.mkdir()
+			for name, anchor in [("README.md", "## Why use it?"), ("docs/index.md", "## User Guides"), ("vscode/README.md", "## Supported Platforms")]:
+				path = root / name
+				path.parent.mkdir(parents=True, exist_ok=True)
+				path.write_text(anchor + "\n")
+			docs = root.parent / "dcmview-docs"
+			docs.mkdir()
+			sentinel = docs / "owner-work.txt"
+			sentinel.write_text("preserve")
+			bundle = root / "bundle"
+			bundle.mkdir()
+			scenes = marketing_media.resolve_scenes(
+				captures=marketing_media.load_json(marketing_media.DEFAULT_CAPTURES),
+				sources=marketing_media.load_json(marketing_media.DEFAULT_SOURCES), requested=[],
+			)
+			lock = {"dcmview_version": "0.3.0", "artifacts": [{"scene_id": scene["id"], "path": scene["output"]} for scene in scenes]}
+			for artifact in lock["artifacts"]:
+				(bundle / artifact["path"]).write_bytes(b"reviewed media")
+			(bundle / marketing_media.MEDIA_LOCK_NAME).write_text(json.dumps(lock))
+			(bundle / marketing_media.ATTRIBUTION_NAME).write_text("Attribution")
+			with patch.object(marketing_media, "REPO_ROOT", root):
+				parser = marketing_media.build_parser()
+				default = parser.parse_args(["publish", "--tag", "v0.3.0"])
+				self.assertEqual(default.docs_repo, docs)
+				self.assertFalse(default.repo_only)
+				args = parser.parse_args(["publish", "--tag", "v0.3.0", "--approve", "--repo-only", "--bundle", str(bundle)])
+				with patch.object(marketing_media, "verify_media_bundle", return_value=lock) as verify:
+					marketing_media.publish_media(args)
+					verify.assert_called_once_with(args, quiet=True)
+			self.assertEqual(list(docs.iterdir()), [sentinel])
+			self.assertEqual(sentinel.read_text(), "preserve")
+			self.assertEqual((root / "media/marketing/mr-seg-cine.gif").read_bytes(), b"reviewed media")
+			self.assertIn("/v0.3.0/media/marketing/", (root / "README.md").read_text())
 
 	def test_parses_the_binary_startup_event(self) -> None:
 		class FakeProcess:

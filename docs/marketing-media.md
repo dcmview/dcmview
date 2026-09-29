@@ -145,6 +145,12 @@ python scripts/marketing_media.py publish \
   --approve
 ```
 
+When acceptance review requires deferring the separate documentation repository,
+use `publish --tag "v${VERSION}" --repo-only --approve`. This updates the root,
+local docs, and Marketplace galleries without accessing `dcmview-docs`.
+`--repo-only` and `--docs-repo` are mutually exclusive; the default publication
+continues to update every surface.
+
 Publication copies the same bundle into the root README/PyPI asset directory,
 the VS Code/Open VSX Marketplace asset directory, and `dcmview-docs`; it updates
 bounded Markdown gallery blocks and creates the documentation attribution page.
