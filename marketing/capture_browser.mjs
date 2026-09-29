@@ -63,6 +63,13 @@ async function waitForRendered(page, expectedFileIndex = null, expectedFrameInde
 		{ timeout: 45_000 },
 	);
 	await page.evaluate(() => document.fonts.ready);
+	await waitForTags(page);
+}
+
+async function waitForTags(page) {
+	// Pixel rendering can finish before the tag tree (notably for WSI).
+	await page.getByRole("button", { name: "Copy (0008,0016) SOPClassUID", exact: true })
+		.waitFor({ state: "visible", timeout: 45_000 });
 }
 
 async function advanceFrame(page, step = 1) {
@@ -87,6 +94,7 @@ async function advanceFrame(page, step = 1) {
 			before,
 			{ timeout: 45_000 },
 		);
+		await waitForTags(page);
 	}
 }
 
