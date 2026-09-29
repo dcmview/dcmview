@@ -62,12 +62,10 @@ export class WindowSettings {
 		this.center = center;
 		this.width = width;
 		this.unit = unit;
-		if (unit !== null) {
-			this.#manual = null;
-			this.mode = "default";
-			this.presetId = "default";
-			return;
-		}
+		this.mode = "default";
+		this.presetId = "default";
+		this.#manual = null;
+		if (unit !== null) return;
 		if (fileIndex === null || !Number.isFinite(center) || !Number.isFinite(width) || width <= 0) return;
 		const base = usableWindow(this.#defaultWindow(fileIndex));
 		if (!base) {
@@ -78,8 +76,6 @@ export class WindowSettings {
 			centerOffsetRatio: (center - base.center) / base.width,
 			widthRatio: width / base.width,
 		};
-		this.mode = "default";
-		this.presetId = "default";
 	}
 
 	/** Re-applies a manual adjustment to a newly active file's default window. */

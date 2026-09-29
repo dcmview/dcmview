@@ -60,6 +60,15 @@ describe("WindowSettings", () => {
 		expect(state(window)).toEqual({ center: null, width: null, mode: "default", presetId: "default" });
 	});
 
+	it.each([3, null])("leaves Full Dynamic and presets on a manual window without a default (%s)", (fileIndex) => {
+		const window = settings();
+		for (const preset of ["full_dynamic", "brain"]) {
+			window.selectPreset(preset);
+			window.recordManual(fileIndex, 0.2, 0.1);
+			expect(state(window)).toEqual({ center: 0.2, width: 0.1, mode: "default", presetId: "default" });
+		}
+	});
+
 	it("carries a real-world window to the next file unchanged", () => {
 		const window = settings();
 		window.selectPreset("full_dynamic");
