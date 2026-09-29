@@ -666,3 +666,24 @@ describe("F11 remaining confirmations", () => {
 		expect(readout.textContent).not.toContain("stored 123");
 	});
 });
+
+
+describe("ImageViewport frame presentation", () => {
+	it("keeps the painted image while the next file's raw frame is pending", async () => {
+		const context = {
+			clearRect: vi.fn(), putImageData: vi.fn(), drawImage: vi.fn(),
+			createImageData: (w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4) }),
+		};
+		const canvas = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(context as unknown as CanvasRenderingContext2D);
+		try {
+			fetchRawFrame.mockImplementation(async (file) => file === 5 ? rawFrame() : new Promise(() => {}));
+			fetchFrameValueMapping.mockImplementation(async (file) => identityMapping(file));
+			const { rerender } = renderViewport({ activeTool: "window_level" });
+			await waitFor(() => expect(context.putImageData).toHaveBeenCalled());
+			context.clearRect.mockClear();
+			await rerender({ activeFile: fileSummary(6) });
+			await waitFor(() => expect(fetchRawFrame).toHaveBeenCalledWith(6, 0, expect.any(AbortSignal)));
+			expect(context.clearRect).not.toHaveBeenCalled();
+		} finally { canvas.mockRestore(); }
+	});
+});

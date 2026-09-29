@@ -871,7 +871,7 @@
 		liveWindowCenter = null;
 		liveWindowWidth = null;
 		untrack(() => setSelectedRoi(null));
-		clearCanvas();
+		// Keep the previous pixels until the replacement is ready to draw.
 	});
 
 	$effect(() => {
