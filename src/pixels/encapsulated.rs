@@ -230,6 +230,24 @@ fn validate_offset_table(name: &str, offsets: &[u64], frame_count: u32) -> Resul
     Ok(())
 }
 
+/// Validate the declared fragment against the file before growing its frame buffer.
+fn checked_fragment_end(
+    reader: &mut BufReader<File>,
+    file_length: u64,
+    start: usize,
+    length: usize,
+) -> Result<usize> {
+    let remaining = file_length
+        .checked_sub(reader.stream_position()?)
+        .context("encapsulated fragment is truncated")?;
+    if u64::try_from(length)? > remaining {
+        return Err(anyhow!("encapsulated fragment is truncated"));
+    }
+    start
+        .checked_add(length)
+        .context("encapsulated frame size overflow")
+}
+
 /// Reads the fragments from the reader's position (the frame's first item,
 /// at `start` bytes past the first fragment) up to `end`, or the sequence
 /// delimiter for the last frame.
@@ -239,6 +257,7 @@ fn read_frame_at_offset(
     end: Option<u64>,
     encoded_length: Option<u64>,
 ) -> Result<Bytes> {
+    let file_length = reader.get_ref().metadata()?.len();
     let mut item_offset = start;
     let mut frame_data = Vec::new();
     while end.is_none_or(|end| item_offset < end) {
@@ -256,7 +275,13 @@ fn read_frame_at_offset(
             _ => return Err(anyhow!("encapsulated frame end is not an item boundary")),
         }
         let fragment_start = frame_data.len();
-        frame_data.resize(fragment_start + usize::try_from(length)?, 0);
+        let fragment_end = checked_fragment_end(
+            reader,
+            file_length,
+            fragment_start,
+            usize::try_from(length)?,
+        )?;
+        frame_data.resize(fragment_end, 0);
         reader
             .read_exact(&mut frame_data[fragment_start..])
             .context("encapsulated fragment is truncated")?;
@@ -290,6 +315,7 @@ fn read_frame_without_offsets(
     frame_count: u32,
     one_fragment_per_frame: bool,
 ) -> Result<Bytes> {
+    let file_length = reader.get_ref().metadata()?.len();
     let mut current_frame = 0_u32;
     let mut frame_data = Vec::new();
     loop {
@@ -300,7 +326,8 @@ fn read_frame_without_offsets(
         let length = usize::try_from(length)?;
         let frame_complete = if current_frame == target_frame {
             let fragment_start = frame_data.len();
-            frame_data.resize(fragment_start + length, 0);
+            let fragment_end = checked_fragment_end(reader, file_length, fragment_start, length)?;
+            frame_data.resize(fragment_end, 0);
             reader
                 .read_exact(&mut frame_data[fragment_start..])
                 .context("encapsulated fragment is truncated")?;
@@ -348,6 +375,48 @@ mod tests {
     use dicom_dictionary_std::{tags, uids};
     use dicom_object::{FileMetaTableBuilder, InMemDicomObject};
     use tempfile::tempdir;
+
+    #[test]
+    fn corrupt_fragment_lengths_with_offsets_are_rejected_before_reading() {
+        assert_corrupt_fragment_rejected_before_reading(true);
+    }
+
+    #[test]
+    fn corrupt_fragment_lengths_without_offsets_are_rejected_before_reading() {
+        assert_corrupt_fragment_rejected_before_reading(false);
+    }
+
+    fn assert_corrupt_fragment_rejected_before_reading(offsets: bool) {
+        use std::io::{BufReader, Seek, Write};
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(&[0xFE, 0xFF, 0x00, 0xE0]).unwrap();
+        file.write_all(&(1024_u32 * 1024).to_le_bytes()).unwrap();
+        file.write_all(b"tiny").unwrap();
+        file.rewind().unwrap();
+        let mut reader = BufReader::new(file);
+        let result = if offsets {
+            super::read_frame_at_offset(&mut reader, 0, None, None)
+        } else {
+            super::read_frame_without_offsets(&mut reader, 0, 2, false)
+        };
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("encapsulated fragment is truncated"));
+        assert_eq!(
+            reader.stream_position().unwrap(),
+            8,
+            "must reject length before payload read"
+        );
+    }
+
+    #[test]
+    fn near_u32_max_fragment_length_fails_the_allocation_preflight() {
+        let file = tempfile::tempfile().unwrap();
+        let mut reader = std::io::BufReader::new(file);
+        let error = super::checked_fragment_end(&mut reader, 0, 0, u32::MAX as usize).unwrap_err();
+        assert_eq!(error.to_string(), "encapsulated fragment is truncated");
+    }
 
     #[test]
     fn basic_offsets_assemble_multifragment_frames_for_random_access() {
