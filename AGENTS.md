@@ -77,6 +77,11 @@ would remove behavior, raise it as a question instead of acting.
 
 **Known gaps (intended work, not settled scope):**
 
+- **VOI LUT Function is not interpreted.** DICOM VOI LUT Function
+  (0028,1056), including `LINEAR_EXACT` and `SIGMOID`, is currently ignored.
+  Supporting these declared functions is deferred until after v0.3.0. The
+  exact window formula used for non-integer samples and real-world units does
+  not imply support for this attribute.
 - **Real-world windows need integer samples.** A window in the unit of a LUT
   mapping (or of a mapping behind a Modality LUT) is exact on the raw path
   and, through the display endpoint's `unit` query, in cine, for 8- and
