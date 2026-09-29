@@ -10,8 +10,31 @@ diagnostic viewer.
 
 ## Unreleased
 
+## 0.3.0 - 2026-09-28
+
 ### Added
 
+- A visible image-position scrubber supports mouse and keyboard seeking at
+  desktop, compact, and narrow widths; seeking pauses playback.
+- Display responses add `X-Frame-Window-Applied`: `linear`, `real_world`, or
+  `voi_lut` for grayscale presentation, omitted for color. The viewer trusts
+  only `real_world` as confirmation that a requested unit window was applied.
+- Every API response includes `X-Server-Instance`, including errors. A viewer
+  detects a replacement server on its next response and reloads the catalog
+  before using data from the new session.
+- `GET /api/file/{index}/frame/{frame}/value-mapping` returns JSON describing
+  stored, Modality, and real-world conversions. Separate RWVM instances can
+  supply mappings for all or selected referenced frames; embedded mappings
+  remain preferred.
+- `GET /api/file/{index}/frame/{frame}/dose-overlay` and
+  `GET /api/file/{index}/frame/{frame}/parametric-map-overlay` return the
+  source-aligned colorwash as transparent PNGs. Oblique planes are sampled
+  through patient coordinates with trilinear interpolation.
+- SEG overlays use the segment's recommended CIELab or grayscale display
+  color when provided, with palette colors as a fallback.
+- WSI context groups navigable companion images by label, overview, thumbnail,
+  volume, and other roles. RT Dose context shows grid dimensions, spacing,
+  offsets, patient geometry, and referenced objects.
 - `GET /api/file/{index}/frame/{frame}/presentation-layer` returns a frame's
   display shutter and overlay graphics as a transparent RGBA PNG;
   `FileSummary.presentation_layer` says which files have one. The value
@@ -43,7 +66,6 @@ diagnostic viewer.
 - `RUST_LOG` now controls logging (for example `RUST_LOG=dcmview=debug` lists
   every skipped file and why); server errors are logged to stderr with their
   request.
-
 - RLE Lossless frames labelled YBR_FULL_422, and JPEG Lossless and JPEG XL
   Lossless frames labelled YBR_FULL, now display in color. They were
   previously reported unsupported; a JPEG Lossless YBR_FULL frame requested
@@ -68,8 +90,8 @@ diagnostic viewer.
   legend shows the window's range, and a dragged window is kept in mapped
   units across frames and files. Each frame, including those cine plays and
   prefetches, converts the window through its own mapping. LUT mappings are
-  windowed exactly on the client-side raw path; during cine their window is
-  applied by its ends.
+  windowed exactly on the client-side raw path and, for supported integer
+  samples, through the display endpoint during cine.
 - With a dose or map overlay shown, the pixel readout also reports the
   overlaid value under the cursor ("dose 16.2 Gy"), from the new
   `dose-overlay/values` and `parametric-map-overlay/values` endpoints, which
@@ -83,6 +105,20 @@ diagnostic viewer.
 
 ### Changed
 
+- Play with the W/L tool selected uses server-rendered frames with the current
+  window; pausing returns to interactive client-side windowing when supported.
+- Float samples, fractional Modality values, and real-world windows use the
+  exact continuous window formula, including widths below one. Integer LINEAR
+  windows retain their minimum width of one and existing pixels.
+- The catalog's `raw_windowing_compatible` is always `true`, and
+  `raw_windowing_reason` is always `null`: the browser now reproduces the
+  declared LUTs, shutters, and overlays. Raw sample availability and browser
+  size limits still determine which render path is used.
+- `python -m dcmview_py` and the `dcmview`/`dcmview-py` console scripts forward
+  arguments, help, version, and exit status to the binary, preserving VS Code
+  routing.
+- ROI outlines, resize handles, and labels retain their screen size when
+  zooming; labels also remain upright through flips and rotation.
 - Built on dicom-rs 0.10; JPEG XL frames now decode with jxl-oxide 0.12.
   Frames, raw samples, tags and file metadata are unchanged.
 - Dragging the window on frames too large for the browser (over 20 Mpx) now
@@ -135,7 +171,6 @@ diagnostic viewer.
   carries the viewer's last output.
 - Release binaries are built with LTO and stripped (about 8.7 MB instead of
   17 MB).
-
 - VS Code routing now follows one rule for `dcmview`, `dcmview-py`, and
   `dcmview_py.view()`: open in VS Code from a VS Code terminal, or when the
   working directory is inside an open workspace folder. Otherwise the local
@@ -163,6 +198,29 @@ diagnostic viewer.
 
 ### Fixed
 
+- Cine resumes after returning to a cached tab. Closing a tab discards its
+  zoom, pan, and orientation, so reopening it starts fitted.
+- Presets replace a preceding live W/L drag, and a manual drag leaves Full
+  Dynamic and preset mode. The HUD, mapped legend, and unit fallback resolve
+  the same applied window, including MONOCHROME1 legend direction.
+- Scrolling retains the previous image until the next is ready. Images,
+  colorwash, presentation layers, mappings, and labels switch together;
+  prefetched mappings and overlays no longer blink or race during navigation.
+- A presentation-layer failure leaves the image visible with a note. Moving
+  between float32 and float64 files no longer combines samples with another
+  file's mapping or throws an exception.
+- Retry reloads a replacement server's catalog; on the same server it retries
+  failed resources and removes the failed-frame placeholder. References
+  refresh as discovery progresses and when it completes.
+- Tag copy, sequence expansion, and value expansion have separate native
+  buttons. Enter and Space activate the focused control without starting cine.
+- MONOCHROME1 browser pixels match server inversion, and pixel padding remains
+  black instead of turning white.
+- Stop-signal listeners are registered before the viewer URL is printed, so
+  an immediate Ctrl+C can shut the viewer down cleanly.
+- Encapsulated-frame reads reject a fragment length larger than the remaining
+  file before allocating its buffer, retaining the existing truncated-input
+  error.
 - A corrupt JPEG fragment is reported as a JPEG decode failure with the
   decoder's reason, not as an unsupported transfer syntax.
 - A transient raw-frame failure no longer turns off client-side window/level
@@ -178,7 +236,6 @@ diagnostic viewer.
 - Display frames larger than the viewer's frame caches (above roughly 32
   megapixels, such as an 8192x8192 image) are shown uncached instead of
   failing with a cache budget error.
-
 - The tag panel's Value column no longer starts past the panel's right edge;
   the keyword column truncates first, so values stay visible at any panel
   width.
@@ -189,6 +246,8 @@ diagnostic viewer.
 
 ### Removed
 
+- The Python wrapper no longer retries binaries older than v0.2.0 without
+  startup/bridge flags. Use a current bundled or explicitly selected binary.
 - Removed the `--tunnel`, `--tunnel-host`, and `--tunnel-port` options, the
   matching `dcmview-py` `view()` keyword arguments, and the `tunnelled` and
   `tunnel_host` fields of `/api/files`. The helper ran `ssh -L` on the machine
