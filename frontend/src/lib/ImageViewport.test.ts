@@ -755,3 +755,25 @@ describe("ImageViewport frame presentation", () => {
 		} finally { canvas.mockRestore(); }
 	});
 });
+
+
+describe("W/L cine", () => {
+	it("plays display frames with the current window and returns to raw windowing when paused", async () => {
+		fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"]), window: { wc: 40, ww: 80 }, appliedWindow: "linear" });
+		const onmanualwindowlevel = vi.fn();
+		const { rerender } = renderViewport({ activeTool: "window_level", file: fileSummary(5, { frame_count: 3 }),
+			windowCenter: 40, windowWidth: 80, onmanualwindowlevel });
+		await screen.findByText("W: 80 · C: 40");
+		await waitFor(() => expect(fetchRawFrame).toHaveBeenCalled());
+		await rerender({ cinePlaying: true });
+		await waitFor(() => expect(fetchDisplayFrame).toHaveBeenCalledWith(5, 0, { wc: 40, ww: 80, windowMode: "default" }, expect.any(AbortSignal)));
+		await rerender({ cinePlaying: false });
+		await screen.findByText("W: 80 · C: 40");
+		const viewport = screen.getByRole("application");
+		await fireEvent.pointerDown(viewport, { button: 0, clientX: 10, clientY: 10, pointerId: 1 });
+		await fireEvent.pointerMove(viewport, { clientX: 20, clientY: 10, pointerId: 1 });
+		await fireEvent.pointerUp(viewport, { clientX: 20, clientY: 10, pointerId: 1 });
+		expect(onmanualwindowlevel).toHaveBeenCalled();
+		expect(fetchDisplayFrame.mock.calls.some((call) => call[2]?.preview)).toBe(false);
+	});
+});

@@ -256,6 +256,7 @@
 	);
 	const pipelineMode = $derived.by<PipelineMode>(() => {
 		if (overlay) return "overlay";
+		if (cinePlaying) return "cine";
 		// Frames over the browser's limit stay on the server without first
 		// downloading their samples.
 		const rawFallback = (rawWindowLevelFallbackByFile[activeFile.index] ?? false)
