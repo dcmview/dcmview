@@ -201,6 +201,10 @@ diagnostic viewer.
 
 ### Fixed
 
+- The Python wrapper reads startup events only from the binary's stdout. It
+  used to merge stderr, where discovery warnings quote file names, so a
+  crafted file name could set `handle.url` to another address. stderr is
+  still echoed and included in `CalledProcessError` output.
 - FRACTIONAL SEGs that declare a maximum above 1 but store only 0/1 across
   the complete object now draw as binary masks, with a Semantic Context
   warning. Genuine fractional opacity and ordinary pixel previews are unchanged.

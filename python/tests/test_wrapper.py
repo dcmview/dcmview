@@ -214,8 +214,25 @@ class WrapperTests(unittest.TestCase):
 		self.assertIsNone(wrapper._parse_startup_url('{"type":"other","url":"http://127.0.0.1:1"}'))
 		self.assertIsNone(wrapper._parse_startup_url("dcmview: loaded 1 DICOM file"))
 
+	def test_output_monitor_ignores_startup_events_on_stderr(self) -> None:
+		# A discovery warning quotes the file name, which can spell an event.
+		forged = '{"type":"server_started","url":"http://evil.example/"}\n'
+		process = mock.Mock()
+		process.stdout = StringIO('{"type":"server_started","url":"http://127.0.0.1:51234"}\n')
+		process.stderr = StringIO(forged)
+		monitor = wrapper._OutputMonitor(process)
+
+		with redirect_stdout(StringIO()), mock.patch("sys.stderr", new_callable=StringIO) as stderr:
+			monitor.start()
+			monitor.join()
+
+		self.assertEqual(monitor.url, "http://127.0.0.1:51234")
+		self.assertEqual(stderr.getvalue(), forged)
+		self.assertIn(forged, monitor.tail())
+
 	def test_output_monitor_wait_for_url_times_out_without_startup_line(self) -> None:
 		process = mock.Mock()
+		process.stderr = None
 		process.stdout = StringIO("dcmview: loaded 1 DICOM file\n")
 		monitor = wrapper._OutputMonitor(process)
 
@@ -226,6 +243,7 @@ class WrapperTests(unittest.TestCase):
 
 	def test_view_routes_through_the_binary_bridge_client_by_default(self) -> None:
 		process = mock.Mock()
+		process.stderr = None
 		process.stdout = StringIO(
 			'{"type":"vscode_session_started","url":"http://127.0.0.1:9999"}\n'
 			"dcmview: opened in VS Code at http://127.0.0.1:9999\n"
@@ -248,6 +266,7 @@ class WrapperTests(unittest.TestCase):
 
 	def test_view_can_disable_vscode_bridge_per_call(self) -> None:
 		process = mock.Mock()
+		process.stderr = None
 		process.stdout = StringIO(
 			'{"type":"server_started","url":"http://127.0.0.1:51234"}\n'
 			'{"type":"scan_complete","file_count":1}\n'
@@ -267,6 +286,7 @@ class WrapperTests(unittest.TestCase):
 	def test_non_blocking_view_raises_when_the_scan_finds_nothing(self) -> None:
 		# The URL comes before discovery; a scan that finds no DICOM then exits 1.
 		process = mock.Mock()
+		process.stderr = None
 		process.stdout = StringIO('{"type":"server_started","url":"http://127.0.0.1:51234"}\n')
 		process.poll.return_value = None
 		process.wait.return_value = 1
@@ -281,6 +301,7 @@ class WrapperTests(unittest.TestCase):
 
 	def test_blocking_view_failure_carries_the_viewer_output(self) -> None:
 		process = mock.Mock()
+		process.stderr = None
 		process.stdout = StringIO("dcmview: no valid DICOM files found\n")
 		process.wait.return_value = 1
 
@@ -295,6 +316,7 @@ class WrapperTests(unittest.TestCase):
 	def test_interrupting_a_blocking_view_stops_the_viewer(self) -> None:
 		# A notebook interrupt reaches only Python, not the viewer process.
 		process = mock.Mock()
+		process.stderr = None
 		process.stdout = StringIO("")
 		process.poll.return_value = None
 		process.wait.side_effect = [KeyboardInterrupt(), 0]

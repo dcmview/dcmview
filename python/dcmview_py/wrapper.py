@@ -42,13 +42,19 @@ class _OutputMonitor:
 		self._scan_succeeded = threading.Event()
 		self._closed = threading.Event()
 		self._tail: deque[str] = deque(maxlen=_OUTPUT_TAIL_LINES)
+		self._tail_lock = threading.Lock()
 		self._thread = threading.Thread(target=self._run, name="dcmview-py-output", daemon=True)
+		self._stderr_thread = threading.Thread(
+			target=self._relay_stderr, name="dcmview-py-stderr", daemon=True
+		)
 
 	def start(self) -> None:
 		self._thread.start()
+		self._stderr_thread.start()
 
 	def join(self) -> None:
 		self._thread.join()
+		self._stderr_thread.join()
 
 	def wait_for_url(self, timeout: float) -> Optional[str]:
 		self._url_ready.wait(timeout)
@@ -70,7 +76,12 @@ class _OutputMonitor:
 
 	def tail(self) -> str:
 		"""The last lines of output, for an error raised after the viewer exited."""
-		return "".join(self._tail)
+		with self._tail_lock:
+			return "".join(self._tail)
+
+	def _remember(self, line: str) -> None:
+		with self._tail_lock:
+			self._tail.append(line)
 
 	def _set_url(self, url: str) -> None:
 		with self._url_lock:
@@ -88,7 +99,7 @@ class _OutputMonitor:
 			for line in stdout:
 				sys.stdout.write(line)
 				sys.stdout.flush()
-				self._tail.append(line)
+				self._remember(line)
 				event = _parse_event(line)
 				url = _startup_url(event)
 				if url is not None:
@@ -101,6 +112,21 @@ class _OutputMonitor:
 			self._closed.set()
 			self._url_ready.set()
 			self._scan_settled.set()
+
+	def _relay_stderr(self) -> None:
+		# Warnings on stderr quote file names and DICOM values, so a crafted
+		# name could spell a startup event. They are echoed and kept for error
+		# reports but never parsed: only stdout carries events.
+		stderr = self._process.stderr
+		if stderr is None:
+			return
+		try:
+			for line in stderr:
+				sys.stderr.write(line)
+				sys.stderr.flush()
+				self._remember(line)
+		finally:
+			stderr.close()
 
 
 class ShutdownHandle:
@@ -429,7 +455,7 @@ def _popen_options(*, vscode_bridge: bool = True) -> dict[str, object]:
 		env[_VSCODE_BRIDGE_BYPASS_ENV] = "1"
 	options: dict[str, object] = {
 		"stdout": subprocess.PIPE,
-		"stderr": subprocess.STDOUT,
+		"stderr": subprocess.PIPE,
 		"text": True,
 		"bufsize": 1,
 		"env": env,
