@@ -35,6 +35,14 @@ export class ViewStates {
 		this.#orientations = { ...this.#orientations, [scope]: change(this.orientation(scope)) };
 	}
 
+	/** Closing a tab retires its navigation scope, including pan and orientation. */
+	forget(scope: string): void {
+		const { [scope]: _transform, ...transforms } = this.#transforms;
+		const { [scope]: _orientation, ...orientations } = this.#orientations;
+		this.#transforms = transforms;
+		this.#orientations = orientations;
+	}
+
 	resetOrientation(scope: string): void {
 		if (!this.#orientations[scope]) return;
 		this.#orientations = { ...this.#orientations, [scope]: DEFAULT_ORIENTATION };

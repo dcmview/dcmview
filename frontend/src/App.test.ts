@@ -99,6 +99,27 @@ describe("App", () => {
 		expect(zoomLabel()).toBe("75%");
 	});
 
+	it("forgets a closed tab's zoom and orientation while retaining other open tabs", async () => {
+		await renderApp();
+		const initial = document.querySelector<HTMLElement>(".image-layer")!.style.transform;
+		await fireEvent.click(screen.getByRole("button", { name: "+" }));
+		await fireEvent.click(screen.getByRole("button", { name: "Flip horizontal" }));
+		await fireEvent.click(screen.getByRole("button", { name: "Rotate 90° clockwise" }));
+		expect(document.querySelector<HTMLElement>(".image-layer")!.style.transform).not.toBe(initial);
+		await openFromExplorer(1);
+		await fireEvent.click(screen.getByRole("button", { name: "−" }));
+		await fireEvent.click(document.querySelector<HTMLElement>('.tab[title="first.dcm"] .close')!);
+		expect(zoomLabel()).toBe("75%");
+		await openFromExplorer(0);
+		expect(zoomLabel()).toBe("100%");
+		expect(document.querySelector<HTMLElement>(".image-layer")!.style.transform).toBe(initial);
+		await fireEvent.click(tabButton("second.dcm"));
+		expect(zoomLabel()).toBe("75%");
+		await fireEvent.click(document.querySelector<HTMLElement>('.tab[title="second.dcm"] .close')!);
+		await openFromExplorer(1);
+		expect(zoomLabel()).toBe("100%");
+	});
+
 	it("switches tools from the keyboard but not while typing", async () => {
 		await renderApp();
 		expect(activeTool()).toBe("Pan");

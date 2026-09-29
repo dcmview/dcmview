@@ -113,6 +113,12 @@
 		tabs.openReference(entry.fileIndex, entry.frameIndex);
 	}
 
+	function closeTab(fileIndex: number): void {
+		const scope = tabs.tabs.find((tab) => tab.fileIndex === fileIndex)?.id;
+		tabs.close(fileIndex);
+		if (scope) viewStates.forget(scope);
+	}
+
 	function openFileFromNavigator(fileIndex: number) {
 		tabs.open(fileIndex);
 		layout.fileOpenedFromExplorer();
@@ -265,7 +271,7 @@
 				activeFileIndex={tabs.activeFileIndex}
 				activePosition={tabs.stackPosition}
 				onactivate={(fileIndex) => tabs.activate(fileIndex)}
-				onclose={(fileIndex) => tabs.close(fileIndex)}
+				onclose={closeTab}
 			/>
 			<span class="compact-sidebar-button tags-drawer-button">
 				<Button
