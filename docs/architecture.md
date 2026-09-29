@@ -299,8 +299,8 @@ The contract is kept consistent by three layers:
   `{"code":"stable_machine_code","error":"human-readable detail"}`. Codes are
   owned by `ApiErrorCode` in the canonical Rust contract; messages may add
   context without changing automation behavior.
-- `/api/health` exposes the package version plus build source revision, target,
-  and profile so compatibility evidence can identify the tested viewer build.
+- `/api/health` exposes the package version plus build target and profile so
+  compatibility evidence can identify the tested viewer build.
 - `/api/files` exposes a response-bounded view of the 256 most recent entries
   in the memory-only discovery ledger and each file's SOP Class, coarse object
   kind, and explicit `renderable`, `metadata_only`, or `unsupported` state with
@@ -470,9 +470,10 @@ inside, and a circle's radius counts pixels along a row, so non-square pixels
 keep it physically round. A bitmap shutter's overlay plane is taken out of the
 overlay list at load time, so it masks the image and is never drawn.
 Standalone one-bit overlay planes are composited last in DICOM LSB-first
-order. These presentation operations affect PNG display frames only; raw-frame
-bytes remain the decoded source samples, and any overlay or shutter marks the
-file incompatible with client raw windowing.
+order. Raw-frame bytes remain the decoded source samples: the server applies
+these presentation operations to PNG display frames, and the browser draws the
+same operations from the frame's `presentation-layer` over its own windowed
+image, so a shutter or overlay no longer keeps a file on server windowing.
 
 Color display frames take the same shutter. Every color decode path converts
 to interleaved RGB and ends in `render::encode_rgb8_display_png`, which fills
