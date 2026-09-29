@@ -136,6 +136,36 @@ describe("RawFrameSource", () => {
 });
 
 describe("DisplayFrameSource", () => {
+	it("prefetches companion layers across already cached display frames", async () => {
+		const load = vi.fn(async () => png());
+		const prepare = vi.fn(async (_file: number, _frame: number) => {});
+		const source = new DisplayFrameSource({ load, prepare,
+			navigationScope: () => "tab", concurrency: () => 3, onScopeChange: vi.fn() });
+		for (let frame = 0; frame < 4; frame++) await source.ensureFrame(1, frame, {});
+		prepare.mockClear(); load.mockClear();
+		source.startPrefetch(navigationFramesForFile(1, 4), 0, 1, {}, 3, "loop");
+		await flush();
+		expect(prepare.mock.calls.map(([, frame]) => frame).sort()).toEqual([1, 2, 3]);
+		expect(load).not.toHaveBeenCalled();
+	});
+
+	it("waits for companion layers even when the display PNG is cached", async () => {
+		const load = vi.fn(async (): Promise<DisplayFrame> => ({ blob: new Blob(["png"]), window: null, appliedWindow: null }));
+		let prepared: Promise<void> = Promise.resolve();
+		const source = new DisplayFrameSource({ load, prepare: () => prepared,
+			navigationScope: () => "tab", concurrency: () => 1, onScopeChange: vi.fn() });
+		await source.ensureFrame(1, 0, {});
+		let finish!: () => void;
+		prepared = new Promise(resolve => { finish = resolve; });
+		const ready = vi.fn();
+		const pending = source.ensureFrame(1, 0, {}).then(ready);
+		await flush();
+		expect(ready).not.toHaveBeenCalled();
+		finish(); await pending;
+		expect(ready).toHaveBeenCalledOnce();
+		expect(load).toHaveBeenCalledOnce();
+	});
+
 	type Load = (file: number, frame: number, options: DisplayFrameWindowOptions, signal: AbortSignal) => Promise<DisplayFrame>;
 
 	function png(blob: Blob = new Blob(["png"])): DisplayFrame {

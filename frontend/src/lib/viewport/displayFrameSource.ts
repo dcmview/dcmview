@@ -28,6 +28,8 @@ const PREFETCH_RESEED_DISTANCE = 6;
 
 export type DisplayFrameSourceOptions = {
 	load?: typeof fetchDisplayFrame;
+	/** Prepare a frame’s companion layers, including when its PNG is cached. */
+	prepare?: (fileIndex: number, frameIndex: number, signal: AbortSignal) => Promise<unknown>;
 	/** The navigation scope (open tab) whose frames are being fetched. */
 	navigationScope: () => string;
 	/** Parallel prefetch requests. */
@@ -75,6 +77,7 @@ function leaseDecode(decode: SharedDecode): DisplayBitmap {
  */
 export class DisplayFrameSource {
 	readonly #load: typeof fetchDisplayFrame;
+	readonly #prepare: DisplayFrameSourceOptions["prepare"];
 	readonly #navigationScope: () => string;
 	readonly #concurrency: () => number;
 	readonly #onScopeChange: () => void;
@@ -93,8 +96,9 @@ export class DisplayFrameSource {
 	/** Where navigation last seeded a prefetch; the widened prefetch starts there. */
 	#lastSeed = 0;
 
-	constructor({ load = fetchDisplayFrame, navigationScope, concurrency, onScopeChange }: DisplayFrameSourceOptions) {
+	constructor({ load = fetchDisplayFrame, prepare, navigationScope, concurrency, onScopeChange }: DisplayFrameSourceOptions) {
 		this.#load = load;
+		this.#prepare = prepare;
 		this.#navigationScope = navigationScope;
 		this.#concurrency = concurrency;
 		this.#onScopeChange = onScopeChange;
@@ -122,13 +126,16 @@ export class DisplayFrameSource {
 		this.enterScope(options);
 		const key = this.key(fileIndex, frameIndex, options);
 		const cached = this.#caches.frames.get(key);
-		if (cached) return Promise.resolve(cached);
+		if (cached && !this.#prepare) return Promise.resolve(cached);
 		const existing = this.#requests.get(key) as Promise<DisplayFrame> | undefined;
 		if (existing) return existing;
 		return this.#requests.request(key, (signal) => {
 			this.#framesInFlight.set(key, `${fileIndex}:${frameIndex}`);
-			return this.#load(fileIndex, frameIndex, options, signal)
-				.then((frame) => {
+			return Promise.all([
+				cached ?? this.#load(fileIndex, frameIndex, options, signal),
+				this.#prepare?.(fileIndex, frameIndex, signal),
+			])
+				.then(([frame]) => {
 					this.#caches.frames.set(key, frame);
 					return frame;
 				})
@@ -301,7 +308,7 @@ export class DisplayFrameSource {
 				const frame = frames[position];
 				if (!frame) return;
 				const key = this.key(frame.file_index, frame.frame_index, options);
-				if (signal.aborted || this.#caches.frames.has(key)) return;
+				if (signal.aborted || (!this.#prepare && this.#caches.frames.has(key))) return;
 				try {
 					await this.ensureFrame(frame.file_index, frame.frame_index, options);
 				} catch {
