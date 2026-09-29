@@ -3,6 +3,7 @@
 	import {
 		ApiError,
 		fetchDisplayFrame,
+		fetchSelectedTag,
 		isApiError,
 		type DisplayFrame,
 		type DisplayFrameWindowOptions,
@@ -172,6 +173,7 @@
 	// proxied metadata object cannot be structured-cloned.
 	let currentRawFrame = $state.raw<RawFrame | null>(null);
 	let currentRawFrameKey = $state("");
+	let displayPhotometric = $state.raw<{ fileIndex: number; value: string } | null>(null);
 	// The window the server rendered the displayed PNG with, if linear, and
 	// whether that PNG was requested in a real-world unit.
 	let shownDisplay = $state.raw<Pick<DisplayFrame, "window" | "appliedWindow"> | null>(null);
@@ -309,7 +311,10 @@
 		};
 	});
 	const windowColors = $derived.by(() => {
-		const mono1 = currentRawFrame?.metadata.photometricInterpretation.trim().toUpperCase() === "MONOCHROME1";
+		const photometric = currentRawFrameKey === `${activeFile.index}:${currentFrame}` && currentRawFrame
+			? currentRawFrame.metadata.photometricInterpretation
+			: displayPhotometric?.fileIndex === activeFile.index ? displayPhotometric.value : "";
+		const mono1 = photometric.trim().toUpperCase() === "MONOCHROME1";
 		const decreasing = mappedScale !== null && mappedScale.ratio < 0;
 		return mono1 !== decreasing ? ["#fff", "#000"] : ["#000", "#fff"];
 	});
@@ -828,6 +833,22 @@
 		untrack(() => {
 			if (dragState?.mode === "wl") endDrag();
 		});
+	});
+
+	// Display PNGs contain no raw headers. Read just the polarity tag when a
+	// mapped legend needs it, rather than downloading a frame's samples.
+	$effect(() => {
+		if (!resolvedWindow.unit || pipelineMode === "diagnostic_wl") return;
+		const fileIndex = activeFile.index;
+		if (untrack(() => displayPhotometric?.fileIndex) === fileIndex) return;
+		const controller = new AbortController();
+		void fetchSelectedTag(fileIndex, { path: "(0028,0004)" }, controller.signal)
+			.then(({ value }) => {
+				if (!controller.signal.aborted && value.type === "string") {
+					displayPhotometric = { fileIndex, value: value.value };
+				}
+			}).catch(() => {});
+		return () => controller.abort();
 	});
 
 	// A window/level drag on a server-windowed frame shows server previews.

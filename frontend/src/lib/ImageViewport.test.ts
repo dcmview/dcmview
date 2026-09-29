@@ -17,6 +17,7 @@ vi.mock("../api", async (importOriginal) => ({
 	fetchDisplayFrame: vi.fn(async () => ({ blob: new Blob(["png"], { type: "image/png" }), window: null, appliedWindow: null })),
 	fetchRawFrame: vi.fn(),
 	fetchFrameValueMapping: vi.fn(),
+	fetchSelectedTag: vi.fn(),
 	fetchDoseOverlayBlob: vi.fn(),
 	fetchSegmentationOverlayBlob: vi.fn(async () => new Blob(["seg"])),
 	fetchDoseOverlayValues: vi.fn(),
@@ -109,6 +110,7 @@ beforeEach(() => {
 	fetchRawFrame.mockResolvedValue(rawFrame());
 	fetchFrameValueMapping.mockReset();
 	fetchFrameValueMapping.mockResolvedValue(identityMapping());
+	vi.mocked(api.fetchSelectedTag).mockResolvedValue({ tag: "(0028,0004)", keyword: "PhotometricInterpretation", vr: "CS", value: { type: "string", value: "MONOCHROME2" } });
 	fetchDoseOverlayBlob.mockReset();
 	fetchDoseOverlayBlob.mockResolvedValue(new Blob(["png"], { type: "image/png" }));
 	drawOverlayLayer.mockClear();
@@ -593,6 +595,16 @@ describe("ImageViewport window presentation consistency", () => {
 		renderViewport({ activeTool: "window_level" });
 		const legend = await screen.findByRole("figure", { name: /ADC:/ });
 		expect(legend.querySelector(".bar")?.getAttribute("style")).toContain("#fff, #000");
+	});
+
+	it("inverts a mapped MONOCHROME1 legend on the display path without downloading raw samples", async () => {
+		fetchFrameValueMapping.mockResolvedValue(adcMapping());
+		fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"]), window: { wc: 100, ww: 200 }, appliedWindow: "linear" });
+		vi.mocked(api.fetchSelectedTag).mockResolvedValue({ tag: "(0028,0004)", keyword: "PhotometricInterpretation", vr: "CS", value: { type: "string", value: "MONOCHROME1" } });
+		renderViewport();
+		const legend = await screen.findByRole("figure", { name: /ADC:/ });
+		await waitFor(() => expect(legend.querySelector(".bar")?.getAttribute("style")).toContain("#fff, #000"));
+		expect(fetchRawFrame).not.toHaveBeenCalled();
 	});
 
 	it("does not preview or label a color frame that starts on server windowing", async () => {
