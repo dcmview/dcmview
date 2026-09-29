@@ -154,6 +154,14 @@ export function renderRawFrameToRgba(
 	return output;
 }
 
+/**
+ * The window a raw frame is shown with: full dynamic, the live or explicit
+ * window, the DICOM window, else the 1st/99th percentile. A live or explicit
+ * window on integer Modality values is reported as LINEAR applies it (and as
+ * the server reports it), at least one value wide; a window carried over at a
+ * sub-unit relative width therefore never reads "W: 0". Continuous values
+ * keep sub-unit widths.
+ */
 export function resolveDisplayWindow(
 	frame: RawFrame,
 	liveWc: number | null,
@@ -166,11 +174,13 @@ export function resolveDisplayWindow(
 	if (mode === "full_dynamic") {
 		return computeFullDynamicWindow(frame, presentation);
 	}
+	const applied = (center: number, width: number): ResolvedWindow => ({ wc: center,
+		ww: integerModality(presentation ?? samplePresentation(frame, null)) ? Math.max(width, 1) : width });
 	if (liveWc !== null && liveWw !== null) {
-		return { wc: liveWc, ww: liveWw };
+		return applied(liveWc, liveWw);
 	}
 	if (wc !== null && ww !== null) {
-		return { wc, ww };
+		return applied(wc, ww);
 	}
 	const { defaultWc, defaultWw } = frame.metadata;
 	if (defaultWc !== null && defaultWw !== null) {

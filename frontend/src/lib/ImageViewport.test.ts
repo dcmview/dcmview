@@ -736,6 +736,15 @@ describe("ImageViewport frame presentation", () => {
 		} finally { restore(); }
 	});
 
+	it("shows a carried sub-unit window on integer samples as the one unit it applies", async () => {
+		const { context, restore } = canvasContext();
+		try {
+			renderViewport({ activeTool: "window_level", windowCenter: 40, windowWidth: 0.3 });
+			await waitFor(() => expect(context.putImageData).toHaveBeenCalled());
+			await screen.findByText("W: 1 · C: 40");
+		} finally { restore(); }
+	});
+
 	it.each(["next file", "next frame", "mid-drag file"])("does not edit held ROIs while the %s is pending", async (destination) => {
 		const { context, restore } = canvasContext();
 		const changesFile = destination !== "next frame";

@@ -84,6 +84,9 @@ export class WindowSettings {
 		const base = usableWindow(this.#defaultWindow(fileIndex));
 		if (!base) return;
 		this.center = base.center + this.#manual.centerOffsetRatio * base.width;
+		// Only the frame knows whether its values are integers: there LINEAR
+		// applies, and the HUD reports, at least one unit (resolveDisplayWindow
+		// and the server); continuous values keep a sub-unit width.
 		this.width = Math.max(Number.MIN_VALUE, this.#manual.widthRatio * base.width);
 		this.mode = "default";
 	}
