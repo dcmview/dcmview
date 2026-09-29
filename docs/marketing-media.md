@@ -117,6 +117,11 @@ dcmview** contribution, opens the viewer, and advances the CT stack. On macOS,
 the isolated profile sets `window.menuStyle` to `custom` because native OS menus
 are not part of the browser screenshot surface. This setting never touches the
 developer's VS Code profile and the temporary workspace is removed after capture.
+Before capturing the viewer frames, the harness checks the initial theme in the
+real Electron webview, switches the isolated editor to the opposite light/dark
+theme, checks that the viewer follows, and switches back to the capture theme.
+These assertions exercise the initial URL and live theme messages; they never
+override the viewer's theme directly.
 
 ## Verify And Publish The Approved Set
 
