@@ -69,6 +69,7 @@ fn main() {
     write_display_shutter_fixtures(&fixture_dir);
     write_sr_without_pixels(&fixture_dir.join("golden-no-pixels-sr.dcm"));
     write_image_without_pixels(&fixture_dir.join("golden-image-no-pixels.dcm"));
+    write_segmentation_fixtures(&fixture_dir);
     write_rt_dose_overlay_fixtures(&fixture_dir);
     write_parametric_map_overlay_fixtures(&fixture_dir);
     write_real_world_value_mapping_instance(&fixture_dir.join("golden-rwvm-ct-hounsfield.dcm"));
@@ -156,6 +157,154 @@ fn fixture_code(value: &str, scheme: &str, meaning: &str) -> InMemDicomObject {
         DataElement::new(tags::CODING_SCHEME_DESIGNATOR, VR::SH, scheme),
         DataElement::new(tags::CODE_MEANING, VR::LO, meaning),
     ])
+}
+
+/// Two-frame SEG/source pairs. The genuine fractional object's first frame
+/// contains only 0/1: only its second frame distinguishes it from a binary mask.
+fn write_segmentation_fixtures(dir: &Path) {
+    for (case, name, segmentation_type, samples) in [
+        (
+            0,
+            "binary-valued-fractional",
+            "FRACTIONAL",
+            vec![0, 1, 1, 0, 1, 0, 0, 1],
+        ),
+        (
+            1,
+            "fractional",
+            "FRACTIONAL",
+            vec![0, 1, 1, 0, 0, 64, 128, 255],
+        ),
+        (2, "binary", "BINARY", vec![0, 1, 1, 0, 1, 0, 0, 1]),
+    ] {
+        let source_uid = format!("2.25.200020{}", case * 2);
+        let seg_uid = format!("2.25.200020{}", case * 2 + 1);
+        let for_uid = format!("2.25.200021{case}");
+        let positions = || {
+            (0..2)
+                .map(|frame| {
+                    InMemDicomObject::from_element_iter([fixture_sequence(
+                        tags::PLANE_POSITION_SEQUENCE,
+                        vec![InMemDicomObject::from_element_iter([DataElement::new(
+                            tags::IMAGE_POSITION_PATIENT,
+                            VR::DS,
+                            format!("0\\0\\{frame}"),
+                        )])],
+                    )])
+                })
+                .collect::<Vec<_>>()
+        };
+        let geometry = || {
+            vec![
+                DataElement::new(tags::NUMBER_OF_FRAMES, VR::IS, "2"),
+                DataElement::new(tags::IMAGE_ORIENTATION_PATIENT, VR::DS, AXIAL),
+                DataElement::new(tags::PIXEL_SPACING, VR::DS, "1\\1"),
+                fixture_sequence(tags::PER_FRAME_FUNCTIONAL_GROUPS_SEQUENCE, positions()),
+            ]
+        };
+        write_native_u16(
+            &dir.join(format!("golden-seg-{name}-source.dcm")),
+            NativeU16Spec {
+                sop_class_uid: uids::ENHANCED_CT_IMAGE_STORAGE,
+                sop_instance_uid: &source_uid,
+                modality: "CT",
+                series_instance_uid: &source_uid,
+                frame_of_reference_uid: &for_uid,
+                rows: 2,
+                columns: 2,
+                samples: vec![100, 200, 300, 400, 500, 600, 700, 800],
+            },
+            geometry(),
+        );
+        let reference = |frame: Option<u32>| {
+            let mut item = InMemDicomObject::from_element_iter([
+                DataElement::new(
+                    tags::REFERENCED_SOP_CLASS_UID,
+                    VR::UI,
+                    uids::ENHANCED_CT_IMAGE_STORAGE,
+                ),
+                DataElement::new(
+                    tags::REFERENCED_SOP_INSTANCE_UID,
+                    VR::UI,
+                    source_uid.as_str(),
+                ),
+            ]);
+            if let Some(frame) = frame {
+                item.put(DataElement::new(
+                    tags::REFERENCED_FRAME_NUMBER,
+                    VR::IS,
+                    frame.to_string(),
+                ));
+            }
+            item
+        };
+        let mut frames = positions();
+        for (frame, group) in frames.iter_mut().enumerate() {
+            group.put(fixture_sequence(
+                tags::SEGMENT_IDENTIFICATION_SEQUENCE,
+                vec![InMemDicomObject::from_element_iter([DataElement::new(
+                    tags::REFERENCED_SEGMENT_NUMBER,
+                    VR::US,
+                    PrimitiveValue::from(1_u16),
+                )])],
+            ));
+            group.put(fixture_sequence(
+                tags::DERIVATION_IMAGE_SEQUENCE,
+                vec![InMemDicomObject::from_element_iter([fixture_sequence(
+                    tags::SOURCE_IMAGE_SEQUENCE,
+                    vec![reference(Some(frame as u32 + 1))],
+                )])],
+            ));
+        }
+        let bits = if segmentation_type == "BINARY" {
+            1_u16
+        } else {
+            8
+        };
+        let pixels = if bits == 1 { vec![0x96, 0] } else { samples };
+        let mut elements = geometry();
+        elements.extend([
+            DataElement::new(tags::SEGMENTATION_TYPE, VR::CS, segmentation_type),
+            DataElement::new(tags::BITS_ALLOCATED, VR::US, PrimitiveValue::from(bits)),
+            DataElement::new(tags::BITS_STORED, VR::US, PrimitiveValue::from(bits)),
+            DataElement::new(tags::HIGH_BIT, VR::US, PrimitiveValue::from(bits - 1)),
+            fixture_sequence(
+                tags::SEGMENT_SEQUENCE,
+                vec![InMemDicomObject::from_element_iter([
+                    DataElement::new(tags::SEGMENT_NUMBER, VR::US, PrimitiveValue::from(1_u16)),
+                    DataElement::new(tags::SEGMENT_LABEL, VR::LO, "Fixture mask"),
+                    DataElement::new(tags::SEGMENT_ALGORITHM_TYPE, VR::CS, "MANUAL"),
+                ])],
+            ),
+            fixture_sequence(tags::SOURCE_IMAGE_SEQUENCE, vec![reference(None)]),
+            fixture_sequence(tags::PER_FRAME_FUNCTIONAL_GROUPS_SEQUENCE, frames),
+            DataElement::new(tags::PIXEL_DATA, VR::OB, PrimitiveValue::U8(pixels.into())),
+        ]);
+        if bits == 8 {
+            elements.extend([
+                DataElement::new(tags::SEGMENTATION_FRACTIONAL_TYPE, VR::CS, "OCCUPANCY"),
+                DataElement::new(
+                    tags::MAXIMUM_FRACTIONAL_VALUE,
+                    VR::US,
+                    PrimitiveValue::from(255_u16),
+                ),
+            ]);
+        }
+        write_native_u16(
+            &dir.join(format!("golden-seg-{name}.dcm")),
+            NativeU16Spec {
+                sop_class_uid: uids::SEGMENTATION_STORAGE,
+                sop_instance_uid: &seg_uid,
+                modality: "SEG",
+                series_instance_uid: &seg_uid,
+                frame_of_reference_uid: &for_uid,
+                rows: 2,
+                columns: 2,
+                samples: vec![],
+            },
+            elements,
+        );
+    }
 }
 
 /// A 3-plane RT Dose grid (4x4 voxels of 4 mm at z = 0, 4, 8 mm) and three
