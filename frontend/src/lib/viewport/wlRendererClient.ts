@@ -17,6 +17,8 @@ export type WlRenderRequest = {
 	options?: RenderOptions;
 	/** False once a newer frame, file, or pipeline supersedes this render. */
 	isCurrent: () => boolean;
+	/** Commits matching layers/labels synchronously after these pixels are drawn. */
+	onRendered?: () => void;
 };
 
 export type WlRendererClientOptions = {
@@ -106,6 +108,7 @@ export class WlRendererClient {
 				current.height = bitmap.height;
 				current.getContext("2d", { alpha: false })?.drawImage(bitmap, 0, 0);
 				bitmap.close();
+				next.onRendered?.();
 			}
 		} catch {
 			this.#available = false;
@@ -114,6 +117,7 @@ export class WlRendererClient {
 			const current = target();
 			if (!latest.isCurrent() || !current) return;
 			drawRawFrame(current, latest.frame, latest.wc, latest.ww, latest.options);
+			latest.onRendered?.();
 		} finally {
 			this.#renderInFlight = false;
 		}
@@ -136,6 +140,7 @@ export class WlRendererClient {
 				if (next && canvas && next.request.isCurrent()) {
 					const { frame, wc, ww, options } = next.request;
 					drawRawFrame(canvas, frame, wc, ww, options);
+					next.request.onRendered?.();
 				}
 				resolve();
 			});
