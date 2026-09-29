@@ -170,6 +170,10 @@
 		columnResizeState = null;
 	}
 
+	function keepActivationLocal(event: KeyboardEvent): void {
+		if (event.key === "Enter" || event.key === " ") event.stopPropagation();
+	}
+
 	async function copyRow(row: FlatTagRow) {
 		const text = `${row.node.tag}  ${row.node.keyword}  =  ${tagValueToCopyText(row.node.value)}`;
 		try {
@@ -256,21 +260,15 @@
 				<div
 					class="row row-grid"
 					class:nested={row.depth > 0}
-					role="button"
-					tabindex="0"
-					onclick={() => copyRow(row)}
-					onkeydown={(event) => {
-						if (event.key === "Enter" || event.key === " ") {
-							event.preventDefault();
-							void copyRow(row);
-						}
-					}}
 				>
+					<button class="copy-row" type="button" aria-label={`Copy ${row.node.tag} ${row.node.keyword}`}
+						onkeydown={keepActivationLocal} onclick={() => copyRow(row)}></button>
 					<div class="tag-cell" style={`--depth:${row.depth}`}>
 						{#if isSequenceTag(row.node)}
 							<button
 								type="button"
 								class="chevron"
+								onkeydown={keepActivationLocal}
 								aria-label={expandedSequences.has(row.key) ? "Collapse sequence" : "Expand sequence"}
 								aria-expanded={expandedSequences.has(row.key)}
 								onclick={(event) => { event.stopPropagation(); toggleSequence(row.key); }}
@@ -290,6 +288,7 @@
 						<button
 							type="button"
 							class="value-toggle"
+							onkeydown={keepActivationLocal}
 							onclick={(event) => {
 								event.stopPropagation();
 								if (row.node.value.type === "string" && row.node.value.value.length > 80) {
@@ -405,6 +404,7 @@
 	}
 
 	.row {
+		position: relative;
 		min-height: var(--row-h);
 		border-bottom: 1px solid var(--surface);
 		color: var(--text);
@@ -416,14 +416,28 @@
 		background: var(--row-hover);
 	}
 
-	.row:focus-visible {
+	.copy-row:focus-visible {
 		outline: 2px solid var(--focus-ring);
 		outline-offset: -2px;
 	}
 
+	.copy-row {
+		position: absolute;
+		inset: 0;
+		width: 100%;
+		border: 0;
+		padding: 0;
+		background: transparent;
+		cursor: pointer;
+	}
+
 	.row > div {
+		position: relative;
+		pointer-events: none;
 		min-width: 0;
 	}
+
+	.row button:not(.copy-row) { pointer-events: auto; }
 
 	.tag-cell {
 		display: flex;
