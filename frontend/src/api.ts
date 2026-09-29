@@ -67,13 +67,17 @@ export type { RawFrame } from "./rawFrame";
 type Endpoint = (typeof API_ENDPOINTS)[keyof typeof API_ENDPOINTS];
 type PathParams = { index?: number; frame?: number };
 
-/** Fills `{index}`/`{frame}` in a generated path and appends defined query values. */
+/**
+ * Fills `{index}`/`{frame}` in a generated path and appends defined query values.
+ * The result is relative to the viewer page (`api/...`), so a reverse proxy can
+ * serve the viewer under a path prefix.
+ */
 function endpointUrl(
 	endpoint: Endpoint,
 	params: PathParams = {},
 	query?: FrameQuery | TagQuery | DoseOverlayQuery | ParametricMapOverlayQuery | PixelQuery,
 ): string {
-	const path = endpoint.path.replace(/\{(\w+)\}/g, (_, name: string) => {
+	const path = endpoint.path.slice(1).replace(/\{(\w+)\}/g, (_, name: string) => {
 		const value = params[name as keyof PathParams];
 		if (value === undefined) {
 			throw new Error(`missing API path parameter ${name} for ${endpoint.path}`);

@@ -105,6 +105,9 @@ diagnostic viewer.
 
 ### Changed
 
+- The viewer requests its assets and the API with page-relative URLs, so a
+  reverse proxy can serve it under a path prefix. The server's routes and the
+  documented `/api` paths are unchanged.
 - Play with the W/L tool selected uses server-rendered frames with the current
   window; pausing returns to interactive client-side windowing when supported.
 - Float samples, fractional Modality values, and real-world windows use the

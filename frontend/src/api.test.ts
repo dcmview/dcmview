@@ -115,21 +115,21 @@ describe("display frame cache keys", () => {
 
 describe("display frame URLs", () => {
 	it("sends explicit windows only outside full-dynamic mode", () => {
-		expect(frameUrl(2, 7)).toBe("/api/file/2/frame/7");
+		expect(frameUrl(2, 7)).toBe("api/file/2/frame/7");
 		expect(frameUrl(2, 7, { wc: 40, ww: 80, windowMode: "default" })).toBe(
-			"/api/file/2/frame/7?wc=40&ww=80",
+			"api/file/2/frame/7?wc=40&ww=80",
 		);
 		expect(frameUrl(2, 7, { wc: 40, ww: 80, windowMode: "full_dynamic" })).toBe(
-			"/api/file/2/frame/7?mode=full_dynamic",
+			"api/file/2/frame/7?mode=full_dynamic",
 		);
 		expect(frameUrl(2, 7, { wc: 1.5, ww: 3, windowMode: "default", unit: "SUV" })).toBe(
-			"/api/file/2/frame/7?wc=1.5&ww=3&unit=SUV",
+			"api/file/2/frame/7?wc=1.5&ww=3&unit=SUV",
 		);
 		expect(frameUrl(2, 7, { wc: 1.5, ww: 3, windowMode: "full_dynamic", unit: "SUV" })).toBe(
-			"/api/file/2/frame/7?mode=full_dynamic",
+			"api/file/2/frame/7?mode=full_dynamic",
 		);
 		expect(frameUrl(2, 7, { wc: 40, ww: 80, preview: true })).toBe(
-			"/api/file/2/frame/7?wc=40&ww=80&preview=true",
+			"api/file/2/frame/7?wc=40&ww=80&preview=true",
 		);
 	});
 });
@@ -198,7 +198,7 @@ describe("fetch wrappers", () => {
 		const fetchMock = vi.fn().mockResolvedValue(new Response(new Blob(), { status: 200 }));
 		vi.stubGlobal("fetch", fetchMock);
 		await fetchDisplayFrame(1, 0, { wc: 12, ww: 20, unit: "Gy" });
-		expect(fetchMock.mock.calls[0][0]).toBe("/api/file/1/frame/0?wc=12&ww=20&unit=Gy");
+		expect(fetchMock.mock.calls[0][0]).toBe("api/file/1/frame/0?wc=12&ww=20&unit=Gy");
 		expect(displayFrameWindowCacheKey({ wc: 12, ww: 20, windowMode: "default", unit: "Gy" }))
 			.toBe("default:12:20:Gy");
 	});
@@ -233,7 +233,7 @@ describe("fetch wrappers", () => {
 
 		const values = await fetchDoseOverlayValues(5, 0, 9);
 
-		expect(fetchMock.mock.calls[0][0]).toBe("/api/file/5/frame/0/dose-overlay/values?dose=9");
+		expect(fetchMock.mock.calls[0][0]).toBe("api/file/5/frame/0/dose-overlay/values?dose=9");
 		expect(values[0]).toBeCloseTo(16.2, 5);
 		expect(Number.isNaN(values[1])).toBe(true);
 		expect(values[2]).toBe(-1.5);
@@ -250,7 +250,7 @@ describe("fetch wrappers", () => {
 
 		expect(frame.buffer.byteLength).toBe(2);
 		expect(frame.metadata.photometricInterpretation).toBe("MONOCHROME1");
-		expect(fetchMock).toHaveBeenCalledWith("/api/file/4/frame/2/raw", {
+		expect(fetchMock).toHaveBeenCalledWith("api/file/4/frame/2/raw", {
 			method: "GET",
 			signal: controller.signal,
 		});
@@ -266,7 +266,7 @@ describe("fetch wrappers", () => {
 		vi.stubGlobal("fetch", fetchMock);
 
 		await expect(updateAnnotations(7, annotations)).resolves.toEqual(annotations);
-		expect(fetchMock).toHaveBeenCalledWith("/api/file/7/annotations", {
+		expect(fetchMock).toHaveBeenCalledWith("api/file/7/annotations", {
 			method: "PUT",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify(annotations),
@@ -282,7 +282,7 @@ describe("fetch wrappers", () => {
 		await fetchSelectedTag(4, { path: "(0008,2218)/69/(0008,0100)", offset: 2, limit: 8 });
 
 		expect(fetchMock.mock.calls[0][0]).toBe(
-			"/api/file/4/tags/select?path=%280008%2C2218%29%2F69%2F%280008%2C0100%29&offset=2&limit=8",
+			"api/file/4/tags/select?path=%280008%2C2218%29%2F69%2F%280008%2C0100%29&offset=2&limit=8",
 		);
 	});
 });

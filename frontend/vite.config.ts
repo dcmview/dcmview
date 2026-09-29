@@ -4,6 +4,8 @@ import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { svelteTesting } from "@testing-library/svelte/vite";
 
 export default defineConfig({
+	// Relative asset URLs let a reverse proxy serve the viewer under a path prefix.
+	base: "./",
 	// svelteTesting resolves Svelte's browser build and cleans up rendered
 	// components after each test; it only applies under Vitest.
 	plugins: [svelte(), ...(process.env.VITEST ? [svelteTesting()] : [])],

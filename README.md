@@ -176,6 +176,10 @@ http://localhost:8888
 You can also let `dcmview` use an auto-assigned port by omitting `--port`; copy
 the printed port into your SSH command.
 
+The viewer also works behind a reverse proxy that serves it under a path
+prefix, such as a Jupyter proxy route. The proxy must strip the prefix before
+forwarding and serve the page with a trailing slash (`.../8888/`).
+
 The HTTP server is unauthenticated. It binds to `127.0.0.1` by default. If you
 bind to `0.0.0.0` or another public interface, use your own network access
 controls. Anyone who can reach the server may be able to access image pixels,

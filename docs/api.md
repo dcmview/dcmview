@@ -43,6 +43,11 @@ debug-api` enables permissive CORS for debugging from another origin only.
 All paths are under `/api`; `{index}` is a file index from `/api/files` and
 `{frame}` a zero-based frame. Static assets are served at `/` and `/assets/*`.
 
+The viewer loads its assets and calls the API with URLs relative to its page
+(`assets/...`, `api/...`), so a reverse proxy can serve it under a path prefix
+such as `/user/alice/proxy/8888/`. The proxy strips the prefix before forwarding
+and redirects the bare prefix to its trailing-slash form.
+
 | Method | Path | Success response |
 |---|---|---|
 | GET | `/health` | `HealthResponse`: `status: "ok"`, viewer name/version/build identity, `file_count`, `server_start_ms`. |

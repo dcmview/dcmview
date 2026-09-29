@@ -251,7 +251,7 @@
 		<header class="topbar">
 			<img
 				class="brand-mark"
-				src="/assets/dcmview-icon.png"
+				src="assets/dcmview-icon.png"
 				alt="dcmview"
 			/>
 			<span class="compact-sidebar-button explorer-drawer-button">

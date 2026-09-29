@@ -209,14 +209,23 @@ async fn serves_js_and_css_assets_with_correct_mime_types() {
     // Discover actual asset filenames from the index.html body
     let index_body = test_server.get("/").await.text();
 
+    // Page-relative references let a reverse proxy serve the viewer under a
+    // path prefix; a root-absolute one would escape it.
+    for absolute in ["src=\"/", "href=\"/"] {
+        assert!(
+            !index_body.contains(absolute),
+            "index.html should reference assets relative to the page, found {absolute}"
+        );
+    }
+
     let js_path = index_body
-        .split("src=\"/assets/")
+        .split("src=\"./assets/")
         .filter_map(|s| s.split('"').next())
         .find(|path| path.ends_with(".js"))
         .expect("JS asset referenced in index.html");
 
     let css_path = index_body
-        .split("href=\"/assets/")
+        .split("href=\"./assets/")
         .filter_map(|s| s.split('"').next())
         .find(|path| path.ends_with(".css"))
         .expect("CSS asset referenced in index.html");
@@ -242,9 +251,11 @@ async fn serves_js_and_css_assets_with_correct_mime_types() {
         css_ct.starts_with("text/css"),
         "CSS asset should be text/css, got: {css_ct}"
     );
+    let css_body = css_response.text();
+    assert!(!css_body.is_empty(), "CSS body should be non-empty");
     assert!(
-        !css_response.as_bytes().is_empty(),
-        "CSS body should be non-empty"
+        !css_body.contains("url(/"),
+        "CSS should reference fonts relative to the stylesheet"
     );
 }
 
