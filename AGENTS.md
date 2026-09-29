@@ -89,7 +89,7 @@ would remove behavior, raise it as a question instead of acting.
   their default window for such a window on the server.
 
 `docs/planned/` is gitignored and holds local proposals, briefs and review
-notes, such as the JupyterLab integration and the original compatibility plan.
+notes, such as the original compatibility plan.
 They are not specs and not current behavior. Do not implement them unless the
 owner asks.
 
