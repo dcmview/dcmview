@@ -467,6 +467,7 @@ fn assert_declared_response_headers(endpoint: &Endpoint, response: &TestResponse
             // The window pair is sent together, as numbers, or not at all.
             let window = DISPLAY_FRAME_HEADERS
                 .iter()
+                .filter(|(field, _)| *field != "windowApplied")
                 .map(|(_, name)| {
                     response.maybe_header(*name).map(|value| {
                         value
@@ -485,6 +486,15 @@ fn assert_declared_response_headers(endpoint: &Endpoint, response: &TestResponse
                 "{} returned half a display window",
                 endpoint.id
             );
+            let applied =
+                response.maybe_header(dcmview::api::contracts::DISPLAY_FRAME_HEADER_WINDOW_APPLIED);
+            match applied.as_ref().and_then(|value| value.to_str().ok()) {
+                Some("linear") => assert!(window.iter().all(Option::is_some)),
+                Some("real_world" | "voi_lut") | None => {
+                    assert!(window.iter().all(Option::is_none))
+                }
+                Some(other) => panic!("invalid applied window: {other}"),
+            }
             assert_no_raw_frame_headers(endpoint, response);
             assert_no_export_header(endpoint, response);
         }
@@ -588,4 +598,30 @@ fn assert_object_keys(value: &Value, expected: &[&str]) {
     expected.sort_unstable();
 
     assert_eq!(actual, expected);
+}
+
+#[tokio::test]
+async fn color_display_omits_the_applied_window_header() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/golden-rle-ybr-full-422-u8-single-frame.dcm");
+    let report = support::discover(
+        &[path],
+        dcmview::loader::DiscoverOptions {
+            recursive: false,
+            filters: Vec::new(),
+        },
+    )
+    .await
+    .expect("discover color fixture");
+    let test_server = TestServer::new(server::router(support::app_state(report.files)));
+    for _ in 0..2 {
+        let response = test_server.get("/api/file/0/frame/0").await;
+        response.assert_status_ok();
+        for (_, name) in DISPLAY_FRAME_HEADERS {
+            assert!(
+                response.maybe_header(*name).is_none(),
+                "color frame sent {name}"
+            );
+        }
+    }
 }

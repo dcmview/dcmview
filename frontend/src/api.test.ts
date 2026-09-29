@@ -208,12 +208,19 @@ describe("fetch wrappers", () => {
 		const windowed = png();
 		windowed.headers.set("X-Frame-Window-Center", "1499.5");
 		windowed.headers.set("X-Frame-Window-Width", "2970");
+		windowed.headers.set("X-Frame-Window-Applied", "linear");
 		vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(windowed).mockResolvedValueOnce(png()));
 
 		const frame = await fetchDisplayFrame(1, 0);
 		expect(frame.window).toEqual({ wc: 1499.5, ww: 2970 });
 		expect(await frame.blob.text()).toBe("png");
-		await expect(fetchDisplayFrame(2, 0)).resolves.toMatchObject({ window: null });
+		await expect(fetchDisplayFrame(2, 0)).resolves.toMatchObject({ window: null, appliedWindow: null });
+	});
+
+	it.each(["real_world", "voi_lut"] as const)("reads the explicit %s display presentation", async (kind) => {
+		const response = new Response(new Blob(["png"]), { headers: { "X-Frame-Window-Applied": kind } });
+		vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response));
+		await expect(fetchDisplayFrame(0, 0)).resolves.toMatchObject({ window: null, appliedWindow: kind });
 	});
 
 	it("reads overlay values as little-endian f32 samples", async () => {

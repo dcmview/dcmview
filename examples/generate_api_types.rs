@@ -5,10 +5,10 @@
 
 use dcmview::api::contracts::{
     endpoints, DoseOverlayQuery, EmbedRoiAnnotations, ErrorResponse, FilesResponse, FrameInfo,
-    FrameQuery, FrameValueMapping, HealthResponse, ParametricMapOverlayQuery, PixelQuery,
-    RawFrameMetadata, ReferenceCatalogResponse, SemanticContextResponse, SeriesCatalogResponse,
-    TagNode, TagQuery, WsiFrameContextResponse, API_PREFIX, DISPLAY_FRAME_HEADERS,
-    RAW_FRAME_HEADERS,
+    FrameQuery, FrameValueMapping, FrameWindowApplied, HealthResponse, ParametricMapOverlayQuery,
+    PixelQuery, RawFrameMetadata, ReferenceCatalogResponse, SemanticContextResponse,
+    SeriesCatalogResponse, TagNode, TagQuery, WsiFrameContextResponse, API_PREFIX,
+    DISPLAY_FRAME_HEADERS, RAW_FRAME_HEADERS,
 };
 use std::any::TypeId;
 use std::collections::{BTreeMap, HashSet};
@@ -62,6 +62,7 @@ fn render() -> String {
     declarations.visit::<FrameValueMapping>();
     declarations.visit::<WsiFrameContextResponse>();
     declarations.visit::<FrameQuery>();
+    declarations.visit::<FrameWindowApplied>();
     declarations.visit::<DoseOverlayQuery>();
     declarations.visit::<ParametricMapOverlayQuery>();
     declarations.visit::<RawFrameMetadata>();

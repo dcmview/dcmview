@@ -6,6 +6,7 @@ import type {
 	FilesResponse,
 	FrameQuery,
 	FrameValueMapping,
+	FrameWindowApplied,
 	HealthResponse,
 	ParametricMapOverlayQuery,
 	PixelQuery,
@@ -30,6 +31,7 @@ export type {
 	FrameQuery,
 	FrameInfo,
 	FrameValueMapping,
+	FrameWindowApplied,
 	HealthResponse,
 	ModalityValueTransform,
 	OverlayLegend,
@@ -384,6 +386,8 @@ export type DisplayFrame = {
 	 * that default window instead.
 	 */
 	window: { wc: number; ww: number } | null;
+	/** The server's explicit presentation kind; null for color or older servers. */
+	appliedWindow: FrameWindowApplied | null;
 };
 
 export async function fetchDisplayFrame(
@@ -394,7 +398,9 @@ export async function fetchDisplayFrame(
 ): Promise<DisplayFrame> {
 	const url = frameUrl(fileIndex, frame, options);
 	const response = await send(API_ENDPOINTS.fileFrame, url, { signal });
-	return { blob: await response.blob(), window: parseDisplayWindow(response.headers) };
+	const kind = response.headers.get(DISPLAY_FRAME_HEADERS.windowApplied);
+	const appliedWindow = kind === "linear" || kind === "real_world" || kind === "voi_lut" ? kind : null;
+	return { blob: await response.blob(), window: parseDisplayWindow(response.headers), appliedWindow };
 }
 
 function parseDisplayWindow(headers: Headers): DisplayFrame["window"] {

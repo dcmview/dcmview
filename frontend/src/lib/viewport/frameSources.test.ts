@@ -118,7 +118,7 @@ describe("DisplayFrameSource", () => {
 	type Load = (file: number, frame: number, options: DisplayFrameWindowOptions, signal: AbortSignal) => Promise<DisplayFrame>;
 
 	function png(blob: Blob = new Blob(["png"])): DisplayFrame {
-		return { blob, window: null };
+		return { blob, window: null, appliedWindow: null };
 	}
 
 	function displaySource(load: Load, scope = { value: "tab:a" }) {
@@ -133,13 +133,13 @@ describe("DisplayFrameSource", () => {
 	}
 
 	it("shares a request per frame and serves the cached payload and its window afterwards", async () => {
-		const load = vi.fn(async () => ({ blob: new Blob(["png"]), window: { wc: 40, ww: 400 } }));
+		const load = vi.fn(async () => ({ blob: new Blob(["png"]), window: { wc: 40, ww: 400 }, appliedWindow: "linear" as const }));
 		const { source } = displaySource(load);
 
 		const first = source.ensureFrame(1, 0, {});
 		expect(source.ensureFrame(1, 0, {})).toBe(first);
 		const frame = await first;
-		await expect(source.ensureFrame(1, 0, {})).resolves.toEqual({ blob: frame.blob, window: { wc: 40, ww: 400 } });
+		await expect(source.ensureFrame(1, 0, {})).resolves.toEqual({ blob: frame.blob, window: { wc: 40, ww: 400 }, appliedWindow: "linear" });
 		expect(load).toHaveBeenCalledOnce();
 	});
 

@@ -427,6 +427,24 @@ async fn loader_driven_display_frames_match_the_shared_windowing_oracle() {
 
         let display = test_server.get(&display_url(case)).await;
         display.assert_status_ok();
+        let applied = if case.real_world.is_some() {
+            "real_world"
+        } else if case.voi_lut.is_some()
+            && case.mode == "default"
+            && case.wc.is_none()
+            && case.ww.is_none()
+            && case.dicom_window.is_none()
+        {
+            "voi_lut"
+        } else {
+            "linear"
+        };
+        assert_eq!(
+            display.header(dcmview::api::contracts::DISPLAY_FRAME_HEADER_WINDOW_APPLIED),
+            applied,
+            "{}: applied-window contract",
+            case.name
+        );
         let pixels =
             image::load_from_memory_with_format(display.as_bytes().as_ref(), ImageFormat::Png)
                 .expect("display PNG")
@@ -538,4 +556,59 @@ async fn a_window_in_another_unit_shows_and_reports_the_default_window() {
         without_window.json::<serde_json::Value>()["code"],
         "invalid_window"
     );
+}
+
+/// F05: a requested unit on u32 samples cannot use the real-world integer
+/// table. Its VOI fallback must not be mistaken for an applied unit window.
+#[tokio::test]
+async fn unit_window_falling_back_to_voi_reports_voi_lut() {
+    let mut case = load_oracle()
+        .cases
+        .into_iter()
+        .find(|case| case.name == "a VOI LUT presents Modality values when no window is set")
+        .expect("VOI oracle");
+    case.sample = Some("int32".into());
+    case.real_world = Some(RealWorld {
+        unit: "ms".into(),
+        first_value_mapped: 0,
+        last_value_mapped: 3,
+        lut: Some(vec![0.0, 10.0, 20.0, 30.0]),
+        slope: None,
+        intercept: None,
+    });
+    let dir = tempdir().expect("temp dir");
+    let path = dir.path().join("u32-voi.dcm");
+    write_case_dicom(&path, &case);
+    let report = support::discover(
+        &[path],
+        DiscoverOptions {
+            recursive: false,
+            filters: Vec::new(),
+        },
+    )
+    .await
+    .expect("discover");
+    let test_server = TestServer::new(server::router(support::app_state(report.files)));
+    for expected_cache in ["MISS", "HIT"] {
+        let response = test_server
+            .get("/api/file/0/frame/0?wc=30&ww=60&unit=ms")
+            .await;
+        response.assert_status_ok();
+        assert_eq!(response.header("X-Cache"), expected_cache);
+        assert_eq!(
+            response.header(dcmview::api::contracts::DISPLAY_FRAME_HEADER_WINDOW_APPLIED),
+            "voi_lut"
+        );
+        assert!(response
+            .maybe_header(dcmview::api::contracts::DISPLAY_FRAME_HEADER_WINDOW_CENTER)
+            .is_none());
+        assert!(response
+            .maybe_header(dcmview::api::contracts::DISPLAY_FRAME_HEADER_WINDOW_WIDTH)
+            .is_none());
+        let pixels = image::load_from_memory(response.as_bytes())
+            .expect("PNG")
+            .to_luma8()
+            .into_raw();
+        assert_eq!(pixels, [0, 85, 170, 255]);
+    }
 }

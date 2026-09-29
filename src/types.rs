@@ -509,7 +509,7 @@ mod tests {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedWindow {
     pub center: f64,
     pub width: f64,

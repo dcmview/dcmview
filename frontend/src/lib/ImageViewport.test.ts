@@ -12,7 +12,7 @@ import { ViewStates } from "./viewport/viewStates.svelte";
 vi.mock("../api", async (importOriginal) => ({
 	...await importOriginal<typeof import("../api")>(),
 	fetchAnnotations: vi.fn(async () => ({ num_roi: 0, roi_coords: [], roi_frames: [] })),
-	fetchDisplayFrame: vi.fn(async () => ({ blob: new Blob(["png"], { type: "image/png" }), window: null })),
+	fetchDisplayFrame: vi.fn(async () => ({ blob: new Blob(["png"], { type: "image/png" }), window: null, appliedWindow: null })),
 	fetchRawFrame: vi.fn(),
 	fetchFrameValueMapping: vi.fn(),
 	fetchDoseOverlayBlob: vi.fn(),
@@ -97,7 +97,7 @@ function renderViewport({
 
 beforeEach(() => {
 	fetchDisplayFrame.mockReset();
-	fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"], { type: "image/png" }), window: null });
+	fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"], { type: "image/png" }), window: null, appliedWindow: null });
 	fetchRawFrame.mockReset();
 	fetchRawFrame.mockResolvedValue(rawFrame());
 	fetchFrameValueMapping.mockReset();
@@ -116,7 +116,7 @@ describe("ImageViewport window/level path", () => {
 	});
 
 	it("shows the window the server rendered a frame with when it chose it", async () => {
-		fetchDisplayFrame.mockResolvedValueOnce({ blob: new Blob(["png"]), window: { wc: 1499.5, ww: 2970 } });
+		fetchDisplayFrame.mockResolvedValueOnce({ blob: new Blob(["png"]), window: { wc: 1499.5, ww: 2970 }, appliedWindow: "linear" });
 		renderViewport({ file: fileSummary(5, { default_window: null }) });
 
 		await screen.findByText("W: 2970 · C: 1500");
@@ -130,7 +130,7 @@ describe("ImageViewport window/level path", () => {
 	});
 
 	it("starts a server-windowed drag from the window the frame was rendered with", async () => {
-		fetchDisplayFrame.mockResolvedValueOnce({ blob: new Blob(["png"]), window: { wc: 1499.5, ww: 2970 } });
+		fetchDisplayFrame.mockResolvedValueOnce({ blob: new Blob(["png"]), window: { wc: 1499.5, ww: 2970 }, appliedWindow: "linear" });
 		const onmanualwindowlevel = vi.fn();
 		renderViewport({
 			activeTool: "window_level",
@@ -368,7 +368,7 @@ describe("ImageViewport window/level in real-world units", () => {
 
 	it("shows the window the server fell back to when a LUT-unit window could not apply", async () => {
 		fetchFrameValueMapping.mockResolvedValue(lutMapping());
-		fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"]), window: { wc: 1.5, ww: 3 } });
+		fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"]), window: { wc: 1.5, ww: 3 }, appliedWindow: "linear" });
 		renderViewport({ file: fileSummary(5, { rows: 5000, columns: 5000 }), windowCenter: 40, windowWidth: 80, windowUnit: "ms" });
 
 		await screen.findByText("W: 3 · C: 2");
@@ -393,7 +393,7 @@ describe("ImageViewport window/level in real-world units", () => {
 
 	it("shows a mapped file's automatic window in its unit without fetching raw samples", async () => {
 		fetchFrameValueMapping.mockResolvedValue(adcMapping());
-		fetchDisplayFrame.mockResolvedValueOnce({ blob: new Blob(["png"]), window: { wc: 100, ww: 200 } });
+		fetchDisplayFrame.mockResolvedValueOnce({ blob: new Blob(["png"]), window: { wc: 100, ww: 200 }, appliedWindow: "linear" });
 		renderViewport({ file: fileSummary(5, { default_window: null }) });
 
 		// mapped = 0.5 × stored − 10: C 100 / W 200 stored is C 40 / W 100 um2/s.
@@ -428,7 +428,7 @@ describe("ImageViewport window/level in real-world units", () => {
 	});
 
 	it("shows the default window on files without that unit", async () => {
-		fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"]), window: { wc: 40, ww: 400 } });
+		fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"]), window: { wc: 40, ww: 400 }, appliedWindow: "linear" });
 		renderViewport({ windowCenter: 40, windowWidth: 100, windowUnit: "Gy" });
 
 		// The server shows the frame's default window for a unit it lacks,

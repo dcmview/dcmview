@@ -37,15 +37,37 @@ pub const RAW_FRAME_HEADER_PADDING_HIGH: &str = "X-Frame-Padding-High";
 
 pub const DISPLAY_FRAME_HEADER_WINDOW_CENTER: &str = "X-Frame-Window-Center";
 pub const DISPLAY_FRAME_HEADER_WINDOW_WIDTH: &str = "X-Frame-Window-Width";
+pub const DISPLAY_FRAME_HEADER_WINDOW_APPLIED: &str = "X-Frame-Window-Applied";
+
+/// How a grayscale display PNG was presented, reported in its applied-window header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum FrameWindowApplied {
+    Linear,
+    RealWorld,
+    VoiLut,
+}
+
+impl FrameWindowApplied {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Linear => "linear",
+            Self::RealWorld => "real_world",
+            Self::VoiLut => "voi_lut",
+        }
+    }
+}
 
 /// Display-frame response headers, keyed by their name in the generated
 /// TypeScript table: the linear window the PNG was presented with, as center
 /// and width in Modality values. Both are sent for grayscale frames windowed
 /// linearly (requested, DICOM, or automatic) and neither for color frames or
-/// frames presented through a VOI LUT.
+/// frames presented through a VOI LUT. The applied kind is sent for every
+/// grayscale frame, and omitted for color frames.
 pub const DISPLAY_FRAME_HEADERS: &[(&str, &str)] = &[
     ("windowCenter", DISPLAY_FRAME_HEADER_WINDOW_CENTER),
     ("windowWidth", DISPLAY_FRAME_HEADER_WINDOW_WIDTH),
+    ("windowApplied", DISPLAY_FRAME_HEADER_WINDOW_APPLIED),
 ];
 
 /// Raw-frame response header carrying each serialized [`RawFrameMetadata`]

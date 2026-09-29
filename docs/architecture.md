@@ -171,9 +171,11 @@ window of the image on screen. The raw path resolves that window itself; for
 a server-rendered frame it is the window being dragged or requested, else the
 one the display response reports (`X-Frame-Window-*`), kept with the cached
 PNG. A mapped file converts that window to its unit, so its legend needs no
-raw samples. A frame requested in a real-world `unit` reports no window when
-that window applied; if it reports one, the server showed its default window
-instead, and the HUD shows that window rather than the unit legend.
+raw samples. The cached `DisplayPng` carries an `AppliedWindow` enum: Linear with its
+Modality window, RealWorld, VoiLut, or Color. `X-Frame-Window-Applied` is
+`linear`, `real_world`, or `voi_lut` for grayscale; color omits it. A unit
+window is confirmed only by `real_world`, including when a fallback uses a
+VOI LUT and therefore reports no center/width.
 
 For SEG objects, `SemanticContextPanel` keeps Pixel Preview as the initial mode
 and publishes an explicit Semantic Context selection to `App.svelte`.

@@ -29,6 +29,7 @@ export const API_ENDPOINTS = {
 export const DISPLAY_FRAME_HEADERS = {
 	windowCenter: "X-Frame-Window-Center",
 	windowWidth: "X-Frame-Window-Width",
+	windowApplied: "X-Frame-Window-Applied",
 } as const;
 
 export const RAW_FRAME_HEADERS = {
@@ -134,6 +135,11 @@ real_world: Array<RealWorldValueMap>,
  * mode when no window is requested and no DICOM window is stored.
  */
 voi_lut: VoiLookupTable | null, };
+
+/**
+ * How a grayscale display PNG was presented, reported in its applied-window header.
+ */
+export type FrameWindowApplied = "linear" | "real_world" | "voi_lut";
 
 export type HealthResponse = { status: string, viewer: ViewerIdentity, file_count: number, server_start_ms: number, };
 

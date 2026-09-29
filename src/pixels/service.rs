@@ -23,7 +23,7 @@ use super::jpegls::{decode_jpeg_ls_to_png, decode_raw_jpeg_ls};
 use super::jpegxl::{decode_jpeg_xl_to_png, decode_raw_jpeg_xl};
 use super::native::{decode_uncompressed_to_png, read_raw_uncompressed};
 use super::render::{
-    encode_real_world_windowed_png, encode_windowed_luminance_png, DisplayPng,
+    encode_real_world_windowed_png, encode_windowed_luminance_png, AppliedWindow, DisplayPng,
     LuminanceRenderOptions, StoredSamples,
 };
 use super::rle::{decode_raw_rle, decode_rle_to_png};
@@ -179,8 +179,8 @@ pub struct FrameRequest {
 pub struct FrameResponse {
     pub body: Bytes,
     pub content_type: &'static str,
-    /// The linear window the frame was presented with, if it has one.
-    pub window: Option<ResolvedWindow>,
+    /// The presentation the frame was actually rendered with.
+    pub window: AppliedWindow,
     pub cache_hit: bool,
 }
 
@@ -683,8 +683,8 @@ mod tests {
                     .expect("raw-tier display");
                 // The same image, reporting the same window.
                 assert_eq!(
-                    (decoded.png, decoded.window.map(|w| (w.center, w.width))),
-                    (windowed.png, windowed.window.map(|w| (w.center, w.width))),
+                    (decoded.png, decoded.window),
+                    (windowed.png, windowed.window),
                     "{}",
                     path.display()
                 );

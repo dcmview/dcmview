@@ -7,7 +7,7 @@ import {
 } from "./frameCache";
 
 function displayFrame(blob: Blob) {
-	return { blob, window: null };
+	return { blob, window: null, appliedWindow: null };
 }
 
 function bitmap(width: number, height: number): BitmapResource {

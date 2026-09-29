@@ -1,4 +1,4 @@
-use crate::api::contracts::{RealWorldValueMap, WindowMode};
+use crate::api::contracts::{FrameWindowApplied, RealWorldValueMap, WindowMode};
 use crate::types::{FileEntry, ResolvedWindow};
 use crate::value_mapping::map_value;
 use anyhow::{anyhow, Context, Result};
@@ -24,18 +24,39 @@ pub(crate) struct LuminanceRenderOptions {
     pub(crate) window_mode: WindowMode,
 }
 
-/// One encoded display frame.
+/// The presentation actually applied to an encoded frame.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AppliedWindow {
+    Linear(ResolvedWindow),
+    RealWorld,
+    VoiLut,
+    Color,
+}
+
+impl AppliedWindow {
+    pub fn kind(&self) -> Option<FrameWindowApplied> {
+        match self {
+            Self::Linear(_) => Some(FrameWindowApplied::Linear),
+            Self::RealWorld => Some(FrameWindowApplied::RealWorld),
+            Self::VoiLut => Some(FrameWindowApplied::VoiLut),
+            Self::Color => None,
+        }
+    }
+}
+
+/// One encoded display frame, with its actual presentation kept in the cache.
 #[derive(Debug, Clone)]
 pub struct DisplayPng {
     pub png: Bytes,
-    /// The linear window its luminance was presented with; `None` for color
-    /// frames and frames presented through a VOI LUT.
-    pub window: Option<ResolvedWindow>,
+    pub window: AppliedWindow,
 }
 
 impl DisplayPng {
     pub(crate) fn color(png: Bytes) -> Self {
-        Self { png, window: None }
+        Self {
+            png,
+            window: AppliedWindow::Color,
+        }
     }
 }
 
@@ -84,8 +105,7 @@ pub(crate) fn encode_windowed_luminance_png(
 /// are the window's low end. MONOCHROME1 inversion, Pixel Padding, shutter
 /// and overlays follow as for any grayscale frame.
 ///
-/// The frame reports no window: a window over mapped values has no linear
-/// Modality equivalent, and the viewer knows the one it asked for.
+/// Reports RealWorld explicitly: its window has no linear Modality equivalent.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn encode_real_world_windowed_png(
     file: &FileEntry,
@@ -112,7 +132,10 @@ pub(crate) fn encode_real_world_windowed_png(
         |index: usize| padding.is_some_and(|range| range.contains(stored_value(index)));
     let windowed = look_up_samples(file, table, is_padding, bytes, bits_allocated);
     let png = present_luminance(file, windowed, frame, rows, columns)?;
-    Ok(DisplayPng { png, window: None })
+    Ok(DisplayPng {
+        png,
+        window: AppliedWindow::RealWorld,
+    })
 }
 
 /// The steps after windowing that every grayscale frame shares: the
@@ -194,7 +217,7 @@ fn window_through_table(
     signed: bool,
     padding: Option<PixelPaddingRange>,
     options: &LuminanceRenderOptions,
-) -> Result<(Vec<u8>, Option<ResolvedWindow>)> {
+) -> Result<(Vec<u8>, AppliedWindow)> {
     let stored_value = stored_value_reader(bits_allocated, signed)?;
     let native = &file.series_metadata.native_pixel;
     let function = WindowFunction::for_file(file);
@@ -222,7 +245,7 @@ fn window_through_table(
             .iter()
             .map(|value| voi_lut_value(voi_lut, *value))
             .collect::<Vec<_>>();
-        (table, None)
+        (table, AppliedWindow::VoiLut)
     } else {
         let mut counts = vec![0_u64; rescaled.len()];
         for index in stored_indexes(bytes, bits_allocated) {
@@ -249,7 +272,7 @@ fn window_through_table(
             .iter()
             .map(|value| function.value(*value, &window))
             .collect();
-        (table, Some(window))
+        (table, AppliedWindow::Linear(window))
     };
     let windowed = look_up_samples(file, table, is_padding, bytes, bits_allocated);
     Ok((windowed, window))
@@ -333,7 +356,7 @@ fn window_each_sample(
     stored: &[f64],
     padding: Option<PixelPaddingRange>,
     options: &LuminanceRenderOptions,
-) -> Result<(Vec<u8>, Option<ResolvedWindow>)> {
+) -> Result<(Vec<u8>, AppliedWindow)> {
     let padding_mask = padding.map(|padding| padding.mask(stored));
     let native = &file.series_metadata.native_pixel;
     let function = WindowFunction::for_file(file);
@@ -358,7 +381,7 @@ fn window_each_sample(
         native.voi_lut.as_ref(),
         &rescaled,
     ) {
-        (values, None)
+        (values, AppliedWindow::VoiLut)
     } else {
         let resolved_window = resolve_window_with_function(
             options.window_mode,
@@ -374,7 +397,7 @@ fn window_each_sample(
             .iter()
             .map(|value| function.value(*value, &resolved_window))
             .collect();
-        (windowed, Some(resolved_window))
+        (windowed, AppliedWindow::Linear(resolved_window))
     };
     apply_monochrome1_inversion(&mut windowed, &file.photometric_interpretation);
     // Padding is background: black whatever the photometric interpretation.

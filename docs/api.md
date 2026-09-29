@@ -130,13 +130,21 @@ request after a display request of the same frame may report `HIT`.
 
 A grayscale display frame windowed linearly reports the window it was
 rendered with, in Modality values, as `X-Frame-Window-Center` and
-`X-Frame-Window-Width` (the width at least 1, as applied), whichever step
+`X-Frame-Window-Width` (the width as applied), whichever step
 above chose it; a drag preview reports its window too. Color frames, frames
 presented through a VOI LUT, and frames windowed in a real-world `unit` send
 neither: a window over mapped values has no linear Modality equivalent. A
 `unit` request whose window could not be applied reports the default window it
-was shown with instead, so the pair's presence on a `unit` response means the
-requested window was not used.
+was shown with instead.
+
+`X-Frame-Window-Applied` identifies the presentation on every grayscale display
+response, including cache hits and previews: `linear` for a Modality window,
+`real_world` for an applied unit window, or `voi_lut` for a VOI LUT. It is
+omitted for color frames. Only `real_world` confirms a requested unit window
+was applied; a fallback can report either `linear` (with center/width) or
+`voi_lut` (without them). Integer Modality windows retain a width floor of 1;
+float, fractional Modality and real-world windows use the continuous function
+without that floor.
 
 A file's `frame_count` in `/api/files` and `/api/series` is its Number of
 Frames bounded by the frames it can hold (the Per-frame Functional Groups items

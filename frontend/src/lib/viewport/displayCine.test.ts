@@ -18,7 +18,7 @@ function fakeDisplay() {
 			key: (file: number, frame: number) => `${file}:${frame}`,
 			ensureFrame: vi.fn(async (file: number, frame: number) => {
 				fetched.push(`${file}:${frame}`);
-				return { blob: new Blob(["png"]), window: null };
+				return { blob: new Blob(["png"]), window: null, appliedWindow: null };
 			}),
 			decode: vi.fn(),
 		},
@@ -35,7 +35,7 @@ describe("playDisplayCine", () => {
 		const ctrl = new AbortController();
 		const rendered = new RenderedFrames();
 		let scope = "tab:a";
-		const load = vi.fn(async () => ({ blob: new Blob(["png"]), window: null }));
+		const load = vi.fn(async () => ({ blob: new Blob(["png"]), window: null, appliedWindow: null }));
 		const display = new DisplayFrameSource({
 			load,
 			navigationScope: () => scope,
