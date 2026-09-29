@@ -893,15 +893,20 @@
 
 	$effect(() => {
 		const mode = pipelineMode;
-		requestGeneration += 1;
-		if (mode !== "diagnostic_wl") {
-			rawFrames.stopPrefetch();
-			invalidateWindowLevelRenders();
-			liveWindowCenter = null;
-			liveWindowWidth = null;
-		} else {
-			displayFrames.resetScope();
-		}
+		// Aborting display requests updates mapping snapshots synchronously.
+		// Those snapshots must not become dependencies of this mode transition:
+		// their next completion would invalidate the newly prepared raw frame.
+		untrack(() => {
+			requestGeneration += 1;
+			if (mode !== "diagnostic_wl") {
+				rawFrames.stopPrefetch();
+				invalidateWindowLevelRenders();
+				liveWindowCenter = null;
+				liveWindowWidth = null;
+			} else {
+				displayFrames.resetScope();
+			}
+		});
 	});
 
 	$effect(() => {

@@ -844,6 +844,37 @@ describe("ImageViewport frame presentation", () => {
 
 
 describe("W/L cine", () => {
+	it("pauses with pending cine metadata and resumes a drawable raw frame", async () => {
+		const context = { createImageData: (w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4) }),
+			putImageData: vi.fn(), drawImage: vi.fn(), clearRect: vi.fn() };
+		const canvas = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(context as unknown as CanvasRenderingContext2D);
+		vi.stubGlobal("createImageBitmap", vi.fn(async () => ({ width: 64, height: 64, close: vi.fn() })));
+		const pending = new Map<number, AbortSignal>();
+		fetchFrameValueMapping.mockImplementation(async (file, frame, signal) => {
+			if (frame < 12) return { ...identityMapping(file), frame_index: frame };
+			if (frame === 35) { await new Promise((resolve) => setTimeout(resolve, 30)); return { ...identityMapping(file), frame_index: frame }; }
+			pending.set(frame, signal!);
+			return new Promise((_resolve, reject) => signal!.addEventListener("abort", () => reject(new DOMException("cancelled", "AbortError")), { once: true }));
+		});
+		fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"]), window: { wc: 40, ww: 80 }, appliedWindow: "linear" });
+		const onmanualwindowlevel = vi.fn();
+		const { rerender } = renderViewport({ activeTool: "window_level", file: fileSummary(5, { frame_count: 300 }),
+			windowCenter: 40, windowWidth: 80, onmanualwindowlevel });
+		await waitFor(() => expect(context.putImageData).toHaveBeenCalled());
+		await rerender({ cinePlaying: true });
+		await waitFor(() => expect(pending.size).toBeGreaterThan(0));
+		await rerender({ currentFrame: 35, navigationPosition: 35 });
+		context.putImageData.mockClear();
+		await rerender({ cinePlaying: false });
+		await waitFor(() => expect(context.putImageData).toHaveBeenCalled());
+		const viewport = screen.getByRole("application");
+		await fireEvent.pointerDown(viewport, { button: 0, clientX: 10, clientY: 10, pointerId: 1 });
+		await fireEvent.pointerMove(viewport, { clientX: 20, clientY: 10, pointerId: 1 });
+		await fireEvent.pointerUp(viewport, { clientX: 20, clientY: 10, pointerId: 1 });
+		expect(onmanualwindowlevel).toHaveBeenCalledWith(40, 120, null);
+		canvas.mockRestore();
+	});
+
 	it("plays display frames with the current window and returns to raw windowing when paused", async () => {
 		fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"]), window: { wc: 40, ww: 80 }, appliedWindow: "linear" });
 		const onmanualwindowlevel = vi.fn();
