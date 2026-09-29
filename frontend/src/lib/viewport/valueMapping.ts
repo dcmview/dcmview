@@ -178,6 +178,20 @@ export function formatValue(value: number): string {
 	return String(Number(value.toPrecision(5)));
 }
 
+/**
+ * A window without a unit, with decimals that resolve a hundredth of its
+ * width: windows 10 or wider read as integers, and the sub-unit windows of
+ * float or fractionally rescaled data keep their digits instead of reading 0.
+ */
+export function formatWindow(window: { wc: number; ww: number }): { width: string; center: string } {
+	const decimals = window.ww >= 10 || !(window.ww > 0) ? 0 : Math.min(8, Math.ceil(-Math.log10(window.ww)) + 2);
+	const format = (value: number) => {
+		if (!Number.isFinite(value)) return String(value);
+		return decimals === 0 ? String(Math.round(value)) : String(Number(value.toFixed(decimals)));
+	};
+	return { width: format(window.ww), center: format(window.wc) };
+}
+
 export type ValueWithUnit = { value: string; unit: string | null; label?: string | null };
 
 /** Which real-world mapping a readout used, out of how many the frame has. */

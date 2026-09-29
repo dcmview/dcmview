@@ -3,6 +3,7 @@ import type { FrameValueMapping, RawFrame, RealWorldValueMap } from "../../api";
 import {
 	describePixelValues,
 	formatValue,
+	formatWindow,
 	frameDisplayWindowOptions,
 	mappedWindowScale,
 	modalityValue,
@@ -106,6 +107,16 @@ describe("value transforms", () => {
 		expect(formatValue(-1024)).toBe("-1024");
 		expect(formatValue(0.123456)).toBe("0.12346");
 		expect(formatValue(23.300000000000001)).toBe("23.3");
+	});
+
+	it("formats unitless windows to a hundredth of their width", () => {
+		expect(formatWindow({ ww: 400, wc: 40 })).toEqual({ width: "400", center: "40" });
+		expect(formatWindow({ ww: 1500.6, wc: -600.4 })).toEqual({ width: "1501", center: "-600" });
+		expect(formatWindow({ ww: 0.0027, wc: 0.00175 })).toEqual({ width: "0.0027", center: "0.00175" });
+		expect(formatWindow({ ww: 0.5, wc: 82.25 })).toEqual({ width: "0.5", center: "82.25" });
+		expect(formatWindow({ ww: 5, wc: 40.5 })).toEqual({ width: "5", center: "40.5" });
+		expect(formatWindow({ ww: 1500, wc: -600.5 })).toEqual({ width: "1500", center: "-600" });
+		expect(formatWindow({ ww: 0, wc: 3 })).toEqual({ width: "0", center: "3" });
 	});
 });
 

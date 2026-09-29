@@ -393,7 +393,7 @@ describe("ImageViewport window/level in real-world units", () => {
 		fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"]), window: { wc: 1.5, ww: 3 }, appliedWindow: "linear" });
 		renderViewport({ file: fileSummary(5, { rows: 5000, columns: 5000 }), windowCenter: 40, windowWidth: 80, windowUnit: "ms" });
 
-		await screen.findByText("W: 3 · C: 2");
+		await screen.findByText("W: 3 · C: 1.5");
 		expect(screen.queryByText(/ms$/)).toBeNull();
 	});
 
@@ -564,7 +564,7 @@ describe("ImageViewport value overlays", () => {
 describe("ImageViewport window presentation consistency", () => {
 	it("releases a manual window so a later preset and reset take effect", async () => {
 		const { rerender } = renderViewport({ activeTool: "window_level" });
-		await screen.findByText("W: 1 · C: 1");
+		await screen.findByText("W: 1 · C: 0.5");
 		const viewport = screen.getByRole("application");
 		await fireEvent.pointerDown(viewport, { button: 0, clientX: 10, clientY: 10, pointerId: 1 });
 		await fireEvent.pointerMove(viewport, { clientX: 20, clientY: 10, pointerId: 1 });
@@ -572,7 +572,7 @@ describe("ImageViewport window presentation consistency", () => {
 		await rerender({ windowCenter: 40, windowWidth: 80 });
 		await screen.findByText("W: 80 · C: 40");
 		await rerender({ windowCenter: null, windowWidth: null });
-		await screen.findByText("W: 1 · C: 1");
+		await screen.findByText("W: 1 · C: 0.5");
 	});
 
 	it("starts a server LUT-unit drag in the displayed unit", async () => {

@@ -88,6 +88,7 @@
 	import ValueLegend from "./viewport/ValueLegend.svelte";
 	import {
 		formatValue,
+		formatWindow,
 		frameDisplayWindowOptions,
 		mappedWindowScale,
 		pixelAt,
@@ -1592,7 +1593,8 @@
 				{:else if hudWindow.source === "voi_lut"}
 					<span>VOI LUT</span>
 				{:else if hudWindow.window}
-					<span>W: {Math.round(hudWindow.window.ww)} · C: {Math.round(hudWindow.window.wc)}</span>
+					{@const shown = formatWindow(hudWindow.window)}
+					<span>W: {shown.width} · C: {shown.center}</span>
 				{/if}
 				{#if presented?.presentation === "error"}
 					<span>Presentation layer unavailable</span>
