@@ -678,6 +678,46 @@ describe("ImageViewport frame presentation", () => {
 		return { context, restore: () => spy.mockRestore() };
 	}
 
+	it.each([false, true])("drags a small float window on its own scale (identity RWVM: %s)", async (mapped) => {
+		const { context, restore } = canvasContext();
+		const frame = rawFrame(64, 64, 32);
+		new Float32Array(frame.buffer).set(Array.from({ length: 4096 }, (_, i) => 0.0005 + (i % 28) * 0.0001));
+		fetchRawFrame.mockResolvedValue(frame);
+		fetchFrameValueMapping.mockResolvedValue({ ...identityMapping(), stored_value_type: "float32",
+			real_world: mapped ? [{ ...adcMapping().real_world[0], unit_label: "mm2/s", transform: { kind: "linear", slope: 1, intercept: 0 } }] : [] });
+		const onmanualwindowlevel = vi.fn();
+		try {
+			renderViewport({ activeTool: "window_level", file: fileSummary(5, { default_window: null }), onmanualwindowlevel });
+			await waitFor(() => expect(context.putImageData).toHaveBeenCalled());
+			const viewport = screen.getByRole("application");
+			for (const dx of [1, -1000]) {
+				await fireEvent.pointerDown(viewport, { button: 0, clientX: 10, clientY: 10, pointerId: 1 });
+				await fireEvent.pointerMove(viewport, { clientX: 10 + dx, clientY: 11, pointerId: 1 });
+				await fireEvent.pointerUp(viewport, { clientX: 10 + dx, clientY: 11, pointerId: 1 });
+				const [center, width, unit] = onmanualwindowlevel.mock.lastCall!;
+				expect(center).toBeGreaterThan(0.001);
+				expect(center).toBeLessThan(0.003);
+				expect(width).toBeGreaterThan(0);
+				expect(width).toBeLessThan(dx === 1 ? 0.01 : 0.0001);
+				expect(unit).toBe(mapped ? "mm2/s" : null);
+			}
+		} finally { restore(); }
+	});
+
+	it("keeps an integer drag's one-unit minimum", async () => {
+		const { context, restore } = canvasContext();
+		const onmanualwindowlevel = vi.fn();
+		try {
+			renderViewport({ activeTool: "window_level", onmanualwindowlevel });
+			await waitFor(() => expect(context.putImageData).toHaveBeenCalled());
+			const viewport = screen.getByRole("application");
+			await fireEvent.pointerDown(viewport, { button: 0, clientX: 10, clientY: 10, pointerId: 1 });
+			await fireEvent.pointerMove(viewport, { clientX: -1000, clientY: 10, pointerId: 1 });
+			await fireEvent.pointerUp(viewport, { pointerId: 1 });
+			expect(onmanualwindowlevel.mock.lastCall?.[1]).toBe(1);
+		} finally { restore(); }
+	});
+
 	it.each(["next file", "next frame", "mid-drag file"])("does not edit held ROIs while the %s is pending", async (destination) => {
 		const { context, restore } = canvasContext();
 		const changesFile = destination !== "next frame";

@@ -1230,6 +1230,23 @@
 		scheduleProbe(event.clientX, event.clientY);
 	}
 
+	function windowDragStep(baseWindow: { wc: number; ww: number }): number {
+		if (frameMapping && frameMapping.stored_value_type !== "integer") {
+			// Continuous samples have no one-unit quantum. Use the data range,
+			// independent of the manual window, to keep subsequent drags stable.
+			const automatic = resolveWindow({
+				raw: rawMatchesRequest ? currentRawFrame : null,
+				mapping: frameMapping, requested: null, live: null,
+				mode: "full_dynamic", defaultWindow: activeFile.default_window,
+				server: shownDisplay, unitRequest: false,
+			}).window ?? baseWindow;
+			return Math.max(Number.MIN_VALUE, Math.abs(automatic.wc) * Number.EPSILON, automatic.ww / 256);
+		}
+		return resolvedWindow.unit && frameMapping?.real_world[0]
+			? mappedScale ? Math.abs(mappedScale.ratio) : mappedUnitsPerStoredUnit(frameMapping.real_world[0])
+			: 1;
+	}
+
 	function onPointerDown(event: PointerEvent) {
 		if (!activeFile || !activeFile.has_pixels) return;
 		if (isViewportChromeTarget(event.target)) return;
@@ -1268,10 +1285,7 @@
 						startY: event.clientY,
 						baseCenter: baseWindow.wc,
 						baseWidth: baseWindow.ww,
-						// A LUT window drags in mapped units, scaled to move like a stored one.
-						step: resolvedWindow.unit && frameMapping?.real_world[0]
-							? mappedScale ? Math.abs(mappedScale.ratio) : mappedUnitsPerStoredUnit(frameMapping.real_world[0])
-							: 1,
+						step: windowDragStep(baseWindow),
 						unit: resolvedWindow.unit,
 					};
 					liveWindowCenter = baseWindow.wc;

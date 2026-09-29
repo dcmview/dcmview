@@ -84,7 +84,7 @@ export class WindowSettings {
 		const base = usableWindow(this.#defaultWindow(fileIndex));
 		if (!base) return;
 		this.center = base.center + this.#manual.centerOffsetRatio * base.width;
-		this.width = Math.max(1, this.#manual.widthRatio * base.width);
+		this.width = Math.max(Number.MIN_VALUE, this.#manual.widthRatio * base.width);
 		this.mode = "default";
 	}
 

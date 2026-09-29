@@ -36,6 +36,14 @@ describe("WindowSettings", () => {
 		expect(state(window)).toMatchObject({ center: 1100, width: 200, mode: "default" });
 	});
 
+	it("carries sub-unit widths without imposing an integer floor", () => {
+		const window = new WindowSettings((index) => ({ center: index * 0.001, width: index * 0.002 }));
+		window.recordManual(1, 0.0015, 0.0004);
+		window.followFile(2);
+		expect(window.center).toBeCloseTo(0.003);
+		expect(window.width).toBeCloseTo(0.0008);
+	});
+
 	it("does not carry a window without a usable default on either side", () => {
 		const window = settings();
 		window.recordManual(3, 50, 60);
