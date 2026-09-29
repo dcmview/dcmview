@@ -117,12 +117,14 @@ export class DisplayFrameSource {
 
 	/** The cached frame, or the scope's shared request for it. */
 	ensureFrame(fileIndex: number, frameIndex: number, options: DisplayFrameWindowOptions): Promise<DisplayFrame> {
+		// Establish the scope before even a cache hit can be presented. Otherwise
+		// starting cine after a tab return resets the frame already on screen.
+		this.enterScope(options);
 		const key = this.key(fileIndex, frameIndex, options);
 		const cached = this.#caches.frames.get(key);
 		if (cached) return Promise.resolve(cached);
 		const existing = this.#requests.get(key) as Promise<DisplayFrame> | undefined;
 		if (existing) return existing;
-		this.enterScope(options);
 		return this.#requests.request(key, (signal) => {
 			this.#framesInFlight.set(key, `${fileIndex}:${frameIndex}`);
 			return this.#load(fileIndex, frameIndex, options, signal)
