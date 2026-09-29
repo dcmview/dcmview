@@ -289,6 +289,25 @@ describe("fetch wrappers", () => {
 
 
 describe("server-instance detection", () => {
+	it("never reports a restart for responses without an instance header", async () => {
+		vi.resetModules();
+		const client = await import("./api");
+		const restarted = vi.fn();
+		const stop = client.onServerRestart(restarted);
+		vi.stubGlobal("fetch", vi.fn()
+			.mockResolvedValueOnce(new Response(JSON.stringify({ server_start_ms: 100, files: [] }), {
+				headers: { "X-Server-Instance": "100" },
+			}))
+			.mockResolvedValueOnce(new Response(JSON.stringify({ status: "ok" })))
+			.mockResolvedValueOnce(new Response(JSON.stringify({ code: "not_found", error: "missing" }), { status: 404 })));
+		try {
+			await client.fetchFiles();
+			await expect(client.fetchHealth()).resolves.toMatchObject({ status: "ok" });
+			await expect(client.fetchHealth()).rejects.toMatchObject({ status: 404 });
+			expect(restarted).not.toHaveBeenCalled();
+		} finally { stop(); }
+	});
+
 	it("anchors identity to the first catalog and rejects another server before consuming its response", async () => {
 		vi.resetModules();
 		const client = await import("./api");
