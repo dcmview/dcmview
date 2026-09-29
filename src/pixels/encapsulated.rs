@@ -146,11 +146,7 @@ impl EncapsulatedFrames {
                 read_frame_without_offsets(
                     &mut self.reader,
                     if frame == self.next_frame { 0 } else { frame },
-                    if frame == self.next_frame {
-                        self.frame_count - frame
-                    } else {
-                        self.frame_count
-                    },
+                    self.frame_count,
                     self.one_fragment_per_frame,
                 )
             }
@@ -589,6 +585,20 @@ mod tests {
                 .as_ref(),
             &[4, 5, 6, 0xFF, 0xD9, 0]
         );
+        let mut malformed = dicom_object::open_file(&path).unwrap();
+        malformed.put(DataElement::new(
+            tags::PIXEL_DATA,
+            VR::OB,
+            PixelFragmentSequence::new_fragments(vec![vec![1, 2, 0xFF, 0xD9], vec![4, 5]]),
+        ));
+        malformed.write_to_file(&path).unwrap();
+        let mut frames = super::EncapsulatedFrames::open(&path, &|| Ok(())).unwrap();
+        frames.read_frame(0).unwrap();
+        assert!(
+            frames.read_frame(1).is_err(),
+            "last frame still needs its boundary marker"
+        );
+        assert!(read_encapsulated_fragment_blocking(&path, 1).is_err());
     }
 
     #[test]
