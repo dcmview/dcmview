@@ -101,7 +101,7 @@ async fn fractional_seg_binary_fallback_is_object_wide_and_preserves_preview() {
             context["warnings"],
             if name == "binary-valued-fractional" {
                 serde_json::json!([
-                    "Declared FRACTIONAL (maximum 255) but stores only 0 and 1; shown as binary"
+                    "Declared FRACTIONAL (maximum 255) but every stored value is 0 or 1; shown as binary"
                 ])
             } else {
                 serde_json::json!([])

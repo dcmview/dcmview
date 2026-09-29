@@ -157,7 +157,7 @@ describe("SemanticContextPanel SEG section", () => {
 		response.context.segmentation_type = "FRACTIONAL";
 		response.context.segmentation_fractional_type = "OCCUPANCY";
 		response.context.maximum_fractional_value = 255;
-		const warning = "Declared FRACTIONAL (maximum 255) but stores only 0 and 1; shown as binary";
+		const warning = "Declared FRACTIONAL (maximum 255) but every stored value is 0 or 1; shown as binary";
 		response.context.warnings = [warning];
 		fetchSemanticContext.mockResolvedValue(response);
 		render(SemanticContextPanel, { fileIndex: SEG.index, currentFrame: 0, files: [SEG], onopenreference: vi.fn() });

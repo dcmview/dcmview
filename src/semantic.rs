@@ -341,7 +341,7 @@ fn segmentation_context(
     );
     SegmentationContext {
         warnings: source.series_metadata.binary_fractional_seg_maximum.map(|maximum| {
-            format!("Declared FRACTIONAL (maximum {maximum}) but stores only 0 and 1; shown as binary")
+            format!("Declared FRACTIONAL (maximum {maximum}) but every stored value is 0 or 1; shown as binary")
         }).into_iter().collect(),
         segmentation_type: read_string(object, tags::SEGMENTATION_TYPE),
         segmentation_fractional_type: read_string(object, tags::SEGMENTATION_FRACTIONAL_TYPE),
