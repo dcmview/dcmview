@@ -457,6 +457,8 @@ def _popen_options(*, vscode_bridge: bool = True) -> dict[str, object]:
 		"stdout": subprocess.PIPE,
 		"stderr": subprocess.PIPE,
 		"text": True,
+		"encoding": "utf-8",
+		"errors": "replace",
 		"bufsize": 1,
 		"env": env,
 	}

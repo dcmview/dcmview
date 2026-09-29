@@ -96,6 +96,18 @@ class WrapperTests(unittest.TestCase):
 				with self.assertRaises(RuntimeError):
 					wrapper._resolve_binary()
 
+	def test_subprocess_pipes_decode_utf8_and_replace_invalid_bytes(self) -> None:
+		options = wrapper._popen_options()
+		self.assertEqual(options["encoding"], "utf-8")
+		self.assertEqual(options["errors"], "replace")
+		payload = "画像.dcm".encode("utf-8") + bytes([255])
+		code = f"import os; os.write(1, {payload!r}); os.write(2, {payload!r})"
+		with subprocess.Popen([sys.executable, "-c", code], **options) as process:
+			stdout, stderr = process.communicate(timeout=10)
+		self.assertEqual(process.returncode, 0)
+		self.assertEqual(stdout, "画像.dcm\ufffd")
+		self.assertEqual(stderr, stdout)
+
 	def test_windows_subprocess_launch_uses_new_process_group(self) -> None:
 		with mock.patch("dcmview_py.wrapper._is_windows", return_value=True):
 			with mock.patch.object(wrapper.subprocess, "CREATE_NEW_PROCESS_GROUP", 512, create=True):
