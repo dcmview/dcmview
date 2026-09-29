@@ -680,11 +680,7 @@
 				() => generation === requestGeneration,
 				(pending) => { loading = pending; },
 			);
-			const [{ blob, window, appliedWindow }, preparedLayers] = await Promise.all([frameRequest, layerRequest,
-				// The resting frame needs its own mapping for the HUD/legend; passing
-				// cine frames and ordinary display prefetch do not.
-				cinePlaying ? null : valueMappings.load(fileIndex, frameIndex),
-			]);
+			const [{ blob, window, appliedWindow }, preparedLayers] = await Promise.all([frameRequest, layerRequest]);
 			layers = preparedLayers;
 			if (generation !== requestGeneration || !usesDisplayPipeline()) return;
 			loading = false;
@@ -1042,6 +1038,18 @@
 			return;
 		}
 		return untrack(() => valueMappings.ensureWhenSettled(fileIndex, frameIndex));
+	});
+
+	// A display PNG is already windowed and can be presented before metadata
+	// settles. Update only its matching HUD/legend when its own mapping arrives;
+	// never hold scrolling pixels behind a metadata round trip.
+	$effect(() => {
+		const frame = presented;
+		if (!frame || frame.raw || !presentedMatchesActive || !usesDisplayPipeline()) return;
+		const mapping = valueMappings.get(activeFile.index, currentFrame);
+		if (!mapping || mapping === frame.mapping) return;
+		const window = resolvedWindow;
+		untrack(() => { presented = { ...frame, mapping, window }; });
 	});
 
 	// Without any value mapping of the file, the raw renderer cannot tell

@@ -678,6 +678,23 @@ describe("ImageViewport frame presentation", () => {
 		return { context, restore: () => spy.mockRestore() };
 	}
 
+	it("presents a display image before its delayed mapping and then updates its legend", async () => {
+		const { context, restore } = canvasContext();
+		vi.stubGlobal("createImageBitmap", vi.fn(async () => ({ width: 64, height: 64, close: vi.fn() })));
+		let finish!: (mapping: api.FrameValueMapping) => void;
+		fetchFrameValueMapping.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+		fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"]), window: { wc: 100, ww: 200 }, appliedWindow: "linear" });
+		renderViewport();
+		await waitFor(() => expect(context.drawImage).toHaveBeenCalled());
+		expect(screen.queryByRole("figure", { name: /ADC:/ })).toBeNull();
+		await waitFor(() => expect(finish).toBeDefined());
+		await act(() => finish(adcMapping()));
+		await screen.findByRole("figure", { name: /ADC:/ });
+		await screen.findByText("W: 100 · C: 40 um2/s");
+		expect(fetchRawFrame).not.toHaveBeenCalled();
+		restore();
+	});
+
 	it.each([false, true])("drags a small float window on its own scale (identity RWVM: %s)", async (mapped) => {
 		const { context, restore } = canvasContext();
 		const frame = rawFrame(64, 64, 32);
