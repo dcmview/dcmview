@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from "svelte";
-	import { annotationsExportUrl, fetchHealth, onReachabilityChange, type SemanticContextResponse } from "./api";
+	import { annotationsExportUrl, fetchHealth, onReachabilityChange, onServerRestart, type SemanticContextResponse } from "./api";
 	import FileNavigator from "./lib/FileNavigator.svelte";
 	import FrameSlider from "./lib/FrameSlider.svelte";
 	import ImageViewport from "./lib/ImageViewport.svelte";
@@ -227,6 +227,7 @@
 	// One place says the server is gone, instead of every panel's own error;
 	// cine stops rather than failing frame by frame.
 	let serverReachable = $state(true);
+	onMount(() => onServerRestart(() => window.location.reload()));
 	onMount(() => onReachabilityChange((reachable) => {
 		serverReachable = reachable;
 		if (!reachable) cinePlaying = false;

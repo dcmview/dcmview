@@ -19,7 +19,7 @@ import type {
 	WindowMode,
 	WsiFrameContextResponse,
 } from "./generated/api-types";
-import { API_ENDPOINTS, DISPLAY_FRAME_HEADERS, RAW_FRAME_HEADERS } from "./generated/api-types";
+import { API_ENDPOINTS, API_RESPONSE_HEADERS, DISPLAY_FRAME_HEADERS, RAW_FRAME_HEADERS } from "./generated/api-types";
 import type { RawFrame } from "./rawFrame";
 
 export type {
@@ -120,6 +120,27 @@ async function readServerError(response: Response): Promise<Partial<ErrorRespons
 export const UNREACHABLE_STATUS = 0;
 const UNREACHABLE_MESSAGE = "dcmview is not reachable: the viewer process may have stopped";
 
+let catalogServerInstance: string | null = null;
+let serverReplaced = false;
+const restartListeners = new Set<() => void>();
+
+/** A changed server invalidates every file index and cache in the loaded page. */
+export function onServerRestart(listener: () => void): () => void {
+	restartListeners.add(listener);
+	if (serverReplaced) listener();
+	return () => restartListeners.delete(listener);
+}
+
+function checkServerInstance(instance: string | null): void {
+	if (catalogServerInstance === null || instance === null || instance === catalogServerInstance && !serverReplaced) return;
+	if (!serverReplaced) {
+		serverReplaced = true;
+		for (const listener of restartListeners) listener();
+	}
+	// Do not let a response from another catalog reach an index-keyed cache.
+	throw new DOMException("dcmview server was replaced", "AbortError");
+}
+
 let serverReachable = true;
 const reachabilityListeners = new Set<(reachable: boolean) => void>();
 
@@ -150,6 +171,7 @@ async function send(endpoint: Endpoint, url: string, init: RequestInit = {}): Pr
 		setReachable(false);
 		throw new ApiError(UNREACHABLE_MESSAGE, UNREACHABLE_STATUS, null);
 	}
+	checkServerInstance(response.headers.get(API_RESPONSE_HEADERS.serverInstance));
 	setReachable(true);
 	if (!response.ok) {
 		const body = await readServerError(response);
@@ -171,8 +193,14 @@ export function fetchHealth(): Promise<HealthResponse> {
 	return getJson(API_ENDPOINTS.health, endpointUrl(API_ENDPOINTS.health));
 }
 
-export function fetchFiles(): Promise<FilesResponse> {
-	return getJson(API_ENDPOINTS.files, endpointUrl(API_ENDPOINTS.files));
+export async function fetchFiles(): Promise<FilesResponse> {
+	const files = await getJson<FilesResponse>(API_ENDPOINTS.files, endpointUrl(API_ENDPOINTS.files));
+	if (Number.isFinite(files.server_start_ms)) {
+		const instance = String(files.server_start_ms);
+		checkServerInstance(instance);
+		catalogServerInstance ??= instance;
+	}
+	return files;
 }
 
 export function fetchSeries(): Promise<SeriesCatalogResponse> {

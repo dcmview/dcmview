@@ -286,3 +286,30 @@ describe("fetch wrappers", () => {
 		);
 	});
 });
+
+
+describe("server-instance detection", () => {
+	it("anchors identity to the first catalog and rejects another server before consuming its response", async () => {
+		vi.resetModules();
+		const client = await import("./api");
+		const restarted = vi.fn();
+		const stop = client.onServerRestart(restarted);
+		const reply = (body: unknown, instance: string, status = 200) => new Response(JSON.stringify(body), {
+			status, headers: { "Content-Type": "application/json", "X-Server-Instance": instance },
+		});
+		const fetch = vi.fn()
+			.mockResolvedValueOnce(reply({ server_start_ms: 100, files: [] }, "100"))
+			.mockResolvedValueOnce(reply({ status: "ok" }, "100"))
+			.mockResolvedValueOnce(reply({ status: "ok" }, "200"))
+			.mockResolvedValueOnce(reply({ code: "not_found", error: "new server" }, "200", 404));
+		vi.stubGlobal("fetch", fetch);
+		try {
+			await client.fetchFiles();
+			await client.fetchHealth();
+			expect(restarted).not.toHaveBeenCalled();
+			await expect(client.fetchHealth()).rejects.toMatchObject({ name: "AbortError", message: "dcmview server was replaced" });
+			await expect(client.fetchHealth()).rejects.toMatchObject({ name: "AbortError" });
+			expect(restarted).toHaveBeenCalledOnce();
+		} finally { stop(); }
+	});
+});
