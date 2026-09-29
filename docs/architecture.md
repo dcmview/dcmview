@@ -141,6 +141,16 @@ per-frame overlay layers, the ROI annotation store and components, the
 pixel probe and value-mapping conversions behind the readout, and the view
 transform math, including the client-to-image-pixel mapping.
 
+The viewport retains the last complete presentation until its replacement is
+ready. `viewport/frameLayers.ts` shares cached colorwash and presentation
+payloads and owns decoded layers for each prepared frame. Raw and display
+prefetches also warm value mappings and colorwash. A raw frame carries its
+own mapping through the worker draw; the completed draw commits its layers,
+window, and frame label together. Display frames await their colorwash before
+drawing and committing. A failed presentation layer leaves the base image
+visible with an unavailable note. Cine advances only after that complete
+presentation is marked rendered.
+
 The pixel readout reads the frame on screen: the samples the window/level
 renderer already holds, or a raw frame fetched through the shared raw-frame
 source once the cursor rests, converted with that frame's `value-mapping`.
