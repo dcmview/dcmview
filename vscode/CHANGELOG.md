@@ -18,6 +18,10 @@
   and Parametric Map colorwash overlays provide opacity controls, units, and
   overlaid values; W/L can operate in mapped units. SEG recommended colors,
   WSI companion navigation, and expanded RT Dose context are also included.
+- FRACTIONAL SEGs whose maximum exceeds 1 but whose complete stored samples
+  are all 0 or 1 draw as binary masks, with a Semantic Context warning.
+- Viewer assets and API requests use page-relative URLs for forwarded paths;
+  responses include `X-Content-Type-Options: nosniff`.
 - A visible image-position scrubber supports keyboard and mouse seeking at
   narrow webview widths too. W/L cine uses the current window and returns to
   interactive windowing when paused; cached tabs resume playback correctly.
@@ -32,7 +36,7 @@
   References refresh during discovery, closing a tab discards its view state,
   and tag buttons support Enter/Space without starting cine.
 - The bundled API adds `X-Frame-Window-Applied` for grayscale display frames and
-  `X-Server-Instance` on every response, allowing the viewer to identify the
+  `X-Server-Instance` on every API response, allowing the viewer to identify the
   applied presentation and detect a replacement server before using its data.
 - MONOCHROME1 padding stays black, stop signals work immediately after the URL
   appears, and corrupt encapsulated fragment lengths fail before allocation.

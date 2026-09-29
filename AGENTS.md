@@ -246,7 +246,7 @@ dcmview/
 |   |       |-- viewport/             ImageViewport units: frame sources, W/L
 |   |       |                         worker client, view state, overlays, ROIs
 |   |       |-- ui/                   Bea · dcmview controls: Button, ButtonGroup,
-|   |       |                         SegmentedControl, Select, SearchField,
+|   |       |                         SegmentedControl, Select, Range, SearchField,
 |   |       |                         StatusBadge, Icon and its line icons
 |   |       |-- FileNavigator.svelte
 |   |       |-- OpenImageTabs.svelte
@@ -460,7 +460,7 @@ is cached between requests.
   Pixel values come from `viewport/pixelProbe.svelte.ts` and the per-frame
   `value-mapping` conversions in `viewport/valueMapping.ts`.
 - No external CSS frameworks. Use scoped Svelte styles.
-- Use the `lib/ui` controls for buttons, segmented choices, selects, search
+- Use the `lib/ui` controls for buttons, segmented choices, selects, ranges, search
   fields and status badges, and `lib/ui/icons.ts` for icons; do not draw
   glyphs with text characters or restyle controls per component.
 - Theme tokens are the Bea · dcmview design system's, in `src/theme.css`:

@@ -329,7 +329,11 @@ The contract is kept consistent by three layers:
   Like the value overlays in `server/api/overlays.rs`, the encoded PNG is
   cached per SEG frame and resolved source frame, and `X-Cache` reports that
   cache. Discovery inspects candidate FRACTIONAL SEGs with a maximum above 1
-  on its blocking workers, one decoded frame at a time. Only an object whose
+  on its blocking workers after filters match. Native samples are streamed in
+  bounded chunks (deflated datasets are inflated once); encapsulated samples
+  reuse one header and sequential frame cursor, retaining at most one decoded
+  frame. Inspection checks discovery cancellation while walking metadata and
+  between chunks/frames. Only an object whose
   complete declared frame set contains exclusively 0/1 samples receives the
   binary fallback. `SeriesMetadata.binary_fractional_seg_maximum` retains the
   verdict for the file's lifetime, independently of request caches; errors or
@@ -597,14 +601,16 @@ installation and VS Code Electron integration can also use network/cache state;
   complete HTTP boundary.
 - Generated DICOM fixtures exercise real discovery and codec paths. Integration
   tests do not mock the DICOM layer.
-- Discovery opens and parses each file once (`loader/entry.rs`
+- Discovery builds each file's catalog metadata in one parse (`loader/entry.rs`
   `read_discovery_header`): it builds the metadata object from the parser's
   tokens up to the earliest standard pixel-data tag, exactly as
   `OpenFileOptions::read_until(FLOAT_PIXEL_DATA)` would, then continues the
   same parse to the data set's own top-level pixel element (deflated data sets
   through their inflating adapter). Pixel elements nested in sequences, such
   as an Icon Image Sequence, do not count. It does not retain integer, float,
-  or double-float pixel values in the catalog.
+  or double-float pixel values in the catalog. Selected candidate FRACTIONAL
+  SEGs additionally receive the bounded sample inspection described above; this
+  is one pixel-stream pass per object, not a header parse per frame.
 - Frontend state helpers, controllers, cache policy, windowing, registry
   shaping, and API wrappers are tested as TypeScript modules. Component tests
   render `App.svelte` and `ImageViewport.svelte` in happy-dom with the API
