@@ -249,7 +249,8 @@ empty when there is nothing to report. Declared `segmentation_type`,
 
 A FRACTIONAL SEG with Maximum Fractional Value above 1 whose stored samples
 across the entire object are all 0 or 1 is drawn as BINARY. Its context warns:
-“Declared FRACTIONAL (maximum N) but stores only 0 and 1; shown as binary”.
+“Declared FRACTIONAL (maximum N) but every stored value is 0 or 1; shown as
+binary”.
 Discovery computes and caches this interpretation before serving the object;
 a binary-valued frame within a genuine fractional object does not trigger it.
 Ordinary display/raw frames and genuine fractional overlays are unchanged.
