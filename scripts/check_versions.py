@@ -52,12 +52,44 @@ def normalize_tag(tag: str) -> str:
 	return version
 
 
-def read_package_json_version(path: pathlib.Path) -> str:
+def read_package_json_version(path: pathlib.Path, *, package_root: bool = False) -> str:
 	data = json.loads(path.read_text(encoding="utf-8"))
-	version = data.get("version")
+	if package_root:
+		packages = data.get("packages") if isinstance(data, dict) else None
+		data = packages.get("") if isinstance(packages, dict) else None
+	version = data.get("version") if isinstance(data, dict) else None
 	if not isinstance(version, str) or not version:
-		raise ValueError(f"{path.name} does not define version")
+		field = 'packages[""].version' if package_root else "version"
+		raise ValueError(f"{path} does not define {field}")
 	return version
+
+
+def read_cargo_lock_version(path: pathlib.Path) -> str:
+	# Cargo's generated lockfile uses scalar name/version entries in package
+	# blocks. Read just the root package, also on Python 3.9 without tomllib.
+	packages = re.split(r"(?m)^\[\[package\]\]\s*$", path.read_text(encoding="utf-8"))[1:]
+	roots = [block for block in packages if re.search(r'^name\s*=\s*"dcmview"\s*$', block, re.M)]
+	if len(roots) != 1:
+		raise ValueError(f"{path} must contain exactly one dcmview package")
+	version = re.search(r'^version\s*=\s*"([^\"]+)"\s*$', roots[0], re.M)
+	if version is None:
+		raise ValueError(f"{path} does not define the dcmview package version")
+	return version.group(1)
+
+
+def release_versions(root: pathlib.Path) -> dict[str, str]:
+	versions = {
+		"Cargo.toml": read_toml_version(root / "Cargo.toml", "package"),
+		"Cargo.lock": read_cargo_lock_version(root / "Cargo.lock"),
+		"pyproject.toml": read_toml_version(root / "pyproject.toml", "project"),
+	}
+	for directory in ("frontend", "vscode"):
+		for filename in ("package.json", "package-lock.json"):
+			name = f"{directory}/{filename}"
+			versions[name] = read_package_json_version(root / name)
+			if filename == "package-lock.json":
+				versions[f'{name} packages[""].version'] = read_package_json_version(root / name, package_root=True)
+	return versions
 
 
 def main() -> int:
@@ -74,18 +106,15 @@ def main() -> int:
 	args = parser.parse_args()
 
 	try:
-		cargo_version = read_toml_version(REPO_ROOT / "Cargo.toml", "package")
-		python_version = read_toml_version(REPO_ROOT / "pyproject.toml", "project")
-		vscode_version = read_package_json_version(REPO_ROOT / "vscode" / "package.json")
-	except ValueError as error:
+		versions = release_versions(REPO_ROOT)
+	except (ValueError, OSError) as error:
 		print(str(error), file=sys.stderr)
 		return 1
 
-	if cargo_version != python_version or cargo_version != vscode_version:
+	cargo_version = versions["Cargo.toml"]
+	if any(version != cargo_version for version in versions.values()):
 		print(
-			f"version mismatch: Cargo.toml has {cargo_version}, "
-			f"pyproject.toml has {python_version}, "
-			f"vscode/package.json has {vscode_version}",
+			"version mismatch: " + ", ".join(f"{name} has {version}" for name, version in versions.items()),
 			file=sys.stderr,
 		)
 		return 1
