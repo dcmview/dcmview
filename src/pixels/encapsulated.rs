@@ -203,7 +203,9 @@ fn read_basic_offset_table(reader: &mut BufReader<File>) -> Result<Vec<u64>> {
             "encapsulated pixel data does not start with an item"
         ));
     }
-    let mut table = vec![0_u8; usize::try_from(length)?];
+    let file_length = reader.get_ref().metadata()?.len();
+    let length = checked_fragment_end(reader, file_length, 0, usize::try_from(length)?)?;
+    let mut table = vec![0_u8; length];
     reader.read_exact(&mut table)?;
     Ok(table
         .chunks_exact(4)
@@ -375,6 +377,20 @@ mod tests {
     use dicom_dictionary_std::{tags, uids};
     use dicom_object::{FileMetaTableBuilder, InMemDicomObject};
     use tempfile::tempdir;
+
+    #[test]
+    fn corrupt_basic_offset_table_is_rejected_before_payload_read() {
+        use std::io::{BufReader, Seek, Write};
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(&[0xFE, 0xFF, 0x00, 0xE0]).unwrap();
+        file.write_all(&(1024_u32 * 1024).to_le_bytes()).unwrap();
+        file.write_all(b"tiny").unwrap();
+        file.rewind().unwrap();
+        let mut reader = BufReader::new(file);
+        let error = super::read_basic_offset_table(&mut reader).unwrap_err();
+        assert!(error.to_string().contains("encapsulated fragment is truncated"));
+        assert_eq!(reader.stream_position().unwrap(), 8);
+    }
 
     #[test]
     fn corrupt_fragment_lengths_with_offsets_are_rejected_before_reading() {
