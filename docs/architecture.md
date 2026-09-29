@@ -192,6 +192,10 @@ presentation; released drags and explicit selections clear their local preview.
 Server unit labels require `X-Frame-Window-Applied: real_world`; `voi_lut`
 and color responses never inherit the requested unit. Manual settings always
 leave Full Dynamic and preset mode, including files without a default window.
+Play while W/L is selected uses display frames with the current window and
+returns to interactive raw rendering when paused. The visible Image position
+scrubber in `FrameSlider`, using `lib/ui/Range`, pauses playback when seeking.
+Browser and VS Code media capture drive this same accessible control.
 
 The cached `DisplayPng` carries an `AppliedWindow` enum: Linear with its
 Modality window, RealWorld, VoiLut, or Color. `X-Frame-Window-Applied` is
