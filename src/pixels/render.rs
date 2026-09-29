@@ -9,10 +9,10 @@ use super::color::{encode_rgb8_png_with_icc, png_encoder};
 use super::overlay::{apply_overlay_planes, OVERLAY_PRESENTATION_VALUE};
 use super::shutter;
 use super::window::{
-    apply_modality_transform, apply_padding_background, apply_voi_lut_if_selected, apply_window,
+    apply_modality_transform, apply_padding_background, apply_voi_lut_if_selected,
     exclude_padding_samples, modality_value, resolve_window_from_distribution,
-    resolve_window_with_mode, selected_voi_lut, voi_lut_value, window_value, PixelPaddingRange,
-    ValueDistribution,
+    resolve_window_with_function, selected_voi_lut, voi_lut_value, PixelPaddingRange,
+    ValueDistribution, WindowFunction,
 };
 
 pub(crate) struct LuminanceRenderOptions {
@@ -98,7 +98,6 @@ pub(crate) fn encode_real_world_windowed_png(
     (rows, columns): (u32, u32),
 ) -> Result<DisplayPng> {
     let stored_value = stored_value_reader(bits_allocated, signed)?;
-    let width = width.max(1.0);
     let low = center - width / 2.0;
     let table = (0..1_usize << bits_allocated)
         .map(|index| match map_value(map, stored_value(index)) {
@@ -198,6 +197,7 @@ fn window_through_table(
 ) -> Result<(Vec<u8>, Option<ResolvedWindow>)> {
     let stored_value = stored_value_reader(bits_allocated, signed)?;
     let native = &file.series_metadata.native_pixel;
+    let function = WindowFunction::for_file(file);
     let rescaled = (0..1_usize << bits_allocated)
         .map(|index| {
             modality_value(
@@ -241,12 +241,13 @@ fn window_through_table(
             options.requested_ww,
             file.default_window,
             &window_source,
+            function,
         )
         .ok_or_else(|| anyhow!("could not resolve window"))
-        .map(applied_window)?;
+        .map(|window| function.applied(window))?;
         let table = rescaled
             .iter()
-            .map(|value| window_value(*value, window.center, window.width))
+            .map(|value| function.value(*value, &window))
             .collect();
         (table, Some(window))
     };
@@ -298,14 +299,6 @@ fn stored_value_reader(bits_allocated: u32, signed: bool) -> Result<fn(usize) ->
     })
 }
 
-/// The window as applied: a linear window is never narrower than one unit.
-fn applied_window(window: ResolvedWindow) -> ResolvedWindow {
-    ResolvedWindow {
-        width: window.width.max(1.0),
-        ..window
-    }
-}
-
 /// Each sample's table index: its bit pattern in the 8- or 16-bit container.
 fn stored_indexes(bytes: &[u8], bits_allocated: u32) -> impl Iterator<Item = usize> + '_ {
     let width = if bits_allocated == 8 { 1 } else { 2 };
@@ -343,6 +336,7 @@ fn window_each_sample(
 ) -> Result<(Vec<u8>, Option<ResolvedWindow>)> {
     let padding_mask = padding.map(|padding| padding.mask(stored));
     let native = &file.series_metadata.native_pixel;
+    let function = WindowFunction::for_file(file);
     let rescaled = apply_modality_transform(
         stored,
         native.modality_lut.as_ref(),
@@ -366,16 +360,20 @@ fn window_each_sample(
     ) {
         (values, None)
     } else {
-        let resolved_window = resolve_window_with_mode(
+        let resolved_window = resolve_window_with_function(
             options.window_mode,
             options.requested_wc,
             options.requested_ww,
             file.default_window,
             window_source,
+            function,
         )
         .ok_or_else(|| anyhow!("could not resolve window"))
-        .map(applied_window)?;
-        let windowed = apply_window(&rescaled, resolved_window.center, resolved_window.width);
+        .map(|window| function.applied(window))?;
+        let windowed = rescaled
+            .iter()
+            .map(|value| function.value(*value, &resolved_window))
+            .collect();
         (windowed, Some(resolved_window))
     };
     apply_monochrome1_inversion(&mut windowed, &file.photometric_interpretation);

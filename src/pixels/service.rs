@@ -237,6 +237,16 @@ pub async fn load_frame(
         display.width = None;
     }
 
+    // Only this frame's integer Modality path proves sub-unit widths render
+    // alike. Unit windows above retain their exact widths and separate keys.
+    if let (Some(center), Some(width)) = (display.center, display.width) {
+        display.width = Some(
+            super::window::WindowFunction::for_file(&file)
+                .applied(ResolvedWindow { center, width })
+                .width,
+        );
+    }
+
     let key = display.cache_key(&file, None);
 
     let cached = cache.lock().map_err(|_| cache_poisoned())?.get(&key);

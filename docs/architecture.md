@@ -410,7 +410,13 @@ color-space transformation, and it does not change decoded RGB samples or raw
 frame responses.
 
 For native monochrome display, Modality LUT or rescale precedes VOI LUT or
-windowing, followed by MONOCHROME1 presentation inversion. Modality and VOI
+windowing, followed by MONOCHROME1 presentation inversion. Integer Modality values
+use LINEAR half-unit boundaries and a minimum width of one. Float samples,
+fractional Modality rescale values, and real-world windows use the continuous
+window function without that floor; automatic Modality windows preserve any positive
+span and use width one only for a constant frame. `pixels/window.rs` chooses
+this function, mirrored by `rawWindowing.ts` and the shared oracle. Sub-unit
+cache widths are normalized only after the integer Modality path is known. Modality and VOI
 LUT sequences accept the standard 8-bit and 16-bit entry depths, including
 byte-packed 8-bit LUT Data. The display shutter then replaces every pixel
 outside its opening with the encoded P-value (Shutter Presentation Value, else

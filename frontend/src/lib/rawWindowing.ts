@@ -132,7 +132,7 @@ export function renderRawFrameToRgba(
 	}
 	const presentation = options.presentation ?? samplePresentation(frame, null);
 	const reader = createSampleReader(frame, presentation.storedValueType);
-	const gray = grayFunction(frame.metadata, presentation, wc, Math.max(ww, 1), options);
+	const gray = grayFunction(frame.metadata, presentation, wc, ww, options);
 	// Padding is background: black after any MONOCHROME1 inversion.
 	const isPadding = paddingPredicate(frame.metadata);
 	const present = (stored: number) => (isPadding?.(stored) ? 0 : gray(stored));
@@ -347,7 +347,11 @@ function cachedAutomaticWindow(
 		cached = { modality };
 		automaticWindows.set(frame, cached);
 	}
-	cached[kind] ??= automaticWindow(windowSourceValues(frame, presentation), kind === "percentile");
+	cached[kind] ??= automaticWindow(
+		windowSourceValues(frame, presentation),
+		kind === "percentile",
+		integerModality(presentation ?? samplePresentation(frame, null)),
+	);
 	return cached[kind];
 }
 
@@ -359,12 +363,12 @@ export function computePercentileWindow(frame: RawFrame, presentation?: SamplePr
 	return cachedAutomaticWindow(frame, presentation, "percentile");
 }
 
-function automaticWindow(values: OrderedValues, percentile: boolean): ResolvedWindow {
+function automaticWindow(values: OrderedValues, percentile: boolean, integer: boolean): ResolvedWindow {
 	if (values.total === 0) return { wc: 128, ww: 256 };
 	const [low, high] = valueSpan(values, percentile);
 	// f64::max on the server ignores NaN; Math.max would return it.
 	const span = high - low;
-	const width = span > 1 ? span : 1;
+	const width = span > (integer ? 1 : 0) ? span : 1;
 	return { wc: low + width / 2, ww: width };
 }
 
@@ -473,6 +477,13 @@ function toByte(value: number): number {
 	return Number.isNaN(value) ? 0 : Math.min(Math.max(Math.round(value), 0), 255);
 }
 
+/** Integer Modality values use LINEAR; all other values use a continuous window. */
+function integerModality(presentation: SamplePresentation): boolean {
+	const { modality, storedValueType } = presentation;
+	return storedValueType === "integer" && (Boolean(modality.lut?.values.length)
+		|| (Number.isInteger(modality.rescale_slope) && Number.isInteger(modality.rescale_intercept)));
+}
+
 /** The displayed byte of one stored value, before Pixel Padding. */
 function grayFunction(
 	metadata: RawFrameMetadata,
@@ -502,6 +513,11 @@ function grayFunction(
 			return output(Math.floor((entry * 255 + Math.floor(max / 2)) / max));
 		};
 	}
+	if (!integerModality(presentation)) {
+		const low = wc - ww / 2;
+		return (stored) => output(toByte(Math.min(Math.max((modal(stored) - low) / ww, 0), 1) * 255));
+	}
+	ww = Math.max(ww, 1);
 	const center = wc - 0.5;
 	const low = center - (ww - 1) / 2;
 	const high = center + (ww - 1) / 2;

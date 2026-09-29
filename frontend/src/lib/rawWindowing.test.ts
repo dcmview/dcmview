@@ -215,7 +215,7 @@ describe("samples presented one at a time", () => {
 
 	it("presents NaN float samples as the server casts them, before MONOCHROME1 inversion", () => {
 		const frame = frameFromSamples([Number.NaN, 0, 1], 32, 0, { photometricInterpretation: "MONOCHROME1" }, true);
-		expect(grayValues(renderRawFrameToRgba(frame, 0.5, 2, { presentation: float("float32") }))).toEqual([255, 127, 0]);
+		expect(grayValues(renderRawFrameToRgba(frame, 0.5, 2, { presentation: float("float32") }))).toEqual([255, 191, 64]);
 		// The server's full range folds with f64::min/max, which skip NaN.
 		expect(computeFullDynamicWindow(frame, float("float32"))).toEqual({ wc: 0.5, ww: 1 });
 	});
