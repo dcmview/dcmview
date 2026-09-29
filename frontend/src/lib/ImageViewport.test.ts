@@ -722,6 +722,31 @@ describe("ImageViewport frame presentation", () => {
 		} finally { restore(); }
 	});
 
+	it("drags a fractionally rescaled window by one stored unit", async () => {
+		const { context, restore } = canvasContext();
+		const frame = rawFrame(64, 64, 16);
+		new Uint16Array(frame.buffer).set(Array.from({ length: 4096 }, (_, i) => i % 101));
+		fetchRawFrame.mockResolvedValue(frame);
+		fetchFrameValueMapping.mockResolvedValue({ ...identityMapping(),
+			modality: { rescale_slope: 0.0001, rescale_intercept: 0, rescale_type: null, lut: null } });
+		const onmanualwindowlevel = vi.fn();
+		try {
+			renderViewport({ activeTool: "window_level", file: fileSummary(5, { default_window: null }), onmanualwindowlevel });
+			await waitFor(() => expect(context.putImageData).toHaveBeenCalled());
+			const viewport = screen.getByRole("application");
+			for (const [dx, maximum] of [[1, 0.02], [-1000, 0.0001]]) {
+				await fireEvent.pointerDown(viewport, { button: 0, clientX: 10, clientY: 10, pointerId: 1 });
+				await fireEvent.pointerMove(viewport, { clientX: 10 + dx, clientY: 10, pointerId: 1 });
+				await fireEvent.pointerUp(viewport, { clientX: 10 + dx, clientY: 10, pointerId: 1 });
+				const [center, width] = onmanualwindowlevel.mock.lastCall!;
+				expect(center).toBeGreaterThan(0);
+				expect(center).toBeLessThan(0.01);
+				expect(width).toBeGreaterThan(0);
+				expect(width).toBeLessThanOrEqual(maximum);
+			}
+		} finally { restore(); }
+	});
+
 	it("keeps an integer drag's one-unit minimum", async () => {
 		const { context, restore } = canvasContext();
 		const onmanualwindowlevel = vi.fn();

@@ -488,10 +488,13 @@ function toByte(value: number): number {
 }
 
 /** Integer Modality values use LINEAR; all other values use a continuous window. */
-function integerModality(presentation: SamplePresentation): boolean {
-	const { modality, storedValueType } = presentation;
+export function hasIntegerModality(storedValueType: string, modality: ModalityValueTransform): boolean {
 	return storedValueType === "integer" && (Boolean(modality.lut?.values.length)
 		|| (Number.isInteger(modality.rescale_slope) && Number.isInteger(modality.rescale_intercept)));
+}
+
+function integerModality(presentation: SamplePresentation): boolean {
+	return hasIntegerModality(presentation.storedValueType, presentation.modality);
 }
 
 /** The displayed byte of one stored value, before Pixel Padding. */

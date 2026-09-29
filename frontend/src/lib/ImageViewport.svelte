@@ -28,6 +28,7 @@
 	import { canRunCinePlayback, type CineDirection, type CineMode } from "./cinePlayback";
 	import { fitImageToViewportHeight, imageDisplayGeometry } from "./imageGeometry";
 	import {
+		hasIntegerModality,
 		mappedUnitsPerStoredUnit,
 		MAX_RENDER_PIXELS,
 		samplePresentation,
@@ -1264,9 +1265,15 @@
 			}).window ?? baseWindow;
 			return Math.max(Number.MIN_VALUE, Math.abs(automatic.wc) * Number.EPSILON, automatic.ww / 256);
 		}
-		return resolvedWindow.unit && frameMapping?.real_world[0]
-			? mappedScale ? Math.abs(mappedScale.ratio) : mappedUnitsPerStoredUnit(frameMapping.real_world[0])
-			: 1;
+		if (resolvedWindow.unit && frameMapping?.real_world[0]) {
+			return mappedScale ? Math.abs(mappedScale.ratio) : mappedUnitsPerStoredUnit(frameMapping.real_world[0]);
+		}
+		// One stored unit: a fractional rescale steps by its slope, not by whole Modality units.
+		if (frameMapping && !hasIntegerModality(frameMapping.stored_value_type, frameMapping.modality)) {
+			const slope = Math.abs(frameMapping.modality.rescale_slope);
+			if (Number.isFinite(slope) && slope > 0) return slope;
+		}
+		return 1;
 	}
 
 	function onPointerDown(event: PointerEvent) {
