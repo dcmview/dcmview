@@ -594,7 +594,7 @@ describe("ImageViewport window presentation consistency", () => {
 		fetchFrameValueMapping.mockResolvedValue(adcMapping());
 		renderViewport({ activeTool: "window_level" });
 		const legend = await screen.findByRole("figure", { name: /ADC:/ });
-		expect(legend.querySelector(".bar")?.getAttribute("style")).toContain("#fff, #000");
+		await waitFor(() => expect(legend.querySelector(".bar")?.getAttribute("style")).toContain("#fff, #000"));
 	});
 
 	it("inverts a mapped MONOCHROME1 legend on the display path without downloading raw samples", async () => {

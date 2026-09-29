@@ -185,7 +185,10 @@
 
 	let prefetchConcurrency = $state(PREFETCH_CONCURRENCY);
 	const rendered = new RenderedFrames();
-	const rawFrames = new RawFrameSource({ concurrency: () => prefetchConcurrency });
+	const rawFrames = new RawFrameSource({
+		concurrency: () => prefetchConcurrency,
+		prepare: (fileIndex, frameIndex, signal) => valueMappings.load(fileIndex, frameIndex, signal),
+	});
 	const displayFrames = new DisplayFrameSource({
 		load: loadDisplayFrame,
 		navigationScope: () => navigationScopeKey,
