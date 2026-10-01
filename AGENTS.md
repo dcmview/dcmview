@@ -579,8 +579,10 @@ coverage from real-binary integration, and VS Code separates compilation from
 Electron-hosted integration.
 
 Committed synthetic fixtures cover native, JPEG Baseline, JPEG Lossless, JPEG
-2000, color, display shutter, multiframe, no-pixel, and RT Dose and
-Parametric Map overlay objects with their source images. They are generated
+2000, color, display shutter, multiframe, no-pixel, RT Dose and
+Parametric Map overlay objects with their source images, and Grayscale
+Softcopy Presentation States with graphic annotations over their target
+images. They are generated
 by:
 
 ```bash
