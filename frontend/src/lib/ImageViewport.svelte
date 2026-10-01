@@ -66,6 +66,10 @@
 		probesSinglePixels,
 		type OverlayValueState,
 	} from "./viewport/pixelProbe.svelte";
+	import GraphicAnnotationLabels from "./viewport/GraphicAnnotationLabels.svelte";
+	import GraphicAnnotationOverlay from "./viewport/GraphicAnnotationOverlay.svelte";
+	import { GraphicAnnotationFrames } from "./viewport/graphicAnnotationFrames.svelte";
+	import type { GraphicAnnotationSelection } from "./viewport/graphicAnnotations";
 	import { RawFrameSource } from "./viewport/rawFrameSource";
 	import { RenderedFrames } from "./viewport/renderedFrames.svelte";
 	import { resolveWindow, type WindowResolution } from "./viewport/resolveWindow";
@@ -132,6 +136,7 @@
 		onnavigationchange,
 		overlay = null,
 		valueOverlay = null,
+		graphicAnnotation = null,
 	}: {
 		activeFile: FileSummary;
 		currentFrame: number;
@@ -160,6 +165,8 @@
 		overlay?: FrameOverlay | null;
 		/** A colorwash drawn over the displayed frame; ignored under a SEG overlay. */
 		valueOverlay?: ValueOverlay | null;
+		/** A presentation state's annotations drawn over the displayed frame; ignored under a SEG overlay. */
+		graphicAnnotation?: GraphicAnnotationSelection | null;
 	} = $props();
 
 	let dragState = $state<DragState>(null);
@@ -368,6 +375,17 @@
 		presented?.target.imageFile.pixel_aspect_ratio ?? overlay?.sourceFile.pixel_aspect_ratio ?? activeFile.pixel_aspect_ratio));
 
 	const transformCss = $derived(layerTransformCss(activeTransform, orientation, displayGeometry));
+	const annotationFrames = new GraphicAnnotationFrames();
+	// The frame on screen, which trails the requested one while it loads.
+	const annotatedFrame = $derived(graphicAnnotation && !overlay ? {
+		stateFileIndex: graphicAnnotation.stateFileIndex,
+		fileIndex: presented?.target.imageFile.index ?? activeFile.index,
+		frameIndex: presented?.target.imageFrameIndex ?? currentFrame,
+	} : null);
+	const shownAnnotations = $derived(annotatedFrame ? annotationFrames.get(annotatedFrame) : null);
+	$effect(() => {
+		if (annotatedFrame) annotationFrames.load(annotatedFrame);
+	});
 	const visibleRois = $derived(
 		overlay ? [] : roisOnFrame(annotations.annotations(presented?.target.file.index ?? activeFile.index), presented?.target.frameIndex ?? currentFrame),
 	);
@@ -1138,6 +1156,7 @@
 			if (annotations.ready(fileIndex)) annotations.retrySave(fileIndex);
 			else annotations.retryLoad(fileIndex);
 		}
+		if (annotatedFrame) annotationFrames.retry(annotatedFrame);
 		const mappingFailed = valueMappings.failed(fileIndex, frameIndex);
 		if (!loadError && !mappingFailed && presented?.presentation !== "error" && valueOverlayState?.status !== "error") return;
 		loadError = null;
@@ -1560,6 +1579,15 @@
 					aria-hidden="true"
 				></canvas>
 			{/if}
+			{#if shownAnnotations && imageColumns > 0 && imageRows > 0}
+				<GraphicAnnotationOverlay
+					annotations={shownAnnotations}
+					highlightedItem={graphicAnnotation?.highlightedItem ?? null}
+					rows={imageRows}
+					columns={imageColumns}
+					scale={activeTransform.scale}
+				/>
+			{/if}
 			{#if !overlay && imageColumns > 0 && imageRows > 0}
 				<RoiOverlay
 					rois={visibleRois}
@@ -1572,6 +1600,15 @@
 				/>
 			{/if}
 		</div>
+		{#if shownAnnotations && imageColumns > 0 && imageRows > 0}
+			<GraphicAnnotationLabels
+				annotations={shownAnnotations}
+				highlightedItem={graphicAnnotation?.highlightedItem ?? null}
+				transform={activeTransform}
+				{orientation}
+				geometry={displayGeometry}
+			/>
+		{/if}
 		{#if !overlay && imageColumns > 0 && imageRows > 0}
 			<RoiLabels
 				rois={visibleRois}
