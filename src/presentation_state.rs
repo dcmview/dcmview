@@ -25,7 +25,7 @@ use anyhow::{Context, Result};
 use dicom_core::Tag;
 use dicom_dictionary_std::{tags, uids};
 use dicom_object::InMemDicomObject;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 const MAX_ANNOTATION_ITEMS: usize = 4_096;
@@ -325,20 +325,39 @@ fn text_object(
     })
 }
 
-/// The local image frames `item` applies to, in file and frame order.
-fn item_frames<'a>(
-    state: &'a PresentationState,
-    item: &'a AnnotationItem,
-    files: &'a [Arc<FileEntry>],
-) -> impl Iterator<Item = (usize, u32)> + 'a {
-    files
-        .iter()
-        .filter(|file| file.has_pixels)
-        .flat_map(move |file| {
-            (0..file.frame_count)
-                .filter(move |frame| state.applies(item, &file.sop_instance_uid, *frame))
-                .map(move |frame| (file.index, frame))
-        })
+/// Local image files by SOP Instance UID.
+type ImagesByUid<'a> = HashMap<&'a str, Vec<&'a FileEntry>>;
+
+/// The local image frames `item` applies to, in file and frame order. Walks
+/// the item's references rather than every loaded frame, so a large scan
+/// costs no more than the state references.
+fn item_frames(
+    state: &PresentationState,
+    item: &AnnotationItem,
+    images: &ImagesByUid<'_>,
+) -> BTreeSet<(usize, u32)> {
+    let mut frames = BTreeSet::new();
+    for target in state.targets(item) {
+        for file in images
+            .get(target.sop_instance_uid.as_str())
+            .into_iter()
+            .flatten()
+        {
+            if target.frame_numbers.is_empty() {
+                frames.extend((0..file.frame_count).map(|frame| (file.index, frame)));
+            } else {
+                frames.extend(
+                    target
+                        .frame_numbers
+                        .iter()
+                        .filter_map(|number| number.checked_sub(1))
+                        .filter(|frame| *frame < file.frame_count)
+                        .map(|frame| (file.index, frame)),
+                );
+            }
+        }
+    }
+    frames
 }
 
 /// The semantic context of a softcopy presentation state.
@@ -348,13 +367,23 @@ pub fn presentation_state_context(
     resolved: &[ResolvedReferenceEdge],
 ) -> PresentationStateContext {
     let state = PresentationState::read(object);
+    let mut images = ImagesByUid::new();
+    for file in files.iter().filter(|file| file.has_pixels) {
+        images
+            .entry(file.sop_instance_uid.as_str())
+            .or_default()
+            .push(file);
+    }
+    let sop_instance_uids = files
+        .iter()
+        .map(|file| (file.index, file.sop_instance_uid.as_str()))
+        .collect::<HashMap<_, _>>();
     let frame = |(file_index, frame_index): (usize, u32)| ResolvedSegmentSourceFrame {
         file_index,
         frame_index,
-        sop_instance_uid: files
-            .iter()
-            .find(|file| file.index == file_index)
-            .map(|file| file.sop_instance_uid.clone())
+        sop_instance_uid: sop_instance_uids
+            .get(&file_index)
+            .map(|uid| uid.to_string())
             .unwrap_or_default(),
     };
     let mut annotated = BTreeSet::new();
@@ -365,13 +394,8 @@ pub fn presentation_state_context(
         .enumerate()
         .map(|(index, item)| {
             skipped.add(item.skipped);
-            let mut frames = item_frames(&state, item, files);
-            let first_frame = frames.next();
-            let frame_count = usize::from(first_frame.is_some()) + frames.count();
-            if item.drawable() {
-                annotated.extend(item_frames(&state, item, files));
-            }
-            GraphicAnnotationItemSummary {
+            let frames = item_frames(&state, item, &images);
+            let summary = GraphicAnnotationItemSummary {
                 index,
                 layer: item.layer.clone(),
                 graphic_types: item
@@ -381,9 +405,13 @@ pub fn presentation_state_context(
                     .collect(),
                 texts: item.texts.iter().map(|text| text.text.clone()).collect(),
                 scoped: item.targets.is_some(),
-                first_frame: first_frame.map(frame),
-                frame_count,
+                first_frame: frames.first().copied().map(frame),
+                frame_count: frames.len(),
+            };
+            if item.drawable() {
+                annotated.extend(frames);
             }
+            summary
         })
         .collect();
     PresentationStateContext {
