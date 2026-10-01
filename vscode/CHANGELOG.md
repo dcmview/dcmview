@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.3.1 - 2026-10-01
+
+- Graphic and text annotations of Grayscale and Color Softcopy Presentation
+  States are drawn on the images they reference. An Annotations bar offers
+  the states that annotate the open image, one at a time and off until
+  chosen; shapes follow zoom, pan, flips, and rotation.
+- Previous/next controls, and `,` / `.`, step through the shown state's
+  annotation items, highlighting the current one and opening the image and
+  frame it references.
+- Only the annotations are applied: the state's window, shutter, displayed
+  area, and rotation or flip are not, and objects in DISPLAY units are
+  counted but not drawn.
+
 ## 0.3.0 - 2026-09-29
 
 - Terminal commands and Python calls route into VS Code when they carry its
