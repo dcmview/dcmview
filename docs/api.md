@@ -59,7 +59,7 @@ and redirects the bare prefix to its trailing-slash form.
 | GET | `/series` | `SeriesCatalogResponse`: logical series and ordered frame stacks. |
 | GET | `/file/{index}/info` | `FrameInfo` for one file. |
 | GET | `/file/{index}/references` | `ReferenceCatalogResponse`: declared DICOM relationships and their local matches. |
-| GET | `/file/{index}/semantic-context` | `SemanticContextResponse`: SEG, Parametric Map, or RT Dose context, or `not_applicable`. |
+| GET | `/file/{index}/semantic-context` | `SemanticContextResponse`: SEG, Parametric Map, RT Dose, or softcopy presentation state context, or `not_applicable`. |
 | GET | `/file/{index}/frame/{frame}` | Display frame as `image/png`, with `X-Cache` and, for linearly windowed frames, `X-Frame-Window-Center`/`X-Frame-Window-Width`. Query: `wc`, `ww`, `mode`, `unit`, `preview`. |
 | GET | `/file/{index}/frame/{frame}/raw` | Decoded samples as `application/octet-stream`, with `X-Cache` and `X-Frame-*` metadata headers. |
 | GET | `/file/{index}/frame/{frame}/raw/pixel?row=&column=` | One pixel of the raw frame as a 1x1 raw frame: its stored samples in color-by-pixel order (planar and subsampled YBR_FULL_422 resolved), with the same headers. `400` outside the frame. |
@@ -69,6 +69,7 @@ and redirects the bare prefix to its trailing-slash form.
 | GET | `/file/{index}/frame/{frame}/dose-overlay/values` | The same resampled dose as little-endian `f32` values, `application/octet-stream`, with `X-Cache`. Query: `dose`. |
 | GET | `/file/{index}/frame/{frame}/parametric-map-overlay` | Parametric Map colorwash sized to this frame as `image/png`, with `X-Cache`. Query: `map` (Parametric Map file index). |
 | GET | `/file/{index}/frame/{frame}/parametric-map-overlay/values` | The same resampled mapped values as little-endian `f32` values, `application/octet-stream`, with `X-Cache`. Query: `map`. |
+| GET | `/file/{index}/frame/{frame}/graphic-annotations` | `GraphicAnnotationsResponse`: the PIXEL-unit graphic and text objects one Grayscale or Color Softcopy Presentation State draws on this image frame, as `[column, row]` image pixel coordinates. Query: `state` (presentation state file index). Empty lists for a frame the state does not annotate; `400` when `state` is missing or is not such a presentation state. |
 | GET | `/file/{index}/frame/{frame}/value-mapping` | `FrameValueMapping`: how this frame's stored samples convert to modality and real-world values. |
 | GET | `/file/{index}/frame/{frame}/wsi-context` | `WsiFrameContextResponse`: position of one Whole Slide Microscopy tile. |
 | GET | `/file/{index}/tags` | `TagNode[]`: preview tag tree. |

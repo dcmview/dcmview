@@ -10,6 +10,45 @@ diagnostic viewer.
 
 ## Unreleased
 
+## 0.3.1 - 2026-10-01
+
+### Added
+
+- Graphic and text annotations of Grayscale and Color Softcopy Presentation
+  States are drawn on the images they reference: points, polylines,
+  interpolated curves, circles, ellipses, and text in image pixel units,
+  filled or outlined, in the layer's recommended display color when it
+  declares one. An Annotations bar above the viewport offers the states that
+  annotate the open image, one at a time and off until chosen. Shapes follow
+  zoom, pan, flips, and rotation; text and point marks stay upright.
+- Previous/next controls in the Annotations bar, and `,` / `.`, step through
+  the shown state's annotation items. The current item is highlighted, the
+  rest are dimmed, and stepping opens the image and frame the item
+  references. An item applies to the images of its own Referenced Image
+  Sequence or, without one, to every image the state's Referenced Series
+  Sequence lists; a reference without frame numbers covers every frame.
+- `GET /api/file/{index}/frame/{frame}/graphic-annotations?state=` returns
+  the objects one presentation state draws on one image frame as JSON in
+  image pixel coordinates. A frame the state does not annotate returns empty
+  lists.
+- `semantic-context` for a presentation state returns
+  `kind: "presentation_state"` with its layers, annotation items, annotated
+  local frames, and counts of objects that are not drawn. Semantic Context
+  for the state can open it, or a single item, on an annotated image.
+
+### Changed
+
+- References of a presentation state also report images named only by an
+  annotation item, not just those in its Referenced Series Sequence.
+
+### Known limitations
+
+- Only a presentation state's annotations are applied. Its window, shutter,
+  LUTs, displayed area, and rotation or flip are not; objects in DISPLAY
+  units are counted and not drawn, and MATRIX units, line and fill styles,
+  and text reading direction are not interpreted. Display PNGs fetched from
+  the API do not carry the graphics.
+
 ## 0.3.0 - 2026-09-29
 
 ### Added
