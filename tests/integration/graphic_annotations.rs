@@ -266,9 +266,8 @@ async fn graphic_annotation_requests_are_validated() {
         let server = &server;
         async move {
             let response = server.get(&path).await;
-            assert_eq!(
+            assert!(
                 response.json::<Value>()["code"].is_string(),
-                true,
                 "{path} should use the JSON error envelope"
             );
             response.status_code()
