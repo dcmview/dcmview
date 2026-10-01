@@ -205,15 +205,17 @@ async fn every_declared_endpoint_matches_its_runtime_contract() {
             assert_json_error(endpoint.id, &missing, StatusCode::NOT_FOUND);
         }
         // Overlays require a linked overlay/source pair: SEG is covered by
-        // semantic_context::segmentation_overlay_returns_source_sized_transparent_png
-        // and the value overlays (colorwash and values) by the
-        // semantic_overlays fixture tests.
+        // semantic_context::segmentation_overlay_returns_source_sized_transparent_png,
+        // the value overlays (colorwash and values) by the semantic_overlays
+        // fixture tests, and graphic annotations by the graphic_annotations
+        // fixture tests.
         if [
             endpoints::FILE_SEGMENTATION_OVERLAY,
             endpoints::FILE_DOSE_OVERLAY,
             endpoints::FILE_DOSE_OVERLAY_VALUES,
             endpoints::FILE_PARAMETRIC_MAP_OVERLAY,
             endpoints::FILE_PARAMETRIC_MAP_OVERLAY_VALUES,
+            endpoints::FILE_GRAPHIC_ANNOTATIONS,
         ]
         .contains(endpoint)
         {

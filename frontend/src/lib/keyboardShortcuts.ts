@@ -7,6 +7,7 @@ export type ShortcutAction =
 	| { type: "select-tool"; tool: ActiveTool }
 	| { type: "step-frame"; step: -1 | 1 }
 	| { type: "toggle-cine" }
+	| { type: "step-annotation-item"; step: -1 | 1 }
 	| { type: "delete-roi" };
 
 export type ShortcutContext = {
@@ -16,6 +17,8 @@ export type ShortcutContext = {
 	multiFrame: boolean;
 	/** The ROI tool is active on a pixel viewport. */
 	roiToolActive: boolean;
+	/** A presentation state with annotation items is shown. */
+	annotationItems: boolean;
 };
 
 export type ShortcutKeyEvent = Pick<KeyboardEvent, "key" | "target" | "altKey" | "ctrlKey" | "metaKey" | "shiftKey">;
@@ -56,6 +59,10 @@ export function shortcutFor(event: ShortcutKeyEvent, context: ShortcutContext): 
 		if (event.key === "ArrowLeft" || event.key === "[") return { type: "step-frame", step: -1 };
 		if (event.key === "ArrowRight" || event.key === "]") return { type: "step-frame", step: 1 };
 		if (event.key === " ") return { type: "toggle-cine" };
+	}
+	if (context.annotationItems) {
+		if (event.key === ",") return { type: "step-annotation-item", step: -1 };
+		if (event.key === ".") return { type: "step-annotation-item", step: 1 };
 	}
 	if (context.roiToolActive && (event.key === "Delete" || event.key === "Backspace")) {
 		return { type: "delete-roi" };

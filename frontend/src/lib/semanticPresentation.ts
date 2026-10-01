@@ -31,11 +31,19 @@ export function segmentationOverlaySelection(
 }
 
 const RT_DOSE_SOP_CLASS_UID = "1.2.840.10008.5.1.4.1.1.481.2";
+/** Grayscale and Color Softcopy Presentation State: their graphic annotations are read. */
+const SOFTCOPY_PRESENTATION_STATE_SOP_CLASS_UIDS = ["1.2.840.10008.5.1.4.1.1.11.1", "1.2.840.10008.5.1.4.1.1.11.2"];
 
 export function supportsSemanticContext(objectKind: string, sopClassUid: string): boolean {
 	return objectKind === "segmentation"
 		|| objectKind === "parametric_map"
-		|| sopClassUid === RT_DOSE_SOP_CLASS_UID;
+		|| sopClassUid === RT_DOSE_SOP_CLASS_UID
+		|| isSoftcopyPresentationState(sopClassUid);
+}
+
+/** Whether a SOP Class is a presentation state whose graphic annotations can be drawn. */
+export function isSoftcopyPresentationState(sopClassUid: string): boolean {
+	return SOFTCOPY_PRESENTATION_STATE_SOP_CLASS_UIDS.includes(sopClassUid);
 }
 
 export function semanticModeLabel(mode: SemanticMode): string {
@@ -50,6 +58,8 @@ export function semanticKindLabel(context: SemanticContext): string {
 			return "Parametric Map";
 		case "rt_dose":
 			return "RT Dose";
+		case "presentation_state":
+			return "Presentation State";
 		case "not_applicable":
 			return "Generic image";
 	}

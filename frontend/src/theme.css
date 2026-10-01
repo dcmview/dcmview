@@ -65,6 +65,7 @@
 	--roi: #ff6d5d;
 	--roi-selected: #61a5ff;
 	--roi-draft: #c49f50;
+	--graphic-annotation: #4fd1c5;
 	--selection-fill: #edf5ff;
 	--selection-edge: #1071e5;
 	--scrim: rgba(58, 65, 74, 0.32);
@@ -177,6 +178,7 @@
 		--roi: #ff6d5d;
 		--roi-selected: #61a5ff;
 		--roi-draft: #c49f50;
+		--graphic-annotation: #4fd1c5;
 		--selection-fill: #26303e;
 		--selection-edge: #61a5ff;
 		--scrim: rgba(0, 0, 0, 0.52);
@@ -256,6 +258,7 @@
 	--roi: #ff6d5d;
 	--roi-selected: #61a5ff;
 	--roi-draft: #c49f50;
+	--graphic-annotation: #4fd1c5;
 	--selection-fill: #edf5ff;
 	--selection-edge: #1071e5;
 	--scrim: rgba(58, 65, 74, 0.32);
@@ -334,6 +337,7 @@
 	--roi: #ff6d5d;
 	--roi-selected: #61a5ff;
 	--roi-draft: #c49f50;
+	--graphic-annotation: #4fd1c5;
 	--selection-fill: #26303e;
 	--selection-edge: #61a5ff;
 	--scrim: rgba(0, 0, 0, 0.52);

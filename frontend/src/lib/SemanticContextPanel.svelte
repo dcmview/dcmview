@@ -6,6 +6,7 @@
 		METADATA_CACHE_FILES,
 		type AsyncResourceSnapshot,
 	} from "./keyedAsyncResource";
+	import { drawableItems, presentationStateTitle } from "./app/graphicAnnotations.svelte";
 	import ReferenceEdge from "./ReferenceEdge.svelte";
 	import {
 		codedConceptLabel,
@@ -28,6 +29,7 @@
 		onmodechange,
 		oncontextchange,
 		onshowoverlay,
+		onshowannotations,
 	}: {
 		fileIndex: number;
 		currentFrame: number;
@@ -37,6 +39,8 @@
 		oncontextchange?: (response: SemanticContextResponse | null) => void;
 		/** Opens the source image this volume's colorwash is drawn on. */
 		onshowoverlay?: (response: SemanticContextResponse) => void;
+		/** Opens an image this presentation state annotates, stepped to `itemIndex` when given. */
+		onshowannotations?: (response: SemanticContextResponse, itemIndex: number | null) => void;
 	} = $props();
 	let snapshotsByFile = $state<Record<number, AsyncResourceSnapshot<SemanticContextResponse> | undefined>>({});
 	let mode = $state<SemanticMode>("pixel_preview");
@@ -54,6 +58,8 @@
 	const error = $derived(snapshot?.status === "error" ? snapshot.error : null);
 	const loading = $derived(snapshot?.status === "loading");
 	const activeFile = $derived(files.find((file) => file.index === fileIndex) ?? null);
+	// A presentation state has no pixels to preview: its annotations are its content.
+	const presentationState = $derived(response?.context.kind === "presentation_state" ? response.context : null);
 	const semanticAvailable =$derived(response !== null && response.context.kind !== "not_applicable");
 	const currentSegmentMapping = $derived.by(() => {
 		if (response?.context.kind !== "segmentation") return null;
@@ -101,10 +107,10 @@
 			<strong>Object interpretation</strong>
 			<span>{response ? semanticKindLabel(response.context) : "Inspecting object…"}</span>
 		</div>
-		<span class="active-mode">Active: {semanticModeLabel(mode)}</span>
+		{#if !presentationState}<span class="active-mode">Active: {semanticModeLabel(mode)}</span>{/if}
 	</header>
 
-	<div class="mode-switch" role="group" aria-label="Interpretation mode">
+	<div class="mode-switch" role="group" aria-label="Interpretation mode" hidden={presentationState !== null}>
 		<button class:active={mode === "pixel_preview"} type="button" onclick={() => setMode("pixel_preview")}>
 			Pixel Preview
 		</button>
@@ -122,6 +128,70 @@
 		<p class="message">Loading declared semantic metadata…</p>
 	{:else if error}
 		<p class="message error status-line">Semantic metadata unavailable: {error}. Pixel Preview remains active.</p>
+	{:else if response && presentationState}
+		{@const shown = response}
+		{@const items = drawableItems(presentationState)}
+		{@const skipped = presentationState.skipped}
+		<div class="details">
+			<div class="summary-grid">
+				<span>State <b>{presentationStateTitle(presentationState)}</b></span>
+				<span>Creator <b>{display(presentationState.content_creator_name)}</b></span>
+				<span>Created <b>{display(presentationState.presentation_creation_date)}</b></span>
+				<span>Annotated frames <b>{presentationState.annotated_frames.length}</b></span>
+			</div>
+			<p class="reason">
+				Only the graphic and text annotations are drawn. The state's window, shutter, displayed area and
+				rotation or flip are not applied.
+			</p>
+			{#if skipped.display_units + skipped.matrix_units + skipped.malformed > 0}
+				<p class="warning status-line">
+					Not drawn: {skipped.display_units} in DISPLAY units, {skipped.matrix_units} in MATRIX units,
+					{skipped.malformed} malformed.
+				</p>
+			{/if}
+			{#if presentationState.annotated_frames.length > 0 && onshowannotations}
+				<button type="button" class="show-overlay" onclick={() => onshowannotations(shown, null)}>
+					Show annotations on image
+				</button>
+			{:else if presentationState.annotated_frames.length === 0}
+				<p class="reason">No annotated image is among the loaded files.</p>
+			{/if}
+			<h3>Layers</h3>
+			{#each presentationState.layers as layer (layer.name)}
+				<span class="layer">
+					{#if layer.color}
+						<span class="swatch" style:background-color={rgbCss(layer.color)} aria-hidden="true"></span>
+					{/if}
+					{layer.name}{layer.description ? ` · ${layer.description}` : ""}{layer.color ? "" : " · no recommended color"}
+				</span>
+			{:else}
+				<p class="reason">No graphic layer is declared.</p>
+			{/each}
+			<h3>Annotation items</h3>
+			{#each items as item, position (item.index)}
+				<div class="item">
+					<strong>Item {position + 1} of {items.length} · layer {display(item.layer)}</strong>
+					<span>{[...item.graphic_types, ...item.texts.map((text) => `text "${text.split("\n")[0]}"`)].join(", ")}</span>
+					<span>
+						{item.scoped ? "Own image references" : "Every referenced image"} ·
+						{item.frame_count} loaded {item.frame_count === 1 ? "frame" : "frames"}
+					</span>
+					{#if item.first_frame && onshowannotations}
+						<button type="button" onclick={() => onshowannotations(shown, item.index)}>Show item on image</button>
+					{/if}
+				</div>
+			{:else}
+				<p class="reason">The state has no drawable graphic annotation.</p>
+			{/each}
+			<h3>References</h3>
+			<div class="references">
+				{#each presentationState.references as reference, index (`${reference.relationship}:${index}`)}
+					<ReferenceEdge {reference} {files} {onopenreference} />
+				{:else}
+					<p class="reason">No image references are declared.</p>
+				{/each}
+			</div>
+		</div>
 	{:else if response}
 		{#if mode === "pixel_preview"}
 			<p class="message">
@@ -267,6 +337,9 @@
 	.item { display: grid; gap: 2px; margin-top: 8px; padding: 6px 8px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--paper); }
 	.item strong { color: var(--text); }
 	.item span { font: var(--t-mono); }
+	.item button { justify-self: start; margin-top: 2px; }
+	.layer { display: flex; align-items: center; gap: 6px; margin-top: 4px; font: var(--t-mono); }
+	.mode-switch[hidden] { display: none; }
 	.segment-title, .item .recommended { display: flex; align-items: center; gap: 6px; }
 	.swatch { flex: 0 0 auto; width: 10px; height: 10px; border: 1px solid var(--line); border-radius: 2px; }
 	h3 { margin: 10px 0 0; color: var(--ink-muted); font: var(--t-micro); letter-spacing: 0.06em; text-transform: uppercase; }

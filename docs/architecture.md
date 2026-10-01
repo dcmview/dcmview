@@ -25,6 +25,7 @@ application module:
 | Value mapping | `src/value_mapping.rs` | Per-frame Modality transform and Real World Value Mappings (or Dose Grid Scaling) that convert stored samples. |
 | DICOM references | `src/references.rs` | Bounded extraction of typed instance relationships without implying target presence or semantic rendering. |
 | Semantic context | `src/semantic.rs` | Conservative SEG, Parametric Map, and RT Dose metadata interpretation layered beside unchanged pixel preview. |
+| Presentation states | `src/presentation_state.rs` | PIXEL-unit graphic and text annotations of softcopy presentation states, and which image frames each annotation item applies to. |
 | WSI tile context | `src/wsi.rs` | Bounded positioning of one selected WSI tile without stitching or Total Pixel Matrix reconstruction. |
 | Attribute readers | `src/dicom_values.rs` | Lenient string, number, and sequence readers shared by discovery, references, semantic context, and WSI context. |
 | DICOM discovery | `src/loader/` | `discovery.rs` progressive events, cancellation, and reports; `entry.rs` `FileEntry` construction; `metadata.rs` geometry, LUT, overlay, and shutter extraction; `filter.rs` metadata filters. |
@@ -229,6 +230,25 @@ cine, ROIs, and the view transform keep working. Frames the context does not
 list, or that answer `404 overlay_not_covering_frame`, show no layer and a
 note in the legend.
 
+Graphic annotations of Grayscale and Color Softcopy Presentation States
+follow the same shape. `lib/app/graphicAnnotations` reads the semantic
+context of the presentation states in the active file's study and offers
+those whose `annotated_frames` include a frame of the active tab; the
+Annotations bar shows one at a time (none until chosen) and steps through
+its Graphic Annotation Sequence items, and the state's own panel can open it,
+or one item, on an annotated image. Stepping to an item opens the first frame
+it applies to, unless it applies to every referenced image and the displayed
+frame is one of them. `ImageViewport` reads the displayed frame's
+`graphic-annotations` and draws them as vectors: shapes in
+`GraphicAnnotationOverlay` (SVG in image pixel coordinates inside the
+transformed image layer, like `RoiOverlay`, so the view transform and
+orientation apply) and text and point marks in `GraphicAnnotationLabels`
+(viewport pixels, upright). The stepped item is drawn heavier and the others
+dimmed. A layer's recommended color is used when it declares one, else the
+`graphic-annotation` theme token. Only the annotations are applied; the
+state's window, shutter, displayed area, and spatial transformation are not,
+and server display PNGs do not carry the graphics.
+
 `FileNavigator` owns the active clinical-versus-directory organization and
 publishes the corresponding flattened file order to `App.svelte`. Global
 Up/Down shortcuts use that order (including the active filter), so file
@@ -359,6 +379,20 @@ The contract is kept consistent by three layers:
   cached beside the PNG (`OverlayEncoding`). Semantic context lists
   covered source frames; the server completes its legend from the decoded
   frames' value range.
+- `/api/file/{index}/frame/{frame}/graphic-annotations?state=`
+  (`presentation_state.rs`) returns, as JSON, the graphic and text objects a
+  Grayscale or Color Softcopy Presentation State draws on one image frame
+  (PS3.3 C.10.5). An annotation item applies to the images of its own
+  Referenced Image Sequence, or, when it has none, to every image of the
+  state's Referenced Series Sequence; a reference without frame numbers
+  covers every frame; images match by SOP Instance UID. Coordinates are
+  PIXEL-unit `[column, row]` positions with `[0, 0]` at the top-left corner
+  of the top-left pixel. Each object names its item and layer. DISPLAY- and
+  MATRIX-unit objects and malformed ones are counted in `skipped`, not
+  drawn. A frame the state does not annotate answers with empty lists. The
+  state is parsed per request; nothing is cached. Its semantic context lists
+  the layers, the items with their first applicable frame, and the annotated
+  local frames (at most 4096).
 - `/api/file/{index}/frame/{frame}/value-mapping` reports the frame's
   Modality transform and real-world mappings for client-side readouts: the
   file's own, then those of loaded RWVM instances that reference the frame.
@@ -653,7 +687,9 @@ installation and VS Code Electron integration can also use network/cache state;
 - No profile automates a real browser. Manual acceptance uses the actual
   Svelte app and fixture server to exercise canvas/network behavior: metadata-only and unsupported states,
   pixel-preview/semantic-context switching, typed references, SEG/Parametric
-  Map/RT Dose context and colorwash overlays, the pixel readout, real-world
+  Map/RT Dose context and colorwash overlays, presentation state annotations
+  (the `golden-gsps-*` fixtures outline shapes painted into their target
+  images, so a misplaced annotation shows), the pixel readout, real-world
   window/level, WSI positioning, cine, windowing, viewport transforms,
   file switching, and recovery after request errors.
 - `python/tests/test_check_profiles.py` locks the documented

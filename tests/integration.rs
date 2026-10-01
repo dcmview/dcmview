@@ -4,6 +4,7 @@ mod integration {
     mod codec_contract;
     mod display_shutters;
     mod golden_fixtures;
+    mod graphic_annotations;
     mod loader_discovery;
     mod malformed_inputs;
     mod pixels_jp2_decode;

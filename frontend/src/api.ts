@@ -7,6 +7,8 @@ import type {
 	FrameQuery,
 	FrameValueMapping,
 	FrameWindowApplied,
+	GraphicAnnotationsQuery,
+	GraphicAnnotationsResponse,
 	HealthResponse,
 	ParametricMapOverlayQuery,
 	PixelQuery,
@@ -32,6 +34,10 @@ export type {
 	FrameInfo,
 	FrameValueMapping,
 	FrameWindowApplied,
+	GraphicAnnotationItemSummary,
+	GraphicAnnotationsResponse,
+	GraphicLayerSummary,
+	GraphicObjectSummary,
 	HealthResponse,
 	ModalityValueTransform,
 	OverlayLegend,
@@ -46,6 +52,7 @@ export type {
 	SemanticContextResponse,
 	SegmentationContext,
 	ParametricMapContext,
+	PresentationStateContext,
 	RtDoseContext,
 	SeriesCatalogResponse,
 	SeriesSummary,
@@ -55,6 +62,7 @@ export type {
 	TagNode,
 	TagQuery,
 	TagValue,
+	TextObjectSummary,
 	ValueLookupTable,
 	WindowMode,
 	WindowPreset,
@@ -75,7 +83,7 @@ type PathParams = { index?: number; frame?: number };
 function endpointUrl(
 	endpoint: Endpoint,
 	params: PathParams = {},
-	query?: FrameQuery | TagQuery | DoseOverlayQuery | ParametricMapOverlayQuery | PixelQuery,
+	query?: FrameQuery | TagQuery | DoseOverlayQuery | ParametricMapOverlayQuery | GraphicAnnotationsQuery | PixelQuery,
 ): string {
 	const path = endpoint.path.slice(1).replace(/\{(\w+)\}/g, (_, name: string) => {
 		const value = params[name as keyof PathParams];
@@ -274,6 +282,17 @@ export async function fetchParametricMapOverlayBlob(
 }
 
 /** Little-endian `f32` values of a values response, one per displayed pixel. */
+/** The annotations softcopy presentation state `stateFileIndex` draws on one image frame. */
+export function fetchGraphicAnnotations(
+	fileIndex: number,
+	frame: number,
+	stateFileIndex: number,
+	signal?: AbortSignal,
+): Promise<GraphicAnnotationsResponse> {
+	const endpoint = API_ENDPOINTS.fileGraphicAnnotations;
+	return getJson(endpoint, endpointUrl(endpoint, { index: fileIndex, frame }, { state: stateFileIndex }), signal);
+}
+
 async function overlayValues(response: Response): Promise<Float32Array> {
 	const buffer = await response.arrayBuffer();
 	if (buffer.byteLength % 4 !== 0) throw new Error("overlay values are not whole f32 samples");

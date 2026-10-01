@@ -16,6 +16,7 @@ use crate::geometry::{
 use crate::object_kind::{classify_sop_class, ObjectKind};
 use crate::pixels::open_header;
 use crate::plane_stack::PlaneStack;
+use crate::presentation_state;
 use crate::references::{self, ReferenceCandidate, ReferenceRelationship, ResolvedReferenceEdge};
 use crate::types::FileEntry;
 use crate::value_mapping::{stored_value_type, FileValueMappings};
@@ -222,8 +223,16 @@ pub fn semantic_context(
         ObjectKind::RadiationTherapy if source.sop_class_uid == uids::RT_DOSE_STORAGE => {
             SemanticContext::RtDose(Box::new(rt_dose_context(source, &object, files, &resolved)))
         }
+        ObjectKind::PresentationState
+            if presentation_state::has_graphic_annotations(&source.sop_class_uid) =>
+        {
+            SemanticContext::PresentationState(Box::new(
+                presentation_state::presentation_state_context(&object, files, &resolved),
+            ))
+        }
         _ => SemanticContext::NotApplicable {
-            reason: "semantic context is only defined for SEG, Parametric Map, and RT Dose"
+            reason: "semantic context is only defined for SEG, Parametric Map, RT Dose, and \
+                     softcopy presentation states"
                 .to_string(),
         },
     };

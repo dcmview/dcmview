@@ -19,6 +19,7 @@ vi.mock("../api", async (importOriginal) => ({
 	fetchFrameValueMapping: vi.fn(),
 	fetchSelectedTag: vi.fn(),
 	fetchDoseOverlayBlob: vi.fn(),
+	fetchGraphicAnnotations: vi.fn(),
 	fetchSegmentationOverlayBlob: vi.fn(async () => new Blob(["seg"])),
 	fetchDoseOverlayValues: vi.fn(),
 	fetchPresentationLayerBlob: vi.fn(async () => new Blob(["png"], { type: "image/png" })),
@@ -75,6 +76,7 @@ function renderViewport({
 	onmanualwindowlevel = vi.fn(),
 	valueOverlay = null as frameOverlay.ValueOverlay | null,
 	overlay = null as frameOverlay.FrameOverlay | null,
+	graphicAnnotation = null as ComponentProps<typeof ImageViewport>["graphicAnnotation"],
 	onnavigationchange = vi.fn() as (position: number) => void,
 } = {}) {
 	const state = reactiveProps<ComponentProps<typeof ImageViewport>>({
@@ -99,6 +101,7 @@ function renderViewport({
 		onmanualwindowlevel,
 		valueOverlay,
 		overlay,
+		graphicAnnotation,
 	});
 	const view = render(ImageViewport, { props: state.props });
 	return { ...view, rerender: async (props: Partial<ComponentProps<typeof ImageViewport>>) => act(() => state.update(props)) };
@@ -981,5 +984,78 @@ describe("W/L cine", () => {
 		await fireEvent.pointerUp(viewport, { clientX: 20, clientY: 10, pointerId: 1 });
 		expect(onmanualwindowlevel).toHaveBeenCalled();
 		expect(fetchDisplayFrame.mock.calls.some((call) => call[2]?.preview)).toBe(false);
+	});
+});
+
+describe("ImageViewport graphic annotations", () => {
+	const fetchGraphicAnnotations = vi.mocked(api.fetchGraphicAnnotations);
+	const annotations = (text: string): api.GraphicAnnotationsResponse => ({
+		layers: [{ name: "SHAPES", order: 1, description: null, color: [255, 212, 0] }],
+		graphics: [
+			{ item: 0, layer: "SHAPES", graphic_type: "circle", points: [[20, 30], [30, 30]], filled: false },
+			{ item: 1, layer: "MARKS", graphic_type: "polyline", points: [[0, 0], [64, 0], [64, 64], [0, 0]], filled: true },
+			{ item: 1, layer: "MARKS", graphic_type: "point", points: [[10.5, 12.5]], filled: false },
+		],
+		texts: [{ item: 0, layer: "SHAPES", text, bounding_box: [10, 40, 30, 46], justification: "center", anchor: null, anchor_visible: false }],
+		skipped: { display_units: 0, matrix_units: 0, malformed: 0 },
+	});
+
+	beforeEach(() => {
+		fetchGraphicAnnotations.mockReset();
+		fetchGraphicAnnotations.mockImplementation(async (_file, frame) => annotations(`frame ${frame}`));
+	});
+
+	it("draws nothing and asks for nothing without a shown state", async () => {
+		const { container } = renderViewport();
+		await waitFor(() => expect(fetchDisplayFrame).toHaveBeenCalled());
+
+		expect(fetchGraphicAnnotations).not.toHaveBeenCalled();
+		expect(container.querySelector(".graphic-annotations")).toBeNull();
+	});
+
+	it("draws the shown state's objects in image pixels over the displayed frame", async () => {
+		const { container } = renderViewport({ graphicAnnotation: { stateFileIndex: 9, highlightedItem: null } });
+		await waitFor(() => expect(container.querySelector(".graphic-annotations ellipse")).not.toBeNull());
+
+		expect(fetchGraphicAnnotations).toHaveBeenCalledWith(5, 0, 9, expect.anything());
+		const layer = container.querySelector(".graphic-annotations");
+		expect(layer?.getAttribute("viewBox")).toBe("0 0 64 64");
+		const circle = layer?.querySelector("ellipse");
+		expect([circle?.getAttribute("cx"), circle?.getAttribute("cy"), circle?.getAttribute("rx")]).toEqual(["20", "30", "10"]);
+		expect(circle?.getAttribute("style")).toContain("rgb(255, 212, 0)");
+		const border = layer?.querySelector("path");
+		expect(border?.getAttribute("d")).toBe("M0 0L64 0L64 64Z");
+		expect(border?.classList.contains("filled")).toBe(true);
+		// Points and text are drawn at screen size outside the scaled layer.
+		expect(container.querySelector(".graphic-annotation-labels .point")).not.toBeNull();
+		expect(container.querySelector(".graphic-annotation-labels text")?.textContent).toBe("frame 0");
+	});
+
+	it("highlights the stepped item and dims the others", async () => {
+		const { container, rerender } = renderViewport({ graphicAnnotation: { stateFileIndex: 9, highlightedItem: null } });
+		await waitFor(() => expect(container.querySelector(".graphic-annotations ellipse")).not.toBeNull());
+		expect(container.querySelectorAll(".highlighted, .dimmed")).toHaveLength(0);
+
+		await rerender({ graphicAnnotation: { stateFileIndex: 9, highlightedItem: 0 } });
+		expect(container.querySelector(".graphic-annotations ellipse")?.classList.contains("highlighted")).toBe(true);
+		expect(container.querySelector(".graphic-annotations path")?.classList.contains("dimmed")).toBe(true);
+		expect(container.querySelector(".graphic-annotation-labels .point")?.classList.contains("dimmed")).toBe(true);
+		expect(container.querySelector(".graphic-annotation-labels g")?.classList.contains("highlighted")).toBe(true);
+		// Stepping re-reads nothing.
+		expect(fetchGraphicAnnotations).toHaveBeenCalledTimes(1);
+	});
+
+	it("reads each displayed frame's own annotations and removes them when turned off", async () => {
+		const file = fileSummary(5, { frame_count: 3 });
+		const { container, rerender } = renderViewport({ file, graphicAnnotation: { stateFileIndex: 9, highlightedItem: null } });
+		await waitFor(() => expect(container.querySelector(".graphic-annotation-labels text")?.textContent).toBe("frame 0"));
+
+		await rerender({ currentFrame: 2, navigationPosition: 2 });
+		await waitFor(() => expect(container.querySelector(".graphic-annotation-labels text")?.textContent).toBe("frame 2"));
+		expect(fetchGraphicAnnotations).toHaveBeenLastCalledWith(5, 2, 9, expect.anything());
+
+		await rerender({ graphicAnnotation: null });
+		expect(container.querySelector(".graphic-annotations")).toBeNull();
+		expect(container.querySelector(".graphic-annotation-labels")).toBeNull();
 	});
 });

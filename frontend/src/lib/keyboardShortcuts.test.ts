@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { isEditableTarget, RepeatThrottle, shortcutFor, type ShortcutContext, type ShortcutKeyEvent } from "./keyboardShortcuts";
 
-const idle: ShortcutContext = { drawerOpen: false, multiFrame: true, roiToolActive: false };
+const idle: ShortcutContext = { drawerOpen: false, multiFrame: true, roiToolActive: false, annotationItems: false };
 
 function press(key: string, overrides: Partial<ShortcutKeyEvent> = {}): ShortcutKeyEvent {
 	return { key, target: null, altKey: false, ctrlKey: false, metaKey: false, shiftKey: false, ...overrides };
@@ -66,10 +66,17 @@ describe("shortcutFor", () => {
 		expect(shortcutFor(press("Delete"), idle)).toBeNull();
 	});
 
+	it("steps annotation items only while a presentation state with items is shown", () => {
+		const annotated = { ...idle, annotationItems: true };
+		expect(shortcutFor(press(","), annotated)).toEqual({ type: "step-annotation-item", step: -1 });
+		expect(shortcutFor(press("."), annotated)).toEqual({ type: "step-annotation-item", step: 1 });
+		expect(shortcutFor(press("."), idle)).toBeNull();
+	});
+
 	it("ignores every shortcut while typing, including in contenteditable", () => {
-		const context = { drawerOpen: false, multiFrame: true, roiToolActive: true };
+		const context = { drawerOpen: false, multiFrame: true, roiToolActive: true, annotationItems: true };
 		for (const target of [element("INPUT"), element("TEXTAREA"), element("SELECT"), element("DIV", true)]) {
-			for (const key of ["w", "ArrowDown", "ArrowRight", " ", "Backspace"]) {
+			for (const key of ["w", "ArrowDown", "ArrowRight", " ", "Backspace", "."]) {
 				expect(shortcutFor(press(key, { target }), context), `${key} in ${String(target)}`).toBeNull();
 			}
 		}

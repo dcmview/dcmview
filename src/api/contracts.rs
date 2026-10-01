@@ -239,6 +239,14 @@ pub mod endpoints {
         OCTET_STREAM_MEDIA_TYPE,
         ResponseHeaders::Cache,
     );
+    /// `GraphicAnnotationsResponse`: the graphic and text objects a softcopy
+    /// presentation state draws on the path's frame; query
+    /// `GraphicAnnotationsQuery`.
+    pub const FILE_GRAPHIC_ANNOTATIONS: Endpoint = json(
+        "fileGraphicAnnotations",
+        ApiMethod::Get,
+        "/file/{index}/frame/{frame}/graphic-annotations",
+    );
     /// `FrameValueMapping`.
     pub const FILE_VALUE_MAPPING: Endpoint = json(
         "fileValueMapping",
@@ -313,6 +321,7 @@ pub mod endpoints {
         FILE_DOSE_OVERLAY_VALUES,
         FILE_PARAMETRIC_MAP_OVERLAY,
         FILE_PARAMETRIC_MAP_OVERLAY_VALUES,
+        FILE_GRAPHIC_ANNOTATIONS,
         FILE_VALUE_MAPPING,
         FILE_WSI_CONTEXT,
         FILE_FRAME,
@@ -437,6 +446,7 @@ pub enum SemanticContext {
     Segmentation(SegmentationContext),
     ParametricMap(Box<ParametricMapContext>),
     RtDose(Box<RtDoseContext>),
+    PresentationState(Box<PresentationStateContext>),
     NotApplicable { reason: String },
 }
 
@@ -648,6 +658,130 @@ pub struct RtDoseContext {
     /// Color bar of the dose colorwash; present when the overlay is eligible.
     pub legend: Option<OverlayLegend>,
     pub clinical_use_warning: String,
+}
+
+/// A Grayscale or Color Softcopy Presentation State's graphic annotations
+/// (PS3.3 C.10.5) and the local image frames they are drawn on. Only the
+/// annotations are applied: the state's window, shutter, displayed area and
+/// spatial transformation are not.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct PresentationStateContext {
+    pub content_label: Option<String>,
+    pub content_description: Option<String>,
+    pub content_creator_name: Option<String>,
+    pub presentation_creation_date: Option<String>,
+    /// In Graphic Layer Order.
+    pub layers: Vec<GraphicLayerSummary>,
+    /// The Graphic Annotation Sequence items in file order, at most 4096.
+    pub items: Vec<GraphicAnnotationItemSummary>,
+    /// The local image frames with a drawable annotation, in file and frame
+    /// order, at most 4096.
+    pub annotated_frames: Vec<ResolvedSegmentSourceFrame>,
+    /// Objects of every item that are not drawn.
+    pub skipped: SkippedGraphicObjects,
+    pub references: Vec<ReferenceSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+pub struct GraphicLayerSummary {
+    pub name: String,
+    pub order: Option<i32>,
+    pub description: Option<String>,
+    /// sRGB of the layer's Recommended Display CIELab Value, else of its
+    /// Recommended Display Grayscale Value; `null` when it declares neither.
+    pub color: Option<[u8; 3]>,
+}
+
+/// One Graphic Annotation Sequence item of a presentation state.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct GraphicAnnotationItemSummary {
+    /// Position in the Graphic Annotation Sequence, zero-based.
+    pub index: usize,
+    pub layer: String,
+    /// Graphic Type of each drawable graphic object.
+    pub graphic_types: Vec<GraphicType>,
+    /// Text of each drawable text object.
+    pub texts: Vec<String>,
+    /// Whether the item names its images in a Referenced Image Sequence;
+    /// otherwise it applies to every image and frame the state references.
+    pub scoped: bool,
+    /// The first local image frame the item applies to.
+    pub first_frame: Option<ResolvedSegmentSourceFrame>,
+    /// How many local image frames the item applies to.
+    pub frame_count: usize,
+}
+
+/// Graphic and text objects that are not drawn, by reason.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, TS)]
+pub struct SkippedGraphicObjects {
+    /// DISPLAY units: positioned in the displayed area, which is not applied.
+    pub display_units: usize,
+    /// MATRIX units: positioned in a tiled image's total pixel matrix.
+    pub matrix_units: usize,
+    /// Unknown type or units, or point data that does not fit the type.
+    pub malformed: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum GraphicType {
+    Point,
+    Polyline,
+    Interpolated,
+    Circle,
+    Ellipse,
+}
+
+/// The annotations one presentation state draws on one image frame. Every
+/// coordinate is a PIXEL-unit `[column, row]` position in the image, where
+/// `[0, 0]` is the top-left corner of the top-left pixel and
+/// `[columns, rows]` the bottom-right corner of the bottom-right pixel.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct GraphicAnnotationsResponse {
+    /// The state's layers, in Graphic Layer Order.
+    pub layers: Vec<GraphicLayerSummary>,
+    pub graphics: Vec<GraphicObjectSummary>,
+    pub texts: Vec<TextObjectSummary>,
+    /// Objects of the items applying to this frame that are not drawn.
+    pub skipped: SkippedGraphicObjects,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+pub struct GraphicObjectSummary {
+    /// The Graphic Annotation Sequence item it belongs to, zero-based.
+    pub item: usize,
+    pub layer: String,
+    pub graphic_type: GraphicType,
+    /// One point; the vertices of a polyline or the points an interpolated
+    /// curve passes through (closed when the last equals the first); a
+    /// circle's centre and a point on it; or an ellipse's two major-axis
+    /// endpoints followed by its two minor-axis endpoints.
+    pub points: Vec<[f64; 2]>,
+    pub filled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+pub struct TextObjectSummary {
+    /// The Graphic Annotation Sequence item it belongs to, zero-based.
+    pub item: usize,
+    pub layer: String,
+    /// Lines are separated by `\n`.
+    pub text: String,
+    /// `[left, top, right, bottom]` of the bounding box.
+    pub bounding_box: Option<[f64; 4]>,
+    /// `left`, `center`, or `right` within the bounding box.
+    pub justification: Option<TextJustification>,
+    pub anchor: Option<[f64; 2]>,
+    /// Whether a line joins the text to its anchor point.
+    pub anchor_visible: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum TextJustification {
+    Left,
+    Center,
+    Right,
 }
 
 /// Color bar of a value overlay. The overlay PNG colors a value `v` at
@@ -975,6 +1109,13 @@ pub struct DoseOverlayQuery {
 #[derive(Debug, Clone, Copy, Deserialize, TS)]
 pub struct ParametricMapOverlayQuery {
     pub map: usize,
+}
+
+/// Graphic-annotations query: the softcopy presentation state whose
+/// annotations are drawn on the path's frame.
+#[derive(Debug, Clone, Copy, Deserialize, TS)]
+pub struct GraphicAnnotationsQuery {
+    pub state: usize,
 }
 
 /// Selective tag query: `path` addresses one element, and `offset`/`limit`

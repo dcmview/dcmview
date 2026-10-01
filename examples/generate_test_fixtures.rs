@@ -73,6 +73,7 @@ fn main() {
     write_rt_dose_overlay_fixtures(&fixture_dir);
     write_parametric_map_overlay_fixtures(&fixture_dir);
     write_real_world_value_mapping_instance(&fixture_dir.join("golden-rwvm-ct-hounsfield.dcm"));
+    write_presentation_state_fixtures(&fixture_dir);
 }
 
 // Semantic-overlay fixtures share one patient and study; each overlay pair
@@ -1587,4 +1588,724 @@ fn hex_nibble(value: u8) -> u8 {
         b'A'..=b'F' => value - b'A' + 10,
         _ => panic!("invalid hexadecimal fixture byte"),
     }
+}
+
+// Presentation-state fixtures: two target images with painted shapes, and
+// Grayscale Softcopy Presentation States whose graphic annotations outline
+// those shapes exactly, so a misplaced annotation is visible.
+const GSPS_PATIENT_ID: &str = "GOLDEN-GSPS";
+const GSPS_STUDY_UID: &str = "2.25.2000200";
+const GSPS_STATE_SERIES_UID: &str = "2.25.2000203";
+/// Non-square, so a column/row swap shows.
+const GSPS_COLUMNS: usize = 240;
+const GSPS_ROWS: usize = 160;
+const GSPS_BACKGROUND: u8 = 40;
+const GSPS_TARGET: u8 = 200;
+
+/// A target image a presentation state references.
+#[derive(Clone, Copy)]
+struct GspsImage {
+    sop_class_uid: &'static str,
+    sop_instance_uid: &'static str,
+    series_instance_uid: &'static str,
+    modality: &'static str,
+    frames: u32,
+}
+
+const GSPS_SINGLE: GspsImage = GspsImage {
+    sop_class_uid: uids::DIGITAL_X_RAY_IMAGE_STORAGE_FOR_PRESENTATION,
+    sop_instance_uid: "2.25.2000210",
+    series_instance_uid: "2.25.2000201",
+    modality: "DX",
+    frames: 1,
+};
+const GSPS_MULTIFRAME: GspsImage = GspsImage {
+    sop_class_uid: uids::X_RAY_ANGIOGRAPHIC_IMAGE_STORAGE,
+    sop_instance_uid: "2.25.2000211",
+    series_instance_uid: "2.25.2000202",
+    modality: "XA",
+    frames: 3,
+};
+
+// The painted shapes, in PS3.3 C.10.5 PIXEL coordinates (column\row, origin
+// at the top-left corner of the top-left pixel). Only +, -, *, / are used on
+// them so the painted pixels are identical on every platform.
+const GSPS_ELLIPSE: [f32; 8] = [20.0, 40.0, 80.0, 40.0, 50.0, 22.0, 50.0, 58.0];
+/// Major axis along (4, 3)/5, semi-axes 30 and 15, centre (130, 45).
+const GSPS_ROTATED_ELLIPSE: [f32; 8] = [106.0, 27.0, 154.0, 63.0, 139.0, 33.0, 121.0, 57.0];
+/// Centre, then a point on the circumference: radius 22.
+const GSPS_DISC: [f32; 4] = [200.0, 40.0, 222.0, 40.0];
+const GSPS_POLYGON: [f32; 12] = [
+    20.0, 90.0, 70.0, 85.0, 80.0, 130.0, 40.0, 145.0, 15.0, 120.0, 20.0, 90.0,
+];
+const GSPS_ZIGZAG: [f32; 8] = [100.0, 90.0, 120.0, 130.0, 140.0, 90.0, 160.0, 130.0];
+/// A closed curve's control points; each is painted as a dot the curve must cross.
+const GSPS_CURVE: [f32; 14] = [
+    185.0, 95.0, 215.0, 90.0, 228.0, 115.0, 210.0, 140.0, 183.0, 135.0, 175.0, 112.0, 185.0, 95.0,
+];
+/// The centre of pixel (column 120, row 150), marked with a plus.
+const GSPS_POINT: [f32; 2] = [120.5, 150.5];
+const GSPS_FILLED_DISC: [f32; 4] = [232.0, 150.0, 237.0, 150.0];
+/// The outline of the single bright pixel at column 232, row 8.
+const GSPS_PIXEL_BOX: [f32; 10] = [232.0, 8.0, 233.0, 8.0, 233.0, 9.0, 232.0, 9.0, 232.0, 8.0];
+/// The image border: 0\0 to Columns\Rows.
+const GSPS_BORDER: [f32; 10] = [0.0, 0.0, 240.0, 0.0, 240.0, 160.0, 0.0, 160.0, 0.0, 0.0];
+/// The disc on frame 1, 2, and 3 of the multi-frame image: radius 25.
+const GSPS_FRAME_DISCS: [[f32; 4]; 3] = [
+    [60.0, 100.0, 85.0, 100.0],
+    [120.0, 100.0, 145.0, 100.0],
+    [180.0, 100.0, 205.0, 100.0],
+];
+
+fn write_presentation_state_fixtures(fixture_dir: &Path) {
+    write_gsps_image(
+        &fixture_dir.join("golden-gsps-target-u8.dcm"),
+        GSPS_SINGLE,
+        gsps_single_frame_pixels(),
+    );
+    write_gsps_image(
+        &fixture_dir.join("golden-gsps-target-multiframe-u8.dcm"),
+        GSPS_MULTIFRAME,
+        (0..3).flat_map(gsps_multiframe_pixels).collect(),
+    );
+
+    let shapes = "SHAPES";
+    let labels = "LABELS";
+    let marks = "MARKS";
+    let layers = vec![
+        // Yellow, as CIELab L* 90, a* -5, b* 85.
+        gsps_layer(
+            shapes,
+            1,
+            "Outlines of the painted shapes",
+            GspsColor::CieLab([58982, 31611, 54741]),
+        ),
+        gsps_layer(labels, 2, "Text labels", GspsColor::Gray(0xFFFF)),
+        // No recommended value: the viewer's fallback color.
+        gsps_layer(
+            marks,
+            3,
+            "Points, the pixel box and the border",
+            GspsColor::None,
+        ),
+    ];
+    let single = [gsps_reference(GSPS_SINGLE, &[])];
+
+    // One annotation item per shape, each naming its image.
+    write_gsps_state(
+        &fixture_dir.join("golden-gsps-conforming.dcm"),
+        GspsState {
+            sop_instance_uid: "2.25.2000220",
+            instance_number: "1",
+            label: "CONFORMING",
+            description: "Every graphic type outlining its painted shape",
+            images: &[GSPS_SINGLE],
+            layers: layers.clone(),
+            annotations: vec![
+                gsps_annotation(
+                    shapes,
+                    &single,
+                    vec![gsps_graphic("ELLIPSE", &GSPS_ELLIPSE, Some(false))],
+                    vec![],
+                ),
+                gsps_annotation(
+                    shapes,
+                    &single,
+                    vec![gsps_graphic("ELLIPSE", &GSPS_ROTATED_ELLIPSE, Some(false))],
+                    vec![],
+                ),
+                gsps_annotation(
+                    shapes,
+                    &single,
+                    vec![gsps_graphic("CIRCLE", &GSPS_DISC, Some(false))],
+                    vec![],
+                ),
+                gsps_annotation(
+                    shapes,
+                    &single,
+                    vec![gsps_graphic("POLYLINE", &GSPS_POLYGON, Some(false))],
+                    vec![],
+                ),
+                gsps_annotation(
+                    shapes,
+                    &single,
+                    vec![gsps_graphic("POLYLINE", &GSPS_ZIGZAG, None)],
+                    vec![],
+                ),
+                gsps_annotation(
+                    shapes,
+                    &single,
+                    vec![gsps_graphic("INTERPOLATED", &GSPS_CURVE, Some(false))],
+                    vec![],
+                ),
+                gsps_annotation(
+                    shapes,
+                    &single,
+                    vec![gsps_graphic("CIRCLE", &GSPS_FILLED_DISC, Some(true))],
+                    vec![],
+                ),
+                gsps_annotation(
+                    marks,
+                    &single,
+                    vec![
+                        gsps_graphic("POINT", &GSPS_POINT, None),
+                        gsps_graphic("POLYLINE", &GSPS_PIXEL_BOX, Some(false)),
+                        gsps_graphic("POLYLINE", &GSPS_BORDER, Some(false)),
+                    ],
+                    vec![],
+                ),
+                gsps_annotation(
+                    labels,
+                    &single,
+                    vec![],
+                    vec![
+                        gsps_boxed_text("Rotated ellipse", [100.0, 66.0], [165.0, 76.0], None),
+                        // Boxed below the disc, with a visible anchor on its edge.
+                        gsps_boxed_text("Disc", [185.0, 66.0], [215.0, 76.0], Some([200.0, 62.0])),
+                        gsps_anchored_text("Point\r\n120.5, 150.5", [120.5, 150.5]),
+                    ],
+                ),
+            ],
+        },
+    );
+
+    // The same image again, as a second state to switch to: bounding boxes.
+    write_gsps_state(
+        &fixture_dir.join("golden-gsps-second-state.dcm"),
+        GspsState {
+            sop_instance_uid: "2.25.2000221",
+            instance_number: "2",
+            label: "BOXES",
+            description: "Bounding boxes of the two ellipses and the disc",
+            images: &[GSPS_SINGLE],
+            layers: layers.clone(),
+            annotations: [
+                [20.0, 22.0, 80.0, 58.0],
+                // The rotated ellipse's extent is +-sqrt(657) by +-sqrt(468).
+                [104.368, 23.367, 155.632, 66.633],
+                [178.0, 18.0, 222.0, 62.0],
+            ]
+            .into_iter()
+            .map(|[x0, y0, x1, y1]: [f32; 4]| {
+                gsps_annotation(
+                    shapes,
+                    &single,
+                    vec![gsps_graphic(
+                        "POLYLINE",
+                        &[x0, y0, x1, y0, x1, y1, x0, y1, x0, y0],
+                        Some(false),
+                    )],
+                    vec![],
+                )
+            })
+            .collect(),
+        },
+    );
+
+    // Items scoped to one frame each, and one for every frame.
+    let mut frame_annotations = (0..3)
+        .map(|frame| {
+            let [x, y, ..] = GSPS_FRAME_DISCS[frame];
+            gsps_annotation(
+                shapes,
+                &[gsps_reference(GSPS_MULTIFRAME, &[frame as u32 + 1])],
+                vec![gsps_graphic(
+                    "CIRCLE",
+                    &GSPS_FRAME_DISCS[frame],
+                    Some(false),
+                )],
+                vec![gsps_boxed_text(
+                    &format!("Frame {} only", frame + 1),
+                    [x - 25.0, y + 28.0],
+                    [x + 25.0, y + 38.0],
+                    None,
+                )],
+            )
+        })
+        .collect::<Vec<_>>();
+    frame_annotations.push(gsps_annotation(
+        marks,
+        &[gsps_reference(GSPS_MULTIFRAME, &[])],
+        vec![gsps_graphic("POLYLINE", &GSPS_BORDER, Some(false))],
+        vec![gsps_boxed_text(
+            "All frames",
+            [90.0, 10.0],
+            [150.0, 20.0],
+            None,
+        )],
+    ));
+    write_gsps_state(
+        &fixture_dir.join("golden-gsps-frames.dcm"),
+        GspsState {
+            sop_instance_uid: "2.25.2000222",
+            instance_number: "3",
+            label: "FRAMES",
+            description: "One item per frame and one for all frames",
+            images: &[GSPS_MULTIFRAME],
+            layers: layers.clone(),
+            annotations: frame_annotations,
+        },
+    );
+
+    // An item without a Referenced Image Sequence applies to every image and
+    // frame of the Referenced Series Sequence.
+    write_gsps_state(
+        &fixture_dir.join("golden-gsps-unscoped.dcm"),
+        GspsState {
+            sop_instance_uid: "2.25.2000223",
+            instance_number: "4",
+            label: "UNSCOPED",
+            description: "One item with no Referenced Image Sequence",
+            images: &[GSPS_SINGLE, GSPS_MULTIFRAME],
+            layers: layers.clone(),
+            annotations: vec![gsps_annotation(
+                marks,
+                &[],
+                vec![
+                    gsps_graphic("POLYLINE", &GSPS_BORDER, Some(false)),
+                    gsps_graphic("POLYLINE", &[0.0, 0.0, 240.0, 160.0], None),
+                ],
+                vec![gsps_boxed_text(
+                    "Every referenced image",
+                    [60.0, 148.0],
+                    [180.0, 158.0],
+                    None,
+                )],
+            )],
+        },
+    );
+
+    // DISPLAY-unit objects beside one PIXEL-unit circle.
+    let mut display_ellipse = gsps_graphic(
+        "ELLIPSE",
+        &[0.25, 0.5, 0.75, 0.5, 0.5, 0.25, 0.5, 0.75],
+        Some(false),
+    );
+    display_ellipse.put(DataElement::new(
+        tags::GRAPHIC_ANNOTATION_UNITS,
+        VR::CS,
+        "DISPLAY",
+    ));
+    let mut display_text = gsps_boxed_text("Display units", [0.1, 0.9], [0.5, 0.95], None);
+    display_text.put(DataElement::new(
+        tags::BOUNDING_BOX_ANNOTATION_UNITS,
+        VR::CS,
+        "DISPLAY",
+    ));
+    write_gsps_state(
+        &fixture_dir.join("golden-gsps-display-units.dcm"),
+        GspsState {
+            sop_instance_uid: "2.25.2000224",
+            instance_number: "5",
+            label: "DISPLAY",
+            description: "DISPLAY-unit ellipse and text, PIXEL-unit circle",
+            images: &[GSPS_SINGLE],
+            layers,
+            annotations: vec![
+                gsps_annotation(shapes, &single, vec![display_ellipse], vec![display_text]),
+                gsps_annotation(
+                    shapes,
+                    &single,
+                    vec![gsps_graphic("CIRCLE", &GSPS_DISC, Some(false))],
+                    vec![],
+                ),
+            ],
+        },
+    );
+}
+
+/// Paints the pixels whose centres satisfy `inside`.
+fn gsps_paint(pixels: &mut [u8], inside: impl Fn(f64, f64) -> bool) {
+    for row in 0..GSPS_ROWS {
+        for column in 0..GSPS_COLUMNS {
+            if inside(column as f64 + 0.5, row as f64 + 0.5) {
+                pixels[row * GSPS_COLUMNS + column] = GSPS_TARGET;
+            }
+        }
+    }
+}
+
+/// Whether a point is inside the ellipse given as PS3.3 C.10.5 ELLIPSE data.
+fn gsps_in_ellipse(data: &[f32; 8], x: f64, y: f64) -> bool {
+    let [ax, ay, bx, by, cx, cy, dx, dy] = data.map(f64::from);
+    let (centre_x, centre_y) = ((ax + bx) / 2.0, (ay + by) / 2.0);
+    let (major_x, major_y) = ((bx - ax) / 2.0, (by - ay) / 2.0);
+    let (minor_x, minor_y) = ((dx - cx) / 2.0, (dy - cy) / 2.0);
+    let major = major_x * major_x + major_y * major_y;
+    let minor = minor_x * minor_x + minor_y * minor_y;
+    let u = ((x - centre_x) * major_x + (y - centre_y) * major_y) / major;
+    let v = ((x - centre_x) * minor_x + (y - centre_y) * minor_y) / minor;
+    u * u + v * v <= 1.0
+}
+
+fn gsps_in_circle(data: &[f32; 4], x: f64, y: f64) -> bool {
+    let [cx, cy, px, py] = data.map(f64::from);
+    (x - cx) * (x - cx) + (y - cy) * (y - cy) <= (px - cx) * (px - cx) + (py - cy) * (py - cy)
+}
+
+fn gsps_points(data: &[f32]) -> Vec<(f64, f64)> {
+    data.chunks_exact(2)
+        .map(|point| (f64::from(point[0]), f64::from(point[1])))
+        .collect()
+}
+
+/// Even-odd test against a closed polyline.
+fn gsps_in_polygon(data: &[f32], x: f64, y: f64) -> bool {
+    let points = gsps_points(data);
+    let mut inside = false;
+    for pair in points.windows(2) {
+        let ((x0, y0), (x1, y1)) = (pair[0], pair[1]);
+        if (y0 > y) != (y1 > y) && x < x0 + (y - y0) * (x1 - x0) / (y1 - y0) {
+            inside = !inside;
+        }
+    }
+    inside
+}
+
+/// Whether a point is within `reach` of a polyline.
+fn gsps_near_polyline(data: &[f32], reach: f64, x: f64, y: f64) -> bool {
+    gsps_points(data).windows(2).any(|pair| {
+        let ((x0, y0), (x1, y1)) = (pair[0], pair[1]);
+        let (dx, dy) = (x1 - x0, y1 - y0);
+        let along = (((x - x0) * dx + (y - y0) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+        let (nx, ny) = (x - (x0 + along * dx), y - (y0 + along * dy));
+        nx * nx + ny * ny <= reach * reach
+    })
+}
+
+fn gsps_single_frame_pixels() -> Vec<u8> {
+    let mut pixels = vec![GSPS_BACKGROUND; GSPS_COLUMNS * GSPS_ROWS];
+    gsps_paint(&mut pixels, |x, y| {
+        gsps_in_ellipse(&GSPS_ELLIPSE, x, y)
+            || gsps_in_ellipse(&GSPS_ROTATED_ELLIPSE, x, y)
+            || gsps_in_circle(&GSPS_DISC, x, y)
+            || gsps_in_circle(&GSPS_FILLED_DISC, x, y)
+            || gsps_in_polygon(&GSPS_POLYGON, x, y)
+            || gsps_near_polyline(&GSPS_ZIGZAG, 0.75, x, y)
+            // A 3x3 dot on each control point of the curve.
+            || gsps_points(&GSPS_CURVE)
+                .iter()
+                .any(|(px, py)| (x - px).abs() <= 1.5 && (y - py).abs() <= 1.5)
+            // A plus centred on the marked pixel.
+            || ((x - 120.5).abs() < 0.5 && (y - 150.5).abs() <= 3.0)
+            || ((y - 150.5).abs() < 0.5 && (x - 120.5).abs() <= 3.0)
+            || (x == 232.5 && y == 8.5)
+    });
+    pixels
+}
+
+/// Frame `frame` (zero-based): its number as a block digit, and its disc.
+fn gsps_multiframe_pixels(frame: usize) -> Vec<u8> {
+    const DIGITS: [[u8; 7]; 3] = [
+        [
+            0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110,
+        ],
+        [
+            0b01110, 0b10001, 0b00001, 0b00110, 0b01000, 0b10000, 0b11111,
+        ],
+        [
+            0b01110, 0b10001, 0b00001, 0b00110, 0b00001, 0b10001, 0b01110,
+        ],
+    ];
+    let mut pixels = vec![GSPS_BACKGROUND; GSPS_COLUMNS * GSPS_ROWS];
+    gsps_paint(&mut pixels, |x, y| {
+        // 5x7 cells of 6 pixels from (10, 10).
+        let (cell_x, cell_y) = (((x - 10.0) / 6.0).floor(), ((y - 10.0) / 6.0).floor());
+        let digit = (0.0..5.0).contains(&cell_x)
+            && (0.0..7.0).contains(&cell_y)
+            && DIGITS[frame][cell_y as usize] >> (4 - cell_x as usize) & 1 == 1;
+        digit || gsps_in_circle(&GSPS_FRAME_DISCS[frame], x, y)
+    });
+    pixels
+}
+
+fn write_gsps_image(path: &Path, image: GspsImage, pixels: Vec<u8>) {
+    let mut obj = InMemDicomObject::from_element_iter([
+        DataElement::new(tags::SOP_CLASS_UID, VR::UI, image.sop_class_uid),
+        DataElement::new(tags::SOP_INSTANCE_UID, VR::UI, image.sop_instance_uid),
+        DataElement::new(tags::PATIENT_ID, VR::LO, GSPS_PATIENT_ID),
+        DataElement::new(tags::STUDY_DATE, VR::DA, "20260930"),
+        DataElement::new(tags::STUDY_INSTANCE_UID, VR::UI, GSPS_STUDY_UID),
+        DataElement::new(tags::MODALITY, VR::CS, image.modality),
+        DataElement::new(tags::SERIES_INSTANCE_UID, VR::UI, image.series_instance_uid),
+        DataElement::new(
+            tags::SERIES_DESCRIPTION,
+            VR::LO,
+            "Presentation state target",
+        ),
+        DataElement::new(tags::INSTANCE_NUMBER, VR::IS, "1"),
+        DataElement::new(tags::ROWS, VR::US, PrimitiveValue::from(GSPS_ROWS as u16)),
+        DataElement::new(
+            tags::COLUMNS,
+            VR::US,
+            PrimitiveValue::from(GSPS_COLUMNS as u16),
+        ),
+        DataElement::new(tags::BITS_ALLOCATED, VR::US, PrimitiveValue::from(8_u16)),
+        DataElement::new(tags::BITS_STORED, VR::US, PrimitiveValue::from(8_u16)),
+        DataElement::new(tags::HIGH_BIT, VR::US, PrimitiveValue::from(7_u16)),
+        DataElement::new(
+            tags::PIXEL_REPRESENTATION,
+            VR::US,
+            PrimitiveValue::from(0_u16),
+        ),
+        DataElement::new(tags::SAMPLES_PER_PIXEL, VR::US, PrimitiveValue::from(1_u16)),
+        DataElement::new(tags::PHOTOMETRIC_INTERPRETATION, VR::CS, "MONOCHROME2"),
+        DataElement::new(tags::WINDOW_CENTER, VR::DS, "128"),
+        DataElement::new(tags::WINDOW_WIDTH, VR::DS, "256"),
+        DataElement::new(tags::PIXEL_DATA, VR::OB, PrimitiveValue::from(pixels)),
+    ]);
+    if image.frames > 1 {
+        obj.put(DataElement::new(
+            tags::NUMBER_OF_FRAMES,
+            VR::IS,
+            image.frames.to_string(),
+        ));
+    }
+    obj.with_meta(
+        FileMetaTableBuilder::new()
+            .implementation_class_uid(FIXTURE_IMPLEMENTATION_CLASS_UID)
+            .implementation_version_name(FIXTURE_IMPLEMENTATION_VERSION_NAME)
+            .transfer_syntax(uids::EXPLICIT_VR_LITTLE_ENDIAN)
+            .media_storage_sop_class_uid(image.sop_class_uid)
+            .media_storage_sop_instance_uid(image.sop_instance_uid),
+    )
+    .expect("build presentation state target meta")
+    .write_to_file(path)
+    .expect("write presentation state target fixture");
+}
+
+#[derive(Clone, Copy)]
+enum GspsColor {
+    CieLab([u16; 3]),
+    Gray(u16),
+    None,
+}
+
+struct GspsState<'a> {
+    sop_instance_uid: &'a str,
+    instance_number: &'a str,
+    label: &'a str,
+    description: &'a str,
+    /// The images of the Referenced Series Sequence, every frame of each.
+    images: &'a [GspsImage],
+    layers: Vec<InMemDicomObject>,
+    annotations: Vec<InMemDicomObject>,
+}
+
+fn gsps_layer(name: &str, order: i32, description: &str, color: GspsColor) -> InMemDicomObject {
+    let mut layer = InMemDicomObject::from_element_iter([
+        DataElement::new(tags::GRAPHIC_LAYER, VR::CS, name),
+        DataElement::new(tags::GRAPHIC_LAYER_ORDER, VR::IS, order.to_string()),
+        DataElement::new(tags::GRAPHIC_LAYER_DESCRIPTION, VR::LO, description),
+    ]);
+    match color {
+        GspsColor::CieLab(lab) => layer.put(DataElement::new(
+            tags::GRAPHIC_LAYER_RECOMMENDED_DISPLAY_CIE_LAB_VALUE,
+            VR::US,
+            PrimitiveValue::U16(lab.to_vec().into()),
+        )),
+        GspsColor::Gray(value) => layer.put(DataElement::new(
+            tags::GRAPHIC_LAYER_RECOMMENDED_DISPLAY_GRAYSCALE_VALUE,
+            VR::US,
+            PrimitiveValue::from(value),
+        )),
+        GspsColor::None => None,
+    };
+    layer
+}
+
+/// A Referenced Image Sequence item; no frame numbers means every frame.
+fn gsps_reference(image: GspsImage, frames: &[u32]) -> InMemDicomObject {
+    let mut reference = InMemDicomObject::from_element_iter([
+        DataElement::new(tags::REFERENCED_SOP_CLASS_UID, VR::UI, image.sop_class_uid),
+        DataElement::new(
+            tags::REFERENCED_SOP_INSTANCE_UID,
+            VR::UI,
+            image.sop_instance_uid,
+        ),
+    ]);
+    if !frames.is_empty() {
+        let frames = frames.iter().map(u32::to_string).collect::<Vec<_>>();
+        reference.put(DataElement::new(
+            tags::REFERENCED_FRAME_NUMBER,
+            VR::IS,
+            frames.join("\\"),
+        ));
+    }
+    reference
+}
+
+/// A Graphic Annotation Sequence item; no `images` leaves out its
+/// Referenced Image Sequence.
+fn gsps_annotation(
+    layer: &str,
+    images: &[InMemDicomObject],
+    graphics: Vec<InMemDicomObject>,
+    texts: Vec<InMemDicomObject>,
+) -> InMemDicomObject {
+    let mut annotation =
+        InMemDicomObject::from_element_iter([DataElement::new(tags::GRAPHIC_LAYER, VR::CS, layer)]);
+    if !images.is_empty() {
+        annotation.put(fixture_sequence(
+            tags::REFERENCED_IMAGE_SEQUENCE,
+            images.to_vec(),
+        ));
+    }
+    if !texts.is_empty() {
+        annotation.put(fixture_sequence(tags::TEXT_OBJECT_SEQUENCE, texts));
+    }
+    if !graphics.is_empty() {
+        annotation.put(fixture_sequence(tags::GRAPHIC_OBJECT_SEQUENCE, graphics));
+    }
+    annotation
+}
+
+fn gsps_floats(values: &[f32]) -> PrimitiveValue {
+    PrimitiveValue::F32(values.to_vec().into())
+}
+
+/// A PIXEL-unit graphic object; `filled` is given for closed graphics only.
+fn gsps_graphic(graphic_type: &str, data: &[f32], filled: Option<bool>) -> InMemDicomObject {
+    let mut graphic = InMemDicomObject::from_element_iter([
+        DataElement::new(tags::GRAPHIC_ANNOTATION_UNITS, VR::CS, "PIXEL"),
+        DataElement::new(
+            tags::GRAPHIC_DIMENSIONS,
+            VR::US,
+            PrimitiveValue::from(2_u16),
+        ),
+        DataElement::new(
+            tags::NUMBER_OF_GRAPHIC_POINTS,
+            VR::US,
+            PrimitiveValue::from((data.len() / 2) as u16),
+        ),
+        DataElement::new(tags::GRAPHIC_DATA, VR::FL, gsps_floats(data)),
+        DataElement::new(tags::GRAPHIC_TYPE, VR::CS, graphic_type),
+    ]);
+    if let Some(filled) = filled {
+        graphic.put(DataElement::new(
+            tags::GRAPHIC_FILLED,
+            VR::CS,
+            if filled { "Y" } else { "N" },
+        ));
+    }
+    graphic
+}
+
+/// A PIXEL-unit text object in a bounding box, with an optional visible anchor.
+fn gsps_boxed_text(
+    text: &str,
+    top_left: [f32; 2],
+    bottom_right: [f32; 2],
+    anchor: Option<[f32; 2]>,
+) -> InMemDicomObject {
+    let mut object = InMemDicomObject::from_element_iter([
+        DataElement::new(tags::BOUNDING_BOX_ANNOTATION_UNITS, VR::CS, "PIXEL"),
+        DataElement::new(tags::UNFORMATTED_TEXT_VALUE, VR::ST, text),
+        DataElement::new(
+            tags::BOUNDING_BOX_TOP_LEFT_HAND_CORNER,
+            VR::FL,
+            gsps_floats(&top_left),
+        ),
+        DataElement::new(
+            tags::BOUNDING_BOX_BOTTOM_RIGHT_HAND_CORNER,
+            VR::FL,
+            gsps_floats(&bottom_right),
+        ),
+        DataElement::new(
+            tags::BOUNDING_BOX_TEXT_HORIZONTAL_JUSTIFICATION,
+            VR::CS,
+            "CENTER",
+        ),
+    ]);
+    if let Some(anchor) = anchor {
+        object.put(DataElement::new(
+            tags::ANCHOR_POINT_ANNOTATION_UNITS,
+            VR::CS,
+            "PIXEL",
+        ));
+        object.put(DataElement::new(
+            tags::ANCHOR_POINT,
+            VR::FL,
+            gsps_floats(&anchor),
+        ));
+        object.put(DataElement::new(tags::ANCHOR_POINT_VISIBILITY, VR::CS, "Y"));
+    }
+    object
+}
+
+/// A PIXEL-unit text object placed only by an anchor point that is not drawn.
+fn gsps_anchored_text(text: &str, anchor: [f32; 2]) -> InMemDicomObject {
+    InMemDicomObject::from_element_iter([
+        DataElement::new(tags::ANCHOR_POINT_ANNOTATION_UNITS, VR::CS, "PIXEL"),
+        DataElement::new(tags::UNFORMATTED_TEXT_VALUE, VR::ST, text),
+        DataElement::new(tags::ANCHOR_POINT, VR::FL, gsps_floats(&anchor)),
+        DataElement::new(tags::ANCHOR_POINT_VISIBILITY, VR::CS, "N"),
+    ])
+}
+
+fn write_gsps_state(path: &Path, state: GspsState<'_>) {
+    let referenced_series = state
+        .images
+        .iter()
+        .map(|image| {
+            InMemDicomObject::from_element_iter([
+                fixture_sequence(
+                    tags::REFERENCED_IMAGE_SEQUENCE,
+                    vec![gsps_reference(*image, &[])],
+                ),
+                DataElement::new(tags::SERIES_INSTANCE_UID, VR::UI, image.series_instance_uid),
+            ])
+        })
+        .collect();
+    // The whole image, for every referenced image.
+    let displayed_area = InMemDicomObject::from_element_iter([
+        DataElement::new(
+            tags::DISPLAYED_AREA_TOP_LEFT_HAND_CORNER,
+            VR::SL,
+            PrimitiveValue::I32(vec![1, 1].into()),
+        ),
+        DataElement::new(
+            tags::DISPLAYED_AREA_BOTTOM_RIGHT_HAND_CORNER,
+            VR::SL,
+            PrimitiveValue::I32(vec![GSPS_COLUMNS as i32, GSPS_ROWS as i32].into()),
+        ),
+        DataElement::new(tags::PRESENTATION_SIZE_MODE, VR::CS, "SCALE TO FIT"),
+        DataElement::new(tags::PRESENTATION_PIXEL_ASPECT_RATIO, VR::IS, "1\\1"),
+    ]);
+    let sop_class_uid = uids::GRAYSCALE_SOFTCOPY_PRESENTATION_STATE_STORAGE;
+    InMemDicomObject::from_element_iter([
+        DataElement::new(tags::SOP_CLASS_UID, VR::UI, sop_class_uid),
+        DataElement::new(tags::SOP_INSTANCE_UID, VR::UI, state.sop_instance_uid),
+        DataElement::new(tags::PATIENT_ID, VR::LO, GSPS_PATIENT_ID),
+        DataElement::new(tags::STUDY_DATE, VR::DA, "20260930"),
+        DataElement::new(tags::STUDY_INSTANCE_UID, VR::UI, GSPS_STUDY_UID),
+        DataElement::new(tags::MODALITY, VR::CS, "PR"),
+        DataElement::new(tags::SERIES_INSTANCE_UID, VR::UI, GSPS_STATE_SERIES_UID),
+        DataElement::new(tags::SERIES_DESCRIPTION, VR::LO, "Presentation states"),
+        DataElement::new(tags::INSTANCE_NUMBER, VR::IS, state.instance_number),
+        DataElement::new(tags::CONTENT_LABEL, VR::CS, state.label),
+        DataElement::new(tags::CONTENT_DESCRIPTION, VR::LO, state.description),
+        DataElement::new(tags::CONTENT_CREATOR_NAME, VR::PN, "dcmview^fixtures"),
+        DataElement::new(tags::PRESENTATION_CREATION_DATE, VR::DA, "20260930"),
+        DataElement::new(tags::PRESENTATION_CREATION_TIME, VR::TM, "120000"),
+        DataElement::new(tags::PRESENTATION_LUT_SHAPE, VR::CS, "IDENTITY"),
+        fixture_sequence(tags::REFERENCED_SERIES_SEQUENCE, referenced_series),
+        fixture_sequence(
+            tags::DISPLAYED_AREA_SELECTION_SEQUENCE,
+            vec![displayed_area],
+        ),
+        fixture_sequence(tags::GRAPHIC_ANNOTATION_SEQUENCE, state.annotations),
+        fixture_sequence(tags::GRAPHIC_LAYER_SEQUENCE, state.layers),
+    ])
+    .with_meta(
+        FileMetaTableBuilder::new()
+            .implementation_class_uid(FIXTURE_IMPLEMENTATION_CLASS_UID)
+            .implementation_version_name(FIXTURE_IMPLEMENTATION_VERSION_NAME)
+            .transfer_syntax(uids::EXPLICIT_VR_LITTLE_ENDIAN)
+            .media_storage_sop_class_uid(sop_class_uid)
+            .media_storage_sop_instance_uid(state.sop_instance_uid),
+    )
+    .expect("build presentation state meta")
+    .write_to_file(path)
+    .expect("write presentation state fixture");
 }

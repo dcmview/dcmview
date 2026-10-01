@@ -319,3 +319,83 @@ describe("SemanticContextPanel Parametric Map overlay", () => {
 		expect(onshowoverlay).toHaveBeenCalledWith(response);
 	});
 });
+
+describe("SemanticContextPanel presentation state", () => {
+	const STATE = fileSummary(9, {
+		label: "state.dcm",
+		modality: "PR",
+		sop_class_uid: "1.2.840.10008.5.1.4.1.1.11.1",
+		object_kind: "presentation_state",
+		has_pixels: false,
+	});
+	const frame = { file_index: CT.index, frame_index: 0, sop_instance_uid: CT.sop_instance_uid };
+	const response: SemanticContextResponse = {
+		source_file_index: STATE.index,
+		default_mode: "pixel_preview",
+		pixel_preview_preserves_stored_values: true,
+		context: {
+			kind: "presentation_state",
+			content_label: "ROIS",
+			content_description: "Reader marks",
+			content_creator_name: "Reader^One",
+			presentation_creation_date: "20260930",
+			layers: [
+				{ name: "SHAPES", order: 1, description: "Outlines", color: [255, 212, 0] },
+				{ name: "MARKS", order: 2, description: null, color: null },
+			],
+			items: [
+				{ index: 0, layer: "SHAPES", graphic_types: [], texts: [], scoped: true, first_frame: frame, frame_count: 1 },
+				{ index: 1, layer: "SHAPES", graphic_types: ["ellipse"], texts: ["Mass"], scoped: true, first_frame: frame, frame_count: 1 },
+			],
+			annotated_frames: [frame],
+			skipped: { display_units: 2, matrix_units: 0, malformed: 1 },
+			references: [],
+		},
+	};
+
+	function renderState() {
+		const onshowannotations = vi.fn();
+		render(SemanticContextPanel, {
+			fileIndex: STATE.index,
+			currentFrame: 0,
+			files: [STATE, CT],
+			onopenreference: vi.fn(),
+			onshowannotations,
+		});
+		return { onshowannotations };
+	}
+
+	it("describes the state without a pixel preview mode", async () => {
+		fetchSemanticContext.mockResolvedValue(response);
+		renderState();
+
+		expect(await screen.findByText("ROIS · Reader marks")).toBeTruthy();
+		expect(screen.getByText("Presentation State")).toBeTruthy();
+		expect(screen.queryByText(/Active:/)).toBeNull();
+		expect(screen.getByText(/window, shutter, displayed area/)).toBeTruthy();
+		expect(screen.getByText(/2 in DISPLAY units, 0 in MATRIX units,\s+1 malformed/)).toBeTruthy();
+		expect(screen.getByText("MARKS · no recommended color")).toBeTruthy();
+		// The item with nothing to draw is not listed.
+		expect(screen.getByText("Item 1 of 1 · layer SHAPES")).toBeTruthy();
+		expect(screen.getByText('ellipse, text "Mass"')).toBeTruthy();
+	});
+
+	it("opens the state, or one of its items, on an annotated image", async () => {
+		fetchSemanticContext.mockResolvedValue(response);
+		const { onshowannotations } = renderState();
+
+		await fireEvent.click(await screen.findByRole("button", { name: "Show annotations on image" }));
+		await fireEvent.click(screen.getByRole("button", { name: "Show item on image" }));
+		expect(onshowannotations.mock.calls).toEqual([[response, null], [response, 1]]);
+	});
+
+	it("offers nothing to show when no annotated image is loaded", async () => {
+		const { context } = response;
+		if (context.kind !== "presentation_state") throw new Error("expected a presentation state");
+		fetchSemanticContext.mockResolvedValue({ ...response, context: { ...context, annotated_frames: [] } });
+		renderState();
+
+		expect(await screen.findByText("No annotated image is among the loaded files.")).toBeTruthy();
+		expect(screen.queryByRole("button", { name: "Show annotations on image" })).toBeNull();
+	});
+});

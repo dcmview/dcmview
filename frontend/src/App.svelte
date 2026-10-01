@@ -3,6 +3,7 @@
 	import { annotationsExportUrl, fetchHealth, onReachabilityChange, onServerRestart, type SemanticContextResponse } from "./api";
 	import FileNavigator from "./lib/FileNavigator.svelte";
 	import FrameSlider from "./lib/FrameSlider.svelte";
+	import GraphicAnnotationBar from "./lib/GraphicAnnotationBar.svelte";
 	import ImageViewport from "./lib/ImageViewport.svelte";
 	import OpenImageTabs from "./lib/OpenImageTabs.svelte";
 	import ReferenceNavigator from "./lib/ReferenceNavigator.svelte";
@@ -19,6 +20,7 @@
 	import Button from "./lib/ui/Button.svelte";
 	import WsiTileContext from "./lib/WsiTileContext.svelte";
 	import { Catalog } from "./lib/app/catalog.svelte";
+	import { annotationEntryFrame, GraphicAnnotations } from "./lib/app/graphicAnnotations.svelte";
 	import {
 		SidebarLayout,
 		TAG_PANEL_MAX_WIDTH_PX,
@@ -64,6 +66,12 @@
 		scanComplete: () => (catalog.files?.scan_complete ?? false) && (catalog.series?.scan_complete ?? false),
 	});
 
+	// Presentation state graphic annotations over the images they reference.
+	const graphicAnnotations = new GraphicAnnotations({
+		files: () => catalog.filesById,
+		scanComplete: () => catalog.files?.scan_complete ?? false,
+	});
+
 	let activeTool = $state<ActiveTool>("pan");
 	let cinePlaying = $state(false);
 	let cineFps = $state(10);
@@ -97,6 +105,11 @@
 			? null
 			: valueOverlays.overlayFor(overlayCandidates, tabs.activeFileIndex, tabs.currentFrame),
 	);
+	const annotationCandidates = $derived(
+		tabs.activeFileIndex === null ? [] : graphicAnnotations.candidatesFor(tabs.activeFileIndex, tabs.frames),
+	);
+	const shownAnnotationState = $derived(frameOverlay ? null : graphicAnnotations.shown(annotationCandidates));
+	const graphicAnnotation = $derived(frameOverlay ? null : graphicAnnotations.selectionFor(annotationCandidates));
 	const openTabFiles = $derived(resolveFilesById(catalog.filesById, tabs.tabs.map((tab) => tab.fileIndex)));
 
 	/** A different tab starts paused and playing forward. */
@@ -111,6 +124,27 @@
 		if (!entry) return;
 		valueOverlays.select(response.source_file_index);
 		tabs.openReference(entry.fileIndex, entry.frameIndex);
+	}
+
+	/** Opens an annotated image with a presentation state shown, stepped to `itemIndex` when given. */
+	function showGraphicAnnotations(response: SemanticContextResponse, itemIndex: number | null = null) {
+		const entry = annotationEntryFrame(response, itemIndex);
+		if (!entry) return;
+		graphicAnnotations.selectItem(response.source_file_index, itemIndex);
+		tabs.openReference(entry.fileIndex, entry.frameIndex);
+	}
+
+	/** Steps the shown state's annotation items, following an item to its image. */
+	function stepAnnotationItem(step: -1 | 1) {
+		if (tabs.activeFileIndex === null) return;
+		const target = graphicAnnotations.stepItem(
+			annotationCandidates,
+			step,
+			{ fileIndex: tabs.activeFileIndex, frameIndex: tabs.currentFrame },
+		);
+		if (!target) return;
+		cinePlaying = false;
+		tabs.openReference(target.fileIndex, target.frameIndex);
 	}
 
 	function closeTab(fileIndex: number): void {
@@ -159,6 +193,7 @@
 			drawerOpen: layout.compactDrawer !== null,
 			multiFrame: activeFile !== null && tabs.frames.length > 1,
 			roiToolActive: activeFile !== null && activeTool === "annotate_rect",
+			annotationItems: (shownAnnotationState?.items.length ?? 0) > 0,
 		});
 		if (!action) return;
 		switch (action.type) {
@@ -187,6 +222,10 @@
 				event.preventDefault();
 				frameSlider?.togglePlay();
 				return;
+			case "step-annotation-item":
+				event.preventDefault();
+				stepAnnotationItem(action.step);
+				return;
 			case "delete-roi":
 				event.preventDefault();
 				viewport?.deleteSelectedRoi();
@@ -195,6 +234,7 @@
 	}
 
 	$effect(() => valueOverlays.load(tabs.activeFileIndex));
+	$effect(() => graphicAnnotations.load(tabs.activeFileIndex));
 
 	let stopPolling: (() => void) | null = null;
 	function loadCatalog(): void {
@@ -216,6 +256,7 @@
 			semanticPanel?.retryFailedLoads();
 			wsiContext?.retryFailedLoads();
 			valueOverlays.retryFailedLoads(tabs.activeFileIndex);
+			graphicAnnotations.retryFailedLoads(tabs.activeFileIndex);
 		} catch { /* Reachability stays failed; Retry remains available. */ }
 	}
 
@@ -343,6 +384,18 @@
 									onopacity={(opacity) => valueOverlays.setOpacity(opacity)}
 								/>
 							{/if}
+							{#if annotationCandidates.length > 0 && !frameOverlay}
+								<GraphicAnnotationBar
+									candidates={annotationCandidates}
+									selectedState={graphicAnnotations.selectedState}
+									selectedItem={graphicAnnotations.selectedItem}
+									coversFrame={shownAnnotationState?.covers(activeFile.index, tabs.currentFrame) ?? false}
+									ontoggle={(stateFileIndex) => graphicAnnotations.select(
+										graphicAnnotations.selectedState === stateFileIndex ? null : stateFileIndex,
+									)}
+									onstep={stepAnnotationItem}
+								/>
+							{/if}
 							<ReferenceNavigator bind:this={references}
 								scanProgress={catalog.referenceRevision}
 								fileIndex={activeFile.index}
@@ -359,6 +412,7 @@
 								onmodechange={(mode) => { semanticMode = mode; }}
 								oncontextchange={(response) => { semanticResponse = response; }}
 								onshowoverlay={showValueOverlay}
+								onshowannotations={showGraphicAnnotations}
 							/>
 						{/if}
 						{#if activeFile.object_kind === "whole_slide_microscopy"}
@@ -382,6 +436,7 @@
 						{viewStates}
 						overlay={frameOverlay}
 						{valueOverlay}
+						{graphicAnnotation}
 						bind:cinePlaying
 						{cineFps}
 						{cineMode}

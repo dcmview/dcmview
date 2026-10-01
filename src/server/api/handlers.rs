@@ -3,13 +3,14 @@ use super::overlays;
 use super::state::AppState;
 use crate::api::contracts::{
     DiscoveryResult, EmbedRoiAnnotations, FileSummary, FilesResponse, FrameInfo, FrameQuery,
-    FrameValueMapping, HealthResponse, PixelQuery, ReferenceCatalogResponse,
-    SemanticContextResponse, TagNode, TagQuery, ViewerIdentity, WsiFrameContextResponse,
-    CACHE_HEADER, CACHE_HIT, CACHE_MISS, CSV_MEDIA_TYPE, DISPLAY_FRAME_HEADER_WINDOW_APPLIED,
-    DISPLAY_FRAME_HEADER_WINDOW_CENTER, DISPLAY_FRAME_HEADER_WINDOW_WIDTH,
-    EXPORT_CONTENT_DISPOSITION_HEADER, EXPORT_CONTENT_DISPOSITION_VALUE, OCTET_STREAM_MEDIA_TYPE,
-    RAW_FRAME_HEADER_BITS_ALLOCATED, RAW_FRAME_HEADER_COLUMNS, RAW_FRAME_HEADER_DEFAULT_WC,
-    RAW_FRAME_HEADER_DEFAULT_WW, RAW_FRAME_HEADER_PADDING_HIGH, RAW_FRAME_HEADER_PADDING_LOW,
+    FrameValueMapping, GraphicAnnotationsQuery, GraphicAnnotationsResponse, HealthResponse,
+    PixelQuery, ReferenceCatalogResponse, SemanticContextResponse, TagNode, TagQuery,
+    ViewerIdentity, WsiFrameContextResponse, CACHE_HEADER, CACHE_HIT, CACHE_MISS, CSV_MEDIA_TYPE,
+    DISPLAY_FRAME_HEADER_WINDOW_APPLIED, DISPLAY_FRAME_HEADER_WINDOW_CENTER,
+    DISPLAY_FRAME_HEADER_WINDOW_WIDTH, EXPORT_CONTENT_DISPOSITION_HEADER,
+    EXPORT_CONTENT_DISPOSITION_VALUE, OCTET_STREAM_MEDIA_TYPE, RAW_FRAME_HEADER_BITS_ALLOCATED,
+    RAW_FRAME_HEADER_COLUMNS, RAW_FRAME_HEADER_DEFAULT_WC, RAW_FRAME_HEADER_DEFAULT_WW,
+    RAW_FRAME_HEADER_PADDING_HIGH, RAW_FRAME_HEADER_PADDING_LOW,
     RAW_FRAME_HEADER_PHOTOMETRIC_INTERPRETATION, RAW_FRAME_HEADER_PIXEL_REPRESENTATION,
     RAW_FRAME_HEADER_RESCALE_INTERCEPT, RAW_FRAME_HEADER_RESCALE_SLOPE, RAW_FRAME_HEADER_ROWS,
     RAW_FRAME_HEADER_SAMPLES_PER_PIXEL,
@@ -170,6 +171,33 @@ pub(super) async fn semantic_context_for(
     let context = Arc::new(context);
     state.cache_semantic_context(key, context.clone());
     Ok(context)
+}
+
+/// The annotations a softcopy presentation state draws on one image frame.
+pub(super) async fn graphic_annotations(
+    State(state): State<AppState>,
+    path: Result<Path<(usize, u32)>, PathRejection>,
+    query: Result<Query<GraphicAnnotationsQuery>, QueryRejection>,
+) -> Result<Json<GraphicAnnotationsResponse>, ApiError> {
+    let Path((index, frame)) = path.map_err(error::path_rejection)?;
+    let target = registered_file(&state, index, "file")?;
+    let Query(query) = query.map_err(error::query_rejection)?;
+    let presentation_state = registered_file(&state, query.state, "presentation state file")?;
+    if !crate::presentation_state::has_graphic_annotations(&presentation_state.sop_class_uid) {
+        return Err(ApiError::bad_request(
+            "state must select a Grayscale or Color Softcopy Presentation State",
+        ));
+    }
+    crate::pixels::PixelError::ensure_frame(frame, target.frame_count)
+        .map_err(error::pixel_error)?;
+    let path = presentation_state.path.clone();
+    let annotations = task::spawn_blocking(move || {
+        crate::presentation_state::graphic_annotations(&presentation_state, &target, frame)
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("graphic annotation task failed: {error}")))?
+    .map_err(|failure| error::gone_or(&path, ApiError::internal(format!("{failure:#}"))))?;
+    Ok(Json(annotations))
 }
 
 pub(super) async fn value_mapping(

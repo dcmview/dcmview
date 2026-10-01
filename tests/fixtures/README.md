@@ -30,6 +30,8 @@ The committed corpus is intentionally small and synthetic:
 - `golden-rwvm-ct-hounsfield.dcm`
 - `golden-seg-{binary,binary-valued-fractional,fractional}.dcm`, each with
   its matching `golden-seg-<kind>-source.dcm`
+- `golden-gsps-{conforming,second-state,frames,unscoped,display-units}.dcm`
+  with `golden-gsps-target-u8.dcm` and `golden-gsps-target-multiframe-u8.dcm`
 
 The goal is stable decoding and contract coverage. The large single-frame JPEG
 fixture keeps file size small while exercising realistic viewport geometry.
@@ -73,3 +75,30 @@ FRACTIONAL object declares maximum 255 but contains only 0/1. The genuine
 FRACTIONAL object's first frame also contains only 0/1, while its second has
 0, 64, 128, and 255. This distinguishes object-level fallback from per-frame
 normalization and preserves meaningful fractional opacity across frames.
+
+The presentation-state fixtures are Grayscale Softcopy Presentation States
+whose graphic annotations (PS3.3 C.10.5, PIXEL units) outline shapes painted
+into two 240x160 target images, so a misplaced annotation is visible. The
+single-frame target holds an axis-aligned ellipse, an ellipse rotated along
+(4, 3), a disc, a filled pentagon, a zigzag line, six dots on a closed
+curve, a plus on the centre of pixel (120, 150), a small disc, and one bright
+pixel at (232, 8). Each frame of the three-frame target holds its frame
+number and a disc at its own position.
+
+- `conforming` has one annotation item per shape, each with its own
+  Referenced Image Sequence: ELLIPSE (twice), CIRCLE, a closed and an open
+  POLYLINE, INTERPOLATED through the dots, a filled CIRCLE, a POINT, the
+  outline of the bright pixel, the image border (0\0 to 240\160), two boxed
+  texts (one with a visible anchor) and one anchor-only text with a line
+  break. Its three layers recommend a CIELab color, a gray value, and nothing.
+- `second-state` annotates the same image with the bounding boxes of the two
+  ellipses and the disc.
+- `frames` scopes one item to each frame of the multi-frame target with
+  Referenced Frame Number, and one item to all frames.
+- `unscoped` has one item with no Referenced Image Sequence, which therefore
+  applies to both targets through the Referenced Series Sequence.
+- `display-units` has a DISPLAY-unit ellipse and text beside a PIXEL-unit
+  circle.
+
+The targets are painted with `+`, `-`, `*` and `/` only, so their pixels are
+the same on every platform.
