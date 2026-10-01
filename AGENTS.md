@@ -74,6 +74,13 @@ would remove behavior, raise it as a question instead of acting.
   and WSI context; RT Dose and Parametric Map colorwash overlays on the
   images they cover (opacity control and color bar), and per-frame value
   mappings for any modality.
+- **Presentation state annotations** - PIXEL-unit graphic and text objects of
+  Grayscale and Color Softcopy Presentation States drawn on the images they
+  reference, one state at a time (off until chosen), with stepping through
+  the state's annotation items (the current one highlighted, the rest
+  dimmed). Items match images through their Referenced Image Sequence, else
+  the state's Referenced Series Sequence. Standard conventions only: the
+  owner ruled institution-specific deviations out of scope on 2026-09-30.
 
 **Known gaps (intended work, not settled scope):**
 
@@ -82,6 +89,13 @@ would remove behavior, raise it as a question instead of acting.
   Supporting these declared functions is deferred until after v0.3.0. The
   exact window formula used for non-integer samples and real-world units does
   not imply support for this attribute.
+- **Presentation states apply annotations only.** DISPLAY-unit objects are
+  counted and not drawn, because placing them needs the state's Displayed
+  Area and Spatial Transformation, which are not applied. The state's
+  Softcopy VOI LUT window is not offered as a preset, and its shutter,
+  Modality and Presentation LUTs are ignored. Both are deferred by the owner
+  (2026-09-30). MATRIX units, line and fill styles, and text reading
+  direction are not interpreted either.
 - **Real-world windows need integer samples.** A window in the unit of a LUT
   mapping (or of a mapping behind a Modality LUT) is exact on the raw path
   and, through the display endpoint's `unit` query, in cine, for 8- and
@@ -230,6 +244,7 @@ dcmview/
 |   |-- references.rs    typed DICOM reference extraction and resolution
 |   |-- semantic.rs      SEG, Parametric Map, and RT Dose context
 |   |-- plane_stack.rs   dose/PM plane stacks and resampling onto frames
+|   |-- presentation_state.rs  softcopy presentation state graphic annotations
 |   |-- value_mapping.rs per-frame Modality and real-world value mappings
 |   |-- wsi.rs           WSI tile placement and companions
 |   `-- types.rs         internal domain and cache-key types
@@ -420,6 +435,8 @@ is cached between requests.
   position), `WindowSettings` (window, its real-world unit, mode, preset,
   manual adjustment), `ValueOverlays` (which RT Dose or Parametric Map
   colorwash is shown, its opacity, and which volumes cover the active tab),
+  `GraphicAnnotations` (which presentation state's annotations are shown,
+  the annotation item stepped to, and which states annotate the active tab),
   and `SidebarLayout` (navigator and tag panel layout, compact drawers), plus
   `lib/viewport/` `ViewStates` (per-tab zoom, pan, and orientation). Active
   tool, cine settings, and semantic mode are plain `App.svelte` state.
@@ -457,6 +474,10 @@ is cached between requests.
   `viewport/viewTransform.ts`; per-frame layers over a source image go through
   `viewport/frameOverlay.ts` (a SEG `FrameOverlay` replaces the displayed
   image, a `ValueOverlay` colorwash is drawn on its own canvas above it).
+  Presentation state annotations are vectors, not a raster layer:
+  `viewport/GraphicAnnotationOverlay.svelte` draws shapes in image pixel
+  coordinates and `GraphicAnnotationLabels.svelte` text and points in
+  viewport pixels, with the geometry in `viewport/graphicAnnotations.ts`.
   Pixel values come from `viewport/pixelProbe.svelte.ts` and the per-frame
   `value-mapping` conversions in `viewport/valueMapping.ts`.
 - No external CSS frameworks. Use scoped Svelte styles.

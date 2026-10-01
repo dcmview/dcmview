@@ -254,6 +254,13 @@ The embedded browser viewer includes:
 - RT Dose and Parametric Map colorwash overlays on the images they cover,
   with an opacity control and a color bar in Gy or the map's unit. Slices the
   volume does not reach say so instead of showing a layer.
+- Graphic and text annotations of Grayscale and Color Softcopy Presentation
+  States drawn on the images they reference: ellipses, circles, polylines,
+  interpolated curves, points, and text in image pixel units. Choose a state
+  from the Annotations bar and step through its annotation items; the current
+  item is highlighted and the others dimmed. The state's window, shutter,
+  displayed area, and rotation or flip are not applied, and objects in
+  DISPLAY units are counted but not drawn.
 - Default pixel preview plus opt-in declared semantic context for SEG,
   Parametric Map, and RT Dose. Validated SEG mappings can compose binary or
   fractional masks over referenced source images even when compatible patient
@@ -279,6 +286,7 @@ Common shortcuts:
 |---|---|
 | Previous/next file in the active Explorer ordering | Up/Down arrows |
 | Previous/next frame | Left/Right arrows or `[` / `]` |
+| Previous/next annotation item of the shown presentation state | `,` / `.` |
 | Play/pause cine | Space |
 | Window/level tool | `W` |
 | Pan tool | `P` |
