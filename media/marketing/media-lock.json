@@ -1,12 +1,12 @@
 {
   "artifacts": [
     {
-      "bytes": 1098641,
+      "bytes": 1091180,
       "height": 900,
       "path": "mr-seg-cine.gif",
       "scene_id": "mr-seg-cine",
       "series_instance_uid": "1.3.6.1.4.1.14519.5.2.1.7695.4164.197935705864255073412256526155",
-      "sha256": "8c321570f4500dc5bb114f54253cfd13628a2b636a2b8e77a277bc80a4f26098",
+      "sha256": "3f41a9666018cd8a1b85016f3b9d1a4f099b8b8a06c9d6da663ebbb846464d54",
       "source_group": "01-mr-seg",
       "width": 1440
     },
@@ -51,22 +51,22 @@
       "width": 1440
     },
     {
-      "bytes": 3833322,
+      "bytes": 3832973,
       "height": 900,
       "path": "ultrasound-cine.gif",
       "scene_id": "ultrasound-cine",
       "series_instance_uid": "1.3.6.1.4.1.14519.5.2.1.1.78620393996990384206084905721745347693",
-      "sha256": "2124973d3293d562340d9d987ff45690599ac1a3a26caf062de9634c679efbbf",
+      "sha256": "036422ae29ea0ada3fa6ae68023eeaed97f31dcdaac136105ddd1c472e11433a",
       "source_group": "06-ultrasound",
       "width": 1440
     },
     {
-      "bytes": 284098,
+      "bytes": 284015,
       "height": 900,
       "path": "rt-dose-context.png",
       "scene_id": "rt-dose-context",
       "series_instance_uid": "1.3.6.1.4.1.14519.5.2.1.118532755654767959890619646384959953910",
-      "sha256": "cf33d2a0d60ee20e4172f4656670f3e73ba0c1362c806ada947a998bbfef1f06",
+      "sha256": "a01acee77a4c099004528b49936221f4b21151cd7dd75720549a3142c9517406",
       "source_group": "07-rt-dose",
       "width": 1440
     },
@@ -81,12 +81,12 @@
       "width": 1440
     },
     {
-      "bytes": 1552674,
+      "bytes": 1550694,
       "height": 900,
       "path": "vscode-workflow.gif",
       "scene_id": "vscode-workflow",
       "series_instance_uid": "1.3.6.1.4.1.14519.5.2.1.9999.103.1892998694410640266017914996862",
-      "sha256": "bcef5d1b1ad9d3dfa864e16bff0d7cdf6cf9bf0bb896737511e994427ea020b3",
+      "sha256": "3d7366dab353691a7f245ab670bef55923769c4a3b3f3ad706fbc87c5f58234e",
       "source_group": "02-chest-ct",
       "width": 1440
     }
@@ -100,6 +100,8 @@
     "frontend/src/lib/FileNavigator.svelte",
     "frontend/src/lib/FrameSlider.svelte",
     "frontend/src/lib/FrameSlider.test.ts",
+    "frontend/src/lib/GraphicAnnotationBar.svelte",
+    "frontend/src/lib/GraphicAnnotationBar.test.ts",
     "frontend/src/lib/ImageViewport.svelte",
     "frontend/src/lib/ImageViewport.test.ts",
     "frontend/src/lib/OpenImageTabs.svelte",
@@ -120,6 +122,8 @@
     "frontend/src/lib/annotationGeometry.ts",
     "frontend/src/lib/app/catalog.svelte.ts",
     "frontend/src/lib/app/catalog.test.ts",
+    "frontend/src/lib/app/graphicAnnotations.svelte.ts",
+    "frontend/src/lib/app/graphicAnnotations.test.ts",
     "frontend/src/lib/app/sidebarLayout.svelte.ts",
     "frontend/src/lib/app/tabNavigation.svelte.ts",
     "frontend/src/lib/app/tabNavigation.test.ts",
@@ -172,6 +176,8 @@
     "frontend/src/lib/ui/StatusBadge.svelte",
     "frontend/src/lib/ui/icons.ts",
     "frontend/src/lib/viewerTools.ts",
+    "frontend/src/lib/viewport/GraphicAnnotationLabels.svelte",
+    "frontend/src/lib/viewport/GraphicAnnotationOverlay.svelte",
     "frontend/src/lib/viewport/PixelReadout.svelte",
     "frontend/src/lib/viewport/RoiLabels.svelte",
     "frontend/src/lib/viewport/RoiList.svelte",
@@ -188,6 +194,9 @@
     "frontend/src/lib/viewport/frameOverlay.test.ts",
     "frontend/src/lib/viewport/frameOverlay.ts",
     "frontend/src/lib/viewport/frameSources.test.ts",
+    "frontend/src/lib/viewport/graphicAnnotationFrames.svelte.ts",
+    "frontend/src/lib/viewport/graphicAnnotations.test.ts",
+    "frontend/src/lib/viewport/graphicAnnotations.ts",
     "frontend/src/lib/viewport/liveWindowPreview.test.ts",
     "frontend/src/lib/viewport/liveWindowPreview.ts",
     "frontend/src/lib/viewport/pixelProbe.svelte.ts",
@@ -245,11 +254,11 @@
     "vscode/src/test/suite/viewer.test.ts",
     "vscode/src/viewerSessions.ts"
   ],
-  "capture_inputs_sha256": "5e68a6a6c91f4e383768c66c5d4495deb7567d21f9e48924462be6662d3a12d0",
-  "captured_at_utc": "2026-09-29T13:22:20+00:00",
+  "capture_inputs_sha256": "b6545d48438056c020617794886a2229b20964ed5039e09fdc5b1d8279170b9e",
+  "captured_at_utc": "2026-10-01T10:24:33+00:00",
   "captures_manifest_sha256": "afdf2b4ec006289d5f336d232ab67977318fc187771e046b24fa8c76d32bcdec",
-  "dcmview_version": "0.3.0",
-  "git_commit": "5c0b9d3c17d5488a8a27a2e83f9a6138b28ed4f7",
+  "dcmview_version": "0.3.1",
+  "git_commit": "0a6ac5439ba513c575013b002d19dabafcb03041",
   "git_dirty": false,
   "reports": [
     {
@@ -268,12 +277,12 @@
         "height": 900,
         "width": 1440
       },
-      "visible_text_sha256": "c7439c759987e6f0e747e874a557e5f06295f40e27736fd0684874a04d738ff6"
+      "visible_text_sha256": "8d87972636662d662b3b9664cbab7dbeabe3514120c1eddaa1b3f60a28b16620"
     },
     {
       "browser_version": "151.0.7922.34",
       "ffmpeg_version": "ffmpeg version 6.0 Copyright (c) 2000-2023 the FFmpeg developers",
-      "file_index": 8,
+      "file_index": 4,
       "node_version": "v26.8.2",
       "patient_ids": [
         "COVID-19-AR-16406502"
@@ -309,7 +318,7 @@
     {
       "browser_version": "151.0.7922.34",
       "ffmpeg_version": "ffmpeg version 6.0 Copyright (c) 2000-2023 the FFmpeg developers",
-      "file_index": 1,
+      "file_index": 3,
       "node_version": "v26.8.2",
       "patient_ids": [
         "D1-0021"
@@ -327,7 +336,7 @@
     {
       "browser_version": "151.0.7922.34",
       "ffmpeg_version": "ffmpeg version 6.0 Copyright (c) 2000-2023 the FFmpeg developers",
-      "file_index": 126,
+      "file_index": 64,
       "node_version": "v26.8.2",
       "patient_ids": [
         "PSMA_f77011649a56cf08"
@@ -363,7 +372,7 @@
     {
       "browser_version": "151.0.7922.34",
       "ffmpeg_version": null,
-      "file_index": 90,
+      "file_index": 101,
       "node_version": "v26.8.2",
       "patient_ids": [
         "VS-SEG-131"
@@ -376,7 +385,7 @@
         "height": 900,
         "width": 1440
       },
-      "visible_text_sha256": "4393e3cea5dc0e2df1bd8aa18da00b4d1771ac544a75c1372f4b0c1a5e89bcdd"
+      "visible_text_sha256": "58c4f9a5ceb61438d99ad2bfb19418863b46cfb5d2a531b510a0a87e3f06114c"
     },
     {
       "browser_version": "151.0.7922.34",
@@ -399,7 +408,7 @@
     {
       "captured_frames": 48,
       "ffmpeg_version": "ffmpeg version 6.0 Copyright (c) 2000-2023 the FFmpeg developers",
-      "file_index": 0,
+      "file_index": 4,
       "node_version": "v26.8.2",
       "patient_ids": [
         "COVID-19-AR-16406502"
