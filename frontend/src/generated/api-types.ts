@@ -14,6 +14,7 @@ export const API_ENDPOINTS = {
 	fileDoseOverlayValues: { method: "GET", path: "/api/file/{index}/frame/{frame}/dose-overlay/values" },
 	fileParametricMapOverlay: { method: "GET", path: "/api/file/{index}/frame/{frame}/parametric-map-overlay" },
 	fileParametricMapOverlayValues: { method: "GET", path: "/api/file/{index}/frame/{frame}/parametric-map-overlay/values" },
+	fileGraphicAnnotations: { method: "GET", path: "/api/file/{index}/frame/{frame}/graphic-annotations" },
 	fileValueMapping: { method: "GET", path: "/api/file/{index}/frame/{frame}/value-mapping" },
 	fileWsiContext: { method: "GET", path: "/api/file/{index}/frame/{frame}/wsi-context" },
 	fileFrame: { method: "GET", path: "/api/file/{index}/frame/{frame}" },
@@ -145,6 +146,80 @@ voi_lut: VoiLookupTable | null, };
  */
 export type FrameWindowApplied = "linear" | "real_world" | "voi_lut";
 
+/**
+ * One Graphic Annotation Sequence item of a presentation state.
+ */
+export type GraphicAnnotationItemSummary = { 
+/**
+ * Position in the Graphic Annotation Sequence, zero-based.
+ */
+index: number, layer: string, 
+/**
+ * Graphic Type of each drawable graphic object.
+ */
+graphic_types: Array<GraphicType>, 
+/**
+ * Text of each drawable text object.
+ */
+texts: Array<string>, 
+/**
+ * Whether the item names its images in a Referenced Image Sequence;
+ * otherwise it applies to every image and frame the state references.
+ */
+scoped: boolean, 
+/**
+ * The first local image frame the item applies to.
+ */
+first_frame: ResolvedSegmentSourceFrame | null, 
+/**
+ * How many local image frames the item applies to.
+ */
+frame_count: number, };
+
+/**
+ * Graphic-annotations query: the softcopy presentation state whose
+ * annotations are drawn on the path's frame.
+ */
+export type GraphicAnnotationsQuery = { state: number, };
+
+/**
+ * The annotations one presentation state draws on one image frame. Every
+ * coordinate is a PIXEL-unit `[column, row]` position in the image, where
+ * `[0, 0]` is the top-left corner of the top-left pixel and
+ * `[columns, rows]` the bottom-right corner of the bottom-right pixel.
+ */
+export type GraphicAnnotationsResponse = { 
+/**
+ * The state's layers, in Graphic Layer Order.
+ */
+layers: Array<GraphicLayerSummary>, graphics: Array<GraphicObjectSummary>, texts: Array<TextObjectSummary>, 
+/**
+ * Objects of the items applying to this frame that are not drawn.
+ */
+skipped: SkippedGraphicObjects, };
+
+export type GraphicLayerSummary = { name: string, order: number | null, description: string | null, 
+/**
+ * sRGB of the layer's Recommended Display CIELab Value, else of its
+ * Recommended Display Grayscale Value; `null` when it declares neither.
+ */
+color: [number, number, number] | null, };
+
+export type GraphicObjectSummary = { 
+/**
+ * The Graphic Annotation Sequence item it belongs to, zero-based.
+ */
+item: number, layer: string, graphic_type: GraphicType, 
+/**
+ * One point; the vertices of a polyline or the points an interpolated
+ * curve passes through (closed when the last equals the first); a
+ * circle's centre and a point on it; or an ellipse's two major-axis
+ * endpoints followed by its two minor-axis endpoints.
+ */
+points: Array<[number, number]>, filled: boolean, };
+
+export type GraphicType = "point" | "polyline" | "interpolated" | "circle" | "ellipse";
+
 export type HealthResponse = { status: string, viewer: ViewerIdentity, file_count: number, server_start_ms: number, };
 
 /**
@@ -206,6 +281,31 @@ export type ParametricMapOverlayQuery = { map: number, };
  * Raw-pixel query: the zero-based image row and column.
  */
 export type PixelQuery = { row: number, column: number, };
+
+/**
+ * A Grayscale or Color Softcopy Presentation State's graphic annotations
+ * (PS3.3 C.10.5) and the local image frames they are drawn on. Only the
+ * annotations are applied: the state's window, shutter, displayed area and
+ * spatial transformation are not.
+ */
+export type PresentationStateContext = { content_label: string | null, content_description: string | null, content_creator_name: string | null, presentation_creation_date: string | null, 
+/**
+ * In Graphic Layer Order.
+ */
+layers: Array<GraphicLayerSummary>, 
+/**
+ * The Graphic Annotation Sequence items in file order, at most 4096.
+ */
+items: Array<GraphicAnnotationItemSummary>, 
+/**
+ * The local image frames with a drawable annotation, in file and frame
+ * order, at most 4096.
+ */
+annotated_frames: Array<ResolvedSegmentSourceFrame>, 
+/**
+ * Objects of every item that are not drawn.
+ */
+skipped: SkippedGraphicObjects, references: Array<ReferenceSummary>, };
 
 export type RawFrameMetadata = { rows: number, columns: number, bitsAllocated: number, pixelRepresentation: number, samplesPerPixel: number, photometricInterpretation: string, rescaleSlope: number, rescaleIntercept: number, defaultWc: number | null, defaultWw: number | null, 
 /**
@@ -323,7 +423,7 @@ display_color_source: string, };
 
 export type SegmentationContext = { warnings: Array<string>, segmentation_type: string | null, segmentation_fractional_type: string | null, maximum_fractional_value: number | null, segments: Array<SegmentSummary>, frame_mappings: Array<SegmentFrameMapping>, references: Array<ReferenceSummary>, overlay: OverlayEligibility, };
 
-export type SemanticContext = { "kind": "segmentation" } & SegmentationContext | { "kind": "parametric_map" } & ParametricMapContext | { "kind": "rt_dose" } & RtDoseContext | { "kind": "not_applicable", reason: string, };
+export type SemanticContext = { "kind": "segmentation" } & SegmentationContext | { "kind": "parametric_map" } & ParametricMapContext | { "kind": "rt_dose" } & RtDoseContext | { "kind": "presentation_state" } & PresentationStateContext | { "kind": "not_applicable", reason: string, };
 
 export type SemanticContextResponse = { source_file_index: number, 
 /**
@@ -339,6 +439,23 @@ export type SeriesSummary = { id: string, study_instance_uid: string, series_ins
 
 export type SeriesWarningSummary = { code: string, message: string, file_indices: Array<number>, };
 
+/**
+ * Graphic and text objects that are not drawn, by reason.
+ */
+export type SkippedGraphicObjects = { 
+/**
+ * DISPLAY units: positioned in the displayed area, which is not applied.
+ */
+display_units: number, 
+/**
+ * MATRIX units: positioned in a tiled image's total pixel matrix.
+ */
+matrix_units: number, 
+/**
+ * Unknown type or units, or point data that does not fit the type.
+ */
+malformed: number, };
+
 export type SupportState = "renderable" | "metadata_only" | "unsupported";
 
 export type TagNode = { tag: string, vr: string, keyword: string, value: TagValue, };
@@ -350,6 +467,30 @@ export type TagNode = { tag: string, vr: string, keyword: string, value: TagValu
 export type TagQuery = { path: string, offset?: number, limit?: number, };
 
 export type TagValue = { "type": "string", value: string, } | { "type": "number", value: number, } | { "type": "numbers", value: Array<number>, truncated?: boolean, total?: number, } | { "type": "binary", length: number, } | { "type": "sequence", items: Array<Array<TagNode>>, truncated?: boolean, total?: number, } | { "type": "error", message: string, };
+
+export type TextJustification = "left" | "center" | "right";
+
+export type TextObjectSummary = { 
+/**
+ * The Graphic Annotation Sequence item it belongs to, zero-based.
+ */
+item: number, layer: string, 
+/**
+ * Lines are separated by `\n`.
+ */
+text: string, 
+/**
+ * `[left, top, right, bottom]` of the bounding box.
+ */
+bounding_box: [number, number, number, number] | null, 
+/**
+ * `left`, `center`, or `right` within the bounding box.
+ */
+justification: TextJustification | null, anchor: [number, number] | null, 
+/**
+ * Whether a line joins the text to its anchor point.
+ */
+anchor_visible: boolean, };
 
 /**
  * `value = values[clamp(stored - first_value_mapped, 0, values.length - 1)]`.
