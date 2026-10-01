@@ -438,10 +438,35 @@ fn select_candidates<'a>(
             })
             .collect()
         }
+        // PS3.3 C.11.11 lists every image in the Referenced Series Sequence.
+        // An image a graphic annotation item names without it being listed
+        // there is still a source image.
         uids::GRAYSCALE_SOFTCOPY_PRESENTATION_STATE_STORAGE
         | uids::COLOR_SOFTCOPY_PRESENTATION_STATE_STORAGE => {
-            matching(&|candidate| candidate.starts_with(tags::REFERENCED_SERIES_SEQUENCE))
+            let listed =
+                matching(&|candidate| candidate.starts_with(tags::REFERENCED_SERIES_SEQUENCE));
+            let mut seen = listed
+                .iter()
+                .filter_map(|candidate| candidate.sop_instance_uid.as_deref())
+                .collect::<HashSet<_>>();
+            let annotated = matching(&|candidate| {
+                candidate.path.as_slice()
+                    == [
+                        tags::GRAPHIC_ANNOTATION_SEQUENCE,
+                        tags::REFERENCED_IMAGE_SEQUENCE,
+                    ]
+            })
+            .into_iter()
+            .filter(|candidate| {
+                candidate
+                    .sop_instance_uid
+                    .as_deref()
+                    .is_some_and(|uid| seen.insert(uid))
+            })
+            .collect::<Vec<_>>();
+            listed
                 .into_iter()
+                .chain(annotated)
                 .map(|candidate| (ReferenceRelationship::SourceImage, candidate))
                 .collect()
         }
@@ -879,6 +904,55 @@ mod tests {
         assert_eq!(
             edges[0].target.series_instance_uid.as_deref(),
             Some("1.2.3.series")
+        );
+    }
+
+    #[test]
+    fn presentation_state_adds_images_named_only_by_annotation_items() {
+        let referenced_series = item([
+            DataElement::new(tags::SERIES_INSTANCE_UID, VR::UI, "1.2.3.series"),
+            DataElement::new(
+                tags::REFERENCED_IMAGE_SEQUENCE,
+                VR::SQ,
+                DataSetSequence::from(vec![referenced("1.2.3.5", &[])]),
+            ),
+        ]);
+        let annotation = |uid: &str, frames: &[&str]| {
+            item([DataElement::new(
+                tags::REFERENCED_IMAGE_SEQUENCE,
+                VR::SQ,
+                DataSetSequence::from(vec![referenced(uid, frames)]),
+            )])
+        };
+        let object = item([
+            DataElement::new(
+                tags::SOP_CLASS_UID,
+                VR::UI,
+                uids::GRAYSCALE_SOFTCOPY_PRESENTATION_STATE_STORAGE,
+            ),
+            DataElement::new(
+                tags::REFERENCED_SERIES_SEQUENCE,
+                VR::SQ,
+                DataSetSequence::from(vec![referenced_series]),
+            ),
+            DataElement::new(
+                tags::GRAPHIC_ANNOTATION_SEQUENCE,
+                VR::SQ,
+                DataSetSequence::from(vec![
+                    annotation("1.2.3.5", &["2"]),
+                    annotation("1.2.3.6", &[]),
+                    annotation("1.2.3.6", &["1"]),
+                ]),
+            ),
+        ]);
+
+        let edges = extract_reference_edges_from_object(&object);
+        assert_eq!(
+            edges
+                .iter()
+                .map(|edge| edge.target.sop_instance_uid.as_deref())
+                .collect::<Vec<_>>(),
+            [Some("1.2.3.5"), Some("1.2.3.6")]
         );
     }
 
