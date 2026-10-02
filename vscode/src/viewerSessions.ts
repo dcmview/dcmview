@@ -162,7 +162,7 @@ export async function startPathSession(
     binary,
     buildDcmviewArgs(filePaths, settings),
     commonWorkingDirectory(filePaths),
-    sessionTitle(filePaths),
+    sessionTitle(filePaths, settings),
     settings,
     output,
   );
@@ -179,14 +179,18 @@ export async function startPathSessionInPanel(
     binary,
     buildDcmviewArgs(filePaths, settings),
     commonWorkingDirectory(filePaths),
-    sessionTitle(filePaths),
+    sessionTitle(filePaths, settings),
     settings,
     output,
     panel,
   );
 }
 
-function sessionTitle(filePaths: readonly string[]): string {
+/** A masked session's tab does not name the file: file names often identify the patient. */
+function sessionTitle(filePaths: readonly string[], settings: Pick<ExtensionSettings, 'extraArgs'>): string {
+  if (settings.extraArgs.includes('--mask')) {
+    return 'dcmview: masked session';
+  }
   return `dcmview: ${path.basename(filePaths[0])}${filePaths.length > 1 ? ` +${filePaths.length - 1}` : ''}`;
 }
 
