@@ -31,7 +31,35 @@ export class Catalog {
 	loadError = $state<string | null>(null);
 	/** References can change only when a file arrives or discovery finishes. */
 	readonly referenceRevision = $derived(`${this.files?.files.length ?? 0}|${this.files?.scan_complete ?? false}`);
-	readonly filesById = $derived<ReadonlyMap<number, FileSummary>>(indexFilesById(this.files?.files ?? []));
+	/** Whether the session masks patient identifiers (`--mask`). */
+	readonly masked = $derived(this.files?.masked ?? false);
+	/** Set by App while the explorer shows the directory tree. */
+	directoryView = $state(false);
+	/**
+	 * A masked session shows real file paths only in the directory tree and,
+	 * while that tree is showing, in what follows it (tabs, tooltips).
+	 */
+	readonly pathsShown = $derived(!this.masked || this.directoryView);
+	/**
+	 * The files as everything but the explorer shows them: while paths are
+	 * hidden, a file's path reads as its synthetic display name.
+	 */
+	readonly shownFiles = $derived.by<FileSummary[]>(() => {
+		const files = this.files?.files ?? [];
+		return this.pathsShown ? files : files.map((file) => this.#withoutPath(file));
+	});
+	readonly filesById = $derived<ReadonlyMap<number, FileSummary>>(indexFilesById(this.shownFiles));
+	/** One hidden-path copy per catalog entry, so unchanged entries keep their identity. */
+	readonly #hiddenPaths = new WeakMap<FileSummary, FileSummary>();
+
+	#withoutPath(file: FileSummary): FileSummary {
+		let hidden = this.#hiddenPaths.get(file);
+		if (!hidden) {
+			hidden = { ...file, path: file.display_name };
+			this.#hiddenPaths.set(file, hidden);
+		}
+		return hidden;
+	}
 
 	apply(files: FilesResponse, series: SeriesCatalogResponse): void {
 		this.series = {

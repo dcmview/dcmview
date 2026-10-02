@@ -300,6 +300,26 @@ pub mod endpoints {
         ApiMethod::Put,
         "/file/{index}/annotations",
     );
+    /// The file's redaction boxes, as `EmbedRoiAnnotations`.
+    pub const FILE_REDACTIONS_GET: Endpoint = json(
+        "fileRedactionsGet",
+        ApiMethod::Get,
+        "/file/{index}/redactions",
+    );
+    /// JSON `EmbedRoiAnnotations` in and out: replaces the file's redaction
+    /// boxes, which both frame endpoints then apply.
+    pub const FILE_REDACTIONS_UPDATE: Endpoint = json(
+        "fileRedactionsUpdate",
+        ApiMethod::Put,
+        "/file/{index}/redactions",
+    );
+    /// `RedactionSeriesResponse`: copies the file's redaction boxes to every
+    /// file of its series with the same rows and columns. Takes no body.
+    pub const FILE_REDACTIONS_APPLY_TO_SERIES: Endpoint = json(
+        "fileRedactionsApplyToSeries",
+        ApiMethod::Put,
+        "/file/{index}/redactions/series",
+    );
     /// EMBED-style CSV of every in-memory annotation.
     pub const ANNOTATIONS_EXPORT: Endpoint = binary(
         "annotationsExport",
@@ -331,6 +351,9 @@ pub mod endpoints {
         FILE_TAG_SELECT,
         FILE_ANNOTATIONS_GET,
         FILE_ANNOTATIONS_UPDATE,
+        FILE_REDACTIONS_GET,
+        FILE_REDACTIONS_UPDATE,
+        FILE_REDACTIONS_APPLY_TO_SERIES,
         ANNOTATIONS_EXPORT,
     ];
 }
@@ -345,6 +368,9 @@ pub struct WindowPreset {
 pub struct FileSummary {
     pub index: usize,
     pub path: String,
+    /// The name the viewer shows for the file outside the directory tree: its
+    /// file name, or a synthetic `File N` in a masked session.
+    pub display_name: String,
     pub label: String,
     pub patient_id: String,
     pub patient_name: String,
@@ -371,6 +397,9 @@ pub struct FileSummary {
     /// Whether grayscale display frames carry a display shutter or overlay
     /// graphics, which `presentation-layer` draws for a raw-rendered frame.
     pub presentation_layer: bool,
+    /// Whether the file declares burned-in annotation, which display masking
+    /// cannot hide.
+    pub burned_in_annotation: bool,
     pub has_pixels: bool,
     pub frame_count: u32,
     pub rows: u32,
@@ -386,6 +415,8 @@ pub struct FilesResponse {
     pub files: Vec<FileSummary>,
     pub discovery: Vec<DiscoveryResult>,
     pub server_start_ms: u64,
+    /// Whether this session masks patient identifiers (`--mask`).
+    pub masked: bool,
     pub scan_complete: bool,
     pub scanned: usize,
     pub skipped: usize,
@@ -720,6 +751,8 @@ pub struct SkippedGraphicObjects {
     pub matrix_units: usize,
     /// Unknown type or units, or point data that does not fit the type.
     pub malformed: usize,
+    /// Text objects, which a masked session does not show.
+    pub masked_text: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
@@ -1017,6 +1050,8 @@ pub enum ApiErrorCode {
     /// A value overlay's planes do not reach the requested frame.
     OverlayNotCoveringFrame,
     PixelDecodeFailed,
+    /// Content a masked session (`--mask`) withholds.
+    Masked,
     InternalError,
 }
 
@@ -1070,6 +1105,8 @@ pub struct HealthResponse {
     pub viewer: ViewerIdentity,
     pub file_count: usize,
     pub server_start_ms: u64,
+    /// Whether this session masks patient identifiers (`--mask`).
+    pub masked: bool,
 }
 
 /// Display-frame query. Explicit `wc`/`ww` must be sent together;
@@ -1133,6 +1170,12 @@ pub struct EmbedRoiAnnotations {
     pub num_roi: usize,
     pub roi_coords: Vec<[u32; 4]>,
     pub roi_frames: Vec<Vec<u32>>,
+}
+
+/// The files a file's redaction boxes were copied to.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct RedactionSeriesResponse {
+    pub file_indices: Vec<usize>,
 }
 
 impl EmbedRoiAnnotations {

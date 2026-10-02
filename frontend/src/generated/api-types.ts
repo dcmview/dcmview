@@ -24,6 +24,9 @@ export const API_ENDPOINTS = {
 	fileTagSelect: { method: "GET", path: "/api/file/{index}/tags/select" },
 	fileAnnotationsGet: { method: "GET", path: "/api/file/{index}/annotations" },
 	fileAnnotationsUpdate: { method: "PUT", path: "/api/file/{index}/annotations" },
+	fileRedactionsGet: { method: "GET", path: "/api/file/{index}/redactions" },
+	fileRedactionsUpdate: { method: "PUT", path: "/api/file/{index}/redactions" },
+	fileRedactionsApplyToSeries: { method: "PUT", path: "/api/file/{index}/redactions/series" },
 	annotationsExport: { method: "GET", path: "/api/annotations/export.csv" },
 } as const;
 
@@ -52,7 +55,7 @@ export const RAW_FRAME_HEADERS = {
 	paddingHigh: "X-Frame-Padding-High",
 } as const satisfies Record<keyof RawFrameMetadata, string>;
 
-export type ApiErrorCode = "invalid_path" | "invalid_query" | "invalid_json" | "bad_request" | "not_found" | "route_not_found" | "asset_not_found" | "method_not_allowed" | "no_pixel_data" | "frame_out_of_range" | "invalid_window" | "unsupported_transfer_syntax" | "unsupported_pixel_layout" | "semantic_mapping_unavailable" | "overlay_not_covering_frame" | "pixel_decode_failed" | "internal_error";
+export type ApiErrorCode = "invalid_path" | "invalid_query" | "invalid_json" | "bad_request" | "not_found" | "route_not_found" | "asset_not_found" | "method_not_allowed" | "no_pixel_data" | "frame_out_of_range" | "invalid_window" | "unsupported_transfer_syntax" | "unsupported_pixel_layout" | "semantic_mapping_unavailable" | "overlay_not_covering_frame" | "pixel_decode_failed" | "masked" | "internal_error";
 
 export type CodedConceptSummary = { value: string, scheme: string, meaning: string, };
 
@@ -69,7 +72,12 @@ export type EmbedRoiAnnotations = { num_roi: number, roi_coords: Array<[number, 
 
 export type ErrorResponse = { code: ApiErrorCode, error: string, };
 
-export type FileSummary = { index: number, path: string, label: string, patient_id: string, patient_name: string, study_instance_uid: string, study_date: string, study_description: string, series_instance_uid: string, series_number: string, series_description: string, modality: string, instance_number: string, sop_instance_uid: string, sop_class_uid: string, object_kind: string, support_state: SupportState, support_reason: string | null, 
+export type FileSummary = { index: number, path: string, 
+/**
+ * The name the viewer shows for the file outside the directory tree: its
+ * file name, or a synthetic `File N` in a masked session.
+ */
+display_name: string, label: string, patient_id: string, patient_name: string, study_instance_uid: string, study_date: string, study_description: string, series_instance_uid: string, series_number: string, series_description: string, modality: string, instance_number: string, sop_instance_uid: string, sop_class_uid: string, object_kind: string, support_state: SupportState, support_reason: string | null, 
 /**
  * Whether client-side raw windowing preserves every declared presentation
  * transform. Always `true` now that the value mapping carries the
@@ -85,13 +93,22 @@ raw_windowing_reason: string | null,
  * Whether grayscale display frames carry a display shutter or overlay
  * graphics, which `presentation-layer` draws for a raw-rendered frame.
  */
-presentation_layer: boolean, has_pixels: boolean, frame_count: number, rows: number, columns: number, 
+presentation_layer: boolean, 
+/**
+ * Whether the file declares burned-in annotation, which display masking
+ * cannot hide.
+ */
+burned_in_annotation: boolean, has_pixels: boolean, frame_count: number, rows: number, columns: number, 
 /**
  * Effective physical row-to-column pixel extent ratio.
  */
 pixel_aspect_ratio: number | null, transfer_syntax_uid: string, default_window: WindowPreset | null, };
 
-export type FilesResponse = { files: Array<FileSummary>, discovery: Array<DiscoveryResult>, server_start_ms: number, scan_complete: boolean, scanned: number, skipped: number, filtered: number, };
+export type FilesResponse = { files: Array<FileSummary>, discovery: Array<DiscoveryResult>, server_start_ms: number, 
+/**
+ * Whether this session masks patient identifiers (`--mask`).
+ */
+masked: boolean, scan_complete: boolean, scanned: number, skipped: number, filtered: number, };
 
 export type FrameInfo = { frame_count: number, rows: number, columns: number, transfer_syntax_uid: string, has_pixels: boolean, sop_class_uid: string, object_kind: string, support_state: SupportState, support_reason: string | null, default_window: WindowPreset | null, };
 
@@ -220,7 +237,11 @@ points: Array<[number, number]>, filled: boolean, };
 
 export type GraphicType = "point" | "polyline" | "interpolated" | "circle" | "ellipse";
 
-export type HealthResponse = { status: string, viewer: ViewerIdentity, file_count: number, server_start_ms: number, };
+export type HealthResponse = { status: string, viewer: ViewerIdentity, file_count: number, server_start_ms: number, 
+/**
+ * Whether this session masks patient identifiers (`--mask`).
+ */
+masked: boolean, };
 
 /**
  * The Modality transform the display pipeline applies to stored values
@@ -343,6 +364,11 @@ export type RealWorldValueMappingSummary = { source: string, source_sop_instance
 
 export type RealWorldValueTransform = { "kind": "linear", slope: number, intercept: number, } | { "kind": "lut", values: Array<number>, };
 
+/**
+ * The files a file's redaction boxes were copied to.
+ */
+export type RedactionSeriesResponse = { file_indices: Array<number>, };
+
 export type ReferenceCatalogResponse = { source_file_index: number, source_sop_instance_uid: string, references: Array<ReferenceSummary>, };
 
 export type ReferenceMatchSummary = { file_index: number, path: string, sop_instance_uid: string, 
@@ -454,7 +480,11 @@ matrix_units: number,
 /**
  * Unknown type or units, or point data that does not fit the type.
  */
-malformed: number, };
+malformed: number, 
+/**
+ * Text objects, which a masked session does not show.
+ */
+masked_text: number, };
 
 export type SupportState = "renderable" | "metadata_only" | "unsupported";
 

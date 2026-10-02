@@ -118,14 +118,24 @@ pub(super) async fn presentation_layer(
         target_frame: frame,
         encoding: OverlayEncoding::Png,
     };
-    if let Some(png) = state.cached_overlay(&key) {
+    let redaction = state
+        .redactions()
+        .for_frame(index, frame)
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+    // A layer with redaction boxes changes with them and is drawn each time.
+    let cacheable = redaction.is_empty();
+    if let Some(png) = state.cached_overlay(&key).filter(|_| cacheable) {
         return Ok(overlay_response(png, true, OverlayEncoding::Png));
     }
-    let png = task::spawn_blocking(move || pixels::encode_presentation_layer_png(&file, frame))
-        .await
-        .map_err(|error| ApiError::internal(format!("presentation layer task failed: {error}")))?
-        .map_err(|error| ApiError::internal(format!("{error:#}")))?;
-    state.cache_overlay(key, png.clone());
+    let png = task::spawn_blocking(move || {
+        pixels::encode_presentation_layer_png(&file, frame, &redaction.boxes)
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("presentation layer task failed: {error}")))?
+    .map_err(|error| ApiError::internal(format!("{error:#}")))?;
+    if cacheable {
+        state.cache_overlay(key, png.clone());
+    }
     Ok(overlay_response(png, false, OverlayEncoding::Png))
 }
 

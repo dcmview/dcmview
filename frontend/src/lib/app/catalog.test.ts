@@ -13,6 +13,7 @@ function filesResponse(count: number, scanComplete: boolean): FilesResponse {
 		files: Array.from({ length: count }, (_, index) => ({ index }) as FileSummary),
 		discovery: [],
 		server_start_ms: 0,
+		masked: false,
 		scan_complete: scanComplete,
 		scanned: count,
 		skipped: 0,
@@ -23,6 +24,39 @@ function filesResponse(count: number, scanComplete: boolean): FilesResponse {
 async function settle(ms: number): Promise<void> {
 	await vi.advanceTimersByTimeAsync(ms);
 }
+
+describe("Catalog path display", () => {
+	const named = (masked: boolean): FilesResponse => ({
+		...filesResponse(0, true),
+		masked,
+		files: [{ index: 0, path: "/data/MRN-1/scan.dcm", display_name: masked ? "File 1" : "scan.dcm" } as FileSummary],
+	});
+	const series = { series: [], scan_complete: true };
+
+	it("shows real paths in an unmasked session", () => {
+		const catalog = new Catalog();
+		catalog.apply(named(false), series);
+
+		expect(catalog.pathsShown).toBe(true);
+		expect(catalog.filesById.get(0)).toBe(catalog.files?.files[0]);
+	});
+
+	it("shows a masked session's paths only while the directory tree is showing", () => {
+		const catalog = new Catalog();
+		catalog.apply(named(true), series);
+
+		expect(catalog.masked).toBe(true);
+		expect(catalog.filesById.get(0)?.path).toBe("File 1");
+		expect(catalog.files?.files[0].path).toBe("/data/MRN-1/scan.dcm");
+		const hidden = catalog.filesById.get(0);
+
+		catalog.directoryView = true;
+		expect(catalog.filesById.get(0)?.path).toBe("/data/MRN-1/scan.dcm");
+
+		catalog.directoryView = false;
+		expect(catalog.filesById.get(0)).toBe(hidden);
+	});
+});
 
 describe("Catalog.poll", () => {
 	it("refreshes references for arrivals and completion, not filtered progress", () => {

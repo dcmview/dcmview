@@ -160,7 +160,11 @@ fn present_luminance(
 /// opaque gray, everything else transparent. Drawn over a frame windowed
 /// anywhere (the viewer's raw renderer), it gives exactly the display frame,
 /// since neither depends on the window.
-pub(crate) fn encode_presentation_layer_png(file: &FileEntry, frame: u32) -> Result<Bytes> {
+pub(crate) fn encode_presentation_layer_png(
+    file: &FileEntry,
+    frame: u32,
+    redaction_boxes: &[[u32; 4]],
+) -> Result<Bytes> {
     let (rows, columns) = (file.rows, file.columns);
     let pixels = (rows as usize)
         .checked_mul(columns as usize)
@@ -175,6 +179,8 @@ pub(crate) fn encode_presentation_layer_png(file: &FileEntry, frame: u32) -> Res
         rows,
         columns,
     );
+    // The layer is drawn over the image, so it carries the redaction too.
+    super::redaction::redact_rgba(&mut layer, rows, columns, redaction_boxes);
     let mut encoded = Vec::new();
     png_encoder(&mut encoded)
         .write_image(&layer, columns, rows, ExtendedColorType::Rgba8)

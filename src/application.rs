@@ -46,6 +46,7 @@ fn local_viewer_options(cli: Cli) -> LocalViewerOptions {
         recursive: !cli.no_recursive,
         filters: cli.filters,
         annotation_path: cli.annotations,
+        mask: cli.mask,
         host: cli.host,
         port: cli.port,
         timeout_seconds: cli.timeout,

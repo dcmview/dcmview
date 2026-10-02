@@ -44,6 +44,10 @@ marketing-review/
 !tests/fixtures/golden-shutter-polygonal-u8.dcm
 !tests/fixtures/golden-shutter-rectangular-circular-u8.dcm
 !tests/fixtures/golden-uncompressed-u16-multiframe.dcm
+!tests/fixtures/golden-masking-patient-a-us-1.dcm
+!tests/fixtures/golden-masking-patient-a-us-2.dcm
+!tests/fixtures/golden-masking-patient-b-us.dcm
+!tests/fixtures/golden-masking-wsi-label.dcm
 
 # python package files
 *.egg-info/

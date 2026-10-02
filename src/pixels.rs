@@ -15,6 +15,7 @@ mod native_layout;
 mod overlay;
 mod palette;
 mod pixeldata_frame;
+mod redaction;
 mod render;
 mod rle;
 mod segmentation;
@@ -36,13 +37,14 @@ pub use colorwash::{
 pub use error::{PixelError, PixelResult};
 pub(crate) use header::open_header;
 pub(crate) use native_layout::{NativeByteOrder, NativeFrameLayout};
+pub use redaction::Redaction;
 pub(crate) use render::encode_presentation_layer_png;
 pub use render::AppliedWindow;
 pub use segmentation::encode_segmentation_overlay_png;
 pub(crate) use segmentation::segmentation_has_only_binary_samples;
 pub use service::{
-    load_frame, load_raw_frame, raw_pixel, FrameRequest, FrameResponse, RawFrameRequest,
-    RawFrameResponse,
+    load_frame, load_raw_frame, load_redacted_frame, load_redacted_raw_frame, raw_pixel,
+    FrameRequest, FrameResponse, RawFrameRequest, RawFrameResponse,
 };
 pub use syntax::{
     classify_pixel_support, codec_for_syntax, Codec, PixelSupport, PixelSupportReason,

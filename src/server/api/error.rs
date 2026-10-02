@@ -45,6 +45,10 @@ impl ApiError {
         }
     }
 
+    pub(super) fn masked(message: impl Into<String>) -> Self {
+        Self::coded(StatusCode::FORBIDDEN, ApiErrorCode::Masked, message)
+    }
+
     pub(super) fn internal(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,

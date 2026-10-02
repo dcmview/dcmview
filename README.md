@@ -273,6 +273,10 @@ The embedded browser viewer includes:
   display, resizable columns, and click-to-copy values.
 - Rectangular ROI annotation display and editing, including draw, select, move,
   resize, delete, frame scoping, and CSV export.
+- Display masking (`--mask`) for screen sharing: pseudonyms, shifted dates,
+  hashed UIDs and masked identifiers in everything the viewer shows.
+- Redaction boxes drawn over burned-in pixel text, kept for the session and
+  applied by the server to every frame it sends.
 
 DICOMDIR inputs are recognized and skipped with a stable unsupported-media
 reason while recursive discovery continues for ordinary DICOM objects. The
@@ -293,6 +297,7 @@ Common shortcuts:
 | Zoom tool | `Z` |
 | Scroll tool | `S` |
 | ROI tool | `R` |
+| Redact tool | `X` |
 | Reset viewport | Double-click |
 
 Right-drag always zooms, middle-drag always pans, the wheel scrolls frames, and
@@ -310,6 +315,58 @@ dcmview --annotations ./embed_annotations.csv ./study_dir
 memory and can be downloaded with **Export ROIs**. For the required columns,
 coordinate format, frame scoping rules, validation behavior, and examples, see
 the [annotation reference](docs/annotations.md).
+
+## Screen Sharing: Masking And Redaction
+
+`--mask` starts a session that replaces patient identifiers in everything the
+viewer displays, so files can be shown on a shared or recorded screen:
+
+```bash
+dcmview --mask ./study_dir
+```
+
+This is a display aid, **not de-identification**. Files are never modified,
+nothing is persisted, and replacements differ on every run. A masked session
+cannot be unmasked; start the viewer again without `--mask` for that.
+
+In a masked session:
+
+- Each patient is shown as `Patient 0001`, `Patient 0002`, ... and files as
+  `File 1`, `File 2`, ... outside the directory tree.
+- Every date and date-time moves by one random offset per patient, within one
+  year. Times of day are kept.
+- Ages above 89 years show `089Y`, and a birth date that implies an age over
+  89 is blank.
+- Person names, private elements and the attributes the DICOM PS3.15 Basic
+  Application Level Confidentiality Profile removes or replaces (institution,
+  addresses, accession number, operators, device serial numbers, ...) show
+  `[masked]`. Study Description, Series Description, and patient sex, size
+  and weight are kept.
+- Study, series, instance and other instance-level UIDs are replaced by
+  hashed `2.25.` UIDs, consistently, so references still resolve.
+- Presentation state text is not drawn, and slide label and overview images
+  are not shown.
+
+What masking does **not** cover:
+
+- **Pixels.** Burned-in text stays visible. Files that declare Burned In
+  Annotation show a "Burned-in text" badge; use redaction boxes for them.
+- **Free text** inside values that are kept, such as descriptions.
+- **Folder and file names.** The Directory view shows them as they are on
+  disk, under a "Not masked" note, and tabs follow that view while it is
+  showing. The Study view and everything else use `File N`.
+- Anything outside the viewer page: the terminal, VS Code's own editor tab and
+  Explorer, and the exported ROI CSV, which keeps real paths.
+
+**Redaction boxes** cover burned-in text. Choose **Redact** (`X`), drag a
+rectangle over the text, and the region turns black. A box covers every frame
+of its file unless you limit it to the current frame, and **Apply to series**
+copies a file's boxes to every file of the series with the same image size,
+where a banner sits in the same place. Boxes are available with or without
+`--mask`, stay in memory until the viewer exits, and are applied by the
+server: a redacted region is never sent to the browser, in either the display
+or the raw frame. Draw them before you share your screen, since you have to
+see the text to cover it.
 
 ## CLI Reference
 

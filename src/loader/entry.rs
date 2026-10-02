@@ -128,6 +128,8 @@ pub(super) fn build_entry_selected(
     let sop_instance_uid_of_concatenation_source =
         read_first_string(&obj, tags::SOP_INSTANCE_UID_OF_CONCATENATION_SOURCE);
     let image_type = read_strings(&obj, tags::IMAGE_TYPE);
+    let burned_in_annotation = read_first_string(&obj, tags::BURNED_IN_ANNOTATION)
+        .is_some_and(|value| value.eq_ignore_ascii_case("YES"));
     let pyramid_uid = read_first_string(&obj, tags::PYRAMID_UID);
     let dimension_organization_type = read_first_string(&obj, tags::DIMENSION_ORGANIZATION_TYPE);
     let dimension_organization_uids = read_sequence_strings(
@@ -224,6 +226,7 @@ pub(super) fn build_entry_selected(
             concatenation_frame_offset_number,
             sop_instance_uid_of_concatenation_source,
             image_type,
+            burned_in_annotation,
             pyramid_uid,
             dimension_organization_type,
             dimension_organization_uids,
@@ -553,7 +556,13 @@ fn top_level_pixel_element(
     Ok(None)
 }
 
-fn build_label(patient_id: &str, modality: &str, study_date: &str, fallback: &str) -> String {
+/// The catalog label of a file: the identifying fields it has, else `fallback`.
+pub(crate) fn build_label(
+    patient_id: &str,
+    modality: &str,
+    study_date: &str,
+    fallback: &str,
+) -> String {
     let mut fields = Vec::new();
     if !patient_id.is_empty() {
         fields.push(patient_id);

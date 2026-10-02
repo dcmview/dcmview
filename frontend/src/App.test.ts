@@ -276,7 +276,7 @@ describe("server retry", () => {
 		const reload = vi.spyOn(window.location, "reload").mockImplementation(() => {});
 		try {
 			await renderApp();
-			vi.mocked(api.fetchHealth).mockResolvedValue({ status: "ok", viewer: { name: "dcmview", version: "test", build_target: "test", build_profile: "test" }, file_count: 1, server_start_ms: 999 });
+			vi.mocked(api.fetchHealth).mockResolvedValue({ status: "ok", viewer: { name: "dcmview", version: "test", build_target: "test", build_profile: "test" }, file_count: 1, server_start_ms: 999, masked: false });
 			await disconnect();
 			await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
 			await waitFor(() => expect(reload).toHaveBeenCalledOnce());
@@ -287,7 +287,7 @@ describe("server retry", () => {
 		vi.mocked(api.fetchDisplayFrame).mockRejectedValueOnce(new api.ApiError("frame was unreachable", 0, null));
 		await renderApp();
 		await screen.findByText("frame was unreachable");
-		vi.mocked(api.fetchHealth).mockResolvedValue({ status: "ok", viewer: { name: "dcmview", version: "test", build_target: "test", build_profile: "test" }, file_count: 2, server_start_ms: 0 });
+		vi.mocked(api.fetchHealth).mockResolvedValue({ status: "ok", viewer: { name: "dcmview", version: "test", build_target: "test", build_profile: "test" }, file_count: 2, server_start_ms: 0, masked: false });
 		await disconnect();
 		await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
 		await waitFor(() => expect(screen.queryByText("frame was unreachable")).toBeNull());

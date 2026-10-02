@@ -113,7 +113,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Additional command-line arguments passed to dcmview before selected paths."
+          "description": "Additional command-line arguments passed to dcmview before selected paths, for example [\"--mask\"] to mask patient identifiers on screen."
         },
         "dcmview.startupTimeoutSeconds": {
           "type": "number",

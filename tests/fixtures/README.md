@@ -102,3 +102,17 @@ number and a disc at its own position.
 
 The targets are painted with `+`, `-`, `*` and `/` only, so their pixels are
 the same on every platform.
+
+The masking fixtures carry every kind of identifier display masking
+(`--mask`) acts on: patient name and ID, birth date, age, institution name
+and address, referring physician and operator names, accession number,
+station name, device serial number, a date-time, a private element, and
+identifier sequences. Their 320x240 images hold a 40-row banner of block
+text over a textured wedge, with Burned In Annotation `YES`, for pixel
+redaction.
+
+- `patient-a-us-1` and `-2` are two files of one series for a patient born
+  in 1930 (age `096Y`), so the age cap and the birth date rule apply.
+- `patient-b-us` is a second patient, aged 45.
+- `wsi-label` is a slide label image (Image Type value 3 `LABEL`) of the
+  second patient, whose frames a masked session withholds.

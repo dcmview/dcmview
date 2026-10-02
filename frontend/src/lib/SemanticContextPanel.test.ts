@@ -348,7 +348,7 @@ describe("SemanticContextPanel presentation state", () => {
 				{ index: 1, layer: "SHAPES", graphic_types: ["ellipse"], texts: ["Mass"], scoped: true, first_frame: frame, frame_count: 1 },
 			],
 			annotated_frames: [frame],
-			skipped: { display_units: 2, matrix_units: 0, malformed: 1 },
+			skipped: { display_units: 2, matrix_units: 0, malformed: 1, masked_text: 0 },
 			references: [],
 		},
 	};

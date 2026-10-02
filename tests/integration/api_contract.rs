@@ -58,6 +58,7 @@ async fn json_endpoints_match_frontend_contract_shapes() {
             "discovery",
             "files",
             "filtered",
+            "masked",
             "scan_complete",
             "scanned",
             "server_start_ms",
@@ -68,8 +69,10 @@ async fn json_endpoints_match_frontend_contract_shapes() {
     assert_object_keys(
         file,
         &[
+            "burned_in_annotation",
             "columns",
             "default_window",
+            "display_name",
             "frame_count",
             "has_pixels",
             "index",

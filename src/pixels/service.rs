@@ -22,6 +22,7 @@ use super::jpeg2000::{decode_jp2_fragment_to_png, decode_raw_jp2_samples};
 use super::jpegls::{decode_jpeg_ls_to_png, decode_raw_jpeg_ls};
 use super::jpegxl::{decode_jpeg_xl_to_png, decode_raw_jpeg_xl};
 use super::native::{decode_uncompressed_to_png, read_raw_uncompressed};
+use super::redaction::{redact_png, redact_raw, RawLayout, Redaction};
 use super::render::{
     encode_real_world_windowed_png, encode_windowed_luminance_png, AppliedWindow, DisplayPng,
     LuminanceRenderOptions, StoredSamples,
@@ -39,6 +40,22 @@ pub struct RawFrameResponse {
     pub body: Bytes,
     pub metadata: RawFrameMetadata,
     pub cache_hit: bool,
+}
+
+/// [`load_raw_frame`] with the frame's redaction boxes filled. The cache
+/// keeps the decoded samples, which the display path also reads; the boxes
+/// are filled in a copy for each response.
+pub async fn load_redacted_raw_frame(
+    file: Arc<FileEntry>,
+    cache: Arc<Mutex<RawFrameCache>>,
+    request: RawFrameRequest,
+    redaction: &Redaction,
+) -> PixelResult<RawFrameResponse> {
+    let mut raw = load_raw_frame(file.clone(), cache, request).await?;
+    if !redaction.is_empty() {
+        raw.body = redact_raw(&file, &raw.body, &raw.metadata, &redaction.boxes);
+    }
+    Ok(raw)
 }
 
 pub async fn load_raw_frame(
@@ -108,44 +125,18 @@ pub fn raw_pixel(
     if row >= metadata.rows || column >= metadata.columns {
         return None;
     }
-    let size = match metadata.bits_allocated {
-        1 | 8 => 1,
-        bits @ (16 | 32 | 64) => (bits / 8) as usize,
-        _ => return None,
-    };
-    let columns = metadata.columns as usize;
-    let pixel_count = metadata.rows as usize * columns;
-    let pixel = row as usize * columns + column as usize;
-    let samples = metadata.samples_per_pixel as usize;
-    let subsampled = metadata
-        .photometric_interpretation
-        .trim()
-        .eq_ignore_ascii_case("YBR_FULL_422")
-        && raw.body.len() == pixel_count * 2 * size;
-    let planar = file.series_metadata.native_pixel.planar_configuration == Some(1)
-        && codec_for_syntax(&file.transfer_syntax_uid) == Some(Codec::Native);
-    let indices: Vec<usize> = if samples == 1 {
-        vec![pixel]
-    } else if subsampled {
-        let pair = row as usize * columns * 2 + (column as usize / 2) * 4;
-        vec![pair + column as usize % 2, pair + 2, pair + 3]
-    } else if planar {
-        (0..samples)
-            .map(|sample| sample * pixel_count + pixel)
-            .collect()
-    } else {
-        (0..samples)
-            .map(|sample| pixel * samples + sample)
-            .collect()
-    };
-    let mut body = Vec::with_capacity(indices.len() * size);
-    for index in &indices {
+    let layout = RawLayout::of(file, metadata, raw.body.len())?;
+    let size = layout.size;
+    let mut body = Vec::with_capacity(3 * size);
+    let mut samples = 0;
+    for index in layout.sample_indices(row as usize, column as usize) {
         body.extend_from_slice(raw.body.get(index * size..(index + 1) * size)?);
+        samples += 1;
     }
     let pixel_metadata = RawFrameMetadata {
         rows: 1,
         columns: 1,
-        samples_per_pixel: indices.len() as u32,
+        samples_per_pixel: samples,
         ..metadata.clone()
     };
     Some((Bytes::from(body), pixel_metadata))
@@ -190,6 +181,19 @@ pub async fn load_frame(
     raw_cache: Arc<Mutex<RawFrameCache>>,
     request: FrameRequest,
 ) -> PixelResult<FrameResponse> {
+    load_redacted_frame(file, cache, raw_cache, request, Redaction::default()).await
+}
+
+/// [`load_frame`] with the frame's redaction boxes painted black. The boxes'
+/// revision is part of the cache key, so a frame rendered before a box was
+/// drawn is never served after it.
+pub async fn load_redacted_frame(
+    file: Arc<FileEntry>,
+    cache: Arc<Mutex<FrameCache>>,
+    raw_cache: Arc<Mutex<RawFrameCache>>,
+    request: FrameRequest,
+    redaction: Redaction,
+) -> PixelResult<FrameResponse> {
     if !file.has_pixels {
         return Err(PixelError::NoPixelData {
             file_index: file.index,
@@ -210,7 +214,13 @@ pub async fn load_frame(
         center: window.center(),
         width: window.width(),
         mode: window.mode(),
+        redaction: if redaction.is_empty() {
+            0
+        } else {
+            redaction.revision
+        },
     };
+    let boxes = Arc::new(redaction.boxes);
 
     let real_world_window = display
         .center
@@ -226,6 +236,7 @@ pub async fn load_frame(
         let raw = raw_samples_for_display(&file, codec, &raw_cache, display.frame, true).await;
         if let Some((raw, layout)) = raw {
             let render = window_real_world_samples(file, raw, layout, map, window, display.frame);
+            let render = redacted(render, boxes);
             let (display, cache_hit) =
                 cached_or_rendered(&cache, key, request.preview, render).await?;
             return Ok(FrameResponse::png(display, cache_hit));
@@ -255,11 +266,11 @@ pub async fn load_frame(
         None => match raw_samples_for_display(&file, codec, &raw_cache, display.frame, false).await
         {
             Some((raw, layout)) => {
-                let render = window_raw_samples(file, raw, layout, display);
+                let render = redacted(window_raw_samples(file, raw, layout, display), boxes);
                 cached_or_rendered(&cache, key, request.preview, render).await?
             }
             None => {
-                let render = decode_display_frame(codec, file, display);
+                let render = redacted(decode_display_frame(codec, file, display), boxes);
                 cached_or_rendered(&cache, key, request.preview, render).await?
             }
         },
@@ -285,19 +296,41 @@ struct DisplayWindow {
     center: Option<f64>,
     width: Option<f64>,
     mode: WindowMode,
+    /// Revision of the redaction boxes painted on the frame; 0 without any.
+    redaction: u64,
 }
 
 impl DisplayWindow {
     fn cache_key(self, file: &FileEntry, unit: Option<&str>) -> FrameCacheKey {
-        FrameCacheKey::new(
-            file.index,
-            self.frame,
-            self.center,
-            self.width,
-            self.mode,
-            unit,
-        )
+        FrameCacheKey {
+            redaction: self.redaction,
+            ..FrameCacheKey::new(
+                file.index,
+                self.frame,
+                self.center,
+                self.width,
+                self.mode,
+                unit,
+            )
+        }
     }
+}
+
+/// `render`'s frame with `boxes` painted black.
+async fn redacted(
+    render: impl Future<Output = PixelResult<DisplayPng>>,
+    boxes: Arc<Vec<[u32; 4]>>,
+) -> PixelResult<DisplayPng> {
+    let mut display = render.await?;
+    if boxes.is_empty() {
+        return Ok(display);
+    }
+    display.png = tokio::task::spawn_blocking(move || redact_png(&display.png, &boxes))
+        .await
+        .context("redaction task failed")
+        .and_then(|result| result)
+        .map_err(PixelError::frame_decode)?;
+    Ok(display)
 }
 
 /// Decodes and presents one display frame with the codec's own decoder.
@@ -311,6 +344,7 @@ async fn decode_display_frame(
         center,
         width,
         mode,
+        ..
     } = window;
     Ok(match codec {
         Codec::DeflatedImageFrame => {
@@ -674,6 +708,7 @@ mod tests {
                     center,
                     width,
                     mode,
+                    redaction: 0,
                 };
                 let decoded = decode_display_frame(codec, file.clone(), window)
                     .await

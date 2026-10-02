@@ -2,6 +2,7 @@ mod integration {
     mod annotations_endpoint;
     mod api_contract;
     mod codec_contract;
+    mod display_masking;
     mod display_shutters;
     mod golden_fixtures;
     mod graphic_annotations;
@@ -11,6 +12,7 @@ mod integration {
     mod pixels_jpeg_decode;
     mod pixels_raw_endpoint;
     mod pixels_uncompressed;
+    mod redactions;
     mod remote_fixtures;
     mod semantic_context;
     mod semantic_overlays;

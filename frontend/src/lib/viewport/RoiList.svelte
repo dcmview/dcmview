@@ -4,6 +4,7 @@
 
 	let {
 		rois,
+		noun = "ROI",
 		totalCount,
 		frameCount,
 		selectedIndex,
@@ -17,7 +18,11 @@
 		onretryload,
 		onretrysave,
 		onrevert,
+		onapplytoseries,
 	}: {
+		/** What a rectangle is called: "ROI", or "redaction". */
+		noun?: string;
+		onapplytoseries?: () => void;
 		/** ROIs shown on the current frame. */
 		rois: readonly VisibleRoi[];
 		/** ROIs across all frames, once annotations have loaded. */
@@ -41,7 +46,7 @@
 
 <div class="roi-list">
 	<div class="roi-list-title">
-		<span>ROIs {countLabel}</span>
+		<span>{noun[0].toUpperCase()}{noun.slice(1)}s {countLabel}</span>
 		{#if saveStatus === "saving"}
 			<span class="roi-save-status">saving…</span>
 		{:else if saveStatus === "dirty"}
@@ -65,7 +70,7 @@
 			{/if}
 		</div>
 	{:else if rois.length === 0}
-		<div class="roi-list-status">No ROIs for this frame</div>
+		<div class="roi-list-status">No {noun}s for this frame</div>
 	{:else}
 		<ul>
 			{#each rois as roi (roi.index)}
@@ -85,6 +90,16 @@
 				</li>
 			{/each}
 		</ul>
+	{/if}
+	{#if onapplytoseries && totalCount}
+		<div class="roi-actions">
+			<button
+				type="button"
+				disabled={saveStatus !== "clean"}
+				title="Copy this file's boxes to every file of the series with the same image size"
+				onclick={onapplytoseries}
+			>Apply to series</button>
+		</div>
 	{/if}
 </div>
 

@@ -1,6 +1,11 @@
 import type { WindowMode } from '../api';
 
-export type ActiveTool = 'pan' | 'scroll' | 'zoom' | 'window_level' | 'annotate_rect';
+export type ActiveTool = 'pan' | 'scroll' | 'zoom' | 'window_level' | 'annotate_rect' | 'redact';
+
+/** The tools that draw and edit rectangles: ROIs, or redaction boxes. */
+export function isRectangleTool(tool: ActiveTool): boolean {
+	return tool === 'annotate_rect' || tool === 'redact';
+}
 
 export type ImageOrientation = {
 	flipH: boolean;
@@ -10,7 +15,7 @@ export type ImageOrientation = {
 
 export const DEFAULT_ORIENTATION: ImageOrientation = { flipH: false, flipV: false, rotation: 0 };
 
-export const TOOL_ORDER: ActiveTool[] = ['pan', 'scroll', 'zoom', 'window_level', 'annotate_rect'];
+export const TOOL_ORDER: ActiveTool[] = ['pan', 'scroll', 'zoom', 'window_level', 'annotate_rect', 'redact'];
 
 export interface WlPreset {
 	id: string;
@@ -37,6 +42,7 @@ export const TOOL_LABELS: Record<ActiveTool, string> = {
 	zoom: 'Zoom',
 	scroll: 'Scroll',
 	annotate_rect: 'ROI',
+	redact: 'Redact',
 };
 
 export const TOOL_SHORTCUTS: Record<ActiveTool, string> = {
@@ -45,4 +51,5 @@ export const TOOL_SHORTCUTS: Record<ActiveTool, string> = {
 	zoom: 'Z',
 	scroll: 'S',
 	annotate_rect: 'R',
+	redact: 'X',
 };

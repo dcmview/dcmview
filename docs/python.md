@@ -99,6 +99,7 @@ view(
     timeout=None,
     annotations=None,
     filters=None,
+    mask=False,
     vscode_bridge=True,
 )
 ```
@@ -114,6 +115,7 @@ view(
 | `timeout` | `None` | Exit after this many seconds without API or browser requests once the scan has finished. |
 | `annotations` | `None` | Load an EMBED-style ROI annotation CSV into memory without modifying the file. |
 | `filters` | `None` | Iterable of `FIELD=VALUE` metadata filters, where `FIELD` is a snake_case name or DICOM keyword (`modality` or `Modality`; see the [configuration reference](configuration.md) for the list). Values are forwarded as repeatable `--filter` flags and combined with AND semantics. |
+| `mask` | `False` | Replace patient identifiers in everything the viewer displays, for screen sharing. Display only: files are not modified and this is not de-identification. |
 | `vscode_bridge` | `True` | Open the viewer in VS Code when run from a VS Code terminal or inside an open workspace folder. |
 
 Filter fields are the same as the Rust CLI: `patient_id`, `patient_name`,

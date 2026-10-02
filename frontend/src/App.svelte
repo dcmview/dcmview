@@ -33,7 +33,7 @@
 	import { resolveFilesById } from "./lib/fileRegistry";
 	import { adjacentFileIndex } from "./lib/fileTree";
 	import { REPEAT_INTERVAL_MS, RepeatThrottle, shortcutFor } from "./lib/keyboardShortcuts";
-	import type { ActiveTool } from "./lib/viewerTools";
+	import { isRectangleTool, type ActiveTool } from "./lib/viewerTools";
 	import type { FrameOverlay } from "./lib/viewport/frameOverlay";
 	import { ViewStates } from "./lib/viewport/viewStates.svelte";
 	import {
@@ -192,7 +192,7 @@
 		const action = shortcutFor(event, {
 			drawerOpen: layout.compactDrawer !== null,
 			multiFrame: activeFile !== null && tabs.frames.length > 1,
-			roiToolActive: activeFile !== null && activeTool === "annotate_rect",
+			roiToolActive: activeFile !== null && isRectangleTool(activeTool),
 			annotationItems: (shownAnnotationState?.items.length ?? 0) > 0,
 		});
 		if (!action) return;
@@ -260,6 +260,17 @@
 		} catch { /* Reachability stays failed; Retry remains available. */ }
 	}
 
+	/**
+	 * A page that finished loading makes no requests until it is used, so it
+	 * would keep showing a stopped session: one restarted with `--mask` on
+	 * the same port would still show unmasked values. Asking once whenever
+	 * the page is looked at again reloads it onto the new session (or says
+	 * the server is gone).
+	 */
+	function checkServerOnReturn(): void {
+		if (document.visibilityState === "visible") void fetchHealth().catch(() => {});
+	}
+
 	onMount(() => {
 		loadCatalog();
 		return () => stopPolling?.();
@@ -275,7 +286,12 @@
 	}));
 </script>
 
-<svelte:window onkeydown={handleWindowKeydown} onresize={() => layout.viewportResized()} />
+<svelte:window
+	onkeydown={handleWindowKeydown}
+	onresize={() => layout.viewportResized()}
+	onfocus={checkServerOnReturn}
+/>
+<svelte:document onvisibilitychange={checkServerOnReturn} />
 
 {#if catalog.loadError}
 	<main class="error">
@@ -363,6 +379,9 @@
 					files={catalog.files.files}
 					activeFileIndex={tabs.activeFileIndex}
 					scanComplete={catalog.files.scan_complete}
+					masked={catalog.masked}
+					bind:viewMode={() => (catalog.directoryView ? "directory" : "study"),
+						(mode) => catalog.directoryView = mode === "directory"}
 					bind:collapsed={layout.fileNavigatorCollapsed}
 					onopenfile={openFileFromNavigator}
 					onnavigationorderchange={updateFileNavigationOrder}
@@ -399,7 +418,7 @@
 							<ReferenceNavigator bind:this={references}
 								scanProgress={catalog.referenceRevision}
 								fileIndex={activeFile.index}
-								files={catalog.files.files}
+								files={catalog.shownFiles}
 								onopenreference={(fileIndex, frameIndex) => tabs.openReference(fileIndex, frameIndex)}
 							/>
 						</div>
@@ -407,7 +426,7 @@
 							<SemanticContextPanel bind:this={semanticPanel}
 								fileIndex={activeFile.index}
 								currentFrame={tabs.currentFrame}
-								files={catalog.files.files}
+								files={catalog.shownFiles}
 								onopenreference={(fileIndex, frameIndex) => tabs.openReference(fileIndex, frameIndex)}
 								onmodechange={(mode) => { semanticMode = mode; }}
 								oncontextchange={(response) => { semanticResponse = response; }}
@@ -419,7 +438,7 @@
 							<WsiTileContext bind:this={wsiContext}
 								fileIndex={activeFile.index}
 								frame={tabs.currentFrame}
-								files={catalog.files.files}
+								files={catalog.shownFiles}
 								onopenreference={(fileIndex, frameIndex) => tabs.openReference(fileIndex, frameIndex)}
 							/>
 						{/if}
@@ -509,6 +528,8 @@
 		<StatusBar
 			serverStartMs={catalog.files.server_start_ms}
 			fileCount={catalog.files.files.length}
+			masked={catalog.masked}
+			burnedInAnnotation={activeFile?.burned_in_annotation ?? false}
 			reachable={serverReachable}
 			onretry={() => void retryServer()}
 		/>

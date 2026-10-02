@@ -79,6 +79,11 @@ export class RevisionedPersistenceController<Key, Value> {
 		this.#pump(key, state);
 	}
 
+	/** Drops a key's state, so it can be initialized again from the server. */
+	forget(key: Key): void {
+		this.#states.delete(key);
+	}
+
 	rollback(key: Key): void {
 		const state = this.#requiredState(key);
 		state.value = state.committedValue;

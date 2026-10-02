@@ -54,7 +54,7 @@ and redirects the bare prefix to its trailing-slash form.
 
 | Method | Path | Success response |
 |---|---|---|
-| GET | `/health` | `HealthResponse`: `status: "ok"`, viewer name/version/build identity, `file_count`, `server_start_ms`. |
+| GET | `/health` | `HealthResponse`: `status: "ok"`, viewer name/version/build identity, `file_count`, `server_start_ms`, `masked`. |
 | GET | `/files` | `FilesResponse`: file summaries plus scan progress. |
 | GET | `/series` | `SeriesCatalogResponse`: logical series and ordered frame stacks. |
 | GET | `/file/{index}/info` | `FrameInfo` for one file. |
@@ -76,6 +76,9 @@ and redirects the bare prefix to its trailing-slash form.
 | GET | `/file/{index}/tags/select` | One `TagNode`. Query: `path`, `offset`, `limit`. |
 | GET | `/file/{index}/annotations` | `EmbedRoiAnnotations` for one file. |
 | PUT | `/file/{index}/annotations` | Replaces one file's annotations with a JSON `EmbedRoiAnnotations` body and returns the canonical result. |
+| GET | `/file/{index}/redactions` | `EmbedRoiAnnotations`: one file's redaction boxes. |
+| PUT | `/file/{index}/redactions` | Replaces one file's redaction boxes with a JSON `EmbedRoiAnnotations` body and returns the canonical result. |
+| PUT | `/file/{index}/redactions/series` | `RedactionSeriesResponse`: copies the file's redaction boxes to every file of its series with the same rows and columns, and lists those files. Takes no body. |
 | GET | `/annotations/export.csv` | `text/csv; charset=utf-8` with `Content-Disposition: attachment; filename="dcmview-annotations.csv"`. |
 
 Every success status is `200`.
@@ -354,6 +357,59 @@ Annotations are EMBED-style rectangles held in memory:
 current in-memory store; source DICOM and CSV files are never modified. See
 [annotations](annotations.md) for the CSV format.
 
+## Redaction Boxes
+
+Redaction boxes are rectangles of a file's frames that are withheld, drawn by
+hand over burned-in text. They use the `EmbedRoiAnnotations` shape and
+validation: `roi_coords` are `[row0, column0, row1, column1]` with exclusive
+ends, and `roi_frames` is empty (every box covers every frame) or lists each
+box's zero-based frames. They live in memory for the session and are not part
+of the annotation CSV export.
+
+Both frame endpoints apply the boxes of the requested frame:
+
+- Display frames paint them black. The boxes' revision is part of the display
+  cache key, so `X-Cache` is `MISS` for the first request after a change.
+- Raw frames, and `raw/pixel`, fill them with one stored value: the frame's
+  darkest (its largest for MONOCHROME1), or black for color. Automatic windows
+  computed from the samples are therefore unchanged.
+- `presentation-layer` paints them opaque black, over any overlay graphics.
+
+`PUT /file/{index}/redactions/series` gives each copy the source's frames when
+the file has as many frames as the source; otherwise its boxes cover every
+frame.
+
+## Masked Sessions
+
+A session started with `--mask` reports `masked: true` in `/health` and
+`/files` and masks every response for the life of the process:
+
+- File summaries carry a pseudonym in `patient_id` and `patient_name`, a
+  shifted `study_date`, hashed UIDs, a `label` built from those, and a
+  synthetic `display_name` (`File N`). `path` is unchanged: the directory tree
+  shows it.
+- Every field named `*_uid` or `*_uids` holds a `2.25.` UID of a keyed hash;
+  UIDs the standard registers (`1.2.840.10008.*`) are unchanged. The hash is
+  the same in every response, including the tag tree, so identifiers still
+  match across endpoints. Series and stack `id` values are built from hashed
+  UIDs.
+- Tag values follow the masking rules: private elements (except private
+  creators) and attributes of the PS3.15 Table E.1-1 basic profile are
+  `[masked]`, `PN` values are `[masked]` (Patient's Name is the pseudonym),
+  `DA` and `DT` values are shifted, `AS` values are capped at `089Y`, `UI`
+  values are hashed, and every value inside a sequence the profile lists is
+  treated as listed. Study Description, Series Description and the patient
+  characteristics (sex, age, size, weight) are kept.
+- A presentation state's `content_creator_name` is `[masked]`, its
+  `presentation_creation_date` is shifted, and its text objects are withheld
+  and counted in `skipped.masked_text`.
+- Slide label and overview images (Image Type value 3 `LABEL` or `OVERVIEW`)
+  report `support_state: unsupported` with `support_reason:
+  masked_label_image`, and their frame endpoints answer `403` `masked`.
+
+`burned_in_annotation` in a file summary is `true` when the file declares
+Burned In Annotation `YES`; masking does not change pixels.
+
 ## Errors
 
 Every API failure, including malformed paths, queries, and JSON bodies, returns
@@ -368,6 +424,7 @@ Branch on `code`; `error` is diagnostic text and may change.
 | Status | Codes |
 |---|---|
 | `400` | `invalid_path`, `invalid_query`, `invalid_json` (malformed body), `bad_request`, `invalid_window` |
+| `403` | `masked` (content a `--mask` session withholds) |
 | `404` | `not_found`, `route_not_found`, `asset_not_found`, `no_pixel_data`, `frame_out_of_range`, `overlay_not_covering_frame` |
 | `405` | `method_not_allowed` |
 | `413` | `invalid_json` (a JSON body over 2 MiB, about 200,000 ROIs in one annotation edit) |

@@ -54,7 +54,7 @@ function stateContext(index: number, overrides: Partial<PresentationStateContext
 			layers: [],
 			items,
 			annotated_frames: items.flatMap((entry) => entry.first_frame ? [entry.first_frame] : []),
-			skipped: { display_units: 0, matrix_units: 0, malformed: 0 },
+			skipped: { display_units: 0, matrix_units: 0, malformed: 0, masked_text: 0 },
 			references: [],
 			...overrides,
 		},
@@ -147,7 +147,7 @@ describe("GraphicAnnotations", () => {
 		const { annotations } = controller([image, state(5)], {
 			5: stateContext(5, {
 				items: [item(0, 1, 0, { graphic_types: [], texts: [] }), item(1, 1, 0, { graphic_types: [], texts: ["Mass"] })],
-				skipped: { display_units: 2, matrix_units: 0, malformed: 1 },
+				skipped: { display_units: 2, matrix_units: 0, malformed: 1, masked_text: 0 },
 			}),
 		});
 		annotations.load(1);

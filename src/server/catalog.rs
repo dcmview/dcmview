@@ -3,6 +3,7 @@ use crate::api::contracts::{
     SeriesWarningSummary,
 };
 use crate::loader::{DiscoveryDisposition, DiscoveryRecord};
+use crate::masking::Masker;
 use crate::series::{
     FrameOrderingInput, NavigationInput, NavigationKind, OrderingInput, SeriesCatalog,
     SeriesFileInput, SeriesGroup, SeriesStack, SeriesWarning,
@@ -24,6 +25,8 @@ pub struct FileRegistry {
     /// state it was built from; the viewer polls it every 500 ms during a
     /// scan, and a large catalog is costly to clone and serialize again.
     catalog: Arc<Mutex<Option<(usize, bool, Bytes)>>>,
+    /// Present in a masked session: the catalog is masked as it is built.
+    masker: Option<Arc<Masker>>,
 }
 
 /// Files and scan counters share one lock so every status read is a
@@ -56,7 +59,20 @@ impl FileRegistry {
             inner: Arc::new(RwLock::new(FileRegistryInner::default())),
             notify: Arc::new(Notify::new()),
             catalog: Arc::new(Mutex::new(None)),
+            masker: None,
         }
+    }
+
+    /// A registry whose catalog and series responses are masked.
+    pub fn masked(masker: Arc<Masker>) -> Self {
+        Self {
+            masker: Some(masker),
+            ..Self::new()
+        }
+    }
+
+    pub fn masker(&self) -> Option<&Arc<Masker>> {
+        self.masker.as_ref()
     }
 
     fn read(&self) -> RwLockReadGuard<'_, FileRegistryInner> {
@@ -81,7 +97,10 @@ impl FileRegistry {
         let mut inner = self.write();
         let index = inner.files.len();
         file.index = index;
-        let summary = FileSummary::from(&file);
+        let summary = match &self.masker {
+            Some(masker) => masker.summary(&file),
+            None => FileSummary::from(&file),
+        };
         inner.files.push(Arc::new(file));
         inner.summaries.push(summary);
         drop(inner);
@@ -144,17 +163,29 @@ impl FileRegistry {
             }
         }
 
-        let catalog = SeriesCatalog::build(files.iter().map(|file| series_file_input(file)));
+        // A masked session groups and names series by hashed UIDs, so the
+        // response and the identifiers derived from it carry no real UID.
+        let inputs = files
+            .iter()
+            .map(|file| {
+                let mut input = series_file_input(file);
+                if let Some(masker) = &self.masker {
+                    mask_series_uids(masker, &mut input);
+                }
+                input
+            })
+            .collect::<Vec<_>>();
         let mut frames_of_reference = HashMap::<(&str, &str), BTreeSet<&str>>::new();
-        for file in &files {
+        for input in &inputs {
             let uids = frames_of_reference
-                .entry((&file.study_instance_uid, &file.series_instance_uid))
+                .entry((&input.study_instance_uid, &input.series_instance_uid))
                 .or_default();
-            let uid = file.series_metadata.frame_of_reference_uid.as_str();
+            let uid = input.frame_of_reference_uid.as_str();
             if !uid.is_empty() {
                 uids.insert(uid);
             }
         }
+        let catalog = SeriesCatalog::build(inputs.iter().cloned());
         let response = SeriesCatalogResponse {
             series: catalog
                 .series()
@@ -255,6 +286,28 @@ fn series_file_input(file: &FileEntry) -> SeriesFileInput {
         },
         per_frame_ordering,
         navigation,
+    }
+}
+
+fn mask_series_uids(masker: &Masker, input: &mut SeriesFileInput) {
+    for uid in [
+        &mut input.study_instance_uid,
+        &mut input.series_instance_uid,
+        &mut input.frame_of_reference_uid,
+        &mut input.sop_instance_uid,
+    ] {
+        *uid = masker.uid(uid);
+    }
+    match &mut input.navigation {
+        NavigationInput::Ordinary => {}
+        NavigationInput::Concatenation {
+            concatenation_uid, ..
+        } => *concatenation_uid = masker.uid(concatenation_uid),
+        NavigationInput::Wsi { pyramid_uid, .. } => {
+            if let Some(uid) = pyramid_uid {
+                *uid = masker.uid(uid);
+            }
+        }
     }
 }
 

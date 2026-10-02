@@ -149,6 +149,9 @@
 					{skipped.malformed} malformed.
 				</p>
 			{/if}
+			{#if skipped.masked_text > 0}
+				<p class="warning status-line">{skipped.masked_text} text {skipped.masked_text === 1 ? "object is" : "objects are"} hidden: this session masks identifiers.</p>
+			{/if}
 			{#if presentationState.annotated_frames.length > 0 && onshowannotations}
 				<button type="button" class="show-overlay" onclick={() => onshowannotations(shown, null)}>
 					Show annotations on image

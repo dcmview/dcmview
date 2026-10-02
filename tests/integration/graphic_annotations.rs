@@ -158,7 +158,7 @@ async fn conforming_state_reports_every_graphic_type_in_image_pixels() {
     assert_eq!(layers[2]["color"], Value::Null);
     assert_eq!(
         body["skipped"],
-        json!({ "display_units": 0, "matrix_units": 0, "malformed": 0 })
+        json!({ "display_units": 0, "matrix_units": 0, "malformed": 0, "masked_text": 0 })
     );
 }
 
@@ -248,7 +248,7 @@ async fn display_unit_objects_are_counted_and_not_drawn() {
     assert_eq!(body["texts"], json!([]));
     assert_eq!(
         body["skipped"],
-        json!({ "display_units": 2, "matrix_units": 0, "malformed": 0 })
+        json!({ "display_units": 2, "matrix_units": 0, "malformed": 0, "masked_text": 0 })
     );
 
     let context = context(&server, indices[1]).await;

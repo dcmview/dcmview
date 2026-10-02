@@ -3,9 +3,11 @@ mod discovery;
 use anyhow::{Context, Result};
 use dcmview::annotations::{AnnotationSource, AnnotationStore};
 use dcmview::loader;
+use dcmview::masking::Masker;
 use dcmview::server::{AppState, BoundServer, FileRegistry, ServerConfig};
 use discovery::{DiscoveryHandle, DiscoveryInputs, DiscoveryOutcome};
 use std::path::PathBuf;
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug)]
@@ -14,6 +16,7 @@ pub(crate) struct LocalViewerOptions {
     pub(crate) recursive: bool,
     pub(crate) filters: Vec<loader::ScanFilter>,
     pub(crate) annotation_path: Option<PathBuf>,
+    pub(crate) mask: bool,
     pub(crate) host: String,
     pub(crate) port: u16,
     pub(crate) timeout_seconds: Option<u64>,
@@ -45,7 +48,11 @@ pub(crate) async fn run_local_viewer(options: LocalViewerOptions) -> Result<Loca
                 .with_context(|| format!("failed to load annotations from {}", path.display()))
         })
         .transpose()?;
-    let registry = FileRegistry::new();
+    let registry = if options.mask {
+        FileRegistry::masked(Arc::new(Masker::new()))
+    } else {
+        FileRegistry::new()
+    };
     let annotation_store = if annotation_source.is_some() {
         AnnotationStore::loading()
     } else {
@@ -111,6 +118,7 @@ mod tests {
             recursive: true,
             filters: Vec::new(),
             annotation_path: None,
+            mask: false,
             host: "127.0.0.1".to_string(),
             port,
             timeout_seconds: Some(0),
