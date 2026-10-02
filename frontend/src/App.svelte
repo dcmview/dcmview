@@ -33,7 +33,7 @@
 	import { resolveFilesById } from "./lib/fileRegistry";
 	import { adjacentFileIndex } from "./lib/fileTree";
 	import { REPEAT_INTERVAL_MS, RepeatThrottle, shortcutFor } from "./lib/keyboardShortcuts";
-	import type { ActiveTool } from "./lib/viewerTools";
+	import { isRectangleTool, type ActiveTool } from "./lib/viewerTools";
 	import type { FrameOverlay } from "./lib/viewport/frameOverlay";
 	import { ViewStates } from "./lib/viewport/viewStates.svelte";
 	import {
@@ -192,7 +192,7 @@
 		const action = shortcutFor(event, {
 			drawerOpen: layout.compactDrawer !== null,
 			multiFrame: activeFile !== null && tabs.frames.length > 1,
-			roiToolActive: activeFile !== null && activeTool === "annotate_rect",
+			roiToolActive: activeFile !== null && isRectangleTool(activeTool),
 			annotationItems: (shownAnnotationState?.items.length ?? 0) > 0,
 		});
 		if (!action) return;

@@ -8,6 +8,7 @@ export const ICONS = {
 	zoom: "<circle cx=\"7\" cy=\"7\" r=\"4.5\"/><path d=\"M10.5 10.5L14 14M5 7h4M7 5v4\"/>",
 	wl: "<rect x=\"2.5\" y=\"2.5\" width=\"11\" height=\"11\" rx=\"1.5\"/><path d=\"M13.5 2.5l-11 11M8 2.5l-5.5 5.5M13.5 8L8 13.5\"/>",
 	roi: "<path d=\"M3.5 5.5v-2h2M10.5 3.5h2v2M12.5 10.5v2h-2M5.5 12.5h-2v-2\"/><rect x=\"6\" y=\"6\" width=\"4\" height=\"4\" rx=\".5\"/>",
+	redact: "<rect x=\"2.5\" y=\"5\" width=\"11\" height=\"6\" rx=\"1\" style=\"fill: currentColor\"/>",
 	"flip-h": "<path d=\"M8 1.5v13\"/><path d=\"M5.6 4L2.2 12h3.4z\" style=\"fill: currentColor\" stroke-width=\"1.2\"/><path d=\"M10.4 4l3.4 8h-3.4z\" style=\"fill: currentColor\" stroke-width=\"1.2\"/>",
 	"flip-v": "<path d=\"M1.5 8h13\"/><path d=\"M4 5.6l8-3.4v3.4z\" style=\"fill: currentColor\" stroke-width=\"1.2\"/><path d=\"M4 10.4l8 3.4v-3.4z\" style=\"fill: currentColor\" stroke-width=\"1.2\"/>",
 	"rotate-ccw": "<path d=\"M3.8 6A5 5 0 1 1 3 9.5M4.17 2.52L3.8 6L7.28 6.37\"/>",

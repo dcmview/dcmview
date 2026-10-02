@@ -12,6 +12,9 @@
 		type FrameValueMapping,
 		type RawFrame,
 		type WindowMode,
+			applyRedactionsToSeries,
+		fetchRedactions,
+		updateRedactions,
 	} from "../api";
 	import {
 		addRoi,
@@ -37,7 +40,7 @@
 	} from "./rawWindowing";
 	import { trackForegroundRequest } from "./requestIndicator";
 	import type { NavigationFrameRef } from "./seriesNavigation";
-	import type { ActiveTool } from "./viewerTools";
+	import { isRectangleTool, type ActiveTool } from "./viewerTools";
 	import { AnnotationStore } from "./viewport/annotationStore.svelte";
 	import { playDisplayCine } from "./viewport/displayCine";
 	import { LiveWindowPreview } from "./viewport/liveWindowPreview";
@@ -206,6 +209,19 @@
 	// Color files: neither path windows them, so a drag sends no previews.
 	let colorFiles = $state<Record<number, boolean>>({});
 	const annotations = new AnnotationStore();
+	// Redaction boxes are edited like ROIs. The server blanks them in the
+	// frames it sends, so a saved change reloads the frames on screen.
+	const redactions = new AnnotationStore({
+		load: fetchRedactions,
+		save: async (fileIndex, boxes) => {
+			const saved = await updateRedactions(fileIndex, boxes);
+			reloadFrames();
+			return saved;
+		},
+	});
+	const redacting = $derived(activeTool === "redact");
+	/** The rectangles the rectangle tool edits and the viewport outlines. */
+	const edited = $derived(redacting ? redactions : annotations);
 
 	let prefetchConcurrency = $state(PREFETCH_CONCURRENCY);
 	const rendered = new RenderedFrames();
@@ -366,9 +382,9 @@
 			: `≤ ${formatValue(legend.transparent_at_or_below)} ${legend.unit_label} transparent`;
 	});
 
-	const activeAnnotations = $derived(annotations.annotations(activeFile.index));
-	const annotationsReady = $derived(annotations.ready(activeFile.index));
-	const selectedRoiIndex = $derived(annotations.selected(activeFile.index));
+	const activeAnnotations = $derived(edited.annotations(activeFile.index));
+	const annotationsReady = $derived(edited.ready(activeFile.index));
+	const selectedRoiIndex = $derived(edited.selected(activeFile.index));
 	const imageRows = $derived(presented?.raw?.metadata.rows ?? presented?.target.imageFile.rows ?? activeFile.rows);
 	const imageColumns = $derived(presented?.raw?.metadata.columns ?? presented?.target.imageFile.columns ?? activeFile.columns);
 	const displayGeometry = $derived(imageDisplayGeometry(imageRows, imageColumns,
@@ -387,7 +403,7 @@
 		if (annotatedFrame) annotationFrames.load(annotatedFrame);
 	});
 	const visibleRois = $derived(
-		overlay ? [] : roisOnFrame(annotations.annotations(presented?.target.file.index ?? activeFile.index), presented?.target.frameIndex ?? currentFrame),
+		overlay ? [] : roisOnFrame(edited.annotations(presented?.target.file.index ?? activeFile.index), presented?.target.frameIndex ?? currentFrame),
 	);
 	const draftRoi = $derived(
 		dragState?.mode === "draw_roi"
@@ -453,7 +469,7 @@
 
 	function setSelectedRoi(index: number | null) {
 		if (index !== null && !presentedMatchesActive) return;
-		annotations.select(activeFile.index, index);
+		edited.select(activeFile.index, index);
 	}
 
 	/** Image coordinates under a client point; the seam for cursor-driven tools. */
@@ -500,13 +516,13 @@
 	export function deleteSelectedRoi() {
 		if (!presentedMatchesActive || selectedRoiIndex === null || !activeAnnotations) return;
 		const next = deleteRoi(activeAnnotations, selectedRoiIndex, activeFile.frame_count);
-		annotations.commit(activeFile.index, next, null);
+		edited.commit(activeFile.index, next, null);
 	}
 
 	function setSelectedScope(scope: "current" | "all") {
 		if (!presentedMatchesActive || selectedRoiIndex === null || !activeAnnotations) return;
 		const next = setRoiFrameScope(activeAnnotations, selectedRoiIndex, scope, currentFrame, activeFile.frame_count);
-		annotations.commit(activeFile.index, next, selectedRoiIndex);
+		edited.commit(activeFile.index, next, selectedRoiIndex);
 	}
 
 	function clearCanvas(): void {
@@ -846,7 +862,8 @@
 
 	$effect(() => {
 		const fileIndex = activeFile.index;
-		untrack(() => annotations.ensureLoaded(fileIndex));
+		const store = edited;
+		untrack(() => store.ensureLoaded(fileIndex));
 	});
 
 	$effect(() => {
@@ -1148,13 +1165,40 @@
 		};
 	});
 
+	/** Fetches the frames again after the server's copy of them changed (redaction boxes). */
+	function reloadFrames(): void {
+		frameLayers.clear();
+		rawFrames.clear();
+		displayFrames.clear();
+		invalidateWindowLevelRenders();
+		if (!activeFile.has_pixels) return;
+		const generation = ++requestGeneration;
+		const fileIndex = activeFile.index;
+		if (pipelineMode === "overlay" && overlay) void loadOverlayAndRender(overlay, generation);
+		else if (pipelineMode === "diagnostic_wl") void loadRawFrameAndRender(fileIndex, currentFrame, generation, frameDirection);
+		else void loadDisplayFrameAndRender(fileIndex, currentFrame, generation, frameDirection);
+	}
+
+	let seriesRedactionError = $state<string | null>(null);
+	/** Copies this file's redaction boxes to the same-sized files of its series. */
+	async function applyRedactionsToSeriesFiles(): Promise<void> {
+		seriesRedactionError = null;
+		try {
+			const { file_indices } = await applyRedactionsToSeries(activeFile.index);
+			for (const fileIndex of file_indices) redactions.forget(fileIndex);
+			reloadFrames();
+		} catch (error) {
+			seriesRedactionError = error instanceof Error ? error.message : "Failed to apply redaction boxes to the series";
+		}
+	}
+
 	/** Retry failed requests without discarding successful frames or unsaved ROIs. */
 	export async function retryFailedLoads(): Promise<void> {
 		const fileIndex = activeFile.index;
 		const frameIndex = currentFrame;
-		if (annotations.error(fileIndex)) {
-			if (annotations.ready(fileIndex)) annotations.retrySave(fileIndex);
-			else annotations.retryLoad(fileIndex);
+		if (edited.error(fileIndex)) {
+			if (edited.ready(fileIndex)) edited.retrySave(fileIndex);
+			else edited.retryLoad(fileIndex);
 		}
 		if (annotatedFrame) annotationFrames.retry(annotatedFrame);
 		const mappingFailed = valueMappings.failed(fileIndex, frameIndex);
@@ -1318,7 +1362,7 @@
 		}
 
 		if (event.button === 0) {
-			if (overlay && (activeTool === "window_level" || activeTool === "annotate_rect")) {
+			if (overlay && (activeTool === "window_level" || isRectangleTool(activeTool))) {
 				return;
 			}
 			let nextDragState: DragState = null;
@@ -1361,7 +1405,8 @@
 						};
 					}
 					break;
-				case "annotate_rect": {
+				case "annotate_rect":
+				case "redact": {
 					if (!presentedMatchesActive || !annotationsReady) break;
 					const point = pointFromPointer(event);
 					if (!point) break;
@@ -1370,7 +1415,7 @@
 					const hit = hitTestRoi(visibleRois, point, activeTransform.scale);
 					if (hit) {
 						setSelectedRoi(hit.roi.index);
-						annotations.beginLiveEdit(activeFile.index);
+						edited.beginLiveEdit(activeFile.index);
 						const original = roiCoord(hit.roi);
 						nextDragState = hit.handle
 							? { mode: "resize_roi", roiIndex: hit.roi.index, handle: hit.handle, original }
@@ -1453,7 +1498,7 @@
 				imageColumns,
 			);
 			const next = updateRoiCoord(activeAnnotations, dragState.roiIndex, moved, activeFile.frame_count);
-			annotations.showDraft(activeFile.index, next);
+			edited.showDraft(activeFile.index, next);
 			return;
 		}
 
@@ -1463,7 +1508,7 @@
 			const resized = resizeCoord(dragState.original, dragState.handle, point, imageRows, imageColumns);
 			if (!resized) return;
 			const next = updateRoiCoord(activeAnnotations, dragState.roiIndex, resized, activeFile.frame_count);
-			annotations.showDraft(activeFile.index, next);
+			edited.showDraft(activeFile.index, next);
 		}
 	}
 
@@ -1479,12 +1524,16 @@
 		if (dragState?.mode === "draw_roi") {
 			const coord = canonicalRect(dragState.start, dragState.current, imageRows, imageColumns);
 			if (coord) {
-				const next = addRoi(activeAnnotations, coord, currentFrame, activeFile.frame_count);
-				annotations.commit(activeFile.index, next, next.num_roi - 1);
+				const added = addRoi(activeAnnotations, coord, currentFrame, activeFile.frame_count);
+				// A ROI marks the frame it is drawn on; a redaction box covers every frame.
+				const next = redacting
+					? setRoiFrameScope(added, added.num_roi - 1, "all", currentFrame, activeFile.frame_count)
+					: added;
+				edited.commit(activeFile.index, next, next.num_roi - 1);
 			}
 		}
 		if ((dragState?.mode === "move_roi" || dragState?.mode === "resize_roi") && activeAnnotations) {
-			annotations.commit(activeFile.index, activeAnnotations, selectedRoiIndex);
+			edited.commit(activeFile.index, activeAnnotations, selectedRoiIndex);
 		}
 		endDrag();
 	}
@@ -1498,7 +1547,7 @@
 
 	function onPointerCancel() {
 		if (roiDragTarget?.original) {
-			annotations.showDraft(roiDragTarget.fileIndex, roiDragTarget.original);
+			edited.showDraft(roiDragTarget.fileIndex, roiDragTarget.original);
 		}
 		endDrag();
 	}
@@ -1509,7 +1558,7 @@
 		livePreview.stop();
 		dragState = null;
 		roiDragTarget = null;
-		annotations.endLiveEdit();
+		edited.endLiveEdit();
 	}
 
 	function onContextMenu(event: MouseEvent) {
@@ -1650,20 +1699,22 @@
 		</div>
 		{#if !overlay}
 			<RoiList
+				noun={redacting ? "redaction" : "ROI"}
+				onapplytoseries={redacting ? () => void applyRedactionsToSeriesFiles() : undefined}
 				rois={visibleRois}
 				totalCount={activeAnnotations?.num_roi ?? null}
 				frameCount={activeFile.frame_count}
 				selectedIndex={selectedRoiIndex}
-				loading={annotations.loading(activeFile.index)}
-				error={annotations.error(activeFile.index)}
+				loading={edited.loading(activeFile.index)}
+				error={(redacting ? seriesRedactionError : null) ?? edited.error(activeFile.index)}
 				ready={annotationsReady}
-				saveStatus={annotations.saveStatus(activeFile.index)}
+				saveStatus={edited.saveStatus(activeFile.index)}
 				onselect={setSelectedRoi}
 				onscope={setSelectedScope}
 				ondelete={deleteSelectedRoi}
-				onretryload={() => annotations.retryLoad(activeFile.index)}
-				onretrysave={() => annotations.retrySave(activeFile.index)}
-				onrevert={() => annotations.rollback(activeFile.index)}
+				onretryload={() => edited.retryLoad(activeFile.index)}
+				onretrysave={() => edited.retrySave(activeFile.index)}
+				onrevert={() => edited.rollback(activeFile.index)}
 			/>
 		{/if}
 		{#if windowLegend || displayedValueOverlay}
@@ -1709,7 +1760,8 @@
 	.viewport[data-tool="pan"]:active { cursor: grabbing; }
 	.viewport[data-tool="zoom"] { cursor: zoom-in; }
 	.viewport[data-tool="scroll"] { cursor: ns-resize; }
-	.viewport[data-tool="annotate_rect"] { cursor: crosshair; }
+	.viewport[data-tool="annotate_rect"],
+	.viewport[data-tool="redact"] { cursor: crosshair; }
 	.viewport.dragging { cursor: grabbing; }
 	.image-layer {
 		position: absolute;

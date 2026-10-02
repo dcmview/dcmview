@@ -24,6 +24,9 @@ vi.mock("../api", async (importOriginal) => ({
 	fetchDoseOverlayValues: vi.fn(),
 	fetchPresentationLayerBlob: vi.fn(async () => new Blob(["png"], { type: "image/png" })),
 	updateAnnotations: vi.fn(),
+	fetchRedactions: vi.fn(),
+	updateRedactions: vi.fn(),
+	applyRedactionsToSeries: vi.fn(),
 }));
 
 // happy-dom cannot decode PNGs or draw on a canvas; the layer is recorded.
@@ -110,6 +113,8 @@ function renderViewport({
 beforeEach(() => {
 	vi.mocked(api.fetchAnnotations).mockReset().mockResolvedValue({ num_roi: 0, roi_coords: [], roi_frames: [] });
 	vi.mocked(api.updateAnnotations).mockReset().mockImplementation(async (_file, annotations) => annotations);
+	vi.mocked(api.fetchRedactions).mockReset().mockResolvedValue({ num_roi: 0, roi_coords: [], roi_frames: [] });
+	vi.mocked(api.applyRedactionsToSeries).mockReset().mockResolvedValue({ file_indices: [6] });
 	fetchDisplayFrame.mockReset();
 	fetchDisplayFrame.mockResolvedValue({ blob: new Blob(["png"], { type: "image/png" }), window: null, appliedWindow: null });
 	fetchRawFrame.mockReset();
@@ -120,6 +125,43 @@ beforeEach(() => {
 	fetchDoseOverlayBlob.mockReset();
 	fetchDoseOverlayBlob.mockResolvedValue(new Blob(["png"], { type: "image/png" }));
 	drawOverlayLayer.mockClear();
+});
+
+describe("ImageViewport redaction boxes", () => {
+	it("lists ROIs, not redaction boxes, outside the Redact tool", async () => {
+		renderViewport({ activeTool: "pan" });
+
+		await screen.findByText("ROIs 0 / 0");
+		expect(api.fetchRedactions).not.toHaveBeenCalled();
+	});
+
+	it("edits the file's redaction boxes with the Redact tool", async () => {
+		vi.mocked(api.fetchRedactions).mockResolvedValue({ num_roi: 1, roi_coords: [[0, 0, 8, 32]], roi_frames: [] });
+		renderViewport({ activeTool: "redact" });
+
+		await screen.findByText("Redactions 1 / 1");
+		expect(api.fetchRedactions).toHaveBeenCalledWith(5);
+		expect(screen.getByText("[0, 0, 8, 32]")).toBeTruthy();
+		expect(screen.getByText("all frames")).toBeTruthy();
+	});
+
+	it("copies the boxes to the series and fetches the frame again", async () => {
+		vi.mocked(api.fetchRedactions).mockResolvedValue({ num_roi: 1, roi_coords: [[0, 0, 8, 32]], roi_frames: [] });
+		renderViewport({ activeTool: "redact" });
+		await waitFor(() => expect(fetchDisplayFrame).toHaveBeenCalledOnce());
+
+		await fireEvent.click(await screen.findByRole("button", { name: "Apply to series" }));
+
+		await waitFor(() => expect(api.applyRedactionsToSeries).toHaveBeenCalledWith(5));
+		await waitFor(() => expect(fetchDisplayFrame).toHaveBeenCalledTimes(2));
+	});
+
+	it("offers no series copy for a file without boxes", async () => {
+		renderViewport({ activeTool: "redact" });
+
+		await screen.findByText("No redactions for this frame");
+		expect(screen.queryByRole("button", { name: "Apply to series" })).toBeNull();
+	});
 });
 
 describe("ImageViewport window/level path", () => {

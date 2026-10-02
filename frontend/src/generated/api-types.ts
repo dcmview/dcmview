@@ -364,6 +364,11 @@ export type RealWorldValueMappingSummary = { source: string, source_sop_instance
 
 export type RealWorldValueTransform = { "kind": "linear", slope: number, intercept: number, } | { "kind": "lut", values: Array<number>, };
 
+/**
+ * The files a file's redaction boxes were copied to.
+ */
+export type RedactionSeriesResponse = { file_indices: Array<number>, };
+
 export type ReferenceCatalogResponse = { source_file_index: number, source_sop_instance_uid: string, references: Array<ReferenceSummary>, };
 
 export type ReferenceMatchSummary = { file_index: number, path: string, sop_instance_uid: string, 

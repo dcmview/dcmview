@@ -39,6 +39,26 @@ describe("AnnotationStore", () => {
 		expect(store.annotations(3)).toEqual(set([1, 1, 5, 5]));
 	});
 
+	it("loads a forgotten file again, with what the server holds by then", async () => {
+		const load = vi.fn()
+			.mockResolvedValueOnce(set())
+			.mockResolvedValueOnce(set([2, 2, 6, 6]));
+		const store = new AnnotationStore({ load, save: vi.fn() });
+
+		store.ensureLoaded(4);
+		await flush();
+		expect(store.annotations(4)).toEqual(set());
+
+		store.forget(4);
+		expect(store.ready(4)).toBe(false);
+		expect(store.annotations(4)).toBeNull();
+
+		store.ensureLoaded(4);
+		await flush();
+		expect(load).toHaveBeenCalledTimes(2);
+		expect(store.annotations(4)).toEqual(set([2, 2, 6, 6]));
+	});
+
 	it("reports a load failure and retries only on request", async () => {
 		const load = vi.fn()
 			.mockRejectedValueOnce(new Error("offline"))

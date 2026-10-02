@@ -13,6 +13,7 @@ import type {
 	ParametricMapOverlayQuery,
 	PixelQuery,
 	RawFrameMetadata,
+	RedactionSeriesResponse,
 	ReferenceCatalogResponse,
 	SemanticContextResponse,
 	SeriesCatalogResponse,
@@ -44,6 +45,7 @@ export type {
 	RawFrameMetadata,
 	RealWorldValueMap,
 	RealWorldValueTransform,
+	RedactionSeriesResponse,
 	ReferenceCatalogResponse,
 	ReferenceMatchSummary,
 	ReferenceSummary,
@@ -376,6 +378,31 @@ export async function updateAnnotations(
 
 export function annotationsExportUrl(): string {
 	return endpointUrl(API_ENDPOINTS.annotationsExport);
+}
+
+export function fetchRedactions(fileIndex: number): Promise<EmbedRoiAnnotations> {
+	const endpoint = API_ENDPOINTS.fileRedactionsGet;
+	return getJson(endpoint, endpointUrl(endpoint, { index: fileIndex }));
+}
+
+/** Replaces the file's redaction boxes, which the server then applies to its frames. */
+export async function updateRedactions(
+	fileIndex: number,
+	boxes: EmbedRoiAnnotations,
+): Promise<EmbedRoiAnnotations> {
+	const endpoint = API_ENDPOINTS.fileRedactionsUpdate;
+	const response = await send(endpoint, endpointUrl(endpoint, { index: fileIndex }), {
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(boxes),
+	});
+	return (await response.json()) as EmbedRoiAnnotations;
+}
+
+/** Copies the file's redaction boxes to the same-sized files of its series. */
+export async function applyRedactionsToSeries(fileIndex: number): Promise<RedactionSeriesResponse> {
+	const endpoint = API_ENDPOINTS.fileRedactionsApplyToSeries;
+	const response = await send(endpoint, endpointUrl(endpoint, { index: fileIndex }));
+	return (await response.json()) as RedactionSeriesResponse;
 }
 
 export function frameUrl(

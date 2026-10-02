@@ -39,6 +39,7 @@ describe("shortcutFor", () => {
 		expect(shortcutFor(press("z"), idle)).toEqual({ type: "select-tool", tool: "zoom" });
 		expect(shortcutFor(press("s"), idle)).toEqual({ type: "select-tool", tool: "scroll" });
 		expect(shortcutFor(press("r"), idle)).toEqual({ type: "select-tool", tool: "annotate_rect" });
+		expect(shortcutFor(press("x"), idle)).toEqual({ type: "select-tool", tool: "redact" });
 	});
 
 	it("moves between files with unmodified up and down arrows", () => {

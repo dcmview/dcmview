@@ -16,7 +16,8 @@ function messageOr(fallback: string): (error: unknown) => string {
 }
 
 /**
- * Per-file EMBED ROI annotations for the viewport: the server copy is loaded
+ * Per-file rectangles for the viewport, EMBED ROI annotations by default (the
+ * redaction boxes use the same store with their own endpoints): the server copy is loaded
  * once per file, edits are shown immediately and written through a
  * revisioned save queue, and each file remembers its selected ROI.
  */
@@ -97,6 +98,19 @@ export class AnnotationStore {
 	retryLoad(fileIndex: number): void {
 		if (this.ready(fileIndex)) return;
 		this.#initializeFrom(this.#loader.reload(fileIndex), fileIndex);
+	}
+
+	/** Drops a file's copy, changed on the server by another request, to load it again when shown. */
+	forget(fileIndex: number): void {
+		this.#loader.invalidate(fileIndex);
+		this.#persistence.forget(fileIndex);
+		const without = <Value>(record: Record<number, Value>): Record<number, Value> => {
+			const { [fileIndex]: _dropped, ...rest } = record;
+			return rest;
+		};
+		this.#values = without(this.#values);
+		this.#loads = without(this.#loads);
+		this.#saves = without(this.#saves);
 	}
 
 	/** Shows geometry that is not saved yet, such as a ROI mid-drag. */

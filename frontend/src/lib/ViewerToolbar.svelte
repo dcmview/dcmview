@@ -35,6 +35,7 @@
 		zoom: "zoom",
 		window_level: "wl",
 		annotate_rect: "roi",
+		redact: "redact",
 	};
 	const toolOptions = TOOL_ORDER.map((tool) => ({
 		value: tool,
