@@ -203,6 +203,7 @@ def view(
 	timeout: Optional[int] = None,
 	annotations: Optional[PathInput] = None,
 	filters: Optional[Iterable[str]] = None,
+	mask: bool = False,
 	vscode_bridge: bool = True,
 ) -> Optional[ShutdownHandle]:
 	"""Launch dcmview for one or more DICOM files or directories.
@@ -222,6 +223,9 @@ def view(
 		annotations: Optional EMBED-style ROI annotation CSV to load in memory.
 		filters: Optional iterable of ``FIELD=VALUE`` metadata filters. Filters
 			are forwarded to the binary and combined with AND semantics.
+		mask: Replace patient identifiers in everything the viewer displays,
+			for screen sharing. Display only: files are not modified and this
+			is not de-identification.
 		vscode_bridge: When ``True``, open the viewer in VS Code when the
 			dcmview extension's bridge applies: inside a VS Code terminal, or
 			when the working directory is inside an open workspace folder
@@ -258,6 +262,7 @@ def view(
 		timeout=timeout,
 		annotations=annotation_path,
 		filters=filter_args,
+		mask=mask,
 		vscode_bridge=vscode_bridge,
 	)
 
@@ -347,6 +352,7 @@ def _build_command(
 	timeout: Optional[int],
 	annotations: Optional[str],
 	filters: Optional[Iterable[str]] = None,
+	mask: bool = False,
 	vscode_bridge: bool = False,
 ) -> list[str]:
 	bridge_client = [_BRIDGE_CLIENT_FLAG, _BRIDGE_PROGRAM] if vscode_bridge else []
@@ -362,6 +368,7 @@ def _build_command(
 			timeout=timeout,
 			annotations=annotations,
 			filters=filters,
+			mask=mask,
 		),
 	]
 
@@ -376,6 +383,7 @@ def _build_args(
 	timeout: Optional[int],
 	annotations: Optional[str],
 	filters: Optional[Iterable[str]] = None,
+	mask: bool = False,
 ) -> list[str]:
 	command = ["--port", str(port), "--host", host, "--startup-json"]
 	if not browser:
@@ -388,6 +396,8 @@ def _build_args(
 		command.extend(["--annotations", annotations])
 	for filter_value in _normalize_filters(filters):
 		command.extend(["--filter", filter_value])
+	if mask:
+		command.append("--mask")
 	command.extend(paths)
 	return command
 

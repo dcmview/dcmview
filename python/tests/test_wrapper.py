@@ -193,6 +193,23 @@ class WrapperTests(unittest.TestCase):
 			["--filter", "modality=MR", "--filter", "patient_id=123"],
 		)
 
+	def test_build_command_includes_mask_flag_only_when_requested(self) -> None:
+		with mock.patch("dcmview_py.wrapper.shutil.which", return_value="/tmp/dcmview"):
+			options = dict(
+				port=0,
+				host="127.0.0.1",
+				browser=True,
+				recursive=True,
+				timeout=None,
+				annotations=None,
+			)
+			masked = wrapper._build_command(["/tmp/scan.dcm"], mask=True, **options)
+			plain = wrapper._build_command(["/tmp/scan.dcm"], **options)
+
+		self.assertIn("--mask", masked)
+		self.assertLess(masked.index("--mask"), masked.index("/tmp/scan.dcm"))
+		self.assertNotIn("--mask", plain)
+
 	def test_build_command_requests_structured_startup_event(self) -> None:
 		with mock.patch("dcmview_py.wrapper.shutil.which", return_value="/tmp/dcmview"):
 			command = wrapper._build_command(
