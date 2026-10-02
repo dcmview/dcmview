@@ -74,6 +74,7 @@ fn main() {
     write_parametric_map_overlay_fixtures(&fixture_dir);
     write_real_world_value_mapping_instance(&fixture_dir.join("golden-rwvm-ct-hounsfield.dcm"));
     write_presentation_state_fixtures(&fixture_dir);
+    write_masking_fixtures(&fixture_dir);
 }
 
 // Semantic-overlay fixtures share one patient and study; each overlay pair
@@ -2308,4 +2309,331 @@ fn write_gsps_state(path: &Path, state: GspsState<'_>) {
     .expect("build presentation state meta")
     .write_to_file(path)
     .expect("write presentation state fixture");
+}
+
+// Display-masking fixtures: two patients whose headers carry every kind of
+// identifier the masking rules act on, images with a burned-in banner for
+// redaction boxes, and a slide label image.
+const MASKING_COLUMNS: usize = 320;
+const MASKING_ROWS: usize = 240;
+/// Rows the burned-in banner occupies, from the top of the image.
+const MASKING_BANNER_ROWS: usize = 40;
+
+struct MaskingImage<'a> {
+    file_name: &'a str,
+    sop_class_uid: &'a str,
+    sop_instance_uid: &'a str,
+    series_instance_uid: &'a str,
+    study_instance_uid: &'a str,
+    modality: &'a str,
+    instance_number: &'a str,
+    patient_id: &'a str,
+    patient_name: &'a str,
+    birth_date: &'a str,
+    age: &'a str,
+    study_date: &'a str,
+    study_description: &'a str,
+    series_description: &'a str,
+    /// The two lines painted into the banner.
+    banner: [&'a str; 2],
+    /// Seeds the image below the banner, so files differ visibly.
+    seed: usize,
+}
+
+/// A 3x5 glyph, one row per element, most significant bit on the left.
+fn masking_glyph(character: char) -> [u8; 5] {
+    match character {
+        '0' => [0b111, 0b101, 0b101, 0b101, 0b111],
+        '1' => [0b010, 0b110, 0b010, 0b010, 0b111],
+        '2' => [0b111, 0b001, 0b111, 0b100, 0b111],
+        '3' => [0b111, 0b001, 0b111, 0b001, 0b111],
+        '4' => [0b101, 0b101, 0b111, 0b001, 0b001],
+        '5' => [0b111, 0b100, 0b111, 0b001, 0b111],
+        '6' => [0b111, 0b100, 0b111, 0b101, 0b111],
+        '7' => [0b111, 0b001, 0b010, 0b010, 0b010],
+        '8' => [0b111, 0b101, 0b111, 0b101, 0b111],
+        '9' => [0b111, 0b101, 0b111, 0b001, 0b111],
+        'A' => [0b010, 0b101, 0b111, 0b101, 0b101],
+        'B' => [0b110, 0b101, 0b110, 0b101, 0b110],
+        'D' => [0b110, 0b101, 0b101, 0b101, 0b110],
+        'E' => [0b111, 0b100, 0b110, 0b100, 0b111],
+        'I' => [0b111, 0b010, 0b010, 0b010, 0b111],
+        'K' => [0b101, 0b101, 0b110, 0b101, 0b101],
+        'L' => [0b100, 0b100, 0b100, 0b100, 0b111],
+        'M' => [0b101, 0b111, 0b111, 0b101, 0b101],
+        'N' => [0b101, 0b111, 0b111, 0b111, 0b101],
+        'O' => [0b111, 0b101, 0b101, 0b101, 0b111],
+        'R' => [0b110, 0b101, 0b110, 0b101, 0b101],
+        'S' => [0b111, 0b100, 0b111, 0b001, 0b111],
+        'T' => [0b111, 0b010, 0b010, 0b010, 0b010],
+        'U' => [0b101, 0b101, 0b101, 0b101, 0b111],
+        'V' => [0b101, 0b101, 0b101, 0b101, 0b010],
+        _ => [0; 5],
+    }
+}
+
+/// A dark banner with two lines of bright block text over a bright wedge on
+/// a mid-gray ground, painted with integer arithmetic only.
+fn masking_pixels(banner: [&str; 2], seed: usize) -> Vec<u8> {
+    const SCALE: usize = 3;
+    let mut pixels = vec![0_u8; MASKING_COLUMNS * MASKING_ROWS];
+    for row in MASKING_BANNER_ROWS..MASKING_ROWS {
+        for column in 0..MASKING_COLUMNS {
+            // A wedge opening downwards from the middle of the banner edge.
+            let depth = row - MASKING_BANNER_ROWS;
+            let offset = column.abs_diff(MASKING_COLUMNS / 2);
+            let inside = offset * 5 <= depth * 4 + 20;
+            let texture = (row * 7 + column * 13 + seed * 29) % 48;
+            pixels[row * MASKING_COLUMNS + column] = if inside {
+                (96 + texture + depth / 4) as u8
+            } else {
+                24
+            };
+        }
+    }
+    for (line, text) in banner.iter().enumerate() {
+        let top = 6 + line * (5 * SCALE + 4);
+        for (position, character) in text.chars().enumerate() {
+            let left = 6 + position * (3 * SCALE + SCALE);
+            for (glyph_row, bits) in masking_glyph(character).iter().enumerate() {
+                for glyph_column in 0..3 {
+                    if bits >> (2 - glyph_column) & 1 == 0 {
+                        continue;
+                    }
+                    for y in 0..SCALE {
+                        for x in 0..SCALE {
+                            let row = top + glyph_row * SCALE + y;
+                            let column = left + glyph_column * SCALE + x;
+                            pixels[row * MASKING_COLUMNS + column] = 255;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    pixels
+}
+
+fn write_masking_image(fixture_dir: &Path, image: MaskingImage<'_>) {
+    let referring_physician = InMemDicomObject::from_element_iter([
+        DataElement::new(tags::INSTITUTION_NAME, VR::LO, "Lakeside Clinic"),
+        fixture_sequence(
+            tags::PERSON_IDENTIFICATION_CODE_SEQUENCE,
+            vec![fixture_code("NPI-4471", "99LOCAL", "Okafor, Dana")],
+        ),
+    ]);
+    let referenced_study = InMemDicomObject::from_element_iter([
+        DataElement::new(
+            tags::REFERENCED_SOP_CLASS_UID,
+            VR::UI,
+            "1.2.840.10008.3.1.2.3.1",
+        ),
+        DataElement::new(
+            tags::REFERENCED_SOP_INSTANCE_UID,
+            VR::UI,
+            image.study_instance_uid,
+        ),
+    ]);
+    let obj = InMemDicomObject::from_element_iter([
+        DataElement::new(tags::SOP_CLASS_UID, VR::UI, image.sop_class_uid),
+        DataElement::new(tags::SOP_INSTANCE_UID, VR::UI, image.sop_instance_uid),
+        DataElement::new(tags::STUDY_DATE, VR::DA, image.study_date),
+        DataElement::new(tags::STUDY_TIME, VR::TM, "101500"),
+        DataElement::new(
+            tags::ACQUISITION_DATE_TIME,
+            VR::DT,
+            format!("{}101742.250000", image.study_date),
+        ),
+        DataElement::new(tags::ACCESSION_NUMBER, VR::SH, "ACC-7731905"),
+        DataElement::new(tags::MODALITY, VR::CS, image.modality),
+        DataElement::new(tags::MANUFACTURER, VR::LO, "dcmview fixtures"),
+        DataElement::new(
+            tags::INSTITUTION_NAME,
+            VR::LO,
+            "Northfield General Hospital",
+        ),
+        DataElement::new(
+            tags::INSTITUTION_ADDRESS,
+            VR::ST,
+            "400 Example Avenue, Northfield, GA 30301",
+        ),
+        DataElement::new(tags::REFERRING_PHYSICIAN_NAME, VR::PN, "Okafor^Dana^^Dr"),
+        fixture_sequence(
+            tags::REFERRING_PHYSICIAN_IDENTIFICATION_SEQUENCE,
+            vec![referring_physician],
+        ),
+        DataElement::new(tags::STATION_NAME, VR::SH, "US-ROOM-3"),
+        DataElement::new(tags::STUDY_DESCRIPTION, VR::LO, image.study_description),
+        DataElement::new(tags::SERIES_DESCRIPTION, VR::LO, image.series_description),
+        DataElement::new(tags::OPERATORS_NAME, VR::PN, "Lindqvist^Per"),
+        fixture_sequence(tags::REFERENCED_STUDY_SEQUENCE, vec![referenced_study]),
+        // A private creator and one private value.
+        DataElement::new(Tag(0x0009, 0x0010), VR::LO, "DCMVIEW FIXTURE"),
+        DataElement::new(Tag(0x0009, 0x1001), VR::LO, "ward 5 bed 12"),
+        DataElement::new(tags::PATIENT_NAME, VR::PN, image.patient_name),
+        DataElement::new(tags::PATIENT_ID, VR::LO, image.patient_id),
+        DataElement::new(tags::PATIENT_BIRTH_DATE, VR::DA, image.birth_date),
+        DataElement::new(tags::PATIENT_SEX, VR::CS, "F"),
+        DataElement::new(tags::PATIENT_AGE, VR::AS, image.age),
+        DataElement::new(
+            tags::PATIENT_ADDRESS,
+            VR::LO,
+            "12 Sample Street, Northfield, GA 30301",
+        ),
+        DataElement::new(tags::DEVICE_SERIAL_NUMBER, VR::LO, "SN-558213"),
+        DataElement::new(tags::STUDY_INSTANCE_UID, VR::UI, image.study_instance_uid),
+        DataElement::new(tags::SERIES_INSTANCE_UID, VR::UI, image.series_instance_uid),
+        DataElement::new(tags::SERIES_NUMBER, VR::IS, "1"),
+        DataElement::new(tags::INSTANCE_NUMBER, VR::IS, image.instance_number),
+        DataElement::new(tags::SAMPLES_PER_PIXEL, VR::US, PrimitiveValue::from(1_u16)),
+        DataElement::new(tags::PHOTOMETRIC_INTERPRETATION, VR::CS, "MONOCHROME2"),
+        DataElement::new(
+            tags::ROWS,
+            VR::US,
+            PrimitiveValue::from(MASKING_ROWS as u16),
+        ),
+        DataElement::new(
+            tags::COLUMNS,
+            VR::US,
+            PrimitiveValue::from(MASKING_COLUMNS as u16),
+        ),
+        DataElement::new(tags::BITS_ALLOCATED, VR::US, PrimitiveValue::from(8_u16)),
+        DataElement::new(tags::BITS_STORED, VR::US, PrimitiveValue::from(8_u16)),
+        DataElement::new(tags::HIGH_BIT, VR::US, PrimitiveValue::from(7_u16)),
+        DataElement::new(
+            tags::PIXEL_REPRESENTATION,
+            VR::US,
+            PrimitiveValue::from(0_u16),
+        ),
+        DataElement::new(tags::BURNED_IN_ANNOTATION, VR::CS, "YES"),
+        DataElement::new(tags::WINDOW_CENTER, VR::DS, "128"),
+        DataElement::new(tags::WINDOW_WIDTH, VR::DS, "256"),
+        DataElement::new(
+            tags::PIXEL_DATA,
+            VR::OB,
+            PrimitiveValue::from(masking_pixels(image.banner, image.seed)),
+        ),
+    ]);
+    obj.with_meta(
+        FileMetaTableBuilder::new()
+            .implementation_class_uid(FIXTURE_IMPLEMENTATION_CLASS_UID)
+            .implementation_version_name(FIXTURE_IMPLEMENTATION_VERSION_NAME)
+            .transfer_syntax(uids::EXPLICIT_VR_LITTLE_ENDIAN)
+            .media_storage_sop_class_uid(image.sop_class_uid)
+            .media_storage_sop_instance_uid(image.sop_instance_uid),
+    )
+    .expect("build masking fixture meta")
+    .write_to_file(fixture_dir.join(image.file_name))
+    .expect("write masking fixture");
+}
+
+fn write_masking_fixtures(fixture_dir: &Path) {
+    // Patient A is over 89 at the study date; two files of one series share
+    // the banner position.
+    for (file_name, sop_instance_uid, instance_number, seed) in [
+        ("golden-masking-patient-a-us-1.dcm", "2.25.2000801", "1", 1),
+        ("golden-masking-patient-a-us-2.dcm", "2.25.2000802", "2", 2),
+    ] {
+        write_masking_image(
+            fixture_dir,
+            MaskingImage {
+                file_name,
+                sop_class_uid: uids::ULTRASOUND_IMAGE_STORAGE,
+                sop_instance_uid,
+                series_instance_uid: "2.25.2000811",
+                study_instance_uid: "2.25.2000821",
+                modality: "US",
+                instance_number,
+                patient_id: "MRN-0042417",
+                patient_name: "Rivera^Alma",
+                birth_date: "19300214",
+                age: "096Y",
+                study_date: "20260520",
+                study_description: "Abdominal ultrasound",
+                series_description: "Liver sweep",
+                banner: ["RIVERA ALMA", "ID 0042417  DOB 1930 02 14"],
+                seed,
+            },
+        );
+    }
+    write_masking_image(
+        fixture_dir,
+        MaskingImage {
+            file_name: "golden-masking-patient-b-us.dcm",
+            sop_class_uid: uids::ULTRASOUND_IMAGE_STORAGE,
+            sop_instance_uid: "2.25.2000803",
+            series_instance_uid: "2.25.2000812",
+            study_instance_uid: "2.25.2000822",
+            modality: "US",
+            instance_number: "1",
+            patient_id: "MRN-0077120",
+            patient_name: "Solberg^Britta",
+            birth_date: "19810903",
+            age: "045Y",
+            study_date: "20260811",
+            study_description: "Thyroid ultrasound",
+            series_description: "Transverse",
+            banner: ["SOLBERG BRITTA", "ID 0077120  DOB 1981 09 03"],
+            seed: 3,
+        },
+    );
+
+    // A slide label image: its pixels are a photograph of the label.
+    let label_uid = "2.25.2000804";
+    let label = InMemDicomObject::from_element_iter([
+        DataElement::new(
+            tags::SOP_CLASS_UID,
+            VR::UI,
+            uids::VL_WHOLE_SLIDE_MICROSCOPY_IMAGE_STORAGE,
+        ),
+        DataElement::new(tags::SOP_INSTANCE_UID, VR::UI, label_uid),
+        DataElement::new(tags::IMAGE_TYPE, VR::CS, "ORIGINAL\\PRIMARY\\LABEL\\NONE"),
+        DataElement::new(tags::PATIENT_ID, VR::LO, "MRN-0077120"),
+        DataElement::new(tags::PATIENT_NAME, VR::PN, "Solberg^Britta"),
+        DataElement::new(tags::STUDY_DATE, VR::DA, "20260812"),
+        DataElement::new(tags::STUDY_INSTANCE_UID, VR::UI, "2.25.2000823"),
+        DataElement::new(tags::SERIES_INSTANCE_UID, VR::UI, "2.25.2000813"),
+        DataElement::new(tags::SERIES_DESCRIPTION, VR::LO, "Slide label"),
+        DataElement::new(tags::MODALITY, VR::CS, "SM"),
+        DataElement::new(tags::INSTANCE_NUMBER, VR::IS, "1"),
+        DataElement::new(tags::NUMBER_OF_FRAMES, VR::IS, "1"),
+        DataElement::new(tags::SAMPLES_PER_PIXEL, VR::US, PrimitiveValue::from(1_u16)),
+        DataElement::new(tags::PHOTOMETRIC_INTERPRETATION, VR::CS, "MONOCHROME2"),
+        DataElement::new(
+            tags::ROWS,
+            VR::US,
+            PrimitiveValue::from(MASKING_ROWS as u16),
+        ),
+        DataElement::new(
+            tags::COLUMNS,
+            VR::US,
+            PrimitiveValue::from(MASKING_COLUMNS as u16),
+        ),
+        DataElement::new(tags::BITS_ALLOCATED, VR::US, PrimitiveValue::from(8_u16)),
+        DataElement::new(tags::BITS_STORED, VR::US, PrimitiveValue::from(8_u16)),
+        DataElement::new(tags::HIGH_BIT, VR::US, PrimitiveValue::from(7_u16)),
+        DataElement::new(
+            tags::PIXEL_REPRESENTATION,
+            VR::US,
+            PrimitiveValue::from(0_u16),
+        ),
+        DataElement::new(tags::BURNED_IN_ANNOTATION, VR::CS, "YES"),
+        DataElement::new(
+            tags::PIXEL_DATA,
+            VR::OB,
+            PrimitiveValue::from(masking_pixels(["SOLBERG BRITTA", "S26 10442 A1"], 4)),
+        ),
+    ]);
+    label
+        .with_meta(
+            FileMetaTableBuilder::new()
+                .implementation_class_uid(FIXTURE_IMPLEMENTATION_CLASS_UID)
+                .implementation_version_name(FIXTURE_IMPLEMENTATION_VERSION_NAME)
+                .transfer_syntax(uids::EXPLICIT_VR_LITTLE_ENDIAN)
+                .media_storage_sop_class_uid(uids::VL_WHOLE_SLIDE_MICROSCOPY_IMAGE_STORAGE)
+                .media_storage_sop_instance_uid(label_uid),
+        )
+        .expect("build slide label fixture meta")
+        .write_to_file(fixture_dir.join("golden-masking-wsi-label.dcm"))
+        .expect("write slide label fixture");
 }

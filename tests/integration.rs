@@ -2,6 +2,7 @@ mod integration {
     mod annotations_endpoint;
     mod api_contract;
     mod codec_contract;
+    mod display_masking;
     mod display_shutters;
     mod golden_fixtures;
     mod graphic_annotations;
