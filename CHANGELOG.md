@@ -33,7 +33,8 @@ diagnostic viewer.
   series. Boxes work with or without `--mask` and are applied by the server
   in the display frame, the raw frame, and the presentation layer, so a
   redacted region is never sent to the browser.
-- Files that declare Burned In Annotation show a "Burned-in text" badge.
+- In a masked session, files that declare Burned In Annotation show a
+  "Burned-in text" badge, since masking does not change pixels.
 - `GET` and `PUT /api/file/{index}/redactions` read and replace one file's
   redaction boxes in the `EmbedRoiAnnotations` shape, and
   `PUT /api/file/{index}/redactions/series` copies them across the series.
