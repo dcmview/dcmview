@@ -81,6 +81,12 @@ impl BoundServer {
             );
         }
 
+        if state.registry().masker().is_some() {
+            crate::status_line!(
+                "dcmview: display masking is on — identifiers are replaced on screen only; files are not modified and this is not de-identification"
+            );
+        }
+
         let activity = state.activity().clone();
         let registry = state.registry().clone();
         let app = router(state);

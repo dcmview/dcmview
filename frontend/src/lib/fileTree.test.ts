@@ -16,6 +16,7 @@ function file(overrides: Partial<FileSummary>): FileSummary {
 	return {
 		index: 0,
 		path: "/study/image.dcm",
+		display_name: (overrides.path ?? "/study/image.dcm").split("/").pop() ?? "",
 		label: "image",
 		patient_id: "P-1",
 		patient_name: "DOE^JANE",
@@ -35,6 +36,7 @@ function file(overrides: Partial<FileSummary>): FileSummary {
 		raw_windowing_compatible: true,
 		raw_windowing_reason: null,
 		presentation_layer: false,
+		burned_in_annotation: false,
 		has_pixels: true,
 		frame_count: 1,
 		rows: 512,

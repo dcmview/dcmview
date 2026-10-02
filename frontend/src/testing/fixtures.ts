@@ -5,6 +5,7 @@ export function fileSummary(index: number, overrides: Partial<FileSummary> = {})
 	return {
 		index,
 		path: `fixtures/image-${index}.dcm`,
+		display_name: `image-${index}.dcm`,
 		label: `image-${index}.dcm`,
 		patient_id: "PATIENT",
 		patient_name: "Test^Patient",
@@ -24,6 +25,7 @@ export function fileSummary(index: number, overrides: Partial<FileSummary> = {})
 		raw_windowing_compatible: true,
 		raw_windowing_reason: null,
 		presentation_layer: false,
+		burned_in_annotation: false,
 		has_pixels: true,
 		frame_count: 1,
 		rows: 64,

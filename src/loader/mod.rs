@@ -17,6 +17,7 @@ pub use discovery::{
     DiscoveryCancellationReason, DiscoveryCancelled, DiscoveryDisposition, DiscoveryEvent,
     DiscoveryReason, DiscoveryRecord, DiscoveryReport,
 };
+pub(crate) use entry::build_label;
 pub use filter::{ScanFilter, ScanFilterField};
 
 /// Root of the independently generated DICOM corpus that `#[ignore]` tests

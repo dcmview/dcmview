@@ -89,6 +89,7 @@ async fn health_endpoint_reports_ready_state() {
     assert!(health["viewer"]["build_target"].as_str().is_some());
     assert!(health["viewer"]["build_profile"].as_str().is_some());
     assert_eq!(health["file_count"], 1);
+    assert_eq!(health["masked"], false);
     assert!(
         health["server_start_ms"]
             .as_u64()

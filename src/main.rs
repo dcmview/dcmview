@@ -22,6 +22,7 @@ Examples:
   ssh -L 8010:127.0.0.1:8010 user@remote
   dcmview --annotations ./rois.csv ./study_dir
   dcmview --filter modality=CT --filter PatientID=phantom ./study_dir
+  dcmview --mask ./study_dir
 
 For remote use, run dcmview on the machine that has the DICOM files, keep the
 server bound to 127.0.0.1, and forward the chosen port over SSH."
@@ -85,6 +86,13 @@ struct Cli {
                 FIELD is a name such as patient_id or a DICOM keyword such as PatientID"
     )]
     filters: Vec<loader::ScanFilter>,
+
+    #[arg(
+        long = "mask",
+        help = "Replace patient identifiers in everything the viewer displays, for screen sharing. \
+                Display only: files are not modified and this is not de-identification"
+    )]
+    mask: bool,
 
     #[arg(
         long = "startup-json",

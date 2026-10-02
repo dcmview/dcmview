@@ -14,6 +14,7 @@ pub mod api;
 mod dicom_values;
 pub mod geometry;
 pub mod loader;
+pub mod masking;
 pub mod object_kind;
 pub mod pixels;
 pub mod plane_stack;

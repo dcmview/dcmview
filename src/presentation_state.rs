@@ -171,6 +171,7 @@ impl SkippedGraphicObjects {
         self.display_units += other.display_units;
         self.matrix_units += other.matrix_units;
         self.malformed += other.malformed;
+        self.masked_text += other.masked_text;
     }
 }
 
@@ -611,6 +612,7 @@ mod tests {
                 display_units: 1,
                 matrix_units: 1,
                 malformed: 4,
+                masked_text: 0,
             }
         );
     }

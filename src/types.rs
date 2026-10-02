@@ -176,6 +176,9 @@ pub struct SeriesMetadata {
     pub concatenation_frame_offset_number: Option<u32>,
     pub sop_instance_uid_of_concatenation_source: Option<String>,
     pub image_type: Vec<String>,
+    /// Burned In Annotation (0028,0301) is `YES`: the pixels are declared to
+    /// carry text that may identify the patient.
+    pub burned_in_annotation: bool,
     pub pyramid_uid: Option<String>,
     pub dimension_organization_type: Option<String>,
     pub dimension_organization_uids: Vec<String>,
@@ -256,6 +259,11 @@ impl From<&FileEntry> for FileSummary {
         Self {
             index: value.index,
             path: value.path.display().to_string(),
+            display_name: value
+                .path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default(),
             label: value.label.clone(),
             patient_id: value.patient_id.clone(),
             patient_name: value.patient_name.clone(),
@@ -279,6 +287,7 @@ impl From<&FileEntry> for FileSummary {
             raw_windowing_reason: None,
             presentation_layer: !value.series_metadata.presentation.overlay_planes.is_empty()
                 || value.series_metadata.presentation.has_display_shutter(),
+            burned_in_annotation: value.series_metadata.burned_in_annotation,
             has_pixels: value.has_pixels,
             frame_count: value.frame_count,
             rows: value.rows,

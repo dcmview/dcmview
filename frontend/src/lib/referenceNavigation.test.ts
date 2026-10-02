@@ -10,6 +10,7 @@ function file(index: number, frameCount: number): FileSummary {
 	return {
 		index,
 		path: `/data/${index}.dcm`,
+		display_name: `${index}.dcm`,
 		label: `${index}.dcm`,
 		patient_id: "",
 		patient_name: "",
@@ -29,6 +30,7 @@ function file(index: number, frameCount: number): FileSummary {
 		raw_windowing_compatible: true,
 		raw_windowing_reason: null,
 		presentation_layer: false,
+		burned_in_annotation: false,
 		has_pixels: true,
 		frame_count: frameCount,
 		rows: 2,

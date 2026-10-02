@@ -345,6 +345,9 @@ pub struct WindowPreset {
 pub struct FileSummary {
     pub index: usize,
     pub path: String,
+    /// The name the viewer shows for the file outside the directory tree: its
+    /// file name, or a synthetic `File N` in a masked session.
+    pub display_name: String,
     pub label: String,
     pub patient_id: String,
     pub patient_name: String,
@@ -371,6 +374,9 @@ pub struct FileSummary {
     /// Whether grayscale display frames carry a display shutter or overlay
     /// graphics, which `presentation-layer` draws for a raw-rendered frame.
     pub presentation_layer: bool,
+    /// Whether the file declares burned-in annotation, which display masking
+    /// cannot hide.
+    pub burned_in_annotation: bool,
     pub has_pixels: bool,
     pub frame_count: u32,
     pub rows: u32,
@@ -720,6 +726,8 @@ pub struct SkippedGraphicObjects {
     pub matrix_units: usize,
     /// Unknown type or units, or point data that does not fit the type.
     pub malformed: usize,
+    /// Text objects, which a masked session does not show.
+    pub masked_text: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
@@ -1017,6 +1025,8 @@ pub enum ApiErrorCode {
     /// A value overlay's planes do not reach the requested frame.
     OverlayNotCoveringFrame,
     PixelDecodeFailed,
+    /// Content a masked session (`--mask`) withholds.
+    Masked,
     InternalError,
 }
 
@@ -1070,6 +1080,8 @@ pub struct HealthResponse {
     pub viewer: ViewerIdentity,
     pub file_count: usize,
     pub server_start_ms: u64,
+    /// Whether this session masks patient identifiers (`--mask`).
+    pub masked: bool,
 }
 
 /// Display-frame query. Explicit `wc`/`ww` must be sent together;

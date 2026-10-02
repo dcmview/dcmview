@@ -3,14 +3,13 @@ use super::overlays;
 use super::state::AppState;
 use crate::api::contracts::{
     DiscoveryResult, EmbedRoiAnnotations, FileSummary, FilesResponse, FrameInfo, FrameQuery,
-    FrameValueMapping, GraphicAnnotationsQuery, GraphicAnnotationsResponse, HealthResponse,
-    PixelQuery, ReferenceCatalogResponse, SemanticContextResponse, TagNode, TagQuery,
-    ViewerIdentity, WsiFrameContextResponse, CACHE_HEADER, CACHE_HIT, CACHE_MISS, CSV_MEDIA_TYPE,
-    DISPLAY_FRAME_HEADER_WINDOW_APPLIED, DISPLAY_FRAME_HEADER_WINDOW_CENTER,
-    DISPLAY_FRAME_HEADER_WINDOW_WIDTH, EXPORT_CONTENT_DISPOSITION_HEADER,
-    EXPORT_CONTENT_DISPOSITION_VALUE, OCTET_STREAM_MEDIA_TYPE, RAW_FRAME_HEADER_BITS_ALLOCATED,
-    RAW_FRAME_HEADER_COLUMNS, RAW_FRAME_HEADER_DEFAULT_WC, RAW_FRAME_HEADER_DEFAULT_WW,
-    RAW_FRAME_HEADER_PADDING_HIGH, RAW_FRAME_HEADER_PADDING_LOW,
+    GraphicAnnotationsQuery, GraphicAnnotationsResponse, HealthResponse, PixelQuery,
+    ReferenceCatalogResponse, SemanticContextResponse, TagNode, TagQuery, ViewerIdentity,
+    CACHE_HEADER, CACHE_HIT, CACHE_MISS, CSV_MEDIA_TYPE, DISPLAY_FRAME_HEADER_WINDOW_APPLIED,
+    DISPLAY_FRAME_HEADER_WINDOW_CENTER, DISPLAY_FRAME_HEADER_WINDOW_WIDTH,
+    EXPORT_CONTENT_DISPOSITION_HEADER, EXPORT_CONTENT_DISPOSITION_VALUE, OCTET_STREAM_MEDIA_TYPE,
+    RAW_FRAME_HEADER_BITS_ALLOCATED, RAW_FRAME_HEADER_COLUMNS, RAW_FRAME_HEADER_DEFAULT_WC,
+    RAW_FRAME_HEADER_DEFAULT_WW, RAW_FRAME_HEADER_PADDING_HIGH, RAW_FRAME_HEADER_PADDING_LOW,
     RAW_FRAME_HEADER_PHOTOMETRIC_INTERPRETATION, RAW_FRAME_HEADER_PIXEL_REPRESENTATION,
     RAW_FRAME_HEADER_RESCALE_INTERCEPT, RAW_FRAME_HEADER_RESCALE_SLOPE, RAW_FRAME_HEADER_ROWS,
     RAW_FRAME_HEADER_SAMPLES_PER_PIXEL,
@@ -35,7 +34,29 @@ pub(super) async fn health(State(state): State<AppState>) -> Json<HealthResponse
         viewer: ViewerIdentity::current(),
         file_count: status.file_count,
         server_start_ms: state.server_start_ms(),
+        masked: state.registry().masker().is_some(),
     })
+}
+
+/// A JSON response whose UIDs are hashed in a masked session.
+fn uid_masked_json<T: serde::Serialize>(state: &AppState, body: T) -> Result<Response, ApiError> {
+    let Some(masker) = state.registry().masker() else {
+        return Ok(Json(body).into_response());
+    };
+    let mut value = serde_json::to_value(body)
+        .map_err(|error| ApiError::internal(format!("response serialization failed: {error}")))?;
+    masker.uids_in_json(&mut value);
+    Ok(Json(value).into_response())
+}
+
+/// Refuses the frames a masked session withholds.
+fn ensure_pixels_shown(state: &AppState, file: &FileEntry) -> Result<(), ApiError> {
+    if state.registry().masker().is_some() && crate::masking::hides_pixels(file) {
+        return Err(ApiError::masked(
+            "slide label and overview images are not shown in a masked session",
+        ));
+    }
+    Ok(())
 }
 
 pub(super) async fn files(State(state): State<AppState>) -> Json<FilesResponse> {
@@ -112,7 +133,7 @@ pub(super) async fn info(
 pub(super) async fn references(
     State(state): State<AppState>,
     path: Result<Path<usize>, PathRejection>,
-) -> Result<Json<ReferenceCatalogResponse>, ApiError> {
+) -> Result<Response, ApiError> {
     let Path(index) = path.map_err(error::path_rejection)?;
     let source = registered_file(&state, index, "file")?;
     let source_path = source.path.clone();
@@ -130,25 +151,32 @@ pub(super) async fn references(
         .iter()
         .map(references::ResolvedReferenceEdge::summary)
         .collect();
-    Ok(Json(ReferenceCatalogResponse {
-        source_file_index: index,
-        source_sop_instance_uid: source.sop_instance_uid.clone(),
-        references: resolved,
-    }))
+    uid_masked_json(
+        &state,
+        ReferenceCatalogResponse {
+            source_file_index: index,
+            source_sop_instance_uid: source.sop_instance_uid.clone(),
+            references: resolved,
+        },
+    )
 }
 
 pub(super) async fn semantic_context(
     State(state): State<AppState>,
     path: Result<Path<usize>, PathRejection>,
-) -> Result<Json<SemanticContextResponse>, ApiError> {
+) -> Result<Response, ApiError> {
     let Path(index) = path.map_err(error::path_rejection)?;
     let source = registered_file(&state, index, "file")?;
     let files = state.registry().files_snapshot();
     let path = source.path.clone();
-    let context = semantic_context_for(&state, source, files)
+    let context = semantic_context_for(&state, source.clone(), files)
         .await
         .map_err(|failure| error::gone_or(&path, ApiError::internal(format!("{failure:#}"))))?;
-    Ok(Json(SemanticContextResponse::clone(&context)))
+    let mut context = SemanticContextResponse::clone(&context);
+    if let Some(masker) = state.registry().masker() {
+        masker.semantic_context(&source, &mut context);
+    }
+    uid_masked_json(&state, context)
 }
 
 /// The source's semantic context against `files`, built at most once per
@@ -191,19 +219,22 @@ pub(super) async fn graphic_annotations(
     crate::pixels::PixelError::ensure_frame(frame, target.frame_count)
         .map_err(error::pixel_error)?;
     let path = presentation_state.path.clone();
-    let annotations = task::spawn_blocking(move || {
+    let mut annotations = task::spawn_blocking(move || {
         crate::presentation_state::graphic_annotations(&presentation_state, &target, frame)
     })
     .await
     .map_err(|error| ApiError::internal(format!("graphic annotation task failed: {error}")))?
     .map_err(|failure| error::gone_or(&path, ApiError::internal(format!("{failure:#}"))))?;
+    if let Some(masker) = state.registry().masker() {
+        masker.graphic_annotations(&mut annotations);
+    }
     Ok(Json(annotations))
 }
 
 pub(super) async fn value_mapping(
     State(state): State<AppState>,
     path: Result<Path<(usize, u32)>, PathRejection>,
-) -> Result<Json<FrameValueMapping>, ApiError> {
+) -> Result<Response, ApiError> {
     let Path((index, frame)) = path.map_err(error::path_rejection)?;
     let file = registered_file(&state, index, "file")?;
     crate::pixels::PixelError::ensure_frame(frame, file.frame_count).map_err(error::pixel_error)?;
@@ -211,7 +242,7 @@ pub(super) async fn value_mapping(
     let mappings = value_mappings_for(&state, file)
         .await
         .map_err(|failure| error::gone_or(&path, ApiError::internal(format!("{failure:#}"))))?;
-    Ok(Json(mappings.frame(index, frame)))
+    uid_masked_json(&state, mappings.frame(index, frame))
 }
 
 /// The file's parsed value mappings, with those of the RWVM instances that
@@ -236,7 +267,7 @@ pub(super) async fn value_mappings_for(
 pub(super) async fn wsi_context(
     State(state): State<AppState>,
     path: Result<Path<(usize, u32)>, PathRejection>,
-) -> Result<Json<WsiFrameContextResponse>, ApiError> {
+) -> Result<Response, ApiError> {
     let Path((index, frame)) = path.map_err(error::path_rejection)?;
     let source = registered_file(&state, index, "file")?;
     crate::pixels::PixelError::ensure_frame(frame, source.frame_count)
@@ -253,7 +284,7 @@ pub(super) async fn wsi_context(
         .await
         .map_err(|error| ApiError::internal(format!("WSI context task failed: {error}")))?
         .map_err(|error| ApiError::internal(error.to_string()))?;
-    Ok(Json(context))
+    uid_masked_json(&state, context)
 }
 
 pub(super) async fn annotations(
@@ -327,6 +358,7 @@ pub(super) async fn frame(
     let Path((index, frame)) = path.map_err(error::path_rejection)?;
     let Query(query) = query.map_err(error::query_rejection)?;
     let file = registered_file(&state, index, "file")?;
+    ensure_pixels_shown(&state, &file)?;
     let source = file.path.clone();
     let window_mode = query.mode.unwrap_or_default();
 
@@ -412,6 +444,7 @@ pub(super) async fn raw_frame(
 ) -> Result<Response, ApiError> {
     let Path((index, frame)) = path.map_err(error::path_rejection)?;
     let file = registered_file(&state, index, "file")?;
+    ensure_pixels_shown(&state, &file)?;
     let source = file.path.clone();
 
     let raw_response = pixels::load_raw_frame(file, state.raw_cache(), RawFrameRequest { frame })
@@ -433,6 +466,7 @@ pub(super) async fn raw_pixel(
     let Path((index, frame)) = path.map_err(error::path_rejection)?;
     let Query(query) = query.map_err(error::query_rejection)?;
     let file = registered_file(&state, index, "file")?;
+    ensure_pixels_shown(&state, &file)?;
     let source = file.path.clone();
     let raw = pixels::load_raw_frame(file.clone(), state.raw_cache(), RawFrameRequest { frame })
         .await
@@ -520,7 +554,7 @@ pub(super) async fn tags(
     }
 
     let path = file.path.clone();
-    let nodes = tokio::task::spawn_blocking(move || tags::build_tag_tree(&path))
+    let mut nodes = tokio::task::spawn_blocking(move || tags::build_tag_tree(&path))
         .await
         .map_err(|error| ApiError::internal(format!("tag serialization task failed: {error}")))?
         .map_err(|failure| {
@@ -530,6 +564,10 @@ pub(super) async fn tags(
             )
         })?;
 
+    // The cache holds what the session shows: the mode never changes.
+    if let Some(masker) = state.registry().masker() {
+        masker.tags(&file, &mut nodes);
+    }
     state.cache_tags(index, nodes.clone());
     Ok(Json(nodes))
 }
@@ -543,10 +581,10 @@ pub(super) async fn select_tag(
     let Query(query) = query.map_err(error::query_rejection)?;
     let file = registered_file(&state, index, "file")?;
     let path = file.path.clone();
-    let selector = query.path;
+    let selector = query.path.clone();
     let offset = query.offset.unwrap_or(0);
     let limit = query.limit.unwrap_or(tags::TAG_SELECT_DEFAULT_LIMIT);
-    let node = tokio::task::spawn_blocking(move || {
+    let mut node = tokio::task::spawn_blocking(move || {
         tags::build_selected_tag(&path, &selector, offset, limit)
     })
     .await
@@ -557,6 +595,9 @@ pub(super) async fn select_tag(
             error::gone_or(&file.path, ApiError::internal(error.to_string()))
         }
     })?;
+    if let Some(masker) = state.registry().masker() {
+        masker.selected_tag(&file, &query.path, &mut node);
+    }
     Ok(Json(node))
 }
 

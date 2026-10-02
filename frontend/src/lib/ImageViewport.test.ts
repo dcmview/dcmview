@@ -997,7 +997,7 @@ describe("ImageViewport graphic annotations", () => {
 			{ item: 1, layer: "MARKS", graphic_type: "point", points: [[10.5, 12.5]], filled: false },
 		],
 		texts: [{ item: 0, layer: "SHAPES", text, bounding_box: [10, 40, 30, 46], justification: "center", anchor: null, anchor_visible: false }],
-		skipped: { display_units: 0, matrix_units: 0, malformed: 0 },
+		skipped: { display_units: 0, matrix_units: 0, malformed: 0, masked_text: 0 },
 	});
 
 	beforeEach(() => {
