@@ -331,10 +331,7 @@ impl Masker {
         }
         // Multiple values were joined with "; " by the tag serializer.
         let each = |mask: &dyn Fn(&str) -> String| {
-            text.split("; ")
-                .map(mask)
-                .collect::<Vec<_>>()
-                .join("; ")
+            text.split("; ").map(mask).collect::<Vec<_>>().join("; ")
         };
         *text = match ((group, element), node.vr.as_str()) {
             (PATIENT_ID, _) => patient.id(),
