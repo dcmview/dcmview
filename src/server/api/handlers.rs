@@ -1,6 +1,7 @@
 use super::error::{self, ApiError};
 use super::overlays;
 use super::state::AppState;
+use crate::api::contracts::RedactionSeriesResponse;
 use crate::api::contracts::{
     DiscoveryResult, EmbedRoiAnnotations, FileSummary, FilesResponse, FrameInfo, FrameQuery,
     GraphicAnnotationsQuery, GraphicAnnotationsResponse, HealthResponse, PixelQuery,
@@ -325,6 +326,82 @@ pub(super) async fn update_annotations(
     Ok(Json(canonical))
 }
 
+pub(super) async fn redactions(
+    State(state): State<AppState>,
+    path: Result<Path<usize>, PathRejection>,
+) -> Result<Json<EmbedRoiAnnotations>, ApiError> {
+    let Path(index) = path.map_err(error::path_rejection)?;
+    registered_file(&state, index, "file")?;
+    let boxes = state
+        .redactions()
+        .get(index)
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+    Ok(Json(boxes))
+}
+
+pub(super) async fn update_redactions(
+    State(state): State<AppState>,
+    path: Result<Path<usize>, PathRejection>,
+    payload: Result<Json<EmbedRoiAnnotations>, JsonRejection>,
+) -> Result<Json<EmbedRoiAnnotations>, ApiError> {
+    let Path(index) = path.map_err(error::path_rejection)?;
+    let Json(boxes) = payload.map_err(error::json_rejection)?;
+    let file = registered_file(&state, index, "file")?;
+    let canonical = state
+        .redactions()
+        .replace_for_file(&file, boxes)
+        .map_err(|error| ApiError::bad_request(error.to_string()))?;
+    Ok(Json(canonical))
+}
+
+/// Copies a file's redaction boxes to the files of its series that share its
+/// image size: a banner sits at the same place in each. A copy keeps the
+/// boxes' frames only when the file has as many frames as the source;
+/// otherwise its boxes cover every frame.
+pub(super) async fn apply_redactions_to_series(
+    State(state): State<AppState>,
+    path: Result<Path<usize>, PathRejection>,
+) -> Result<Json<RedactionSeriesResponse>, ApiError> {
+    let Path(index) = path.map_err(error::path_rejection)?;
+    let source = registered_file(&state, index, "file")?;
+    let boxes = state
+        .redactions()
+        .get(index)
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+    let mut file_indices = Vec::new();
+    for file in state.registry().files_snapshot() {
+        let same_series = file.index != source.index
+            && file.study_instance_uid == source.study_instance_uid
+            && file.series_instance_uid == source.series_instance_uid
+            && (file.rows, file.columns) == (source.rows, source.columns);
+        if !same_series {
+            continue;
+        }
+        let mut copy = boxes.clone();
+        if file.frame_count != source.frame_count {
+            copy.roi_frames.clear();
+        }
+        state
+            .redactions()
+            .replace_for_file(&file, copy)
+            .map_err(|error| ApiError::internal(error.to_string()))?;
+        file_indices.push(file.index);
+    }
+    Ok(Json(RedactionSeriesResponse { file_indices }))
+}
+
+/// The redaction boxes of one frame.
+fn frame_redaction(
+    state: &AppState,
+    index: usize,
+    frame: u32,
+) -> Result<pixels::Redaction, ApiError> {
+    state
+        .redactions()
+        .for_frame(index, frame)
+        .map_err(|error| ApiError::internal(error.to_string()))
+}
+
 pub(super) async fn export_annotations(
     State(state): State<AppState>,
 ) -> Result<Response, ApiError> {
@@ -388,7 +465,8 @@ pub(super) async fn frame(
     }
     let (window_center, window_width, real_world) = window;
 
-    let frame_response = pixels::load_frame(
+    let redaction = frame_redaction(&state, index, frame)?;
+    let frame_response = pixels::load_redacted_frame(
         file,
         state.pixel_cache(),
         state.raw_cache(),
@@ -400,6 +478,7 @@ pub(super) async fn frame(
             real_world,
             preview: query.preview.unwrap_or(false),
         },
+        redaction,
     )
     .await
     .map_err(|failure| error::gone_or(&source, error::pixel_error(failure)))?;
@@ -448,9 +527,14 @@ pub(super) async fn raw_frame(
     ensure_pixels_shown(&state, &file)?;
     let source = file.path.clone();
 
-    let raw_response = pixels::load_raw_frame(file, state.raw_cache(), RawFrameRequest { frame })
-        .await
-        .map_err(|failure| error::gone_or(&source, error::pixel_error(failure)))?;
+    let raw_response = pixels::load_redacted_raw_frame(
+        file,
+        state.raw_cache(),
+        RawFrameRequest { frame },
+        &frame_redaction(&state, index, frame)?,
+    )
+    .await
+    .map_err(|failure| error::gone_or(&source, error::pixel_error(failure)))?;
 
     Ok(raw_response_with_headers(
         raw_response.body,
@@ -469,9 +553,14 @@ pub(super) async fn raw_pixel(
     let file = registered_file(&state, index, "file")?;
     ensure_pixels_shown(&state, &file)?;
     let source = file.path.clone();
-    let raw = pixels::load_raw_frame(file.clone(), state.raw_cache(), RawFrameRequest { frame })
-        .await
-        .map_err(|failure| error::gone_or(&source, error::pixel_error(failure)))?;
+    let raw = pixels::load_redacted_raw_frame(
+        file.clone(),
+        state.raw_cache(),
+        RawFrameRequest { frame },
+        &frame_redaction(&state, index, frame)?,
+    )
+    .await
+    .map_err(|failure| error::gone_or(&source, error::pixel_error(failure)))?;
     let (body, metadata) =
         pixels::raw_pixel(&file, &raw, query.row, query.column).ok_or_else(|| {
             ApiError::bad_request(format!(

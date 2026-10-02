@@ -312,6 +312,8 @@ pub struct FrameCacheKey {
     /// The real-world unit an explicit window is in; `None` for Modality
     /// values.
     pub window_unit: Option<String>,
+    /// Revision of the redaction boxes painted on the frame; 0 without any.
+    pub redaction: u64,
 }
 
 impl FrameCacheKey {
@@ -334,6 +336,7 @@ impl FrameCacheKey {
             window_width_bits: window_width.map(f64::to_bits),
             window_mode,
             window_unit: window_center.and(window_unit).map(str::to_string),
+            redaction: 0,
         }
     }
 }

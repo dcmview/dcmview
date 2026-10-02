@@ -19,6 +19,7 @@ pub mod object_kind;
 pub mod pixels;
 pub mod plane_stack;
 pub mod presentation_state;
+pub mod redactions;
 pub mod references;
 pub mod semantic;
 pub mod series;

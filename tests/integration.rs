@@ -12,6 +12,7 @@ mod integration {
     mod pixels_jpeg_decode;
     mod pixels_raw_endpoint;
     mod pixels_uncompressed;
+    mod redactions;
     mod remote_fixtures;
     mod semantic_context;
     mod semantic_overlays;

@@ -9,7 +9,7 @@ use axum::extract::{Request, State};
 use axum::http::{header, HeaderName, HeaderValue};
 use axum::middleware::{self, Next};
 use axum::response::Response;
-use axum::routing::get;
+use axum::routing::{get, put};
 use axum::Router;
 use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Predicate};
 use tower_http::compression::{CompressionLayer, CompressionLevel};
@@ -73,6 +73,14 @@ pub(crate) fn router(state: AppState) -> Router {
         .route(
             endpoints::FILE_ANNOTATIONS_GET.path,
             get(handlers::annotations).put(handlers::update_annotations),
+        )
+        .route(
+            endpoints::FILE_REDACTIONS_GET.path,
+            get(handlers::redactions).put(handlers::update_redactions),
+        )
+        .route(
+            endpoints::FILE_REDACTIONS_APPLY_TO_SERIES.path,
+            put(handlers::apply_redactions_to_series),
         )
         .route(
             endpoints::ANNOTATIONS_EXPORT.path,

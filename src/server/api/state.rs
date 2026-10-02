@@ -2,6 +2,7 @@ use super::super::{now_unix_ms, FileRegistry, RequestActivity};
 use crate::annotations::AnnotationStore;
 use crate::api::contracts::{SemanticContextResponse, TagNode};
 use crate::pixels::{self, FrameCache, OverlayCache, RawFrameCache};
+use crate::redactions::RedactionStore;
 use crate::types::OverlayCacheKey;
 use crate::value_mapping::FileValueMappings;
 use bytes::Bytes;
@@ -37,6 +38,7 @@ pub struct AppState {
     value_mapping_cache: Arc<Mutex<LruCache<FileSetCacheKey, Arc<FileValueMappings>>>>,
     overlay_cache: Arc<Mutex<OverlayCache>>,
     annotations: AnnotationStore,
+    redactions: RedactionStore,
     server_start_ms: u64,
     activity: RequestActivity,
 }
@@ -52,6 +54,7 @@ impl AppState {
             value_mapping_cache: Arc::new(Mutex::new(LruCache::new(VALUE_MAPPING_CACHE_MAX_FILES))),
             overlay_cache: pixels::new_overlay_cache(),
             annotations,
+            redactions: RedactionStore::new(),
             server_start_ms: now_unix_ms(),
             activity: RequestActivity::new(),
         }
@@ -141,6 +144,10 @@ impl AppState {
 
     pub(crate) fn annotations(&self) -> &AnnotationStore {
         &self.annotations
+    }
+
+    pub(crate) fn redactions(&self) -> &RedactionStore {
+        &self.redactions
     }
 
     pub(crate) fn server_start_ms(&self) -> u64 {

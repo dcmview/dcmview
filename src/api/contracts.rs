@@ -300,6 +300,26 @@ pub mod endpoints {
         ApiMethod::Put,
         "/file/{index}/annotations",
     );
+    /// The file's redaction boxes, as `EmbedRoiAnnotations`.
+    pub const FILE_REDACTIONS_GET: Endpoint = json(
+        "fileRedactionsGet",
+        ApiMethod::Get,
+        "/file/{index}/redactions",
+    );
+    /// JSON `EmbedRoiAnnotations` in and out: replaces the file's redaction
+    /// boxes, which both frame endpoints then apply.
+    pub const FILE_REDACTIONS_UPDATE: Endpoint = json(
+        "fileRedactionsUpdate",
+        ApiMethod::Put,
+        "/file/{index}/redactions",
+    );
+    /// `RedactionSeriesResponse`: copies the file's redaction boxes to every
+    /// file of its series with the same rows and columns. Takes no body.
+    pub const FILE_REDACTIONS_APPLY_TO_SERIES: Endpoint = json(
+        "fileRedactionsApplyToSeries",
+        ApiMethod::Put,
+        "/file/{index}/redactions/series",
+    );
     /// EMBED-style CSV of every in-memory annotation.
     pub const ANNOTATIONS_EXPORT: Endpoint = binary(
         "annotationsExport",
@@ -331,6 +351,9 @@ pub mod endpoints {
         FILE_TAG_SELECT,
         FILE_ANNOTATIONS_GET,
         FILE_ANNOTATIONS_UPDATE,
+        FILE_REDACTIONS_GET,
+        FILE_REDACTIONS_UPDATE,
+        FILE_REDACTIONS_APPLY_TO_SERIES,
         ANNOTATIONS_EXPORT,
     ];
 }
@@ -1147,6 +1170,12 @@ pub struct EmbedRoiAnnotations {
     pub num_roi: usize,
     pub roi_coords: Vec<[u32; 4]>,
     pub roi_frames: Vec<Vec<u32>>,
+}
+
+/// The files a file's redaction boxes were copied to.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct RedactionSeriesResponse {
+    pub file_indices: Vec<usize>,
 }
 
 impl EmbedRoiAnnotations {

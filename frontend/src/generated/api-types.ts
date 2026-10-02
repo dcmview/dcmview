@@ -24,6 +24,9 @@ export const API_ENDPOINTS = {
 	fileTagSelect: { method: "GET", path: "/api/file/{index}/tags/select" },
 	fileAnnotationsGet: { method: "GET", path: "/api/file/{index}/annotations" },
 	fileAnnotationsUpdate: { method: "PUT", path: "/api/file/{index}/annotations" },
+	fileRedactionsGet: { method: "GET", path: "/api/file/{index}/redactions" },
+	fileRedactionsUpdate: { method: "PUT", path: "/api/file/{index}/redactions" },
+	fileRedactionsApplyToSeries: { method: "PUT", path: "/api/file/{index}/redactions/series" },
 	annotationsExport: { method: "GET", path: "/api/annotations/export.csv" },
 } as const;
 
