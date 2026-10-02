@@ -27,6 +27,7 @@ dcmview [OPTIONS] <PATH> [PATH ...]
 | `--no-recursive` | `false` | Scan only the top level of input directories. |
 | `--annotations <CSV>` | none | Load EMBED-style ROI annotations from CSV without modifying the file. |
 | `--filter <FIELD=VALUE>` | none | Include only files whose metadata field contains the value; repeatable. |
+| `--mask` | `false` | Replace patient identifiers in everything the viewer displays, for screen sharing. Display only: files are not modified and this is not de-identification. Fixed for the session. |
 
 Filter fields, by snake_case name or DICOM keyword (either spelling, any
 case):
@@ -79,6 +80,7 @@ single path-like value or an iterable of path-like values.
 | `timeout` | `None` | Forwards to `--timeout` when set. |
 | `annotations` | `None` | Path to an EMBED-style ROI CSV; forwards `--annotations` when set. |
 | `filters` | `None` | Iterable of `FIELD=VALUE` filters; each value forwards as `--filter`. |
+| `mask` | `False` | When `True`, forwards `--mask`. |
 | `vscode_bridge` | `True` | When `True`, the viewer opens in VS Code when launched from a VS Code terminal or inside an open workspace folder. |
 
 The wrapper adds `--startup-json` when launching the binary so it can discover

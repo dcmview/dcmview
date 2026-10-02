@@ -82,6 +82,26 @@ would remove behavior, raise it as a question instead of acting.
   the state's Referenced Series Sequence. Standard conventions only: the
   owner ruled institution-specific deviations out of scope on 2026-09-30.
 
+- **Display masking (owner decisions, 2026-10-02)** - `--mask` (and Python
+  `view(mask=True)`) starts a session that replaces patient identifiers in
+  every response the viewer displays, for screen sharing. It is display only
+  and claims no de-identification: files are never modified and nothing is
+  persisted. The mode is fixed for the process; there is no runtime toggle.
+  Patients get numbered pseudonyms, dates move by one per-patient offset
+  within a year, ages over 89 are capped, PN values, private elements and the
+  PS3.15 Table E.1-1 basic-profile attributes show `[masked]`, and instance
+  UIDs are hashed consistently in the tag tree and every wire field. Kept on
+  purpose: Study and Series Description, patient characteristics, and real
+  folder and file names in the directory tree (under a "Not masked" note;
+  tabs follow the tree). Presentation state text and slide label and
+  overview frames are withheld.
+- **Redaction boxes** - rectangles drawn with the Redact tool over burned-in
+  text, per file, covering every frame unless scoped, in server memory for
+  the session and never exported. The server applies them in both frame
+  endpoints and the presentation layer, so a redacted region is never sent.
+  "Apply to series" copies a file's boxes to the same-sized files of its
+  series. Available with or without `--mask`.
+
 **Known gaps (intended work, not settled scope):**
 
 - **VOI LUT Function is not interpreted.** DICOM VOI LUT Function
@@ -101,6 +121,13 @@ would remove behavior, raise it as a question instead of acting.
   and, through the display endpoint's `unit` query, in cine, for 8- and
   16-bit (and one-bit) single-sample frames. Frames with other samples show
   their default window for such a window on the server.
+
+- **Redaction boxes are not saved or loaded.** They are lost when the viewer
+  exits. A `--redactions <csv>` load and an export, in the EMBED ROI layout,
+  are the agreed follow-up (owner, 2026-10-02).
+- **Masking does not reach pixels, free text or paths.** Burned-in text needs
+  redaction boxes; names and dates inside kept free-text values, and the real
+  paths the directory tree shows, are outside the rules.
 
 `docs/planned/` is gitignored and holds local proposals, briefs and review
 notes, such as the original compatibility plan.
@@ -233,6 +260,8 @@ dcmview/
 |   |-- api/contracts.rs canonical HTTP endpoint and wire contract
 |   |-- loader/          cancellable DICOM discovery and FileEntry creation
 |   |-- annotations.rs   EMBED-style ROI parsing, validation, memory store
+|   |-- masking.rs       --mask display masking rules and the PS3.15 profile list
+|   |-- redactions.rs    in-memory redaction boxes and their revisions
 |   |-- signals.rs       stop-signal listeners registered before startup output
 |   |-- pixels/          service, caches, codecs, rendering, windowing, shutters,
 |   |                    overlay colorwash
@@ -414,6 +443,20 @@ without one it steps over item headers and reads only each fragment's end to
 find a JPEG end marker (RLE is one fragment per frame). No frame-offset index
 is cached between requests.
 
+**Masking and redaction**
+
+- `src/masking.rs` is the only place that decides what a masked session
+  shows. A new wire field that carries an instance UID must be named `*_uid`
+  or `*_uids` (the response-wide hash keys on the name), and any other new
+  field that can carry an identifier must be masked in `Masker` and asserted
+  in `tests/integration/display_masking.rs`, which fails when a fixture
+  identifier appears in a response.
+- Masked values are computed from the process's random keys; never persist
+  them or derive them from anything stable across runs.
+- Redaction boxes are applied where frames leave the pixel service
+  (`load_redacted_frame`, `load_redacted_raw_frame`, the presentation
+  layer). A new endpoint that returns source pixels must apply them too.
+
 **Annotations**
 
 - `--annotations` loads EMBED-style CSV rows into memory only.
@@ -466,6 +509,15 @@ is cached between requests.
   transform; opening a different tab starts from a fitted view.
 - Orientation state is also per open tab and supports horizontal flip, vertical
   flip, and 90-degree rotation.
+- The Redact tool edits redaction boxes with the ROI rectangle editing: the
+  viewport's `edited` store is the ROI `AnnotationStore` or a second one bound
+  to the redaction endpoints. The server blanks the boxes, so a saved change
+  reloads the frames (`reloadFrames`); outlines show only while the tool is
+  active. Do not draw a client-side cover instead.
+- A masked session's file names come from `Catalog.shownFiles`, whose `path`
+  is the synthetic `display_name` unless the directory tree is showing. Pass
+  those files (or `catalog.filesById`) to anything that displays a path; only
+  `FileNavigator` receives the raw catalog.
 - ROI pointer editing lives in `ImageViewport.svelte`; annotation state in
   `viewport/annotationStore.svelte.ts`, hit testing in `viewport/roiEditing.ts`,
   and geometry helpers in `annotationGeometry.ts`. Keep frame-scoping semantics
@@ -531,6 +583,7 @@ dcmview [OPTIONS] <PATH> [PATH ...]
   --no-recursive
   --annotations <csv>
   --filter <FIELD=VALUE>    repeatable metadata filter
+  --mask                    mask patient identifiers on screen; fixed for the session
 ```
 
 The server is unauthenticated. Keep loopback binding as the default and prefer
@@ -603,7 +656,8 @@ Committed synthetic fixtures cover native, JPEG Baseline, JPEG Lossless, JPEG
 2000, color, display shutter, multiframe, no-pixel, RT Dose and
 Parametric Map overlay objects with their source images, and Grayscale
 Softcopy Presentation States with graphic annotations over their target
-images. They are generated
+images, and two patients' identifier-laden images with a burned-in banner
+(plus a slide label image) for display masking and redaction. They are generated
 by:
 
 ```bash
@@ -635,6 +689,11 @@ default suite.
 - Mixed DICOM/non-DICOM discovery reports valid files and skip counts.
 - Annotation load, edit, validation, and CSV export preserve the EMBED-style
   contract.
+- A masked session shows no fixture identifier in the catalog, series catalog,
+  tag tree or selected elements, and its hashed UIDs agree across endpoints.
+- A redaction box blanks the display and raw frame, is a cache `MISS` after a
+  change, copies to the same-sized files of the series, and stays out of the
+  ROI export.
 
 Do not mock the DICOM layer for integration coverage. Use generated fixtures or
 feature-gated remote fixtures so codec and metadata behavior stay exercised.
