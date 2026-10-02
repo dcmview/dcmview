@@ -81,7 +81,9 @@ integration for a single shell session.
 
 - `dcmview.binaryPath`: absolute path to a `dcmview` binary override.
 - `dcmview.defaultRecursive`: recursively scan selected folders by default.
-- `dcmview.extraArgs`: additional command-line arguments passed to `dcmview`.
+- `dcmview.extraArgs`: additional command-line arguments passed to `dcmview`,
+  for example `["--mask"]` to mask patient identifiers on screen (a display
+  aid, not de-identification).
 - `dcmview.startupTimeoutSeconds`: seconds to wait for startup.
 - `dcmview.terminalInterception.enabled`: route integrated terminal launches
   into editor webviews.
