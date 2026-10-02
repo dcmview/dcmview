@@ -58,6 +58,7 @@ async fn json_endpoints_match_frontend_contract_shapes() {
             "discovery",
             "files",
             "filtered",
+            "masked",
             "scan_complete",
             "scanned",
             "server_start_ms",

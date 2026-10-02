@@ -42,13 +42,13 @@
 				<button
 					class="target"
 					type="button"
-					title={match.path}
+					title={destination.file.path}
 					onclick={() => onopenreference(destination.file.index, destination.frameIndex)}
 				>
 					Open {destination.file.label} · frame {destination.frameIndex + 1}
 				</button>
 			{:else}
-				<span class="unresolved" title={match.path}>local target unavailable</span>
+				<span class="unresolved" title={files.find((file) => file.index === match.file_index)?.path}>local target unavailable</span>
 			{/if}
 		{/each}
 	{/if}

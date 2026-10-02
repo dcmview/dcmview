@@ -392,6 +392,8 @@ pub struct FilesResponse {
     pub files: Vec<FileSummary>,
     pub discovery: Vec<DiscoveryResult>,
     pub server_start_ms: u64,
+    /// Whether this session masks patient identifiers (`--mask`).
+    pub masked: bool,
     pub scan_complete: bool,
     pub scanned: usize,
     pub skipped: usize,

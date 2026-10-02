@@ -79,6 +79,7 @@ pub(super) async fn files(State(state): State<AppState>) -> Json<FilesResponse> 
             })
             .collect(),
         server_start_ms: state.server_start_ms(),
+        masked: state.registry().masker().is_some(),
         scan_complete: status.scan_complete,
         scanned: status.scanned,
         skipped: status.skipped,

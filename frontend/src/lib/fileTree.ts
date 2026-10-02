@@ -275,7 +275,7 @@ function seriesDetail(file: FileSummary): string {
 
 function fileLabel(file: FileSummary): string {
 	const instance = clean(file.instance_number);
-	const name = basename(file.path);
+	const name = file.display_name;
 	return instance ? `#${instance} ${name}` : name;
 }
 

@@ -101,7 +101,11 @@ burned_in_annotation: boolean, has_pixels: boolean, frame_count: number, rows: n
  */
 pixel_aspect_ratio: number | null, transfer_syntax_uid: string, default_window: WindowPreset | null, };
 
-export type FilesResponse = { files: Array<FileSummary>, discovery: Array<DiscoveryResult>, server_start_ms: number, scan_complete: boolean, scanned: number, skipped: number, filtered: number, };
+export type FilesResponse = { files: Array<FileSummary>, discovery: Array<DiscoveryResult>, server_start_ms: number, 
+/**
+ * Whether this session masks patient identifiers (`--mask`).
+ */
+masked: boolean, scan_complete: boolean, scanned: number, skipped: number, filtered: number, };
 
 export type FrameInfo = { frame_count: number, rows: number, columns: number, transfer_syntax_uid: string, has_pixels: boolean, sop_class_uid: string, object_kind: string, support_state: SupportState, support_reason: string | null, default_window: WindowPreset | null, };
 

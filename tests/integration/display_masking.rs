@@ -108,6 +108,7 @@ async fn catalog_shows_pseudonyms_shifted_dates_and_hashed_uids() {
     assert_eq!(health["masked"], true);
 
     let catalog: Value = server.get("/api/files").await.json();
+    assert_eq!(catalog["masked"], true);
     assert_no_identifiers("catalog", &without_paths(catalog.clone()).to_string());
     let files = catalog["files"].as_array().expect("files");
     assert_eq!(files[0]["patient_name"], "Patient 0001");

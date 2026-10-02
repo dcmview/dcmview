@@ -5,11 +5,17 @@
 	let {
 		serverStartMs,
 		fileCount,
+		masked = false,
+		burnedInAnnotation = false,
 		reachable = true,
 		onretry,
 	}: {
 		serverStartMs: number;
 		fileCount: number;
+		/** The session masks patient identifiers (`--mask`). */
+		masked?: boolean;
+		/** The active file declares burned-in annotation. */
+		burnedInAnnotation?: boolean;
 		/** False once a request could not reach the server at all. */
 		reachable?: boolean;
 		onretry?: () => void;
@@ -33,6 +39,20 @@
 </script>
 
 <footer class="status">
+	{#if masked}
+		<span class="masking">
+			<StatusBadge
+				status="positive"
+				title="Patient identifiers are replaced on screen for this session. Files are not modified, and pixels, free text and directory names are not masked. This is not de-identification."
+			>Masked display</StatusBadge>
+			{#if burnedInAnnotation}
+				<StatusBadge
+					status="partial"
+					title="This file declares burned-in annotation. Masking does not change pixels."
+				>Burned-in text</StatusBadge>
+			{/if}
+		</span>
+	{/if}
 	<span>{window.location.origin}</span>
 	<span>{fileCount} files loaded</span>
 	{#if reachable}
@@ -47,6 +67,13 @@
 </footer>
 
 <style>
+	.masking {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		color: var(--text);
+	}
+
 	.status {
 		display: flex;
 		align-items: center;

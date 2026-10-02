@@ -42,6 +42,7 @@ export function filesResponse(files: FileSummary[]): FilesResponse {
 		files,
 		discovery: [],
 		server_start_ms: 0,
+		masked: false,
 		scan_complete: true,
 		scanned: files.length,
 		skipped: 0,

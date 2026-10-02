@@ -27,6 +27,8 @@
 		files,
 		activeFileIndex,
 		scanComplete = true,
+		masked = false,
+		viewMode = $bindable("study"),
 		collapsed = $bindable(),
 		onopenfile,
 		onnavigationorderchange,
@@ -34,6 +36,9 @@
 		files: FileSummary[];
 		activeFileIndex: number | null;
 		scanComplete?: boolean;
+		/** A masked session: only the directory tree shows real file names. */
+		masked?: boolean;
+		viewMode?: "study" | "directory";
 		collapsed: boolean;
 		onopenfile: (index: number) => void;
 		onnavigationorderchange?: (order: number[]) => void;
@@ -42,7 +47,6 @@
 	const LARGE_TREE_COLLAPSE_THRESHOLD = 500;
 	let collapsedNodes = $state<Record<string, boolean>>({});
 	let filterQuery = $state("");
-	let viewMode = $state<"study" | "directory">("study");
 	const VIEW_OPTIONS: { value: "study" | "directory"; label: string }[] = [
 		{ value: "study", label: "Study" },
 		{ value: "directory", label: "Directory" },
@@ -205,6 +209,12 @@
 			{#if !scanComplete}
 				<div class="scan-progress">indexed {files.length} file{files.length === 1 ? "" : "s"}...</div>
 			{/if}
+			{#if masked && viewMode === "directory"}
+				<div class="unmasked-names" role="note">
+					<StatusBadge status="partial">Not masked</StatusBadge>
+					<span>Folder and file names are shown as they are on disk.</span>
+				</div>
+			{/if}
 		</div>
 		{#if viewMode === "study"}
 		<div class="tree study-tree" role="tree" aria-label="DICOM file hierarchy">
@@ -264,7 +274,7 @@
 												class:dim={!item.file.has_pixels}
 												aria-current={item.file.index === activeFileIndex ? "true" : undefined}
 												onclick={() => onopenfile(item.file.index)}
-												title={item.file.path}
+												title={masked ? item.file.display_name : item.file.path}
 												aria-label={fileAriaLabel(item)}
 											>
 												{@render nodeContent(fileIcon(item.file), item.label, item.detail, item.file)}
@@ -345,6 +355,15 @@
 
 	.filter-result,
 	.scan-progress {
+		color: var(--ink-muted);
+		font: var(--t-meta);
+		font-size: 11px;
+	}
+
+	.unmasked-names {
+		display: flex;
+		align-items: center;
+		gap: 8px;
 		color: var(--ink-muted);
 		font: var(--t-meta);
 		font-size: 11px;
