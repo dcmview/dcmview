@@ -10,6 +10,54 @@ diagnostic viewer.
 
 ## Unreleased
 
+## 0.3.2 - 2026-10-02
+
+### Added
+
+- `--mask` starts a session that replaces patient identifiers in everything
+  the viewer displays, for a shared or recorded screen. It is a display aid,
+  not de-identification: files are never modified, nothing is persisted, and
+  the mode is fixed for the process. Patients show as numbered pseudonyms and
+  files as `File N`; dates and date-times move by one random offset per
+  patient within a year; ages above 89 years show `089Y`; person names,
+  private elements, and the attributes of the PS3.15 Basic Application Level
+  Confidentiality Profile show `[masked]`; and instance UIDs become hashed
+  `2.25.` UIDs that agree in the tag tree and every response, so references
+  still resolve. Study and Series Description and patient sex, age, size,
+  and weight are kept. Presentation state text is not drawn, and slide label
+  and overview images are not shown.
+- Python `view(mask=True)` starts the same masked session.
+- A Redact tool (`X`) draws redaction boxes over burned-in pixel text. A box
+  covers every frame of its file unless limited to the current frame, and
+  **Apply to series** copies a file's boxes to the same-sized files of its
+  series. Boxes work with or without `--mask` and are applied by the server
+  in the display frame, the raw frame, and the presentation layer, so a
+  redacted region is never sent to the browser.
+- In a masked session, files that declare Burned In Annotation show a
+  "Burned-in text" badge, since masking does not change pixels.
+- `GET` and `PUT /api/file/{index}/redactions` read and replace one file's
+  redaction boxes in the `EmbedRoiAnnotations` shape, and
+  `PUT /api/file/{index}/redactions/series` copies them across the series.
+- `/api/health` and `/api/files` report `masked`. File summaries add
+  `display_name` and `burned_in_annotation`, and a presentation state's
+  skipped counts add `masked_text`. Content a masked session withholds
+  answers `403` with the error code `masked`.
+
+### Fixed
+
+- A page that had finished loading kept showing the previous session after
+  the viewer was restarted on the same port. It now checks the server when
+  the page is looked at again and reloads onto the new session.
+
+### Known limitations
+
+- Masking does not reach pixels, free text inside kept values such as
+  descriptions, or paths: the Directory view shows real folder and file names
+  under a "Not masked" note, and the exported ROI CSV keeps real paths. The
+  terminal and VS Code's own Explorer are outside the viewer page.
+- Redaction boxes are not saved or loaded; they are lost when the viewer
+  exits and are not part of the ROI export.
+
 ## 0.3.1 - 2026-10-01
 
 ### Added

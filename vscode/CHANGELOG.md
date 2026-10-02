@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.3.2 - 2026-10-02
+
+- Adding `--mask` to `dcmview.extraArgs` starts masked sessions that replace
+  patient identifiers in everything the viewer displays, for a shared or
+  recorded screen: numbered pseudonyms, shifted dates, hashed UIDs, and
+  `[masked]` identifiers. This is a display aid, not de-identification.
+- A masked viewer panel is titled "dcmview: masked session" instead of the
+  file name. VS Code's Explorer, the tab of a file opened in the DICOM custom
+  editor, and the viewer's Directory view still show real folder and file
+  names.
+- A Redact tool (`X`) draws redaction boxes over burned-in pixel text, with
+  or without masking. Boxes last for the session and are not saved.
+
 ## 0.3.1 - 2026-10-01
 
 - Graphic and text annotations of Grayscale and Color Softcopy Presentation

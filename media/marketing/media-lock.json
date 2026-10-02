@@ -1,92 +1,92 @@
 {
   "artifacts": [
     {
-      "bytes": 1091180,
+      "bytes": 1092177,
       "height": 900,
       "path": "mr-seg-cine.gif",
       "scene_id": "mr-seg-cine",
       "series_instance_uid": "1.3.6.1.4.1.14519.5.2.1.7695.4164.197935705864255073412256526155",
-      "sha256": "3f41a9666018cd8a1b85016f3b9d1a4f099b8b8a06c9d6da663ebbb846464d54",
+      "sha256": "5782309950bb7516b6c15e737497b9f9ad44341aa39330eb8d7b286b111f98e1",
       "source_group": "01-mr-seg",
       "width": 1440
     },
     {
-      "bytes": 5564897,
+      "bytes": 5565723,
       "height": 900,
       "path": "chest-ct-cine.gif",
       "scene_id": "chest-ct-cine",
       "series_instance_uid": "1.3.6.1.4.1.14519.5.2.1.9999.103.1892998694410640266017914996862",
-      "sha256": "18a7cce7e5291f5fb2962479bdf9d572918a2670360b22c55dd682615320df5b",
+      "sha256": "ca49420fa021ba690e2796aa0732a291b15f0201d906f6d163a3794e0b258b3f",
       "source_group": "02-chest-ct",
       "width": 1440
     },
     {
-      "bytes": 705562,
+      "bytes": 706108,
       "height": 900,
       "path": "radiograph.png",
       "scene_id": "radiograph",
       "series_instance_uid": "1.3.6.1.4.1.14519.5.2.1.9999.103.7387851802783238061375077795803",
-      "sha256": "ff010dcd4e01c912ab794facdee9e6f768c5b213e1d02abc481f38ecb7bf3f60",
+      "sha256": "7b3e091c63398ccbe8413c5c4591d6a4ba9f8bb55d84ae7df14516a0fbf5e3d4",
       "source_group": "03-radiograph",
       "width": 1440
     },
     {
-      "bytes": 499063,
+      "bytes": 499184,
       "height": 900,
       "path": "mammography.gif",
       "scene_id": "mammography",
       "series_instance_uid": "1.3.6.1.4.1.14519.5.2.1.1239.1759.817188338697704141156927137894",
-      "sha256": "7371e7d0f5da86137c416c757e262215559b3a4f819b4cec1b62d67710c4c7bb",
+      "sha256": "61a344b72e2d4310c1de767441603fb95ed1fee8ba877e5dbcefb056475a2278",
       "source_group": "04-mammography",
       "width": 1440
     },
     {
-      "bytes": 1503283,
+      "bytes": 1503708,
       "height": 900,
       "path": "pet-cine.gif",
       "scene_id": "pet-cine",
       "series_instance_uid": "1.3.6.1.4.1.14519.5.2.1.153050364328304867324655664137435456205",
-      "sha256": "70e90b5a787e07a37677c640564cbd6773830693bb6abb154b1a0d4447d3fd46",
+      "sha256": "0f4fbcd2d1af372eda2bc978c904c4fcf36b1b7a8df034dba25dec44d8adc902",
       "source_group": "05-pet",
       "width": 1440
     },
     {
-      "bytes": 3832973,
+      "bytes": 3833392,
       "height": 900,
       "path": "ultrasound-cine.gif",
       "scene_id": "ultrasound-cine",
       "series_instance_uid": "1.3.6.1.4.1.14519.5.2.1.1.78620393996990384206084905721745347693",
-      "sha256": "036422ae29ea0ada3fa6ae68023eeaed97f31dcdaac136105ddd1c472e11433a",
+      "sha256": "c2b6712eb45e55e79497cb9a020ad9b498769addede63fffda982b0bf382dd7c",
       "source_group": "06-ultrasound",
       "width": 1440
     },
     {
-      "bytes": 284015,
+      "bytes": 284576,
       "height": 900,
       "path": "rt-dose-context.png",
       "scene_id": "rt-dose-context",
       "series_instance_uid": "1.3.6.1.4.1.14519.5.2.1.118532755654767959890619646384959953910",
-      "sha256": "a01acee77a4c099004528b49936221f4b21151cd7dd75720549a3142c9517406",
+      "sha256": "2990717188aa02aafedbba8303bc8b89d18568e977413e00d680f6fda853d5ac",
       "source_group": "07-rt-dose",
       "width": 1440
     },
     {
-      "bytes": 410658,
+      "bytes": 413447,
       "height": 900,
       "path": "wsi-context.png",
       "scene_id": "wsi-context",
       "series_instance_uid": "1.3.6.1.4.1.5962.99.1.2218940421.790215425.1720205891589.4.0",
-      "sha256": "54b69a2daea452d1bacd505f75695da475d32fb340e11e431f3f9ea17a820165",
+      "sha256": "c79d00064d6564376cc8e8eb08683f4f35bebecd402dd6f1f46a929c6a8c7ab8",
       "source_group": "08-wsi",
       "width": 1440
     },
     {
-      "bytes": 1550694,
+      "bytes": 1550740,
       "height": 900,
       "path": "vscode-workflow.gif",
       "scene_id": "vscode-workflow",
       "series_instance_uid": "1.3.6.1.4.1.14519.5.2.1.9999.103.1892998694410640266017914996862",
-      "sha256": "3d7366dab353691a7f245ab670bef55923769c4a3b3f3ad706fbc87c5f58234e",
+      "sha256": "2c4a9147869988ebc6489ceb64ed0ed2d440552222b41313c892be40bcaeb6cf",
       "source_group": "02-chest-ct",
       "width": 1440
     }
@@ -254,17 +254,17 @@
     "vscode/src/test/suite/viewer.test.ts",
     "vscode/src/viewerSessions.ts"
   ],
-  "capture_inputs_sha256": "b6545d48438056c020617794886a2229b20964ed5039e09fdc5b1d8279170b9e",
-  "captured_at_utc": "2026-10-01T10:24:33+00:00",
+  "capture_inputs_sha256": "f3ce51141aeeee3eb432c5b8caeb40c29b969e480bab3e640f583f7b2f7cdc6c",
+  "captured_at_utc": "2026-10-02T12:00:04+00:00",
   "captures_manifest_sha256": "afdf2b4ec006289d5f336d232ab67977318fc187771e046b24fa8c76d32bcdec",
-  "dcmview_version": "0.3.1",
-  "git_commit": "0a6ac5439ba513c575013b002d19dabafcb03041",
+  "dcmview_version": "0.3.2",
+  "git_commit": "e63b830263ea2b8891b218ba8528e75eec9356cc",
   "git_dirty": false,
   "reports": [
     {
       "browser_version": "151.0.7922.34",
       "ffmpeg_version": "ffmpeg version 6.0 Copyright (c) 2000-2023 the FFmpeg developers",
-      "file_index": 120,
+      "file_index": 119,
       "node_version": "v26.8.2",
       "patient_ids": [
         "ACRIN-6698-234723"
@@ -277,7 +277,7 @@
         "height": 900,
         "width": 1440
       },
-      "visible_text_sha256": "8d87972636662d662b3b9664cbab7dbeabe3514120c1eddaa1b3f60a28b16620"
+      "visible_text_sha256": "1047c20268ee6ec4ee4e7f2979c22b542d0f26b8d646c27a8f7509448a411b28"
     },
     {
       "browser_version": "151.0.7922.34",
@@ -295,7 +295,7 @@
         "height": 900,
         "width": 1440
       },
-      "visible_text_sha256": "a048a188f64ec3c7c639b353bc9c42bf0f9a57082de104769aa3191571b79b4e"
+      "visible_text_sha256": "a9f9a1dbfee93a4bd5cc96091bc97fb9017d2a6a0d4eb0171d00e156e1cb5483"
     },
     {
       "browser_version": "151.0.7922.34",
@@ -313,12 +313,12 @@
         "height": 900,
         "width": 1440
       },
-      "visible_text_sha256": "aedd225cf08b2831d7500a35f55b80c6ecf7fbaa728fbbff504234e6b4bc96cf"
+      "visible_text_sha256": "dd9016ce5e5bdadbdb1b33801427418b03074206705ac8983bd4356de5cf06e5"
     },
     {
       "browser_version": "151.0.7922.34",
       "ffmpeg_version": "ffmpeg version 6.0 Copyright (c) 2000-2023 the FFmpeg developers",
-      "file_index": 3,
+      "file_index": 0,
       "node_version": "v26.8.2",
       "patient_ids": [
         "D1-0021"
@@ -331,12 +331,12 @@
         "height": 900,
         "width": 1440
       },
-      "visible_text_sha256": "e7d2b9c5ea224c77131253acfc69bcb925ccfe5543141910a270005be580928a"
+      "visible_text_sha256": "3150d92f3cfb7368f02eb281dfa4d78a5519d5a3922b411f3a2fce4595455a4f"
     },
     {
       "browser_version": "151.0.7922.34",
       "ffmpeg_version": "ffmpeg version 6.0 Copyright (c) 2000-2023 the FFmpeg developers",
-      "file_index": 64,
+      "file_index": 80,
       "node_version": "v26.8.2",
       "patient_ids": [
         "PSMA_f77011649a56cf08"
@@ -349,12 +349,12 @@
         "height": 900,
         "width": 1440
       },
-      "visible_text_sha256": "5f55835febcc96db189f779a7bb647580e89c0a698bf97f2eead49c1417a8f4e"
+      "visible_text_sha256": "1512da6923cea1dd5f25391bab03ababcb5c60b1e88e7bef4717711efe7588dc"
     },
     {
       "browser_version": "151.0.7922.34",
       "ffmpeg_version": "ffmpeg version 6.0 Copyright (c) 2000-2023 the FFmpeg developers",
-      "file_index": 4,
+      "file_index": 7,
       "node_version": "v26.8.2",
       "patient_ids": [
         "MSB-07848"
@@ -367,12 +367,12 @@
         "height": 900,
         "width": 1440
       },
-      "visible_text_sha256": "5771c8ea0c8f56dc59d40ed90b8b8e22c457e895797fe9ed98441734022a1828"
+      "visible_text_sha256": "b4e1434c39bc73c4dde623628c3ef2ff513d95cde5974775c94cf5aa50176af5"
     },
     {
       "browser_version": "151.0.7922.34",
       "ffmpeg_version": null,
-      "file_index": 101,
+      "file_index": 119,
       "node_version": "v26.8.2",
       "patient_ids": [
         "VS-SEG-131"
@@ -385,12 +385,12 @@
         "height": 900,
         "width": 1440
       },
-      "visible_text_sha256": "58c4f9a5ceb61438d99ad2bfb19418863b46cfb5d2a531b510a0a87e3f06114c"
+      "visible_text_sha256": "1cf9a276fce6b489a760a8dca939e0c56a58ca2a7ee9bfdd487bf376b017c441"
     },
     {
       "browser_version": "151.0.7922.34",
       "ffmpeg_version": null,
-      "file_index": 0,
+      "file_index": 1,
       "node_version": "v26.8.2",
       "patient_ids": [
         "GTEX-17HHY"
@@ -403,12 +403,12 @@
         "height": 900,
         "width": 1440
       },
-      "visible_text_sha256": "91206f22308b6783c85203c1fb0e7e9a955606d208908ff0fdd7911eb02a917c"
+      "visible_text_sha256": "2bfd30850027ead9894da9422861c6ec065c1864aa864c5bc2324413d8107ce0"
     },
     {
       "captured_frames": 48,
       "ffmpeg_version": "ffmpeg version 6.0 Copyright (c) 2000-2023 the FFmpeg developers",
-      "file_index": 4,
+      "file_index": 42,
       "node_version": "v26.8.2",
       "patient_ids": [
         "COVID-19-AR-16406502"

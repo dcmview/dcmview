@@ -28,11 +28,11 @@ troubleshooting, API/debugging, development, and release references.
 <!-- dcmview-marketing:start -->
 ## In VS Code
 
-![Open DICOM data with dcmview from VS Code Explorer](https://raw.githubusercontent.com/dcmview/dcmview/v0.3.1/media/marketing/vscode-workflow.gif)
+![Open DICOM data with dcmview from VS Code Explorer](https://raw.githubusercontent.com/dcmview/dcmview/v0.3.2/media/marketing/vscode-workflow.gif)
 
-![DICOM cine playback in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.3.1/media/marketing/chest-ct-cine.gif)
+![DICOM cine playback in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.3.2/media/marketing/chest-ct-cine.gif)
 
-[Source imagery attribution](https://raw.githubusercontent.com/dcmview/dcmview/v0.3.1/media/marketing/ATTRIBUTION.md)
+[Source imagery attribution](https://raw.githubusercontent.com/dcmview/dcmview/v0.3.2/media/marketing/ATTRIBUTION.md)
 <!-- dcmview-marketing:end -->
 
 ## Supported Platforms
@@ -81,7 +81,9 @@ integration for a single shell session.
 
 - `dcmview.binaryPath`: absolute path to a `dcmview` binary override.
 - `dcmview.defaultRecursive`: recursively scan selected folders by default.
-- `dcmview.extraArgs`: additional command-line arguments passed to `dcmview`.
+- `dcmview.extraArgs`: additional command-line arguments passed to `dcmview`,
+  for example `["--mask"]` to mask patient identifiers on screen (a display
+  aid, not de-identification).
 - `dcmview.startupTimeoutSeconds`: seconds to wait for startup.
 - `dcmview.terminalInterception.enabled`: route integrated terminal launches
   into editor webviews.
