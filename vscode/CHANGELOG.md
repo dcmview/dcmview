@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Preserve the access token across VS Code port forwarding by forwarding
+  `base_url` and attaching `token` afterwards. Older binaries still use `url`.
+  Bridge clients receive the token-bearing launch URL, startup credentials are
+  omitted from extension output, and socket-only startup events fail clearly.
+
 ## 0.3.2 - 2026-10-02
 
 - Adding `--mask` to `dcmview.extraArgs` starts masked sessions that replace

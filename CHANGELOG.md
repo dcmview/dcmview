@@ -24,6 +24,14 @@ diagnostic viewer.
 
 ### Added
 
+- Python non-blocking handles expose read-only `token` and `base_url` startup
+  fields for authenticated API calls, while `url` remains the launch URL.
+  Older binaries leave the new properties as `None`.
+- VS Code reads `base_url` and `token` separately so the token survives port
+  forwarding, with `url` as the fallback for older binaries. Bridge launch
+  URLs retain the token fragment, extension output omits startup credentials,
+  and socket-only startup events report an unsupported-launch error.
+
 - `--unix-socket PATH` serves the viewer through a private Unix domain socket
   on Linux and macOS, for shared-server inspection with SSH forwarding.
   The parent directory must be owned by the current effective user and not

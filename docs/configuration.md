@@ -119,6 +119,18 @@ the launch URL, token included, as a process argument) or `--unix-socket`.
 Non-loopback TCP binds still warn about plain HTTP; bearer authentication
 does not encrypt requests or responses.
 
+Python non-blocking handles expose the startup fields as read-only `token`
+and `base_url` properties, alongside the unchanged launch `url`; see the
+[authenticated API example](python.md#non-blocking-use). The VS Code extension
+forwards `base_url` through `asExternalUri`, then adds the token fragment after
+the query, including the viewer theme. Older binaries fall back to `url`.
+The extension's output channel shows the origin without credentials; bridge
+clients receive the full local launch URL with its token fragment.
+
+`DCMVIEW_TOKEN` set only in a launching terminal or notebook is not passed
+through the VS Code bridge. An extension-managed viewer inherits the extension
+host's environment; without a token there, it generates a fresh one.
+
 ## Python Module CLI
 
 `python -m dcmview_py` and the `dcmview`/`dcmview-py` console scripts forward

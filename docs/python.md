@@ -59,9 +59,28 @@ It provides:
 
 | Attribute or method | Behavior |
 |---|---|
-| `url` | Viewer URL when startup has reported one. |
+| `url` | Read-only launch URL, verbatim from startup, including the token fragment when enabled. |
+| `token` | Read-only `str \| None`: bearer token reported at startup; `None` when absent or under `--no-token`. |
+| `base_url` | Read-only `str \| None`: bare HTTP origin reported at startup, without the token fragment; `None` when absent. |
 | `stop(timeout=5.0)` | Ask the viewer to stop, wait for exit, and return the exit code. |
 | Context manager | Calls `stop()` automatically on context exit. |
+
+Older binaries that report only `url` leave `token` and `base_url` as `None`.
+For a local launch with a current binary, call the API with the bearer header:
+
+```python
+import json
+from urllib.request import Request, urlopen
+from dcmview_py import view
+
+with view("./study_dir", browser=False, block=False, vscode_bridge=False) as handle:
+    request = Request(
+        handle.base_url + "/api/files",
+        headers={"Authorization": f"Bearer {handle.token}"},
+    )
+    with urlopen(request) as response:
+        catalog = json.load(response)
+```
 
 Viewers started with `block=False` are stopped when the Python interpreter
 exits, whether or not the handle is still referenced, so a finished script or a
@@ -218,6 +237,13 @@ launches the local viewer. The wrapper hands this to the `dcmview` binary, so
 Python, terminal, and shell launches follow the same rule. `url`, `stop()`,
 and blocking calls behave the same for a VS Code-managed viewer; `stop()`
 closes the VS Code viewer.
+
+The bridge reports a launch URL with its token fragment, so `handle.url`
+continues to work. Its session event currently has no separate `token` or
+`base_url` fields, so those handle properties remain `None`. A `DCMVIEW_TOKEN`
+set only in the launching terminal or notebook is not forwarded through the
+bridge: the viewer inherits the extension host's environment and otherwise
+generates its own token.
 
 Set `vscode_bridge=False` for one call:
 
