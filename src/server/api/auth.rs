@@ -30,7 +30,9 @@ impl AccessToken {
         let mut bytes = [0; TOKEN_BYTES];
         getrandom::fill(&mut bytes)
             .map_err(|_| anyhow::anyhow!("failed to generate access token from OS randomness"))?;
-        Ok(Self(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)))
+        Ok(Self(
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes),
+        ))
     }
 
     /// A token fixed by the owner through `DCMVIEW_TOKEN`. It must be
