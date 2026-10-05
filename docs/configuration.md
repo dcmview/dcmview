@@ -68,7 +68,6 @@ The total defaults to 768 MiB and is split proportionally among display, raw,
 overlay and thumbnail caches using their default sizes of 256, 384, 64 and
 64 MiB. Each share rounds down; frames larger than their cache's share are
 served without being retained.
-Without the flag, those defaults are unchanged.
 
 This limits retained frame bodies, not total process memory. It does not cover
 in-flight decoding and responses, cache metadata, the file catalog, annotations,
