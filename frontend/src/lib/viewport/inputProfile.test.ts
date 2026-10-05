@@ -37,6 +37,10 @@ const traces = {
 	macMouseNotch: { everyMs: 60, steps: [withLegacy(pixels(4.000244140625), -120)] },
 	/** One small pixel step with nothing around it: could be either device. */
 	loneSmallStep: { everyMs: 16, steps: [pixels(20)] },
+	/** Lone pixel steps either side of the 50 px that splits them while the session has shown nothing. */
+	lone49: { everyMs: 16, steps: [pixels(49)] },
+	lone50: { everyMs: 16, steps: [pixels(-50)] },
+	lone99: { everyMs: 16, steps: [pixels(99)] },
 	/** Shift+wheel on Windows and Linux: a whole notch sideways. */
 	shiftWheel: { everyMs: 60, steps: [pixels(0, 100)] },
 } satisfies Record<string, Trace>;
@@ -62,6 +66,9 @@ const cases: { name: string; gestures: Expectation[] }[] = [
 		name: "a lone small step decides nothing and follows the profile",
 		gestures: [["loneSmallStep", "trackpad", null], ["notch100", "mouse", "mouse"], ["loneSmallStep", "mouse", "mouse"], ["loneSmallStep", "mouse", "mouse"]],
 	},
+	{ name: "in a fresh session a lone 49 px step acts as a trackpad", gestures: [["lone49", "trackpad", null]] },
+	{ name: "in a fresh session a lone 50 px step acts as a mouse", gestures: [["lone50", "mouse", null]] },
+	{ name: "in a fresh session a lone 99 px step acts as a mouse", gestures: [["lone99", "mouse", null]] },
 	{
 		name: "a sideways notch decides nothing",
 		gestures: [["notch100", "mouse", "mouse"], ["shiftWheel", "mouse", "mouse"], ["shiftWheel", "mouse", "mouse"]],
