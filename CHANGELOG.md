@@ -37,6 +37,8 @@ diagnostic viewer.
   without the token, or after dcmview restarted on the same port, it says to
   open the link printed in the terminal instead of showing a load error;
   pasting that link into the same tab loads the viewer.
+- Export ROIs reports a failed export in the viewer instead of leaving the
+  browser on an error page or doing nothing.
 
 ## 0.3.2 - 2026-10-02
 
