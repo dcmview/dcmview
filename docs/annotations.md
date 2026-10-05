@@ -55,8 +55,11 @@ Extra columns are ignored when loading and are not preserved when exporting.
 [[120, 340, 220, 430], [400, 510, 480, 590]]
 ```
 
-Coordinates are image pixel indices. Each box must be inside image bounds, and
-`ymax`/`xmax` must be greater than `ymin`/`xmin`.
+Coordinates are image pixel indices and must be non-negative integers. A box
+should be inside image bounds with `ymax`/`xmax` greater than `ymin`/`xmin`:
+loading does not check this, and such a box is kept and exported as written,
+but the viewer refuses to save an edit to a file whose boxes break either
+rule.
 
 `ROI_frames` is a JSON array with one frame-index list per ROI:
 
@@ -98,7 +101,7 @@ background ingestion. Common failures include:
 - Missing `anon_dicom_path` or `ROI_coords`.
 - Invalid JSON in `ROI_coords` or `ROI_frames`.
 - `num_ROI` not matching the number of coordinate boxes.
-- A coordinate box outside image bounds.
+- A negative or non-integer coordinate.
 - A frame index outside the file's frame range.
 - A different number of `ROI_coords` and `ROI_frames` entries.
 
