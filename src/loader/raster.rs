@@ -36,8 +36,10 @@ use std::path::Path;
 ///   ends early is `RasterHeaderInvalid`, not an error.
 ///
 /// A cancelled discovery is the other `Err`: `check_active` is called at
-/// least once for every segment, chunk and page visited, and its error is
-/// returned as it is.
+/// least once for every segment, chunk and page visited, and once more for
+/// every buffer of JPEG fill bytes read inside one segment, and its error is
+/// returned as it is. Only the first kind is a structural step: a check
+/// between two buffers of fill spends none of the step limit below.
 ///
 /// This function must not panic on any input and must not read pixel data.
 ///
@@ -393,8 +395,12 @@ impl<'a> HeaderReader<'a> {
         }
     }
 
+    fn active(&mut self) -> Result<()> {
+        (self.check_active)().inspect_err(|_| self.cancelled = true)
+    }
+
     fn step(&mut self) -> Result<()> {
-        (self.check_active)().inspect_err(|_| self.cancelled = true)?;
+        self.active()?;
         if self.steps == HEADER_SCAN_MAX_STEPS {
             let what = match self.format {
                 FileFormat::Tiff => "more than 65535 TIFF pages",
@@ -446,14 +452,8 @@ impl<'a> HeaderReader<'a> {
             }
         } else {
             while !bytes.is_empty() {
-                if offset < self.buffer_start
-                    || offset - self.buffer_start >= self.buffer_len as u64
-                {
-                    self.source.seek(SeekFrom::Start(offset))?;
-                    let mut buffer = [0; HEADER_SCAN_BUFFER_BYTES];
-                    self.buffer_len = self.read_source(&mut buffer)?;
-                    self.buffer[..self.buffer_len].copy_from_slice(&buffer[..self.buffer_len]);
-                    self.buffer_start = offset;
+                if !self.buffered(offset) {
+                    self.refill(offset)?;
                 }
                 let start = (offset - self.buffer_start) as usize;
                 let count = bytes.len().min(self.buffer_len - start);
@@ -463,6 +463,41 @@ impl<'a> HeaderReader<'a> {
             }
         }
         Ok(())
+    }
+
+    fn buffered(&self, offset: u64) -> bool {
+        offset >= self.buffer_start && offset - self.buffer_start < self.buffer_len as u64
+    }
+
+    fn refill(&mut self, offset: u64) -> Result<()> {
+        self.source.seek(SeekFrom::Start(offset))?;
+        let mut buffer = std::mem::take(&mut self.buffer);
+        let read = self.read_source(&mut buffer);
+        self.buffer = buffer;
+        // A failed read leaves nothing buffered rather than stale bytes.
+        self.buffer_len = 0;
+        self.buffer_start = offset;
+        self.buffer_len = read?;
+        Ok(())
+    }
+
+    /// The offset of the first byte at or after `offset` that is not `byte`,
+    /// found a buffer at a time. A long run is the one place a sequential
+    /// walk stays inside a single step, so cancellation is checked at every
+    /// refill.
+    fn skip_run(&mut self, mut offset: u64, byte: u8) -> Result<u64> {
+        loop {
+            self.check_range(offset, 1)?;
+            if !self.buffered(offset) {
+                self.active()?;
+                self.refill(offset)?;
+            }
+            let run = &self.buffer[(offset - self.buffer_start) as usize..self.buffer_len];
+            match run.iter().position(|found| *found != byte) {
+                Some(index) => return Ok(offset + index as u64),
+                None => offset += run.len() as u64,
+            }
+        }
     }
 
     fn read<const N: usize>(&mut self, offset: u64) -> Result<[u8; N]> {
@@ -704,7 +739,8 @@ mod tests {
                 format: FileFormat::Jpeg,
                 bytes: fill,
                 outcome: Outcome::Invalid,
-                most: sequential(fill_length),
+                // One read per buffer of fill and nothing per byte.
+                most: (fill_length, fill_length / BUFFER),
             },
             Case {
                 name: "JPEG of empty segments",
@@ -829,37 +865,56 @@ mod tests {
     }
 
     #[test]
-    fn a_cancelled_discovery_stops_a_header_walk_at_its_next_step() {
+    fn a_cancelled_discovery_stops_a_header_walk_at_its_next_check() {
         let mut segments = vec![0xff, 0xd8];
         for _ in 0..STEPS {
             segments.extend_from_slice(&[0xff, 0xe0, 0x00, 0x02]);
         }
-        let (reads, read, checks) = (Cell::new(0), Cell::new(0), Cell::new(0));
-        let length = segments.len() as u64;
-        let mut source = Counted {
-            bytes: Cursor::new(segments),
-            reads: &reads,
-            read: &read,
-        };
+        // One segment whose marker never comes: megabytes of fill.
+        let mut fill = vec![0xff, 0xd8];
+        fill.resize(4 * 1024 * 1024, 0xff);
 
-        let result = inspect_raster_source(
-            Path::new("crafted"),
-            &mut source,
-            length,
-            FileFormat::Jpeg,
-            &|| {
-                checks.set(checks.get() + 1);
-                anyhow::ensure!(checks.get() < 10, "discovery cancelled");
-                Ok(())
-            },
-        );
+        // Each walk is cancelled at its tenth check, with the most bytes it
+        // may have read by then.
+        let cases = [
+            ("JPEG of empty segments", segments, 2 * BUFFER),
+            ("JPEG of fill bytes", fill, 10 * BUFFER),
+        ];
+        for (name, bytes, most_bytes) in cases {
+            let (reads, read, checks) = (Cell::new(0), Cell::new(0), Cell::new(0));
+            let length = bytes.len() as u64;
+            let mut source = Counted {
+                bytes: Cursor::new(bytes),
+                reads: &reads,
+                read: &read,
+            };
 
-        let error = result.err().expect("the check's error ends the walk");
-        assert!(
-            error.to_string().contains("discovery cancelled"),
-            "{error:#}"
-        );
-        assert_eq!(checks.get(), 10, "the walk asks once per step and stops");
-        assert!(read.get() <= 2 * BUFFER, "{} bytes read", read.get());
+            let result = inspect_raster_source(
+                Path::new("crafted"),
+                &mut source,
+                length,
+                FileFormat::Jpeg,
+                &|| {
+                    checks.set(checks.get() + 1);
+                    anyhow::ensure!(checks.get() < 10, "discovery cancelled");
+                    Ok(())
+                },
+            );
+
+            let error = match result {
+                Err(error) => error,
+                Ok(_) => panic!("{name}: the walk outlived its cancellation"),
+            };
+            assert!(
+                error.to_string().contains("discovery cancelled"),
+                "{name}: {error:#}"
+            );
+            assert_eq!(checks.get(), 10, "{name}: the walk stops when told to");
+            assert!(
+                read.get() <= most_bytes,
+                "{name}: {} bytes read",
+                read.get()
+            );
+        }
     }
 }

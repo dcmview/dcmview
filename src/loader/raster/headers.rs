@@ -89,14 +89,10 @@ pub(super) fn jpeg(input: &mut HeaderReader) -> Result<Header> {
     loop {
         input.step()?;
         ensure!(input.read::<1>(offset)?[0] == 0xff, "invalid JPEG marker");
+        // Any number of fill bytes may stand between the 0xff and its marker.
+        offset = input.skip_run(offset + 1, 0xff)?;
+        let marker = input.read::<1>(offset)?[0];
         offset += 1;
-        let marker = loop {
-            let byte = input.read::<1>(offset)?[0];
-            offset += 1;
-            if byte != 0xff {
-                break byte;
-            }
-        };
         ensure!(
             !matches!(marker, 0 | 0xd8..=0xda),
             "JPEG ends before a frame header"
