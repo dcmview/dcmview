@@ -40,32 +40,58 @@ export function isEditableTarget(target: EventTarget | null): boolean {
 }
 
 /**
+ * Ctrl, Meta or Alt is held. No binding names one of them, so the key is the
+ * browser's, the system's or VS Code's (Ctrl+Z, Ctrl+R, Cmd+[) and not ours.
+ */
+function hasCommandModifier(event: ShortcutKeyEvent): boolean {
+	return event.altKey || event.ctrlKey || event.metaKey;
+}
+
+/**
+ * The key may have been typed with AltGr, which Windows reports as Ctrl+Alt,
+ * or with Option. Layouts without bracket keys type `[` and `]` that way.
+ */
+function mayBeTypedWithAltGraph(event: ShortcutKeyEvent): boolean {
+	return event.altKey && !event.metaKey;
+}
+
+/**
  * Maps a window keydown to a viewer action. Escape closes an open drawer
  * from anywhere; every other shortcut is ignored while focus is in an
- * editable control.
+ * editable control, and while Ctrl, Meta or Alt is held, so those
+ * combinations stay with the browser or VS Code. Delete and Backspace are
+ * the exception and remove the selected ROI with or without a modifier. Shift alone does not stop a
+ * shortcut, except for the file arrows.
  */
 export function shortcutFor(event: ShortcutKeyEvent, context: ShortcutContext): ShortcutAction | null {
 	if (event.key === "Escape" && context.drawerOpen) return { type: "close-drawer" };
 	if (isEditableTarget(event.target)) return null;
 	if (isRangeTarget(event.target) && event.key.startsWith("Arrow")) return null;
 
-	const modified = event.altKey || event.ctrlKey || event.metaKey || event.shiftKey;
-	if ((event.key === "ArrowUp" || event.key === "ArrowDown") && !modified) {
+	if (context.multiFrame && (!hasCommandModifier(event) || mayBeTypedWithAltGraph(event))) {
+		if (event.key === "[") return { type: "step-frame", step: -1 };
+		if (event.key === "]") return { type: "step-frame", step: 1 };
+	}
+	// Deleting the selected ROI keeps working with a modifier held:
+	// Cmd+Backspace is the usual delete on macOS, not an accidental chord.
+	if (context.roiToolActive && (event.key === "Delete" || event.key === "Backspace")) {
+		return { type: "delete-roi" };
+	}
+	if (hasCommandModifier(event)) return null;
+
+	if ((event.key === "ArrowUp" || event.key === "ArrowDown") && !event.shiftKey) {
 		return { type: "select-adjacent-file", step: event.key === "ArrowUp" ? -1 : 1 };
 	}
 	const tool = TOOL_KEYS.get(event.key.toLowerCase());
 	if (tool) return { type: "select-tool", tool };
 	if (context.multiFrame) {
-		if (event.key === "ArrowLeft" || event.key === "[") return { type: "step-frame", step: -1 };
-		if (event.key === "ArrowRight" || event.key === "]") return { type: "step-frame", step: 1 };
+		if (event.key === "ArrowLeft") return { type: "step-frame", step: -1 };
+		if (event.key === "ArrowRight") return { type: "step-frame", step: 1 };
 		if (event.key === " ") return { type: "toggle-cine" };
 	}
 	if (context.annotationItems) {
 		if (event.key === ",") return { type: "step-annotation-item", step: -1 };
 		if (event.key === ".") return { type: "step-annotation-item", step: 1 };
-	}
-	if (context.roiToolActive && (event.key === "Delete" || event.key === "Backspace")) {
-		return { type: "delete-roi" };
 	}
 	return null;
 }

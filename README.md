@@ -307,8 +307,9 @@ Common shortcuts:
 | Redact tool | `X` |
 | Reset viewport | Double-click |
 
-Right-drag always zooms, middle-drag always pans, the wheel scrolls frames, and
-Ctrl/Cmd+wheel zooms.
+Middle-drag pans in every tool. The wheel zooms about the pointer, a
+two-finger trackpad scroll pans, and Ctrl/Cmd+wheel (a trackpad pinch) zooms.
+In the Scroll tool the wheel steps frames.
 
 ## Annotations
 

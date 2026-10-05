@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { isEditableTarget, RepeatThrottle, shortcutFor, type ShortcutContext, type ShortcutKeyEvent } from "./keyboardShortcuts";
+import { isEditableTarget, RepeatThrottle, shortcutFor, type ShortcutAction, type ShortcutContext, type ShortcutKeyEvent } from "./keyboardShortcuts";
+import type { ActiveTool } from "./viewerTools";
 
 const idle: ShortcutContext = { drawerOpen: false, multiFrame: true, roiToolActive: false, annotationItems: false };
 
@@ -33,13 +34,47 @@ describe("shortcutFor", () => {
 		}
 	});
 
-	it("selects tools by their toolbar letters, in either case", () => {
-		expect(shortcutFor(press("w"), idle)).toEqual({ type: "select-tool", tool: "window_level" });
-		expect(shortcutFor(press("P"), idle)).toEqual({ type: "select-tool", tool: "pan" });
-		expect(shortcutFor(press("z"), idle)).toEqual({ type: "select-tool", tool: "zoom" });
-		expect(shortcutFor(press("s"), idle)).toEqual({ type: "select-tool", tool: "scroll" });
-		expect(shortcutFor(press("r"), idle)).toEqual({ type: "select-tool", tool: "annotate_rect" });
-		expect(shortcutFor(press("x"), idle)).toEqual({ type: "select-tool", tool: "redact" });
+	it("leaves every binding to the browser while Ctrl, Meta or Alt is held", () => {
+		const context: ShortcutContext = { drawerOpen: false, multiFrame: true, roiToolActive: true, annotationItems: true };
+		const tool = (name: ActiveTool): ShortcutAction => ({ type: "select-tool", tool: name });
+		// Key, its action alone, and whether Alt (or AltGr, reported as Ctrl+Alt) still reaches it.
+		const bindings: [string, ShortcutAction, boolean][] = [
+			["w", tool("window_level"), false],
+			["p", tool("pan"), false],
+			["z", tool("zoom"), false],
+			["s", tool("scroll"), false],
+			["r", tool("annotate_rect"), false],
+			["x", tool("redact"), false],
+			["ArrowUp", { type: "select-adjacent-file", step: -1 }, false],
+			["ArrowDown", { type: "select-adjacent-file", step: 1 }, false],
+			["ArrowLeft", { type: "step-frame", step: -1 }, false],
+			["ArrowRight", { type: "step-frame", step: 1 }, false],
+			// Layouts without bracket keys type them with AltGr or Option.
+			["[", { type: "step-frame", step: -1 }, true],
+			["]", { type: "step-frame", step: 1 }, true],
+			[" ", { type: "toggle-cine" }, false],
+			[",", { type: "step-annotation-item", step: -1 }, false],
+			[".", { type: "step-annotation-item", step: 1 }, false],
+		];
+		for (const [key, action, altGraph] of bindings) {
+			expect(shortcutFor(press(key), context), key).toEqual(action);
+			expect(shortcutFor(press(key, { ctrlKey: true }), context), `Ctrl+${key}`).toBeNull();
+			expect(shortcutFor(press(key, { metaKey: true }), context), `Meta+${key}`).toBeNull();
+			expect(shortcutFor(press(key, { metaKey: true, altKey: true }), context), `Meta+Alt+${key}`).toBeNull();
+			expect(shortcutFor(press(key, { ctrlKey: true, shiftKey: true }), context), `Ctrl+Shift+${key}`).toBeNull();
+			expect(shortcutFor(press(key, { altKey: true }), context), `Alt+${key}`).toEqual(altGraph ? action : null);
+			expect(shortcutFor(press(key, { ctrlKey: true, altKey: true }), context), `Ctrl+Alt+${key}`).toEqual(altGraph ? action : null);
+		}
+		// Deleting the selected ROI is not an accidental chord: Cmd+Backspace
+		// is the usual delete on macOS.
+		for (const key of ["Delete", "Backspace"]) {
+			for (const modifiers of [{}, { metaKey: true }, { ctrlKey: true }, { altKey: true }]) {
+				expect(shortcutFor(press(key, modifiers), context), `${key} ${JSON.stringify(modifiers)}`)
+					.toEqual({ type: "delete-roi" });
+			}
+		}
+		// Shift alone still reaches a tool letter, as with Caps Lock.
+		expect(shortcutFor(press("P", { shiftKey: true }), idle)).toEqual(tool("pan"));
 	});
 
 	it("moves between files with unmodified up and down arrows", () => {

@@ -1,12 +1,12 @@
 // @vitest-environment happy-dom
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/svelte";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, createEvent, fireEvent, render, screen, waitFor } from "@testing-library/svelte";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "../api";
 import { fileSummary, rawFrame } from "../testing/fixtures";
 import ImageViewport from "./ImageViewport.svelte";
 import * as frameOverlay from "./viewport/frameOverlay";
 import { navigationFramesForFile } from "./seriesNavigation";
-import type { ActiveTool } from "./viewerTools";
+import { TOOL_ORDER, type ActiveTool } from "./viewerTools";
 import { ViewStates } from "./viewport/viewStates.svelte";
 import { reactiveProps } from "../testing/reactiveProps.svelte";
 import type { ComponentProps } from "svelte";
@@ -716,14 +716,14 @@ describe("F11 remaining confirmations", () => {
 });
 
 
-describe("ImageViewport frame presentation", () => {
-	function canvasContext() {
-		const context = { clearRect: vi.fn(), putImageData: vi.fn(), drawImage: vi.fn(),
-			createImageData: (w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4) }) };
-		const spy = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(context as unknown as CanvasRenderingContext2D);
-		return { context, restore: () => spy.mockRestore() };
-	}
+function canvasContext() {
+	const context = { clearRect: vi.fn(), putImageData: vi.fn(), drawImage: vi.fn(),
+		createImageData: (w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4) }) };
+	const spy = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(context as unknown as CanvasRenderingContext2D);
+	return { context, restore: () => spy.mockRestore() };
+}
 
+describe("ImageViewport frame presentation", () => {
 	it("presents a display image before its delayed mapping and then updates its legend", async () => {
 		const { context, restore } = canvasContext();
 		vi.stubGlobal("createImageBitmap", vi.fn(async () => ({ width: 64, height: 64, close: vi.fn() })));
@@ -1099,5 +1099,199 @@ describe("ImageViewport graphic annotations", () => {
 		await rerender({ graphicAnnotation: null });
 		expect(container.querySelector(".graphic-annotations")).toBeNull();
 		expect(container.querySelector(".graphic-annotation-labels")).toBeNull();
+	});
+});
+
+// The gestures every tool shares, which the tool host handles before any tool.
+describe("ImageViewport shared gestures", () => {
+	const noRois: api.EmbedRoiAnnotations = { num_roi: 0, roi_coords: [], roi_frames: [] };
+	const oneRoi: api.EmbedRoiAnnotations = { num_roi: 1, roi_coords: [[10, 10, 30, 30]], roi_frames: [] };
+	const otherFileRoi: api.EmbedRoiAnnotations = { num_roi: 1, roi_coords: [[40, 40, 60, 60]], roi_frames: [] };
+
+	let restoreCanvas = () => {};
+	beforeEach(() => {
+		restoreCanvas = canvasContext().restore;
+		vi.stubGlobal("createImageBitmap", vi.fn(async () => ({ width: 64, height: 64, close: vi.fn() })));
+	});
+	afterEach(() => {
+		restoreCanvas();
+		vi.unstubAllGlobals();
+	});
+
+	type Wheel = { deltaX?: number; deltaY?: number; deltaMode?: number; ctrlKey?: boolean; metaKey?: boolean };
+	/** A wheel event at client (20, 30). happy-dom's WheelEvent lacks the MouseEvent fields browsers give it. */
+	function wheelAt(viewport: HTMLElement, { ctrlKey = false, metaKey = false, ...deltas }: Wheel) {
+		const event = createEvent.wheel(viewport, deltas);
+		Object.defineProperties(event, {
+			clientX: { value: 20 }, clientY: { value: 30 }, ctrlKey: { value: ctrlKey }, metaKey: { value: metaKey },
+		});
+		return fireEvent(viewport, event);
+	}
+
+	/** The zoom and pan the image layer is drawn with. */
+	function shownTransform() {
+		const style = document.querySelector(".image-layer")?.getAttribute("style") ?? "";
+		const match = /translate\((\S+)px, (\S+)px\) scale\((\S+?)\)/.exec(style);
+		if (!match) throw new Error(`no view transform in "${style}"`);
+		return { tx: Number(match[1]), ty: Number(match[2]), scale: Number(match[3]) };
+	}
+
+	function expectTransform(expected: { tx: number; ty: number; scale: number }) {
+		const shown = shownTransform();
+		expect(shown.scale).toBeCloseTo(expected.scale, 3);
+		expect(shown.tx).toBeCloseTo(expected.tx, 1);
+		expect(shown.ty).toBeCloseTo(expected.ty, 1);
+	}
+
+	/** Resolves once the frame is on screen, which is when a tool can act on it. */
+	async function shown(fileIndex: number, frameIndex: number) {
+		await waitFor(() => expect(document.querySelector(".dicom-canvas")?.getAttribute("data-capture-rendered"))
+			.toBe(`${fileIndex}:${frameIndex}`));
+	}
+
+	const draft = () => document.querySelector(".roi-rect.draft");
+	const coords = () => [...document.querySelectorAll(".roi-coords")].map((item) => item.textContent);
+	const windowHud = () => [...document.querySelectorAll(".hud .overlay span")]
+		.map((span) => span.textContent?.trim()).find((text) => text?.startsWith("W:"));
+
+	/** A three-frame file (5) with `rois` in `activeTool`, ready for that tool's own gesture; file 6 has its own ROI. */
+	async function renderReady(activeTool: ActiveTool, rois = noRois) {
+		vi.mocked(api.fetchAnnotations).mockImplementation(async (file) => file === 6 ? otherFileRoi : rois);
+		const onnavigationchange = vi.fn();
+		const onmanualwindowlevel = vi.fn();
+		const view = renderViewport({ activeTool, file: fileSummary(5, { frame_count: 3 }), onnavigationchange, onmanualwindowlevel });
+		const viewport = await screen.findByRole("application");
+		await shown(5, 0);
+		await screen.findByText(activeTool === "redact" ? "Redactions 0 / 0" : `ROIs ${rois.num_roi} / ${rois.num_roi}`);
+		if (activeTool === "window_level") await waitFor(() => expect(windowHud()).toBe("W: 1 · C: 0.5"));
+		return { ...view, viewport, onnavigationchange, onmanualwindowlevel };
+	}
+
+	it.each([
+		...TOOL_ORDER.map((tool) => [tool, "middle", 1, true] as const),
+		...TOOL_ORDER.map((tool) => [tool, "right", 2, false] as const),
+		["pan", "left", 0, true] as const,
+	])("%s tool: a %s-button drag pans or does nothing, and never starts another tool's gesture", async (tool, _name, button, pans) => {
+		const { viewport, onnavigationchange, onmanualwindowlevel } = await renderReady(tool);
+		const moved = pans ? { tx: 15, ty: -6, scale: 1 } : { tx: 0, ty: 0, scale: 1 };
+
+		await fireEvent.pointerDown(viewport, { button, clientX: 10, clientY: 10, pointerId: 1 });
+		// The pointer belongs to the viewport for as long as the drag lasts.
+		expect(viewport.hasPointerCapture(1)).toBe(pans);
+		await fireEvent.pointerMove(viewport, { clientX: 25, clientY: 4, pointerId: 1 });
+		expectTransform(moved);
+		expect(draft()).toBeNull();
+		await fireEvent.pointerUp(viewport, { button, clientX: 25, clientY: 4, pointerId: 1 });
+		expect(viewport.hasPointerCapture(1)).toBe(false);
+		await fireEvent.pointerMove(viewport, { clientX: 60, clientY: 60, pointerId: 1 });
+
+		expectTransform(moved);
+		expect(onnavigationchange).not.toHaveBeenCalled();
+		expect(onmanualwindowlevel).not.toHaveBeenCalled();
+		expect(api.updateAnnotations).not.toHaveBeenCalled();
+		expect(api.updateRedactions).not.toHaveBeenCalled();
+		if (tool === "window_level") expect(windowHud()).toBe("W: 1 · C: 0.5");
+	});
+
+	// Zooming keeps the image point under the pointer (20, 30) in place.
+	const zoomedAbout = (scale: number) => ({ scale, tx: 20 - 20 * scale, ty: 30 - 30 * scale });
+	it.each([
+		["a mouse wheel notch zooms about the pointer", "pan", { deltaY: -100 }, zoomedAbout(Math.exp(0.25)), null],
+		["a line-mode wheel zooms however small its step", "pan", { deltaY: 1, deltaMode: 1 }, zoomedAbout(Math.exp(-0.04)), null],
+		["a small pixel step pans", "pan", { deltaY: 20 }, { scale: 1, tx: 0, ty: -20 }, null],
+		["a step with a horizontal part pans both ways", "pan", { deltaX: 30, deltaY: 80 }, { scale: 1, tx: -30, ty: -80 }, null],
+		["Ctrl plus wheel zooms as a pinch", "pan", { deltaY: -10, ctrlKey: true }, zoomedAbout(Math.exp(0.1)), null],
+		["Meta plus wheel zooms as a pinch", "pan", { deltaY: -10, metaKey: true }, zoomedAbout(Math.exp(0.1)), null],
+		["the Scroll tool steps to the next frame", "scroll", { deltaY: 100 }, { scale: 1, tx: 0, ty: 0 }, 1],
+	] as const)("wheel: %s", async (_name, tool, wheel, expected, steppedTo) => {
+		const { viewport, onnavigationchange } = await renderReady(tool);
+
+		await wheelAt(viewport, wheel);
+
+		expectTransform(expected);
+		if (steppedTo === null) expect(onnavigationchange).not.toHaveBeenCalled();
+		else expect(onnavigationchange.mock.calls).toEqual([[steppedTo]]);
+	});
+
+	it.each([
+		["draw", "frame"], ["draw", "file"], ["move", "frame"], ["move", "file"],
+	] as const)("drops a rectangle %s when the %s changes under it", async (gesture, change) => {
+		const { viewport, rerender } = await renderReady("annotate_rect", gesture === "move" ? oneRoi : noRois);
+		const before = gesture === "move" ? ["[10, 10, 30, 30]"] : [];
+		const after = change === "file" ? ["[40, 40, 60, 60]"] : before;
+
+		// From (20, 20): inside the ROI when there is one, on bare image otherwise.
+		await fireEvent.pointerDown(viewport, { button: 0, clientX: 20, clientY: 20, pointerId: 1 });
+		await fireEvent.pointerMove(viewport, { clientX: 25, clientY: 25, pointerId: 1 });
+		if (gesture === "draw") expect(draft()).not.toBeNull();
+		else expect(coords()).toEqual(["[15, 15, 35, 35]"]);
+
+		await rerender(change === "file"
+			? { activeFile: fileSummary(6, { frame_count: 3 }) }
+			: { currentFrame: 1, navigationPosition: 1 });
+		await (change === "file" ? shown(6, 0) : shown(5, 1));
+		await waitFor(() => expect(coords()).toHaveLength(after.length));
+		await fireEvent.pointerMove(viewport, { clientX: 45, clientY: 45, pointerId: 1 });
+
+		expect(draft()).toBeNull();
+		expect(coords()).toEqual(after);
+		await fireEvent.pointerUp(viewport, { clientX: 45, clientY: 45, pointerId: 1 });
+		expect(draft()).toBeNull();
+		expect(coords()).toEqual(after);
+		expect(api.updateAnnotations).not.toHaveBeenCalled();
+
+		// The frame the gesture began on shows what it showed before.
+		await rerender(change === "file"
+			? { activeFile: fileSummary(5, { frame_count: 3 }) }
+			: { currentFrame: 0, navigationPosition: 0 });
+		await shown(5, 0);
+		await waitFor(() => expect(coords()).toEqual(before));
+		expect(api.updateAnnotations).not.toHaveBeenCalled();
+	});
+
+	it("does not land a rectangle on the new frame when released without another move", async () => {
+		const { viewport, rerender } = await renderReady("annotate_rect", noRois);
+
+		await fireEvent.pointerDown(viewport, { button: 0, clientX: 20, clientY: 20, pointerId: 1 });
+		await fireEvent.pointerMove(viewport, { clientX: 35, clientY: 35, pointerId: 1 });
+		expect(draft()).not.toBeNull();
+
+		await rerender({ currentFrame: 1, navigationPosition: 1 });
+		await shown(5, 1);
+		await fireEvent.pointerUp(viewport, { clientX: 35, clientY: 35, pointerId: 1 });
+
+		expect(draft()).toBeNull();
+		expect(coords()).toEqual([]);
+		expect(api.updateAnnotations).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		["a rectangle being drawn", "annotate_rect", noRois, false],
+		["a ROI being moved", "annotate_rect", oneRoi, false],
+		["a ROI being moved, after a second pointer began a middle-button pan", "annotate_rect", oneRoi, true],
+		["a window/level drag", "window_level", noRois, false],
+		["a pan", "pan", noRois, false],
+	] as const)("pointercancel ends %s without committing it", async (_name, tool, rois, secondPointer) => {
+		const { viewport, onmanualwindowlevel } = await renderReady(tool, rois);
+
+		await fireEvent.pointerDown(viewport, { button: 0, clientX: 20, clientY: 20, pointerId: 1 });
+		await fireEvent.pointerMove(viewport, { clientX: 25, clientY: 25, pointerId: 1 });
+		if (tool === "annotate_rect" && rois.num_roi === 0) expect(draft()).not.toBeNull();
+		if (rois.num_roi === 1) expect(coords()).toEqual(["[15, 15, 35, 35]"]);
+		if (tool === "pan") expectTransform({ tx: 5, ty: 5, scale: 1 });
+		if (tool === "window_level") await waitFor(() => expect(windowHud()).toMatch(/^W: 21 /));
+		if (secondPointer) await fireEvent.pointerDown(viewport, { button: 1, clientX: 40, clientY: 40, pointerId: 2 });
+
+		await fireEvent.pointerCancel(viewport, { pointerId: 1 });
+		await fireEvent.pointerMove(viewport, { clientX: 50, clientY: 50, pointerId: 1 });
+		await fireEvent.pointerUp(viewport, { clientX: 50, clientY: 50, pointerId: 1 });
+
+		expect(draft()).toBeNull();
+		expect(coords()).toEqual(rois.num_roi === 1 ? ["[10, 10, 30, 30]"] : []);
+		expect(api.updateAnnotations).not.toHaveBeenCalled();
+		expect(onmanualwindowlevel).not.toHaveBeenCalled();
+		// A pan is not undone, but it stops following the pointer.
+		expectTransform(tool === "pan" ? { tx: 5, ty: 5, scale: 1 } : { tx: 0, ty: 0, scale: 1 });
+		if (tool === "window_level") await waitFor(() => expect(windowHud()).toBe("W: 1 · C: 0.5"));
 	});
 });
