@@ -69,6 +69,14 @@ pub async fn load_raw_frame(
         });
     }
     PixelError::ensure_frame(request.frame, file.frame_count)?;
+    if file.format.is_raster() {
+        return Err(PixelError::UnsupportedLayout(
+            classify_pixel_support(&file)
+                .reason_id()
+                .unwrap_or_default()
+                .to_string(),
+        ));
+    }
 
     let codec = codec_or_unsupported(&file)?;
     reject_unsupported_layout(&file, FrameKind::Raw)?;
@@ -200,6 +208,14 @@ pub async fn load_redacted_frame(
         });
     }
     PixelError::ensure_frame(request.frame, file.frame_count)?;
+    if file.format.is_raster() {
+        return Err(PixelError::UnsupportedLayout(
+            classify_pixel_support(&file)
+                .reason_id()
+                .unwrap_or_default()
+                .to_string(),
+        ));
+    }
 
     let window = WindowRequest::new(
         request.window_center,

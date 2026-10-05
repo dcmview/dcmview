@@ -56,6 +56,23 @@ struct InstanceMappings {
 }
 
 impl FileValueMappings {
+    /// Image files carry stored samples without DICOM value transforms.
+    pub(crate) fn identity(file: &FileEntry) -> Self {
+        Self {
+            stored_value_type: stored_value_type(file),
+            modality: ModalityValueTransform {
+                rescale_slope: 1.0,
+                rescale_intercept: 0.0,
+                rescale_type: None,
+                lut: None,
+            },
+            voi_lut: None,
+            default: Vec::new(),
+            per_frame: Vec::new(),
+            instances: Vec::new(),
+        }
+    }
+
     /// Reads the header of `file`, stopping before any pixel data, and every
     /// RWVM instance among `files` that references it.
     pub fn read(file: &FileEntry, files: &[Arc<FileEntry>]) -> Result<Self> {
