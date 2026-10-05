@@ -194,16 +194,44 @@ pixel probe and value-mapping conversions behind the readout, and the view
 transform math, including the client-to-image-pixel mapping.
 
 Pointer and wheel events go to one `viewport/ToolHost.svelte.ts`. It owns
-pointer capture, the gestures every tool shares (middle-button pan, wheel pan
-and zoom, pinch, with the wheel classified in one function), the cancel of a
-frame-bound gesture when another file or frame is shown, and the tool that
-holds the pointer. Each tool (Pan, Zoom, Scroll, W/L, and the rectangle tool
+pointer capture, the gestures every tool shares (middle-button pan,
+right-button zoom, wheel pan and zoom, pinch, Alt+wheel frame steps), the
+cancel of a frame-bound gesture when another file or frame is shown, and the
+tool that holds the pointer. It runs one gesture at a time: presses and moves
+of a second pointer are ignored until the first one's gesture ends.
+
+The host tells a mouse from a trackpad through `viewport/inputProfile.ts`,
+which is pure. A run of wheel events under 150 ms apart is one gesture,
+classified from its first events and never reclassified: line or page mode,
+whole 100 or 120 px notches, a legacy `wheelDeltaY` of whole notches, or
+steps that are multiples of one quantum are a mouse; a diagonal step or
+varied small steps are a trackpad. The session profile is set by the first
+confident gesture and switches after two confident gestures of the other
+device in a row. A gesture whose first event decides nothing acts as the
+profile, or by the per-event rule (a pixel step under 50 px pans) while the
+session has shown nothing. A mouse gesture zooms and a trackpad gesture pans;
+Ctrl or Meta plus wheel is a pinch and zooms in every tool. The host exposes
+the profile (`inputProfile`) and an Auto, Mouse or Trackpad override
+(`inputProfileSetting`) as state; no control sets the override yet. Tools
+receive the gesture's device with each wheel step and the profile as
+`ToolContext.inputProfile`, and never read wheel events: the Scroll tool
+steps one frame per mouse notch and one per 30 px of trackpad travel,
+stopping on the falling step sizes of a momentum tail, and the rectangle
+tool grabs handles within 10 screen pixels in the trackpad profile and 8
+otherwise.
+
+Each tool (Pan, Zoom, Scroll, W/L, and the rectangle tool
 behind both ROI and Redact) is a state machine in `lib/annotation/tools/`
 behind the `Tool` interface of `tool.ts`, with no Svelte in it. Tools reach
 the viewport only through `ToolContext`, which the viewport implements over
 its own state: the view transform, frame navigation, the live window of a
-W/L drag, and the rectangles being edited. The host exposes what the tool
-holding the pointer is drawing (the draft rectangle). The viewport keeps
+W/L drag, and the rectangles being edited. A tool whose gesture goes on
+with no button held reports `armed` after a release: the host then keeps
+its state, sends it the pointer's moves, gives it the next press, and drops
+it on Escape (`cancelPlacement`, offered the key by `App.svelte` before the
+shortcut table) or when another tool, file or frame is shown. The rectangle
+tool uses this to place a rectangle with two clicks. The host exposes what
+the tool holding the pointer, or armed, is drawing (the draft rectangle). The viewport keeps
 rendering, the readout, and the overlays, the presentation state's
 annotations among them.
 

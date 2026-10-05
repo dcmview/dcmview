@@ -308,9 +308,20 @@ Common shortcuts:
 | Redact tool | `X` |
 | Reset viewport | Double-click |
 
-Middle-drag pans in every tool. The wheel zooms about the pointer, a
-two-finger trackpad scroll pans, and Ctrl/Cmd+wheel (a trackpad pinch) zooms.
-In the Scroll tool the wheel steps frames.
+Mouse and trackpad, in every tool:
+
+| Action | Mouse | Trackpad |
+|---|---|---|
+| Pan | Middle-drag | Two-finger scroll |
+| Zoom | Wheel, or right-drag (up to zoom in) | Pinch |
+| Step frames | Alt+wheel, or the wheel in the Scroll tool | Alt+two-finger scroll, or a two-finger scroll in the Scroll tool |
+| Draw a ROI or redaction box | Drag, or click two corners (Esc cancels) | Click two corners, or drag |
+
+The viewer tells the two devices apart by their wheel events, one gesture at
+a time, and keeps to what it last saw: after a couple of scrolls with the
+other device it switches. A mouse wheel steps one frame per notch; a trackpad
+scroll steps one frame per 30 px of travel and stops when the fingers lift.
+Ctrl/Cmd+wheel zooms like a pinch.
 
 ## Annotations
 
