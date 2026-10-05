@@ -7,8 +7,7 @@ use bytes::Bytes;
 use futures::FutureExt;
 use std::future::Future;
 use std::hash::Hash;
-use std::sync::{Arc, LazyLock, Mutex};
-use tokio::sync::Semaphore;
+use std::sync::{Arc, Mutex};
 
 use super::cache::{BudgetedLru, FrameBody, FrameCache, InFlight, RawFrameCache, ThumbnailCache};
 use super::deflated_frame::{
@@ -28,6 +27,7 @@ use super::render::{
     LuminanceRenderOptions, StoredSamples,
 };
 use super::rle::{decode_raw_rle, decode_rle_to_png};
+use super::schedule::{decode_scheduler, DecodeClass};
 use super::syntax::{classify_pixel_support, codec_for_syntax, Codec, PixelSupportReason};
 use super::thumbnail::{ThumbnailRequest, ThumbnailResponse};
 
@@ -577,19 +577,9 @@ async fn cached_or_rendered(
     if !preview {
         return cached_or_decoded(cache, key, render).await;
     }
-    let _permit = DECODE_PERMITS
-        .acquire()
-        .await
-        .map_err(|_| PixelError::frame_decode(anyhow::anyhow!("decoder shut down")))?;
+    let _permit = decode_scheduler().acquire(DecodeClass::Interactive).await;
     Ok((render.await?, false))
 }
-
-/// Decodes run on the blocking pool; bounding them to the core count keeps
-/// concurrent requests from multiplying peak memory (one large frame can take
-/// hundreds of MB while it decodes) without speeding anything up.
-static DECODE_PERMITS: LazyLock<Semaphore> = LazyLock::new(|| {
-    Semaphore::new(std::thread::available_parallelism().map_or(4, |cores| cores.get()))
-});
 
 /// The cached value for `key` (`true`), or the result of `decode` (`false`).
 ///
@@ -639,11 +629,9 @@ where
 {
     let (task_cache, task_key) = (Arc::clone(cache), key.clone());
     let task = tokio::spawn(async move {
-        let result = match DECODE_PERMITS.acquire().await {
-            Ok(_permit) => decode.await,
-            Err(_) => Err(PixelError::frame_decode(anyhow::anyhow!(
-                "decoder shut down"
-            ))),
+        let result = {
+            let _permit = decode_scheduler().acquire(DecodeClass::Interactive).await;
+            decode.await
         };
         if let Ok(mut lock) = task_cache.lock() {
             lock.finish_flight(&task_key);

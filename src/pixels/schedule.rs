@@ -14,8 +14,11 @@
 //! to the `X-Dcmview-Background` request header, which only keeps a request
 //! off the idle clock and never changes how it is served.
 
-use std::sync::Arc;
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::sync::Notify;
+use tokio::time::Instant;
 
 /// How urgent a decode is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -77,6 +80,8 @@ pub fn background_limit(permits: usize) -> usize {
 ///   as a waiting interactive request.
 pub struct DecodeScheduler {
     permits: usize,
+    state: Mutex<ScheduleState>,
+    changed: Notify,
 }
 
 /// One running decode's share of the pool, returned to the scheduler when
@@ -84,7 +89,8 @@ pub struct DecodeScheduler {
 /// the decode.
 #[must_use = "a decode permit is released when dropped"]
 pub struct DecodePermit {
-    _scheduler: Arc<DecodeScheduler>,
+    scheduler: Arc<DecodeScheduler>,
+    class: DecodeClass,
 }
 
 impl DecodeScheduler {
@@ -92,6 +98,8 @@ impl DecodeScheduler {
     pub fn new(permits: usize) -> Arc<Self> {
         Arc::new(Self {
             permits: permits.max(1),
+            state: Mutex::new(ScheduleState::default()),
+            changed: Notify::new(),
         })
     }
 
@@ -107,8 +115,127 @@ impl DecodeScheduler {
     /// this inside its request future, so a client that aborts before the
     /// grant causes no decode at all.
     pub async fn acquire(self: &Arc<Self>, class: DecodeClass) -> DecodePermit {
-        let _ = class;
-        todo!("GAL1: grant decode permits by class")
+        let id = {
+            let mut state = self.state.lock().expect("decode scheduler lock poisoned");
+            let id = state.next_id;
+            state.next_id += 1;
+            if class == DecodeClass::Interactive {
+                state.last_interactive = Some(Instant::now());
+            }
+            state.queue(class).push_back(id);
+            id
+        };
+        let mut waiting = WaitingDecode {
+            scheduler: self,
+            class,
+            id,
+            queued: true,
+        };
+        self.changed.notify_waiters();
+        loop {
+            // Register before checking the state, so a release between the
+            // check and the await cannot be lost.
+            let changed = self.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            let idle_until = {
+                let mut state = self.state.lock().expect("decode scheduler lock poisoned");
+                let idle_until = (self.permits == 1 && class == DecodeClass::Background)
+                    .then_some(state.last_interactive)
+                    .flatten()
+                    .map(|last| last + ONE_CORE_IDLE_WINDOW)
+                    .filter(|deadline| *deadline > Instant::now());
+                let eligible = state.running < self.permits
+                    && state.queue(class).front() == Some(&id)
+                    && (class == DecodeClass::Interactive
+                        || (state.interactive.is_empty()
+                            && state.background_running < background_limit(self.permits)
+                            && idle_until.is_none()));
+                if eligible {
+                    state.queue(class).pop_front();
+                    waiting.queued = false;
+                    state.running += 1;
+                    if class == DecodeClass::Background {
+                        state.background_running += 1;
+                    }
+                    // The next request in this class may now use another
+                    // free permit, without waiting for this decode to finish.
+                    self.changed.notify_waiters();
+                    return DecodePermit {
+                        scheduler: Arc::clone(self),
+                        class,
+                    };
+                }
+                idle_until
+            };
+            if let Some(deadline) = idle_until {
+                tokio::select! {
+                    _ = changed => {},
+                    _ = tokio::time::sleep_until(deadline) => {},
+                }
+            } else {
+                changed.await;
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+struct ScheduleState {
+    running: usize,
+    background_running: usize,
+    next_id: u64,
+    interactive: VecDeque<u64>,
+    background: VecDeque<u64>,
+    last_interactive: Option<Instant>,
+}
+
+impl ScheduleState {
+    fn queue(&mut self, class: DecodeClass) -> &mut VecDeque<u64> {
+        match class {
+            DecodeClass::Interactive => &mut self.interactive,
+            DecodeClass::Background => &mut self.background,
+        }
+    }
+}
+
+// Queue membership belongs to the acquire future, not a detached task.
+// Grants happen on polling that future, with no suspension before returning
+// the owning permit; cancellation therefore cannot strand a granted slot.
+struct WaitingDecode<'a> {
+    scheduler: &'a DecodeScheduler,
+    class: DecodeClass,
+    id: u64,
+    queued: bool,
+}
+
+impl Drop for WaitingDecode<'_> {
+    fn drop(&mut self) {
+        if self.queued {
+            self.scheduler
+                .state
+                .lock()
+                .expect("decode scheduler lock poisoned")
+                .queue(self.class)
+                .retain(|id| *id != self.id);
+            self.scheduler.changed.notify_waiters();
+        }
+    }
+}
+
+impl Drop for DecodePermit {
+    fn drop(&mut self) {
+        let mut state = self
+            .scheduler
+            .state
+            .lock()
+            .expect("decode scheduler lock poisoned");
+        state.running -= 1;
+        if self.class == DecodeClass::Background {
+            state.background_running -= 1;
+        }
+        drop(state);
+        self.scheduler.changed.notify_waiters();
     }
 }
 
