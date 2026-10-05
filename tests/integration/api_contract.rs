@@ -4,13 +4,12 @@ use axum_test::{TestResponse, TestServer};
 use bytes::Bytes;
 use dcmview::annotations::{AnnotationStore, EmbedRoiAnnotations};
 use dcmview::api::contracts::{
-    endpoints, ApiMethod, Endpoint, ResponseHeaders, API_PREFIX, CACHE_HEADER, CACHE_HIT,
-    CACHE_MISS, DISPLAY_FRAME_HEADERS, EXPORT_CONTENT_DISPOSITION_HEADER,
-    EXPORT_CONTENT_DISPOSITION_VALUE, RAW_FRAME_HEADERS, SERVER_INSTANCE_HEADER,
+    endpoints, Endpoint, ResponseHeaders, CACHE_HEADER, CACHE_HIT, CACHE_MISS,
+    DISPLAY_FRAME_HEADERS, EXPORT_CONTENT_DISPOSITION_HEADER, EXPORT_CONTENT_DISPOSITION_VALUE,
+    RAW_FRAME_HEADERS, SERVER_INSTANCE_HEADER,
 };
 use dcmview::server;
 use dcmview::types::WindowPreset;
-use dicom_dictionary_std::uids;
 use serde_json::Value;
 use std::collections::HashMap;
 use tempfile::tempdir;
@@ -162,66 +161,17 @@ async fn json_endpoints_match_frontend_contract_shapes() {
 #[tokio::test]
 async fn every_declared_endpoint_matches_its_runtime_contract() {
     let dir = tempdir().expect("temp dir");
-    let path = dir.path().join("endpoint-registry.dcm");
-    support::write_uncompressed_u16_dicom(
-        &path,
-        "1.2.840.10008.1.2.1",
-        2,
-        2,
-        vec![0, 1000, 2000, 3000],
-        Some("1500"),
-        Some("3000"),
-    );
-    let mut entry = support::file_entry(path, "1.2.840.10008.1.2.1", 1);
-    entry.rows = 2;
-    entry.columns = 2;
-    entry.default_window = Some(WindowPreset {
-        center: 1500.0,
-        width: 3000.0,
-    });
-    entry.sop_class_uid = uids::VL_WHOLE_SLIDE_MICROSCOPY_IMAGE_STORAGE.to_string();
-    entry.series_metadata.dimension_organization_type = Some("TILED_FULL".to_string());
-    entry.series_metadata.total_pixel_matrix_rows = Some(2);
-    entry.series_metadata.total_pixel_matrix_columns = Some(2);
-    let test_server = TestServer::new(server::router(support::app_state(vec![entry])));
-    let annotation_body = EmbedRoiAnnotations::empty();
-
-    let request = |endpoint: &Endpoint, index: &str| {
-        let mut path = format!("{API_PREFIX}{}", endpoint.path)
-            .replace("{index}", index)
-            .replace("{frame}", "0");
-        if *endpoint == endpoints::FILE_TAG_SELECT {
-            path.push_str("?path=%280028%2C0010%29");
-        }
-        if *endpoint == endpoints::FILE_RAW_PIXEL {
-            path.push_str("?row=1&column=0");
-        }
-        match endpoint.method {
-            ApiMethod::Get => test_server.get(&path),
-            ApiMethod::Put => test_server.put(&path).json(&annotation_body),
-        }
-    };
+    let test_server = TestServer::new(server::router(support::every_endpoint_state(dir.path())));
+    let request =
+        |endpoint: &Endpoint, index: &str| support::endpoint_request(&test_server, endpoint, index);
 
     for endpoint in endpoints::ALL {
         if endpoint.path.contains("{index}") {
             let missing = request(endpoint, "99").await;
             assert_json_error(endpoint.id, &missing, StatusCode::NOT_FOUND);
         }
-        // Overlays require a linked overlay/source pair: SEG is covered by
-        // semantic_context::segmentation_overlay_returns_source_sized_transparent_png,
-        // the value overlays (colorwash and values) by the semantic_overlays
-        // fixture tests, and graphic annotations by the graphic_annotations
-        // fixture tests.
-        if [
-            endpoints::FILE_SEGMENTATION_OVERLAY,
-            endpoints::FILE_DOSE_OVERLAY,
-            endpoints::FILE_DOSE_OVERLAY_VALUES,
-            endpoints::FILE_PARAMETRIC_MAP_OVERLAY,
-            endpoints::FILE_PARAMETRIC_MAP_OVERLAY_VALUES,
-            endpoints::FILE_GRAPHIC_ANNOTATIONS,
-        ]
-        .contains(endpoint)
-        {
+        // Covered by their own fixture tests; see `NEEDS_LINKED_SOURCE`.
+        if support::NEEDS_LINKED_SOURCE.contains(endpoint) {
             continue;
         }
         let response = request(endpoint, "0").await;
