@@ -6,6 +6,7 @@ use crate::signals::StopSignals;
 use anyhow::{Context, Result};
 use serde::Serialize;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::pin::pin;
 use std::time::Duration;
 use tokio::net::TcpListener;
@@ -16,6 +17,7 @@ use tokio_util::sync::CancellationToken;
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
+    pub unix_socket: Option<PathBuf>,
     pub timeout_seconds: Option<u64>,
     pub open_browser: bool,
     pub startup_json: bool,
@@ -23,9 +25,13 @@ pub struct ServerConfig {
     pub shutdown: CancellationToken,
 }
 
-pub struct BoundServer {
-    listener: TcpListener,
-    local_addr: SocketAddr,
+pub enum BoundServer {
+    Tcp {
+        listener: TcpListener,
+        local_addr: SocketAddr,
+    },
+    #[cfg(unix)]
+    Unix(super::unix_socket::UnixSocket),
 }
 
 #[derive(Debug, Serialize)]
@@ -38,6 +44,17 @@ struct StartupEvent<'a> {
 
 impl BoundServer {
     pub async fn bind(config: &ServerConfig) -> Result<Self> {
+        if let Some(path) = &config.unix_socket {
+            #[cfg(unix)]
+            return super::unix_socket::UnixSocket::bind(path)
+                .await
+                .map(Self::Unix);
+            #[cfg(not(unix))]
+            {
+                let _ = path;
+                anyhow::bail!("--unix-socket is supported only on Unix (Linux and macOS)");
+            }
+        }
         let bind_addr = format!("{}:{}", config.host, config.port);
         let listener = TcpListener::bind(&bind_addr)
             .await
@@ -45,18 +62,30 @@ impl BoundServer {
         let local_addr = listener
             .local_addr()
             .context("failed to read local bind address")?;
-        Ok(Self {
+        Ok(Self::Tcp {
             listener,
             local_addr,
         })
     }
 
+    /// The bound TCP address.
+    ///
+    /// # Panics
+    /// Panics for a Unix socket, which has no TCP address.
     pub fn local_addr(&self) -> SocketAddr {
-        self.local_addr
+        match self {
+            Self::Tcp { local_addr, .. } => *local_addr,
+            #[cfg(unix)]
+            Self::Unix(_) => panic!("Unix socket listeners have no TCP address"),
+        }
     }
 
+    /// The TCP viewer URL.
+    ///
+    /// # Panics
+    /// Panics for a Unix socket; its forwarded URL is chosen by the user.
     pub fn url(&self) -> String {
-        socket_url(self.local_addr)
+        socket_url(self.local_addr())
     }
 
     pub async fn serve(self, config: ServerConfig, state: AppState) -> Result<()> {
@@ -64,22 +93,26 @@ impl BoundServer {
         // soon as it reads it, and an unhandled signal would skip the graceful
         // shutdown below.
         let mut stop_signals = StopSignals::listen();
-        let server_url = self.url();
-
-        crate::status_line!(
-            "dcmview: (on a remote server? run on your local machine: ssh -L {0}:localhost:{0} user@host)",
-            self.local_addr.port()
-        );
-
-        if is_non_loopback_bind(self.local_addr.ip()) {
-            eprintln!(
-                "dcmview: warning — server bound to non-loopback address {}; endpoints are unauthenticated and may expose sensitive DICOM data",
-                self.local_addr.ip()
-            );
-            eprintln!(
-                "dcmview: warning — prefer --host 127.0.0.1 (or ::1) and use SSH port forwarding for remote access"
-            );
-        }
+        let server_url = match &self {
+            Self::Tcp { local_addr, .. } => {
+                crate::status_line!(
+                    "dcmview: (on a remote server? run on your local machine: ssh -L {0}:localhost:{0} user@host)",
+                    local_addr.port()
+                );
+                if is_non_loopback_bind(local_addr.ip()) {
+                    eprintln!(
+                        "dcmview: warning — server bound to non-loopback address {}; endpoints are unauthenticated and may expose sensitive DICOM data",
+                        local_addr.ip()
+                    );
+                    eprintln!(
+                        "dcmview: warning — prefer --host 127.0.0.1 (or ::1) and use SSH port forwarding for remote access"
+                    );
+                }
+                Some(socket_url(*local_addr))
+            }
+            #[cfg(unix)]
+            Self::Unix(_) => None,
+        };
 
         if state.registry().masker().is_some() {
             crate::status_line!(
@@ -91,9 +124,10 @@ impl BoundServer {
         let registry = state.registry().clone();
         let app = router(state);
         let mut browser_task = BrowserTask::new(
-            config
-                .open_browser
-                .then(|| spawn_browser_opener(server_url.clone(), registry.clone())),
+            server_url
+                .as_ref()
+                .filter(|_| config.open_browser)
+                .map(|url| spawn_browser_opener(url.clone(), registry.clone())),
         );
 
         let timeout = config.timeout_seconds.map(Duration::from_secs);
@@ -105,19 +139,53 @@ impl BoundServer {
             async move { stop_signals.recv().await },
         );
 
-        if config.startup_json {
-            crate::status_line!(
-                "{}",
-                startup_event_json(&server_url, &config.host, self.local_addr.port())
-                    .context("failed to serialize startup event")?
-            );
+        match &self {
+            Self::Tcp { local_addr, .. } => {
+                let server_url = server_url.as_deref().expect("TCP viewer URL");
+                if config.startup_json {
+                    crate::status_line!(
+                        "{}",
+                        startup_event_json(server_url, &config.host, local_addr.port())
+                            .context("failed to serialize startup event")?
+                    );
+                }
+                crate::status_line!("dcmview: server running at {server_url}");
+            }
+            #[cfg(unix)]
+            Self::Unix(socket) => {
+                let path = socket.path().display();
+                if config.startup_json {
+                    crate::status_line!(
+                        "{}",
+                        serde_json::to_string(&crate::api::contracts::StartupEvent::unix_socket(
+                            &socket.path().to_string_lossy(),
+                            None,
+                        ))
+                        .context("failed to serialize startup event")?
+                    );
+                }
+                crate::status_line!("dcmview: listening on {path}");
+                crate::status_line!(
+                    "dcmview: on your local machine run: ssh -L 8080:{path} user@host"
+                );
+                crate::status_line!("dcmview: then open http://localhost:8080/");
+            }
         }
-        crate::status_line!("dcmview: server running at {server_url}");
         crate::status_line!("dcmview: press Ctrl+C to stop");
 
-        let serve_result = axum::serve(self.listener, app)
-            .with_graceful_shutdown(shutdown)
-            .await;
+        let serve_result = match self {
+            Self::Tcp { listener, .. } => {
+                axum::serve(listener, app)
+                    .with_graceful_shutdown(shutdown)
+                    .await
+            }
+            #[cfg(unix)]
+            Self::Unix(listener) => {
+                axum::serve(listener, app)
+                    .with_graceful_shutdown(shutdown)
+                    .await
+            }
+        };
 
         browser_task.abort();
         serve_result.context("server failed")?;

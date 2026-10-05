@@ -10,6 +10,16 @@ diagnostic viewer.
 
 ## Unreleased
 
+### Added
+
+- `--unix-socket PATH` serves the viewer through a private Unix domain socket
+  on Linux and macOS, for shared-server inspection with SSH forwarding.
+  The parent directory must be owned by the current effective user and not
+  group- or other-writable; a missing parent is created with mode `0700`.
+  The socket is mode `0600`, checks peer user IDs, and is removed on shutdown.
+  Socket mode conflicts with `--host` and `--port`, always bypasses VS Code
+  routing, and never opens a browser automatically.
+
 ## 0.3.2 - 2026-10-02
 
 ### Added

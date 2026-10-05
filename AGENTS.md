@@ -588,6 +588,7 @@ dcmview [OPTIONS] <PATH> [PATH ...]
   --annotations <csv>
   --filter <FIELD=VALUE>    repeatable metadata filter
   --mask                    mask patient identifiers on screen; fixed for the session
+  --unix-socket <path>      listen on a private Unix socket instead of TCP (Unix only)
 ```
 
 The server is unauthenticated. Keep loopback binding as the default and prefer

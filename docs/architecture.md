@@ -93,7 +93,12 @@ modules, not the reverse:
    directory before inspecting candidates, bounds each file's `frame_count` by
    the frames it can hold, and counts skips by reason for the summary.
 5. `server/runtime.rs` owns listener, browser, and graceful-shutdown
-   resources. `server/api/` owns HTTP concerns. `server/catalog.rs` owns the
+   resources. The listener is TCP or, with `--unix-socket`, a Unix socket
+   owned by `server/unix_socket.rs`: it binds only in a directory the
+   effective user owns and no one else can write, restricts the socket to
+   its owner, admits only connections from the same uid, and removes the
+   socket file it created on shutdown. Both listeners serve the same router.
+   A socket launch always runs the local viewer and never opens a browser. `server/api/` owns HTTP concerns. `server/catalog.rs` owns the
    progressive file registry.
 6. `pixels/service.rs` is the server-facing pixel boundary. Codec, cache,
    rendering, and window modules remain below it. A cache miss registers an

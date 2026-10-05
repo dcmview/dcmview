@@ -55,7 +55,7 @@ export const RAW_FRAME_HEADERS = {
 	paddingHigh: "X-Frame-Padding-High",
 } as const satisfies Record<keyof RawFrameMetadata, string>;
 
-export type ApiErrorCode = "invalid_path" | "invalid_query" | "invalid_json" | "bad_request" | "not_found" | "route_not_found" | "asset_not_found" | "method_not_allowed" | "no_pixel_data" | "frame_out_of_range" | "invalid_window" | "unsupported_transfer_syntax" | "unsupported_pixel_layout" | "semantic_mapping_unavailable" | "overlay_not_covering_frame" | "pixel_decode_failed" | "masked" | "internal_error";
+export type ApiErrorCode = "invalid_path" | "invalid_query" | "invalid_json" | "bad_request" | "not_found" | "route_not_found" | "asset_not_found" | "method_not_allowed" | "no_pixel_data" | "frame_out_of_range" | "invalid_window" | "unsupported_transfer_syntax" | "unsupported_pixel_layout" | "semantic_mapping_unavailable" | "overlay_not_covering_frame" | "pixel_decode_failed" | "masked" | "unauthorized" | "internal_error";
 
 export type CodedConceptSummary = { value: string, scheme: string, meaning: string, };
 

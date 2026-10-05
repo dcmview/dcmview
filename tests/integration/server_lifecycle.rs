@@ -12,6 +12,7 @@ fn server_config(shutdown: CancellationToken, timeout_seconds: Option<u64>) -> S
     ServerConfig {
         host: "127.0.0.1".to_string(),
         port: 0,
+        unix_socket: None,
         timeout_seconds,
         open_browser: false,
         startup_json: false,

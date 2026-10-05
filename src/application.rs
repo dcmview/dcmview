@@ -17,10 +17,14 @@ pub(crate) async fn run(mut cli: Cli, raw_args: &[String]) -> Result<i32> {
         None => ("dcmview".to_string(), raw_args.to_vec()),
     };
 
-    if let BridgeOutcome::Routed(exit_code) =
-        launch_in_vscode(&program, &args, cli.startup_json).await
-    {
-        return Ok(exit_code);
+    // Socket launches have no browser URL and always belong to this process,
+    // including launches parsed from the hidden bridge-client entry point.
+    if cli.unix_socket.is_none() {
+        if let BridgeOutcome::Routed(exit_code) =
+            launch_in_vscode(&program, &args, cli.startup_json).await
+        {
+            return Ok(exit_code);
+        }
     }
 
     let options = local_viewer_options(cli);
@@ -49,6 +53,7 @@ fn local_viewer_options(cli: Cli) -> LocalViewerOptions {
         mask: cli.mask,
         host: cli.host,
         port: cli.port,
+        unix_socket: cli.unix_socket,
         timeout_seconds: cli.timeout,
         open_browser: !cli.no_browser,
         startup_json: cli.startup_json,
