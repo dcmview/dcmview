@@ -1269,19 +1269,35 @@ describe("ImageViewport shared gestures", () => {
 	// then the momentum the system adds once they lift, falling smoothly to nothing.
 	const fingers = [2, 5, 9, 14, 20, 22, 18, 25];
 	const momentum = [20, 16, 13, 10, 8, 6, 5, 4, 3, 2, 2, 1, 1, 1];
+	/** A tail from the fingers' last 25 px step that keeps `decay` of each step, in whole pixels, until nothing is left. */
+	function slowTail(decay: number): number[] {
+		const tail: number[] = [];
+		for (let step = 25 * decay; Math.round(step) >= 1; step *= decay) tail.push(Math.round(step));
+		return tail;
+	}
 	it.each([
 		["a mouse wheel steps one frame per notch", [100, 100, 100], 60, 3],
 		["a slow two-finger scroll steps one frame per 30 px", Array.from({ length: 12 }, () => 5), 16, 2],
 		["a two-finger swipe steps by its travel, and its momentum stops stepping", [...fingers, ...momentum], 16, 5],
 		["stepping starts again when the fingers move after the momentum", [...fingers, ...momentum, 6, 12, 12], 16, 6],
 		["a swipe back steps back", [...fingers, ...fingers.map((dy) => -dy)], 16, 0],
+		// The fingers' 115 px are three frames. The tail above keeps 80% of each step, and
+		// two more frames get through before it is recognised. Real momentum is believed
+		// to fall far more slowly, about 3 to 5% an event, and there the same rule lets
+		// more through: these two rows state the overrun the thresholds give today (5 and
+		// 8 frames past the fingers' three; unstopped, the tails would run 16 and 27).
+		// They are constructed, like every trace here, and pin current behaviour, not
+		// the wanted one: the thresholds await a recorded trace and must not be retuned
+		// against these.
+		["momentum that falls by 5% an event overruns by five frames", [...fingers, ...slowTail(0.95)], 16, 8],
+		["momentum that falls by 3% an event overruns by eight frames", [...fingers, ...slowTail(0.97)], 16, 11],
 	] as const)("Scroll tool wheel: %s", async (_name, steps, everyMs, endsOn) => {
-		const file = fileSummary(5, { frame_count: 12 });
+		const file = fileSummary(5, { frame_count: 60 });
 		let position = 0;
 		const view = renderViewport({
 			activeTool: "scroll",
 			file,
-			onnavigationchange: (next) => { position = Math.max(0, Math.min(11, next)); },
+			onnavigationchange: (next) => { position = Math.max(0, Math.min(59, next)); },
 		});
 		const viewport = await screen.findByRole("application");
 		await shown(5, 0);
