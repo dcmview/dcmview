@@ -1365,6 +1365,24 @@ describe("ImageViewport shared gestures", () => {
 		expect(api.updateAnnotations).not.toHaveBeenCalled();
 	});
 
+	it("saves a ROI move that a second pointer's middle-button press interrupted", async () => {
+		const { viewport } = await renderReady("annotate_rect", oneRoi);
+
+		await fireEvent.pointerDown(viewport, { button: 0, clientX: 20, clientY: 20, pointerId: 1 });
+		await fireEvent.pointerMove(viewport, { clientX: 25, clientY: 25, pointerId: 1 });
+		expect(coords()).toEqual(["[15, 15, 35, 35]"]);
+		await fireEvent.pointerDown(viewport, { button: 1, clientX: 40, clientY: 40, pointerId: 2 });
+		await fireEvent.pointerMove(viewport, { clientX: 50, clientY: 45, pointerId: 2 });
+		await fireEvent.pointerUp(viewport, { button: 0, clientX: 25, clientY: 25, pointerId: 1 });
+		await fireEvent.pointerUp(viewport, { button: 1, clientX: 50, clientY: 45, pointerId: 2 });
+
+		// What is drawn is what was saved, and the second pointer moved nothing.
+		expect(coords()).toEqual(["[15, 15, 35, 35]"]);
+		await waitFor(() => expect(vi.mocked(api.updateAnnotations).mock.calls.map(([file, saved]) => [file, saved.roi_coords]))
+			.toEqual([[5, [[15, 15, 35, 35]]]]));
+		expectTransform({ tx: 0, ty: 0, scale: 1 });
+	});
+
 	it.each([
 		["a rectangle being drawn", "annotate_rect", noRois, false],
 		["a ROI being moved", "annotate_rect", oneRoi, false],

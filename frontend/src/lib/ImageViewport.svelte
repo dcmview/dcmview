@@ -1359,7 +1359,7 @@
 	onpointerdown={(event) => tools.pointerDown(event)}
 	onpointermove={onPointerMove}
 	onpointerup={(event) => tools.pointerUp(event)}
-	onpointercancel={() => tools.pointerCancel()}
+	onpointercancel={(event) => tools.pointerCancel(event)}
 	onpointerleave={stopProbe}
 	oncontextmenu={onContextMenu}
 	ondblclick={onreset}

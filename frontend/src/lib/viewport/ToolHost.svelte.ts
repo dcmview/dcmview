@@ -44,6 +44,8 @@ export class ToolHost {
 	readonly #tools: Record<ToolId, Tool>;
 	readonly #scroll = new ScrollTool();
 	#captured = $state.raw<Tool | null>(null);
+	// The pointer whose press began the gesture; other pointers are ignored until it ends.
+	#pointerId = 0;
 	#draft = $state.raw<DraftRect | null>(null);
 	// The frame-bound gesture begun since the last one ended, and where it began.
 	#frameGesture: { tool: Tool; fileIndex: number; frameIndex: number } | null = null;
@@ -132,6 +134,12 @@ export class ToolHost {
 		const view = this.#view;
 		if (!view.file.has_pixels) return;
 		if (isViewportChromeTarget(event.target)) return;
+		// One gesture at a time: a press by another pointer must not take over
+		// the tools, or the gesture in progress would end neither saved nor undone.
+		if (this.#captured) {
+			if (event.button !== 0) event.preventDefault();
+			return;
+		}
 
 		if (event.button === 1) {
 			event.preventDefault();
@@ -152,13 +160,14 @@ export class ToolHost {
 	}
 
 	pointerMove(event: PointerEvent): void {
-		if (!this.#captured) return;
+		if (!this.#captured || event.pointerId !== this.#pointerId) return;
 		if (this.#cancelReplacedFrameGesture()) return;
 		this.#captured.pointerMove(toolPointer(event), this.#view);
 		this.#draft = this.#captured.draft ?? null;
 	}
 
 	pointerUp(event: PointerEvent): void {
+		if (this.#captured && event.pointerId !== this.#pointerId) return;
 		const target = event.currentTarget as HTMLElement;
 		if (target.hasPointerCapture(event.pointerId)) {
 			target.releasePointerCapture(event.pointerId);
@@ -168,7 +177,9 @@ export class ToolHost {
 		this.endGesture();
 	}
 
-	pointerCancel(): void {
+	/** The browser took the pointer away; without an event, cancels whatever is in progress. */
+	pointerCancel(event?: PointerEvent): void {
+		if (event && this.#captured && event.pointerId !== this.#pointerId) return;
 		const frameTool = this.#frameGesture?.tool;
 		if (frameTool && frameTool !== this.#captured) frameTool.cancel(this.#view);
 		this.#captured?.cancel(this.#view);
@@ -190,6 +201,7 @@ export class ToolHost {
 		event.preventDefault();
 		(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
 		this.#captured = tool;
+		this.#pointerId = event.pointerId;
 		this.#draft = tool.draft ?? null;
 		if (tool.frameBound) this.#frameGesture = { tool, fileIndex: view.file.index, frameIndex: view.frame };
 	}
