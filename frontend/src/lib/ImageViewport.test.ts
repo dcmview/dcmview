@@ -1230,6 +1230,15 @@ describe("ImageViewport shared gestures", () => {
 		expect(onnavigationchange).not.toHaveBeenCalled();
 	});
 
+	it.each(TOOL_ORDER)("wheel: Alt plus wheel steps a frame in the %s tool and leaves the view alone", async (tool) => {
+		const { viewport, onnavigationchange } = await renderReady(tool);
+
+		await wheelAt(viewport, { deltaY: 100, altKey: true });
+
+		expectTransform({ scale: 1, tx: 0, ty: 0 });
+		expect(onnavigationchange.mock.calls).toEqual([[1]]);
+	});
+
 	// Wheel events under 150 ms apart are one gesture, which keeps the device it began as;
 	// the session then follows what its gestures showed (annotation-tools-ux.md 3.5).
 	it.each([

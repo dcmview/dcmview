@@ -42,6 +42,7 @@ function toolPointer(event: PointerEvent): ToolPointer {
 export class ToolHost {
 	readonly #view: ToolHostView;
 	readonly #tools: Record<ToolId, Tool>;
+	readonly #scroll = new ScrollTool();
 	#captured = $state.raw<Tool | null>(null);
 	#draft = $state.raw<DraftRect | null>(null);
 	// The frame-bound gesture begun since the last one ended, and where it began.
@@ -55,7 +56,7 @@ export class ToolHost {
 		this.#view = view;
 		this.#tools = {
 			pan: new PanTool(),
-			scroll: new ScrollTool(),
+			scroll: this.#scroll,
 			zoom: new ZoomTool(),
 			window_level: new WindowLevelTool(),
 			annotate_rect: new RectangleTool("annotate_rect"),
@@ -105,6 +106,11 @@ export class ToolHost {
 		// Ctrl or Meta is how browsers report a pinch, which zooms in every tool.
 		if (event.ctrlKey || event.metaKey) {
 			this.#zoomByWheelDelta(dy, event.clientX, event.clientY, PINCH_ZOOM_SENSITIVITY);
+			return;
+		}
+		// Alt+wheel steps frames in every tool, and does nothing else on a single image.
+		if (event.altKey) {
+			this.#scroll.wheel({ dx, dy }, view);
 			return;
 		}
 		if (this.#tools[view.activeTool].wheel?.({ dx, dy }, view)) return;
