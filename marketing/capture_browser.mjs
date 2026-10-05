@@ -173,11 +173,14 @@ async function main() {
 			*, *::before, *::after { animation: none !important; transition: none !important; caret-color: transparent !important; }
 			.status { display: none !important; }
 		` });
-		const catalog = await page.evaluate(async () => {
-			const response = await fetch("/api/files");
+		const token = new URLSearchParams(new URL(args.url).hash.slice(1)).get("token");
+		const catalog = await page.evaluate(async (token) => {
+			const response = await fetch("/api/files", {
+				headers: { Authorization: `Bearer ${token}` },
+			});
 			if (!response.ok) throw new Error(`files endpoint returned ${response.status}`);
 			return response.json();
-		});
+		}, token);
 		const unexpectedPatientIds = [...new Set(catalog.files
 			.map((file) => file.patient_id)
 			.filter(Boolean)

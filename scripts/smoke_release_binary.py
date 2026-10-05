@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -48,8 +49,17 @@ class OutputMonitor:
 		self._ready.set()
 
 
-def get_json(url: str) -> dict:
-	with urllib.request.urlopen(url, timeout=10) as response:
+def api_request(url: str, path: str) -> urllib.request.Request:
+	base_url, fragment = urllib.parse.urldefrag(url)
+	token = urllib.parse.parse_qs(fragment).get("token", [""])[0]
+	return urllib.request.Request(
+		f"{base_url.rstrip('/')}{path}",
+		headers={"Authorization": f"Bearer {token}"},
+	)
+
+
+def get_json(url: str, path: str) -> dict:
+	with urllib.request.urlopen(api_request(url, path), timeout=10) as response:
 		return json.load(response)
 
 
@@ -60,7 +70,7 @@ def wait_for_files(base_url: str, expected_count: int, timeout: float) -> dict:
 
 	while time.monotonic() < deadline:
 		try:
-			payload = get_json(f"{base_url}/api/files")
+			payload = get_json(base_url, "/api/files")
 			entries = payload.get("files", [])
 			last_payload = payload
 			last_error = None
@@ -91,8 +101,8 @@ def wait_for_files(base_url: str, expected_count: int, timeout: float) -> dict:
 	raise RuntimeError("timed out waiting for /api/files")
 
 
-def get_response(url: str) -> tuple[int, dict[str, str], bytes]:
-	request = urllib.request.Request(url)
+def get_response(url: str, path: str) -> tuple[int, dict[str, str], bytes]:
+	request = api_request(url, path)
 	try:
 		with urllib.request.urlopen(request, timeout=10) as response:
 			return response.status, dict(response.headers.items()), response.read()
@@ -170,17 +180,17 @@ def main() -> int:
 			if Path(entry["path"]).name == no_pixel_fixture.name
 		)
 
-		status, headers, body = get_response(f"{base_url}/api/file/{pixel_index}/frame/0")
+		status, headers, body = get_response(base_url, f"/api/file/{pixel_index}/frame/0")
 		expect(status == 200, f"display frame returned status {status}")
 		expect(headers.get("content-type") == "image/png", "display frame must be PNG")
 		expect(headers.get("x-cache") == "MISS", "first display request must be a cache MISS")
 		expect(body.startswith(b"\x89PNG\r\n\x1a\n"), "display frame must be a PNG file")
 
-		status, headers, _ = get_response(f"{base_url}/api/file/{pixel_index}/frame/0")
+		status, headers, _ = get_response(base_url, f"/api/file/{pixel_index}/frame/0")
 		expect(status == 200, f"repeat display frame returned status {status}")
 		expect(headers.get("x-cache") == "HIT", "repeat display request must be a cache HIT")
 
-		status, _, _ = get_response(f"{base_url}/api/file/{no_pixel_index}/frame/0")
+		status, _, _ = get_response(base_url, f"/api/file/{no_pixel_index}/frame/0")
 		expect(status == 404, f"no-pixel fixture should return 404, got {status}")
 		return 0
 	finally:
