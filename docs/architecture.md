@@ -721,6 +721,11 @@ installation and VS Code Electron integration can also use network/cache state;
   endpoint returns a valid `X-Cache` value. Codec tests assert decode results,
   not cache state.
 - Error assertions use the JSON envelope's stable `code`, not message text.
+- The access token is checked against the endpoint table: one test requests
+  every entry of `endpoints::ALL` without the token (`401`) and with it (the
+  declared status), so a new endpoint is covered when it is declared. Socket
+  tests bind real sockets in temporary directories and cover the token over a
+  socket, a symlinked parent, and a live socket whose accept queue is full.
 - Python unit tests isolate subprocess policy; `python-integration` adds the real
   binary. VS Code compile and Electron integration remain separate layers.
 - `scripts/compatibility/run.py --corpus-root` checks the real binary against

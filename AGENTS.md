@@ -693,6 +693,10 @@ default suite.
 - `X-Cache: MISS` on first frame request; `X-Cache: HIT` on identical repeat.
 - Every declared HTTP endpoint matches its status, media type, response header,
   and shared JSON error contract at runtime.
+- With a token set, every declared endpoint answers `401` without it and its
+  declared status with it.
+- A Unix socket is `0600` in a directory only the launching user can write,
+  judged at its resolved location, and a live socket is never replaced.
 - Cache misses when window parameters or window mode change.
 - Display frames for supported image syntaxes return `Content-Type: image/png`.
 - JPEG 2000 display paths decode server-side rather than returning raw
