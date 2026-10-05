@@ -1056,7 +1056,7 @@ fn is_false(value: &bool) -> bool {
 /// consumer that only knows `url` keeps working. `base_url` and `token` are
 /// the same two facts apart, for a consumer that rewrites the origin (a
 /// forwarded port, `asExternalUri`) and then appends the fragment itself.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
 pub struct StartupEvent {
     pub r#type: &'static str,
     /// Launch URL with the token fragment. `null` for a Unix socket, where
@@ -1075,6 +1075,18 @@ pub struct StartupEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub socket: Option<String>,
     pub protocol: u32,
+}
+
+/// Never prints the token or the URL that carries it.
+impl std::fmt::Debug for StartupEvent {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("StartupEvent")
+            .field("base_url", &self.base_url)
+            .field("socket", &self.socket)
+            .field("protocol", &self.protocol)
+            .finish_non_exhaustive()
+    }
 }
 
 impl StartupEvent {
