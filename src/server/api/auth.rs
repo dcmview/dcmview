@@ -25,7 +25,12 @@ impl AccessToken {
     /// A fresh token: [`TOKEN_BYTES`] from the OS random source, encoded as
     /// unpadded base64url.
     pub fn generate() -> Result<Self> {
-        todo!("SEC1: generate the token")
+        use base64::Engine;
+
+        let mut bytes = [0; TOKEN_BYTES];
+        getrandom::fill(&mut bytes)
+            .map_err(|_| anyhow::anyhow!("failed to generate access token from OS randomness"))?;
+        Ok(Self(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)))
     }
 
     /// A token fixed by the owner through `DCMVIEW_TOKEN`. It must be
@@ -33,8 +38,14 @@ impl AccessToken {
     /// unescaped in a URL fragment and in a header; anything else is an error
     /// that names the variable and never echoes the value.
     pub fn fixed(value: &str) -> Result<Self> {
-        let _ = value;
-        todo!("SEC1: validate a fixed token")
+        anyhow::ensure!(
+            !value.is_empty()
+                && value.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')
+                }),
+            "DCMVIEW_TOKEN must be non-empty and contain only A-Z a-z 0-9 - . _ ~"
+        );
+        Ok(Self(value.to_owned()))
     }
 
     /// The token text, for the launch URL, the startup line and the header
@@ -46,8 +57,9 @@ impl AccessToken {
 
     /// Whether `presented` is this token, compared in constant time.
     pub fn matches(&self, presented: &str) -> bool {
-        let _ = presented;
-        todo!("SEC1: constant-time comparison")
+        use subtle::ConstantTimeEq;
+
+        bool::from(self.0.as_bytes().ct_eq(presented.as_bytes()))
     }
 }
 
@@ -66,8 +78,19 @@ pub(super) async fn require_bearer(
     request: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-    let _ = (&token, &request, &next);
-    todo!("SEC1: check the Authorization header, else ApiError::unauthorized()")
+    let authorized = request
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split_once(' '))
+        .is_some_and(|(scheme, value)| {
+            scheme.eq_ignore_ascii_case(crate::api::contracts::AUTHORIZATION_SCHEME)
+                && token.matches(value.trim_start_matches(' '))
+        });
+    if !authorized {
+        return Err(ApiError::unauthorized());
+    }
+    Ok(next.run(request).await)
 }
 
 #[cfg(test)]
