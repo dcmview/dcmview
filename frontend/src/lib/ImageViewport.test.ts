@@ -1118,12 +1118,17 @@ describe("ImageViewport shared gestures", () => {
 		vi.unstubAllGlobals();
 	});
 
-	type Wheel = { deltaX?: number; deltaY?: number; deltaMode?: number; ctrlKey?: boolean; metaKey?: boolean };
-	/** A wheel event at client (20, 30). happy-dom's WheelEvent lacks the MouseEvent fields browsers give it. */
-	function wheelAt(viewport: HTMLElement, { ctrlKey = false, metaKey = false, ...deltas }: Wheel) {
+	type Wheel = { deltaX?: number; deltaY?: number; deltaMode?: number; ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean; at?: number };
+	/**
+	 * A wheel event at client (20, 30), `at` milliseconds into the test when given.
+	 * happy-dom's WheelEvent lacks the MouseEvent fields browsers give it.
+	 */
+	function wheelAt(viewport: HTMLElement, { ctrlKey = false, metaKey = false, altKey = false, at, ...deltas }: Wheel) {
 		const event = createEvent.wheel(viewport, deltas);
 		Object.defineProperties(event, {
 			clientX: { value: 20 }, clientY: { value: 30 }, ctrlKey: { value: ctrlKey }, metaKey: { value: metaKey },
+			altKey: { value: altKey },
+			...(at === undefined ? {} : { timeStamp: { value: 10_000 + at } }),
 		});
 		return fireEvent(viewport, event);
 	}
@@ -1211,6 +1216,24 @@ describe("ImageViewport shared gestures", () => {
 		expectTransform(expected);
 		if (steppedTo === null) expect(onnavigationchange).not.toHaveBeenCalled();
 		else expect(onnavigationchange.mock.calls).toEqual([[steppedTo]]);
+	});
+
+	// Wheel events under 150 ms apart are one gesture, which keeps the device it began as;
+	// the session then follows what its gestures showed (annotation-tools-ux.md 3.5).
+	it.each([
+		["after a wheel notch, a small pixel step zooms too",
+			[{ deltaY: -100, at: 0 }, { deltaY: -20, at: 400 }], zoomedAbout(Math.exp(0.3))],
+		["a swipe keeps panning through a notch-sized step",
+			[{ deltaY: 20, at: 0 }, { deltaY: 30, at: 16 }, { deltaY: 100, at: 32 }], { scale: 1, tx: 0, ty: -150 }],
+		["a wheel that only moves sideways pans",
+			[{ deltaY: -100, at: 0 }, { deltaX: 100, at: 400 }], { ...zoomedAbout(Math.exp(0.25)), tx: zoomedAbout(Math.exp(0.25)).tx - 100 }],
+	] as const)("wheel sequence: %s", async (_name, wheels, expected) => {
+		const { viewport, onnavigationchange } = await renderReady("pan");
+
+		for (const wheel of wheels) await wheelAt(viewport, wheel);
+
+		expectTransform(expected);
+		expect(onnavigationchange).not.toHaveBeenCalled();
 	});
 
 	it.each([
