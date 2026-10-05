@@ -134,6 +134,10 @@ notes, such as the original compatibility plan.
 They are not specs and not current behavior. Do not implement them unless the
 owner asks.
 
+`docs/design/` is the confirmed plan for upcoming releases: design, not current
+behavior. An implementing change cites the document and section it implements,
+and `docs/architecture.md` stays the normative description of what exists.
+
 ---
 
 ## Git Commit Policy
@@ -694,6 +698,18 @@ default suite.
 - A redaction box blanks the display and raw frame, is a cache `MISS` after a
   change, copies to the same-sized files of the series, and stays out of the
   ROI export.
+
+**Test policy:**
+
+- A test earns its place by catching a regression that a user or a downstream
+  consumer would notice: wire contracts, golden bytes, invariants, security
+  boundaries, cross-component behavior.
+- Do not test private helpers, exact log or error strings, or internal struct
+  layout, and do not snapshot whole responses unless a contract requires the
+  bytes.
+- Prefer one table-driven test over many near-identical ones.
+- When working from a brief, write only the tests it names. Suggest any others
+  in the report instead of adding them.
 
 Do not mock the DICOM layer for integration coverage. Use generated fixtures or
 feature-gated remote fixtures so codec and metadata behavior stay exercised.
