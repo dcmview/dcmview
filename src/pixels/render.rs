@@ -60,6 +60,183 @@ impl DisplayPng {
     }
 }
 
+/// One frame rendered for display: 8-bit (or, for one color path, 16-bit)
+/// pixels in the stored pixel grid, after every step that depends on the
+/// frame's samples (Modality LUT or rescale, VOI LUT or window, MONOCHROME1
+/// inversion, Pixel Padding as background, palette and YBR conversion) and
+/// before anything is drawn over it or encoded.
+///
+/// This is the seam between rendering and encoding. Every decode path
+/// produces one; what happens next is the caller's presentation:
+///
+/// - a display frame draws the presentation graphics
+///   ([`Self::draw_presentation_graphics`]) and encodes a PNG
+///   ([`Self::encode_png`]); [`Self::into_display_png`] is those two steps;
+/// - a thumbnail draws no graphics, paints the redaction boxes
+///   ([`Self::redact`]) and is resampled and encoded as JPEG by
+///   `thumbnail::encode_thumbnail_jpeg`.
+///
+/// A buffer never has graphics or redaction applied when a decode path
+/// returns it, so one buffer can serve either presentation.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct DisplayBuffer {
+    pub(crate) rows: u32,
+    pub(crate) columns: u32,
+    pub(crate) pixels: DisplayPixels,
+    /// The presentation the pixels were rendered with.
+    pub(crate) window: AppliedWindow,
+    /// The source ICC profile of an 8-bit RGB frame, which the display PNG
+    /// carries. Thumbnails drop it.
+    pub(crate) icc_profile: Option<Vec<u8>>,
+}
+
+/// The pixels of a [`DisplayBuffer`], row-major from the top-left pixel.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum DisplayPixels {
+    /// One byte per pixel.
+    Gray8(Vec<u8>),
+    /// Three bytes per pixel, R G B.
+    Rgb8(Vec<u8>),
+    /// Three samples per pixel, R G B, as the 9- to 16-bit JPEG 2000 color
+    /// path decodes them. `full_scale` is the largest value of the declared
+    /// precision; the shutter fill is scaled to it.
+    Rgb16 { samples: Vec<u16>, full_scale: u16 },
+}
+
+impl DisplayBuffer {
+    /// An 8-bit RGB frame. Errors when `rgb` is not `rows * columns * 3`
+    /// bytes or the geometry overflows.
+    pub(crate) fn rgb8(
+        rgb: Vec<u8>,
+        columns: u32,
+        rows: u32,
+        icc_profile: Option<Vec<u8>>,
+    ) -> Result<Self> {
+        let expected = (rows as usize)
+            .checked_mul(columns as usize)
+            .and_then(|pixels| pixels.checked_mul(3))
+            .ok_or_else(|| anyhow!("RGB image geometry overflowed"))?;
+        if rgb.len() != expected {
+            return Err(anyhow!("RGB buffer size does not match image geometry"));
+        }
+        Ok(Self {
+            rows,
+            columns,
+            pixels: DisplayPixels::Rgb8(rgb),
+            window: AppliedWindow::Color,
+            icc_profile,
+        })
+    }
+
+    /// A 9- to 16-bit RGB frame whose samples reach `full_scale`. Errors
+    /// when `samples` is not `rows * columns * 3` values.
+    pub(crate) fn rgb16(
+        samples: Vec<u16>,
+        full_scale: u16,
+        columns: u32,
+        rows: u32,
+    ) -> Result<Self> {
+        let expected = (rows as usize)
+            .checked_mul(columns as usize)
+            .and_then(|pixels| pixels.checked_mul(3))
+            .ok_or_else(|| anyhow!("RGB image geometry overflowed"))?;
+        if samples.len() != expected {
+            return Err(anyhow!("RGB buffer size does not match image geometry"));
+        }
+        Ok(Self {
+            rows,
+            columns,
+            pixels: DisplayPixels::Rgb16 {
+                samples,
+                full_scale,
+            },
+            window: AppliedWindow::Color,
+            icc_profile: None,
+        })
+    }
+
+    /// Draws what a display frame carries over its pixels and a thumbnail
+    /// omits: the display shutter, then for a grayscale frame the overlay
+    /// planes: `shutter::apply_to_luminance` then `apply_overlay_planes` at
+    /// [`OVERLAY_PRESENTATION_VALUE`] for `Gray8`, `shutter::apply_to_rgb8`
+    /// for `Rgb8`, `shutter::apply_to_rgb16` with `full_scale` for `Rgb16`.
+    pub(crate) fn draw_presentation_graphics(&mut self, file: &FileEntry, frame: u32) {
+        let _ = (file, frame);
+        todo!("GAL1: draw the shutter and overlay planes on the buffer")
+    }
+
+    /// Paints `boxes` (`[row0, column0, row1, column1]`, exclusive ends,
+    /// stored-grid coordinates) black, clipped to the frame. Black is 0 in
+    /// every channel whatever the photometric interpretation, as on a
+    /// display frame.
+    pub(crate) fn redact(&mut self, boxes: &[[u32; 4]]) {
+        let _ = boxes;
+        todo!("GAL1: paint redaction boxes on the buffer")
+    }
+
+    /// Encodes the buffer as the display PNG: `Gray8` as 8-bit grayscale,
+    /// `Rgb8` as 8-bit RGB with the ICC profile when there is one, `Rgb16`
+    /// as 16-bit RGB. The 8-bit forms are written with `png_encoder`, and
+    /// `Rgb16` with `image`'s default PNG writer, so a display frame's bytes
+    /// are what they were before rendering and encoding were separate
+    /// steps.
+    pub(crate) fn encode_png(self) -> Result<DisplayPng> {
+        todo!("GAL1: encode the buffer as the display PNG")
+    }
+
+    /// The display frame of this buffer: the presentation graphics, then the
+    /// PNG.
+    pub(crate) fn into_display_png(mut self, file: &FileEntry, frame: u32) -> Result<DisplayPng> {
+        self.draw_presentation_graphics(file, frame);
+        self.encode_png()
+    }
+}
+
+/// Renders one frame of stored grayscale samples to a `Gray8` buffer.
+///
+/// Every grayscale decode path shares this pipeline: Modality LUT or
+/// rescale, VOI LUT or window, MONOCHROME1 inversion and Pixel Padding as
+/// black background. The display shutter and overlay planes are not drawn
+/// here; see [`DisplayBuffer::draw_presentation_graphics`].
+/// [`encode_windowed_luminance_png`] is this buffer's
+/// [`DisplayBuffer::into_display_png`].
+pub(crate) fn render_windowed_luminance(
+    file: &FileEntry,
+    stored: StoredSamples<'_>,
+    options: LuminanceRenderOptions,
+) -> Result<DisplayBuffer> {
+    let _ = (file, stored, options);
+    todo!("GAL1: window stored samples into a display buffer")
+}
+
+/// Renders 8- or 16-bit stored integers windowed over a real-world mapping's
+/// values to a `Gray8` buffer whose window is [`AppliedWindow::RealWorld`],
+/// windowed as [`encode_real_world_windowed_png`] describes; that function
+/// is this buffer's [`DisplayBuffer::into_display_png`].
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn render_real_world_windowed(
+    file: &FileEntry,
+    bytes: &[u8],
+    bits_allocated: u32,
+    signed: bool,
+    map: &RealWorldValueMap,
+    window: (f64, f64),
+    frame: u32,
+    dimensions: (u32, u32),
+) -> Result<DisplayBuffer> {
+    let _ = (
+        file,
+        bytes,
+        bits_allocated,
+        signed,
+        map,
+        window,
+        frame,
+        dimensions,
+    );
+    todo!("GAL1: window stored samples over real-world values into a display buffer")
+}
+
 /// One grayscale frame's stored values, as the presentation pipeline takes
 /// them.
 pub(crate) enum StoredSamples<'a> {

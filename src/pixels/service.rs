@@ -10,7 +10,7 @@ use std::hash::Hash;
 use std::sync::{Arc, LazyLock, Mutex};
 use tokio::sync::Semaphore;
 
-use super::cache::{BudgetedLru, FrameBody, FrameCache, InFlight, RawFrameCache};
+use super::cache::{BudgetedLru, FrameBody, FrameCache, InFlight, RawFrameCache, ThumbnailCache};
 use super::deflated_frame::{
     decode_deflated_binary_frame_to_png, decode_raw_deflated_binary_frame,
 };
@@ -29,6 +29,7 @@ use super::render::{
 };
 use super::rle::{decode_raw_rle, decode_rle_to_png};
 use super::syntax::{classify_pixel_support, codec_for_syntax, Codec, PixelSupportReason};
+use super::thumbnail::{ThumbnailRequest, ThumbnailResponse};
 
 #[derive(Debug, Clone)]
 pub struct RawFrameRequest {
@@ -277,6 +278,52 @@ pub async fn load_redacted_frame(
     };
 
     Ok(FrameResponse::png(display, cache_hit))
+}
+
+/// The gallery thumbnail of one frame: a small JPEG of the whole frame with
+/// the redaction boxes painted black.
+///
+/// Errors as [`load_redacted_frame`] does for the same file and frame: no
+/// pixel data, frame out of range, unsupported transfer syntax, a layout the
+/// display path does not present, a failed decode.
+///
+/// The cache key is the file, frame, bucket, window mode and the revision of
+/// `redaction` (0 when it has no box for this frame), so a thumbnail
+/// rendered before a file's boxes changed is never served after the change.
+///
+/// 1. A thumbnail the cache holds is returned as it is: source
+///    `ThumbnailCache`, a cache hit.
+/// 2. A render of the same key already under way is awaited instead of
+///    repeated, and counts as a cache hit with source `ThumbnailCache`.
+/// 3. Otherwise the request waits for a [`DecodeClass::Background`] permit
+///    of [`decode_scheduler`] inside this future, so a request that is
+///    dropped while it waits starts no work. Once it holds the permit, the
+///    render runs as its own task, keeps the permit until it ends, and
+///    caches its result whether or not the request is still there. Source
+///    `FullDecode`, a cache miss.
+///
+/// The render decodes the frame with its codec's display renderer at the
+/// default window of `request.window_mode` (no explicit center or width, no
+/// real-world unit), paints `redaction.boxes` on the buffer
+/// ([`DisplayBuffer::redact`]) and encodes it
+/// (`thumbnail::encode_thumbnail_jpeg`, with the file's effective pixel
+/// aspect ratio). It does not draw the display shutter or overlay planes.
+///
+/// It never reads or writes the display cache and never writes the raw
+/// cache: those hold the viewer's working set, which a gallery scroll must
+/// not evict. In this version it does not read the raw cache either.
+///
+/// [`DecodeClass::Background`]: super::schedule::DecodeClass::Background
+/// [`decode_scheduler`]: super::schedule::decode_scheduler
+/// [`DisplayBuffer::redact`]: super::render::DisplayBuffer::redact
+pub async fn load_thumbnail(
+    file: Arc<FileEntry>,
+    cache: Arc<Mutex<ThumbnailCache>>,
+    request: ThumbnailRequest,
+    redaction: Redaction,
+) -> PixelResult<ThumbnailResponse> {
+    let _ = (file, cache, request, redaction);
+    todo!("GAL1: render, cache and share thumbnails on the background decode class")
 }
 
 impl FrameResponse {
