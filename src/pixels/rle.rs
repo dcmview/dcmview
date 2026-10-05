@@ -13,8 +13,7 @@ use super::header::open_header;
 use super::icc::select_icc_profile;
 use super::palette::palette_indices_to_rgb8;
 use super::render::{
-    encode_rgb8_display_png, encode_windowed_luminance_png, DisplayPng, LuminanceRenderOptions,
-    StoredSamples,
+    render_windowed_luminance, DisplayBuffer, DisplayPng, LuminanceRenderOptions, StoredSamples,
 };
 use super::stored_bits::canonicalize_integer_samples;
 use super::syntax::{Codec, ColorSamples};
@@ -56,6 +55,20 @@ enum RleDecodeError {
     LayoutSizeOverflow,
 }
 
+pub(crate) async fn render_rle(
+    file: Arc<FileEntry>,
+    frame: u32,
+    requested_wc: Option<f64>,
+    requested_ww: Option<f64>,
+    window_mode: WindowMode,
+) -> PixelResult<DisplayBuffer> {
+    task::spawn_blocking(move || {
+        render_rle_blocking(&file, frame, requested_wc, requested_ww, window_mode)
+    })
+    .await
+    .map_err(|error| PixelError::frame_decode(anyhow!("RLE decode task failed: {error}")))?
+}
+
 pub(crate) async fn decode_rle_to_png(
     file: Arc<FileEntry>,
     frame: u32,
@@ -70,13 +83,13 @@ pub(crate) async fn decode_rle_to_png(
     .map_err(|error| PixelError::frame_decode(anyhow!("RLE decode task failed: {error}")))?
 }
 
-fn decode_rle_to_png_blocking(
+fn render_rle_blocking(
     file: &FileEntry,
     frame: u32,
     requested_wc: Option<f64>,
     requested_ww: Option<f64>,
     window_mode: WindowMode,
-) -> PixelResult<DisplayPng> {
+) -> PixelResult<DisplayBuffer> {
     let decoded = read_and_decode_frame(file, frame).map_err(PixelError::frame_decode)?;
     let photometric = file.photometric_interpretation.trim().to_ascii_uppercase();
 
@@ -84,7 +97,7 @@ fn decode_rle_to_png_blocking(
         (1, "MONOCHROME1" | "MONOCHROME2") => {
             let (bits_allocated, signed) =
                 monochrome_layout(file.bits_allocated, file.pixel_representation)?;
-            encode_windowed_luminance_png(
+            render_windowed_luminance(
                 file,
                 StoredSamples::Integer {
                     bytes: &decoded,
@@ -103,9 +116,8 @@ fn decode_rle_to_png_blocking(
             .map_err(PixelError::frame_decode)
         }
         (3, color) => match Codec::Rle.color_samples(color, file.bits_allocated) {
-            Some(samples) => encode_rgb_png(
+            Some(samples) => render_rgb(
                 file,
-                frame,
                 normalize_color_for_display(
                     &decoded,
                     file.rows,
@@ -121,10 +133,22 @@ fn decode_rle_to_png_blocking(
             None => Err(unsupported_display_layout(file)),
         },
         (1, "PALETTE COLOR") if Codec::Rle.displays_palette(file.bits_allocated) => {
-            encode_palette_png(file, frame, &decoded)
+            render_palette(file, &decoded)
         }
         _ => Err(unsupported_display_layout(file)),
     }
+}
+
+fn decode_rle_to_png_blocking(
+    file: &FileEntry,
+    frame: u32,
+    requested_wc: Option<f64>,
+    requested_ww: Option<f64>,
+    window_mode: WindowMode,
+) -> PixelResult<DisplayPng> {
+    render_rle_blocking(file, frame, requested_wc, requested_ww, window_mode)?
+        .into_display_png(file, frame)
+        .map_err(PixelError::frame_decode)
 }
 
 fn unsupported_display_layout(file: &FileEntry) -> PixelError {
@@ -364,13 +388,12 @@ fn read_icc_profile(file: &FileEntry) -> PixelResult<Option<Vec<u8>>> {
     Ok(select_icc_profile(&object))
 }
 
-fn encode_rgb_png(
+fn render_rgb(
     file: &FileEntry,
-    frame: u32,
     rgb: Vec<u8>,
     icc_profile: Option<Vec<u8>>,
-) -> PixelResult<DisplayPng> {
-    encode_rgb8_display_png(file, frame, rgb, file.columns, file.rows, icc_profile)
+) -> PixelResult<DisplayBuffer> {
+    DisplayBuffer::rgb8(rgb, file.columns, file.rows, icc_profile)
         .context("RLE RGB PNG encoding failed")
         .map_err(PixelError::frame_decode)
 }
@@ -397,12 +420,12 @@ fn normalize_color_for_display(
         .map_err(PixelError::frame_decode)
 }
 
-fn encode_palette_png(file: &FileEntry, frame: u32, indices: &[u8]) -> PixelResult<DisplayPng> {
+fn render_palette(file: &FileEntry, indices: &[u8]) -> PixelResult<DisplayBuffer> {
     let object = open_header(&file.path).map_err(PixelError::frame_decode)?;
     let rgb = palette_indices_to_rgb8(&object, indices, file.bits_allocated)
         .context("RLE palette lookup failed")
         .map_err(PixelError::frame_decode)?;
-    encode_rgb_png(file, frame, rgb, select_icc_profile(&object))
+    render_rgb(file, rgb, select_icc_profile(&object))
 }
 
 #[cfg(test)]

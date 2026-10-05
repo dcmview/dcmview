@@ -161,8 +161,25 @@ impl DisplayBuffer {
     /// [`OVERLAY_PRESENTATION_VALUE`] for `Gray8`, `shutter::apply_to_rgb8`
     /// for `Rgb8`, `shutter::apply_to_rgb16` with `full_scale` for `Rgb16`.
     pub(crate) fn draw_presentation_graphics(&mut self, file: &FileEntry, frame: u32) {
-        let _ = (file, frame);
-        todo!("GAL1: draw the shutter and overlay planes on the buffer")
+        match &mut self.pixels {
+            DisplayPixels::Gray8(pixels) => draw_presentation_graphics(
+                pixels,
+                |gray| [gray],
+                file,
+                frame,
+                self.rows,
+                self.columns,
+            ),
+            DisplayPixels::Rgb8(pixels) => {
+                shutter::apply_to_rgb8(pixels, file, frame, self.rows, self.columns)
+            }
+            DisplayPixels::Rgb16 {
+                samples,
+                full_scale,
+            } => {
+                shutter::apply_to_rgb16(samples, *full_scale, file, frame, self.rows, self.columns)
+            }
+        }
     }
 
     /// Paints `boxes` (`[row0, column0, row1, column1]`, exclusive ends,
@@ -170,8 +187,20 @@ impl DisplayBuffer {
     /// every channel whatever the photometric interpretation, as on a
     /// display frame.
     pub(crate) fn redact(&mut self, boxes: &[[u32; 4]]) {
-        let _ = boxes;
-        todo!("GAL1: paint redaction boxes on the buffer")
+        for (rows, columns) in super::redaction::clipped(boxes, self.rows, self.columns) {
+            for row in rows {
+                for column in columns.clone() {
+                    let index = row * self.columns as usize + column;
+                    match &mut self.pixels {
+                        DisplayPixels::Gray8(pixels) => pixels[index] = 0,
+                        DisplayPixels::Rgb8(pixels) => pixels[index * 3..index * 3 + 3].fill(0),
+                        DisplayPixels::Rgb16 { samples, .. } => {
+                            samples[index * 3..index * 3 + 3].fill(0)
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Encodes the buffer as the display PNG: `Gray8` as 8-bit grayscale,
@@ -181,7 +210,35 @@ impl DisplayBuffer {
     /// are what they were before rendering and encoding were separate
     /// steps.
     pub(crate) fn encode_png(self) -> Result<DisplayPng> {
-        todo!("GAL1: encode the buffer as the display PNG")
+        let png = match self.pixels {
+            DisplayPixels::Gray8(pixels) => {
+                let mut encoded = Vec::new();
+                png_encoder(&mut encoded)
+                    .write_image(&pixels, self.columns, self.rows, ExtendedColorType::L8)
+                    .context("png encoding failed")?;
+                Bytes::from(encoded)
+            }
+            DisplayPixels::Rgb8(pixels) => {
+                encode_rgb8_png_with_icc(pixels, self.columns, self.rows, self.icc_profile)?
+            }
+            DisplayPixels::Rgb16 { samples, .. } => {
+                let image = image::ImageBuffer::<image::Rgb<u16>, Vec<u16>>::from_raw(
+                    self.columns,
+                    self.rows,
+                    samples,
+                )
+                .ok_or_else(|| anyhow!("JP2 decoded buffer size mismatch"))?;
+                let mut buffer = std::io::Cursor::new(Vec::new());
+                image::DynamicImage::ImageRgb16(image)
+                    .write_to(&mut buffer, image::ImageFormat::Png)
+                    .context("JP2 decode failed: png encoding failed")?;
+                Bytes::from(buffer.into_inner())
+            }
+        };
+        match self.window {
+            AppliedWindow::Color => Ok(DisplayPng::color(png)),
+            window => Ok(DisplayPng { png, window }),
+        }
     }
 
     /// The display frame of this buffer: the presentation graphics, then the
@@ -205,8 +262,22 @@ pub(crate) fn render_windowed_luminance(
     stored: StoredSamples<'_>,
     options: LuminanceRenderOptions,
 ) -> Result<DisplayBuffer> {
-    let _ = (file, stored, options);
-    todo!("GAL1: window stored samples into a display buffer")
+    let padding = pixel_padding(file);
+    let (windowed, window) = match stored {
+        StoredSamples::Integer {
+            bytes,
+            bits_allocated,
+            signed,
+        } => window_through_table(file, bytes, bits_allocated, signed, padding, &options)?,
+        StoredSamples::Values(values) => window_each_sample(file, values, padding, &options)?,
+    };
+    Ok(DisplayBuffer {
+        rows: options.rows,
+        columns: options.columns,
+        pixels: DisplayPixels::Gray8(windowed),
+        window,
+        icc_profile: None,
+    })
 }
 
 /// Renders 8- or 16-bit stored integers windowed over a real-world mapping's
@@ -224,17 +295,31 @@ pub(crate) fn render_real_world_windowed(
     frame: u32,
     dimensions: (u32, u32),
 ) -> Result<DisplayBuffer> {
-    let _ = (
-        file,
-        bytes,
-        bits_allocated,
-        signed,
-        map,
-        window,
-        frame,
-        dimensions,
-    );
-    todo!("GAL1: window stored samples over real-world values into a display buffer")
+    let (center, width) = window;
+    let (rows, columns) = dimensions;
+    let _ = frame;
+
+    let stored_value = stored_value_reader(bits_allocated, signed)?;
+    let low = center - width / 2.0;
+    let table = (0..1_usize << bits_allocated)
+        .map(|index| match map_value(map, stored_value(index)) {
+            Some(mapped) if mapped.is_finite() => {
+                (((mapped - low) / width).clamp(0.0, 1.0) * 255.0).round() as u8
+            }
+            _ => 0,
+        })
+        .collect::<Vec<_>>();
+    let padding = pixel_padding(file);
+    let is_padding =
+        |index: usize| padding.is_some_and(|range| range.contains(stored_value(index)));
+    let windowed = look_up_samples(file, table, is_padding, bytes, bits_allocated);
+    Ok(DisplayBuffer {
+        rows,
+        columns,
+        pixels: DisplayPixels::Gray8(windowed),
+        window: AppliedWindow::RealWorld,
+        icc_profile: None,
+    })
 }
 
 /// One grayscale frame's stored values, as the presentation pipeline takes
@@ -261,17 +346,8 @@ pub(crate) fn encode_windowed_luminance_png(
     stored: StoredSamples<'_>,
     options: LuminanceRenderOptions,
 ) -> Result<DisplayPng> {
-    let padding = pixel_padding(file);
-    let (windowed, window) = match stored {
-        StoredSamples::Integer {
-            bytes,
-            bits_allocated,
-            signed,
-        } => window_through_table(file, bytes, bits_allocated, signed, padding, &options)?,
-        StoredSamples::Values(values) => window_each_sample(file, values, padding, &options)?,
-    };
-    let png = present_luminance(file, windowed, options.frame, options.rows, options.columns)?;
-    Ok(DisplayPng { png, window })
+    let frame = options.frame;
+    render_windowed_luminance(file, stored, options)?.into_display_png(file, frame)
 }
 
 /// Renders 8- or 16-bit stored integers windowed over a real-world mapping's
@@ -294,42 +370,17 @@ pub(crate) fn encode_real_world_windowed_png(
     frame: u32,
     (rows, columns): (u32, u32),
 ) -> Result<DisplayPng> {
-    let stored_value = stored_value_reader(bits_allocated, signed)?;
-    let low = center - width / 2.0;
-    let table = (0..1_usize << bits_allocated)
-        .map(|index| match map_value(map, stored_value(index)) {
-            Some(mapped) if mapped.is_finite() => {
-                (((mapped - low) / width).clamp(0.0, 1.0) * 255.0).round() as u8
-            }
-            _ => 0,
-        })
-        .collect::<Vec<_>>();
-    let padding = pixel_padding(file);
-    let is_padding =
-        |index: usize| padding.is_some_and(|range| range.contains(stored_value(index)));
-    let windowed = look_up_samples(file, table, is_padding, bytes, bits_allocated);
-    let png = present_luminance(file, windowed, frame, rows, columns)?;
-    Ok(DisplayPng {
-        png,
-        window: AppliedWindow::RealWorld,
-    })
-}
-
-/// The steps after windowing that every grayscale frame shares: the
-/// presentation graphics, then PNG encoding.
-fn present_luminance(
-    file: &FileEntry,
-    mut windowed: Vec<u8>,
-    frame: u32,
-    rows: u32,
-    columns: u32,
-) -> Result<Bytes> {
-    draw_presentation_graphics(&mut windowed, |gray| [gray], file, frame, rows, columns);
-    let mut encoded = Vec::new();
-    png_encoder(&mut encoded)
-        .write_image(&windowed, columns, rows, ExtendedColorType::L8)
-        .context("png encoding failed")?;
-    Ok(Bytes::from(encoded))
+    render_real_world_windowed(
+        file,
+        bytes,
+        bits_allocated,
+        signed,
+        map,
+        (center, width),
+        frame,
+        (rows, columns),
+    )?
+    .into_display_png(file, frame)
 }
 
 /// The graphics a grayscale display frame carries over its windowed values,
@@ -588,21 +639,6 @@ fn window_each_sample(
         apply_padding_background(&mut windowed, mask);
     }
     Ok((windowed, window))
-}
-
-/// Encodes one interleaved 8-bit RGB display frame as PNG. Every color
-/// decode path ends here after converting its samples to RGB, so the display
-/// shutter is applied once for all of them.
-pub(crate) fn encode_rgb8_display_png(
-    file: &FileEntry,
-    frame: u32,
-    mut rgb: Vec<u8>,
-    columns: u32,
-    rows: u32,
-    icc_profile: Option<Vec<u8>>,
-) -> Result<DisplayPng> {
-    shutter::apply_to_rgb8(&mut rgb, file, frame, rows, columns);
-    encode_rgb8_png_with_icc(rgb, columns, rows, icc_profile).map(DisplayPng::color)
 }
 
 fn is_monochrome1(photometric_interpretation: &str) -> bool {

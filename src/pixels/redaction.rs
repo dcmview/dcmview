@@ -27,7 +27,7 @@ impl Redaction {
 }
 
 /// Each box clipped to the image, as `(rows, columns)` ranges.
-fn clipped(
+pub(super) fn clipped(
     boxes: &[[u32; 4]],
     rows: u32,
     columns: u32,

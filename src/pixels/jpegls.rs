@@ -8,7 +8,7 @@ use tokio::task;
 use super::error::{PixelError, PixelResult};
 use super::pixeldata_frame::{self, DecodedFrame};
 use super::render::{
-    encode_windowed_luminance_png, DisplayPng, LuminanceRenderOptions, StoredSamples,
+    render_windowed_luminance, DisplayBuffer, DisplayPng, LuminanceRenderOptions, StoredSamples,
 };
 
 pub(crate) async fn decode_jpeg_ls_to_png(
@@ -19,33 +19,59 @@ pub(crate) async fn decode_jpeg_ls_to_png(
     window_mode: WindowMode,
 ) -> PixelResult<DisplayPng> {
     task::spawn_blocking(move || {
-        let decoded = decode_frame(&file, frame).map_err(PixelError::frame_decode)?;
-        if !matches!(decoded.bits_allocated, 8 | 16) {
-            return Err(PixelError::UnsupportedLayout(format!(
-                "JPEG-LS Lossless display does not support BitsAllocated {}",
-                decoded.bits_allocated
-            )));
-        }
-        encode_windowed_luminance_png(
-            &file,
-            StoredSamples::Integer {
-                bytes: &decoded.bytes,
-                bits_allocated: decoded.bits_allocated,
-                signed: file.pixel_representation == 1,
-            },
-            LuminanceRenderOptions {
-                frame,
-                rows: decoded.rows,
-                columns: decoded.columns,
-                requested_wc,
-                requested_ww,
-                window_mode,
-            },
-        )
-        .map_err(PixelError::frame_decode)
+        render_jpeg_ls_blocking(&file, frame, requested_wc, requested_ww, window_mode)?
+            .into_display_png(&file, frame)
+            .map_err(PixelError::frame_decode)
     })
     .await
     .map_err(|error| PixelError::frame_decode(anyhow!("JPEG-LS decode task failed: {error}")))?
+}
+
+pub(crate) async fn render_jpeg_ls(
+    file: Arc<FileEntry>,
+    frame: u32,
+    requested_wc: Option<f64>,
+    requested_ww: Option<f64>,
+    window_mode: WindowMode,
+) -> PixelResult<DisplayBuffer> {
+    task::spawn_blocking(move || {
+        render_jpeg_ls_blocking(&file, frame, requested_wc, requested_ww, window_mode)
+    })
+    .await
+    .map_err(|error| PixelError::frame_decode(anyhow!("JPEG-LS decode task failed: {error}")))?
+}
+
+fn render_jpeg_ls_blocking(
+    file: &FileEntry,
+    frame: u32,
+    requested_wc: Option<f64>,
+    requested_ww: Option<f64>,
+    window_mode: WindowMode,
+) -> PixelResult<DisplayBuffer> {
+    let decoded = decode_frame(file, frame).map_err(PixelError::frame_decode)?;
+    if !matches!(decoded.bits_allocated, 8 | 16) {
+        return Err(PixelError::UnsupportedLayout(format!(
+            "JPEG-LS Lossless display does not support BitsAllocated {}",
+            decoded.bits_allocated
+        )));
+    }
+    render_windowed_luminance(
+        file,
+        StoredSamples::Integer {
+            bytes: &decoded.bytes,
+            bits_allocated: decoded.bits_allocated,
+            signed: file.pixel_representation == 1,
+        },
+        LuminanceRenderOptions {
+            frame,
+            rows: decoded.rows,
+            columns: decoded.columns,
+            requested_wc,
+            requested_ww,
+            window_mode,
+        },
+    )
+    .map_err(PixelError::frame_decode)
 }
 
 pub(crate) async fn decode_raw_jpeg_ls(
