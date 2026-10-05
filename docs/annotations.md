@@ -67,14 +67,15 @@ Coordinates are image pixel indices. Each box must be inside image bounds, and
 Frame indices are zero-based and must be less than `NumberOfFrames`. Empty
 frame lists mean the ROI applies to all frames.
 
-JSON-valued fields must be CSV-quoted.
+JSON-valued fields that contain a comma must be CSV-quoted. A value without
+one, such as `[]` or `[[0]]`, needs no quotes, and export writes it unquoted.
 
 ## Example
 
 ```csv
 anon_dicom_path,num_ROI,ROI_coords,ROI_frames
 /path/to/dbt_case.dcm,2,"[[120,340,220,430],[400,510,480,590]]","[[0,1,2],[5,6]]"
-/path/to/ffdm_case.dcm,1,"[[80,150,190,260]]","[]"
+/path/to/ffdm_case.dcm,1,"[[80,150,190,260]]",[]
 ```
 
 Matching uses normalized absolute path equality against loaded DICOM paths.
