@@ -672,7 +672,9 @@ Discovery lists PNG, JPEG, TIFF and still WebP files beside DICOM
 - **On the wire** `FileSummary.file_format` names the format and
   `FileSummary.raster` is a `RasterSummary` for rasters and `null` for DICOM;
   `object_kind` is `image`. Rasters have no Study or Series UID, so the series
-  catalog leaves them out and each is its own tab.
+  catalog leaves them out and each is its own tab; for the same reason
+  `redactions/series` copies a raster's boxes to no other file, and a raster
+  is never the target of a DICOM reference.
 - **Filters.** `--filter format=<name>` matches the format name exactly and
   `--filter path=<text>` matches a substring of the reported path, both
   ignoring case. The DICOM filter fields are empty for a raster, so any DICOM

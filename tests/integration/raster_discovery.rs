@@ -766,6 +766,11 @@ async fn every_endpoint_answers_for_a_raster_without_a_server_error() {
     )
     .expect("write PNG");
     fs::write(
+        dir.path().join("same-size.png"),
+        png(ExtendedColorType::L16, 3, 2),
+    )
+    .expect("write PNG");
+    fs::write(
         dir.path().join("volume.tif"),
         tiff_page::<colortype::Gray32Float>(false, &[0.5; 4], &[]),
     )
@@ -862,6 +867,22 @@ async fn every_endpoint_answers_for_a_raster_without_a_server_error() {
         assert_eq!(mapping["real_world"], json!([]), "{name}");
         assert!(mapping["voi_lut"].is_null(), "{name}");
     }
+
+    // A raster belongs to no series: the catalog groups none, and one
+    // image's redaction boxes are never copied to another of the same size.
+    let series: Value = scan.server.get("/api/series").await.json();
+    assert_eq!(series["series"], json!([]));
+    scan.server
+        .put(&format!("/api/file/{index}/redactions"))
+        .json(&json!({ "num_roi": 1, "roi_coords": [[0, 0, 1, 1]], "roi_frames": [] }))
+        .await
+        .assert_status_ok();
+    let copied = scan
+        .server
+        .put(&format!("/api/file/{index}/redactions/series"))
+        .await;
+    copied.assert_status_ok();
+    assert_eq!(copied.json::<Value>(), json!({ "file_indices": [] }));
 }
 
 #[tokio::test]
