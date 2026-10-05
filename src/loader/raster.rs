@@ -5,7 +5,14 @@
 //! describe it: each format is read only as far as the table in section 4
 //! says. Decoding belongs to `pixels/` and is not part of this module.
 
-use super::entry::EntryInspection;
+use super::{discovery::DiscoveryReason, entry::EntryInspection};
+use crate::api::contracts::{RasterColorType, RasterSampleFormat};
+use crate::types::{FileEntry, NativePixelDataKind, RasterMetadata, SeriesMetadata};
+use std::fs::File;
+use std::io::{self, Read, Seek, SeekFrom};
+
+mod headers;
+mod tiff;
 use crate::types::FileFormat;
 use anyhow::Result;
 use std::path::Path;
@@ -105,5 +112,203 @@ use std::path::Path;
 /// cannot describe may be reported as `RasterHeaderInvalid`; listing such
 /// files as unsupported is the decoder work's decision.
 pub(super) fn inspect_raster(_path: &Path, _format: FileFormat) -> Result<EntryInspection> {
-    todo!("FMT1: read the raster header into a FileEntry")
+    let file = File::open(_path)?;
+    let len = file.metadata()?.len();
+    let mut input = HeaderReader { file, len };
+    let parsed = match _format {
+        FileFormat::Png => headers::png(&mut input),
+        FileFormat::Jpeg => headers::jpeg(&mut input),
+        FileFormat::Tiff => tiff::inspect(&mut input),
+        FileFormat::Webp => headers::webp(&mut input),
+        FileFormat::Dicom => anyhow::bail!("expected a raster format"),
+    };
+    let header = match parsed {
+        Ok(header) if header.width > 0 && header.height > 0 => header,
+        Err(error) if is_io_failure(&error) => return Err(error),
+        _ => {
+            return Ok(EntryInspection::Skipped(
+                DiscoveryReason::RasterHeaderInvalid,
+            ))
+        }
+    };
+    let raster = header.metadata;
+    let (samples_per_pixel, photometric) = match raster.color_type {
+        RasterColorType::Gray => (
+            1,
+            if header.white_is_zero {
+                "MONOCHROME1"
+            } else {
+                "MONOCHROME2"
+            },
+        ),
+        RasterColorType::GrayAlpha => (2, "MONOCHROME2"),
+        RasterColorType::Rgb | RasterColorType::Cmyk => (3, "RGB"),
+        RasterColorType::Rgba => (4, "RGBA"),
+        RasterColorType::Palette if raster.has_alpha => (4, "RGBA"),
+        RasterColorType::Palette => (3, "RGB"),
+    };
+    let mut series_metadata = SeriesMetadata::default();
+    series_metadata.native_pixel.pixel_data_kind =
+        Some(match (raster.sample_format, raster.bit_depth) {
+            (RasterSampleFormat::Float, 32) => NativePixelDataKind::Float32,
+            (RasterSampleFormat::Float, 64) => NativePixelDataKind::Float64,
+            _ => NativePixelDataKind::Integer,
+        });
+    let file_name = _path.file_name().unwrap_or_default().to_string_lossy();
+    Ok(EntryInspection::Selected(Box::new(FileEntry {
+        index: 0,
+        path: _path.to_path_buf(),
+        format: _format,
+        label: super::build_label("", "", "", &file_name),
+        patient_id: String::new(),
+        patient_name: String::new(),
+        study_instance_uid: String::new(),
+        study_date: String::new(),
+        study_description: String::new(),
+        series_instance_uid: String::new(),
+        series_number: String::new(),
+        series_description: String::new(),
+        modality: String::new(),
+        instance_number: String::new(),
+        sop_instance_uid: String::new(),
+        sop_class_uid: String::new(),
+        transfer_syntax_uid: String::new(),
+        series_metadata: Box::new(series_metadata),
+        has_pixels: true,
+        frame_count: raster.frame_pages.len() as u32,
+        rows: header.height,
+        columns: header.width,
+        bits_allocated: if raster.color_type == RasterColorType::Palette {
+            8
+        } else {
+            raster.bit_depth.next_power_of_two().max(8)
+        },
+        pixel_representation: u32::from(raster.sample_format == RasterSampleFormat::Int),
+        samples_per_pixel,
+        photometric_interpretation: photometric.into(),
+        rescale_slope: 1.0,
+        rescale_intercept: 0.0,
+        default_window: None,
+        raster: Some(Box::new(raster)),
+    })))
+}
+
+struct Header {
+    width: u32,
+    height: u32,
+    white_is_zero: bool,
+    metadata: RasterMetadata,
+}
+
+impl Header {
+    fn new(width: u32, height: u32, color_type: RasterColorType, bit_depth: u32) -> Self {
+        Self {
+            width,
+            height,
+            white_is_zero: false,
+            metadata: RasterMetadata {
+                color_type,
+                bit_depth,
+                sample_format: RasterSampleFormat::Uint,
+                has_alpha: matches!(
+                    color_type,
+                    RasterColorType::GrayAlpha | RasterColorType::Rgba
+                ),
+                alpha_associated: false,
+                orientation: 1,
+                has_icc: false,
+                pages_total: 1,
+                frame_pages: vec![0],
+                excluded_pages: Vec::new(),
+                animated: false,
+                significant_bits: None,
+                warnings: Vec::new(),
+            },
+        }
+    }
+}
+
+// Seek past payloads and validate ranges before allocating metadata buffers.
+struct HeaderReader {
+    file: File,
+    len: u64,
+}
+
+impl HeaderReader {
+    fn check_range(&self, offset: u64, len: u64) -> Result<()> {
+        anyhow::ensure!(
+            offset <= self.len && len <= self.len - offset,
+            "truncated raster header"
+        );
+        Ok(())
+    }
+
+    fn read<const N: usize>(&mut self, offset: u64) -> Result<[u8; N]> {
+        self.check_range(offset, N as u64)?;
+        self.file.seek(SeekFrom::Start(offset))?;
+        let mut bytes = [0; N];
+        self.file.read_exact(&mut bytes)?;
+        Ok(bytes)
+    }
+
+    fn bytes(&mut self, offset: u64, len: u64) -> Result<Vec<u8>> {
+        self.check_range(offset, len)?;
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(usize::try_from(len)?)?;
+        bytes.resize(len as usize, 0);
+        self.file.seek(SeekFrom::Start(offset))?;
+        self.file.read_exact(&mut bytes)?;
+        Ok(bytes)
+    }
+}
+
+fn is_io_failure(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<io::Error>()
+            .is_some_and(|error| error.kind() != io::ErrorKind::UnexpectedEof)
+    })
+}
+
+fn orientation(value: u64) -> u8 {
+    if (1..=8).contains(&value) {
+        value as u8
+    } else {
+        1
+    }
+}
+
+/// Only IFD0 of the TIFF block, shared by JPEG, PNG and WebP EXIF.
+fn exif_orientation(bytes: &[u8]) -> u8 {
+    fn read(bytes: &[u8]) -> Option<u64> {
+        let little = match bytes.get(..2)? {
+            b"II" => true,
+            b"MM" => false,
+            _ => return None,
+        };
+        let number = |offset: usize, len: usize| -> Option<u64> {
+            let slice = bytes.get(offset..offset.checked_add(len)?)?;
+            Some(if little {
+                slice.iter().rev().fold(0, |n, b| (n << 8) | u64::from(*b))
+            } else {
+                slice.iter().fold(0, |n, b| (n << 8) | u64::from(*b))
+            })
+        };
+        if number(2, 2)? != 42 {
+            return None;
+        }
+        let ifd = usize::try_from(number(4, 4)?).ok()?;
+        let count = usize::try_from(number(ifd, 2)?).ok()?;
+        for i in 0..count {
+            let offset = ifd.checked_add(2)?.checked_add(i.checked_mul(12)?)?;
+            if number(offset, 2)? == 0x0112
+                && number(offset + 2, 2)? == 3
+                && number(offset + 4, 4)? == 1
+            {
+                return number(offset + 8, 2);
+            }
+        }
+        None
+    }
+    orientation(read(bytes).unwrap_or(1))
 }
