@@ -10,7 +10,7 @@ use axum::extract::{Request, State};
 use axum::http::{header, HeaderName, HeaderValue};
 use axum::middleware::{self, Next};
 use axum::response::Response;
-use axum::routing::{get, put};
+use axum::routing::{any, get, put};
 use axum::Router;
 use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Predicate};
 use tower_http::compression::{CompressionLayer, CompressionLevel};
@@ -91,18 +91,24 @@ pub(crate) fn router(state: AppState) -> Router {
         .method_not_allowed_fallback(error::method_not_allowed_handler);
     // The token check wraps the whole API router, fallbacks included, so an
     // unauthenticated caller cannot tell a declared route from a missing one.
-    let api = match state.access_token() {
-        Some(token) => api.layer(middleware::from_fn_with_state(
+    let guard = |router: Router<AppState>| match state.access_token() {
+        Some(token) => router.layer(middleware::from_fn_with_state(
             token.clone(),
             auth::require_bearer,
         )),
-        None => api,
+        None => router,
     };
+    let api = guard(api);
+    // `nest` does not match the prefix with a trailing slash, which would
+    // otherwise fall through to the public page fallback.
+    let api_root =
+        guard(Router::new().route(&format!("{API_PREFIX}/"), any(error::not_found_handler)));
 
     let router = Router::new()
         .route("/", get(web::index))
         .route("/assets/{*path}", get(web::asset))
         .nest(API_PREFIX, api)
+        .merge(api_root)
         .fallback(error::page_not_found_handler)
         .method_not_allowed_fallback(error::method_not_allowed_handler)
         .layer(middleware::from_fn_with_state(

@@ -21,8 +21,15 @@ async fn api_requests_without_the_session_token_are_401() {
     let server = server_with_token();
     let bearer = |value: &str| Some(format!("Bearer {value}"));
     // (method, path, Authorization header)
-    let cases: [(Method, &str, Option<String>); 8] = [
+    let cases: [(Method, &str, Option<String>); 12] = [
         (Method::GET, "/api/health", None),
+        // The prefix itself, with and without a trailing slash.
+        (Method::GET, "/api", None),
+        (Method::GET, "/api/", None),
+        // A method the route does not allow is refused before it is 405.
+        (Method::POST, "/api/files", None),
+        // Preflight-style requests get no pass in the default build.
+        (Method::OPTIONS, "/api/files", None),
         (Method::GET, "/api/files", bearer("not-the-token")),
         (Method::GET, "/api/files", bearer("")),
         (Method::GET, "/api/files", Some(format!("Basic {TOKEN}"))),
