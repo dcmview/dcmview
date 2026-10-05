@@ -569,7 +569,7 @@
 					{#if activeFile === null}
 						<div class="tag-empty">No file selected</div>
 					{:else}
-						<TagPanel bind:this={tagPanel} fileIndex={activeFile.index} />
+						<TagPanel bind:this={tagPanel} fileIndex={activeFile.index} raster={activeFile.file_format !== "dicom"} />
 					{/if}
 				{/if}
 			</aside>

@@ -38,3 +38,12 @@ it("leaves child button activation native and keeps copy/expand keys out of glob
 		expect(value.parentElement?.closest('button, [role="button"]')).toBeNull();
 	} finally { window.removeEventListener("keydown", globalKey); }
 });
+
+it.each([
+	{ raster: false, title: "DICOM tags" },
+	{ raster: true, title: "Metadata" },
+])("titles the panel $title (raster: $raster)", async ({ raster, title }) => {
+	vi.mocked(api.fetchTags).mockResolvedValue([]);
+	render(TagPanel, { props: { fileIndex: 1, raster } });
+	expect(screen.getByRole("heading").textContent).toBe(title);
+});
