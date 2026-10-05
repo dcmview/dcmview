@@ -63,6 +63,7 @@ pub(crate) async fn run_local_viewer(options: LocalViewerOptions) -> Result<Loca
     let config = ServerConfig {
         host: options.host,
         port: options.port,
+        unix_socket: None,
         timeout_seconds: options.timeout_seconds,
         open_browser: options.open_browser,
         startup_json: options.startup_json,

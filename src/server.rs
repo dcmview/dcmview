@@ -3,6 +3,8 @@ mod catalog;
 pub mod lifecycle;
 pub mod runtime;
 mod tags;
+#[cfg(unix)]
+mod unix_socket;
 mod web;
 
 pub use api::AppState;
