@@ -4,6 +4,7 @@
 use super::support;
 use axum::http::{header, HeaderValue, Method, StatusCode};
 use axum_test::TestServer;
+use dcmview::api::contracts::endpoints;
 use dcmview::server::{self, AccessToken};
 use serde_json::Value;
 
@@ -69,6 +70,65 @@ async fn api_requests_without_the_session_token_are_401() {
         let body: Value = response.json();
         assert_eq!(body["code"], "unauthorized", "{case}");
         assert!(body["error"].is_string(), "{case}");
+    }
+}
+
+/// The matrix: no declared endpoint answers without the token, and each one
+/// does with it. It walks `endpoints::ALL`, so a new endpoint is covered when
+/// it is declared, and one routed outside the token check fails the first
+/// half.
+#[tokio::test]
+async fn every_declared_endpoint_needs_the_session_token() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let token = AccessToken::fixed(TOKEN).expect("test token");
+    let server = TestServer::new(server::router(
+        support::every_endpoint_state(dir.path()).with_access_token(token),
+    ));
+    let authorization = HeaderValue::from_str(&format!("Bearer {TOKEN}")).expect("header value");
+
+    for endpoint in endpoints::ALL {
+        let refused = support::endpoint_request(&server, endpoint, "0").await;
+        assert_eq!(
+            refused.status_code(),
+            StatusCode::UNAUTHORIZED,
+            "{} without the token",
+            endpoint.id
+        );
+        assert_eq!(
+            refused.header(header::WWW_AUTHENTICATE),
+            "Bearer",
+            "{} challenge",
+            endpoint.id
+        );
+        let body: Value = refused.json();
+        assert_eq!(body["code"], "unauthorized", "{} envelope", endpoint.id);
+
+        let admitted = support::endpoint_request(&server, endpoint, "0")
+            .add_header(header::AUTHORIZATION, authorization.clone())
+            .await;
+        if support::NEEDS_LINKED_SOURCE.contains(endpoint) {
+            // No linked pair in this fixture, so the handler answers its own
+            // error: reaching it is what the token has to buy.
+            assert_ne!(
+                admitted.status_code(),
+                StatusCode::UNAUTHORIZED,
+                "{} with the token",
+                endpoint.id
+            );
+            assert_ne!(
+                admitted.json::<Value>()["code"],
+                "unauthorized",
+                "{} with the token",
+                endpoint.id
+            );
+        } else {
+            assert_eq!(
+                admitted.status_code().as_u16(),
+                endpoint.success_status,
+                "{} with the token",
+                endpoint.id
+            );
+        }
     }
 }
 
