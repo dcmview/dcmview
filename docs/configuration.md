@@ -7,8 +7,9 @@ flags, Python wrapper arguments, VS Code settings, and a small set of
 environment variables.
 
 Keep TCP listeners bound to `127.0.0.1` unless you have added your own network
-access controls. The viewer server is unauthenticated. On shared Unix servers,
-use `--unix-socket` to restrict direct connections to your account.
+access controls. Every listener requires a session bearer token for API access
+by default. On shared Unix servers, `--unix-socket` also restricts direct
+connections to your account.
 
 ## Rust CLI
 
@@ -24,6 +25,7 @@ dcmview [OPTIONS] <PATH> [PATH ...]
 | `-p, --port <PORT>` | `0` | Local HTTP port to bind. `0` asks the OS for an available port. |
 | `--host <ADDR>` | `127.0.0.1` | Local interface to bind. Keep the default for normal and SSH-forwarded use. |
 | `--unix-socket <PATH>` | none | Listen on a private Unix domain socket instead of TCP; Linux and macOS only. Conflicts with explicit `--host` and `--port`. |
+| `--no-token` | `false` | Serve the API without the access token; for use behind a proxy that already authenticates. Warns that the API is open to anything that can reach the listener. |
 | `--no-browser` | `false` | Print the viewer URL instead of opening a browser automatically. |
 | `--timeout <SECONDS>` | none | Exit after this many seconds without API or browser requests once the scan has finished. |
 | `--no-recursive` | `false` | Scan only the top level of input directories. |
@@ -75,7 +77,8 @@ non-socket entries, including symlinks, are refused and left untouched.
 The socket created by this process is removed on graceful shutdown or when
 the bound server is dropped; a forced kill can leave a stale socket.
 
-Run this command on your local machine, then open `http://localhost:8080/`:
+Run this command on your local machine, then open the printed
+`http://localhost:8080/#token=...` launch URL:
 
 ```bash
 ssh -L 8080:/home/alice/dcmview/scan.sock user@host
@@ -92,9 +95,26 @@ the flag with an unsupported-platform error. Python `view()` and the VS Code
 extension do not offer socket mode in this version.
 
 For integrations, `--startup-json` reports the absolute socket path with
-`url: null`, `token: null`, and `protocol: 1`. No access token is issued by
-this version's socket mode; the forwarded browser URL depends on your local
-port choice.
+`url: null`, the session `token`, and `protocol: 1`. The token is required
+for API requests over the socket too. The forwarded browser URL depends on
+your local port choice; preserve its `#token=...` fragment.
+
+### Access token
+
+One token is generated at startup from 32 OS-random bytes, encoded as 43
+unpadded base64url characters. It lasts for the process lifetime, without
+expiry or rotation. The printed browser and forwarding URLs carry it in
+`#token=...`; treat these links and startup JSON as credentials.
+
+Set `DCMVIEW_TOKEN` to fix the value instead. It must be non-empty and contain
+only `A-Z a-z 0-9 - . _ ~`. Invalid values fail startup without echoing the
+value. Tokens are never accepted on argv. Setting `DCMVIEW_TOKEN` together
+with `--no-token` is a startup error, even if the variable is empty.
+
+`--no-token` generates no token, leaves URLs without a fragment, and reports
+`token: null` in startup JSON. Use it only behind an authenticating proxy.
+Non-loopback TCP binds still warn about plain HTTP; bearer authentication
+does not encrypt requests or responses.
 
 ## Python Module CLI
 
@@ -184,6 +204,7 @@ These variables affect viewer launch and VS Code bridge routing at runtime.
 
 | Variable | Used by | Behavior |
 |---|---|---|
+| `DCMVIEW_TOKEN` | Rust binary (including Python launches) | Fix the session bearer token; non-empty `A-Z a-z 0-9 - . _ ~` only. Conflicts with `--no-token`. |
 | `DCMVIEW_BINARY` | Python wrapper | Absolute or user-expanded path to the Rust binary. Overrides bundled wheels and `PATH`. |
 | `DCMVIEW_VSCODE_BYPASS` | Rust binary (including Python launches), VS Code shims | Set to `1` to bypass VS Code bridge discovery and launch a normal local process. |
 | `DCMVIEW_VSCODE_BRIDGE_URL` | Rust binary (including Python launches), VS Code extension | Explicit VS Code bridge URL for terminal interception. Usually managed by the extension. |

@@ -29,11 +29,25 @@ public disclosure when the report describes a real vulnerability.
 `dcmview` is intended for research and development inspection on secure
 networks. It is not for clinical diagnosis or clinical decision-making.
 
-The local HTTP server is unauthenticated by design. It binds to `127.0.0.1` by
-default and should normally be accessed locally or through SSH port forwarding.
-Avoid public-facing binds such as `--host 0.0.0.0` unless you provide your own
-network access controls.
+Every `/api` request requires the session's bearer token by default, including
+health, downloads, and unknown routes. The viewer page and hashed assets are
+public and contain no file data. A generated token uses 32 bytes of OS
+randomness as unpadded base64url and is compared in constant time. It is valid
+for the process lifetime, with no expiry or rotation. `DCMVIEW_TOKEN` can fix
+its value; it is never accepted as a command-line argument. Treat startup
+JSON and the printed launch URL, whose fragment carries the token, as
+credentials.
 
-DICOM files often contain protected or sensitive information. Anyone who can
-reach the running `dcmview` server may be able to access image pixels, metadata,
-file paths, patient identifiers, study identifiers, and in-memory annotations.
+The server binds to `127.0.0.1` by default and should normally be accessed
+locally or through SSH port forwarding. Bearer authentication does not encrypt
+plain HTTP traffic. Avoid public-facing binds such as `--host 0.0.0.0` unless
+you provide your own network access controls. Unix sockets also require the
+token and restrict direct connections to the server's user ID.
+
+`--no-token` explicitly disables API authentication and warns on stderr; it is
+intended for a listener behind a proxy that already authenticates. In that
+mode, anything that can reach the listener can use the API.
+
+DICOM files often contain protected or sensitive information. Anyone with the
+token and access to the listener can access image pixels, metadata, file paths,
+patient identifiers, study identifiers, and in-memory annotations.

@@ -143,6 +143,19 @@ Fix: copy the printed URL into a browser that can reach the machine running
 `dcmview`. On remote servers, keep `--no-browser` and forward the loopback port
 over SSH instead of exposing the server publicly.
 
+## API returns 401
+
+Every API path, including `/api/health`, needs the session's bearer token.
+Open the complete launch URL printed by the current process. For scripts,
+read `base_url` and `token` from `--startup-json`, append the API path to
+`base_url`, and send `Authorization: Bearer <token>`. A token in a query
+parameter or cookie does not authenticate. A token from an earlier process
+will not work unless you fixed it with `DCMVIEW_TOKEN`.
+
+`DCMVIEW_TOKEN` must be non-empty and contain only `A-Z a-z 0-9 - . _ ~`.
+Unset it before using `--no-token`, which is intended for a proxy that already
+authenticates and leaves the listener's API open.
+
 ## Viewer And Decode Errors
 
 ### Image frame returns unsupported transfer syntax
@@ -193,8 +206,9 @@ dcmview --no-browser --port 8888 /path/to/study
 ssh -L 8888:127.0.0.1:8888 user@remote-host
 ```
 
-Open `http://localhost:8888` locally. Keep the server bound to loopback unless
-you have separate network access controls.
+Open the printed `http://localhost:8888/#token=...` launch URL locally,
+keeping its token fragment. Keep the server bound to loopback unless you
+have separate network access controls.
 
 ## VS Code Extension
 

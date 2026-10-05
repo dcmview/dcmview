@@ -5,9 +5,12 @@ Rust binary. It is intended for scripts and notebooks that have already selected
 local DICOM files or directories and need a temporary viewer for research or
 development inspection.
 
-`dcmview` is not for clinical diagnosis. The local HTTP server is
-unauthenticated; keep it bound to `127.0.0.1` unless you have added your own
-network access controls.
+`dcmview` is not for clinical diagnosis. The local HTTP API requires the
+session's bearer token by default; the launch URL carries it in `#token=...`.
+Keep the server bound to `127.0.0.1` and use SSH forwarding for remote work:
+plain HTTP does not encrypt the token or DICOM data. The binary inherits
+`DCMVIEW_TOKEN` when a fixed token is needed. Direct API clients must send
+`Authorization: Bearer <token>`; see the [API reference](api.md).
 
 ## Install
 
@@ -172,7 +175,8 @@ Then forward the port from your local machine:
 ssh -L 8010:127.0.0.1:8010 user@remote
 ```
 
-Open `http://127.0.0.1:8010` locally.
+Open the printed `http://localhost:8010/#token=...` launch URL locally,
+keeping its token fragment.
 
 ## Return Values and Errors
 

@@ -10,6 +10,18 @@ diagnostic viewer.
 
 ## Unreleased
 
+### Breaking changes
+
+- Every `/api` request now requires `Authorization: Bearer <token>` by default,
+  including health and downloads, over TCP and Unix sockets. HTTP scripts must
+  read `token` and `base_url` from `--startup-json` (or extract the token from
+  the launch URL fragment and remove the fragment before adding API paths).
+  Missing or invalid credentials return `401 unauthorized` with
+  `WWW-Authenticate: Bearer`. Startup `url` now carries `#token=...`; JSON adds
+  `base_url`, `token`, and `protocol`. `DCMVIEW_TOKEN` fixes the session token;
+  `--no-token` explicitly disables authentication with a warning for use behind
+  an authenticating proxy. Public binds still warn about unencrypted HTTP.
+
 ### Added
 
 - `--unix-socket PATH` serves the viewer through a private Unix domain socket
