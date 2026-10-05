@@ -153,11 +153,10 @@ pub(super) fn webp(input: &mut HeaderReader) -> Result<Header> {
     let end = u64::from(u32::from_le_bytes(riff[4..8].try_into()?)) + 8;
     input.check_range(0, end)?;
     let mut offset = 12;
-    let mut header = None;
-    let mut has_icc = false;
-    let mut orientation = 1;
-    let mut animated = false;
-    let mut alpha = false;
+    let mut header: Option<Header> = None;
+    // An extended file says in its first chunk whether EXIF follows; until
+    // that chunk is found the walk goes on, past the frames.
+    let mut exif_pending = false;
     while offset < end {
         input.step()?;
         ensure!(end - offset >= 8, "truncated WebP chunk");
@@ -166,28 +165,32 @@ pub(super) fn webp(input: &mut HeaderReader) -> Result<Header> {
         let start = offset + 8;
         let padded = length + (length & 1);
         ensure!(padded <= end - start, "truncated WebP payload");
-        match &chunk[..4] {
-            b"VP8X" => {
-                ensure!(
-                    header.is_none() && length == 10 && offset == 12,
-                    "invalid VP8X header"
-                );
+        match (&chunk[..4], header.as_mut()) {
+            (b"VP8X", None) => {
+                ensure!(length == 10 && offset == 12, "invalid VP8X header");
                 let bytes = input.read::<10>(start)?;
+                let flags = bytes[0];
                 ensure!(
-                    bytes[0] & 0xc1 == 0 && bytes[1..4] == [0, 0, 0],
+                    flags & 0xc1 == 0 && bytes[1..4] == [0, 0, 0],
                     "invalid VP8X flags"
                 );
                 let u24 = |b: &[u8]| u32::from(b[0]) | u32::from(b[1]) << 8 | u32::from(b[2]) << 16;
-                header = Some(Header::new(
+                let color = if flags & 0x10 != 0 {
+                    RasterColorType::Rgba
+                } else {
+                    RasterColorType::Rgb
+                };
+                let image = header.insert(Header::new(
                     1 + u24(&bytes[4..7]),
                     1 + u24(&bytes[7..10]),
-                    RasterColorType::Rgb,
+                    color,
                     8,
                 ));
-                alpha |= bytes[0] & 0x10 != 0;
-                animated |= bytes[0] & 2 != 0;
+                image.metadata.has_icc = flags & 0x20 != 0;
+                image.metadata.animated = flags & 0x02 != 0;
+                exif_pending = flags & 0x08 != 0;
             }
-            b"VP8 " => {
+            (b"VP8 ", None) => {
                 ensure!(length >= 10, "short VP8 header");
                 let bytes = input.read::<10>(start)?;
                 ensure!(
@@ -196,48 +199,43 @@ pub(super) fn webp(input: &mut HeaderReader) -> Result<Header> {
                 );
                 let width = u16::from_le_bytes([bytes[6], bytes[7]]) & 0x3fff;
                 let height = u16::from_le_bytes([bytes[8], bytes[9]]) & 0x3fff;
-                header.get_or_insert_with(|| {
-                    Header::new(width.into(), height.into(), RasterColorType::Rgb, 8)
-                });
+                header = Some(Header::new(
+                    width.into(),
+                    height.into(),
+                    RasterColorType::Rgb,
+                    8,
+                ));
             }
-            b"VP8L" => {
+            (b"VP8L", None) => {
                 ensure!(length >= 5, "short VP8L header");
                 let bytes = input.read::<5>(start)?;
                 let bits = u32::from_le_bytes(bytes[1..].try_into()?);
                 ensure!(bytes[0] == 0x2f && bits >> 29 == 0, "invalid VP8L header");
-                header.get_or_insert_with(|| {
-                    Header::new(
-                        1 + (bits & 0x3fff),
-                        1 + ((bits >> 14) & 0x3fff),
-                        RasterColorType::Rgb,
-                        8,
-                    )
-                });
-                alpha |= bits & (1 << 28) != 0;
+                let color = if bits & (1 << 28) != 0 {
+                    RasterColorType::Rgba
+                } else {
+                    RasterColorType::Rgb
+                };
+                header = Some(Header::new(
+                    1 + (bits & 0x3fff),
+                    1 + ((bits >> 14) & 0x3fff),
+                    color,
+                    8,
+                ));
             }
-            b"ICCP" => has_icc = true,
-            b"EXIF" => {
-                orientation =
+            (b"EXIF", Some(image)) if exif_pending => {
+                image.metadata.orientation =
                     exif_orientation(&input.bytes(start, length.min(EXIF_SCAN_MAX_BYTES))?);
+                exif_pending = false;
             }
-            b"ANIM" => {
-                ensure!(length == 6, "invalid ANIM header");
-                animated = true;
-            }
-            b"ALPH" => alpha = true,
             _ => {}
+        }
+        // A simple file is its one image chunk, and an extended one declares
+        // the rest in its flags, so nothing past this point is needed.
+        if header.is_some() && !exif_pending {
+            break;
         }
         offset = start + padded;
     }
-    let mut header = header.ok_or_else(|| anyhow::anyhow!("missing WebP image header"))?;
-    header.metadata.color_type = if alpha {
-        RasterColorType::Rgba
-    } else {
-        RasterColorType::Rgb
-    };
-    header.metadata.has_alpha = alpha;
-    header.metadata.has_icc = has_icc;
-    header.metadata.orientation = orientation;
-    header.metadata.animated = animated;
-    Ok(header)
+    header.ok_or_else(|| anyhow::anyhow!("missing WebP image header"))
 }

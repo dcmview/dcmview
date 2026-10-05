@@ -66,8 +66,13 @@ use std::path::Path;
 ///
 /// - JPEG, PNG and WebP are scanned front to back through a buffer of
 ///   [`HEADER_SCAN_BUFFER_BYTES`]. A forward skip that lands inside the
-///   buffer costs no read; a longer skip is a seek, not a read. Scanning `n`
-///   contiguous bytes costs at most `n / HEADER_SCAN_BUFFER_BYTES + 1` reads.
+///   buffer costs no read; a longer skip is a seek, not a read. The read
+///   after a skip of [`HEADER_SCAN_READ_AHEAD_SKIP_BYTES`] or more returns
+///   only the bytes asked for (a chunk header is eight), so walking past
+///   payloads is not charged a buffer for each; a read that continues from
+///   the last byte used, or nearly, reads ahead. Scanning `n` contiguous
+///   bytes costs at most `n / HEADER_SCAN_BUFFER_BYTES + 2` reads.
+///   The walk ends at the last thing it needs, not at the end of the file.
 /// - TIFF pages are scattered through the file between pixel data, so an IFD
 ///   is read with reads of exactly its own length (its entry count, then its
 ///   entry table) and never with read-ahead, which would spend the budget on
@@ -89,7 +94,7 @@ use std::path::Path;
 /// | PNG | chunk headers up to the first `IDAT`, and of the chunks: `IHDR`, `sBIT`, the start of `eXIf`; `PLTE`, `tRNS`, `iCCP`, `acTL` by presence | any `IDAT`; text and profile payloads |
 /// | JPEG | markers up to and including the first `SOFn`: `APP1` EXIF (orientation), `APP2` ICC (presence), `APP14` Adobe | entropy-coded data; the file is never read whole |
 /// | TIFF | the IFD chain, up to the page limit: each page's layout tags | strips and tiles; other tag values |
-/// | WebP | the RIFF chunk headers: `VP8 `/`VP8L`/`VP8X`, `ICCP` (presence), `EXIF`, `ANIM` | image data |
+/// | WebP | the first `VP8 `/`VP8L` header, or the `VP8X` header with its alpha, ICC, EXIF and animation flags; only when that flag announces EXIF, the chunk headers up to `EXIF` and its start | image data and animation frames; any chunk after the last one needed |
 ///
 /// `image`'s `JpegDecoder::new` reads the whole file into memory and so must
 /// not be used here.
@@ -205,6 +210,12 @@ pub(super) const HEADER_SCAN_MAX_STEPS: u32 = 65_535;
 
 /// The buffer JPEG, PNG and WebP are scanned through.
 pub(super) const HEADER_SCAN_BUFFER_BYTES: usize = 8 * 1024;
+
+/// A read after a skip shorter than this still fills the whole buffer.
+/// Chunks that small sit several to a buffer, so reading ahead costs about
+/// the bytes walked; past a longer payload the next chunk is as likely to
+/// be skipped as read.
+pub(super) const HEADER_SCAN_READ_AHEAD_SKIP_BYTES: u64 = 1024;
 
 /// How much of an EXIF block is read for its orientation. A JPEG `APP1`
 /// segment cannot be longer; IFD0 starts 8 bytes in.
@@ -359,6 +370,8 @@ struct HeaderReader<'a> {
     buffer: Vec<u8>,
     buffer_start: u64,
     buffer_len: usize,
+    // One past the last byte handed to a format walk.
+    used_to: u64,
     bytes_read: u64,
     reads: u64,
     steps: u32,
@@ -385,6 +398,7 @@ impl<'a> HeaderReader<'a> {
             },
             buffer_start: 0,
             buffer_len: 0,
+            used_to: 0,
             bytes_read: 0,
             reads: 0,
             steps: 0,
@@ -453,13 +467,14 @@ impl<'a> HeaderReader<'a> {
         } else {
             while !bytes.is_empty() {
                 if !self.buffered(offset) {
-                    self.refill(offset)?;
+                    self.refill(offset, bytes.len())?;
                 }
                 let start = (offset - self.buffer_start) as usize;
                 let count = bytes.len().min(self.buffer_len - start);
                 bytes[..count].copy_from_slice(&self.buffer[start..start + count]);
                 bytes = &mut bytes[count..];
                 offset += count as u64;
+                self.used_to = offset;
             }
         }
         Ok(())
@@ -469,10 +484,20 @@ impl<'a> HeaderReader<'a> {
         offset >= self.buffer_start && offset - self.buffer_start < self.buffer_len as u64
     }
 
-    fn refill(&mut self, offset: u64) -> Result<()> {
+    /// Buffers from `offset`: a whole buffer when that is where the walk
+    /// already was, or nearly, and only the `wanted` bytes after a longer
+    /// skip, where what follows is most often the next payload to skip.
+    fn refill(&mut self, offset: u64, wanted: usize) -> Result<()> {
+        let continues =
+            offset >= self.used_to && offset - self.used_to < HEADER_SCAN_READ_AHEAD_SKIP_BYTES;
         self.source.seek(SeekFrom::Start(offset))?;
         let mut buffer = std::mem::take(&mut self.buffer);
-        let read = self.read_source(&mut buffer);
+        let limit = if continues {
+            buffer.len()
+        } else {
+            wanted.min(buffer.len())
+        };
+        let read = self.read_source(&mut buffer[..limit]);
         self.buffer = buffer;
         // A failed read leaves nothing buffered rather than stale bytes.
         self.buffer_len = 0;
@@ -490,13 +515,17 @@ impl<'a> HeaderReader<'a> {
             self.check_range(offset, 1)?;
             if !self.buffered(offset) {
                 self.active()?;
-                self.refill(offset)?;
+                self.refill(offset, self.buffer.len())?;
             }
             let run = &self.buffer[(offset - self.buffer_start) as usize..self.buffer_len];
             match run.iter().position(|found| *found != byte) {
-                Some(index) => return Ok(offset + index as u64),
+                Some(index) => {
+                    self.used_to = offset + index as u64;
+                    return Ok(self.used_to);
+                }
                 None => offset += run.len() as u64,
             }
+            self.used_to = offset;
         }
     }
 
@@ -732,6 +761,21 @@ mod tests {
         exif_webp.extend(chunk(b"VP8L", &[0x2f, 0x02, 0x40, 0, 0], false));
         exif_webp.extend(chunk(b"EXIF", &exif(6, 4 * MIB), false));
 
+        // 90 MB of animation frames, each far longer than the read buffer.
+        const FRAMES: u64 = 9_000;
+        let animation = |flags: u8, exif_block: &[u8]| {
+            let mut chunks = chunk(b"VP8X", &[flags, 0, 0, 0, 63, 0, 0, 47, 0, 0], false);
+            chunks.extend(chunk(b"ANIM", &[0; 6], false));
+            let frame = chunk(b"ANMF", &[0; 10_000], false);
+            for _ in 0..FRAMES {
+                chunks.extend_from_slice(&frame);
+            }
+            if !exif_block.is_empty() {
+                chunks.extend(chunk(b"EXIF", exif_block, false));
+            }
+            webp(chunks)
+        };
+
         vec![
             // Fill bytes before a marker are legal, in any number.
             Case {
@@ -811,6 +855,31 @@ mod tests {
                     EXIF_SCAN_MAX_BYTES + 6 * BUFFER,
                     EXIF_SCAN_MAX_BYTES / BUFFER + 16,
                 ),
+            },
+            // Everything but the orientation is in the first chunk.
+            Case {
+                name: "WebP animation of 90 MB",
+                format: FileFormat::Webp,
+                bytes: animation(0x02, &[]),
+                outcome: Outcome::Listed(|entry| {
+                    (entry.rows, entry.columns) == (48, 64)
+                        && entry.raster.as_ref().is_some_and(|raster| raster.animated)
+                }),
+                most: (BUFFER, 1),
+            },
+            // The orientation follows the frames: their headers are read,
+            // eight bytes each, and nothing of their payloads.
+            Case {
+                name: "WebP animation of 90 MB with EXIF after its frames",
+                format: FileFormat::Webp,
+                bytes: animation(0x0a, &exif(6, 64)),
+                outcome: Outcome::Listed(|entry| {
+                    entry
+                        .raster
+                        .as_ref()
+                        .is_some_and(|raster| raster.animated && raster.orientation == 6)
+                }),
+                most: (8 * FRAMES + 3 * BUFFER, FRAMES + 4),
             },
         ]
     }
