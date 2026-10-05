@@ -10,7 +10,7 @@ const MOUSE_WHEEL_ZOOM_SENSITIVITY = 0.0025;
 const PINCH_ZOOM_SENSITIVITY = 0.01;
 
 /** What the host needs of the viewport beyond what it hands to tools. */
-export interface ToolHostView extends ToolContext {
+export interface ToolHostView extends Omit<ToolContext, "inputProfile"> {
 	readonly activeTool: ToolId;
 	/** The frame on screen is the requested frame of the active file. */
 	readonly displayedFrameIsCurrent: boolean;
@@ -42,6 +42,7 @@ function toolPointer(event: PointerEvent): ToolPointer {
  */
 export class ToolHost {
 	readonly #view: ToolHostView;
+	readonly #ctx: ToolContext;
 	readonly #tools: Record<ToolId, Tool>;
 	readonly #scroll = new ScrollTool();
 	#captured = $state.raw<Tool | null>(null);
@@ -61,6 +62,8 @@ export class ToolHost {
 
 	constructor(view: ToolHostView) {
 		this.#view = view;
+		// What tools see: the viewport, read live, plus the profile only the host knows.
+		this.#ctx = Object.create(view, { inputProfile: { get: () => this.#inputProfile } }) as ToolContext;
 		this.#tools = {
 			pan: new PanTool(),
 			scroll: this.#scroll,
@@ -121,10 +124,10 @@ export class ToolHost {
 		}
 		// Alt+wheel steps frames in every tool, and does nothing else on a single image.
 		if (event.altKey) {
-			this.#scroll.wheel(wheel, view);
+			this.#scroll.wheel(wheel, this.#ctx);
 			return;
 		}
-		if (this.#tools[view.activeTool].wheel?.(wheel, view)) return;
+		if (this.#tools[view.activeTool].wheel?.(wheel, this.#ctx)) return;
 		// Two fingers pan; so does a wheel that only moves sideways (a tilt wheel, Shift+wheel).
 		if (device === "trackpad" || dy === 0) {
 			view.setTransform({
@@ -176,7 +179,7 @@ export class ToolHost {
 		const tool = this.#captured ?? armed;
 		if (!tool) return;
 		if (this.#cancelReplacedFrameGesture()) return;
-		tool.pointerMove(toolPointer(event), this.#view);
+		tool.pointerMove(toolPointer(event), this.#ctx);
 		this.#draft = (armed ?? tool).draft ?? null;
 	}
 
@@ -192,7 +195,7 @@ export class ToolHost {
 			if (!this.#armed) this.endGesture();
 			return;
 		}
-		tool.pointerUp(this.#view);
+		tool.pointerUp(this.#ctx);
 		this.#captured = null;
 		// The release left the tool armed: its gesture goes on with no button held.
 		if (tool.armed) {
@@ -212,8 +215,8 @@ export class ToolHost {
 	pointerCancel(event?: PointerEvent): void {
 		if (event && (this.#captured ? event.pointerId !== this.#pointerId : this.#armed !== null)) return;
 		const frameTool = this.#frameGesture?.tool;
-		if (frameTool && frameTool !== this.#captured) frameTool.cancel(this.#view);
-		this.#captured?.cancel(this.#view);
+		if (frameTool && frameTool !== this.#captured) frameTool.cancel(this.#ctx);
+		this.#captured?.cancel(this.#ctx);
 		this.endGesture();
 	}
 
@@ -248,7 +251,7 @@ export class ToolHost {
 
 	#begin(tool: Tool, event: PointerEvent): void {
 		const view = this.#view;
-		if (tool.pointerDown(toolPointer(event), view) !== "capture") return;
+		if (tool.pointerDown(toolPointer(event), this.#ctx) !== "capture") return;
 		event.preventDefault();
 		(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
 		this.#captured = tool;
@@ -274,7 +277,7 @@ export class ToolHost {
 	#liveArmed(): Tool | null {
 		const armed = this.#armed;
 		if (!armed || this.#captured || this.#tools[this.#view.activeTool] === armed) return armed;
-		armed.cancel(this.#view);
+		armed.cancel(this.#ctx);
 		this.endGesture();
 		return null;
 	}

@@ -48,6 +48,7 @@ function viewport({ images = 1, position = 0, rectangles = noRectangles, redacti
 		frame: 1,
 		imageRows: 64,
 		imageColumns: 64,
+		inputProfile: "mouse",
 		get transform() { return transform; },
 		setTransform(next) {
 			transform = { ...next, fit: false };

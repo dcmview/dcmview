@@ -83,6 +83,8 @@ export interface ToolContext {
 	zoomAnchor(clientX: number, clientY: number): ZoomAnchor | null;
 	/** The transform at `scale` that keeps `anchor` under its client point; null before layout. */
 	zoomTransform(scale: number, anchor: ZoomAnchor): Omit<ViewTransform, "fit"> | null;
+	/** The device the session is taken to use; the host decides it (section 3.5 of the tools design). */
+	readonly inputProfile: InputDevice;
 	readonly navigation: FrameNavigation;
 	readonly window: WindowLevelSession;
 	readonly rects: RectangleEdits;

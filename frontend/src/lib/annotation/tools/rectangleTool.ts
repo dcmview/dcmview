@@ -13,6 +13,9 @@ import {
 import { hitTestRoi, roiCoord } from "../../viewport/roiEditing";
 import type { DraftRect, Tool, ToolContext, ToolPointer } from "./tool";
 
+/** How near a handle a press grabs it, in screen pixels: a trackpad points less precisely at the moment of clicking. */
+const HANDLE_TOLERANCE_PX = { mouse: 8, trackpad: 10 } as const;
+
 /** A press that travels less than this many screen pixels before its release is a click. */
 const CLICK_TRAVEL_PX = 4;
 
@@ -68,7 +71,7 @@ export class RectangleTool implements Tool {
 		const point = ctx.toImage(pointer.clientX, pointer.clientY);
 		if (!point) return "ignore";
 		this.#before = { fileIndex: ctx.file.index, original: ctx.rects.annotations };
-		const hit = hitTestRoi(ctx.rects.visible, point, ctx.transform.scale);
+		const hit = hitTestRoi(ctx.rects.visible, point, ctx.transform.scale, HANDLE_TOLERANCE_PX[ctx.inputProfile]);
 		if (hit) {
 			ctx.rects.select(hit.roi.index);
 			ctx.rects.beginLiveEdit();
