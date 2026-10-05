@@ -84,7 +84,21 @@ impl FromStr for FormatSelection {
     type Err = String;
 
     fn from_str(_raw: &str) -> Result<Self, Self::Err> {
-        todo!("FMT1: parse the --formats list")
+        let mut formats = Vec::new();
+        for item in _raw.split(',') {
+            let name = item.trim();
+            let format = FileFormat::ALL
+                .into_iter()
+                .find(|format| format.as_str().eq_ignore_ascii_case(name))
+                .ok_or_else(|| {
+                    format!(
+                        "invalid format `{item}`; expected one of: {}",
+                        FileFormat::ALL.map(FileFormat::as_str).join(", ")
+                    )
+                })?;
+            formats.push(format);
+        }
+        Ok(Self::only(&formats))
     }
 }
 
