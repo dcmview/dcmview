@@ -48,6 +48,13 @@ would remove behavior, raise it as a question instead of acting.
 
 - **Local viewer** - CLI over files and directories, recursive or top-level
   scan, `--filter`, `--timeout`, and EMBED-style ROI load, edit, and export.
+- **Raster image files (owner decisions, 2026-09-30)** - PNG, JPEG, TIFF and
+  still WebP files are discovered beside DICOM, by content and never by
+  extension, and listed with `file_format` and a `raster` summary. They are
+  on by default; `--formats` narrows a directory walk (`--formats dicom` is
+  the earlier DICOM-only behaviour) and never excludes a file named as an
+  input path. `--filter` has `format` and `path` fields. Coordinates and
+  sizes are in the stored pixel grid; orientation is reported, not applied.
 - **Remote use** - loopback bind plus the printed `ssh -L` hint. (`--tunnel`
   was removed with the owner's agreement on 2026-09-25.)
 - **Python package** - `view()` with blocking and non-blocking handles,
@@ -103,6 +110,12 @@ would remove behavior, raise it as a question instead of acting.
   series. Available with or without `--mask`.
 
 **Known gaps (intended work, not settled scope):**
+
+- **Raster images are listed but not yet decoded.** A raster reports
+  `support_state: unsupported` with `raster.decode_not_available`, its frame
+  endpoints answer 422, and its tag tree is empty. Decoders, the metadata
+  tree (which must honour `--mask`), decode admission and file keys are the
+  planned follow-ups in `docs/design/image-formats.md`.
 
 - **VOI LUT Function is not interpreted.** DICOM VOI LUT Function
   (0028,1056), including `LINEAR_EXACT` and `SIGMOID`, is currently ignored.
@@ -268,7 +281,8 @@ dcmview/
 |   |-- bridge/          binary-private bridge protocol, registry, client
 |   |-- startup/         local assembly and owned discovery lifecycle
 |   |-- api/contracts.rs canonical HTTP endpoint and wire contract
-|   |-- loader/          cancellable DICOM discovery and FileEntry creation
+|   |-- loader/          cancellable discovery of DICOM and raster image files,
+|   |                    format detection, and FileEntry creation
 |   |-- annotations.rs   EMBED-style ROI parsing, validation, memory store
 |   |-- masking.rs       --mask display masking rules and the PS3.15 profile list
 |   |-- redactions.rs    in-memory redaction boxes and their revisions
@@ -644,7 +658,7 @@ the warning path in `server/runtime.rs`.
 | `src/startup/` | Local viewer assembly and discovery ownership |
 | `src/api/contracts.rs` | Canonical HTTP endpoint and wire contract |
 | `src/server/` | Axum runtime, lifecycle, catalog, API, tags, and web assets |
-| `src/loader/` | Cancellable DICOM discovery and metadata extraction |
+| `src/loader/` | Cancellable DICOM and raster discovery and metadata extraction |
 | `src/pixels/` | Pixel service, codecs, display/raw paths, caches, and windowing |
 | `src/annotations.rs` | ROI CSV import/export, validation, in-memory store |
 | `src/types.rs` | Internal domain, transfer-syntax, and cache-key types |
