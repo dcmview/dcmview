@@ -1,12 +1,13 @@
 //! Gallery thumbnails: the geometry of one and its JPEG encoding. The
 //! service entry point is `service::load_thumbnail`.
 
-use super::render::DisplayBuffer;
+use super::render::{DisplayBuffer, DisplayPixels};
 use crate::api::contracts::{
     ThumbnailSource, WindowMode, THUMBNAIL_DEFAULT_SIZE, THUMBNAIL_SIZE_BUCKETS,
 };
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use bytes::Bytes;
+use image::{DynamicImage, GrayImage, ImageBuffer, Rgb, RgbImage};
 
 /// JPEG quality of a thumbnail. Thumbnails are previews; the viewer's own
 /// frames stay lossless.
@@ -100,6 +101,48 @@ pub(crate) fn encode_thumbnail_jpeg(
     bucket: u32,
     pixel_aspect_ratio: Option<f64>,
 ) -> Result<Bytes> {
-    let _ = (buffer, bucket, pixel_aspect_ratio);
-    todo!("GAL1: resample the buffer and encode the thumbnail JPEG")
+    let (width, height) =
+        thumbnail_dimensions(buffer.rows, buffer.columns, pixel_aspect_ratio, bucket);
+    let pixels = match buffer.pixels {
+        DisplayPixels::Gray8(pixels) => {
+            let image = GrayImage::from_raw(buffer.columns, buffer.rows, pixels)
+                .ok_or_else(|| anyhow!("grayscale buffer size does not match image geometry"))?;
+            DynamicImage::ImageLuma8(if image.dimensions() == (width, height) {
+                image
+            } else {
+                image::imageops::thumbnail(&image, width, height)
+            })
+        }
+        pixels => {
+            let image = match pixels {
+                DisplayPixels::Rgb8(pixels) => {
+                    RgbImage::from_raw(buffer.columns, buffer.rows, pixels)
+                        .ok_or_else(|| anyhow!("RGB buffer size does not match image geometry"))?
+                }
+                DisplayPixels::Rgb16 { samples, .. } => {
+                    let image = ImageBuffer::<Rgb<u16>, Vec<u16>>::from_raw(
+                        buffer.columns,
+                        buffer.rows,
+                        samples,
+                    )
+                    .ok_or_else(|| anyhow!("RGB buffer size does not match image geometry"))?;
+                    DynamicImage::ImageRgb16(image).to_rgb8()
+                }
+                DisplayPixels::Gray8(_) => unreachable!(),
+            };
+            DynamicImage::ImageRgb8(if image.dimensions() == (width, height) {
+                image
+            } else {
+                image::imageops::thumbnail(&image, width, height)
+            })
+        }
+    };
+    let mut jpeg = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, THUMBNAIL_JPEG_QUALITY).encode(
+        pixels.as_bytes(),
+        width,
+        height,
+        pixels.color().into(),
+    )?;
+    Ok(Bytes::from(jpeg))
 }
