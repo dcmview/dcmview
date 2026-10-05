@@ -33,9 +33,10 @@ diagnostic viewer.
 - The Explorer's Study view lists PNG, JPEG, TIFF and WebP files in an
   "Images" group after the patients, in their folder tree, with their own
   icon and a format chip; DICOM files stay in the patient tree even without
-  identifiers. The Explorer filter also matches the format and the part of
-  the path the Directory view shows, and `format:png` (or `jpg`, `tif`,
-  `webp`, `dicom`) selects by format. Opening an image file says that it
+  identifiers. The Explorer filter's `format:png` (or `jpg`, `tif`,
+  `webp`, `dicom`) selects by format; a plain term also matches an image
+  file's format name and the path the current view shows for a file, never
+  a folder that every listed file shares. Opening an image file says that it
   cannot be displayed yet instead of failing a frame request, and its tag
   panel is titled "Metadata". In a `--mask` session the Study view lists
   image files as `File N` without folders and its filter does not match
