@@ -109,9 +109,14 @@ Common backend checks:
 cargo fmt --all
 cargo fmt --all -- --check
 DCMVIEW_SKIP_FRONTEND_BUILD=1 cargo check --locked
-DCMVIEW_SKIP_FRONTEND_BUILD=1 cargo clippy --all-targets --locked -- -D warnings
-DCMVIEW_SKIP_FRONTEND_BUILD=1 cargo test --locked
+DCMVIEW_SKIP_FRONTEND_BUILD=1 cargo clippy --workspace --all-targets --locked -- -D warnings
+DCMVIEW_SKIP_FRONTEND_BUILD=1 cargo test --workspace --locked
 ```
+
+The repository is a Cargo workspace whose root is also the `dcmview` package.
+Without `--workspace`, `cargo test` and `cargo clippy` cover only that
+package and skip the member crates under `crates/`. `cargo test -p
+dcmview-protocol` runs one member and needs no frontend build.
 
 Prefer `python scripts/check.py quick` or `core` for handoff. The individual
 commands remain useful for targeted iteration.
@@ -170,6 +175,8 @@ The [architecture and test model](architecture.md) is normative. In brief:
   discovery cancellation and joins through server exit.
 - `api/contracts.rs` owns HTTP wire declarations and generates the checked-in
   TypeScript contract used by `frontend/src/api.ts`.
+- `crates/dcmview-protocol` owns the launch and startup contract (the
+  `--startup-json` line); `api/contracts.rs` re-exports it.
 - `server/` separates runtime, lifecycle, catalog, API, tags, and embedded web
   assets. `pixels/` separates service, codecs, caches, windowing, and rendering.
 - `App.svelte` composes `FileNavigator`, `OpenImageTabs`, the viewer controls,

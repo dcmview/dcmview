@@ -62,12 +62,15 @@ at the end of this checklist.
 
 ### Version And Package Metadata
 
-- [ ] Set the release version consistently in `Cargo.toml`, `pyproject.toml`,
-      `frontend/package.json`, and `vscode/package.json`.
+- [ ] Set the release version consistently in `Cargo.toml`, every
+      `crates/*/Cargo.toml`, `pyproject.toml`, `frontend/package.json`, and
+      `vscode/package.json`.
 - [ ] Regenerate `Cargo.lock`, `frontend/package-lock.json`, and
       `vscode/package-lock.json`; do not hand-edit resolved dependency records.
-      The version check covers the root package in Cargo.lock and both the
-      top-level and root-package versions in each npm lockfile.
+      The version check covers the root package in Cargo.lock, each
+      workspace member manifest, and both the top-level and root-package
+      versions in each npm lockfile. A stale member entry in Cargo.lock is
+      caught by the `--locked` builds, not by the version check.
 - [ ] Check canonical package-version parity and the proposed tag:
 
   ```bash
@@ -290,7 +293,7 @@ or every remaining external issue has an explicit maintainer-owned resolution.
 - [ ] Choose the next working version. Default to the next patch version unless
       the planned development scope requires a minor or major increment.
 - [ ] Update the canonical manifests and regenerate their lockfiles. At minimum,
-      keep `Cargo.toml`, `Cargo.lock`, `pyproject.toml`,
+      keep `Cargo.toml`, `crates/*/Cargo.toml`, `Cargo.lock`, `pyproject.toml`,
       `frontend/package.json`, `frontend/package-lock.json`,
       `vscode/package.json`, and `vscode/package-lock.json` consistent.
 - [ ] Leave the released notes under their dated version sections and retain a

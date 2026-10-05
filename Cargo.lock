@@ -634,6 +634,7 @@ dependencies = [
  "chrono",
  "clap",
  "csv",
+ "dcmview-protocol",
  "dicom-core",
  "dicom-dictionary-std",
  "dicom-encoding",
@@ -668,6 +669,14 @@ dependencies = [
  "ts-rs",
  "urlencoding",
  "walkdir",
+]
+
+[[package]]
+name = "dcmview-protocol"
+version = "0.3.3"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -24,19 +24,12 @@ pub const API_RESPONSE_HEADERS: &[(&str, &str)] = &[("serverInstance", SERVER_IN
 pub const AUTHORIZATION_SCHEME: &str = "Bearer";
 /// Value of `WWW-Authenticate` on a 401.
 pub const UNAUTHORIZED_CHALLENGE: &str = "Bearer";
-/// Fragment parameter that carries the token in a launch URL:
-/// `http://127.0.0.1:PORT/#token=<token>`. Fragments are never sent to the
-/// server, so the token stays out of request logs, proxies and `Referer`.
-pub const TOKEN_FRAGMENT_PARAM: &str = "token";
-/// Environment variable that fixes the token instead of generating one. The
-/// token is never accepted on the command line, which other local users can
-/// read.
-pub const TOKEN_ENV_VAR: &str = "DCMVIEW_TOKEN";
-
-/// Version of the launch and startup contract in [`StartupEvent`]. It rises
-/// when a consumer of the startup line, a flag an integration passes, or a
-/// route an integration calls gains a requirement an older peer cannot meet.
-pub const STARTUP_PROTOCOL: u32 = 1;
+// The launch and startup contract lives in the `dcmview-protocol` crate so
+// other crates can use it without the viewer. Re-exported here so existing
+// `crate::api::contracts` paths keep working.
+pub use dcmview_protocol::{
+    launch_url, StartupEvent, STARTUP_PROTOCOL, TOKEN_ENV_VAR, TOKEN_FRAGMENT_PARAM,
+};
 
 /// Request header (`X-Dcmview-Background: 1`) marking a request the page
 /// makes on its own, such as polling or prefetch. Such a request is served
@@ -1056,89 +1049,6 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
-/// The `--startup-json` line the Python wrapper, the VS Code extension and
-/// other parents parse. Fields are only ever added.
-///
-/// `url` is what a browser opens and carries the token fragment, so a
-/// consumer that only knows `url` keeps working. `base_url` and `token` are
-/// the same two facts apart, for a consumer that rewrites the origin (a
-/// forwarded port, `asExternalUri`) and then appends the fragment itself.
-#[derive(Clone, PartialEq, Eq, Serialize)]
-pub struct StartupEvent {
-    pub r#type: &'static str,
-    /// Launch URL with the token fragment. `null` for a Unix socket, where
-    /// the local port is whatever the user forwards.
-    pub url: Option<String>,
-    /// Origin without a fragment or trailing slash. Absent for a Unix socket.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub base_url: Option<String>,
-    /// The bearer token; `null` under `--no-token`.
-    pub token: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub host: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub port: Option<u16>,
-    /// Socket path when listening on a Unix socket. Absent for TCP.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub socket: Option<String>,
-    pub protocol: u32,
-}
-
-/// Never prints the token or the URL that carries it.
-impl std::fmt::Debug for StartupEvent {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("StartupEvent")
-            .field("base_url", &self.base_url)
-            .field("socket", &self.socket)
-            .field("protocol", &self.protocol)
-            .finish_non_exhaustive()
-    }
-}
-
-impl StartupEvent {
-    pub const TYPE: &'static str = "server_started";
-
-    /// A TCP listener. `base_url` is the origin, such as
-    /// `http://127.0.0.1:43127`; `host` is the bind host as configured.
-    pub fn tcp(base_url: &str, host: &str, port: u16, token: Option<&str>) -> Self {
-        Self {
-            r#type: Self::TYPE,
-            url: Some(launch_url(base_url, token)),
-            base_url: Some(base_url.to_string()),
-            token: token.map(str::to_string),
-            host: Some(host.to_string()),
-            port: Some(port),
-            socket: None,
-            protocol: STARTUP_PROTOCOL,
-        }
-    }
-
-    /// A Unix socket listener (`--unix-socket`).
-    pub fn unix_socket(socket: &str, token: Option<&str>) -> Self {
-        Self {
-            r#type: Self::TYPE,
-            url: None,
-            base_url: None,
-            token: token.map(str::to_string),
-            host: None,
-            port: None,
-            socket: Some(socket.to_string()),
-            protocol: STARTUP_PROTOCOL,
-        }
-    }
-}
-
-/// The URL a browser opens: `<base_url>/#token=<token>`, or `base_url`
-/// unchanged under `--no-token`. Tokens are base64url, so they need no
-/// escaping in a fragment.
-pub fn launch_url(base_url: &str, token: Option<&str>) -> String {
-    match token {
-        Some(token) => format!("{base_url}/#{TOKEN_FRAGMENT_PARAM}={token}"),
-        None => base_url.to_string(),
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ApiErrorCode {
@@ -1303,58 +1213,9 @@ impl EmbedRoiAnnotations {
 
 #[cfg(test)]
 mod tests {
-    use super::{endpoints, FrameInfo, RawFrameMetadata, StartupEvent, RAW_FRAME_HEADERS};
+    use super::{endpoints, FrameInfo, RawFrameMetadata, RAW_FRAME_HEADERS};
     use serde_json::json;
     use std::collections::HashSet;
-
-    /// The startup line is parsed by released Python wrappers and VS Code
-    /// extensions, and by any parent process: these are the exact shapes.
-    #[test]
-    fn startup_event_matches_the_integration_contract() {
-        let cases = [
-            (
-                StartupEvent::tcp("http://127.0.0.1:43127", "127.0.0.1", 43127, Some("Xy-_09")),
-                json!({
-                    "type": "server_started",
-                    "url": "http://127.0.0.1:43127/#token=Xy-_09",
-                    "base_url": "http://127.0.0.1:43127",
-                    "token": "Xy-_09",
-                    "host": "127.0.0.1",
-                    "port": 43127,
-                    "protocol": 1
-                }),
-            ),
-            (
-                StartupEvent::tcp("http://[::1]:8010", "::1", 8010, None),
-                json!({
-                    "type": "server_started",
-                    "url": "http://[::1]:8010",
-                    "base_url": "http://[::1]:8010",
-                    "token": null,
-                    "host": "::1",
-                    "port": 8010,
-                    "protocol": 1
-                }),
-            ),
-            (
-                StartupEvent::unix_socket("/run/user/1000/dcmview/scan.sock", Some("Xy-_09")),
-                json!({
-                    "type": "server_started",
-                    "url": null,
-                    "token": "Xy-_09",
-                    "socket": "/run/user/1000/dcmview/scan.sock",
-                    "protocol": 1
-                }),
-            ),
-        ];
-
-        for (event, expected) in cases {
-            assert_eq!(
-                serde_json::to_value(&event).expect("serialize startup event"),
-                expected
-            );
-        }
-    }
 
     #[test]
     fn endpoint_table_is_unique_and_well_formed() {

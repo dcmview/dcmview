@@ -198,6 +198,12 @@ Frontend (Svelte 5, compiled into the binary via rust-embed):
 
 ### Contract and state ownership
 
+- The repository is a Cargo workspace. The root package is the `dcmview`
+  binary and library; `crates/dcmview-protocol` owns the launch and startup
+  contract (`StartupEvent`, `launch_url`, `STARTUP_PROTOCOL`,
+  `TOKEN_FRAGMENT_PARAM`, `TOKEN_ENV_VAR`) and depends on `serde` only.
+  `src/api/contracts.rs` re-exports those items. Fields of the startup event
+  are only added, and member crates carry the viewer's version.
 - `src/api/contracts.rs` is the source of truth for the HTTP contract: the
   `endpoints` table (method, path, response media type, response headers,
   success status) that the router and `tests/integration/api_contract.rs`
@@ -319,6 +325,9 @@ dcmview/
 |   |-- package.json
 |   |-- svelte.config.js
 |   `-- vite.config.ts
+|-- crates/
+|   `-- dcmview-protocol/  workspace member: launch and startup contract
+|                          (serde only; no axum, tokio or DICOM crates)
 |-- python/dcmview_py/  Python subprocess wrapper and package entrypoint
 |-- vscode/             VS Code extension (src/: activation, sessions, custom
 |                       editor, bridge server/registry, terminal shims) and
@@ -332,7 +341,7 @@ dcmview/
 |-- examples/generate_test_fixtures.rs
 |-- examples/generate_api_types.rs
 |-- build.rs
-|-- Cargo.toml
+|-- Cargo.toml          workspace root and the dcmview package
 `-- pyproject.toml
 ```
 
@@ -358,7 +367,7 @@ python scripts/check.py external
 python scripts/check.py corpus --corpus /path/to/prepared-corpus
 
 # Targeted iteration remains valid
-DCMVIEW_SKIP_FRONTEND_BUILD=1 cargo test --locked
+DCMVIEW_SKIP_FRONTEND_BUILD=1 cargo test --workspace --locked
 npm --prefix frontend run generate:types   # after changing src/api/contracts.rs
 npm --prefix frontend run test
 npm --prefix frontend run typecheck

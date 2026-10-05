@@ -22,6 +22,9 @@ class ReleaseVersionTests(unittest.TestCase):
 			'\n[[package]]\nname = "dcmview"\nversion = "0.3.0"\n'
 		)
 		(self.root / "pyproject.toml").write_text('[project]\nversion = "0.3.0"\n')
+		member = self.root / "crates/dcmview-protocol"
+		member.mkdir(parents=True)
+		(member / "Cargo.toml").write_text('[package]\nname = "dcmview-protocol"\nversion = "0.3.0"\n')
 		for directory in ("frontend", "vscode"):
 			(self.root / directory).mkdir()
 			(self.root / directory / "package.json").write_text(json.dumps({"version": "0.3.0"}))
@@ -45,7 +48,10 @@ class ReleaseVersionTests(unittest.TestCase):
 		self.assertIn("tag v0.2.13", output)
 
 	def test_every_manifest_and_lock_version_independently_rejects_drift(self) -> None:
-		for relative in ("Cargo.toml", "Cargo.lock", "pyproject.toml", "frontend/package.json", "vscode/package.json"):
+		for relative in (
+			"Cargo.toml", "Cargo.lock", "pyproject.toml", "frontend/package.json", "vscode/package.json",
+			"crates/dcmview-protocol/Cargo.toml",
+		):
 			with self.subTest(path=relative):
 				path = self.root / relative
 				original = path.read_text()
@@ -86,3 +92,14 @@ class ReleaseVersionTests(unittest.TestCase):
 				status, output = self.run_check()
 				self.assertEqual(status, 1, output)
 				self.assertIn("Cargo.lock", output)
+
+	def test_workspace_members_must_state_the_release_version(self) -> None:
+		member = self.root / "crates/dcmview-protocol/Cargo.toml"
+		member.write_text('[package]\nname = "dcmview-protocol"\nversion.workspace = true\n')
+		status, output = self.run_check()
+		self.assertEqual(status, 1, output)
+
+		member.unlink()
+		member.parent.rmdir()
+		(self.root / "crates").rmdir()
+		self.assertEqual(self.run_check()[0], 0)

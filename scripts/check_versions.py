@@ -83,6 +83,11 @@ def release_versions(root: pathlib.Path) -> dict[str, str]:
 		"Cargo.lock": read_cargo_lock_version(root / "Cargo.lock"),
 		"pyproject.toml": read_toml_version(root / "pyproject.toml", "project"),
 	}
+	# Workspace member crates carry the viewer's version: other repositories
+	# pin them by dcmview release tag.
+	for manifest in sorted((root / "crates").glob("*/Cargo.toml")):
+		name = manifest.relative_to(root).as_posix()
+		versions[name] = read_toml_version(manifest, "package")
 	for directory in ("frontend", "vscode"):
 		for filename in ("package.json", "package-lock.json"):
 			name = f"{directory}/{filename}"

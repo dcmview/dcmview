@@ -145,7 +145,7 @@ class CheckRunner:
 		run("Check Rust formatting", [self.cargo, "fmt", "--all", "--", "--check"], env=env)
 		run(
 			"Run strict Rust lints",
-			[self.cargo, "clippy", "--all-targets", "--locked", "--", "-D", "warnings"],
+			[self.cargo, "clippy", "--workspace", "--all-targets", "--locked", "--", "-D", "warnings"],
 			env=env,
 		)
 
@@ -160,7 +160,9 @@ class CheckRunner:
 		)
 		print("\n==> Check deterministic DICOM fixture drift", flush=True)
 		check_fixture_snapshot(fixtures_before, fixture_snapshot())
-		run("Run Rust tests", [self.cargo, "test", "--locked"], env=env)
+		# The root manifest is also the root package, so plain `cargo test` would
+		# skip the member crates under crates/.
+		run("Run Rust tests", [self.cargo, "test", "--workspace", "--locked"], env=env)
 
 	def rust(self) -> None:
 		self.rust_lint()
