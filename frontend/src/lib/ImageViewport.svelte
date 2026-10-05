@@ -927,7 +927,7 @@
 	// Display PNGs contain no raw headers. Read just the polarity tag when a
 	// mapped legend needs it, rather than downloading a frame's samples.
 	$effect(() => {
-		if (!resolvedWindow.unit || pipelineMode === "diagnostic_wl") return;
+		if (!activeFile.has_pixels || !resolvedWindow.unit || pipelineMode === "diagnostic_wl") return;
 		const fileIndex = activeFile.index;
 		if (untrack(() => displayPhotometric?.fileIndex) === fileIndex) return;
 		const controller = new AbortController();
