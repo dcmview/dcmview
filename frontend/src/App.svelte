@@ -199,7 +199,9 @@
 			document.body.appendChild(link);
 			link.click();
 			link.remove();
-			URL.revokeObjectURL(url);
+			// Some browsers start the download after the click returns, so the
+			// URL must outlive this call.
+			setTimeout(() => URL.revokeObjectURL(url), 1000);
 		} catch (error) {
 			exportError = (error as Error).message || "The server did not return the export";
 		}
