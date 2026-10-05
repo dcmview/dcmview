@@ -97,7 +97,10 @@ modules, not the reverse:
    owned by `server/unix_socket.rs`: it binds only in a directory the
    effective user owns and no one else can write, restricts the socket to
    its owner, admits only connections from the same uid, and removes the
-   socket file it created on shutdown. Both listeners serve the same router.
+   socket file it created on shutdown. Ownership of the path is an exclusive
+   `flock` on `<socket>.lock` held for the life of the listener: an existing
+   socket is replaced only by a process holding that lock, never because a
+   connection attempt was refused, so a busy or hung viewer is not displaced. Both listeners serve the same router.
    A socket launch always runs the local viewer and never opens a browser. `server/api/` owns HTTP concerns. `server/catalog.rs` owns the
    progressive file registry.
 6. `pixels/service.rs` is the server-facing pixel boundary. Codec, cache,

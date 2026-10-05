@@ -225,7 +225,12 @@ impl SocketLock {
             if error.kind() == io::ErrorKind::WouldBlock {
                 bail!("Unix socket {} is already in use", socket.display());
             }
-            return Err(error).context("failed to lock Unix socket path");
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to lock {}; if this filesystem does not support file locks, put the socket in a local directory",
+                    path.display()
+                )
+            });
         }
         // A previous owner may have unlinked this entry during shutdown
         // between our open and flock. Never bind under an obsolete lock.
