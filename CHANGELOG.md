@@ -55,6 +55,10 @@ diagnostic viewer.
 
 ### Fixed
 
+- A redaction box change can no longer leave a frame cached without the new
+  box. A frame requested at the same instant as the change could be rendered
+  with the earlier boxes and then served from the cache until the next
+  change.
 - Tool, frame, cine and file shortcuts no longer fire while Ctrl, Cmd or Alt
   is held, so Ctrl+Z no longer selects the Zoom tool and Ctrl+R no longer
   selects the ROI tool before the browser or VS Code handles the combination.
