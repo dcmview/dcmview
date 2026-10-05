@@ -2,9 +2,9 @@
 
 use super::lifecycle::wait_for_shutdown;
 use super::{is_non_loopback_bind, router, AppState, FileRegistry};
+use crate::api::contracts::{StartupEvent, TOKEN_FRAGMENT_PARAM};
 use crate::signals::StopSignals;
 use anyhow::{Context, Result};
-use serde::Serialize;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::pin::pin;
@@ -32,14 +32,6 @@ pub enum BoundServer {
     },
     #[cfg(unix)]
     Unix(super::unix_socket::UnixSocket),
-}
-
-#[derive(Debug, Serialize)]
-struct StartupEvent<'a> {
-    r#type: &'a str,
-    url: &'a str,
-    host: &'a str,
-    port: u16,
 }
 
 impl BoundServer {
@@ -93,25 +85,46 @@ impl BoundServer {
         // soon as it reads it, and an unhandled signal would skip the graceful
         // shutdown below.
         let mut stop_signals = StopSignals::listen();
-        let server_url = match &self {
+        let access_token = state.access_token().cloned();
+        let token = access_token.as_ref().map(|token| token.expose());
+        let fragment = token
+            .map(|token| format!("#{TOKEN_FRAGMENT_PARAM}={token}"))
+            .unwrap_or_default();
+        let startup_event = match &self {
             Self::Tcp { local_addr, .. } => {
                 crate::status_line!(
                     "dcmview: (on a remote server? run on your local machine: ssh -L {0}:localhost:{0} user@host)",
                     local_addr.port()
                 );
+                crate::status_line!(
+                    "dcmview: then open http://localhost:{}/{fragment}",
+                    local_addr.port()
+                );
                 if is_non_loopback_bind(local_addr.ip()) {
+                    let exposure = if token.is_some() {
+                        "plain HTTP does not encrypt the access token or sensitive DICOM data"
+                    } else {
+                        "endpoints are unauthenticated and may expose sensitive DICOM data over plain HTTP"
+                    };
                     eprintln!(
-                        "dcmview: warning — server bound to non-loopback address {}; endpoints are unauthenticated and may expose sensitive DICOM data",
+                        "dcmview: warning — server bound to non-loopback address {}; {exposure}",
                         local_addr.ip()
                     );
                     eprintln!(
                         "dcmview: warning — prefer --host 127.0.0.1 (or ::1) and use SSH port forwarding for remote access"
                     );
                 }
-                Some(socket_url(*local_addr))
+                StartupEvent::tcp(
+                    &socket_url(*local_addr),
+                    &config.host,
+                    local_addr.port(),
+                    token,
+                )
             }
             #[cfg(unix)]
-            Self::Unix(_) => None,
+            Self::Unix(socket) => {
+                StartupEvent::unix_socket(&socket.path().to_string_lossy(), token)
+            }
         };
 
         if state.registry().masker().is_some() {
@@ -124,7 +137,8 @@ impl BoundServer {
         let registry = state.registry().clone();
         let app = router(state);
         let mut browser_task = BrowserTask::new(
-            server_url
+            startup_event
+                .url
                 .as_ref()
                 .filter(|_| config.open_browser)
                 .map(|url| spawn_browser_opener(url.clone(), registry.clone())),
@@ -139,36 +153,26 @@ impl BoundServer {
             async move { stop_signals.recv().await },
         );
 
+        if config.startup_json {
+            crate::status_line!(
+                "{}",
+                serde_json::to_string(&startup_event)
+                    .context("failed to serialize startup event")?
+            );
+        }
         match &self {
-            Self::Tcp { local_addr, .. } => {
-                let server_url = server_url.as_deref().expect("TCP viewer URL");
-                if config.startup_json {
-                    crate::status_line!(
-                        "{}",
-                        startup_event_json(server_url, &config.host, local_addr.port())
-                            .context("failed to serialize startup event")?
-                    );
-                }
+            Self::Tcp { .. } => {
+                let server_url = startup_event.url.as_deref().expect("TCP viewer URL");
                 crate::status_line!("dcmview: server running at {server_url}");
             }
             #[cfg(unix)]
             Self::Unix(socket) => {
                 let path = socket.path().display();
-                if config.startup_json {
-                    crate::status_line!(
-                        "{}",
-                        serde_json::to_string(&crate::api::contracts::StartupEvent::unix_socket(
-                            &socket.path().to_string_lossy(),
-                            None,
-                        ))
-                        .context("failed to serialize startup event")?
-                    );
-                }
                 crate::status_line!("dcmview: listening on {path}");
                 crate::status_line!(
                     "dcmview: on your local machine run: ssh -L 8080:{path} user@host"
                 );
-                crate::status_line!("dcmview: then open http://localhost:8080/");
+                crate::status_line!("dcmview: then open http://localhost:8080/{fragment}");
             }
         }
         crate::status_line!("dcmview: press Ctrl+C to stop");
@@ -194,16 +198,6 @@ impl BoundServer {
     }
 }
 
-/// The `--startup-json` line that the Python wrapper and VS Code extension parse.
-fn startup_event_json(server_url: &str, host: &str, port: u16) -> serde_json::Result<String> {
-    serde_json::to_string(&StartupEvent {
-        r#type: "server_started",
-        url: server_url,
-        host,
-        port,
-    })
-}
-
 fn socket_url(local_addr: SocketAddr) -> String {
     format!("http://{local_addr}")
 }
@@ -216,8 +210,11 @@ fn spawn_browser_opener(server_url: String, registry: FileRegistry) -> JoinHandl
             changed.as_mut().enable();
             let status = registry.status();
             if status.file_count > 0 {
-                if let Err(error) = open::that(&server_url) {
-                    eprintln!("dcmview: warning — failed to open browser: {error}");
+                if open::that(&server_url).is_err() {
+                    // An opener error can contain its command arguments, including the token.
+                    eprintln!(
+                        "dcmview: warning — failed to open browser; open the launch URL manually"
+                    );
                 }
                 return;
             }
@@ -253,27 +250,8 @@ impl Drop for BrowserTask {
 
 #[cfg(test)]
 mod tests {
-    use super::{socket_url, startup_event_json};
-    use serde_json::json;
+    use super::socket_url;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-
-    #[test]
-    fn startup_event_json_uses_stable_extension_contract() {
-        let line = startup_event_json("http://127.0.0.1:49321", "127.0.0.1", 49321)
-            .expect("serialize startup event");
-        let event: serde_json::Value =
-            serde_json::from_str(&line).expect("startup event should be valid JSON");
-
-        assert_eq!(
-            event,
-            json!({
-                "type": "server_started",
-                "url": "http://127.0.0.1:49321",
-                "host": "127.0.0.1",
-                "port": 49321
-            })
-        );
-    }
 
     #[test]
     fn socket_urls_are_ipv4_and_ipv6_correct() {
