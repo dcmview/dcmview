@@ -332,3 +332,65 @@ describe("server-instance detection", () => {
 		} finally { stop(); }
 	});
 });
+
+describe("access token", () => {
+	afterEach(() => vi.doUnmock("./lib/accessToken"));
+
+	async function clientWithToken(token: string | null) {
+		vi.resetModules();
+		vi.doMock("./lib/accessToken", () => ({ accessToken: () => token }));
+		return import("./api");
+	}
+	const unauthorized = () => new Response(
+		JSON.stringify({ code: "unauthorized", error: "access token required" }),
+		{ status: 401, headers: { "WWW-Authenticate": "Bearer" } },
+	);
+
+	it("sends the token as a bearer header on every request, never in the URL", async () => {
+		const client = await clientWithToken("s3cr3t-token");
+		const fetchMock = vi.fn(async () => new Response(JSON.stringify({ num_roi: 0, roi_coords: [], roi_frames: [] })));
+		vi.stubGlobal("fetch", fetchMock);
+		const signal = new AbortController().signal;
+
+		await client.fetchTags(3, signal);
+		await client.fetchDisplayFrame(3, 0, { wc: 40, ww: 400 });
+		await client.updateAnnotations(3, { num_roi: 0, roi_coords: [], roi_frames: [] });
+
+		expect(fetchMock).toHaveBeenCalledTimes(3);
+		for (const [url, init] of fetchMock.mock.calls as unknown as [string, RequestInit][]) {
+			expect(new Headers(init.headers).get("Authorization")).toBe("Bearer s3cr3t-token");
+			expect(url).not.toContain("s3cr3t-token");
+		}
+		const [, get] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+		expect(get.signal).toBe(signal);
+		const [, put] = fetchMock.mock.calls[2] as unknown as [string, RequestInit];
+		expect(put.method).toBe("PUT");
+		expect(new Headers(put.headers).get("Content-Type")).toBe("application/json");
+	});
+
+	it.each([
+		{ token: null, denial: "missing" },
+		{ token: "stale-token", denial: "rejected" },
+	] as const)("reports a 401 as $denial when the page's token is $token", async ({ token, denial }) => {
+		const client = await clientWithToken(token);
+		const denied = vi.fn();
+		const stop = client.onAccessDenied(denied);
+		const fetchMock = vi.fn()
+			.mockResolvedValueOnce(new Response(JSON.stringify({ status: "ok" })))
+			.mockResolvedValueOnce(new Response(JSON.stringify({ code: "not_found", error: "missing" }), { status: 404 }))
+			.mockResolvedValueOnce(unauthorized());
+		vi.stubGlobal("fetch", fetchMock);
+		try {
+			await client.fetchHealth();
+			await client.fetchHealth().catch(() => {});
+			expect(denied).not.toHaveBeenCalled();
+			if (token === null) {
+				expect(new Headers(fetchMock.mock.calls[0][1].headers).has("Authorization")).toBe(false);
+			}
+
+			const error = await client.fetchHealth().catch((caught: unknown) => caught);
+			expect(client.isApiError(error, "unauthorized")).toBe(true);
+			expect(denied.mock.calls).toEqual([[denial]]);
+		} finally { stop(); }
+	});
+});
