@@ -38,6 +38,13 @@ its value; it is never accepted as a command-line argument. Treat startup
 JSON and the printed launch URL, whose fragment carries the token, as
 credentials.
 
+A fixed `DCMVIEW_TOKEN` is only as strong as the value chosen: there is no
+rate limit, so use a long random value. When dcmview opens a browser itself it
+passes the launch URL, token included, to the operating system's opener, and
+on some systems other local users can read another process's arguments. On a
+machine shared with people who should not see the data, start with
+`--no-browser` and open the printed link yourself, or use `--unix-socket`.
+
 The server binds to `127.0.0.1` by default and should normally be accessed
 locally or through SSH port forwarding. Bearer authentication does not encrypt
 plain HTTP traffic. Avoid public-facing binds such as `--host 0.0.0.0` unless

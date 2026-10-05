@@ -110,6 +110,9 @@ Set `DCMVIEW_TOKEN` to fix the value instead. It must be non-empty and contain
 only `A-Z a-z 0-9 - . _ ~`. Invalid values fail startup without echoing the
 value. Tokens are never accepted on argv. Setting `DCMVIEW_TOKEN` together
 with `--no-token` is a startup error, even if the variable is empty.
+A fixed token is not rate-limited, so make it long and random. On a host
+shared with other accounts, prefer `--no-browser` (the browser opener receives
+the launch URL, token included, as a process argument) or `--unix-socket`.
 
 `--no-token` generates no token, leaves URLs without a fragment, and reports
 `token: null` in startup JSON. Use it only behind an authenticating proxy.
