@@ -83,9 +83,11 @@ diagnostic viewer.
   viewer has seen it is a wheel. After changing device, the first two
   gestures may still act as the previous one.
 - In the Scroll tool a trackpad scroll steps one frame per 30 px of travel
-  instead of one per wheel event, and stops when the fingers lift instead of
-  running on through the momentum. A mouse wheel still steps one frame per
-  notch.
+  instead of one per wheel event, and stepping slows to a stop as the
+  momentum after the fingers lift decays instead of running on through all of
+  it. The stop is tuned on constructed traces, not recorded ones, so some
+  trackpads may run a few frames further. A mouse wheel still steps one frame
+  per notch.
 - In the trackpad profile a rectangle's handles are grabbed from 10 screen
   pixels away instead of 8.
 
