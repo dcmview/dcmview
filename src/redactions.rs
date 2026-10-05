@@ -52,33 +52,34 @@ impl RedactionStore {
         file: &FileEntry,
         boxes: EmbedRoiAnnotations,
     ) -> Result<EmbedRoiAnnotations> {
-        // The revision moves first: a frame rendered while the boxes change
-        // is then cached under a revision no later request asks for.
-        {
-            let mut revisions = self
-                .revisions
-                .lock()
-                .map_err(|_| anyhow!("redaction store lock poisoned"))?;
-            revisions.latest += 1;
-            let revision = revisions.latest;
-            revisions.by_file.insert(file.index, revision);
-        }
-        self.boxes.replace_for_file(file, boxes)
+        // The boxes and their revision change together, under the lock a
+        // reader takes for both: a frame is never rendered from one file
+        // state and cached under the revision of another. An invalid
+        // replacement changes neither.
+        let mut revisions = self
+            .revisions
+            .lock()
+            .map_err(|_| anyhow!("redaction store lock poisoned"))?;
+        let canonical = self.boxes.replace_for_file(file, boxes)?;
+        revisions.latest += 1;
+        let revision = revisions.latest;
+        revisions.by_file.insert(file.index, revision);
+        Ok(canonical)
     }
 
     /// The boxes that apply to one frame of a file.
     pub fn for_frame(&self, file_index: usize, frame: u32) -> Result<Redaction> {
-        let revision = self
+        // One lock for the revision and the boxes it names; see
+        // `replace_for_file`.
+        let revisions = self
             .revisions
             .lock()
-            .map_err(|_| anyhow!("redaction store lock poisoned"))?
-            .by_file
-            .get(&file_index)
-            .copied();
-        let Some(revision) = revision else {
+            .map_err(|_| anyhow!("redaction store lock poisoned"))?;
+        let Some(revision) = revisions.by_file.get(&file_index).copied() else {
             return Ok(Redaction::default());
         };
         let stored = self.boxes.get(file_index)?;
+        drop(revisions);
         let boxes = stored
             .roi_coords
             .iter()
@@ -175,5 +176,45 @@ mod tests {
         assert!(store
             .replace_for_file(&file, boxes(vec![[0, 0, 9999, 1]], Vec::new()))
             .is_err());
+    }
+
+    /// Frames are cached under the revision, so a revision must always name
+    /// one set of boxes, however a read interleaves with a change.
+    #[test]
+    fn a_revision_never_names_two_sets_of_boxes() {
+        let store = RedactionStore::new();
+        let file = file();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        let readers: Vec<_> = (0..4)
+            .map(|_| {
+                let (store, stop, index) = (store.clone(), stop.clone(), file.index);
+                std::thread::spawn(move || {
+                    let mut seen: HashMap<u64, Vec<[u32; 4]>> = HashMap::new();
+                    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        let redaction = store.for_frame(index, 0).expect("read boxes");
+                        let earlier = seen
+                            .entry(redaction.revision)
+                            .or_insert_with(|| redaction.boxes.clone());
+                        assert_eq!(*earlier, redaction.boxes, "revision {}", redaction.revision);
+                    }
+                })
+            })
+            .collect();
+
+        for round in 0..2_000 {
+            let coords = if round % 2 == 0 {
+                vec![[0, 0, 2, 2]]
+            } else {
+                vec![[0, 0, 2, 2], [2, 2, 4, 4]]
+            };
+            store
+                .replace_for_file(&file, boxes(coords, vec![]))
+                .expect("replace boxes");
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        for reader in readers {
+            reader.join().expect("reader saw one box set per revision");
+        }
     }
 }
