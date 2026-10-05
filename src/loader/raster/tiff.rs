@@ -188,9 +188,10 @@ fn note(header: &mut Header, count: &mut usize, message: String) {
     if *count < RASTER_WARNINGS_MAX {
         warnings.push(message);
     } else {
+        let omitted = *count - (RASTER_WARNINGS_MAX - 1);
         let summary = format!(
-            "{} more notes not shown",
-            *count - (RASTER_WARNINGS_MAX - 1)
+            "{omitted} more {} not shown",
+            if omitted == 1 { "note" } else { "notes" }
         );
         if warnings.len() < RASTER_WARNINGS_MAX {
             warnings.push(summary);

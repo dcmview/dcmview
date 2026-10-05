@@ -169,7 +169,9 @@ use std::path::Path;
 /// the chain cannot be read past some page (a bad offset, a cycle), the
 /// pages read so far stand and a warning says where the walk stopped.
 /// `warnings` never exceeds `RASTER_WARNINGS_MAX` entries: when more arise,
-/// the last entry says how many are not shown. Classic TIFF and BigTIFF, in
+/// the last entry says how many are not shown. Each entry is also printed
+/// once to stderr as it is found here, in the style of the scan budget's
+/// line: `dcmview: warning — <path>: <note>`. Classic TIFF and BigTIFF, in
 /// either byte order, are read alike.
 ///
 /// A file may have at most [`HEADER_SCAN_MAX_STEPS`] pages. One with more is
@@ -260,6 +262,9 @@ pub(super) fn inspect_raster_source(
         }
     };
     let raster = header.metadata;
+    for note in &raster.warnings {
+        eprintln!("dcmview: warning — {}: {note}", _path.display());
+    }
     let (samples_per_pixel, photometric) = match raster.color_type {
         RasterColorType::Gray => (
             1,

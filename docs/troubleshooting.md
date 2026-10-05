@@ -115,6 +115,16 @@ remove unnecessary metadata from a copy before retrying. The limit applies
 to header inspection, not the size of compressed pixel data; blank PNG masks
 are listed even when they compress to less than one row of pixels.
 
+A listed image file can also print notes in the same style, for example when
+a TIFF page chain cannot be read past some page (the pages before it are
+listed) or a page's ICC profile presence differs from the first page's:
+
+```text
+dcmview: warning — {path}: {note}
+```
+
+Each file prints at most 16 notes; the last one counts any that are not shown.
+
 ### Image files now appear beside DICOM
 
 PNG, JPEG, TIFF, and WebP headers are listed by default, though their pixels

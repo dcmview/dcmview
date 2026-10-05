@@ -58,9 +58,10 @@ diagnostic viewer.
 - File summaries add `file_format` and `raster` metadata: stored color and
   sample layout, orientation, alpha/profile presence, animation, significant
   bits, and the TIFF frame-to-page map with the first 16 excluded pages and
-  their full `excluded_pages_total` count. Notes are capped at 16, with an
-  overflow summary. Rasters use `object_kind: "image"` and empty DICOM
-  identity fields.
+  their full `excluded_pages_total` count. Rasters use `object_kind: "image"`
+  and empty DICOM identity fields. Notes about a listed file, such as a TIFF
+  page chain that could not be read to its end, are printed to stderr during
+  discovery: at most 16 per file, the last counting any that are not shown.
 
 - `--cache-budget BYTES` sets the combined display, raw and overlay frame cache
   budget, with proportional shares, binary suffixes such as `256MiB`, and a
