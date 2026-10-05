@@ -215,10 +215,38 @@ the profile (`inputProfile`) and an Auto, Mouse or Trackpad override
 (`inputProfileSetting`) as state; no control sets the override yet. Tools
 receive the gesture's device with each wheel step and the profile as
 `ToolContext.inputProfile`, and never read wheel events: the Scroll tool
-steps one frame per mouse notch and one per 30 px of trackpad travel,
-stopping on the falling step sizes of a momentum tail, and the rectangle
-tool grabs handles within 10 screen pixels in the trackpad profile and 8
-otherwise.
+steps one frame per mouse notch and one per 30 px of trackpad travel, and
+the rectangle tool grabs handles within 10 screen pixels in the trackpad
+profile and 8 otherwise. Browsers do not report when the fingers lift, so
+the Scroll tool takes three steps that each fall, down to 70% of the size
+the run began at, for the momentum tail and stops stepping until a step
+grows again. Those thresholds are tuned on constructed traces: on a tail
+that keeps 95 to 97% of each step they let five to eight frames through,
+and they await a recorded trace.
+
+Decision: the classifier reads one piece of evidence beyond the list in
+`docs/design/annotation-tools-ux.md` section 3.5, the legacy
+`WheelEvent.wheelDeltaY`. Chrome and Safari report it as 120 per wheel notch
+whatever `deltaY` says, and as three per pixel for a trackpad, so a value
+that is a whole number of 120s and differs from `-3 * deltaY` by more than
+2 marks a mouse. It is what separates a notched mouse on macOS, which
+reports a few fractional pixels per notch, from a trackpad. The rule was
+written from how those browsers are known to behave, not from recordings.
+Known ways it is wrong or silent:
+
+- A trackpad whose browser scales `wheelDeltaY` by something other than
+  three per pixel is taken for a mouse on any early step where the value
+  lands on a multiple of 120 (Chrome on Windows is believed to use 1.2, so a
+  100 px step would do it). Only the first four steps of a gesture are read.
+- A trackpad step of exactly 40, 80, ... px is not misread (its
+  `wheelDeltaY` is three times it), and neither does it count as evidence.
+- A browser without `wheelDeltaY` gives the rule nothing, and a mouse that
+  also sends neither line mode nor whole notches stays unrecognised there.
+
+One more false positive is independent of it: a gesture whose first four
+steps are equal, or all multiples of the smallest, with that smallest at
+least 4 px and nothing sideways, reads as a free-spinning wheel. A steady
+two-finger scroll of four equal steps of 4 px or more is such a gesture.
 
 Each tool (Pan, Zoom, Scroll, W/L, and the rectangle tool
 behind both ROI and Redact) is a state machine in `lib/annotation/tools/`
