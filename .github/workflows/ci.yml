@@ -26,6 +26,7 @@ jobs:
               - "LICENSE"
               - "README.md"
               - "build.rs"
+              - "crates/**"
               - "frontend/**"
               - "pyproject.toml"
               - "setup.py"
