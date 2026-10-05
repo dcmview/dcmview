@@ -8,6 +8,37 @@ contracts, lifecycle ownership, or the canonical check profiles change.
 the product center; the Svelte frontend is embedded into that binary, and the
 Python and VS Code integrations launch or route to the same executable.
 
+## Workspace
+
+The repository is one Cargo workspace with one `Cargo.lock`. The root manifest
+is both the workspace root and the `dcmview` package (the binary and its
+library), so `cargo build`, `cargo install --path .`, `build.rs`, the wheel
+build and the VS Code packaging use the same paths as a single-package
+repository. Member crates under `crates/` hold what another crate or
+repository may depend on without the viewer:
+
+| Package | Path | Holds | Depends on |
+|---|---|---|---|
+| `dcmview` | `.` | The viewer binary and library. | Everything, including the members. |
+| `dcmview-protocol` | `crates/dcmview-protocol` | The launch and startup contract: `StartupEvent`, `launch_url`, `STARTUP_PROTOCOL`, `TOKEN_FRAGMENT_PARAM`, `TOKEN_ENV_VAR`, and the test that pins the startup line. | `serde` only. No axum, tokio or DICOM crates. |
+
+Rules for the workspace:
+
+- A member never depends on the root package.
+- `[workspace.package]` in the root manifest owns edition, MSRV, license and
+  project URLs; every package inherits them.
+- Every member has the viewer's version. Other repositories pin a member by
+  dcmview release tag, so the tag is the only version a consumer selects, and
+  wire compatibility is carried by `STARTUP_PROTOCOL` rather than by the crate
+  version. The root `[package].version` stays a literal because release
+  tooling reads it; `scripts/check_versions.py` compares each
+  `crates/*/Cargo.toml` with it.
+- Plain `cargo build`, `cargo run` and `cargo test` at the root act on the
+  root package only. `scripts/check.py` passes `--workspace` to Clippy and to
+  the Rust test run so members are linted and tested; `cargo fmt --all`
+  already covers them.
+- Members are not published to crates.io (`publish = false`).
+
 ## Module Boundaries
 
 The codebase is organized around explicit boundaries rather than one
@@ -18,6 +49,7 @@ application module:
 | Process dispatch | `src/application.rs` | Routes a launch into VS Code through `bridge::launch_in_vscode` when the routing rule selects a bridge, otherwise runs the local viewer in-process. |
 | Local startup | `src/startup/` | `LocalViewerOptions`, `LocalViewerOutcome`, and `DiscoveryHandle`. |
 | HTTP wire model | `src/api/contracts.rs` | Plain `endpoints` table, media types, header names, wire structs (query names are `FrameQuery`/`TagQuery` fields), and error envelope. |
+| Launch and startup contract | `crates/dcmview-protocol` | `StartupEvent` (the `--startup-json` line), `launch_url`, `STARTUP_PROTOCOL`, the token fragment parameter and the token environment variable. Re-exported by `src/api/contracts.rs`. Fields are only added. |
 | HTTP runtime | `src/server/` | Listener/runtime, route registration, handlers, state, registry, activity tracking, tags, and embedded assets. |
 | Pixel service | `src/pixels/` | Typed display/raw requests, cache behavior, transfer-syntax classification, decoding, rendering, and `PixelError`. |
 | Patient geometry | `src/geometry.rs` | Normalized per-frame position, orientation, pixel spacing, coplanarity checks, and target-to-source pixel transforms. |
@@ -120,7 +152,9 @@ modules, not the reverse:
    dispatch and support classification read, including which color layouts
    each codec converts.
 
-`src/api/contracts.rs` owns browser-visible wire declarations. `src/types.rs`
+`src/api/contracts.rs` owns browser-visible wire declarations and re-exports
+the launch and startup contract that `crates/dcmview-protocol` owns.
+`src/types.rs`
 owns internal DICOM, cache-key, transfer-syntax, and windowing domain types; it
 re-exports selected wire types for compatibility but is not their source of
 truth.
@@ -361,10 +395,11 @@ and downloads are fetch-then-blob.
 authenticates, and warns on stderr. `AppState` without a token is the same
 open mode, which in-process tests use.
 
-The `--startup-json` line is `StartupEvent` in `api/contracts.rs`. `url` is
-the launch URL with the fragment, so a consumer that only knows `url` keeps
-working; `base_url` and `token` give the same facts apart; `protocol` is
-`STARTUP_PROTOCOL`. Fields are only added.
+The `--startup-json` line is `StartupEvent`, owned by the `dcmview-protocol`
+crate and re-exported from `api/contracts.rs`. `url` is the launch URL with
+the fragment, so a consumer that only knows `url` keeps working; `base_url`
+and `token` give the same facts apart; `protocol` is `STARTUP_PROTOCOL`.
+Fields are only added, and the crate's own test pins the exact shapes.
 
 ### Endpoint Invariants
 
@@ -684,8 +719,8 @@ The supported development baselines are Rust 1.88+, Node.js 20.19+, and Python
 
 | Profile | Intended use | Exact coverage |
 |---|---|---|
-| `quick` | Normal development loop | Version parity; generated frontend contract check; Svelte/TypeScript checks; Vitest; frontend build; Rust format and strict all-target Clippy; Python unit, packaging-helper, and compatibility-runner unit tests. It does not run Rust tests or VS Code tests. |
-| `core` | Before handing off a normal code change | Everything in the corresponding frontend/lint/unit layers, plus deterministic fixture regeneration that must leave the current fixture tree unchanged, the default-feature, non-ignored locked Rust suite, and VS Code compilation. |
+| `quick` | Normal development loop | Version parity; generated frontend contract check; Svelte/TypeScript checks; Vitest; frontend build; Rust format and strict all-target Clippy over the workspace; Python unit, packaging-helper, and compatibility-runner unit tests. It does not run Rust tests or VS Code tests. |
+| `core` | Before handing off a normal code change | Everything in the corresponding frontend/lint/unit layers, plus deterministic fixture regeneration that must leave the current fixture tree unchanged, the default-feature, non-ignored locked Rust suite of every workspace package, and VS Code compilation. |
 | `e2e` | Process or integration changes | `core`, then a real debug binary, Python wrapper binary integration, debug-binary HTTP smoke, and VS Code Electron integration, which opens a fixture through the extension's custom editor and terminal shim against the debug binary. |
 | `compatibility-artifact` | Stored current corpus integration | Builds only the dcmview binary, verifies an explicitly supplied producer container (`DCMVIEW_COMPAT_CORPUS_ROOT`), and runs `scripts/compatibility/run.py` against every verified DICOM payload. It never checks out or builds the generator and fails when no container is supplied. It is run locally only; no CI workflow runs it. |
 | `corpus` | Stored generated corpus, unit and integration level | Builds frontend assets and runs every ignored lib and integration test except the remote-fixture ones, with `DCMVIEW_PREPARED_CORPUS` set from `--corpus PATH` or the environment. Those tests read cases from a local dicom-test-suite corpus, either one flat `all` corpus or per-profile `core`/`extended`/`extended-deflate` roots; the ICC test's JPEG XL and JPEG 2000 re-encodings run only when their per-profile roots exist. It fails before building when the corpus is unset or not a directory, never generates one, and no CI workflow runs it. |
@@ -816,6 +851,8 @@ Not current correctness blockers:
 - Keep CPU, codec, filesystem, and Rayon work off the async executor.
 - Do not hold cache or registry locks across I/O, decode, encode, or await.
 - Treat `src/api/contracts.rs` plus its generated TypeScript as one contract.
+- Keep `crates/dcmview-protocol` free of viewer, server and DICOM
+  dependencies, and only add fields to its types.
 - Add endpoint fetches through `frontend/src/api.ts`.
 - Use generated synthetic fixtures for integration coverage; never commit PHI.
 - Run the narrow profile while iterating, then the profile required by the
