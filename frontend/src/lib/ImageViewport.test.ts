@@ -1249,6 +1249,22 @@ describe("ImageViewport shared gestures", () => {
 		expect(api.updateAnnotations).not.toHaveBeenCalled();
 	});
 
+	it("does not land a rectangle on the new frame when released without another move", async () => {
+		const { viewport, rerender } = await renderReady("annotate_rect", noRois);
+
+		await fireEvent.pointerDown(viewport, { button: 0, clientX: 20, clientY: 20, pointerId: 1 });
+		await fireEvent.pointerMove(viewport, { clientX: 35, clientY: 35, pointerId: 1 });
+		expect(draft()).not.toBeNull();
+
+		await rerender({ currentFrame: 1, navigationPosition: 1 });
+		await shown(5, 1);
+		await fireEvent.pointerUp(viewport, { clientX: 35, clientY: 35, pointerId: 1 });
+
+		expect(draft()).toBeNull();
+		expect(coords()).toEqual([]);
+		expect(api.updateAnnotations).not.toHaveBeenCalled();
+	});
+
 	it.each([
 		["a rectangle being drawn", "annotate_rect", noRois, false],
 		["a ROI being moved", "annotate_rect", oneRoi, false],
