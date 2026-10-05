@@ -97,7 +97,10 @@ modules, not the reverse:
    owned by `server/unix_socket.rs`: it binds only in a directory the
    effective user owns and no one else can write, restricts the socket to
    its owner, admits only connections from the same uid, and removes the
-   socket file it created on shutdown. Both listeners serve the same router.
+   socket file it created on shutdown. Ownership of the path is an exclusive
+   `flock` on `<socket>.lock` held for the life of the listener: an existing
+   socket is replaced only by a process holding that lock, never because a
+   connection attempt was refused, so a busy or hung viewer is not displaced. Both listeners serve the same router.
    A socket launch always runs the local viewer and never opens a browser. `server/api/` owns HTTP concerns. `server/catalog.rs` owns the
    progressive file registry.
 6. `pixels/service.rs` is the server-facing pixel boundary. Codec, cache,
@@ -721,6 +724,11 @@ installation and VS Code Electron integration can also use network/cache state;
   endpoint returns a valid `X-Cache` value. Codec tests assert decode results,
   not cache state.
 - Error assertions use the JSON envelope's stable `code`, not message text.
+- The access token is checked against the endpoint table: one test requests
+  every entry of `endpoints::ALL` without the token (`401`) and with it (the
+  declared status), so a new endpoint is covered when it is declared. Socket
+  tests bind real sockets in temporary directories and cover the token over a
+  socket, a symlinked parent, and a live socket whose accept queue is full.
 - Python unit tests isolate subprocess policy; `python-integration` adds the real
   binary. VS Code compile and Electron integration remain separate layers.
 - `scripts/compatibility/run.py --corpus-root` checks the real binary against

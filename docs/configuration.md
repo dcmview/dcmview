@@ -71,7 +71,12 @@ Unsafe directories are refused before any existing socket is touched.
 The socket has mode `0600`, and connections are accepted only when their peer
 user ID matches the server's effective user ID.
 
-An existing socket that refuses connections is treated as stale and removed.
+A mode `0600` `<socket file name>.lock` file holds an exclusive lock for the
+server's lifetime and is removed on graceful shutdown or drop; only with that
+lock acquired can an existing socket that refuses connections be treated as
+stale and removed. The directory therefore needs a filesystem that supports
+file locks; some network filesystems do not, and a local directory such as
+one under `$XDG_RUNTIME_DIR` avoids the problem.
 A live socket is reported as already in use. Regular files and other
 non-socket entries, including symlinks, are refused and left untouched.
 The socket created by this process is removed on graceful shutdown or when

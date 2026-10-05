@@ -1,7 +1,9 @@
-use dcmview::annotations::AnnotationStore;
+use axum_test::{TestRequest, TestServer};
+use dcmview::annotations::{AnnotationStore, EmbedRoiAnnotations};
+use dcmview::api::contracts::{endpoints, ApiMethod, Endpoint, API_PREFIX};
 use dcmview::loader::{self, DiscoverOptions};
 use dcmview::server::{AppState, FileRegistry};
-use dcmview::types::FileEntry;
+use dcmview::types::{FileEntry, WindowPreset};
 use dicom_core::value::{DataSetSequence, PixelFragmentSequence};
 use dicom_core::{DataElement, PrimitiveValue, VR};
 use dicom_dictionary_std::{tags, uids};
@@ -338,4 +340,64 @@ pub fn write_uncompressed_u16_dicom_with_photometric(
     file_object
         .write_to_file(path)
         .expect("write uncompressed DICOM fixture");
+}
+
+/// A state in which every endpoint of `endpoints::ALL` outside
+/// [`NEEDS_LINKED_SOURCE`] answers its declared success status for file 0.
+/// The fixture file is written into `dir`, which must outlive the state.
+pub fn every_endpoint_state(dir: &Path) -> AppState {
+    let path = dir.join("endpoint-registry.dcm");
+    write_uncompressed_u16_dicom(
+        &path,
+        "1.2.840.10008.1.2.1",
+        2,
+        2,
+        vec![0, 1000, 2000, 3000],
+        Some("1500"),
+        Some("3000"),
+    );
+    let mut entry = file_entry(path, "1.2.840.10008.1.2.1", 1);
+    entry.rows = 2;
+    entry.columns = 2;
+    entry.default_window = Some(WindowPreset {
+        center: 1500.0,
+        width: 3000.0,
+    });
+    entry.sop_class_uid = uids::VL_WHOLE_SLIDE_MICROSCOPY_IMAGE_STORAGE.to_string();
+    entry.series_metadata.dimension_organization_type = Some("TILED_FULL".to_string());
+    entry.series_metadata.total_pixel_matrix_rows = Some(2);
+    entry.series_metadata.total_pixel_matrix_columns = Some(2);
+    app_state(vec![entry])
+}
+
+/// Endpoints that only succeed for a linked overlay/source pair, which
+/// [`every_endpoint_state`] does not hold: SEG is covered by
+/// semantic_context::segmentation_overlay_returns_source_sized_transparent_png,
+/// the value overlays (colorwash and values) by the semantic_overlays fixture
+/// tests, and graphic annotations by the graphic_annotations fixture tests.
+pub const NEEDS_LINKED_SOURCE: [Endpoint; 6] = [
+    endpoints::FILE_SEGMENTATION_OVERLAY,
+    endpoints::FILE_DOSE_OVERLAY,
+    endpoints::FILE_DOSE_OVERLAY_VALUES,
+    endpoints::FILE_PARAMETRIC_MAP_OVERLAY,
+    endpoints::FILE_PARAMETRIC_MAP_OVERLAY_VALUES,
+    endpoints::FILE_GRAPHIC_ANNOTATIONS,
+];
+
+/// A well-formed request for `endpoint` with its declared method, for the
+/// file at `index`, frame 0.
+pub fn endpoint_request(server: &TestServer, endpoint: &Endpoint, index: &str) -> TestRequest {
+    let mut path = format!("{API_PREFIX}{}", endpoint.path)
+        .replace("{index}", index)
+        .replace("{frame}", "0");
+    if *endpoint == endpoints::FILE_TAG_SELECT {
+        path.push_str("?path=%280028%2C0010%29");
+    }
+    if *endpoint == endpoints::FILE_RAW_PIXEL {
+        path.push_str("?row=1&column=0");
+    }
+    match endpoint.method {
+        ApiMethod::Get => server.get(&path),
+        ApiMethod::Put => server.put(&path).json(&EmbedRoiAnnotations::empty()),
+    }
 }

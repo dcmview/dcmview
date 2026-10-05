@@ -37,6 +37,8 @@ diagnostic viewer.
   The parent directory must be owned by the current effective user and not
   group- or other-writable; a missing parent is created with mode `0700`.
   The socket is mode `0600`, checks peer user IDs, and is removed on shutdown.
+  An adjacent mode `0600` lock file prevents a busy or hung viewer's socket
+  from being replaced and is also removed on shutdown.
   Socket mode conflicts with `--host` and `--port`, always bypasses VS Code
   routing, and never opens a browser automatically.
 - The viewer reads the access token from its launch link
