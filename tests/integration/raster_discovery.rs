@@ -794,11 +794,14 @@ async fn every_endpoint_answers_for_a_raster_without_a_server_error() {
         }
     }
 
-    // No decoder yet: the frame endpoints say so with the catalog's reason.
+    // No decoder yet: the endpoints that produce a frame-sized image say so
+    // with the catalog's reason.
     for endpoint in [
         &endpoints::FILE_FRAME,
         &endpoints::FILE_RAW_FRAME,
         &endpoints::FILE_RAW_PIXEL,
+        // Sized from the header's rows and columns, so it is refused too.
+        &endpoints::FILE_PRESENTATION_LAYER,
     ] {
         let response = get(endpoint).await;
         assert_eq!(response.status_code().as_u16(), 422, "{}", endpoint.id);

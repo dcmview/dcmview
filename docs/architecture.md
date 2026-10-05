@@ -680,9 +680,10 @@ Discovery lists PNG, JPEG, TIFF and still WebP files beside DICOM
   ignoring case. The DICOM filter fields are empty for a raster, so any DICOM
   filter excludes rasters.
 - **Until the raster decoders exist** a raster is `unsupported` with
-  `support_reason` `raster.decode_not_available`, and the display, raw and
-  raw-pixel endpoints answer `422 unsupported_pixel_layout` naming that
-  reason. `/tags` answers an empty tree. `/value-mapping` answers the identity
+  `support_reason` `raster.decode_not_available`, and the display, raw,
+  raw-pixel and presentation-layer endpoints answer
+  `422 unsupported_pixel_layout` naming that reason, so nothing is allocated
+  from a raster header's dimensions. `/tags` answers an empty tree. `/value-mapping` answers the identity
   mapping, `/references` an empty list and `/semantic-context`
   `not_applicable`, none of which opens the file. No endpoint answers a
   server error for a raster.

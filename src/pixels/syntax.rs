@@ -194,8 +194,9 @@ impl PixelSupport {
 /// separate.
 ///
 /// A raster image is `Unsupported` with `raster.decode_not_available`: it has
-/// pixels and no transfer syntax, and nothing decodes it yet. Both frame
-/// endpoints answer `422 unsupported_pixel_layout` naming that reason.
+/// pixels and no transfer syntax, and nothing decodes it yet. The display,
+/// raw, raw-pixel and presentation-layer endpoints answer
+/// `422 unsupported_pixel_layout` naming that reason.
 pub fn classify_pixel_support(file: &FileEntry) -> PixelSupport {
     if file.format.is_raster() {
         return PixelSupport::unsupported(PixelSupportReason::RasterDecodeNotAvailable);
