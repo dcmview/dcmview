@@ -82,8 +82,17 @@ impl ScanFilter {
     /// contains the filter's value, ignoring case.
     pub fn matches(&self, entry: &FileEntry) -> bool {
         let haystack = match self.field {
-            ScanFilterField::Format => todo!("FMT1: match the file format name"),
-            ScanFilterField::Path => todo!("FMT1: match the reported path"),
+            ScanFilterField::Format => {
+                return entry.format.as_str().eq_ignore_ascii_case(&self.value)
+            }
+            ScanFilterField::Path => {
+                return entry
+                    .path
+                    .display()
+                    .to_string()
+                    .to_lowercase()
+                    .contains(&self.value.to_lowercase())
+            }
             ScanFilterField::PatientId => &entry.patient_id,
             ScanFilterField::PatientName => &entry.patient_name,
             ScanFilterField::StudyDescription => &entry.study_description,
@@ -136,7 +145,10 @@ impl FromStr for ScanFilter {
             return Err(scan_filter_parse_error(raw));
         }
         if *field == ScanFilterField::Format {
-            todo!("FMT1: accept only a FileFormat name as the value")
+            crate::types::FileFormat::ALL
+                .into_iter()
+                .find(|format| format.as_str().eq_ignore_ascii_case(value))
+                .ok_or_else(|| scan_filter_parse_error(raw))?;
         }
         Ok(Self {
             field: *field,
@@ -156,7 +168,7 @@ fn scan_filter_parse_error(raw: &str) -> String {
         .join(", ");
     format!(
         "invalid scan filter `{raw}`; expected FIELD=VALUE where FIELD is one of: {fields} \
-         (case-insensitive)"
+         (case-insensitive); format values: dicom, png, jpeg, tiff, webp"
     )
 }
 
