@@ -51,7 +51,12 @@ pub const STARTUP_PROTOCOL: u32 = 1;
 /// consumer that only knows `url` keeps working. `base_url` and `token` are
 /// the same two facts apart, for a consumer that rewrites the origin (a
 /// forwarded port, `asExternalUri`) and then appends the fragment itself.
+///
+/// The struct is non-exhaustive because fields are only ever added: build it
+/// with [`StartupEvent::tcp`] or [`StartupEvent::unix_socket`], and read the
+/// fields you need by name.
 #[derive(Clone, PartialEq, Eq, Serialize)]
+#[non_exhaustive]
 pub struct StartupEvent {
     pub r#type: &'static str,
     /// Launch URL with the token fragment. `null` for a Unix socket, where

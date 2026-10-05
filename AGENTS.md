@@ -202,8 +202,8 @@ Frontend (Svelte 5, compiled into the binary via rust-embed):
   binary and library; `crates/dcmview-protocol` owns the launch and startup
   contract (`StartupEvent`, `launch_url`, `STARTUP_PROTOCOL`,
   `TOKEN_FRAGMENT_PARAM`, `TOKEN_ENV_VAR`) and depends on `serde` only.
-  `src/api/contracts.rs` re-exports those items. Its fields are only added,
-  and members carry the viewer's version.
+  `src/api/contracts.rs` re-exports those items. Fields of the startup event
+  are only added, and member crates carry the viewer's version.
 - `src/api/contracts.rs` is the source of truth for the HTTP contract: the
   `endpoints` table (method, path, response media type, response headers,
   success status) that the router and `tests/integration/api_contract.rs`
