@@ -26,8 +26,9 @@ mod syntax;
 mod window;
 
 pub use cache::{
-    new_cache, new_overlay_cache, new_raw_cache, FrameCache, OverlayCache, RawFrameCache,
-    FRAME_CACHE_MAX_BYTES, OVERLAY_CACHE_MAX_BYTES, RAW_CACHE_MAX_BYTES,
+    new_cache, new_overlay_cache, new_raw_cache, parse_byte_size, CacheBudget, FrameCache,
+    OverlayCache, RawFrameCache, FRAME_CACHE_MAX_BYTES, OVERLAY_CACHE_MAX_BYTES,
+    RAW_CACHE_MAX_BYTES,
 };
 pub(crate) use color::cielab_to_srgb8;
 pub use colorwash::{

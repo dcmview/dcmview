@@ -156,6 +156,84 @@ async fn browser_route_requests_reset_the_idle_timeout() {
 }
 
 #[tokio::test]
+async fn background_requests_do_not_reset_the_idle_timeout() {
+    let shutdown = CancellationToken::new();
+    let (url, task) = spawn_server(
+        server_config(shutdown, Some(1)),
+        support::app_state(Vec::new()),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    // Polled faster than the timeout, as an open tab would: the server must
+    // still stop about one second after the last foreground request.
+    let stopped = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let poll = client
+                .get(format!("{url}/api/health"))
+                .header("X-Dcmview-Background", "1")
+                .send()
+                .await;
+            match poll {
+                Ok(response) => assert!(response.status().is_success()),
+                Err(_) => return,
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await;
+
+    assert!(stopped.is_ok(), "background polling kept the server alive");
+    await_exit(task).await;
+}
+
+#[tokio::test]
+async fn exit_with_parent_stops_when_the_kept_open_stdin_closes() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/golden-uncompressed-u16-multiframe.dcm");
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_dcmview"))
+        .arg("--startup-json")
+        .arg("--no-browser")
+        .arg("--exit-with-parent")
+        .arg(fixture)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn dcmview");
+    let stdin = child.stdin.take().expect("child stdin");
+    let mut stdout = child.stdout.take().expect("child stdout");
+
+    // The parent keeps the pipe open and writes nothing: the viewer starts
+    // and stays up.
+    let mut seen = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let mut buffer = [0_u8; 1024];
+        while !String::from_utf8_lossy(&seen).contains("\"type\":\"server_started\"") {
+            let read = stdout.read(&mut buffer).await.expect("read stdout");
+            assert_ne!(read, 0, "viewer exited before starting");
+            seen.extend_from_slice(&buffer[..read]);
+        }
+    })
+    .await
+    .expect("startup line");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        child.try_wait().expect("poll child").is_none(),
+        "viewer stopped while the parent's pipe was open"
+    );
+
+    // The parent goes away: end of file on stdin is a graceful stop.
+    drop(stdin);
+    let status = tokio::time::timeout(Duration::from_secs(5), child.wait())
+        .await
+        .expect("viewer did not stop after stdin closed")
+        .expect("child status");
+    assert!(status.success());
+}
+
+#[tokio::test]
 async fn graceful_shutdown_drains_an_in_flight_request() {
     let shutdown = CancellationToken::new();
     let state = support::app_state(Vec::new());

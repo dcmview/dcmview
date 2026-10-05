@@ -638,6 +638,23 @@ lifecycle is the explicit `cancel_and_wait` path; callers that later embed
 startup in an abortable Tokio task must add a supervisor contract if they need
 join guarantees after hard task abortion.
 
+### Process Seams For A Supervising Parent
+
+- `--cache-budget BYTES` sets one total for the display, raw and overlay
+  frame caches. `pixels::CacheBudget` splits it in the proportions of the
+  defaults (256, 384 and 64 MiB), and `AppState::with_cache_budget` builds
+  the caches from it before the router exists. Tag, semantic and value
+  mapping caches are bounded by entry count and are not part of the budget.
+- `--exit-with-parent` (hidden) treats end of file on stdin as a stop signal
+  and shuts down gracefully, so a child does not outlive a parent that died
+  without signalling it. It only works when the parent passes a pipe and
+  keeps its write end open: a closed or null stdin is an immediate end of
+  file.
+- A request carrying `X-Dcmview-Background: 1` is served and drained like
+  any other but does not move the idle clock that `--timeout` reads. The
+  viewer's own polling does not send it in a standalone launch, so
+  `--timeout` behaves there as before.
+
 ## Test Layers And Check Profiles
 
 ```mermaid

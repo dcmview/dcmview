@@ -58,6 +58,13 @@ impl RequestActivity {
         }
     }
 
+    /// A request carrying `X-Dcmview-Background: 1`. It is in flight like any
+    /// other, so graceful shutdown still drains it, but neither its start nor
+    /// its end moves the idle clock.
+    pub fn background_request_started(&self) -> RequestActivityGuard {
+        todo!("SPK3: track a background request without resetting idleness")
+    }
+
     pub fn in_flight(&self) -> usize {
         self.snapshot().in_flight
     }

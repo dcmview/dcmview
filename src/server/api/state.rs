@@ -70,6 +70,15 @@ impl AppState {
         self
     }
 
+    /// Replaces the display, raw and overlay caches with ones sized by
+    /// `budget`. Call it before the state is cloned into a router.
+    pub fn with_cache_budget(mut self, budget: pixels::CacheBudget) -> Self {
+        self.pixel_cache = Arc::new(Mutex::new(FrameCache::new(budget.frame_bytes)));
+        self.raw_cache = Arc::new(Mutex::new(RawFrameCache::new(budget.raw_bytes)));
+        self.overlay_cache = Arc::new(Mutex::new(OverlayCache::new(budget.overlay_bytes)));
+        self
+    }
+
     pub fn access_token(&self) -> Option<&AccessToken> {
         self.access_token.as_ref()
     }

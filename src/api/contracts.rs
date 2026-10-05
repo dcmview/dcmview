@@ -38,6 +38,13 @@ pub const TOKEN_ENV_VAR: &str = "DCMVIEW_TOKEN";
 /// route an integration calls gains a requirement an older peer cannot meet.
 pub const STARTUP_PROTOCOL: u32 = 1;
 
+/// Request header (`X-Dcmview-Background: 1`) marking a request the page
+/// makes on its own, such as polling or prefetch. Such a request is served
+/// normally but does not count as activity for `--timeout`, so an open tab
+/// alone does not keep an idle process alive. Sent only where a supervising
+/// parent asks for it; a standalone viewer's own polling does not send it.
+pub const BACKGROUND_REQUEST_HEADER: &str = "X-Dcmview-Background";
+
 pub const CACHE_HEADER: &str = "X-Cache";
 pub const CACHE_HIT: &str = "HIT";
 pub const CACHE_MISS: &str = "MISS";

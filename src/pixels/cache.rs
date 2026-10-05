@@ -61,7 +61,7 @@ pub struct BudgetedLru<K: Hash + Eq, V> {
 }
 
 impl<K: Hash + Eq, V: FrameBody> BudgetedLru<K, V> {
-    fn new(max_bytes: usize) -> Self {
+    pub(crate) fn new(max_bytes: usize) -> Self {
         Self {
             entries: LruCache::unbounded(),
             bytes: 0,
@@ -108,6 +108,48 @@ impl<K: Hash + Eq, V: FrameBody> BudgetedLru<K, V> {
         self.entries.put(key, value);
         self.bytes = self.bytes.saturating_add(incoming);
     }
+}
+
+/// One byte budget divided among the display, raw and overlay caches
+/// (`--cache-budget`), in the proportions of the defaults.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CacheBudget {
+    pub frame_bytes: usize,
+    pub raw_bytes: usize,
+    pub overlay_bytes: usize,
+}
+
+impl CacheBudget {
+    pub const DEFAULT: Self = Self {
+        frame_bytes: FRAME_CACHE_MAX_BYTES,
+        raw_bytes: RAW_CACHE_MAX_BYTES,
+        overlay_bytes: OVERLAY_CACHE_MAX_BYTES,
+    };
+
+    /// Smallest accepted total. Below it one decoded frame of a large image
+    /// no longer fits and every request would miss.
+    pub const MIN_TOTAL_BYTES: u64 = 16 * 1024 * 1024;
+
+    /// Splits `total_bytes` in the proportions of [`Self::DEFAULT`], rounding
+    /// each share down so the three never exceed the total. A total below
+    /// [`Self::MIN_TOTAL_BYTES`] is an error that names the minimum.
+    pub fn from_total(total_bytes: u64) -> Result<Self, String> {
+        let _ = total_bytes;
+        todo!("SPK3: proportional split")
+    }
+
+    pub fn total_bytes(&self) -> u64 {
+        self.frame_bytes as u64 + self.raw_bytes as u64 + self.overlay_bytes as u64
+    }
+}
+
+/// Parses a `--cache-budget` value: a whole number of bytes, optionally with
+/// a binary suffix `KiB`, `MiB` or `GiB` (case-insensitive, no space), such
+/// as `268435456`, `256MiB` or `2GiB`. Decimal suffixes (`MB`), fractions,
+/// signs and overflow are errors.
+pub fn parse_byte_size(raw: &str) -> Result<u64, String> {
+    let _ = raw;
+    todo!("SPK3: parse a byte size")
 }
 
 pub fn new_cache() -> Arc<Mutex<FrameCache>> {
@@ -233,5 +275,51 @@ mod tests {
 
         assert!(contains(&cache, &key));
         assert_eq!(cache.bytes, 3);
+    }
+
+    #[test]
+    fn cache_budget_keeps_the_default_proportions_within_the_total() {
+        use super::{parse_byte_size, CacheBudget};
+        const MIB: u64 = 1024 * 1024;
+
+        assert_eq!(
+            CacheBudget::from_total(CacheBudget::DEFAULT.total_bytes()),
+            Ok(CacheBudget::DEFAULT)
+        );
+        assert_eq!(
+            CacheBudget::from_total(352 * MIB),
+            Ok(CacheBudget {
+                frame_bytes: 128 * 1024 * 1024,
+                raw_bytes: 192 * 1024 * 1024,
+                overlay_bytes: 32 * 1024 * 1024,
+            })
+        );
+        // Totals that do not divide evenly round down and never exceed the total.
+        for total in [16 * MIB, 16 * MIB + 1, 100 * MIB + 7, 8 * 1024 * MIB] {
+            let budget = CacheBudget::from_total(total).expect("budget");
+            assert!(budget.total_bytes() <= total, "{total}");
+            assert!(total - budget.total_bytes() < 3, "{total}");
+            assert!(budget.raw_bytes > budget.frame_bytes, "{total}");
+            assert!(budget.frame_bytes > budget.overlay_bytes, "{total}");
+        }
+        assert!(CacheBudget::from_total(CacheBudget::MIN_TOTAL_BYTES - 1).is_err());
+        assert!(CacheBudget::from_total(0).is_err());
+
+        for (raw, expected) in [
+            ("268435456", Some(268_435_456)),
+            ("512KiB", Some(512 * 1024)),
+            ("256MiB", Some(256 * MIB)),
+            ("256mib", Some(256 * MIB)),
+            ("2GiB", Some(2 * 1024 * MIB)),
+            ("", None),
+            ("MiB", None),
+            ("256MB", None),
+            ("1.5GiB", None),
+            ("-1", None),
+            ("256 MiB", None),
+            ("99999999999GiB", None),
+        ] {
+            assert_eq!(parse_byte_size(raw).ok(), expected, "{raw:?}");
+        }
     }
 }
