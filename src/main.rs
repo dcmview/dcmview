@@ -53,6 +53,14 @@ struct Cli {
     host: String,
 
     #[arg(
+        long = "unix-socket",
+        value_name = "PATH",
+        conflicts_with_all = ["host", "port"],
+        help = "Listen on a private Unix socket instead of TCP (Linux and macOS only)"
+    )]
+    unix_socket: Option<PathBuf>,
+
+    #[arg(
         long = "no-browser",
         help = "Print the viewer URL instead of opening a browser automatically"
     )]
