@@ -21,15 +21,14 @@ impl UnixSocket {
         let parent = path
             .parent()
             .context("Unix socket path needs a parent directory")?;
+        // Checked before the parent is touched, so a path without a file
+        // name never leaves a directory behind.
+        let file_name = path
+            .file_name()
+            .context("Unix socket path needs a file name")?;
         // SAFETY: geteuid takes no arguments and has no safety preconditions.
         let uid = unsafe { libc::geteuid() };
-        prepare_parent(parent, uid)?;
-        // Resolve the parent once so cleanup and startup output use the same
-        // absolute location, including when the supplied parent is a symlink.
-        let path = parent.canonicalize()?.join(
-            path.file_name()
-                .context("Unix socket path needs a file name")?,
-        );
+        let path = prepare_parent(parent, uid)?.join(file_name);
 
         match fs::symlink_metadata(&path) {
             Ok(metadata) => {
@@ -106,7 +105,11 @@ impl Listener for UnixSocket {
     }
 }
 
-fn prepare_parent(parent: &Path, uid: libc::uid_t) -> Result<()> {
+/// Creates the parent when missing and returns its canonical path after
+/// checking that directory. The check and the bind use the one resolved
+/// location: if the supplied path runs through a symlink, swapping the link
+/// afterwards cannot move the socket into a directory that was never checked.
+fn prepare_parent(parent: &Path, uid: libc::uid_t) -> Result<PathBuf> {
     if !parent.try_exists()? {
         DirBuilder::new()
             .mode(0o700)
@@ -119,7 +122,13 @@ fn prepare_parent(parent: &Path, uid: libc::uid_t) -> Result<()> {
             })?;
         fs::set_permissions(parent, Permissions::from_mode(0o700))?;
     }
-    let metadata = fs::metadata(parent).with_context(|| {
+    let resolved = parent.canonicalize().with_context(|| {
+        format!(
+            "failed to resolve Unix socket directory {}",
+            parent.display()
+        )
+    })?;
+    let metadata = fs::symlink_metadata(&resolved).with_context(|| {
         format!(
             "failed to inspect Unix socket directory {}",
             parent.display()
@@ -140,7 +149,7 @@ fn prepare_parent(parent: &Path, uid: libc::uid_t) -> Result<()> {
             parent.display()
         );
     }
-    Ok(())
+    Ok(resolved)
 }
 
 fn same_file(path: &Path, original: &Metadata) -> bool {
