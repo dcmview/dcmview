@@ -67,6 +67,12 @@ struct Cli {
     no_browser: bool,
 
     #[arg(
+        long = "no-token",
+        help = "Serve the API without the access token; for use behind a proxy that already authenticates"
+    )]
+    no_token: bool,
+
+    #[arg(
         long = "timeout",
         value_name = "SECONDS",
         help = "Exit after this many seconds without API or browser requests once the scan has finished"
