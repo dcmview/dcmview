@@ -1,14 +1,33 @@
 use super::{exif_orientation, Header, HeaderReader};
 use crate::api::contracts::RasterColorType;
 use anyhow::{ensure, Result};
+use std::io::{Read, Seek, SeekFrom};
 
 pub(super) fn png(input: &mut HeaderReader) -> Result<Header> {
-    let decoder = png::Decoder::new_with_limits(
-        &mut input.file,
+    // Find the header boundary and profile presence without inflating ICC
+    // or text. A valid compressed profile may expand far beyond the file.
+    let mut offset = 8;
+    let mut has_icc = false;
+    let header_end = loop {
+        let chunk = input.read::<8>(offset)?;
+        let length = u64::from(u32::from_be_bytes(chunk[..4].try_into()?));
+        if &chunk[4..] == b"IDAT" {
+            break offset + 8;
+        }
+        ensure!(&chunk[4..] != b"IEND", "PNG ends before image data");
+        input.check_range(offset + 8, length + 4)?;
+        has_icc |= &chunk[4..] == b"iCCP";
+        offset += length + 12;
+    };
+    input.file.seek(SeekFrom::Start(0))?;
+    let mut decoder = png::Decoder::new_with_limits(
+        (&mut input.file).take(header_end),
         png::Limits {
             bytes: usize::try_from(input.len).unwrap_or(usize::MAX),
         },
     );
+    decoder.set_ignore_iccp_chunk(true);
+    decoder.set_ignore_text_chunk(true);
     let reader = decoder.read_info()?;
     let info = reader.info();
     let color = match info.color_type {
@@ -20,7 +39,7 @@ pub(super) fn png(input: &mut HeaderReader) -> Result<Header> {
     };
     let mut header = Header::new(info.width, info.height, color, info.bit_depth as u32);
     header.metadata.has_alpha |= info.trns.is_some();
-    header.metadata.has_icc = info.icc_profile.is_some();
+    header.metadata.has_icc = has_icc;
     header.metadata.significant_bits = info.sbit.as_deref().map(<[u8]>::to_vec);
     header.metadata.animated = info.animation_control.is_some();
     header.metadata.orientation = info
@@ -63,7 +82,7 @@ pub(super) fn jpeg(input: &mut HeaderReader) -> Result<Header> {
             ensure!(payload >= 6, "short JPEG frame header");
             let data = input.read::<6>(start)?;
             let depth = u32::from(data[0]);
-            ensure!(matches!(depth, 8 | 12 | 16), "invalid JPEG precision");
+            ensure!((2..=16).contains(&depth), "invalid JPEG precision");
             let color = match data[5] {
                 1 => RasterColorType::Gray,
                 3 => RasterColorType::Rgb,
