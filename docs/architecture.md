@@ -198,7 +198,10 @@ pointer capture, the gestures every tool shares (middle-button pan,
 right-button zoom, wheel pan and zoom, pinch, Alt+wheel frame steps), the
 cancel of a frame-bound gesture when another file or frame is shown, and the
 tool that holds the pointer. It runs one gesture at a time: presses and moves
-of a second pointer are ignored until the first one's gesture ends.
+of a second pointer are ignored until the first one's gesture ends. A
+gesture whose release never arrives does not hold the host: losing the
+pointer capture mid-gesture cancels it, and so does a new press from the
+pointer that owns it, which then starts the next gesture.
 
 The host tells a mouse from a trackpad through `viewport/inputProfile.ts`,
 which is pure. A run of wheel events under 150 ms apart is one gesture,
