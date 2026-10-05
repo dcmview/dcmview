@@ -1,0 +1,18 @@
+[package]
+name = "dcmview-protocol"
+# Always the viewer's version: other repositories pin this crate by dcmview
+# release tag, and `scripts/check_versions.py` rejects drift.
+version = "0.3.3"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Launch and startup contract between dcmview and the processes that start it"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"

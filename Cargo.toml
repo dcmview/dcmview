@@ -1,16 +1,42 @@
 [package]
 name = "dcmview"
 version = "0.3.3"
-edition = "2021"
-rust-version = "1.88"
+edition.workspace = true
+rust-version.workspace = true
 build = "build.rs"
 description = "Fast temporary DICOM viewer for local and remote research workflows"
-license = "MIT"
-repository = "https://github.com/dcmview/dcmview"
-homepage = "https://github.com/dcmview/dcmview"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 readme = "README.md"
 keywords = ["dicom", "medical-imaging", "viewer", "research"]
 categories = ["command-line-utilities", "science", "visualization"]
+
+# The root package stays the `dcmview` binary and library, so `cargo build`,
+# `cargo install --path .`, the wheel build and the VS Code packaging all keep
+# their paths. Member crates hold what other crates and repositories may
+# depend on without the viewer.
+#
+# Shared here: edition, MSRV, license and project URLs. Not shared: `version`.
+# The root `[package].version` above stays a literal because release tooling
+# reads it from this file; every member repeats the same value and
+# `scripts/check_versions.py` rejects drift. Members share the viewer's
+# version because other repositories pin them by dcmview release tag, so the
+# tag is the only version a consumer selects. Wire compatibility is carried by
+# the `protocol` integer, not by this number.
+#
+# No `[workspace.lints]`: the lint policy is `clippy --workspace -D warnings`
+# in `scripts/check.py`, the same for every member.
+[workspace]
+members = ["crates/dcmview-protocol"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.88"
+license = "MIT"
+repository = "https://github.com/dcmview/dcmview"
+homepage = "https://github.com/dcmview/dcmview"
 
 [features]
 default = []
@@ -19,6 +45,9 @@ debug-embed = ["rust-embed/debug-embed"]
 remote-fixtures = ["dep:dicom-test-files"]
 
 [dependencies]
+# Launch and startup contract, re-exported by src/api/contracts.rs
+dcmview-protocol = { path = "crates/dcmview-protocol" }
+
 # DICOM
 dicom-object = "0.10.0"
 dicom-core = "0.10.0"
