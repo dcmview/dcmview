@@ -287,8 +287,12 @@ dcmview/
 |   |   `-- lib/
 |   |       |-- app/                  App-owned controllers: catalog, tabs,
 |   |       |                         window settings, sidebar layout
-|   |       |-- viewport/             ImageViewport units: frame sources, W/L
-|   |       |                         worker client, view state, overlays, ROIs
+|   |       |-- annotation/tools/     one state machine per pointer tool behind
+|   |       |                         the Tool interface (pan, zoom, scroll, W/L,
+|   |       |                         rectangle for ROI and Redact)
+|   |       |-- viewport/             ImageViewport units: ToolHost (pointer and
+|   |       |                         wheel dispatch), frame sources, W/L worker
+|   |       |                         client, view state, overlays, ROIs
 |   |       |-- ui/                   Bea · dcmview controls: Button, ButtonGroup,
 |   |       |                         SegmentedControl, Select, Range, SearchField,
 |   |       |                         StatusBadge, Icon and its line icons
@@ -518,7 +522,11 @@ is cached between requests.
   is the synthetic `display_name` unless the directory tree is showing. Pass
   those files (or `catalog.filesById`) to anything that displays a path; only
   `FileNavigator` receives the raw catalog.
-- ROI pointer editing lives in `ImageViewport.svelte`; annotation state in
+- Pointer and wheel handling lives in `viewport/ToolHost.svelte.ts`, which owns
+  capture, the shared gestures and the active tool; each tool is a state
+  machine in `annotation/tools/`. `ImageViewport.svelte` forwards events to
+  the host and keeps rendering. Add a tool there, not in the component. ROI
+  editing is `annotation/tools/rectangleTool.ts`; annotation state in
   `viewport/annotationStore.svelte.ts`, hit testing in `viewport/roiEditing.ts`,
   and geometry helpers in `annotationGeometry.ts`. Keep frame-scoping semantics
   consistent with backend validation.
@@ -612,7 +620,8 @@ the warning path in `server/runtime.rs`.
 | `frontend/src/api.ts` | Typed frontend fetch wrappers |
 | `frontend/src/generated/api-types.ts` | Generated TypeScript HTTP contract |
 | `frontend/src/App.svelte` | Root frontend state and layout |
-| `frontend/src/lib/ImageViewport.svelte` | Viewport composition, render pipelines, pointer tools |
+| `frontend/src/lib/ImageViewport.svelte` | Viewport composition and render pipelines |
+| `frontend/src/lib/viewport/ToolHost.svelte.ts` | Pointer and wheel dispatch to the tools in `lib/annotation/tools/` |
 | `python/dcmview_py/wrapper.py` | Python subprocess wrapper |
 | `examples/generate_test_fixtures.rs` | Synthetic fixture generator |
 | `examples/generate_api_types.rs` | TypeScript contract generator and drift check |
