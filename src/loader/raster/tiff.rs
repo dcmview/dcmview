@@ -4,6 +4,7 @@ use super::{is_io_failure, orientation, Header, HeaderReader};
 use crate::api::contracts::{
     RasterColorType, RasterExcludedPage, RasterPageDifference, RasterSampleFormat,
 };
+use crate::types::{RASTER_EXCLUDED_PAGES_LISTED, RASTER_WARNINGS_MAX};
 use anyhow::{ensure, Result};
 use std::collections::{BTreeMap, HashSet};
 
@@ -120,11 +121,16 @@ pub(super) fn inspect(input: &mut HeaderReader) -> Result<Header> {
         }
         _ => anyhow::bail!("invalid TIFF version"),
     };
+    input.step()?;
     let (first, next) = read_page(input, encoding, offset)?;
     let mut header = first.header()?;
+    // Keep exact cycle detection so a repeated page is never counted twice.
+    // The step check precedes insertion, bounding this set to 65,535 offsets.
     let mut seen = HashSet::from([offset]);
+    let mut notes = 0;
     offset = next;
     while offset != 0 {
+        input.step()?;
         let page = header.metadata.pages_total;
         let result = if seen.insert(offset) {
             read_page(input, encoding, offset)
@@ -133,38 +139,52 @@ pub(super) fn inspect(input: &mut HeaderReader) -> Result<Header> {
         };
         let (current, next) = match result {
             Ok(result) => result,
-            Err(error) if is_io_failure(&error) => return Err(error),
+            Err(error) if input.exhausted.is_some() || is_io_failure(&error) => return Err(error),
             Err(error) => {
-                header
-                    .metadata
-                    .warnings
-                    .push(format!("TIFF page walk stopped at page {page}: {error}"));
+                note(
+                    &mut header,
+                    &mut notes,
+                    format!("TIFF page walk stopped at page {page}: {error}"),
+                );
                 break;
             }
         };
         if let Some(differs) = current.difference(&first) {
-            header
-                .metadata
-                .excluded_pages
-                .push(RasterExcludedPage { page, differs });
-            header
-                .metadata
-                .warnings
-                .push(format!("TIFF page {page} excluded: {differs:?}"));
+            header.metadata.excluded_pages_total += 1;
+            if header.metadata.excluded_pages.len() < RASTER_EXCLUDED_PAGES_LISTED {
+                header
+                    .metadata
+                    .excluded_pages
+                    .push(RasterExcludedPage { page, differs });
+            }
         } else {
             header.metadata.frame_pages.push(page);
             if current.icc != first.icc {
-                header.metadata.warnings.push(format!(
-                    "TIFF page {page} ICC profile presence differs from page 0"
-                ));
+                note(
+                    &mut header,
+                    &mut notes,
+                    format!("TIFF page {page} ICC profile presence differs from page 0"),
+                );
             }
         }
-        header.metadata.pages_total = page
-            .checked_add(1)
-            .ok_or_else(|| anyhow::anyhow!("too many TIFF pages"))?;
+        header.metadata.pages_total =
+            header.metadata.frame_pages.len() as u32 + header.metadata.excluded_pages_total;
         offset = next;
     }
     Ok(header)
+}
+
+fn note(header: &mut Header, count: &mut usize, message: String) {
+    *count += 1;
+    let warnings = &mut header.metadata.warnings;
+    if *count <= RASTER_WARNINGS_MAX {
+        warnings.push(message);
+    } else {
+        warnings[RASTER_WARNINGS_MAX - 1] = format!(
+            "{} more notes not shown",
+            *count - (RASTER_WARNINGS_MAX - 1)
+        );
+    }
 }
 
 fn read_page(input: &mut HeaderReader, encoding: Encoding, offset: u64) -> Result<(Page, u64)> {
@@ -181,17 +201,11 @@ fn read_page(input: &mut HeaderReader, encoding: Encoding, offset: u64) -> Resul
         .checked_mul(entry_size)
         .and_then(|n| n.checked_add(encoding.offset_size()))
         .ok_or_else(|| anyhow::anyhow!("IFD length overflow"))?;
-    input.check_range(start, table_len)?;
+    let table = input.bytes(start, table_len)?;
     let mut tags = BTreeMap::new();
     let mut icc = false;
-    for index in 0..count {
-        let position = start + index * entry_size;
-        let mut entry = [0; 20];
-        if encoding.big {
-            entry = input.read::<20>(position)?;
-        } else {
-            entry[..12].copy_from_slice(&input.read::<12>(position)?);
-        }
+    let entries_len = table.len() - encoding.offset_size() as usize;
+    for entry in table[..entries_len].chunks_exact(entry_size as usize) {
         let tag = encoding.number(&entry[..2]);
         if tag == 34675 {
             icc = true;
@@ -214,11 +228,11 @@ fn read_page(input: &mut HeaderReader, encoding: Encoding, offset: u64) -> Resul
         };
         ensure!(values > 0, "empty TIFF layout tag");
         ensure!(
-            values <= u64::from(u16::MAX) && values <= input.len / 8,
+            values <= u64::from(u16::MAX),
             "TIFF layout values exceed the file budget"
         );
-        // These are per-channel values or scalars, never pixel arrays. Even
-        // corrupt counts are bounded by the actual file before allocation.
+        // These are per-channel values or scalars, never pixel arrays;
+        // the fixed channel cap bounds even a corrupt value count.
         let len = values
             .checked_mul(size)
             .ok_or_else(|| anyhow::anyhow!("TIFF tag length overflow"))?;
@@ -277,11 +291,6 @@ fn read_page(input: &mut HeaderReader, encoding: Encoding, offset: u64) -> Resul
         subfile: scalar(254, 0)?,
         icc,
     };
-    let next_offset = start + count * entry_size;
-    let next = if encoding.big {
-        encoding.number(&input.read::<8>(next_offset)?)
-    } else {
-        encoding.number(&input.read::<4>(next_offset)?)
-    };
+    let next = encoding.number(&table[entries_len..]);
     Ok((page, next))
 }
