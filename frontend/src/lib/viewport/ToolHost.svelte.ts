@@ -37,7 +37,8 @@ function toolPointer(event: PointerEvent): ToolPointer {
  * the gestures every tool shares (middle-button pan, right-button zoom,
  * wheel pan and zoom, pinch), the input profile that tells a mouse wheel from a trackpad, the
  * cancel of a gesture whose file or frame was replaced, and the tool that
- * holds the pointer. The tools are state machines behind `Tool`.
+ * holds the pointer or is armed between the two clicks of a placement. The
+ * tools are state machines behind `Tool`.
  */
 export class ToolHost {
 	readonly #view: ToolHostView;
@@ -46,6 +47,10 @@ export class ToolHost {
 	#captured = $state.raw<Tool | null>(null);
 	// The pointer whose press began the gesture; other pointers are ignored until it ends.
 	#pointerId = 0;
+	// The tool whose gesture goes on between presses (click-click placement).
+	#armed = $state.raw<Tool | null>(null);
+	// The element holding the pointer capture.
+	#surface: HTMLElement | null = null;
 	#draft = $state.raw<DraftRect | null>(null);
 	// The frame-bound gesture begun since the last one ended, and where it began.
 	#frameGesture: { tool: Tool; fileIndex: number; frameIndex: number } | null = null;
@@ -76,8 +81,11 @@ export class ToolHost {
 		return this.#captured?.id ?? null;
 	}
 
-	/** The rectangle the tool holding the pointer is drawing. */
+	/** The rectangle being drawn, by the tool holding the pointer or by an armed tool between its clicks. */
 	get draft(): DraftRect | null {
+		// An armed tool's rectangle belongs to the tool and frame it began on:
+		// it is not drawn over another, even before `shownChanged` drops it.
+		if (this.#armed && (this.#armed.id !== this.#view.activeTool || this.#frameGestureReplaced())) return null;
 		return this.#draft;
 	}
 
@@ -140,6 +148,8 @@ export class ToolHost {
 			if (event.button !== 0) event.preventDefault();
 			return;
 		}
+		// A placement left behind by a tool, file or frame change does not take this press.
+		if (this.#liveArmed()) this.#cancelReplacedFrameGesture();
 
 		if (event.button === 1) {
 			event.preventDefault();
@@ -160,10 +170,14 @@ export class ToolHost {
 	}
 
 	pointerMove(event: PointerEvent): void {
-		if (!this.#captured || event.pointerId !== this.#pointerId) return;
+		if (this.#captured && event.pointerId !== this.#pointerId) return;
+		// With no button held, the moves go to a tool armed between its clicks.
+		const armed = this.#liveArmed();
+		const tool = this.#captured ?? armed;
+		if (!tool) return;
 		if (this.#cancelReplacedFrameGesture()) return;
-		this.#captured.pointerMove(toolPointer(event), this.#view);
-		this.#draft = this.#captured.draft ?? null;
+		tool.pointerMove(toolPointer(event), this.#view);
+		this.#draft = (armed ?? tool).draft ?? null;
 	}
 
 	pointerUp(event: PointerEvent): void {
@@ -173,17 +187,53 @@ export class ToolHost {
 			target.releasePointerCapture(event.pointerId);
 		}
 		if (this.#cancelReplacedFrameGesture()) return;
-		this.#captured?.pointerUp(this.#view);
+		const tool = this.#captured;
+		if (!tool) {
+			if (!this.#armed) this.endGesture();
+			return;
+		}
+		tool.pointerUp(this.#view);
+		this.#captured = null;
+		// The release left the tool armed: its gesture goes on with no button held.
+		if (tool.armed) {
+			this.#armed = tool;
+			this.#draft = tool.draft ?? null;
+			return;
+		}
+		// A middle- or right-button drag over an armed tool ends alone.
+		if (this.#armed && this.#armed !== tool) {
+			tool.reset();
+			return;
+		}
 		this.endGesture();
 	}
 
 	/** The browser took the pointer away; without an event, cancels whatever is in progress. */
 	pointerCancel(event?: PointerEvent): void {
-		if (event && this.#captured && event.pointerId !== this.#pointerId) return;
+		if (event && (this.#captured ? event.pointerId !== this.#pointerId : this.#armed !== null)) return;
 		const frameTool = this.#frameGesture?.tool;
 		if (frameTool && frameTool !== this.#captured) frameTool.cancel(this.#view);
 		this.#captured?.cancel(this.#view);
 		this.endGesture();
+	}
+
+	/** The viewport shows another tool, file or frame: a placement begun on the last one ends. */
+	shownChanged(): void {
+		if (this.#captured || !this.#liveArmed()) return;
+		if (this.#frameGestureReplaced()) this.pointerCancel();
+	}
+
+	/**
+	 * Escape: cancels a click-click placement between or during its clicks.
+	 * False when there is none, so the key keeps its other meanings.
+	 */
+	cancelPlacement(): boolean {
+		if (!this.#liveArmed()) return false;
+		if (this.#captured && this.#surface?.hasPointerCapture(this.#pointerId)) {
+			this.#surface.releasePointerCapture(this.#pointerId);
+		}
+		this.pointerCancel();
+		return true;
 	}
 
 	/** Drops the gesture in progress without committing or undoing it. */
@@ -191,6 +241,7 @@ export class ToolHost {
 		this.#view.gestureEnded();
 		for (const tool of Object.values(this.#tools)) tool.reset();
 		this.#captured = null;
+		this.#armed = null;
 		this.#draft = null;
 		this.#frameGesture = null;
 	}
@@ -202,17 +253,30 @@ export class ToolHost {
 		(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
 		this.#captured = tool;
 		this.#pointerId = event.pointerId;
-		this.#draft = tool.draft ?? null;
+		this.#surface = event.currentTarget as HTMLElement;
+		this.#draft = (this.#armed ?? tool).draft ?? null;
 		if (tool.frameBound) this.#frameGesture = { tool, fileIndex: view.file.index, frameIndex: view.frame };
 	}
 
 	#cancelReplacedFrameGesture(): boolean {
-		const began = this.#frameGesture;
-		const view = this.#view;
-		if (!began || (view.displayedFrameIsCurrent && began.fileIndex === view.file.index
-			&& began.frameIndex === view.frame)) return false;
+		if (!this.#frameGesture || (this.#view.displayedFrameIsCurrent && !this.#frameGestureReplaced())) return false;
 		this.pointerCancel();
 		return true;
+	}
+
+	/** Another file or frame is requested than the one the frame-bound gesture began on. */
+	#frameGestureReplaced(): boolean {
+		const began = this.#frameGesture;
+		return began !== null && (began.fileIndex !== this.#view.file.index || began.frameIndex !== this.#view.frame);
+	}
+
+	/** The armed tool, unless another tool was chosen since: then its gesture is dropped. */
+	#liveArmed(): Tool | null {
+		const armed = this.#armed;
+		if (!armed || this.#captured || this.#tools[this.#view.activeTool] === armed) return armed;
+		armed.cancel(this.#view);
+		this.endGesture();
+		return null;
 	}
 
 	/** The one place a wheel event is told apart: the device its gesture acts as. */

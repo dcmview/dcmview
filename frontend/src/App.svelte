@@ -209,6 +209,7 @@
 
 	/** The single global keyboard dispatcher; bindings live in keyboardShortcuts.ts. */
 	function handleWindowKeydown(event: KeyboardEvent) {
+		if (event.key === "Escape" && viewport?.cancelPlacement()) return;
 		const action = shortcutFor(event, {
 			drawerOpen: layout.compactDrawer !== null,
 			multiFrame: activeFile !== null && tabs.frames.length > 1,

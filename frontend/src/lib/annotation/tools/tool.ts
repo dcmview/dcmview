@@ -91,7 +91,8 @@ export interface ToolContext {
 /**
  * One tool's gestures as a state machine. The host owns pointer capture and
  * the universal gestures, and calls `pointerMove`, `pointerUp` and `cancel`
- * only for the tool whose `pointerDown` captured the pointer.
+ * only for the tool whose `pointerDown` captured the pointer, or which is
+ * `armed`.
  */
 export interface Tool {
 	readonly id: ToolId;
@@ -100,11 +101,20 @@ export interface Tool {
 	 * host cancels it when another one is shown.
 	 */
 	readonly frameBound: boolean;
-	/** What the gesture in progress is drawing; the host shows it while this tool holds the pointer. */
+	/** What the gesture in progress is drawing; the host shows it while the gesture lasts. */
 	readonly draft?: DraftRect | null;
+	/**
+	 * The gesture goes on with no button held (click-click placement). While
+	 * true after `pointerUp`, the host keeps the tool's state instead of
+	 * resetting it, sends it the pointer's moves while it is the active tool,
+	 * and gives its next press to `pointerDown`. The host cancels it on Escape
+	 * and when the tool, file or frame changes.
+	 */
+	readonly armed?: boolean;
 	pointerDown(pointer: ToolPointer, ctx: ToolContext): "capture" | "ignore";
+	/** The pointer moved: with the button held, or with none held while the tool is armed. */
 	pointerMove(pointer: ToolPointer, ctx: ToolContext): void;
-	/** Commits the gesture in progress. */
+	/** The button was released: commits the gesture, or leaves the tool armed. */
 	pointerUp(ctx: ToolContext): void;
 	/** A wheel step while this tool is active; true when the tool used it. */
 	wheel?(wheel: ToolWheel, ctx: ToolContext): boolean;

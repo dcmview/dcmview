@@ -1365,6 +1365,70 @@ describe("ImageViewport shared gestures", () => {
 		expect(api.updateAnnotations).not.toHaveBeenCalled();
 	});
 
+	/** A press and release in one place. */
+	async function click(viewport: HTMLElement, clientX: number, clientY: number) {
+		await fireEvent.pointerDown(viewport, { button: 0, clientX, clientY, pointerId: 1 });
+		await fireEvent.pointerUp(viewport, { button: 0, clientX, clientY, pointerId: 1 });
+	}
+	const savedBoxes = (save: typeof api.updateAnnotations) => vi.mocked(save).mock.calls
+		.map(([file, saved]) => [file, saved.roi_coords, saved.roi_frames]);
+
+	// The rectangle from (20, 20) to (45, 50), as [ymin, xmin, ymax, xmax]: a ROI on the
+	// frame it is drawn on, a redaction box on every frame of the file.
+	it.each([
+		["annotate_rect", "two clicks", [[0]]],
+		["annotate_rect", "a drag", [[0]]],
+		["redact", "two clicks", [[0, 1, 2]]],
+		["redact", "a drag", [[0, 1, 2]]],
+	] as const)("%s tool: %s place a rectangle", async (tool, gesture, frames) => {
+		vi.mocked(api.updateRedactions).mockReset().mockImplementation(async (_file, boxes) => boxes);
+		const { viewport } = await renderReady(tool);
+		const save = tool === "redact" ? api.updateRedactions : api.updateAnnotations;
+
+		if (gesture === "two clicks") {
+			await click(viewport, 20, 20);
+			// No button is held between the clicks, and the rectangle follows the pointer.
+			expect(viewport.hasPointerCapture(1)).toBe(false);
+			await fireEvent.pointerMove(viewport, { clientX: 30, clientY: 40, pointerId: 1 });
+			expect(draft()).not.toBeNull();
+			expect(save).not.toHaveBeenCalled();
+			await fireEvent.pointerMove(viewport, { clientX: 45, clientY: 50, pointerId: 1 });
+			await click(viewport, 45, 50);
+		} else {
+			await fireEvent.pointerDown(viewport, { button: 0, clientX: 20, clientY: 20, pointerId: 1 });
+			await fireEvent.pointerMove(viewport, { clientX: 45, clientY: 50, pointerId: 1 });
+			expect(draft()).not.toBeNull();
+			await fireEvent.pointerUp(viewport, { button: 0, clientX: 45, clientY: 50, pointerId: 1 });
+		}
+
+		await waitFor(() => expect(savedBoxes(save)).toEqual([[5, [[20, 20, 50, 45]], frames]]));
+		expect(coords()).toEqual(["[20, 20, 50, 45]"]);
+		// The placement is over: the pointer draws nothing more.
+		await fireEvent.pointerMove(viewport, { clientX: 60, clientY: 60, pointerId: 1 });
+		expect(draft()).toBeNull();
+		expect(save).toHaveBeenCalledTimes(1);
+		// The file's beforeEach does not clear this mock, and other tests assert it was never called.
+		vi.mocked(api.updateRedactions).mockReset();
+	});
+
+	it("Escape cancels a rectangle between its two clicks", async () => {
+		const { viewport, component } = await renderReady("annotate_rect");
+
+		// Nothing to cancel leaves Escape to its other meanings.
+		expect(component.cancelPlacement()).toBe(false);
+		await click(viewport, 20, 20);
+		await fireEvent.pointerMove(viewport, { clientX: 45, clientY: 50, pointerId: 1 });
+		expect(draft()).not.toBeNull();
+
+		expect(await act(() => component.cancelPlacement())).toBe(true);
+
+		expect(draft()).toBeNull();
+		await fireEvent.pointerMove(viewport, { clientX: 50, clientY: 55, pointerId: 1 });
+		expect(draft()).toBeNull();
+		expect(coords()).toEqual([]);
+		expect(api.updateAnnotations).not.toHaveBeenCalled();
+	});
+
 	it("saves a ROI move that a second pointer's middle-button press interrupted", async () => {
 		const { viewport } = await renderReady("annotate_rect", oneRoi);
 

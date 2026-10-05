@@ -544,6 +544,11 @@
 		};
 	}
 
+	/** Escape: cancels a rectangle between its two clicks. False when there is none. */
+	export function cancelPlacement(): boolean {
+		return tools.cancelPlacement();
+	}
+
 	/** Deletes the selected ROI on this file; App's keyboard dispatcher calls it. */
 	export function deleteSelectedRoi() {
 		if (!presentedMatchesActive || selectedRoiIndex === null || !activeAnnotations) return;
@@ -903,6 +908,14 @@
 		// frames stay for a return; only the previous tab's work stops.
 		rawFrames.abortAll();
 		displayFrames.resetScope();
+	});
+
+	// A rectangle left between its two clicks ends with the tool, file or frame it began on.
+	$effect(() => {
+		void activeTool;
+		void activeFile?.index;
+		void currentFrame;
+		untrack(() => tools.shownChanged());
 	});
 
 	// An explicit selection supersedes an in-progress local drag as well as
