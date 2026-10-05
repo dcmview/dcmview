@@ -24,6 +24,9 @@ diagnostic viewer.
 
 ### Added
 
+- `--cache-budget BYTES` sets the combined display, raw and overlay frame cache
+  budget, with proportional shares, binary suffixes such as `256MiB`, and a
+  `16MiB` minimum. The default remains 704 MiB; this is not a process memory cap.
 - Python non-blocking handles expose read-only `token` and `base_url` startup
   fields for authenticated API calls, while `url` remains the launch URL.
   Older binaries leave the new properties as `None`.

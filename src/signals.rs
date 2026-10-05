@@ -8,6 +8,20 @@
 
 use std::future::Future;
 
+/// Stop when the supervising parent's stdin pipe closes or cannot be read.
+pub fn stop_on_stdin_eof(shutdown: tokio_util::sync::CancellationToken) -> std::io::Result<()> {
+    // Tokio stdin and spawn_blocking use runtime-owned blocking workers that
+    // cannot be cancelled during a read. A detached OS thread lets the runtime
+    // and process exit even if another stop source fires with stdin still open.
+    std::thread::Builder::new()
+        .name("dcmview-parent-stdin".into())
+        .spawn(move || {
+            let _ = std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink());
+            shutdown.cancel();
+        })?;
+    Ok(())
+}
+
 /// Ctrl+C and SIGTERM on Unix; Ctrl+C and Ctrl+Break on Windows.
 pub struct StopSignals {
     #[cfg(unix)]

@@ -598,7 +598,14 @@ dcmview [OPTIONS] <PATH> [PATH ...]
   --mask                    mask patient identifiers on screen; fixed for the session
   --unix-socket <path>      listen on a private Unix socket instead of TCP (Unix only)
   --no-token                serve the API without the bearer token (warns)
+  --cache-budget <bytes>    total size of the frame caches, e.g. 256MiB
 ```
+
+Hidden and experimental, for a supervising parent process, and outside the
+sign-off rule until that integration ships: `--exit-with-parent` (stop on end
+of file on a stdin pipe the parent keeps open) and the
+`X-Dcmview-Background: 1` request header (served, but not counted as activity
+for `--timeout`).
 
 Every `/api` request needs the session's bearer token unless the process runs
 with `--no-token`; `DCMVIEW_TOKEN` fixes the token, and it is never taken from

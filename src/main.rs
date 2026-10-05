@@ -4,6 +4,7 @@ mod startup;
 
 use clap::Parser;
 use dcmview::loader;
+use dcmview::pixels::{parse_byte_size, CacheBudget};
 use std::env;
 use std::path::PathBuf;
 
@@ -80,6 +81,17 @@ struct Cli {
     timeout: Option<u64>,
 
     #[arg(
+        long = "cache-budget",
+        value_name = "BYTES",
+        value_parser = parse_cache_budget,
+        help = "Total memory for the frame caches, such as 256MiB; default about 700MiB"
+    )]
+    cache_budget: Option<CacheBudget>,
+
+    #[arg(long = "exit-with-parent", hide = true)]
+    exit_with_parent: bool,
+
+    #[arg(
         long = "no-recursive",
         help = "Scan only the top level of input directories"
     )]
@@ -126,6 +138,10 @@ struct Cli {
 
 fn parse_scan_filter(raw: &str) -> std::result::Result<loader::ScanFilter, String> {
     raw.parse()
+}
+
+fn parse_cache_budget(raw: &str) -> Result<CacheBudget, String> {
+    CacheBudget::from_total(parse_byte_size(raw)?)
 }
 
 #[tokio::main]

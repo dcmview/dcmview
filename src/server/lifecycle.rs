@@ -30,6 +30,7 @@ struct RequestActivityState {
 #[must_use = "the guard keeps a request marked as in flight until it is dropped"]
 pub struct RequestActivityGuard {
     activity: RequestActivity,
+    background: bool,
 }
 
 impl RequestActivity {
@@ -55,6 +56,22 @@ impl RequestActivity {
         self.inner.changed.notify_waiters();
         RequestActivityGuard {
             activity: self.clone(),
+            background: false,
+        }
+    }
+
+    /// A request carrying `X-Dcmview-Background: 1`. It is in flight like any
+    /// other, so graceful shutdown still drains it, but neither its start nor
+    /// its end moves the idle clock.
+    pub fn background_request_started(&self) -> RequestActivityGuard {
+        {
+            let mut state = self.state();
+            state.in_flight = state.in_flight.saturating_add(1);
+        }
+        self.inner.changed.notify_waiters();
+        RequestActivityGuard {
+            activity: self.clone(),
+            background: true,
         }
     }
 
@@ -105,7 +122,9 @@ impl Drop for RequestActivityGuard {
         {
             let mut state = self.activity.state();
             state.in_flight = state.in_flight.saturating_sub(1);
-            state.last_activity = Instant::now();
+            if !self.background {
+                state.last_activity = Instant::now();
+            }
         }
         self.activity.inner.changed.notify_waiters();
     }
