@@ -6,7 +6,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { posixShim } from '../../terminalInterception';
-import { activeSessionCount, startupViewerUrl, viewerUrl } from '../../viewerSessions';
+import { activeSessionCount, forwardedViewerUrl, startupBaseUrl } from '../../viewerSessions';
 
 // These tests drive the real debug binary that `python scripts/check.py e2e`
 // (or `cargo build --bin dcmview`) leaves in target/debug, which the extension
@@ -109,10 +109,12 @@ suite('dcmview startup URL', () => {
     ];
     for (const { name, event, expected } of cases) {
       if (expected === null) {
-        assert.throws(() => startupViewerUrl(event), /Unix socket launches are not supported in VS Code/, name);
+        assert.throws(() => startupBaseUrl(event), /Unix socket/, name);
       } else {
-        const url = viewerUrl(vscode.Uri.parse(startupViewerUrl(event)), 'dark');
-        assert.strictEqual(url.href, expected, name);
+        // As in the extension: only the bare origin is forwarded (here by an
+        // identity stand-in for asExternalUri), and the token is added after.
+        const forwarded = vscode.Uri.parse(startupBaseUrl(event));
+        assert.strictEqual(forwardedViewerUrl(event, forwarded, 'dark').href, expected, name);
       }
     }
   });

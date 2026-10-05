@@ -108,7 +108,7 @@ async function startSessionInPanel(
       throw new Error('dcmview panel closed before startup completed.');
     }
     const theme = viewerTheme(vscode.window.activeColorTheme.kind);
-    const viewerUri = new URL(startupViewerUrl(startup, viewerUrl(externalUri, theme).href));
+    const viewerUri = forwardedViewerUrl(startup, externalUri, theme);
     panel.webview.html = webviewHtml(panel.webview, viewerUri);
     const themeListener = vscode.window.onDidChangeActiveColorTheme((colorTheme) => {
       void panel.webview.postMessage({ type: THEME_MESSAGE_TYPE, theme: viewerTheme(colorTheme.kind) });
@@ -117,8 +117,16 @@ async function startSessionInPanel(
   } catch (error) {
     panelDisposeListener.dispose();
     child.kill('SIGINT');
-    // URI/forwarding errors can quote their input, including a legacy token.
-    throw new Error('Could not load the dcmview viewer URL in VS Code.');
+    if (panelDisposed) {
+      throw error;
+    }
+    // URI and forwarding errors can quote their input, including a legacy
+    // URL's token: keep the cause, drop the credential.
+    const cause = (error instanceof Error ? error.message : String(error)).replace(
+      /#token=[^\s"'<>)]*/g,
+      '#token=…',
+    );
+    throw new Error(`Could not load the dcmview viewer URL in VS Code: ${cause}`);
   }
 
   let resolveExitCode: (exitCode: number) => void;
@@ -328,7 +336,7 @@ function parseStartupEvent(line: string): StartupEvent | undefined {
 }
 
 /** Only the bare origin of new startup events is sent through port forwarding. */
-function startupBaseUrl(event: StartupEvent): string {
+export function startupBaseUrl(event: StartupEvent): string {
   if (typeof event.base_url === 'string') {
     return event.base_url;
   }
@@ -336,6 +344,19 @@ function startupBaseUrl(event: StartupEvent): string {
     return event.url;
   }
   throw new Error('dcmview did not report a usable HTTP viewer URL; Unix socket launches are not supported in VS Code.');
+}
+
+/**
+ * The URL the webview loads: the forwarded origin, then the theme query, then
+ * the token fragment. The token is attached last, so it does not depend on
+ * port forwarding keeping fragments.
+ */
+export function forwardedViewerUrl(
+  event: StartupEvent,
+  externalUri: vscode.Uri,
+  theme: 'light' | 'dark',
+): URL {
+  return new URL(startupViewerUrl(event, viewerUrl(externalUri, theme).href));
 }
 
 /** Reattach credentials after forwarding; older binaries retain their URL fallback. */
