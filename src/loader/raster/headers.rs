@@ -16,58 +16,61 @@ pub(super) fn png(input: &mut HeaderReader) -> Result<Header> {
         let length = u64::from(u32::from_be_bytes(chunk[..4].try_into()?));
         let kind = &chunk[4..];
         let start = offset + 8;
-        if header.is_none() {
-            ensure!(kind == b"IHDR" && length == 13, "missing PNG IHDR");
-            let data = input.read::<13>(start)?;
-            let depth = data[8];
-            let color = match (data[9], depth) {
-                (0, 1 | 2 | 4 | 8 | 16) => RasterColorType::Gray,
-                (2, 8 | 16) => RasterColorType::Rgb,
-                (3, 1 | 2 | 4 | 8) => RasterColorType::Palette,
-                (4, 8 | 16) => RasterColorType::GrayAlpha,
-                (6, 8 | 16) => RasterColorType::Rgba,
-                _ => anyhow::bail!("invalid PNG sample layout"),
-            };
-            ensure!(
-                data[10] == 0 && data[11] == 0 && data[12] <= 1,
-                "invalid PNG encoding"
-            );
-            header = Some(Header::new(
-                u32::from_be_bytes(data[..4].try_into()?),
-                u32::from_be_bytes(data[4..8].try_into()?),
-                color,
-                depth.into(),
-            ));
-        } else {
-            let image = header.as_mut().expect("IHDR read");
-            match kind {
-                b"IDAT" => {
-                    ensure!(
-                        image.metadata.color_type != RasterColorType::Palette || palette,
-                        "missing PNG palette"
-                    );
-                    return Ok(header.expect("IHDR read"));
+        match header.take() {
+            None => {
+                ensure!(kind == b"IHDR" && length == 13, "missing PNG IHDR");
+                let data = input.read::<13>(start)?;
+                let depth = data[8];
+                let color = match (data[9], depth) {
+                    (0, 1 | 2 | 4 | 8 | 16) => RasterColorType::Gray,
+                    (2, 8 | 16) => RasterColorType::Rgb,
+                    (3, 1 | 2 | 4 | 8) => RasterColorType::Palette,
+                    (4, 8 | 16) => RasterColorType::GrayAlpha,
+                    (6, 8 | 16) => RasterColorType::Rgba,
+                    _ => anyhow::bail!("invalid PNG sample layout"),
+                };
+                ensure!(
+                    data[10] == 0 && data[11] == 0 && data[12] <= 1,
+                    "invalid PNG encoding"
+                );
+                header = Some(Header::new(
+                    u32::from_be_bytes(data[..4].try_into()?),
+                    u32::from_be_bytes(data[4..8].try_into()?),
+                    color,
+                    depth.into(),
+                ));
+            }
+            Some(mut image) => {
+                match kind {
+                    b"IDAT" => {
+                        ensure!(
+                            image.metadata.color_type != RasterColorType::Palette || palette,
+                            "missing PNG palette"
+                        );
+                        return Ok(image);
+                    }
+                    b"IHDR" | b"IEND" => anyhow::bail!("invalid PNG chunk order"),
+                    b"PLTE" => palette = true,
+                    b"tRNS" => image.metadata.has_alpha = true,
+                    b"iCCP" => image.metadata.has_icc = true,
+                    b"acTL" => image.metadata.animated = true,
+                    b"sBIT" => {
+                        let expected = match image.metadata.color_type {
+                            RasterColorType::Gray => 1,
+                            RasterColorType::GrayAlpha => 2,
+                            RasterColorType::Rgba => 4,
+                            _ => 3,
+                        };
+                        ensure!(length == expected, "invalid PNG significant bits length");
+                        image.metadata.significant_bits = Some(input.bytes(start, length)?);
+                    }
+                    b"eXIf" => {
+                        image.metadata.orientation =
+                            exif_orientation(&input.bytes(start, length.min(EXIF_SCAN_MAX_BYTES))?);
+                    }
+                    _ => {}
                 }
-                b"IHDR" | b"IEND" => anyhow::bail!("invalid PNG chunk order"),
-                b"PLTE" => palette = true,
-                b"tRNS" => image.metadata.has_alpha = true,
-                b"iCCP" => image.metadata.has_icc = true,
-                b"acTL" => image.metadata.animated = true,
-                b"sBIT" => {
-                    let expected = match image.metadata.color_type {
-                        RasterColorType::Gray => 1,
-                        RasterColorType::GrayAlpha => 2,
-                        RasterColorType::Rgba => 4,
-                        _ => 3,
-                    };
-                    ensure!(length == expected, "invalid PNG significant bits length");
-                    image.metadata.significant_bits = Some(input.bytes(start, length)?);
-                }
-                b"eXIf" => {
-                    image.metadata.orientation =
-                        exif_orientation(&input.bytes(start, length.min(EXIF_SCAN_MAX_BYTES))?);
-                }
-                _ => {}
+                header = Some(image);
             }
         }
         input.check_range(start, length + 4)?;
