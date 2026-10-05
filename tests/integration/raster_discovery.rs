@@ -160,6 +160,45 @@ where
     out.into_inner()
 }
 
+/// A classic little-endian TIFF written tag by tag, one IFD per page and no
+/// pixel data, for layouts and page counts the encoder does not write. Every
+/// value is a SHORT; a page's tags are given in ascending order.
+fn tiff_of(pages: &[&[(u16, &[u16])]]) -> Vec<u8> {
+    let mut out = b"II\x2a\0\x08\0\0\0".to_vec();
+    for (index, tags) in pages.iter().enumerate() {
+        let mut data_at = out.len() + 2 + tags.len() * 12 + 4;
+        let mut data = Vec::new();
+        out.extend_from_slice(&(tags.len() as u16).to_le_bytes());
+        for (tag, values) in tags.iter() {
+            out.extend_from_slice(&tag.to_le_bytes());
+            out.extend_from_slice(&3_u16.to_le_bytes());
+            out.extend_from_slice(&(values.len() as u32).to_le_bytes());
+            let bytes = values
+                .iter()
+                .flat_map(|value| value.to_le_bytes())
+                .collect::<Vec<_>>();
+            if bytes.len() <= 4 {
+                out.extend_from_slice(&bytes);
+                out.resize(out.len() + 4 - bytes.len(), 0);
+            } else {
+                out.extend_from_slice(&(data_at as u32).to_le_bytes());
+                data_at += bytes.len();
+                data.extend(bytes);
+            }
+        }
+        let next = if index + 1 == pages.len() { 0 } else { data_at };
+        out.extend_from_slice(&(next as u32).to_le_bytes());
+        out.extend(data);
+    }
+    out
+}
+
+/// `count` 2x2 one-bit gray pages.
+fn tiff_of_pages(count: usize) -> Vec<u8> {
+    let page: &[(u16, &[u16])] = &[(256, &[2]), (257, &[2]), (262, &[1])];
+    tiff_of(&vec![page; count])
+}
+
 fn webp_rgba(width: u32, height: u32) -> Vec<u8> {
     let mut out = Vec::new();
     image::codecs::webp::WebPEncoder::new_lossless(&mut out)
@@ -334,6 +373,7 @@ fn raster_defaults() -> Value {
         "pages_total": 1,
         "frame_pages": [0],
         "excluded_pages": [],
+        "excluded_pages_total": 0,
         "animated": false,
         "significant_bits": null,
     })
@@ -475,6 +515,7 @@ fn raster_cases() -> Vec<Expected> {
                     { "page": 1, "differs": "width" },
                     { "page": 3, "differs": "bits_per_sample" },
                 ],
+                "excluded_pages_total": 2,
             }),
             layout: (1, 16, 0, "MONOCHROME2"),
         },
@@ -585,6 +626,213 @@ async fn rasters_are_listed_by_content_with_what_their_headers_declare() {
             "{name}"
         );
     }
+}
+
+/// A PNG that compresses well is smaller on disk than one row of its
+/// pixels, or than a text chunk it carries. Blank label masks are the
+/// everyday case.
+#[tokio::test]
+async fn compressible_pngs_are_listed_whatever_their_size_on_disk() {
+    let blank = |width: u32, height: u32| {
+        png_with(
+            png::ColorType::Grayscale,
+            png::BitDepth::Eight,
+            (width, height),
+            width as usize,
+            |_| {},
+            1,
+        )
+    };
+    // (name, bytes, rows, columns)
+    let cases = [
+        ("mask-256.png", blank(256, 256), 256, 256),
+        ("mask-512.png", blank(512, 512), 512, 512),
+        ("strip.png", blank(8192, 8), 8, 8192),
+        (
+            "wide-rgba.png",
+            png(ExtendedColorType::Rgba8, 30_000, 10),
+            10,
+            30_000,
+        ),
+        (
+            "captioned.png",
+            png_with(
+                png::ColorType::Grayscale,
+                png::BitDepth::Eight,
+                (4, 4),
+                4,
+                |encoder| {
+                    encoder
+                        .add_text_chunk("Comment".to_string(), "a".repeat(200_000))
+                        .expect("text chunk")
+                },
+                1,
+            ),
+            4,
+            4,
+        ),
+    ];
+    let dir = tempdir().expect("temp dir");
+    for (name, bytes, _, _) in &cases {
+        fs::write(dir.path().join(name), bytes).expect("write PNG");
+    }
+
+    let scan = scan_dir(dir.path()).await;
+
+    assert_eq!(scan.not_loaded(), []);
+    for (name, _, rows, columns) in cases {
+        let file = scan.file(name);
+        assert_eq!(file["file_format"], "png", "{name}");
+        assert_eq!(
+            (file["rows"].as_u64(), file["columns"].as_u64()),
+            (Some(rows), Some(columns)),
+            "{name}"
+        );
+    }
+}
+
+/// Files built to make a header walk long are skipped, each for what it is,
+/// and a TIFF is listed up to exactly the page limit. What such a walk may
+/// read is pinned beside the reader, in `src/loader/raster.rs`.
+#[tokio::test]
+async fn crafted_headers_are_skipped_and_the_tiff_page_limit_is_exact() {
+    const PAGE_LIMIT: usize = 65_535;
+    let mut fill = vec![0xff, 0xd8];
+    fill.resize(512 * 1024, 0xff);
+    let mut segments = vec![0xff, 0xd8];
+    let mut png_chunks = png(ExtendedColorType::L8, 1, 1)[..33].to_vec();
+    let mut webp_chunks = b"RIFF\0\0\0\0WEBP".to_vec();
+    for _ in 0..2 * PAGE_LIMIT {
+        segments.extend_from_slice(&[0xff, 0xe0, 0x00, 0x02]);
+        png_chunks.extend_from_slice(b"\0\0\0\0tEXt\0\0\0\0");
+        webp_chunks.extend_from_slice(b"JUNK\0\0\0\0");
+    }
+    let riff_length = webp_chunks.len() as u32 - 8;
+    webp_chunks[4..8].copy_from_slice(&riff_length.to_le_bytes());
+
+    let dir = tempdir().expect("temp dir");
+    let skipped = [
+        ("fill.jpg", fill),
+        ("segments.jpg", segments),
+        ("chunks.png", png_chunks),
+        ("chunks.webp", webp_chunks),
+        ("one-page-too-many.tif", tiff_of_pages(PAGE_LIMIT + 1)),
+    ];
+    for (name, bytes) in &skipped {
+        fs::write(dir.path().join(name), bytes).expect("write crafted file");
+    }
+    fs::write(dir.path().join("most-pages.tif"), tiff_of_pages(PAGE_LIMIT)).expect("write TIFF");
+
+    let scan = scan_dir(dir.path()).await;
+
+    let mut expected = skipped
+        .iter()
+        .map(|(name, _)| (name.to_string(), "raster_header_invalid".to_string()))
+        .collect::<Vec<_>>();
+    expected.sort();
+    assert_eq!(scan.not_loaded(), expected);
+    assert_eq!(scan.loaded(), ["most-pages.tif"]);
+    let most = scan.file("most-pages.tif");
+    assert_eq!(most["frame_count"], PAGE_LIMIT);
+    assert_eq!(most["raster"]["pages_total"], PAGE_LIMIT);
+}
+
+/// A TIFF whose layout no decoder will take is still listed, and says why,
+/// instead of vanishing as an unreadable file. A file with many excluded
+/// pages counts them all and lists the first few.
+#[tokio::test]
+async fn tiff_layouts_without_a_decoder_are_listed_as_unsupported_and_exclusions_are_counted() {
+    // (name, page 0, raster fields, support_reason)
+    type Case<'a> = (&'a str, &'a [(u16, &'a [u16])], Value, &'a str);
+    const SIZE: [(u16, &[u16]); 2] = [(256, &[2]), (257, &[2])];
+    let cases: [Case<'_>; 4] = [
+        // RGB with a fourth sample declared "unspecified", not alpha.
+        (
+            "extra-unspecified.tif",
+            &[
+                SIZE[0],
+                SIZE[1],
+                (258, &[8, 8, 8, 8]),
+                (262, &[2]),
+                (277, &[4]),
+                (338, &[0]),
+            ],
+            json!({ "color_type": "other", "has_alpha": false }),
+            "raster.unsupported_color",
+        ),
+        (
+            "five-bands.tif",
+            &[
+                SIZE[0],
+                SIZE[1],
+                (258, &[8, 8, 8, 8, 8]),
+                (262, &[1]),
+                (277, &[5]),
+                (338, &[0, 0, 0, 0]),
+            ],
+            json!({ "color_type": "other", "has_alpha": false }),
+            "raster.unsupported_color",
+        ),
+        (
+            "cielab.tif",
+            &[
+                SIZE[0],
+                SIZE[1],
+                (258, &[8, 8, 8]),
+                (262, &[8]),
+                (277, &[3]),
+            ],
+            json!({ "color_type": "other" }),
+            "raster.unsupported_color",
+        ),
+        (
+            "half-float.tif",
+            &[SIZE[0], SIZE[1], (258, &[16]), (262, &[1]), (339, &[3])],
+            json!({ "bit_depth": 16, "sample_format": "float" }),
+            "raster.unsupported_sample_format",
+        ),
+    ];
+    // Page 0, forty pages of another width, and a second frame.
+    let frame: &[(u16, &[u16])] = &[SIZE[0], SIZE[1], (258, &[8]), (262, &[1])];
+    let wider: &[(u16, &[u16])] = &[(256, &[3]), SIZE[1], (258, &[8]), (262, &[1])];
+    let mut pages = vec![frame];
+    pages.extend(vec![wider; 40]);
+    pages.push(frame);
+
+    let dir = tempdir().expect("temp dir");
+    for (name, page, _, _) in &cases {
+        fs::write(dir.path().join(name), tiff_of(&[page])).expect("write TIFF");
+    }
+    fs::write(dir.path().join("many-excluded.tif"), tiff_of(&pages)).expect("write TIFF");
+
+    let scan = scan_dir(dir.path()).await;
+
+    assert_eq!(scan.not_loaded(), []);
+    for (name, _, fields, reason) in cases {
+        let file = scan.file(name);
+        assert_eq!(file["file_format"], "tiff", "{name}");
+        assert_eq!(file["frame_count"], 1, "{name}");
+        assert_eq!(
+            (file["rows"].as_u64(), file["columns"].as_u64()),
+            (Some(2), Some(2))
+        );
+        let mut raster = raster_defaults();
+        for (field, value) in fields.as_object().expect("overrides") {
+            raster[field] = value.clone();
+        }
+        assert_eq!(file["raster"], raster, "{name}");
+        assert_eq!(file["support_state"], "unsupported", "{name}");
+        assert_eq!(file["support_reason"], reason, "{name}");
+    }
+
+    let raster = &scan.file("many-excluded.tif")["raster"];
+    assert_eq!(raster["pages_total"], 42);
+    assert_eq!(raster["frame_pages"], json!([0, 41]));
+    assert_eq!(raster["excluded_pages_total"], 40);
+    let listed = raster["excluded_pages"].as_array().expect("excluded pages");
+    assert_eq!(listed.len(), 16);
+    assert_eq!(listed[0], json!({ "page": 1, "differs": "width" }));
+    assert_eq!(listed[15], json!({ "page": 16, "differs": "width" }));
 }
 
 #[tokio::test]

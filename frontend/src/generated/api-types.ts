@@ -353,7 +353,7 @@ skipped: SkippedGraphicObjects, references: Array<ReferenceSummary>, };
 /**
  * How a raster file stores colour, before any expansion on decode.
  */
-export type RasterColorType = "gray" | "gray_alpha" | "rgb" | "rgba" | "palette" | "cmyk";
+export type RasterColorType = "gray" | "gray_alpha" | "rgb" | "rgba" | "palette" | "cmyk" | "other";
 
 /**
  * A TIFF page left out of the frame map.
@@ -402,7 +402,8 @@ orientation: number,
  */
 has_icc: boolean, 
 /**
- * Pages (IFDs) in the file: 1 for PNG, JPEG and WebP.
+ * Pages (IFDs) in the file: 1 for PNG, JPEG and WebP, at most 65,535
+ * for TIFF (a file with more is not listed).
  */
 pages_total: number, 
 /**
@@ -411,9 +412,15 @@ pages_total: number,
  */
 frame_pages: Array<number>, 
 /**
- * Pages that are not frames, in page order.
+ * The first pages that are not frames, in page order: at most 16, so a
+ * file with many excluded pages does not grow every catalog response.
  */
 excluded_pages: Array<RasterExcludedPage>, 
+/**
+ * How many pages are not frames; `pages_total` is this plus the length
+ * of `frame_pages`.
+ */
+excluded_pages_total: number, 
 /**
  * An animated PNG or WebP; only its first frame is a frame here.
  */

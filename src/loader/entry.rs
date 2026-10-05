@@ -64,7 +64,7 @@ pub(super) fn build_entry_selected(
                 Some(format) if !formats.contains(format) => {
                     Ok(EntryInspection::Skipped(DiscoveryReason::FormatNotSelected))
                 }
-                Some(format) => super::raster::inspect_raster(path, format),
+                Some(format) => super::raster::inspect_raster(path, format, check_active),
             }
         }
         HeaderRead::NotSelected => {

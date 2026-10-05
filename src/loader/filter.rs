@@ -166,9 +166,11 @@ fn scan_filter_parse_error(raw: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(", ");
+    let formats = crate::types::FileFormat::ALL.map(crate::types::FileFormat::as_str);
     format!(
         "invalid scan filter `{raw}`; expected FIELD=VALUE where FIELD is one of: {fields} \
-         (case-insensitive); format values: dicom, png, jpeg, tiff, webp"
+         (case-insensitive); format values: {}",
+        formats.join(", ")
     )
 }
 

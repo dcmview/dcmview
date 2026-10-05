@@ -662,6 +662,29 @@ Discovery lists PNG, JPEG, TIFF and still WebP files beside DICOM
   chain, the WebP chunk headers. No pixel data is decoded and no file is read
   whole. A raster signature whose header does not parse is skipped with
   `raster_header_invalid`. Selected rasters carry the reason `valid_image`.
+- **A raster header has a fixed scan budget**, the same for every file
+  whatever its size or what it declares (`loader/raster.rs` holds the numbers
+  and why): at most 64 MiB obtained from the file, a bounded number of reads,
+  and at most 65,535 JPEG segments, PNG chunks, WebP chunks or TIFF pages.
+  JPEG, PNG and WebP are scanned through one small buffer; a TIFF IFD is read
+  with reads of exactly its own length, because pages lie between pixel
+  data. Nothing is read or allocated in proportion to a declared length: a
+  payload that is not needed is skipped, an EXIF block is read for its first
+  64 KiB only, and no limit is derived from the file's size (a blank mask is
+  smaller on disk than one of its rows). Every step checks discovery
+  cancellation. A file that spends the budget before its header is complete
+  is skipped with `raster_header_invalid` and a stderr line saying what ran
+  out. There are no wall-clock limits. All of it is read through one function
+  over a `Read + Seek` source, which the unit tests count.
+- **A TIFF may have at most 65,535 pages.** A file with more is skipped, not
+  truncated, since a frame map that stops early would move the last frame.
+  (This narrows the design's "walk the whole IFD chain".) The catalog lists
+  the first 16 excluded pages and counts the rest in `excluded_pages_total`.
+- **A TIFF layout no decoder will take is listed, not skipped**:
+  `raster.unsupported_color` (with `color_type` `other`) for CIELab, more
+  than four bands or an extra sample that is not alpha, and
+  `raster.unsupported_sample_format` for 16-bit float. Only a header that
+  cannot be described at all is `raster_header_invalid`.
 - **A raster `FileEntry`** has `format` set, `raster: Some(RasterMetadata)`,
   empty DICOM identity strings and an empty `transfer_syntax_uid`. Its
   `rows`, `columns` and sample layout describe the stored pixel grid and the
@@ -680,9 +703,10 @@ Discovery lists PNG, JPEG, TIFF and still WebP files beside DICOM
   ignoring case. The DICOM filter fields are empty for a raster, so any DICOM
   filter excludes rasters.
 - **Until the raster decoders exist** a raster is `unsupported` with
-  `support_reason` `raster.decode_not_available`, and the display, raw,
+  `support_reason` `raster.decode_not_available` (or one of the two layout
+  reasons above), and the display, raw,
   raw-pixel and presentation-layer endpoints answer
-  `422 unsupported_pixel_layout` naming that reason, so nothing is allocated
+  `422 unsupported_pixel_layout` naming its reason, so nothing is allocated
   from a raster header's dimensions. `/tags` answers an empty tree. `/value-mapping` answers the identity
   mapping, `/references` an empty list and `/semantic-context`
   `not_applicable`, none of which opens the file. No endpoint answers a

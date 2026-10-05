@@ -484,6 +484,11 @@ pub enum RasterColorType {
     Palette,
     /// CMYK or YCCK JPEG; decoded frames hold an approximate sRGB conversion.
     Cmyk,
+    /// A stored layout none of the above describes and the viewer does not
+    /// decode: CIELab, more than four bands, or an extra sample that is not
+    /// alpha. The file is listed with `support_reason`
+    /// `raster.unsupported_color`.
+    Other,
 }
 
 /// The numeric kind of a raster file's stored samples.
@@ -542,13 +547,18 @@ pub struct RasterSummary {
     pub orientation: u8,
     /// Whether the file embeds an ICC profile.
     pub has_icc: bool,
-    /// Pages (IFDs) in the file: 1 for PNG, JPEG and WebP.
+    /// Pages (IFDs) in the file: 1 for PNG, JPEG and WebP, at most 65,535
+    /// for TIFF (a file with more is not listed).
     pub pages_total: u32,
     /// The zero-based page (IFD index) of each frame, in frame order. Its
     /// length is the file's `frame_count`; `[0]` for PNG, JPEG and WebP.
     pub frame_pages: Vec<u32>,
-    /// Pages that are not frames, in page order.
+    /// The first pages that are not frames, in page order: at most 16, so a
+    /// file with many excluded pages does not grow every catalog response.
     pub excluded_pages: Vec<RasterExcludedPage>,
+    /// How many pages are not frames; `pages_total` is this plus the length
+    /// of `frame_pages`.
+    pub excluded_pages_total: u32,
     /// An animated PNG or WebP; only its first frame is a frame here.
     pub animated: bool,
     /// PNG `sBIT`: the original precision of each stored channel, in file

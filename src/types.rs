@@ -151,15 +151,40 @@ pub struct RasterMetadata {
     pub pages_total: u32,
     /// The zero-based IFD index of each frame; never empty.
     pub frame_pages: Vec<u32>,
-    /// Pages left out of the frame map, in page order.
+    /// The first [`RASTER_EXCLUDED_PAGES_LISTED`] pages left out of the frame
+    /// map, in page order.
     pub excluded_pages: Vec<RasterExcludedPage>,
+    /// How many pages are left out of the frame map, listed or not.
+    pub excluded_pages_total: u32,
+    /// Why no decoder will take this file whatever decoders exist, from its
+    /// header alone; `None` for a layout the format table maps.
+    pub unsupported: Option<RasterUnsupported>,
     /// Animated PNG (`acTL`) or animated WebP.
     pub animated: bool,
     /// PNG `sBIT`, one entry per stored channel; informational only.
     pub significant_bits: Option<Vec<u8>>,
     /// Notes for the file report, such as a page whose ICC profile differs
-    /// from page 0's or a page chain that could not be read to its end.
+    /// from page 0's or a page chain that could not be read to its end. At
+    /// most [`RASTER_WARNINGS_MAX`] entries; when more arose, the last entry
+    /// says how many are not shown.
     pub warnings: Vec<String>,
+}
+
+/// How many excluded pages a raster's metadata lists; the rest are counted.
+pub const RASTER_EXCLUDED_PAGES_LISTED: usize = 16;
+
+/// How many warnings a raster's metadata keeps.
+pub const RASTER_WARNINGS_MAX: usize = 16;
+
+/// A raster layout the viewer lists and does not decode
+/// (`docs/design/image-formats.md` section 2.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RasterUnsupported {
+    /// The colour layout: CIELab, more than four bands, an extra sample that
+    /// is not alpha. `color_type` is `Other`.
+    Color,
+    /// The sample format at this depth: 16-bit float.
+    SampleFormat,
 }
 
 impl RasterMetadata {
@@ -175,6 +200,7 @@ impl RasterMetadata {
             pages_total: self.pages_total,
             frame_pages: self.frame_pages.clone(),
             excluded_pages: self.excluded_pages.clone(),
+            excluded_pages_total: self.excluded_pages_total,
             animated: self.animated,
             significant_bits: self.significant_bits.clone(),
         }

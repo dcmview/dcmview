@@ -35,17 +35,58 @@ use std::path::Path;
 ///   (the caller reports `DiscoveryReason::InspectionFailed`). A file that
 ///   ends early is `RasterHeaderInvalid`, not an error.
 ///
-/// This function must not panic on any input, must not allocate from a
-/// length the header declares without bounding it by the file's length, and
-/// must not read pixel data.
+/// A cancelled discovery is the other `Err`: `check_active` is called at
+/// least once for every segment, chunk and page visited, and its error is
+/// returned as it is.
+///
+/// This function must not panic on any input and must not read pixel data.
+///
+/// # The scan budget
+///
+/// What one file may cost is fixed, whatever its size and whatever its
+/// header declares. All four formats read through one reader that enforces:
+///
+/// - at most [`HEADER_SCAN_MAX_BYTES`] bytes obtained from the file, counting
+///   every byte a read returns, read-ahead included;
+/// - at most [`HEADER_SCAN_MAX_READS`] reads issued to the file;
+/// - at most [`HEADER_SCAN_MAX_STEPS`] structural steps: JPEG segments, PNG
+///   chunks, WebP chunks, TIFF pages.
+///
+/// A read that would pass a limit is not issued. A file whose header is not
+/// complete when a limit is reached is
+/// `Skipped(DiscoveryReason::RasterHeaderInvalid)`, and one line on stderr
+/// says why in words a user can act on:
+/// `dcmview: warning — <path>: <what ran out>; not loaded`, for example
+/// "more than 65535 TIFF pages". There are no wall-clock limits.
+///
+/// How the bytes are read is part of the contract, because it is what keeps
+/// a crafted or merely large file cheap:
+///
+/// - JPEG, PNG and WebP are scanned front to back through a buffer of
+///   [`HEADER_SCAN_BUFFER_BYTES`]. A forward skip that lands inside the
+///   buffer costs no read; a longer skip is a seek, not a read. Scanning `n`
+///   contiguous bytes costs at most `n / HEADER_SCAN_BUFFER_BYTES + 1` reads.
+/// - TIFF pages are scattered through the file between pixel data, so an IFD
+///   is read with reads of exactly its own length (its entry count, then its
+///   entry table) and never with read-ahead, which would spend the budget on
+///   pixel data.
+/// - Nothing is read or allocated in proportion to a length the file
+///   declares. A payload that is not needed is skipped. Of an EXIF block
+///   only its first [`EXIF_SCAN_MAX_BYTES`] are read, and the orientation is
+///   taken only from an IFD0 that lies within them. A PNG chunk before the
+///   image data is never buffered whole: `IHDR`, the presence of `PLTE`,
+///   `tRNS`, `iCCP` and `acTL`, the at most four bytes of `sBIT`, and the
+///   capped `eXIf` are read from the chunk walk itself, and no limit is
+///   derived from the file's length (a blank 512 x 512 mask is 334 bytes).
+///   Chunk checksums are not verified.
 ///
 /// # What is read
 ///
 /// | Format | Read | Not read |
 /// |---|---|---|
-/// | PNG | chunks up to, not including, the first `IDAT`: `IHDR`, `PLTE`, `tRNS`, `sBIT`, `iCCP` (presence), `eXIf`, `acTL` | any `IDAT` |
+/// | PNG | chunk headers up to the first `IDAT`, and of the chunks: `IHDR`, `sBIT`, the start of `eXIf`; `PLTE`, `tRNS`, `iCCP`, `acTL` by presence | any `IDAT`; text and profile payloads |
 /// | JPEG | markers up to and including the first `SOFn`: `APP1` EXIF (orientation), `APP2` ICC (presence), `APP14` Adobe | entropy-coded data; the file is never read whole |
-/// | TIFF | the IFD chain: every page's tags | strips and tiles |
+/// | TIFF | the IFD chain, up to the page limit: each page's layout tags | strips and tiles; other tag values |
 /// | WebP | the RIFF chunk headers: `VP8 `/`VP8L`/`VP8X`, `ICCP` (presence), `EXIF`, `ANIM` | image data |
 ///
 /// `image`'s `JpegDecoder::new` reads the whole file into memory and so must
@@ -79,6 +120,18 @@ use std::path::Path;
 /// | RGB + alpha | `rgba` | 4 | `RGBA` |
 /// | palette | `palette` | 3, or 4 with transparency | `RGB`, or `RGBA` |
 /// | CMYK, YCCK (JPEG) | `cmyk` | 3 | `RGB` |
+/// | anything else (TIFF) | `other` | the stored count | empty |
+///
+/// - A TIFF layout outside the table is still listed, with
+///   `raster.unsupported` set, so the catalog reports it as unsupported
+///   rather than dropping the file: `RasterUnsupported::Color` with
+///   `color_type` `other` for CIELab, more than four samples, or an extra
+///   sample that is not alpha (`ExtraSamples` 0), in which case `has_alpha`
+///   is false; `RasterUnsupported::SampleFormat` for 16-bit float samples,
+///   whose `color_type`, `bit_depth` 16 and `sample_format` `float` are
+///   reported as stored. `RasterHeaderInvalid` is for a header that cannot
+///   be described at all: no dimensions, a depth that is not 1, 2, 4, 8, 16,
+///   32 or 64, samples of mixed depth or format.
 ///
 /// - `raster.bit_depth` is the stored bits per sample. `bits_allocated` is
 ///   the width a raw sample is served in: 8 for depths up to 8, else the
@@ -101,17 +154,29 @@ use std::path::Path;
 /// sample, photometric interpretation, extra-sample type and orientation.
 /// Any other page goes in `raster.excluded_pages` with the first
 /// `RasterPageDifference` that applies, in that enum's declaration order.
-/// `frame_pages` and `excluded_pages` are in page order and together hold
-/// every page once; `pages_total` is their combined length. A page whose ICC
-/// profile presence differs from page 0's is still a frame and adds a
-/// warning. If the chain cannot be read past some page, the pages read so
-/// far stand and a warning says where the walk stopped. Classic TIFF and
-/// BigTIFF, in either byte order, are read alike.
+/// `frame_pages` and `excluded_pages` are in page order.
+/// `excluded_pages_total` counts every excluded page and `excluded_pages`
+/// lists the first `RASTER_EXCLUDED_PAGES_LISTED` of them; `pages_total` is
+/// `frame_pages.len()` plus `excluded_pages_total`. A page whose ICC profile
+/// presence differs from page 0's is still a frame and adds a warning. If
+/// the chain cannot be read past some page (a bad offset, a cycle), the
+/// pages read so far stand and a warning says where the walk stopped.
+/// `warnings` never exceeds `RASTER_WARNINGS_MAX` entries: when more arise,
+/// the last entry says how many are not shown. Classic TIFF and BigTIFF, in
+/// either byte order, are read alike.
 ///
-/// A first page whose compression or photometric interpretation the reader
-/// cannot describe may be reported as `RasterHeaderInvalid`; listing such
-/// files as unsupported is the decoder work's decision.
-pub(super) fn inspect_raster(_path: &Path, _format: FileFormat) -> Result<EntryInspection> {
+/// A file may have at most [`HEADER_SCAN_MAX_STEPS`] pages. One with more is
+/// not truncated to the limit: it is skipped as `RasterHeaderInvalid` with
+/// the stderr line above, since a frame map that silently stops would shift
+/// what "the last frame" means.
+///
+/// Compression is not read here; which compressions decode is the decoder
+/// work's classification.
+pub(super) fn inspect_raster(
+    _path: &Path,
+    _format: FileFormat,
+    _check_active: &dyn Fn() -> Result<()>,
+) -> Result<EntryInspection> {
     let file = File::open(_path)?;
     let len = file.metadata()?.len();
     let mut input = HeaderReader { file, len };
@@ -146,6 +211,9 @@ pub(super) fn inspect_raster(_path: &Path, _format: FileFormat) -> Result<EntryI
         RasterColorType::Rgba => (4, "RGBA"),
         RasterColorType::Palette if raster.has_alpha => (4, "RGBA"),
         RasterColorType::Palette => (3, "RGB"),
+        RasterColorType::Other => {
+            todo!("FMT1 round 2: the stored sample count and an empty photometric")
+        }
     };
     let mut series_metadata = SeriesMetadata::default();
     series_metadata.native_pixel.pixel_data_kind =
@@ -193,6 +261,62 @@ pub(super) fn inspect_raster(_path: &Path, _format: FileFormat) -> Result<EntryI
     })))
 }
 
+/// The most bytes header inspection obtains from one file. A TIFF at the
+/// page limit needs about 12 MiB as classic TIFF (a 15-entry IFD is 186
+/// bytes) and about 27 MiB as BigTIFF (20 entries, 416 bytes), plus small
+/// out-of-line values; the other formats need a few kilobytes. 64 MiB admits
+/// all of them twice over and is tens of milliseconds of buffered reading.
+// Not used until `inspect_raster` reads through the budget; remove the
+// attribute then (also on the four items below).
+#[allow(dead_code)]
+pub(super) const HEADER_SCAN_MAX_BYTES: u64 = 64 * 1024 * 1024;
+
+/// The most reads header inspection issues to one file: eight per page at
+/// the page limit (a TIFF page needs two, and up to four with out-of-line
+/// values). A reader that fetched one byte per read would stop after half a
+/// megabyte instead of walking the file.
+#[allow(dead_code)]
+pub(super) const HEADER_SCAN_MAX_READS: u64 = 8 * HEADER_SCAN_MAX_STEPS as u64;
+
+/// The most JPEG segments, PNG chunks, WebP chunks or TIFF pages visited in
+/// one file. Real JPEG, PNG and WebP headers hold tens of them and real
+/// multi-page TIFFs thousands; 65,535 is also the most pages a TIFF may have
+/// and still be listed.
+#[allow(dead_code)]
+pub(super) const HEADER_SCAN_MAX_STEPS: u32 = 65_535;
+
+/// The buffer JPEG, PNG and WebP are scanned through.
+#[allow(dead_code)]
+pub(super) const HEADER_SCAN_BUFFER_BYTES: usize = 8 * 1024;
+
+/// How much of an EXIF block is read for its orientation. A JPEG `APP1`
+/// segment cannot be longer; IFD0 starts 8 bytes in.
+#[allow(dead_code)]
+pub(super) const EXIF_SCAN_MAX_BYTES: u64 = 64 * 1024;
+
+/// What header inspection reads from: the file, or a test's counted bytes.
+pub(super) trait HeaderSource: Read + Seek {}
+
+impl<T: Read + Seek> HeaderSource for T {}
+
+/// [`inspect_raster`] over an open source of `length` bytes positioned at
+/// its start. `inspect_raster` opens the file and delegates here, so this is
+/// the only path a raster header is read through, and the scan budget is
+/// counted against what `source` is asked for: its `read` calls and the
+/// bytes they return. `path` only names the file in the entry and in
+/// messages; it is never opened here.
+// Not called until `inspect_raster` delegates here; remove the attribute then.
+#[allow(dead_code)]
+pub(super) fn inspect_raster_source(
+    _path: &Path,
+    _source: &mut dyn HeaderSource,
+    _length: u64,
+    _format: FileFormat,
+    _check_active: &dyn Fn() -> Result<()>,
+) -> Result<EntryInspection> {
+    todo!("FMT1 round 2: read every raster header through the scan budget")
+}
+
 struct Header {
     width: u32,
     height: u32,
@@ -220,6 +344,8 @@ impl Header {
                 pages_total: 1,
                 frame_pages: vec![0],
                 excluded_pages: Vec::new(),
+                excluded_pages_total: 0,
+                unsupported: None,
                 animated: false,
                 significant_bits: None,
                 warnings: Vec::new(),
@@ -311,4 +437,334 @@ fn exif_orientation(bytes: &[u8]) -> u8 {
         None
     }
     orientation(read(bytes).unwrap_or(1))
+}
+
+#[cfg(test)]
+mod tests {
+    //! What one raster header may cost, counted at the source: the reads
+    //! issued and the bytes they return. Nothing here measures time.
+
+    use super::{
+        inspect_raster_source, EntryInspection, EXIF_SCAN_MAX_BYTES, HEADER_SCAN_BUFFER_BYTES,
+        HEADER_SCAN_MAX_BYTES, HEADER_SCAN_MAX_READS, HEADER_SCAN_MAX_STEPS,
+    };
+    use crate::loader::DiscoveryReason;
+    use crate::types::{FileEntry, FileFormat};
+    use std::cell::Cell;
+    use std::io::{Cursor, Read, Seek, SeekFrom};
+    use std::path::Path;
+
+    const BUFFER: u64 = HEADER_SCAN_BUFFER_BYTES as u64;
+    const STEPS: u64 = HEADER_SCAN_MAX_STEPS as u64;
+
+    /// A file in memory that counts what is read from it.
+    struct Counted<'a> {
+        bytes: Cursor<Vec<u8>>,
+        reads: &'a Cell<u64>,
+        read: &'a Cell<u64>,
+    }
+
+    impl Read for Counted<'_> {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            let count = self.bytes.read(buffer)?;
+            self.reads.set(self.reads.get() + 1);
+            self.read.set(self.read.get() + count as u64);
+            Ok(count)
+        }
+    }
+
+    impl Seek for Counted<'_> {
+        fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+            self.bytes.seek(position)
+        }
+    }
+
+    /// A classic little-endian TIFF of `pages` 2x2 one-bit pages, each IFD
+    /// (42 bytes) followed by `gap` bytes standing for its pixel data.
+    fn tiff_chain(pages: usize, gap: usize) -> Vec<u8> {
+        const IFD: usize = 2 + 3 * 12 + 4;
+        let mut out = b"II\x2a\0\x08\0\0\0".to_vec();
+        for page in 0..pages {
+            out.extend_from_slice(&3_u16.to_le_bytes());
+            for (tag, value) in [(256_u16, 2_u16), (257, 2), (262, 1)] {
+                out.extend_from_slice(&tag.to_le_bytes());
+                out.extend_from_slice(&3_u16.to_le_bytes());
+                out.extend_from_slice(&1_u32.to_le_bytes());
+                out.extend_from_slice(&value.to_le_bytes());
+                out.extend_from_slice(&[0, 0]);
+            }
+            let next = if page + 1 == pages {
+                0
+            } else {
+                out.len() + 4 + gap
+            };
+            out.extend_from_slice(&(next as u32).to_le_bytes());
+            out.resize(out.len() + gap, 0);
+            debug_assert_eq!(out.len(), 8 + (page + 1) * (IFD + gap));
+        }
+        out
+    }
+
+    fn chunk(name: &[u8; 4], payload: &[u8], big_endian: bool) -> Vec<u8> {
+        let length = payload.len() as u32;
+        let mut out = Vec::new();
+        if big_endian {
+            // PNG: length, type, data, CRC (not verified by the reader).
+            out.extend_from_slice(&length.to_be_bytes());
+            out.extend_from_slice(name);
+            out.extend_from_slice(payload);
+            out.extend_from_slice(&[0; 4]);
+        } else {
+            // RIFF: type, length, data, padded to an even length.
+            out.extend_from_slice(name);
+            out.extend_from_slice(&length.to_le_bytes());
+            out.extend_from_slice(payload);
+            out.resize(out.len() + payload.len() % 2, 0);
+        }
+        out
+    }
+
+    fn png_start(width: u32, height: u32) -> Vec<u8> {
+        let mut header = Vec::new();
+        header.extend_from_slice(&width.to_be_bytes());
+        header.extend_from_slice(&height.to_be_bytes());
+        // 8-bit grayscale, deflate, adaptive filtering, not interlaced.
+        header.extend_from_slice(&[8, 0, 0, 0, 0]);
+        let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
+        out.extend(chunk(b"IHDR", &header, true));
+        out
+    }
+
+    fn webp(chunks: Vec<u8>) -> Vec<u8> {
+        let mut out = b"RIFF".to_vec();
+        out.extend_from_slice(&(chunks.len() as u32 + 4).to_le_bytes());
+        out.extend_from_slice(b"WEBP");
+        out.extend(chunks);
+        out
+    }
+
+    /// An EXIF block of `length` bytes whose IFD0, at offset 8, holds the
+    /// orientation.
+    fn exif(orientation: u16, length: usize) -> Vec<u8> {
+        let mut out = b"II\x2a\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0".to_vec();
+        out.extend_from_slice(&orientation.to_le_bytes());
+        out.extend_from_slice(&[0; 6]);
+        out.resize(length, 0);
+        out
+    }
+
+    enum Outcome {
+        /// Skipped as `raster_header_invalid`.
+        Invalid,
+        /// Listed, with this holding of the entry.
+        Listed(fn(&FileEntry) -> bool),
+    }
+
+    struct Case {
+        name: &'static str,
+        format: FileFormat,
+        bytes: Vec<u8>,
+        outcome: Outcome,
+        /// The most bytes and reads the source may be asked for.
+        most: (u64, u64),
+    }
+
+    fn cases() -> Vec<Case> {
+        const MIB: usize = 1024 * 1024;
+        let sequential = |consumed: u64| (consumed + 2 * BUFFER, consumed / BUFFER + 8);
+
+        let mut fill = vec![0xff, 0xd8];
+        fill.resize(2 * MIB, 0xff);
+        let fill_length = fill.len() as u64;
+
+        let mut segments = vec![0xff, 0xd8];
+        for _ in 0..4 * STEPS {
+            segments.extend_from_slice(&[0xff, 0xe0, 0x00, 0x02]);
+        }
+
+        let mut empty_png_chunks = png_start(1, 1);
+        for _ in 0..2 * STEPS {
+            empty_png_chunks.extend(chunk(b"tEXt", &[], true));
+        }
+
+        let mut empty_webp_chunks = Vec::new();
+        for _ in 0..3 * STEPS {
+            empty_webp_chunks.extend(chunk(b"JUNK", &[], false));
+        }
+
+        let mut text_png = png_start(4, 4);
+        text_png.extend(chunk(b"tEXt", &vec![b'a'; 4 * MIB], true));
+        text_png.extend(chunk(b"eXIf", &exif(8, 2 * MIB), true));
+        text_png.extend(chunk(b"IDAT", &[0; 16], true));
+
+        // VP8X announcing EXIF, a 3x2 lossless image header, then the block.
+        let mut exif_webp = chunk(b"VP8X", &[0x08, 0, 0, 0, 2, 0, 0, 1, 0, 0], false);
+        exif_webp.extend(chunk(b"VP8L", &[0x2f, 0x02, 0x40, 0, 0], false));
+        exif_webp.extend(chunk(b"EXIF", &exif(6, 4 * MIB), false));
+
+        vec![
+            // Fill bytes before a marker are legal, in any number.
+            Case {
+                name: "JPEG of fill bytes",
+                format: FileFormat::Jpeg,
+                bytes: fill,
+                outcome: Outcome::Invalid,
+                most: sequential(fill_length),
+            },
+            Case {
+                name: "JPEG of empty segments",
+                format: FileFormat::Jpeg,
+                bytes: segments,
+                outcome: Outcome::Invalid,
+                most: sequential(4 * (STEPS + 1) + 2),
+            },
+            Case {
+                name: "PNG of empty chunks",
+                format: FileFormat::Png,
+                bytes: empty_png_chunks,
+                outcome: Outcome::Invalid,
+                most: sequential(12 * (STEPS + 1) + 33),
+            },
+            Case {
+                name: "WebP of empty chunks",
+                format: FileFormat::Webp,
+                bytes: webp(empty_webp_chunks),
+                outcome: Outcome::Invalid,
+                most: sequential(8 * (STEPS + 1) + 12),
+            },
+            // The walk stops at the page limit, not at the end of the chain.
+            Case {
+                name: "TIFF of three times the page limit",
+                format: FileFormat::Tiff,
+                bytes: tiff_chain(3 * STEPS as usize, 0),
+                outcome: Outcome::Invalid,
+                most: (42 * (STEPS + 1) + 8 + 2 * BUFFER, HEADER_SCAN_MAX_READS),
+            },
+            // Pages between pixel data cost their own bytes, not the gaps.
+            Case {
+                name: "TIFF of scattered pages",
+                format: FileFormat::Tiff,
+                bytes: tiff_chain(2_000, 16 * 1024),
+                outcome: Outcome::Listed(|entry| entry.frame_count == 2_000),
+                most: (2_000 * 128, 2_000 * 4 + 8),
+            },
+            // Text is skipped and of EXIF only the start is read.
+            Case {
+                name: "PNG with megabytes of text and EXIF before its image data",
+                format: FileFormat::Png,
+                bytes: text_png,
+                outcome: Outcome::Listed(|entry| {
+                    (entry.rows, entry.columns) == (4, 4)
+                        && entry
+                            .raster
+                            .as_ref()
+                            .is_some_and(|raster| raster.orientation == 8)
+                }),
+                most: (
+                    EXIF_SCAN_MAX_BYTES + 6 * BUFFER,
+                    EXIF_SCAN_MAX_BYTES / BUFFER + 16,
+                ),
+            },
+            Case {
+                name: "WebP with megabytes of EXIF",
+                format: FileFormat::Webp,
+                bytes: webp(exif_webp),
+                outcome: Outcome::Listed(|entry| {
+                    (entry.rows, entry.columns) == (2, 3)
+                        && entry
+                            .raster
+                            .as_ref()
+                            .is_some_and(|raster| raster.orientation == 6)
+                }),
+                most: (
+                    EXIF_SCAN_MAX_BYTES + 6 * BUFFER,
+                    EXIF_SCAN_MAX_BYTES / BUFFER + 16,
+                ),
+            },
+        ]
+    }
+
+    #[test]
+    fn a_header_costs_a_bounded_number_of_reads_and_bytes_whatever_the_file_declares() {
+        for case in cases() {
+            let name = case.name;
+            let (reads, read) = (Cell::new(0), Cell::new(0));
+            let length = case.bytes.len() as u64;
+            let mut source = Counted {
+                bytes: Cursor::new(case.bytes),
+                reads: &reads,
+                read: &read,
+            };
+
+            let inspected = inspect_raster_source(
+                Path::new("crafted"),
+                &mut source,
+                length,
+                case.format,
+                &|| Ok(()),
+            )
+            .unwrap_or_else(|error| panic!("{name}: {error:#}"));
+
+            match (inspected, case.outcome) {
+                (EntryInspection::Skipped(reason), Outcome::Invalid) => {
+                    assert_eq!(reason, DiscoveryReason::RasterHeaderInvalid, "{name}");
+                }
+                (EntryInspection::Selected(entry), Outcome::Listed(holds)) => {
+                    assert!(holds(&entry), "{name}: {entry:?}");
+                }
+                (EntryInspection::Selected(_), Outcome::Invalid) => {
+                    panic!("{name} was listed")
+                }
+                (EntryInspection::Skipped(reason), Outcome::Listed(_)) => {
+                    panic!("{name} was skipped: {}", reason.code())
+                }
+            }
+            let (most_bytes, most_reads) = case.most;
+            assert!(
+                read.get() <= most_bytes.min(HEADER_SCAN_MAX_BYTES),
+                "{name}: {} bytes read of {length}, at most {most_bytes} expected",
+                read.get()
+            );
+            assert!(
+                reads.get() <= most_reads.min(HEADER_SCAN_MAX_READS),
+                "{name}: {} reads, at most {most_reads} expected",
+                reads.get()
+            );
+        }
+    }
+
+    #[test]
+    fn a_cancelled_discovery_stops_a_header_walk_at_its_next_step() {
+        let mut segments = vec![0xff, 0xd8];
+        for _ in 0..STEPS {
+            segments.extend_from_slice(&[0xff, 0xe0, 0x00, 0x02]);
+        }
+        let (reads, read, checks) = (Cell::new(0), Cell::new(0), Cell::new(0));
+        let length = segments.len() as u64;
+        let mut source = Counted {
+            bytes: Cursor::new(segments),
+            reads: &reads,
+            read: &read,
+        };
+
+        let result = inspect_raster_source(
+            Path::new("crafted"),
+            &mut source,
+            length,
+            FileFormat::Jpeg,
+            &|| {
+                checks.set(checks.get() + 1);
+                anyhow::ensure!(checks.get() < 10, "discovery cancelled");
+                Ok(())
+            },
+        );
+
+        let error = result.err().expect("the check's error ends the walk");
+        assert!(
+            error.to_string().contains("discovery cancelled"),
+            "{error:#}"
+        );
+        assert_eq!(checks.get(), 10, "the walk asks once per step and stops");
+        assert!(read.get() <= 2 * BUFFER, "{} bytes read", read.get());
+    }
 }
