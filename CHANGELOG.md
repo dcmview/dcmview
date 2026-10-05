@@ -46,14 +46,21 @@ diagnostic viewer.
 - Header-only, content-based discovery of PNG, JPEG, TIFF (including BigTIFF
   and compatible multipage stacks), and WebP beside DICOM. Image pixels are
   not decoded yet and frame endpoints return `422 unsupported_pixel_layout`
-  with `raster.decode_not_available`.
+  with `raster.decode_not_available`. Header scans have fixed byte, read and
+  step budgets with cancellation checks; oversized headers are skipped with
+  an actionable warning. Highly compressed PNGs, including blank masks, are
+  listed regardless of their size on disk. TIFFs with more than 65,535 pages
+  are skipped; describable unsupported TIFF layouts remain listed with
+  `raster.unsupported_color` or `raster.unsupported_sample_format`.
 - `--formats dicom,png,jpeg,tiff,webp` narrows directory discovery, and
   `--filter format=<name>` and `--filter path=<text>` select by exact format
   or a substring of the reported path, ignoring case.
 - File summaries add `file_format` and `raster` metadata: stored color and
   sample layout, orientation, alpha/profile presence, animation, significant
-  bits, and the TIFF frame-to-page map with excluded pages. Rasters use
-  `object_kind: "image"` and empty DICOM identity fields.
+  bits, and the TIFF frame-to-page map with the first 16 excluded pages and
+  their full `excluded_pages_total` count. Notes are capped at 16, with an
+  overflow summary. Rasters use `object_kind: "image"` and empty DICOM
+  identity fields.
 
 - `--cache-budget BYTES` sets the combined display, raw and overlay frame cache
   budget, with proportional shares, binary suffixes such as `256MiB`, and a

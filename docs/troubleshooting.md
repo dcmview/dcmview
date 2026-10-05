@@ -99,6 +99,22 @@ If filters are in use, confirm that the field name and value match the file's
 metadata. DICOM fields and paths use case-insensitive substring matching;
 `format` matches a whole format name.
 
+Raster headers that exhaust the fixed scan budget are skipped as
+`raster_header_invalid` and print one line on stderr:
+
+```text
+dcmview: warning — {path}: {what}; not loaded
+```
+
+`{what}` is `more than 65535 TIFF pages`, `more than 65535 JPEG segments before
+the image`, `more than 65535 PNG chunks before the image`, `more than 65535
+WebP chunks`, or `the image header is larger than 64 MiB` (also used when the
+read-count budget runs out). Split the file into smaller files, keeping TIFF
+stacks to at most 65,535 pages each. For images with excessive metadata, also
+remove unnecessary metadata from a copy before retrying. The limit applies
+to header inspection, not the size of compressed pixel data; blank PNG masks
+are listed even when they compress to less than one row of pixels.
+
 ### Image files now appear beside DICOM
 
 PNG, JPEG, TIFF, and WebP headers are listed by default, though their pixels

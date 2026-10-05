@@ -151,13 +151,16 @@ the browser gives exactly the display frame for that window.
 from content. `raster` is `null` for DICOM and the following object for images.
 Rasters have `object_kind: "image"`, empty DICOM identity and transfer-syntax
 strings, `has_pixels: true`, `support_state: "unsupported"`, and
-`support_reason: "raster.decode_not_available"`. Their headers are listed;
+`support_reason: "raster.decode_not_available"`. TIFF layouts without a decoder
+instead report `raster.unsupported_color` (for example CIELab, more than four
+bands, or an extra sample that is not alpha) or
+`raster.unsupported_sample_format` (16-bit float). Their headers are listed;
 pixel decoding is not available yet. Dimensions and coordinates remain in
 the stored pixel grid.
 
 | `RasterSummary` field | Meaning |
 |---|---|
-| `color_type` | Stored `gray`, `gray_alpha`, `rgb`, `rgba`, `palette`, or `cmyk`. |
+| `color_type` | Stored `gray`, `gray_alpha`, `rgb`, `rgba`, `palette`, `cmyk`, or `other` for an unsupported TIFF color layout. |
 | `bit_depth` | Stored bits per sample, including low-bit palette indices. |
 | `sample_format` | `uint`, `int`, or `float`. |
 | `has_alpha` | Alpha channel or transparency, including PNG `tRNS`. |
@@ -165,26 +168,29 @@ the stored pixel grid.
 | `has_icc` | Whether an ICC profile is embedded. |
 | `pages_total` | TIFF pages inspected; 1 for PNG, JPEG, and WebP. |
 | `frame_pages` | Zero-based TIFF page index per frame; `[0]` for other formats. Its length is `frame_count`. |
-| `excluded_pages` | Objects with `page` and `differs`: first difference in order `reduced_resolution`, `mask`, `width`, `height`, `samples_per_pixel`, `sample_format`, `bits_per_sample`, `photometric`, `alpha`, `orientation`. |
+| `excluded_pages` | At most 16 objects with `page` and `differs`: first difference in order `reduced_resolution`, `mask`, `width`, `height`, `samples_per_pixel`, `sample_format`, `bits_per_sample`, `photometric`, `alpha`, `orientation`. |
+| `excluded_pages_total` | Count of all excluded TIFF pages, including those not listed. `pages_total` equals this plus `frame_pages.length`. |
 | `animated` | APNG or animated WebP; only the first frame is represented. |
 | `significant_bits` | PNG `sBIT` bytes in stored channel order, or `null`; informational only. |
 
 TIFF page 0 is always frame 0. Later pages join the frame map only if their
 layout and orientation match page 0 and they are neither reduced-resolution
 nor mask pages. A damaged later IFD ends the walk; earlier pages remain listed.
+A TIFF may have at most 65,535 pages; a longer chain is skipped as
+`raster_header_invalid`, rather than listed with a truncated frame map.
 
 Discovery reasons include `valid_image` for accepted rasters,
 `unrecognized_format` for content that is neither DICOM nor a recognized image
 (replaces `missing_part10_preamble`), `format_not_selected` for a recognized
 format excluded from a directory walk, and `raster_header_invalid` for a
-recognized image whose header cannot be read. Accepted files are represented
+recognized image whose header cannot be read within the fixed scan budget. Accepted files are represented
 in `files`, not the bounded skipped/filtered `discovery` list.
 
 For a raster file index, the following responses require no DICOM parsing:
 
 | Endpoint suffix under `/api/file/{index}` | Raster response |
 |---|---|
-| `/frame/{frame}`, `/frame/{frame}/raw`, `/frame/{frame}/raw/pixel`, `/frame/{frame}/presentation-layer` | `422 unsupported_pixel_layout`, error text containing `raster.decode_not_available`. Missing pixels and out-of-range frames are checked first; the latter is `404 frame_out_of_range`. The presentation layer rejects before allocating an image. |
+| `/frame/{frame}`, `/frame/{frame}/raw`, `/frame/{frame}/raw/pixel`, `/frame/{frame}/presentation-layer` | `422 unsupported_pixel_layout`, error text containing the raster support reason above. Missing pixels and out-of-range frames are checked first; the latter is `404 frame_out_of_range`. The presentation layer rejects before allocating an image. |
 | `/tags` | `200` with `[]`. |
 | `/tags/select` | `400 bad_request`: tag selection is not available for image files. |
 | `/references` | `200` with `source_file_index`, empty `source_sop_instance_uid`, and `references: []`. Rasters are never reference targets. |
