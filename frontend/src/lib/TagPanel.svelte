@@ -37,10 +37,10 @@
 	const VR_COLUMN_MIN_PX = 28;
 	const VR_COLUMN_MAX_PX = 140;
 
-	let { fileIndex, raster = false }: {
+	let { fileIndex, title = "DICOM tags" }: {
 		fileIndex: number;
-		/** A raster image file: its tree is file metadata, not DICOM tags. */
-		raster?: boolean;
+		/** "Metadata" for a raster image file; see `tagPanelNames`. */
+		title?: string;
 	} = $props();
 
 	let filter = $state("");
@@ -206,7 +206,7 @@
 
 <aside class="panel">
 	<header>
-		<h2>{raster ? "Metadata" : "DICOM tags"}</h2>
+		<h2>{title}</h2>
 		<SearchField bind:value={filter} placeholder="keyword, tag or value" aria-label="Filter tags" />
 	</header>
 	{#if error}

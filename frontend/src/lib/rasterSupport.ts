@@ -6,6 +6,13 @@ const REASON_DETAIL: Record<string, string> = {
 	"raster.unsupported_sample_format": "Its sample format is not one dcmview will decode.",
 };
 
+/** What the tag panel is called for a file: a raster has metadata, not DICOM tags. */
+export function tagPanelNames(file: Pick<FileSummary, "file_format"> | null): { title: string; panel: string } {
+	return file !== null && file.file_format !== "dicom"
+		? { title: "Metadata", panel: "metadata panel" }
+		: { title: "DICOM tags", panel: "DICOM tag panel" };
+}
+
 /**
  * Why a raster image file cannot be drawn, from the catalog alone: the
  * server answers 422 for every frame of such a file, so nothing about its
