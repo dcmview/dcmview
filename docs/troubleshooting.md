@@ -111,9 +111,17 @@ the image`, `more than 65535 PNG chunks before the image`, `more than 65535
 WebP chunks`, or `the image header is larger than 64 MiB` (also used when the
 read-count budget runs out). Split the file into smaller files, keeping TIFF
 stacks to at most 65,535 pages each. For images with excessive metadata, also
-remove unnecessary metadata from a copy before retrying. The limit applies
-to header inspection, not the size of compressed pixel data; blank PNG masks
-are listed even when they compress to less than one row of pixels.
+remove unnecessary metadata from a copy before retrying.
+
+The limits count what header inspection reads and the segments, chunks or
+pages it visits, never the size of the file. Pixel data and other payloads are
+skipped without being read, so a large file with an ordinary header is listed
+whatever its size, and blank PNG masks are listed even when they compress to
+less than one row of pixels. A WebP animation is described from its first
+chunk; its frames are walked, one chunk each and without reading them, only
+when the file declares EXIF metadata, which is stored after the frames. Bytes
+that must be read to find the header do count: a JPEG padded with tens of
+megabytes of fill bytes before a marker is skipped.
 
 A listed image file can also print notes in the same style, for example when
 a TIFF page chain cannot be read past some page (the pages before it are
