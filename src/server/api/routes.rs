@@ -147,7 +147,15 @@ async fn track_request_activity(
     request: Request,
     next: Next,
 ) -> Response {
-    let _request = activity.request_started();
+    let _request = if request
+        .headers()
+        .get(crate::api::contracts::BACKGROUND_REQUEST_HEADER)
+        .is_some_and(|value| value == "1")
+    {
+        activity.background_request_started()
+    } else {
+        activity.request_started()
+    };
     let (method, uri) = (request.method().clone(), request.uri().clone());
     let response = next.run(request).await;
     if let Some(error::ServerErrorMessage(message)) = response.extensions().get() {
