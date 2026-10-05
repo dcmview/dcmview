@@ -342,7 +342,8 @@ function searchableValues(file: FileSummary, scope: string | null, shownPath: st
 				file.series_description,
 				file.series_number,
 				file.modality,
-				...formatValues(file),
+				// "dicom" is every DICOM file's format: only format: selects it.
+				...(isRasterFile(file) ? formatValues(file) : []),
 				shownPath,
 			];
 	}
@@ -369,21 +370,33 @@ export function fileMatchesFilter(file: FileSummary, query: string, shownPath = 
 	return terms.every((term) => fileMatchesTerm(file, term, shownPath));
 }
 
+/** Which part of a file's path the explorer shows, and so unscoped terms search. */
+export type PathSearch = "directory" | "study" | "hidden";
+
+/** Each path without the folders every one of them shares. */
+function pathsBelowSharedFolder(files: readonly FileSummary[]): Map<number, string> {
+	const parts = files.map((file) => pathParts(file.path));
+	const trimCount = sharedDirectoryPrefix(parts.map((path) => path.slice(0, -1))).length;
+	return new Map(files.map((file, position) => [file.index, parts[position].slice(trimCount).join("/")]));
+}
+
 /**
- * The files matching `query`. With `searchPaths`, unscoped terms also match
- * a file's path below the folder all files share: the part the directory
- * tree shows, so a term never matches every file through a parent folder.
+ * The files matching `query`. Unscoped terms also match the path the view
+ * shows for a file, never a folder that every listed file shares:
+ * - `directory`: the path below the folders all files share;
+ * - `study`: a raster's path below the folders all rasters share (its place
+ *   in the Images group), and a DICOM file's name;
+ * - `hidden` (a masked Study view): no path at all.
  */
 export function filterFiles(
 	files: readonly FileSummary[],
 	query: string,
-	{ searchPaths = true }: { searchPaths?: boolean } = {},
+	{ paths = "directory" }: { paths?: PathSearch } = {},
 ): FileSummary[] {
 	if (!clean(query)) return [...files];
-	if (!searchPaths) return files.filter((file) => fileMatchesFilter(file, query));
-	const parts = files.map((file) => pathParts(file.path));
-	const trimCount = shownPathStart(parts.map((path) => path.slice(0, -1)));
-	return files.filter((file, position) => fileMatchesFilter(file, query, parts[position].slice(trimCount).join("/")));
+	if (paths === "hidden") return files.filter((file) => fileMatchesFilter(file, query));
+	const shown = pathsBelowSharedFolder(paths === "study" ? files.filter(isRasterFile) : files);
+	return files.filter((file) => fileMatchesFilter(file, query, shown.get(file.index) ?? basename(file.path)));
 }
 
 export function patientDetailWithCounts(patient: NavPatient): string {

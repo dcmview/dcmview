@@ -29,9 +29,9 @@ function maskedCatalog(): FileSummary[] {
 	return mixedCatalog().map((file) => ({ ...file, display_name: `File ${file.index + 1}` }));
 }
 
-function renderNavigator(files: FileSummary[], masked = false) {
+function renderNavigator(files: FileSummary[], masked = false, onnavigationorderchange = vi.fn()) {
 	return render(FileNavigator, {
-		props: { files, masked, activeFileIndex: null, collapsed: false, onopenfile: vi.fn() },
+		props: { files, masked, activeFileIndex: null, collapsed: false, onopenfile: vi.fn(), onnavigationorderchange },
 	});
 }
 
@@ -39,14 +39,19 @@ function texts(root: Element, selector: string): string[] {
 	return [...root.querySelectorAll(selector)].map((element) => element.textContent?.trim() ?? "");
 }
 
-/** The names of the listed files, clinical tree first. */
-function shownFileNames(root: Element): string[] {
-	return texts(root, ".file-row .node-label, .directory-file .directory-label");
+/** The tooltips of the rows that open a file, in order: the path, or the display name where paths are hidden. */
+function listedFiles(root: HTMLElement): string[] {
+	return within(root).queryAllByRole("button")
+		.filter((button) => button.closest('[role="tree"]') && !button.hasAttribute("aria-expanded"))
+		.map((button) => button.title);
 }
 
 function imageGroup(): HTMLElement {
 	return screen.getByRole("button", { name: /^Images, / }).closest("section")!;
 }
+
+// Not "data": the markup has data- attributes.
+const REAL_NAMES = /scans|\bother\b|a\.png|b\.tif|c\.jpg|\.dcm/;
 
 describe("FileNavigator image files", () => {
 	it.each([
@@ -54,15 +59,15 @@ describe("FileNavigator image files", () => {
 			name: "groups rasters by folder under Images and keeps every DICOM file in the clinical tree",
 			masked: false,
 			folders: ["data", "other", "scans", "sub"],
-			images: ["c.jpg", "b.tif", "a.png"],
-			clinical: ["#1 anonymous.dcm", "#1 ct.dcm"],
+			images: ["/data/other/c.jpg", "/data/scans/sub/b.tif", "/data/scans/a.png"],
+			clinical: ["/data/scans/ct.dcm", "/data/scans/anonymous.dcm"],
 		},
 		{
 			name: "lists a masked session's rasters by display name, without folders",
 			masked: true,
 			folders: [],
 			images: ["File 3", "File 4", "File 5"],
-			clinical: ["#1 File 2", "#1 File 1"],
+			clinical: ["File 1", "File 2"],
 		},
 	])("$name", ({ masked, folders, images, clinical }) => {
 		const { container } = renderNavigator(masked ? maskedCatalog() : mixedCatalog(), masked);
@@ -70,34 +75,47 @@ describe("FileNavigator image files", () => {
 
 		expect(within(group).getByRole("button", { name: "Images, 3 images, expanded" })).toBeTruthy();
 		expect(texts(group, ".folder-row .directory-label")).toEqual(folders);
-		expect(shownFileNames(group)).toEqual(images);
+		expect(listedFiles(group)).toEqual(images);
 		// Rasters have no patient: the clinical tree holds exactly the DICOM
-		// files, the one with empty UIDs included.
-		expect(shownFileNames(container).filter((name) => !images.includes(name)).sort()).toEqual([...clinical].sort());
+		// files, the one with empty UIDs included, ahead of the Images group.
+		expect(listedFiles(container)).toEqual([...clinical, ...images]);
+		expect(screen.getByRole("tree", { name: "File hierarchy" })).toBeTruthy();
 		// Two patients (one unnamed), then the Images group.
 		expect(container.querySelectorAll(".study-tree > .tree-group")).toHaveLength(3);
-		if (masked) {
-			expect(container.innerHTML).not.toMatch(/scans|other|a\.png|b\.tif|c\.jpg|\.dcm/);
-		}
+		if (masked) expect(container.innerHTML).not.toMatch(REAL_NAMES);
+	});
+
+	it("continues the Up/Down file order from the last DICOM file into Images", () => {
+		const order = vi.fn();
+		renderNavigator(mixedCatalog(), false, order);
+		// The clinical tree's files, then the Images group in its folder order.
+		expect(order).toHaveBeenLastCalledWith([0, 1, 4, 3, 2]);
 	});
 
 	it.each([
-		{ query: "format:png", masked: false, shown: ["a.png"] },
-		{ query: "format:jpg", masked: false, shown: ["c.jpg"] },
-		{ query: "format:dicom", masked: false, shown: ["#1 anonymous.dcm", "#1 ct.dcm"] },
-		{ query: "scans/sub", masked: false, shown: ["b.tif"] },
-		{ query: "tiff", masked: false, shown: ["b.tif"] },
-		// Every file is under /data: a shared parent folder matches nothing.
-		{ query: "data/", masked: false, shown: ["c.jpg", "a.png", "b.tif", "#1 anonymous.dcm", "#1 ct.dcm"] },
+		{ query: "format:png", masked: false, shown: ["/data/scans/a.png"] },
+		{ query: "format:jpg", masked: false, shown: ["/data/other/c.jpg"] },
+		{ query: "format:dicom", masked: false, shown: ["/data/scans/ct.dcm", "/data/scans/anonymous.dcm"] },
+		// Unscoped, a format name matches rasters only: "dicom" is not a way to match every DICOM file.
+		{ query: "tiff", masked: false, shown: ["/data/scans/sub/b.tif"] },
+		{ query: "com", masked: false, shown: [] },
+		{ query: "scans/sub", masked: false, shown: ["/data/scans/sub/b.tif"] },
+		// The Study view shows a raster's folders in Images and a DICOM file's name only.
+		{ query: "scans", masked: false, shown: ["/data/scans/sub/b.tif", "/data/scans/a.png"] },
+		{ query: ".dcm", masked: false, shown: ["/data/scans/ct.dcm", "/data/scans/anonymous.dcm"] },
+		// Every raster is under /data: a folder they all share matches nothing.
+		{ query: "data", masked: false, shown: [] },
 		{ query: "format:png", masked: true, shown: ["File 3"] },
-		// A masked study view hides paths, so they match nothing either.
+		// A masked Study view hides paths, so they match nothing either.
 		{ query: "sub", masked: true, shown: [] },
 	])("filters by format and path: $query (masked: $masked)", async ({ query, masked, shown }) => {
 		const { container } = renderNavigator(masked ? maskedCatalog() : mixedCatalog(), masked);
 
 		await fireEvent.input(screen.getByLabelText("Filter file hierarchy"), { target: { value: query } });
 
-		expect(shownFileNames(container).sort()).toEqual([...shown].sort());
+		expect(listedFiles(container)).toEqual(shown);
 		expect(screen.getByText(`showing ${shown.length} of 5 images`)).toBeTruthy();
+		// Filtering a masked session reveals no real name, tooltips included.
+		if (masked) expect(container.innerHTML).not.toMatch(REAL_NAMES);
 	});
 });

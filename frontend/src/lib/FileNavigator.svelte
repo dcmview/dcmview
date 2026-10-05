@@ -12,6 +12,7 @@
 		fileKindLabel,
 		filterFiles,
 		imageGroupAriaLabel,
+		isRasterFile,
 		nodeAriaLabel,
 		patientDetailWithCounts,
 		seriesDetailWithCounts,
@@ -94,7 +95,7 @@
 	const pathsShown = $derived(!masked || viewMode === "directory");
 	const filteredFiles = $derived.by(() => {
 		if (!filterActive) return files;
-		return filterFiles(files, filterQuery, { searchPaths: pathsShown });
+		return filterFiles(files, filterQuery, { paths: pathsShown ? viewMode : "hidden" });
 	});
 
 	// Study view: DICOM in the clinical tree, raster files in "Images" after it.
@@ -171,6 +172,7 @@
 				class="directory-row directory-file"
 				class:active={node.file.index === activeFileIndex}
 				class:unsupported={node.file.support_state === "unsupported"}
+				class:raster={isRasterFile(node.file)}
 				class:dim={!node.file.has_pixels}
 				aria-current={node.file.index === activeFileIndex ? "true" : undefined}
 				title={pathsShown ? node.file.path : node.file.display_name}
@@ -231,7 +233,7 @@
 			{/if}
 		</div>
 		{#if viewMode === "study"}
-		<div class="tree study-tree" role="tree" aria-label="DICOM file hierarchy">
+		<div class="tree study-tree" role="tree" aria-label="File hierarchy">
 			{#each tree as patient}
 				{@const patientDetail = patientDetailWithCounts(patient)}
 				<section class="tree-group">
@@ -517,8 +519,7 @@
 	}
 
 	/* Every raster is unsupported for now: the open one still reads as selected. */
-	.file-row.unsupported.active,
-	.directory-row.unsupported.active {
+	.directory-row.raster.unsupported.active {
 		background: var(--selection-fill);
 	}
 
