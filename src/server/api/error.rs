@@ -1,7 +1,7 @@
-use crate::api::contracts::{ApiErrorCode, ErrorResponse};
+use crate::api::contracts::{ApiErrorCode, ErrorResponse, UNAUTHORIZED_CHALLENGE};
 use crate::pixels::{self, PixelError};
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
-use axum::http::StatusCode;
+use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 
@@ -47,6 +47,16 @@ impl ApiError {
 
     pub(super) fn masked(message: impl Into<String>) -> Self {
         Self::coded(StatusCode::FORBIDDEN, ApiErrorCode::Masked, message)
+    }
+
+    /// The one answer for a missing, malformed or wrong token: the response
+    /// does not say which, and does not say whether the route exists.
+    pub(super) fn unauthorized() -> Self {
+        Self::coded(
+            StatusCode::UNAUTHORIZED,
+            ApiErrorCode::Unauthorized,
+            "missing or invalid access token: send Authorization: Bearer <token>",
+        )
     }
 
     pub(super) fn internal(message: impl Into<String>) -> Self {
@@ -190,6 +200,12 @@ impl IntoResponse for ApiError {
             }),
         )
             .into_response();
+        if self.code == ApiErrorCode::Unauthorized {
+            response.headers_mut().insert(
+                header::WWW_AUTHENTICATE,
+                HeaderValue::from_static(UNAUTHORIZED_CHALLENGE),
+            );
+        }
         if let Some(message) = logged {
             response.extensions_mut().insert(message);
         }

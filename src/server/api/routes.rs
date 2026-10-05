@@ -1,3 +1,4 @@
+use super::auth;
 use super::error;
 use super::handlers;
 use super::overlays;
@@ -88,6 +89,15 @@ pub(crate) fn router(state: AppState) -> Router {
         )
         .fallback(error::not_found_handler)
         .method_not_allowed_fallback(error::method_not_allowed_handler);
+    // The token check wraps the whole API router, fallbacks included, so an
+    // unauthenticated caller cannot tell a declared route from a missing one.
+    let api = match state.access_token() {
+        Some(token) => api.layer(middleware::from_fn_with_state(
+            token.clone(),
+            auth::require_bearer,
+        )),
+        None => api,
+    };
 
     let router = Router::new()
         .route("/", get(web::index))

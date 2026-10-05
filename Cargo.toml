@@ -73,6 +73,10 @@ urlencoding = "2"
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 dicom-test-files = { version = "0.4", optional = true }
 libc = "0.2"
+# Access token: OS randomness, URL-safe encoding, constant-time comparison
+getrandom = "0.3"
+base64 = "0.22"
+subtle = "2"
 ts-rs = "12"
 
 [build-dependencies]
