@@ -1223,3 +1223,16 @@ What this doc fixes for later areas, assuming the owner confirms section 12.
 This doc was written against dcmview 0.3.1 dev. Since then 0.3.1 added presentation-state graphic annotations drawn over the frame, and 0.3.2 added `--mask` display masking and in-memory redaction boxes edited with a Redact tool. The owner confirmed these resolutions on 2026-10-05 :
 
 - **Redaction boxes are not annotations.** They keep their own store and endpoint, outside the neutral model, the op log, the history tree and every adapter or export. The op store does not absorb them.
+
+---
+
+## EMBED parity amendment (confirmed by the owner 2026-10-05)
+
+Freezing the 0.3 bytes as goldens (`tests/fixtures/embed-goldens/`) showed four behaviours this doc did not settle or described differently from the code. The owner decided each on 2026-10-05. Where this amendment and an earlier section disagree, this amendment wins.
+
+- **Frame lists are kept as written.** A per-ROI frame list that is unsorted or repeats a frame round-trips through EMBED import and export unchanged, as in 0.3. The `FrameScope` set in section 4 is described there as sorted and unique; the model must still be able to reproduce the list as it was written for a record that came from EMBED and has not been edited (for example by keeping the original list beside the normalised set). An edit may normalise it.
+- **An unedited explicit list stays explicit.** `[[0]]` on a single-frame file exports as `[[0]]`, not `[]`. Only the post-edit expansion changes, as decision 12.6 already says.
+- **Coordinates that are negative or not integers are clamped with a warning, not fatal.** In 0.3 such a value fails the whole import. The lenient import clamps the box to the image (a negative value becomes 0, a value past the edge becomes the edge, a non-integer value is rounded to the nearest pixel first) and lists the row in the import report, the same way out-of-range boxes are handled. A value that is not a number at all is still a shape error. What happens to a box with no area after clamping follows the existing lenient-import rule.
+- **Paths through a symlink are resolved on export.** In 0.3 a file discovered through a symlinked directory is exported under the link path. Export writes the resolved absolute path, as `output-adapters.md` section 1 already states; matching on import keeps accepting either spelling.
+
+The goldens mark the last two as expected changes and the first two as behaviour to keep.
