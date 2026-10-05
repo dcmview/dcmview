@@ -1411,6 +1411,38 @@ describe("ImageViewport shared gestures", () => {
 		vi.mocked(api.updateRedactions).mockReset();
 	});
 
+	it.each([
+		["the Redact tool is chosen", [{ activeTool: "redact" }]],
+		["the Redact tool is chosen and the ROI tool again", [{ activeTool: "redact" }, { activeTool: "annotate_rect" }]],
+		["another frame is shown", [{ currentFrame: 1, navigationPosition: 1 }]],
+		["another file is shown", [{ activeFile: fileSummary(6, { frame_count: 3 }) }]],
+	] as const)("a rectangle between its two clicks ends when %s, and the next click starts a new one", async (_name, changes) => {
+		vi.mocked(api.updateRedactions).mockReset().mockImplementation(async (_file, boxes) => boxes);
+		const { viewport, rerender } = await renderReady("annotate_rect");
+		await click(viewport, 20, 20);
+		await fireEvent.pointerMove(viewport, { clientX: 45, clientY: 50, pointerId: 1 });
+		expect(draft()).not.toBeNull();
+
+		for (const change of changes) {
+			await rerender(change);
+			expect(draft()).toBeNull();
+		}
+		const last = changes[changes.length - 1];
+		await ("activeFile" in last ? shown(6, 0) : shown(5, "currentFrame" in last ? 1 : 0));
+		await screen.findByText("activeTool" in last && last.activeTool === "redact" ? "Redactions 0 / 0" : /^ROIs /);
+		// No pointer event has reached the viewport yet: the rectangle is gone, not hidden.
+		expect(draft()).toBeNull();
+
+		// Had the placement survived, this click would place its second corner and save.
+		await click(viewport, 5, 5);
+		expect(draft()).toBeNull();
+		await fireEvent.pointerMove(viewport, { clientX: 14, clientY: 16, pointerId: 1 });
+		expect(draft()).not.toBeNull();
+		expect(api.updateAnnotations).not.toHaveBeenCalled();
+		expect(api.updateRedactions).not.toHaveBeenCalled();
+		vi.mocked(api.updateRedactions).mockReset();
+	});
+
 	it("Escape cancels a rectangle between its two clicks", async () => {
 		const { viewport, component } = await renderReady("annotate_rect");
 
