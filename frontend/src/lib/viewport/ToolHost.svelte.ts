@@ -102,12 +102,12 @@ export class ToolHost {
 
 		const { dx, dy } = this.#wheelDeltaPixels(event);
 		const { device } = this.#classifyWheel(event);
-		if (this.#tools[view.activeTool].wheel?.({ dx, dy }, view)) return;
-		// Ctrl or Meta is how browsers report a pinch.
+		// Ctrl or Meta is how browsers report a pinch, which zooms in every tool.
 		if (event.ctrlKey || event.metaKey) {
 			this.#zoomByWheelDelta(dy, event.clientX, event.clientY, PINCH_ZOOM_SENSITIVITY);
 			return;
 		}
+		if (this.#tools[view.activeTool].wheel?.({ dx, dy }, view)) return;
 		// Two fingers pan; so does a wheel that only moves sideways (a tilt wheel, Shift+wheel).
 		if (device === "trackpad" || dy === 0) {
 			view.setTransform({

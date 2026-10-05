@@ -1218,6 +1218,18 @@ describe("ImageViewport shared gestures", () => {
 		else expect(onnavigationchange.mock.calls).toEqual([[steppedTo]]);
 	});
 
+	it.each([
+		["Ctrl", { deltaY: -10, ctrlKey: true }],
+		["Meta", { deltaY: -10, metaKey: true }],
+	] as const)("wheel: a pinch (%s plus wheel) zooms in the Scroll tool and steps no frame", async (_name, wheel) => {
+		const { viewport, onnavigationchange } = await renderReady("scroll");
+
+		await wheelAt(viewport, wheel);
+
+		expectTransform(zoomedAbout(Math.exp(0.1)));
+		expect(onnavigationchange).not.toHaveBeenCalled();
+	});
+
 	// Wheel events under 150 ms apart are one gesture, which keeps the device it began as;
 	// the session then follows what its gestures showed (annotation-tools-ux.md 3.5).
 	it.each([
