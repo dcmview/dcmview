@@ -26,21 +26,25 @@ type Viewport = {
 	redacting?: boolean;
 	/** False for a frame that cannot be windowed now. */
 	windowable?: boolean;
+	/** The view zoom; 1 unless given. */
+	zoom?: number;
+	/** The session's input profile is a trackpad. */
+	trackpad?: boolean;
 };
 
 const oneRectangle: EmbedRoiAnnotations = { num_roi: 1, roi_coords: [[10, 10, 30, 30]], roi_frames: [[1]] };
 const noRectangles: EmbedRoiAnnotations = { num_roi: 0, roi_coords: [], roi_frames: [] };
 
 /**
- * A 64x64, three-frame file shown on frame 1 at 1:1 with the image at the
- * client origin, so client and image coordinates agree. `effects` lists what
+ * A 64x64, three-frame file shown on frame 1 with the image at the client
+ * origin, at 1:1 unless `zoom` is given, so client and image coordinates agree. `effects` lists what
  * the tool did to the viewport, in order.
  */
-function viewport({ images = 1, position = 0, rectangles = noRectangles, redacting = false, windowable = true }: Viewport) {
+function viewport({ images = 1, position = 0, rectangles = noRectangles, redacting = false, windowable = true, zoom = 1, trackpad = false }: Viewport) {
 	const effects: unknown[][] = [];
 	const origin = { left: 0, top: 0 };
 	const file = fileSummary(5, { frame_count: 3, rows: 64, columns: 64 });
-	let transform: ViewTransform = { scale: 1, tx: 0, ty: 0, fit: false };
+	let transform: ViewTransform = { scale: zoom, tx: 0, ty: 0, fit: false };
 	let shown = rectangles;
 	let selected: number | null = null;
 	const ctx: ToolContext = {
@@ -48,13 +52,13 @@ function viewport({ images = 1, position = 0, rectangles = noRectangles, redacti
 		frame: 1,
 		imageRows: 64,
 		imageColumns: 64,
-		inputProfile: "mouse",
+		inputProfile: trackpad ? "trackpad" : "mouse",
 		get transform() { return transform; },
 		setTransform(next) {
 			transform = { ...next, fit: false };
 			effects.push(["transform", Number(next.scale.toFixed(3)), Math.round(next.tx), Math.round(next.ty)]);
 		},
-		toImage: (clientX, clientY) => ({ x: Math.min(64, Math.max(0, clientX)), y: Math.min(64, Math.max(0, clientY)) }),
+		toImage: (clientX, clientY) => ({ x: Math.min(64, Math.max(0, clientX / zoom)), y: Math.min(64, Math.max(0, clientY / zoom)) }),
 		zoomAnchor: (clientX, clientY) => zoomAnchor(clientX, clientY, origin, transform),
 		zoomTransform: (scale, anchor) => zoomAroundAnchor(scale, anchor, origin),
 		navigation: {
@@ -174,6 +178,15 @@ const cases: { name: string; tool: () => Tool; viewport?: Viewport; steps: Step[
 		steps: [["down", 40, 50], ["up"], ["down", 40, 50], ["move", 60, 51], ["up"]],
 		answers: ["capture", "capture"],
 		effects: [],
+	},
+	{
+		name: "zoomed out, a press that travels under four screen pixels is a click and saves nothing, and a longer drag saves",
+		tool: () => new RectangleTool("redact"),
+		viewport: { zoom: 0.25, redacting: true },
+		// Two screen pixels each way are eight image pixels at 25%.
+		steps: [["down", 5, 5], ["move", 7, 7], ["up"], ["cancel"], ["down", 5, 5], ["move", 8, 8], ["up"]],
+		answers: ["capture", "capture"],
+		effects: [["save", [[20, 20, 32, 32]], [[0, 1, 2]], 0]],
 	},
 	{
 		name: "dragging inside a rectangle moves it within the image and saves once on release",

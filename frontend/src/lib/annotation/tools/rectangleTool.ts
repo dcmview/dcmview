@@ -37,7 +37,7 @@ type RectangleState =
 /**
  * Draws a rectangle, or moves or resizes the one under the pointer. A
  * rectangle is drawn by a drag, or by two clicks: a press and release on
- * bare image that does not move fixes one corner, the rectangle follows the
+ * bare image within four screen pixels fixes one corner, the rectangle follows the
  * pointer, and the next click places it. The ROI and Redact tools are two of
  * these; `ctx.rects` decides which rectangles they edit.
  */
@@ -124,12 +124,13 @@ export class RectangleTool implements Tool {
 	pointerUp(ctx: ToolContext): void {
 		const state = this.#state;
 		if (state.phase === "drawing") {
-			const coord = canonicalRect(state.start, state.current, ctx.imageRows, ctx.imageColumns);
-			// A click, which a drag would have dropped as a sliver, fixes the first corner instead.
-			if (!coord && !state.placing && !state.dragged) {
-				this.#state = { ...state, placing: true };
+			// A click fixes the first corner and never places a rectangle, however
+			// many image pixels its few screen pixels of travel cover when zoomed out.
+			if (!state.placing && !state.dragged) {
+				this.#state = { ...state, current: state.start, placing: true };
 				return;
 			}
+			const coord = canonicalRect(state.start, state.current, ctx.imageRows, ctx.imageColumns);
 			if (coord) {
 				const added = addRoi(ctx.rects.annotations, coord, ctx.frame, ctx.file.frame_count);
 				// A ROI marks the frame it is drawn on; a redaction box covers every frame.
