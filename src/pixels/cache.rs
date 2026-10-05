@@ -126,8 +126,10 @@ impl CacheBudget {
         overlay_bytes: OVERLAY_CACHE_MAX_BYTES,
     };
 
-    /// Smallest accepted total. Below it one decoded frame of a large image
-    /// no longer fits and every request would miss.
+    /// Smallest accepted total. A frame larger than its cache's share is
+    /// served but not kept, so a very small budget turns every request for a
+    /// large image into a decode; below this floor that is true of ordinary
+    /// images too.
     pub const MIN_TOTAL_BYTES: u64 = 16 * 1024 * 1024;
 
     /// Splits `total_bytes` in the proportions of [`Self::DEFAULT`], rounding
