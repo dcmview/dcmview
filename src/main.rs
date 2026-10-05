@@ -12,12 +12,13 @@ use std::path::PathBuf;
 #[command(
     name = "dcmview",
     version,
-    about = "Start a temporary local DICOM inspection viewer",
-    long_about = "Start a temporary local web server for inspecting DICOM files, directories, image frames, tags, and optional ROI annotations. dcmview is intended for research and development inspection, not clinical diagnosis.",
+    about = "Start a temporary local viewer for DICOM and image files",
+    long_about = "Start a temporary local web server for inspecting DICOM and image files, directories, image frames, tags, and optional ROI annotations. dcmview is intended for research and development inspection, not clinical diagnosis.",
     after_long_help = "\
 Examples:
   dcmview ./scan.dcm
   dcmview ./study_dir
+  dcmview --formats dicom ./mixed_dir
   dcmview --no-recursive ./study_dir
   dcmview --no-browser --host 127.0.0.1 --port 8010 ./study_dir
   ssh -L 8010:127.0.0.1:8010 user@remote
@@ -32,7 +33,7 @@ struct Cli {
     #[arg(
         value_name = "PATH",
         required_unless_present = "vscode_bridge_client",
-        help = "DICOM file or directory to inspect; repeat for multiple inputs"
+        help = "DICOM and image files or directories to inspect; repeat for multiple inputs"
     )]
     paths: Vec<PathBuf>,
 

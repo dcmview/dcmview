@@ -389,7 +389,7 @@ fn discover_progressive_blocking(
                         DiscoveryEvent::SkippedInput(record),
                     )?;
                     note_skip(candidate, DiscoveryReason::InspectionFailed);
-                    eprintln!("dcmview: warning — failed to inspect DICOM: {error}");
+                    eprintln!("dcmview: warning — failed to inspect file: {error}");
                 }
             }
 

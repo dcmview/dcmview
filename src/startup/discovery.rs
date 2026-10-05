@@ -145,6 +145,7 @@ async fn scan(
         result,
         &inputs.registry,
         &inputs.filters,
+        inputs.formats,
         &inputs.input_paths,
     )
 }
@@ -186,7 +187,7 @@ async fn load_annotations(
             }
             if report.unmatched_rows > 0 {
                 eprintln!(
-                    "dcmview: warning — {} annotation row(s) did not match discovered DICOM files",
+                    "dcmview: warning — {} annotation row(s) did not match discovered files",
                     report.unmatched_rows
                 );
             }
@@ -208,6 +209,7 @@ fn finish_scan(
     result: anyhow::Result<loader::DiscoveryReport>,
     registry: &FileRegistry,
     filters: &[loader::ScanFilter],
+    formats: loader::FormatSelection,
     input_paths: &[PathBuf],
 ) -> DiscoveryOutcome {
     let report = match result {
@@ -218,7 +220,7 @@ fn finish_scan(
             {
                 return DiscoveryOutcome::Cancelled;
             }
-            eprintln!("failed to discover DICOM files: {error:#}");
+            eprintln!("failed to discover files: {error:#}");
             return DiscoveryOutcome::Failed;
         }
     };
@@ -227,21 +229,21 @@ fn finish_scan(
     if file_count == 0 {
         if report.filtered > 0 {
             eprintln!(
-                "dcmview: no DICOM files matched active filters ({})",
+                "dcmview: no files matched active filters ({})",
                 format_scan_filters(filters)
             );
         } else if report.skipped > 0 {
             eprintln!(
-                "dcmview: no valid DICOM files found ({})",
+                "dcmview: no DICOM or image files found ({})",
                 skip_breakdown(&report)
             );
         } else {
-            eprintln!("dcmview: no valid DICOM files found");
+            eprintln!("dcmview: no DICOM or image files found");
         }
         return DiscoveryOutcome::Failed;
     }
 
-    print_progressive_load_summary(file_count, &report, filters, input_paths);
+    print_progressive_load_summary(file_count, &report, filters, formats, input_paths);
     DiscoveryOutcome::Completed
 }
 
@@ -260,6 +262,7 @@ fn print_progressive_load_summary(
     file_count: usize,
     report: &loader::DiscoveryReport,
     filters: &[loader::ScanFilter],
+    formats: loader::FormatSelection,
     input_paths: &[PathBuf],
 ) {
     let (skipped, filtered) = (report.skipped, report.filtered);
@@ -284,10 +287,24 @@ fn print_progressive_load_summary(
     if !filters.is_empty() {
         notes.push(format!("filters: {}", format_scan_filters(filters)));
     }
+    if !formats.is_all() {
+        notes.push(format!("formats: {formats}"));
+    }
     notes.push(recursive_note.to_string());
     let note = notes.join(", ");
 
-    if file_count == 1 && skipped == 0 && filtered == 0 && filters.is_empty() {
+    let single = file_count == 1 && skipped == 0 && filtered == 0 && filters.is_empty();
+    if report.images_found > 0 {
+        let images = report.images_found;
+        let dicom = file_count - images;
+        if single {
+            dcmview::status_line!("dcmview: loaded 1 image file");
+        } else {
+            dcmview::status_line!(
+                "dcmview: loaded {file_count} file(s) ({dicom} DICOM, {images} image(s)) from {path_label} ({note})"
+            );
+        }
+    } else if single {
         dcmview::status_line!("dcmview: loaded 1 DICOM file");
     } else {
         dcmview::status_line!(
