@@ -185,13 +185,18 @@ pub(super) fn inspect(input: &mut HeaderReader) -> Result<Header> {
 fn note(header: &mut Header, count: &mut usize, message: String) {
     *count += 1;
     let warnings = &mut header.metadata.warnings;
-    if *count <= RASTER_WARNINGS_MAX {
+    if *count < RASTER_WARNINGS_MAX {
         warnings.push(message);
     } else {
-        warnings[RASTER_WARNINGS_MAX - 1] = format!(
+        let summary = format!(
             "{} more notes not shown",
             *count - (RASTER_WARNINGS_MAX - 1)
         );
+        if warnings.len() < RASTER_WARNINGS_MAX {
+            warnings.push(summary);
+        } else {
+            warnings[RASTER_WARNINGS_MAX - 1] = summary;
+        }
     }
 }
 
