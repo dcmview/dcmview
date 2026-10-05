@@ -39,6 +39,50 @@ export function fileSummary(index: number, overrides: Partial<FileSummary> = {})
 	};
 }
 
+/** A catalog entry for an 8-bit RGB PNG the server lists but does not decode. */
+export function rasterSummary(index: number, overrides: Partial<FileSummary> = {}): FileSummary {
+	const path = overrides.path ?? `fixtures/image-${index}.png`;
+	const name = path.split("/").pop() ?? path;
+	return fileSummary(index, {
+		path,
+		display_name: name,
+		label: name,
+		patient_id: "",
+		patient_name: "",
+		study_instance_uid: "",
+		study_date: "",
+		study_description: "",
+		series_instance_uid: "",
+		series_number: "",
+		series_description: "",
+		modality: "",
+		instance_number: "",
+		sop_instance_uid: "",
+		sop_class_uid: "",
+		object_kind: "image",
+		file_format: "png",
+		raster: {
+			color_type: "rgb",
+			bit_depth: 8,
+			sample_format: "uint",
+			has_alpha: false,
+			orientation: 1,
+			has_icc: false,
+			pages_total: 1,
+			frame_pages: [0],
+			excluded_pages: [],
+			excluded_pages_total: 0,
+			animated: false,
+			significant_bits: null,
+		},
+		support_state: "unsupported",
+		support_reason: "raster.decode_not_available",
+		transfer_syntax_uid: "",
+		default_window: null,
+		...overrides,
+	});
+}
+
 export function filesResponse(files: FileSummary[]): FilesResponse {
 	return {
 		files,
