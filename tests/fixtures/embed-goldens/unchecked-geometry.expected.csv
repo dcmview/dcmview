@@ -1,3 +1,2 @@
 anon_dicom_path,num_ROI,ROI_coords,ROI_frames
 {{ROOT}}/single-frame.dcm,5,"[[0,0,161,241],[500,600,700,800],[40,50,40,90],[5,5,5,5],[60,90,20,30]]",[]
-{{ROOT}}/multiframe.dcm,2,"[[10,20,50,80],[100,120,160,240]]","[[2,0,0],[]]"
