@@ -24,6 +24,7 @@ pub(crate) struct LocalViewerOptions {
     pub(crate) unix_socket: Option<PathBuf>,
     pub(crate) timeout_seconds: Option<u64>,
     pub(crate) cache_budget: Option<CacheBudget>,
+    pub(crate) exit_with_parent: bool,
     pub(crate) open_browser: bool,
     pub(crate) startup_json: bool,
     pub(crate) no_token: bool,
@@ -104,6 +105,10 @@ pub(crate) async fn run_local_viewer(options: LocalViewerOptions) -> Result<Loca
     let bound = BoundServer::bind(&config)
         .await
         .map_err(|error| friendly_bind_error(error, config.port))?;
+    if options.exit_with_parent {
+        dcmview::signals::stop_on_stdin_eof(shutdown.clone())
+            .context("failed to watch parent stdin pipe")?;
+    }
     let discovery = DiscoveryHandle::spawn(DiscoveryInputs {
         input_paths: options.input_paths,
         recursive: options.recursive,
@@ -156,6 +161,7 @@ mod tests {
             unix_socket: None,
             timeout_seconds: Some(0),
             cache_budget: None,
+            exit_with_parent: false,
             open_browser: false,
             startup_json: false,
             no_token: false,

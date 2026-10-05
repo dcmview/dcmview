@@ -88,6 +88,9 @@ struct Cli {
     )]
     cache_budget: Option<CacheBudget>,
 
+    #[arg(long = "exit-with-parent", hide = true)]
+    exit_with_parent: bool,
+
     #[arg(
         long = "no-recursive",
         help = "Scan only the top level of input directories"
