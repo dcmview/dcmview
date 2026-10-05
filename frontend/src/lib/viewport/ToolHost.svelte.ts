@@ -54,7 +54,7 @@ export class ToolHost {
 	#surface: HTMLElement | null = null;
 	#draft = $state.raw<DraftRect | null>(null);
 	// The frame-bound gesture begun since the last one ended, and where it began.
-	#frameGesture: { tool: Tool; fileIndex: number; frameIndex: number } | null = null;
+	#frameGesture: { fileIndex: number; frameIndex: number } | null = null;
 	// Wheel events are told apart here and nowhere else (inputProfile.ts).
 	readonly #profile = new InputProfile();
 	#inputProfile = $state.raw<InputDevice>("mouse");
@@ -220,8 +220,6 @@ export class ToolHost {
 	/** The browser took the pointer away; without an event, cancels whatever is in progress. */
 	pointerCancel(event?: PointerEvent): void {
 		if (event && (this.#captured ? event.pointerId !== this.#pointerId : this.#armed !== null)) return;
-		const frameTool = this.#frameGesture?.tool;
-		if (frameTool && frameTool !== this.#captured) frameTool.cancel(this.#ctx);
 		this.#captured?.cancel(this.#ctx);
 		this.endGesture();
 	}
@@ -273,7 +271,7 @@ export class ToolHost {
 		this.#pointerId = event.pointerId;
 		this.#surface = event.currentTarget as HTMLElement;
 		this.#draft = (this.#armed ?? tool).draft ?? null;
-		if (tool.frameBound) this.#frameGesture = { tool, fileIndex: view.file.index, frameIndex: view.frame };
+		if (tool.frameBound) this.#frameGesture = { fileIndex: view.file.index, frameIndex: view.frame };
 	}
 
 	#cancelReplacedFrameGesture(): boolean {
