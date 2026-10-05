@@ -1,0 +1,5 @@
+empi_anon,acc_anon,ROI_coords,ROI_frames,side,num_ROI,anon_dicom_path
+1001,2001,"[[20, 30, 60, 90]]",[ ],L,1,{{ROOT}}/single-frame.dcm
+1001,2002," [[10,20,50,80], [100,120,160,240]] ","[[0, 1], [2]]",R, 2 ,  {{ROOT}}/multiframe.dcm
+1002,2003,[],[],L,0,"{{ROOT}}/comma, name.dcm"
+1003,2004,not-json,also-not-json,R,many,{{ROOT}}/not-loaded.dcm

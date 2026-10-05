@@ -727,6 +727,8 @@ default suite.
 - Mixed DICOM/non-DICOM discovery reports valid files and skip counts.
 - Annotation load, edit, validation, and CSV export preserve the EMBED-style
   contract.
+- The EMBED-style CSV export of the real binary equals the committed goldens in
+  `tests/fixtures/embed-goldens/` byte for byte, rows in any order.
 - A masked session shows no fixture identifier in the catalog, series catalog,
   tag tree or selected elements, and its hashed UIDs agree across endpoints.
 - A redaction box blanks the display and raw frame, is a cache `MISS` after a

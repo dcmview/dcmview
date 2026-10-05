@@ -781,6 +781,10 @@ installation and VS Code Electron integration can also use network/cache state;
   declared status), so a new endpoint is covered when it is declared. Socket
   tests bind real sockets in temporary directories and cover the token over a
   socket, a symlinked parent, and a live socket whose accept queue is full.
+- `tests/fixtures/embed-goldens/` freezes the EMBED-style ROI CSV bytes: each
+  hand-written input is loaded by the real binary with `--annotations` over
+  copies of committed fixtures, and the export must equal the expected file
+  byte for byte, with rows in any order (Unix only).
 - Python unit tests isolate subprocess policy; `python-integration` adds the real
   binary. VS Code compile and Electron integration remain separate layers.
 - `scripts/compatibility/run.py --corpus-root` checks the real binary against

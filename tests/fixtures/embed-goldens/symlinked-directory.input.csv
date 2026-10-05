@@ -1,0 +1,3 @@
+anon_dicom_path,num_ROI,ROI_coords,ROI_frames
+{{LINK}}/single-frame.dcm,1,"[[20,30,60,90]]",[]
+{{ROOT}}/multiframe.dcm,1,"[[10,20,50,80]]",[[1]]
