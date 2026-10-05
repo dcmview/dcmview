@@ -4,7 +4,7 @@ use super::{is_io_failure, orientation, Header, HeaderReader};
 use crate::api::contracts::{
     RasterColorType, RasterExcludedPage, RasterPageDifference, RasterSampleFormat,
 };
-use crate::types::{RASTER_EXCLUDED_PAGES_LISTED, RASTER_WARNINGS_MAX};
+use crate::types::{RasterUnsupported, RASTER_EXCLUDED_PAGES_LISTED, RASTER_WARNINGS_MAX};
 use anyhow::{ensure, Result};
 use std::collections::{BTreeMap, HashSet};
 
@@ -77,24 +77,32 @@ impl Page {
         let sample_format = match sample {
             1 => RasterSampleFormat::Uint,
             2 => RasterSampleFormat::Int,
-            3 if matches!(depth, 32 | 64) => RasterSampleFormat::Float,
+            3 => RasterSampleFormat::Float,
             _ => anyhow::bail!("unsupported TIFF sample format"),
         };
-        let alpha = self.extra.iter().any(|v| matches!(v, 1 | 2));
-        let color = match (self.photometric, self.samples, alpha) {
-            (0 | 1, 1, false) => RasterColorType::Gray,
-            (0 | 1, 2, true) => RasterColorType::GrayAlpha,
-            (2 | 6, 3, false) => RasterColorType::Rgb,
-            (2, 4, true) => RasterColorType::Rgba,
-            (3, 1, false) => RasterColorType::Palette,
-            (5, 4, false) => RasterColorType::Cmyk,
-            _ => anyhow::bail!("unsupported TIFF photometric/sample layout"),
+        let color = match (self.photometric, self.samples, self.extra.as_slice()) {
+            (0 | 1, 1, []) => RasterColorType::Gray,
+            (0 | 1, 2, [1 | 2]) => RasterColorType::GrayAlpha,
+            (2 | 6, 3, []) => RasterColorType::Rgb,
+            (2, 4, [1 | 2]) => RasterColorType::Rgba,
+            (3, 1, []) => RasterColorType::Palette,
+            (5, 4, []) => RasterColorType::Cmyk,
+            _ => RasterColorType::Other,
         };
+        let alpha = matches!(color, RasterColorType::GrayAlpha | RasterColorType::Rgba);
         let mut header = Header::new(self.width, self.height, color, depth as u32);
         header.white_is_zero = self.photometric == 0;
+        header.stored_samples = self.samples;
+        header.metadata.unsupported = if color == RasterColorType::Other {
+            Some(RasterUnsupported::Color)
+        } else if sample_format == RasterSampleFormat::Float && depth == 16 {
+            Some(RasterUnsupported::SampleFormat)
+        } else {
+            None
+        };
         header.metadata.sample_format = sample_format;
         header.metadata.has_alpha = alpha;
-        header.metadata.alpha_associated = self.extra.contains(&1);
+        header.metadata.alpha_associated = alpha && self.extra.contains(&1);
         header.metadata.orientation = self.orientation;
         header.metadata.has_icc = self.icc;
         Ok(header)
@@ -262,10 +270,7 @@ fn read_page(input: &mut HeaderReader, encoding: Encoding, offset: u64) -> Resul
     let height = u32::try_from(scalar(257, 0)?)?;
     ensure!(width > 0 && height > 0, "zero TIFF dimensions");
     let samples = scalar(277, 1)?;
-    ensure!(
-        samples > 0 && samples <= input.len,
-        "invalid TIFF sample count"
-    );
+    ensure!(samples > 0, "invalid TIFF sample count");
     let channel_values = |tag, default| -> Result<Vec<u64>> {
         let values = tags.get(&tag).cloned().unwrap_or_else(|| vec![default]);
         ensure!(

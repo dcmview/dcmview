@@ -261,9 +261,7 @@ pub(super) fn inspect_raster_source(
         RasterColorType::Rgba => (4, "RGBA"),
         RasterColorType::Palette if raster.has_alpha => (4, "RGBA"),
         RasterColorType::Palette => (3, "RGB"),
-        RasterColorType::Other => {
-            todo!("FMT1 round 2: the stored sample count and an empty photometric")
-        }
+        RasterColorType::Other => (u32::try_from(header.stored_samples).unwrap_or(u32::MAX), ""),
     };
     let mut series_metadata = SeriesMetadata::default();
     series_metadata.native_pixel.pixel_data_kind =
@@ -315,6 +313,8 @@ struct Header {
     width: u32,
     height: u32,
     white_is_zero: bool,
+    // TIFF retains its channel count even when its layout has no decoder.
+    stored_samples: u64,
     metadata: RasterMetadata,
 }
 
@@ -324,6 +324,7 @@ impl Header {
             width,
             height,
             white_is_zero: false,
+            stored_samples: 1,
             metadata: RasterMetadata {
                 color_type,
                 bit_depth,
