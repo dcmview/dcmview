@@ -1,6 +1,7 @@
 import type { EmbedRoiAnnotations, FileSummary } from "../../../api";
 import type { ImagePoint } from "../../annotationGeometry";
 import type { ActiveTool } from "../../viewerTools";
+import type { InputDevice } from "../../viewport/inputProfile";
 import type { VisibleRoi } from "../../viewport/roiEditing";
 import type { ViewTransform, ZoomAnchor } from "../../viewport/viewTransform";
 
@@ -9,8 +10,18 @@ export type ToolId = ActiveTool;
 /** A pointer position in client (CSS pixel) coordinates. */
 export type ToolPointer = { clientX: number; clientY: number };
 
-/** A wheel step in CSS pixels, whatever unit the device reported. */
-export type ToolWheel = { dx: number; dy: number };
+/**
+ * A wheel step in CSS pixels, whatever unit the device reported, with what
+ * the host made of it: tools never inspect wheel events themselves.
+ */
+export type ToolWheel = {
+	dx: number;
+	dy: number;
+	/** The device this step's gesture acts as. */
+	device: InputDevice;
+	/** This step begins a gesture: the first after a pause. */
+	gestureStart: boolean;
+};
 
 /** The frames the viewport steps through: a file's frames or a stack's images. */
 export interface FrameNavigation {

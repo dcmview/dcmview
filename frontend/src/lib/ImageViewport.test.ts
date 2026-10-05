@@ -1239,6 +1239,36 @@ describe("ImageViewport shared gestures", () => {
 		expect(onnavigationchange.mock.calls).toEqual([[1]]);
 	});
 
+	// Constructed traces (no trackpad was available): fingers speeding up over 115 px,
+	// then the momentum the system adds once they lift, falling smoothly to nothing.
+	const fingers = [2, 5, 9, 14, 20, 22, 18, 25];
+	const momentum = [20, 16, 13, 10, 8, 6, 5, 4, 3, 2, 2, 1, 1, 1];
+	it.each([
+		["a mouse wheel steps one frame per notch", [100, 100, 100], 60, 3],
+		["a slow two-finger scroll steps one frame per 30 px", Array.from({ length: 12 }, () => 5), 16, 2],
+		["a two-finger swipe steps by its travel, and its momentum stops stepping", [...fingers, ...momentum], 16, 5],
+		["stepping starts again when the fingers move after the momentum", [...fingers, ...momentum, 6, 12, 12], 16, 6],
+		["a swipe back steps back", [...fingers, ...fingers.map((dy) => -dy)], 16, 0],
+	] as const)("Scroll tool wheel: %s", async (_name, steps, everyMs, endsOn) => {
+		const file = fileSummary(5, { frame_count: 12 });
+		let position = 0;
+		const view = renderViewport({
+			activeTool: "scroll",
+			file,
+			onnavigationchange: (next) => { position = Math.max(0, Math.min(11, next)); },
+		});
+		const viewport = await screen.findByRole("application");
+		await shown(5, 0);
+
+		for (const [index, deltaY] of steps.entries()) {
+			await wheelAt(viewport, { deltaY, at: index * everyMs });
+			await view.rerender({ currentFrame: position, navigationPosition: position });
+		}
+
+		expect(position).toBe(endsOn);
+		expectTransform({ scale: 1, tx: 0, ty: 0 });
+	});
+
 	// Wheel events under 150 ms apart are one gesture, which keeps the device it began as;
 	// the session then follows what its gestures showed (annotation-tools-ux.md 3.5).
 	it.each([

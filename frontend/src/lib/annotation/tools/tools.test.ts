@@ -92,7 +92,7 @@ function run(tool: Tool, ctx: ToolContext, steps: Step[]): unknown[] {
 	for (const step of steps) {
 		if (step[0] === "down") answers.push(tool.pointerDown({ clientX: step[1], clientY: step[2] }, ctx));
 		else if (step[0] === "move") tool.pointerMove({ clientX: step[1], clientY: step[2] }, ctx);
-		else if (step[0] === "wheel") answers.push(tool.wheel?.({ dx: 0, dy: step[1] }, ctx) ?? false);
+		else if (step[0] === "wheel") answers.push(tool.wheel?.({ dx: 0, dy: step[1], device: "mouse", gestureStart: true }, ctx) ?? false);
 		else if (step[0] === "up") tool.pointerUp(ctx);
 		else tool.cancel(ctx);
 	}

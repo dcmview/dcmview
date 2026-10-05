@@ -1,7 +1,7 @@
 import { PanTool } from "../annotation/tools/panTool";
 import { RectangleTool } from "../annotation/tools/rectangleTool";
 import { ScrollTool } from "../annotation/tools/scrollTool";
-import type { DraftRect, Tool, ToolContext, ToolId, ToolPointer } from "../annotation/tools/tool";
+import type { DraftRect, Tool, ToolContext, ToolId, ToolPointer, ToolWheel } from "../annotation/tools/tool";
 import { WindowLevelTool } from "../annotation/tools/windowLevelTool";
 import { ZoomTool } from "../annotation/tools/zoomTool";
 import { InputProfile, type InputDevice, type InputProfileSetting, type WheelVerdict } from "./inputProfile";
@@ -102,7 +102,8 @@ export class ToolHost {
 		event.preventDefault();
 
 		const { dx, dy } = this.#wheelDeltaPixels(event);
-		const { device } = this.#classifyWheel(event);
+		const { device, gestureStart } = this.#classifyWheel(event);
+		const wheel: ToolWheel = { dx, dy, device, gestureStart };
 		// Ctrl or Meta is how browsers report a pinch, which zooms in every tool.
 		if (event.ctrlKey || event.metaKey) {
 			this.#zoomByWheelDelta(dy, event.clientX, event.clientY, PINCH_ZOOM_SENSITIVITY);
@@ -110,10 +111,10 @@ export class ToolHost {
 		}
 		// Alt+wheel steps frames in every tool, and does nothing else on a single image.
 		if (event.altKey) {
-			this.#scroll.wheel({ dx, dy }, view);
+			this.#scroll.wheel(wheel, view);
 			return;
 		}
-		if (this.#tools[view.activeTool].wheel?.({ dx, dy }, view)) return;
+		if (this.#tools[view.activeTool].wheel?.(wheel, view)) return;
 		// Two fingers pan; so does a wheel that only moves sideways (a tilt wheel, Shift+wheel).
 		if (device === "trackpad" || dy === 0) {
 			view.setTransform({
