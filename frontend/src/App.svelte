@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { onMount } from "svelte";
-	import { annotationsExportUrl, fetchHealth, onReachabilityChange, onServerRestart, type SemanticContextResponse } from "./api";
+	import { annotationsExportUrl, fetchHealth, onAccessDenied, onReachabilityChange, onServerRestart, type AccessDenial, type SemanticContextResponse } from "./api";
+	import AccessRequired from "./lib/AccessRequired.svelte";
+	import { adoptAccessToken } from "./lib/accessToken";
 	import FileNavigator from "./lib/FileNavigator.svelte";
 	import FrameSlider from "./lib/FrameSlider.svelte";
 	import GraphicAnnotationBar from "./lib/GraphicAnnotationBar.svelte";
@@ -42,6 +44,9 @@
 		rotateClockwise,
 		rotateCounterClockwise,
 	} from "./lib/viewport/viewTransform";
+
+	// Before any request: the launch link's token leaves the address bar.
+	adoptAccessToken();
 
 	// App owns the shared root state; the controllers below hold its parts
 	// and the components receive what they need as props.
@@ -284,16 +289,38 @@
 		serverReachable = reachable;
 		if (!reachable) cinePlaying = false;
 	}));
+
+	// A 401 replaces the viewer with what to do about it; see AccessRequired.
+	let accessDenial = $state<AccessDenial | null>(null);
+	onMount(() => onAccessDenied((denial) => {
+		accessDenial = denial;
+		stopPolling?.();
+	}));
+
+	/** The launch link pasted into this tab changes only the fragment, so nothing reloads by itself. */
+	function adoptPastedLink(): void {
+		if (!adoptAccessToken()) return;
+		// A loaded catalog belongs to the server that issued the old token.
+		if (catalog.files) {
+			window.location.reload();
+			return;
+		}
+		accessDenial = null;
+		loadCatalog();
+	}
 </script>
 
 <svelte:window
 	onkeydown={handleWindowKeydown}
 	onresize={() => layout.viewportResized()}
 	onfocus={checkServerOnReturn}
+	onhashchange={adoptPastedLink}
 />
 <svelte:document onvisibilitychange={checkServerOnReturn} />
 
-{#if catalog.loadError}
+{#if accessDenial}
+	<AccessRequired denial={accessDenial} />
+{:else if catalog.loadError}
 	<main class="error">
 		<p>{catalog.loadError}</p>
 		<Button onclick={loadCatalog}>Retry</Button>

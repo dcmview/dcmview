@@ -11,6 +11,7 @@ vi.mock("./api", async (importOriginal) => ({
 	fetchFiles: vi.fn(),
 	fetchHealth: vi.fn(),
 	onReachabilityChange: vi.fn(() => () => {}),
+	onAccessDenied: vi.fn(() => () => {}),
 	fetchSeries: vi.fn(),
 	fetchTags: vi.fn(async () => []),
 	fetchReferences: vi.fn(async (fileIndex: number) => ({
@@ -292,5 +293,39 @@ describe("server retry", () => {
 		await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
 		await waitFor(() => expect(screen.queryByText("frame was unreachable")).toBeNull());
 		await waitFor(() => expect(document.querySelector(".dicom-canvas")?.getAttribute("data-capture-rendered")).toBe("0:0"));
+	});
+});
+
+describe("access denied", () => {
+	async function deny(denial: api.AccessDenial) {
+		const calls = vi.mocked(api.onAccessDenied).mock.calls;
+		await act(() => calls[calls.length - 1][0](denial));
+	}
+
+	it.each([
+		{ denial: "missing", says: /needs its access link/, not: /restarted/ },
+		{ denial: "rejected", says: /restarted/, not: /needs its access link/ },
+	] as const)("replaces the viewer with what to do when the token is $denial", async ({ denial, says, not }) => {
+		await renderApp();
+		await deny(denial);
+
+		expect(screen.getByRole("heading").textContent).toMatch(says);
+		expect(screen.queryByText(not)).toBeNull();
+		expect(screen.getByText("#token=…")).toBeTruthy();
+		expect(screen.queryByTitle("Fit to height")).toBeNull();
+	});
+
+	it("loads the viewer when the launch link is pasted into the refused tab", async () => {
+		vi.mocked(api.fetchFiles).mockRejectedValueOnce(new api.ApiError("access token required", 401, "unauthorized"));
+		render(App);
+		await deny("missing");
+		await screen.findByText(/needs its access link/);
+
+		window.location.hash = "#token=pasted-token";
+		window.dispatchEvent(new Event("hashchange"));
+
+		await screen.findByTitle("Fit to height");
+		expect(screen.queryByText(/needs its access link/)).toBeNull();
+		expect(window.location.href).not.toContain("pasted-token");
 	});
 });
