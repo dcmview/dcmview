@@ -53,6 +53,12 @@ diagnostic viewer.
 - Export ROIs reports a failed export in the viewer instead of leaving the
   browser on an error page or doing nothing.
 
+### Fixed
+
+- Viewer keyboard shortcuts no longer fire while Ctrl, Cmd or Alt is held, so
+  Ctrl+Z no longer selects the Zoom tool and Ctrl+R no longer selects the ROI
+  tool before the browser or VS Code handles the combination.
+
 ## 0.3.2 - 2026-10-02
 
 ### Added
