@@ -28,6 +28,7 @@ dcmview [OPTIONS] <PATH> [PATH ...]
 | `--no-token` | `false` | Serve the API without the access token; for use behind a proxy that already authenticates. Warns that the API is open to anything that can reach the listener. |
 | `--no-browser` | `false` | Print the viewer URL instead of opening a browser automatically. |
 | `--timeout <SECONDS>` | none | Exit after this many seconds without API or browser requests once the scan has finished. |
+| `--cache-budget <BYTES>` | `704MiB` | Total memory for cached display, raw and overlay frame bodies; minimum `16MiB`. |
 | `--no-recursive` | `false` | Scan only the top level of input directories. |
 | `--annotations <CSV>` | none | Load EMBED-style ROI annotations from CSV without modifying the file. |
 | `--filter <FIELD=VALUE>` | none | Include only files whose metadata field contains the value; repeatable. |
@@ -54,6 +55,24 @@ with AND semantics.
 `--startup-json` and `--vscode-bridge-client` are hidden integration flags for
 wrappers and VS Code terminal interception. They are not part of the normal user
 interface.
+
+### Frame cache memory
+
+Use `dcmview --cache-budget 256MiB ./study` to reduce frame cache memory on a
+small machine. Values are whole byte counts (for example `268435456`), optionally
+followed by `KiB`, `MiB` or `GiB`, case-insensitively and without spaces.
+Fractions, signs, decimal suffixes such as `MB`, overflow and totals below
+`16MiB` (`16777216` bytes) are rejected.
+
+The total is split proportionally among display, raw and overlay frame caches
+using their default sizes of 256, 384 and 64 MiB. Each share rounds down;
+frames larger than their cache's share are served without being retained.
+Without the flag, those defaults are unchanged.
+
+This limits retained frame bodies, not total process memory. It does not cover
+in-flight decoding and responses, cache metadata, the file catalog, annotations,
+or the tag, semantic and value-mapping caches (which use entry limits).
+Browser memory is separate.
 
 ### Private Unix socket and SSH forwarding
 

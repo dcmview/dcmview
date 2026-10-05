@@ -134,8 +134,23 @@ impl CacheBudget {
     /// each share down so the three never exceed the total. A total below
     /// [`Self::MIN_TOTAL_BYTES`] is an error that names the minimum.
     pub fn from_total(total_bytes: u64) -> Result<Self, String> {
-        let _ = total_bytes;
-        todo!("SPK3: proportional split")
+        if total_bytes < Self::MIN_TOTAL_BYTES {
+            return Err(format!(
+                "cache budget must be at least {} bytes (16MiB)",
+                Self::MIN_TOTAL_BYTES
+            ));
+        }
+        let share = |bytes: usize| {
+            let scaled =
+                u128::from(total_bytes) * bytes as u128 / u128::from(Self::DEFAULT.total_bytes());
+            usize::try_from(scaled)
+                .map_err(|_| "cache budget is too large for this platform".to_string())
+        };
+        Ok(Self {
+            frame_bytes: share(Self::DEFAULT.frame_bytes)?,
+            raw_bytes: share(Self::DEFAULT.raw_bytes)?,
+            overlay_bytes: share(Self::DEFAULT.overlay_bytes)?,
+        })
     }
 
     pub fn total_bytes(&self) -> u64 {
@@ -148,8 +163,20 @@ impl CacheBudget {
 /// as `268435456`, `256MiB` or `2GiB`. Decimal suffixes (`MB`), fractions,
 /// signs and overflow are errors.
 pub fn parse_byte_size(raw: &str) -> Result<u64, String> {
-    let _ = raw;
-    todo!("SPK3: parse a byte size")
+    let digits = raw.bytes().take_while(u8::is_ascii_digit).count();
+    let (number, suffix) = raw.split_at(digits);
+    let multiplier = match suffix.to_ascii_lowercase().as_str() {
+        "" => 1,
+        "kib" => 1024,
+        "mib" => 1024 * 1024,
+        "gib" => 1024 * 1024 * 1024,
+        _ => return Err("expected whole bytes or a KiB, MiB or GiB suffix, without spaces".into()),
+    };
+    number
+        .parse::<u64>()
+        .ok()
+        .and_then(|bytes| bytes.checked_mul(multiplier))
+        .ok_or_else(|| "expected an unsigned whole byte size that fits in 64 bits".into())
 }
 
 pub fn new_cache() -> Arc<Mutex<FrameCache>> {

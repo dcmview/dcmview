@@ -55,6 +55,7 @@ fn local_viewer_options(cli: Cli) -> LocalViewerOptions {
         port: cli.port,
         unix_socket: cli.unix_socket,
         timeout_seconds: cli.timeout,
+        cache_budget: cli.cache_budget,
         open_browser: !cli.no_browser,
         startup_json: cli.startup_json,
         no_token: cli.no_token,

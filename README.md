@@ -431,7 +431,10 @@ compiles the VS Code extension.
 
 See the [development reference](docs/development.md) for source builds, frontend
 proxy behavior, fixture policy, test commands, architecture notes, and cache
-budget guidance.
+budget guidance. On smaller machines, `--cache-budget 256MiB` reduces the
+server's retained frame caches; it does not cap total process or browser
+memory. See [frame cache memory](docs/configuration.md#frame-cache-memory)
+for accepted sizes and limits.
 
 ## Reporting Issues
 
