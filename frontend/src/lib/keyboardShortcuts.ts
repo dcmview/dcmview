@@ -59,7 +59,8 @@ function mayBeTypedWithAltGraph(event: ShortcutKeyEvent): boolean {
  * Maps a window keydown to a viewer action. Escape closes an open drawer
  * from anywhere; every other shortcut is ignored while focus is in an
  * editable control, and while Ctrl, Meta or Alt is held, so those
- * combinations stay with the browser or VS Code. Shift alone does not stop a
+ * combinations stay with the browser or VS Code. Delete and Backspace are
+ * the exception and remove the selected ROI with or without a modifier. Shift alone does not stop a
  * shortcut, except for the file arrows.
  */
 export function shortcutFor(event: ShortcutKeyEvent, context: ShortcutContext): ShortcutAction | null {
@@ -70,6 +71,11 @@ export function shortcutFor(event: ShortcutKeyEvent, context: ShortcutContext): 
 	if (context.multiFrame && (!hasCommandModifier(event) || mayBeTypedWithAltGraph(event))) {
 		if (event.key === "[") return { type: "step-frame", step: -1 };
 		if (event.key === "]") return { type: "step-frame", step: 1 };
+	}
+	// Deleting the selected ROI keeps working with a modifier held:
+	// Cmd+Backspace is the usual delete on macOS, not an accidental chord.
+	if (context.roiToolActive && (event.key === "Delete" || event.key === "Backspace")) {
+		return { type: "delete-roi" };
 	}
 	if (hasCommandModifier(event)) return null;
 
@@ -86,9 +92,6 @@ export function shortcutFor(event: ShortcutKeyEvent, context: ShortcutContext): 
 	if (context.annotationItems) {
 		if (event.key === ",") return { type: "step-annotation-item", step: -1 };
 		if (event.key === ".") return { type: "step-annotation-item", step: 1 };
-	}
-	if (context.roiToolActive && (event.key === "Delete" || event.key === "Backspace")) {
-		return { type: "delete-roi" };
 	}
 	return null;
 }

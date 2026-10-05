@@ -55,8 +55,6 @@ describe("shortcutFor", () => {
 			[" ", { type: "toggle-cine" }, false],
 			[",", { type: "step-annotation-item", step: -1 }, false],
 			[".", { type: "step-annotation-item", step: 1 }, false],
-			["Delete", { type: "delete-roi" }, false],
-			["Backspace", { type: "delete-roi" }, false],
 		];
 		for (const [key, action, altGraph] of bindings) {
 			expect(shortcutFor(press(key), context), key).toEqual(action);
@@ -66,6 +64,14 @@ describe("shortcutFor", () => {
 			expect(shortcutFor(press(key, { ctrlKey: true, shiftKey: true }), context), `Ctrl+Shift+${key}`).toBeNull();
 			expect(shortcutFor(press(key, { altKey: true }), context), `Alt+${key}`).toEqual(altGraph ? action : null);
 			expect(shortcutFor(press(key, { ctrlKey: true, altKey: true }), context), `Ctrl+Alt+${key}`).toEqual(altGraph ? action : null);
+		}
+		// Deleting the selected ROI is not an accidental chord: Cmd+Backspace
+		// is the usual delete on macOS.
+		for (const key of ["Delete", "Backspace"]) {
+			for (const modifiers of [{}, { metaKey: true }, { ctrlKey: true }, { altKey: true }]) {
+				expect(shortcutFor(press(key, modifiers), context), `${key} ${JSON.stringify(modifiers)}`)
+					.toEqual({ type: "delete-roi" });
+			}
 		}
 		// Shift alone still reaches a tool letter, as with Caps Lock.
 		expect(shortcutFor(press("P", { shiftKey: true }), idle)).toEqual(tool("pan"));
