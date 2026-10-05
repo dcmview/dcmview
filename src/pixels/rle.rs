@@ -526,6 +526,8 @@ mod tests {
             .write_to_file(&path)
             .unwrap();
         let file = FileEntry {
+            format: Default::default(),
+            raster: None,
             index: 0,
             path,
             label: String::new(),

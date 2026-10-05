@@ -72,6 +72,7 @@ async fn jp2_grayscale_display_applies_the_shared_presentation_pipeline() {
         dcmview::loader::DiscoverOptions {
             recursive: false,
             filters: Vec::new(),
+            formats: Default::default(),
         },
     )
     .await

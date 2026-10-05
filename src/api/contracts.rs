@@ -403,7 +403,15 @@ pub struct FileSummary {
     pub instance_number: String,
     pub sop_instance_uid: String,
     pub sop_class_uid: String,
+    /// The object family: a DICOM family from the SOP Class, or `image` for a
+    /// raster file.
     pub object_kind: String,
+    /// What the file is, detected from its content and never from its name.
+    /// A raster (anything but `dicom`) has empty DICOM identity strings and
+    /// an empty `transfer_syntax_uid`.
+    pub file_format: FileFormat,
+    /// What discovery read from a raster file's header; `null` for DICOM.
+    pub raster: Option<RasterSummary>,
     pub support_state: SupportState,
     pub support_reason: Option<String>,
     /// Whether client-side raw windowing preserves every declared presentation
@@ -427,6 +435,126 @@ pub struct FileSummary {
     pub pixel_aspect_ratio: Option<f64>,
     pub transfer_syntax_uid: String,
     pub default_window: Option<WindowPreset>,
+}
+
+/// The container format of a discovered file, detected from its content
+/// (`docs/design/image-formats.md` section 3). The serialized names are also
+/// the values of `--formats` and of the `format` scan filter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum FileFormat {
+    #[default]
+    Dicom,
+    Png,
+    Jpeg,
+    Tiff,
+    Webp,
+}
+
+impl FileFormat {
+    /// Every format, in the order lists of formats are printed.
+    pub const ALL: [Self; 5] = [Self::Dicom, Self::Png, Self::Jpeg, Self::Tiff, Self::Webp];
+
+    /// The serialized name: `dicom`, `png`, `jpeg`, `tiff` or `webp`.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Dicom => "dicom",
+            Self::Png => "png",
+            Self::Jpeg => "jpeg",
+            Self::Tiff => "tiff",
+            Self::Webp => "webp",
+        }
+    }
+
+    /// Whether this is a raster image format, that is, anything but DICOM.
+    pub const fn is_raster(self) -> bool {
+        !matches!(self, Self::Dicom)
+    }
+}
+
+/// How a raster file stores colour, before any expansion on decode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum RasterColorType {
+    Gray,
+    GrayAlpha,
+    Rgb,
+    Rgba,
+    /// Indexed colour; decoded frames hold the expanded colours.
+    Palette,
+    /// CMYK or YCCK JPEG; decoded frames hold an approximate sRGB conversion.
+    Cmyk,
+}
+
+/// The numeric kind of a raster file's stored samples.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum RasterSampleFormat {
+    Uint,
+    Int,
+    Float,
+}
+
+/// Why a TIFF page is not one of the file's frames: the first property, in
+/// this order, in which it differs from page 0, or the subfile flag that
+/// marks it as not a full image
+/// (`docs/design/image-formats.md` section 2.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum RasterPageDifference {
+    /// `NewSubfileType` bit 0: a reduced-resolution copy, such as a thumbnail.
+    ReducedResolution,
+    /// `NewSubfileType` bit 2: a transparency mask.
+    Mask,
+    Width,
+    Height,
+    SamplesPerPixel,
+    SampleFormat,
+    BitsPerSample,
+    Photometric,
+    /// The extra-sample (alpha) type.
+    Alpha,
+    Orientation,
+}
+
+/// A TIFF page left out of the frame map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+pub struct RasterExcludedPage {
+    /// Zero-based IFD index in the file's page chain.
+    pub page: u32,
+    pub differs: RasterPageDifference,
+}
+
+/// What discovery read from a raster file's header. Every field holds for
+/// every frame of the file. Nothing here is decoded from pixel data.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+pub struct RasterSummary {
+    pub color_type: RasterColorType,
+    /// Bits per sample as stored in the file (1, 2, 4, 8, 16, 32 or 64).
+    /// Raw frames serve low-bit samples one byte each, at this depth's values.
+    pub bit_depth: u32,
+    pub sample_format: RasterSampleFormat,
+    /// Whether the file carries an alpha channel or palette transparency.
+    pub has_alpha: bool,
+    /// The EXIF or TIFF orientation, 1 to 8; 1 when the file declares none or
+    /// an invalid one. `rows`, `columns`, raw samples and every coordinate
+    /// stay in the stored pixel grid: this is a display hint only.
+    pub orientation: u8,
+    /// Whether the file embeds an ICC profile.
+    pub has_icc: bool,
+    /// Pages (IFDs) in the file: 1 for PNG, JPEG and WebP.
+    pub pages_total: u32,
+    /// The zero-based page (IFD index) of each frame, in frame order. Its
+    /// length is the file's `frame_count`; `[0]` for PNG, JPEG and WebP.
+    pub frame_pages: Vec<u32>,
+    /// Pages that are not frames, in page order.
+    pub excluded_pages: Vec<RasterExcludedPage>,
+    /// An animated PNG or WebP; only its first frame is a frame here.
+    pub animated: bool,
+    /// PNG `sBIT`: the original precision of each stored channel, in file
+    /// order. Informational only: it never narrows a window or value range.
+    /// `null` when the file has no `sBIT` chunk.
+    pub significant_bits: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]

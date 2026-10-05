@@ -49,6 +49,7 @@ fn local_viewer_options(cli: Cli) -> LocalViewerOptions {
         input_paths: cli.paths,
         recursive: !cli.no_recursive,
         filters: cli.filters,
+        formats: cli.formats.unwrap_or_default(),
         annotation_path: cli.annotations,
         mask: cli.mask,
         host: cli.host,

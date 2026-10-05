@@ -19,6 +19,7 @@ async fn discover(dir: &Path) -> support::LoadReport {
         DiscoverOptions {
             recursive: true,
             filters: Vec::new(),
+            formats: Default::default(),
         },
     )
     .await

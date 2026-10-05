@@ -72,12 +72,34 @@ export type EmbedRoiAnnotations = { num_roi: number, roi_coords: Array<[number, 
 
 export type ErrorResponse = { code: ApiErrorCode, error: string, };
 
+/**
+ * The container format of a discovered file, detected from its content
+ * (`docs/design/image-formats.md` section 3). The serialized names are also
+ * the values of `--formats` and of the `format` scan filter.
+ */
+export type FileFormat = "dicom" | "png" | "jpeg" | "tiff" | "webp";
+
 export type FileSummary = { index: number, path: string, 
 /**
  * The name the viewer shows for the file outside the directory tree: its
  * file name, or a synthetic `File N` in a masked session.
  */
-display_name: string, label: string, patient_id: string, patient_name: string, study_instance_uid: string, study_date: string, study_description: string, series_instance_uid: string, series_number: string, series_description: string, modality: string, instance_number: string, sop_instance_uid: string, sop_class_uid: string, object_kind: string, support_state: SupportState, support_reason: string | null, 
+display_name: string, label: string, patient_id: string, patient_name: string, study_instance_uid: string, study_date: string, study_description: string, series_instance_uid: string, series_number: string, series_description: string, modality: string, instance_number: string, sop_instance_uid: string, sop_class_uid: string, 
+/**
+ * The object family: a DICOM family from the SOP Class, or `image` for a
+ * raster file.
+ */
+object_kind: string, 
+/**
+ * What the file is, detected from its content and never from its name.
+ * A raster (anything but `dicom`) has empty DICOM identity strings and
+ * an empty `transfer_syntax_uid`.
+ */
+file_format: FileFormat, 
+/**
+ * What discovery read from a raster file's header; `null` for DICOM.
+ */
+raster: RasterSummary | null, support_state: SupportState, support_reason: string | null, 
 /**
  * Whether client-side raw windowing preserves every declared presentation
  * transform. Always `true` now that the value mapping carries the
@@ -327,6 +349,81 @@ annotated_frames: Array<ResolvedSegmentSourceFrame>,
  * Objects of every item that are not drawn.
  */
 skipped: SkippedGraphicObjects, references: Array<ReferenceSummary>, };
+
+/**
+ * How a raster file stores colour, before any expansion on decode.
+ */
+export type RasterColorType = "gray" | "gray_alpha" | "rgb" | "rgba" | "palette" | "cmyk";
+
+/**
+ * A TIFF page left out of the frame map.
+ */
+export type RasterExcludedPage = { 
+/**
+ * Zero-based IFD index in the file's page chain.
+ */
+page: number, differs: RasterPageDifference, };
+
+/**
+ * Why a TIFF page is not one of the file's frames: the first property, in
+ * this order, in which it differs from page 0, or the subfile flag that
+ * marks it as not a full image
+ * (`docs/design/image-formats.md` section 2.4).
+ */
+export type RasterPageDifference = "reduced_resolution" | "mask" | "width" | "height" | "samples_per_pixel" | "sample_format" | "bits_per_sample" | "photometric" | "alpha" | "orientation";
+
+/**
+ * The numeric kind of a raster file's stored samples.
+ */
+export type RasterSampleFormat = "uint" | "int" | "float";
+
+/**
+ * What discovery read from a raster file's header. Every field holds for
+ * every frame of the file. Nothing here is decoded from pixel data.
+ */
+export type RasterSummary = { color_type: RasterColorType, 
+/**
+ * Bits per sample as stored in the file (1, 2, 4, 8, 16, 32 or 64).
+ * Raw frames serve low-bit samples one byte each, at this depth's values.
+ */
+bit_depth: number, sample_format: RasterSampleFormat, 
+/**
+ * Whether the file carries an alpha channel or palette transparency.
+ */
+has_alpha: boolean, 
+/**
+ * The EXIF or TIFF orientation, 1 to 8; 1 when the file declares none or
+ * an invalid one. `rows`, `columns`, raw samples and every coordinate
+ * stay in the stored pixel grid: this is a display hint only.
+ */
+orientation: number, 
+/**
+ * Whether the file embeds an ICC profile.
+ */
+has_icc: boolean, 
+/**
+ * Pages (IFDs) in the file: 1 for PNG, JPEG and WebP.
+ */
+pages_total: number, 
+/**
+ * The zero-based page (IFD index) of each frame, in frame order. Its
+ * length is the file's `frame_count`; `[0]` for PNG, JPEG and WebP.
+ */
+frame_pages: Array<number>, 
+/**
+ * Pages that are not frames, in page order.
+ */
+excluded_pages: Array<RasterExcludedPage>, 
+/**
+ * An animated PNG or WebP; only its first frame is a frame here.
+ */
+animated: boolean, 
+/**
+ * PNG `sBIT`: the original precision of each stored channel, in file
+ * order. Informational only: it never narrows a window or value range.
+ * `null` when the file has no `sBIT` chunk.
+ */
+significant_bits: Array<number> | null, };
 
 export type RawFrameMetadata = { rows: number, columns: number, bitsAllocated: number, pixelRepresentation: number, samplesPerPixel: number, photometricInterpretation: string, rescaleSlope: number, rescaleIntercept: number, defaultWc: number | null, defaultWw: number | null, 
 /**

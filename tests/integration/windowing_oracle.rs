@@ -418,6 +418,7 @@ async fn loader_driven_display_frames_match_the_shared_windowing_oracle() {
             DiscoverOptions {
                 recursive: false,
                 filters: Vec::new(),
+                formats: Default::default(),
             },
         )
         .await
@@ -523,6 +524,7 @@ async fn a_window_in_another_unit_shows_and_reports_the_default_window() {
         DiscoverOptions {
             recursive: false,
             filters: Vec::new(),
+            formats: Default::default(),
         },
     )
     .await
@@ -584,6 +586,7 @@ async fn unit_window_falling_back_to_voi_reports_voi_lut() {
         DiscoverOptions {
             recursive: false,
             filters: Vec::new(),
+            formats: Default::default(),
         },
     )
     .await

@@ -12,6 +12,7 @@ pub(super) struct DiscoveryInputs {
     pub(super) input_paths: Vec<PathBuf>,
     pub(super) recursive: bool,
     pub(super) filters: Vec<loader::ScanFilter>,
+    pub(super) formats: loader::FormatSelection,
     pub(super) annotation_source: Option<AnnotationSource>,
     pub(super) registry: FileRegistry,
     pub(super) annotation_store: AnnotationStore,
@@ -130,6 +131,7 @@ async fn scan(
     let options = loader::DiscoverOptions {
         recursive: inputs.recursive,
         filters: inputs.filters.clone(),
+        formats: inputs.formats,
     };
     let discover =
         loader::discover_progressive(&inputs.input_paths, options, events_tx, cancellation);
@@ -243,7 +245,7 @@ fn finish_scan(
     DiscoveryOutcome::Completed
 }
 
-/// "3 skipped: 2 not DICOM (no DICM preamble), 1 unparsable DICOM".
+/// "3 skipped: 2 not a DICOM or image file, 1 unparsable DICOM".
 fn skip_breakdown(report: &loader::DiscoveryReport) -> String {
     let reasons = report
         .skipped_by_reason
@@ -343,6 +345,7 @@ mod tests {
                 input_paths: vec![input_path],
                 recursive: true,
                 filters,
+                formats: loader::FormatSelection::all(),
                 annotation_source,
                 registry: registry.clone(),
                 annotation_store: annotation_store.clone(),

@@ -259,6 +259,8 @@ mod tests {
         .unwrap();
 
         let file = FileEntry {
+            format: Default::default(),
+            raster: None,
             index: 0,
             path,
             label: "fixture".to_string(),

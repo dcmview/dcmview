@@ -114,6 +114,15 @@ struct Cli {
     filters: Vec<loader::ScanFilter>,
 
     #[arg(
+        long = "formats",
+        value_name = "LIST",
+        value_parser = parse_formats,
+        help = "File formats to load from directories, as a comma-separated list of \
+                dicom, png, jpeg, tiff, webp; default all. A file named as a PATH is always loaded"
+    )]
+    formats: Option<loader::FormatSelection>,
+
+    #[arg(
         long = "mask",
         help = "Replace patient identifiers in everything the viewer displays, for screen sharing. \
                 Display only: files are not modified and this is not de-identification"
@@ -137,6 +146,10 @@ struct Cli {
 }
 
 fn parse_scan_filter(raw: &str) -> std::result::Result<loader::ScanFilter, String> {
+    raw.parse()
+}
+
+fn parse_formats(raw: &str) -> std::result::Result<loader::FormatSelection, String> {
     raw.parse()
 }
 

@@ -23,6 +23,9 @@ pub enum ObjectKind {
     Waveform,
     RadiationTherapy,
     EncapsulatedPdf,
+    /// A raster image file (PNG, JPEG, TIFF or WebP), which has no SOP Class.
+    /// Never the result of [`classify_sop_class`].
+    Image,
     Unknown,
 }
 
@@ -43,6 +46,7 @@ impl ObjectKind {
             Self::Waveform => "waveform",
             Self::RadiationTherapy => "radiation_therapy",
             Self::EncapsulatedPdf => "encapsulated_pdf",
+            Self::Image => "image",
             Self::Unknown => "unknown",
         }
     }
@@ -51,6 +55,16 @@ impl ObjectKind {
 impl fmt::Display for ObjectKind {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.as_str())
+    }
+}
+
+/// The object family of a discovered file: [`ObjectKind::Image`] for a
+/// raster, else the family of its SOP Class.
+pub fn classify_file(file: &crate::types::FileEntry) -> ObjectKind {
+    if file.format.is_raster() {
+        ObjectKind::Image
+    } else {
+        classify_sop_class(&file.sop_class_uid)
     }
 }
 

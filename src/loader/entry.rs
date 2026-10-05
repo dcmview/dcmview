@@ -1,3 +1,4 @@
+use super::format::{sniff_raster_format, FormatSelection};
 use super::metadata::{
     normalize_pixel_aspect, read_exact_f64s, read_frame_patient_geometry, read_lut_sequence,
     read_positive_f64_pair, read_positive_u32_pair, read_presentation_metadata,
@@ -7,7 +8,9 @@ use super::DiscoveryReason;
 use crate::api::contracts::WindowPreset;
 use crate::dicom_values::{read_first_string, read_number, read_strings, sequence_items};
 use crate::pixels::{read_pixel_padding_range, NativeByteOrder, NativeFrameLayout};
-use crate::types::{FileEntry, NativePixelDataKind, NativePixelMetadata, SeriesMetadata};
+use crate::types::{
+    FileEntry, FileFormat, NativePixelDataKind, NativePixelMetadata, SeriesMetadata,
+};
 use anyhow::{bail, Context, Result};
 use dicom_core::value::{DataSetSequence, InMemFragment, PixelFragmentSequence, Value};
 use dicom_core::VR;
@@ -30,11 +33,21 @@ pub(super) enum EntryInspection {
 
 #[cfg(test)]
 pub(super) fn build_entry(path: &Path) -> Result<EntryInspection> {
-    build_entry_selected(path, &|_| true, &|| Ok(()))
+    build_entry_selected(path, FormatSelection::all(), &|_| true, &|| Ok(()))
 }
 
+/// Inspects one candidate file. `formats` is the selection that applies to
+/// it: the discovery's own for a file found by walking a directory, and
+/// [`FormatSelection::all`] for a file named as an input path.
+///
+/// The format is decided from content alone: `DICM` at offset 128 makes the
+/// file DICOM whatever precedes it; otherwise a raster signature at the
+/// start selects that format; otherwise the file is skipped as
+/// `UnrecognizedFormat`. A recognized format outside `formats` is skipped as
+/// `FormatNotSelected` before any header is parsed.
 pub(super) fn build_entry_selected(
     path: &Path,
+    formats: FormatSelection,
     selected: &impl Fn(&FileEntry) -> bool,
     check_active: &impl Fn() -> Result<()>,
 ) -> Result<EntryInspection> {
@@ -42,11 +55,20 @@ pub(super) fn build_entry_selected(
         object: obj,
         odd_item_length,
         pixels: pixel_header,
-    } = match read_discovery_header(path)? {
-        HeaderRead::NotPart10 => {
-            return Ok(EntryInspection::Skipped(
-                DiscoveryReason::MissingPart10Preamble,
-            ))
+    } = match read_discovery_header(path, formats)? {
+        HeaderRead::NotPart10(prefix) => {
+            return match sniff_raster_format(&prefix) {
+                None => Ok(EntryInspection::Skipped(
+                    DiscoveryReason::UnrecognizedFormat,
+                )),
+                Some(format) if !formats.contains(format) => {
+                    Ok(EntryInspection::Skipped(DiscoveryReason::FormatNotSelected))
+                }
+                Some(format) => super::raster::inspect_raster(path, format),
+            }
+        }
+        HeaderRead::NotSelected => {
+            return Ok(EntryInspection::Skipped(DiscoveryReason::FormatNotSelected))
         }
         HeaderRead::ParseFailed => {
             return Ok(EntryInspection::Skipped(DiscoveryReason::DicomParseFailed))
@@ -184,6 +206,8 @@ pub(super) fn build_entry_selected(
     let mut entry = FileEntry {
         index: 0,
         path: path.to_path_buf(),
+        format: FileFormat::Dicom,
+        raster: None,
         label,
         patient_id,
         patient_name,
@@ -290,6 +314,10 @@ fn valid_specific_character_set(value: &str) -> bool {
     })
 }
 
+/// The 128-byte preamble and the `DICM` magic code of a Part 10 file. Every
+/// raster signature fits in the same read.
+const PART10_PREFIX_LENGTH: usize = 132;
+
 /// What discovery reads from one file: the data set up to, but excluding,
 /// Float Pixel Data, and the top-level pixel element's header.
 struct DiscoveryHeader {
@@ -302,7 +330,12 @@ struct DiscoveryHeader {
 }
 
 enum HeaderRead {
-    NotPart10,
+    /// No `DICM` at offset 128. Holds the start of the file, up to
+    /// [`PART10_PREFIX_LENGTH`] bytes and fewer for a shorter file, for the
+    /// raster signatures.
+    NotPart10(Vec<u8>),
+    /// A Part 10 file while DICOM is outside the format selection; not parsed.
+    NotSelected,
     ParseFailed,
     Read(Box<DiscoveryHeader>),
 }
@@ -315,23 +348,32 @@ enum HeaderRead {
 /// drops the element it stopped at and reads through its own buffer, so the
 /// object is built here from the same parser's tokens instead, and the parse
 /// carries on from the stop token to the top-level pixel element's header.
-fn read_discovery_header(path: &Path) -> Result<HeaderRead> {
+fn read_discovery_header(path: &Path, formats: FormatSelection) -> Result<HeaderRead> {
     let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
     let file_length = file
         .metadata()
         .with_context(|| format!("failed to stat {}", path.display()))?
         .len();
     let mut reader = BufReader::new(file);
-    let mut preamble = [0_u8; 132];
-    match reader.read_exact(&mut preamble) {
-        Ok(()) if &preamble[128..132] == b"DICM" => {}
-        Ok(()) => return Ok(HeaderRead::NotPart10),
-        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => {
-            return Ok(HeaderRead::NotPart10)
+    // A file shorter than the preamble is not Part 10 but may be a raster (a
+    // valid PNG can be about 70 bytes), so a short read keeps what it got.
+    let mut preamble = [0_u8; PART10_PREFIX_LENGTH];
+    let mut filled = 0;
+    while filled < preamble.len() {
+        match reader.read(&mut preamble[filled..]) {
+            Ok(0) => break,
+            Ok(read) => filled += read,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => {
+                return Err(error).with_context(|| format!("failed to read {}", path.display()))
+            }
         }
-        Err(error) => {
-            return Err(error).with_context(|| format!("failed to read {}", path.display()))
-        }
+    }
+    if filled < preamble.len() || &preamble[128..132] != b"DICM" {
+        return Ok(HeaderRead::NotPart10(preamble[..filled].to_vec()));
+    }
+    if !formats.contains(FileFormat::Dicom) {
+        return Ok(HeaderRead::NotSelected);
     }
     // The file meta reader expects the magic code.
     reader
@@ -596,6 +638,7 @@ mod tests {
         };
         let EntryInspection::Selected(entry) = super::build_entry_selected(
             &fixture,
+            FormatSelection::all(),
             &|_| {
                 selected.set(true);
                 false
@@ -612,13 +655,14 @@ mod tests {
         );
         assert_eq!(entry.series_metadata.binary_fractional_seg_maximum, None);
         checks.set(0);
-        let error = super::build_entry_selected(&fixture, &|_| true, &|| {
-            checks.set(checks.get() + 1);
-            anyhow::ensure!(checks.get() < 10, "cancel sample inspection");
-            Ok(())
-        })
-        .err()
-        .expect("cancelled inspection must not publish an entry");
+        let error =
+            super::build_entry_selected(&fixture, FormatSelection::all(), &|_| true, &|| {
+                checks.set(checks.get() + 1);
+                anyhow::ensure!(checks.get() < 10, "cancel sample inspection");
+                Ok(())
+            })
+            .err()
+            .expect("cancelled inspection must not publish an entry");
         assert!(error.to_string().contains("cancel sample inspection"));
     }
 
@@ -764,6 +808,7 @@ mod tests {
         );
     }
 
+    use super::super::format::FormatSelection;
     use super::super::test_fixtures::base_object;
     use super::{
         build_entry, read_discovery_header, valid_specific_character_set, EntryInspection,
@@ -999,7 +1044,8 @@ mod tests {
                 .read_until(tags::FLOAT_PIXEL_DATA)
                 .open_file(&path)
                 .expect("dicom-object reads the fixture");
-            let HeaderRead::Read(header) = read_discovery_header(&path).expect("read header")
+            let HeaderRead::Read(header) =
+                read_discovery_header(&path, FormatSelection::all()).expect("read header")
             else {
                 panic!("{name} should parse");
             };
@@ -1023,7 +1069,7 @@ mod tests {
         }
     }
 
-    /// Each way a file can fail keeps its own outcome: no Part 10 preamble,
+    /// Each way a file can fail keeps its own outcome: no recognized format,
     /// an unparsable header (including an odd item length), or a data set
     /// that breaks after the header, which fails the inspection.
     #[test]
@@ -1063,7 +1109,7 @@ mod tests {
             EntryInspection::Skipped(reason) => reason.code(),
             EntryInspection::Selected(_) => "selected",
         };
-        assert_eq!(skipped(&short), "missing_part10_preamble");
+        assert_eq!(skipped(&short), "unrecognized_format");
         assert_eq!(
             skipped(&part10("cut-value.dcm", &cut_value)),
             "dicom_parse_failed"

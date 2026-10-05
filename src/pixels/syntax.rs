@@ -124,6 +124,10 @@ pub enum PixelSupportReason {
     GenericColorRenderingOnly,
     PaletteColorNotSupported,
     PhotometricInterpretationNotSupported,
+    /// A raster image file: discovered and described, with no decoder yet.
+    /// The raster decoders replace this with `Renderable` or a specific
+    /// `raster.*` reason.
+    RasterDecodeNotAvailable,
 }
 
 impl PixelSupportReason {
@@ -143,6 +147,7 @@ impl PixelSupportReason {
             Self::PhotometricInterpretationNotSupported => {
                 "pixel_layout.photometric_interpretation_not_supported"
             }
+            Self::RasterDecodeNotAvailable => "raster.decode_not_available",
         }
     }
 }
@@ -187,7 +192,14 @@ impl PixelSupport {
 ///
 /// Semantic interpretation such as segmentation or parametric mapping is
 /// separate.
+///
+/// A raster image is `Unsupported` with `raster.decode_not_available`: it has
+/// pixels and no transfer syntax, and nothing decodes it yet. Both frame
+/// endpoints answer `422 unsupported_pixel_layout` naming that reason.
 pub fn classify_pixel_support(file: &FileEntry) -> PixelSupport {
+    if file.format.is_raster() {
+        return PixelSupport::unsupported(PixelSupportReason::RasterDecodeNotAvailable);
+    }
     if !file.has_pixels {
         return PixelSupport::metadata_only(PixelSupportReason::PixelDataAbsentOrUnrecognized);
     }
@@ -273,6 +285,8 @@ mod tests {
 
     fn file(transfer_syntax_uid: &str) -> FileEntry {
         FileEntry {
+            format: Default::default(),
+            raster: None,
             index: 0,
             path: PathBuf::from("fixture.dcm"),
             label: String::new(),

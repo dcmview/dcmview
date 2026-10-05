@@ -485,7 +485,7 @@ mod tests {
         registry.record_discovery(DiscoveryRecord {
             path: PathBuf::from("/scan/z-invalid.bin"),
             disposition: DiscoveryDisposition::Skipped,
-            reason: DiscoveryReason::MissingPart10Preamble,
+            reason: DiscoveryReason::UnrecognizedFormat,
         });
         registry.record_discovery(DiscoveryRecord {
             path: PathBuf::from("/scan/a-selected.dcm"),
@@ -510,7 +510,7 @@ mod tests {
             ]
         );
         assert_eq!(records[0].reason.code(), "filter_mismatch");
-        assert_eq!(records[1].reason.code(), "missing_part10_preamble");
+        assert_eq!(records[1].reason.code(), "unrecognized_format");
 
         let status = registry.status();
         assert_eq!(status.scanned, 1);

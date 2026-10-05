@@ -55,6 +55,7 @@ async fn serve_masked(names: &[&str]) -> TestServer {
         DiscoverOptions {
             recursive: false,
             filters: Vec::new(),
+            formats: Default::default(),
         },
     )
     .await

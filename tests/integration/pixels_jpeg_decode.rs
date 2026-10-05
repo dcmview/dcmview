@@ -70,6 +70,7 @@ async fn jpeg_lossless_decodes_server_side_to_windowed_png() {
         DiscoverOptions {
             recursive: false,
             filters: Vec::new(),
+            formats: Default::default(),
         },
     )
     .await
