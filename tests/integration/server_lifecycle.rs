@@ -166,17 +166,19 @@ async fn background_requests_do_not_reset_the_idle_timeout() {
     let client = reqwest::Client::new();
 
     // Polled faster than the timeout, as an open tab would: the server must
-    // still stop about one second after the last foreground request.
-    let stopped = tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
+    // still stop about one second after the last foreground request. The
+    // stop is read from the server task, because a connection to a closed
+    // port fails slowly on some platforms.
+    let stopped = tokio::time::timeout(Duration::from_secs(4), async {
+        while !task.is_finished() {
             let poll = client
                 .get(format!("{url}/api/health"))
                 .header("X-Dcmview-Background", "1")
+                .timeout(Duration::from_millis(300))
                 .send()
                 .await;
-            match poll {
-                Ok(response) => assert!(response.status().is_success()),
-                Err(_) => return,
+            if let Ok(response) = poll {
+                assert!(response.status().is_success());
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
