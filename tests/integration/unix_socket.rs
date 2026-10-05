@@ -281,10 +281,11 @@ async fn a_live_socket_with_a_full_accept_queue_is_not_taken_over() {
     let original = fs::symlink_metadata(&path).expect("live socket metadata");
 
     // Fill its accept queue: macOS starts refusing at `kern.ipc.somaxconn`
-    // (128 by default). Linux queues or times out instead of refusing; either
-    // way the loop is bounded and the assertions below still have to hold.
+    // (128 by default). Linux has a longer queue and keeps accepting, so the
+    // loop is capped well under the usual descriptor limit; the assertions
+    // below have to hold either way.
     let mut waiting = Vec::new();
-    for _ in 0..1024 {
+    for _ in 0..256 {
         match tokio::time::timeout(Duration::from_millis(200), UnixStream::connect(&path)).await {
             Ok(Ok(stream)) => waiting.push(stream),
             Ok(Err(_)) | Err(_) => break,
@@ -299,4 +300,61 @@ async fn a_live_socket_with_a_full_accept_queue_is_not_taken_over() {
     );
     assert!(second.is_err(), "a second viewer bound over a live one");
     drop(live);
+}
+
+/// The lock file beside the socket is what marks a path as owned: it goes
+/// away with the viewer, a leftover one does not block the next launch, and
+/// it is never followed or replaced when it is not a plain file.
+#[tokio::test]
+async fn the_lock_file_follows_the_viewer_and_is_never_followed() {
+    // A viewer leaves nothing behind.
+    let directory = private_directory();
+    let path = directory.path().join("scan.sock");
+    let lock = directory.path().join("scan.sock.lock");
+    let bound = BoundServer::bind(&config(path.clone()))
+        .await
+        .expect("bind");
+    assert!(lock.exists(), "the lock file sits beside the socket");
+    drop(bound);
+    assert_eq!(
+        fs::read_dir(directory.path())
+            .expect("read directory")
+            .count(),
+        0,
+        "socket and lock are both removed"
+    );
+
+    // A killed viewer leaves both files and holds no lock: the next launch
+    // takes the path over.
+    drop(UnixListener::bind(&path).expect("leftover socket"));
+    fs::write(&lock, b"").expect("leftover lock");
+    let bound = BoundServer::bind(&config(path.clone()))
+        .await
+        .expect("a leftover lock with no holder does not block a launch");
+    assert!(fs::metadata(&path)
+        .expect("socket metadata")
+        .file_type()
+        .is_socket());
+    drop(bound);
+
+    // A lock path that is not a plain file is refused and left as it was.
+    let target = directory.path().join("elsewhere");
+    fs::write(&target, b"keep this file").expect("link target");
+    symlink(&target, &lock).expect("lock as a symlink");
+    assert!(BoundServer::bind(&config(path.clone())).await.is_err());
+    assert_eq!(
+        fs::read(&target).expect("target remains"),
+        b"keep this file"
+    );
+    assert!(fs::symlink_metadata(&lock)
+        .expect("link remains")
+        .file_type()
+        .is_symlink());
+    assert!(!path.exists(), "nothing is bound under a refused lock");
+
+    fs::remove_file(&lock).expect("remove link");
+    fs::create_dir(&lock).expect("lock as a directory");
+    assert!(BoundServer::bind(&config(path.clone())).await.is_err());
+    assert!(lock.is_dir());
+    assert!(!path.exists());
 }
