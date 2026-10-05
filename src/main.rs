@@ -150,4 +150,24 @@ mod tests {
     fn cli_definition_satisfies_clap_debug_assertions() {
         Cli::command().debug_assert();
     }
+
+    #[test]
+    fn unix_socket_conflicts_with_host_and_port() {
+        let cli =
+            Cli::try_parse_from(["dcmview", "--unix-socket", "/private/scan.sock", "./study"])
+                .expect("socket flag accepts default host and port");
+        assert_eq!(cli.unix_socket, Some(PathBuf::from("/private/scan.sock")));
+        for (flag, value) in [("--host", "127.0.0.1"), ("--port", "0")] {
+            let error = Cli::try_parse_from([
+                "dcmview",
+                "--unix-socket",
+                "/private/scan.sock",
+                flag,
+                value,
+                "./study",
+            ])
+            .expect_err("socket conflicts with explicit TCP flags");
+            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        }
+    }
 }
