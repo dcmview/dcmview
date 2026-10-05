@@ -3,7 +3,6 @@
 use super::support;
 use dcmview::server::{AccessToken, BoundServer, ServerConfig};
 use std::fs;
-use std::os::fd::AsRawFd;
 use std::os::unix::fs::{symlink, FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -267,25 +266,25 @@ async fn a_symlinked_parent_is_checked_and_used_at_its_resolved_location() {
     );
 }
 
-/// A live server whose accept queue is full must not be mistaken for a stale
+/// A live viewer whose accept queue is full must not be mistaken for a stale
 /// socket. macOS refuses such a connection with `ECONNREFUSED`, the same
 /// answer a socket with no listener gives.
 #[tokio::test]
 async fn a_live_socket_with_a_full_accept_queue_is_not_taken_over() {
     let directory = private_directory();
     let path = directory.path().join("scan.sock");
-    // The first, live server. It never accepts, as a stopped or busy process
-    // would not. The queue is shortened so two connections fill it; with the
-    // length tokio asks for, macOS fills at `kern.ipc.somaxconn` (128).
-    let live = UnixListener::bind(&path).expect("bind the live socket");
-    // SAFETY: the descriptor is an open listening socket owned by `live`.
-    assert_eq!(unsafe { libc::listen(live.as_raw_fd(), 1) }, 0);
+    // The first viewer is bound but never accepts, as a stopped or hung
+    // process would not.
+    let live = BoundServer::bind(&config(path.clone()))
+        .await
+        .expect("bind the live viewer");
     let original = fs::symlink_metadata(&path).expect("live socket metadata");
 
+    // Fill its accept queue: macOS starts refusing at `kern.ipc.somaxconn`
+    // (128 by default). Linux queues or times out instead of refusing; either
+    // way the loop is bounded and the assertions below still have to hold.
     let mut waiting = Vec::new();
-    for _ in 0..16 {
-        // Linux queues or answers EAGAIN here instead of refusing; either
-        // way the loop ends and the assertions below still have to hold.
+    for _ in 0..1024 {
         match tokio::time::timeout(Duration::from_millis(200), UnixStream::connect(&path)).await {
             Ok(Ok(stream)) => waiting.push(stream),
             Ok(Err(_)) | Err(_) => break,
@@ -296,8 +295,8 @@ async fn a_live_socket_with_a_full_accept_queue_is_not_taken_over() {
     let current = fs::symlink_metadata(&path).expect("the live socket must still exist");
     assert!(
         current.dev() == original.dev() && current.ino() == original.ino(),
-        "the live server's socket was replaced"
+        "the live viewer's socket was replaced"
     );
-    assert!(second.is_err(), "a second server bound over a live one");
+    assert!(second.is_err(), "a second viewer bound over a live one");
     drop(live);
 }
