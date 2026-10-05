@@ -7,7 +7,6 @@
 		isApiError,
 		type DisplayFrame,
 		type DisplayFrameWindowOptions,
-		type EmbedRoiAnnotations,
 		type FileSummary,
 		type FrameValueMapping,
 		type RawFrame,
@@ -16,17 +15,12 @@
 		fetchRedactions,
 		updateRedactions,
 	} from "../api";
+	import type { WindowDragBase } from "./annotation/tools/tool";
 	import {
-		addRoi,
 		canonicalRect,
 		deleteRoi,
-		moveCoord,
-		resizeCoord,
 		setRoiFrameScope,
-		updateRoiCoord,
 		type ImagePoint,
-		type RoiCoord,
-		type RoiHandle,
 	} from "./annotationGeometry";
 	import { canRunCinePlayback, type CineDirection, type CineMode } from "./cinePlayback";
 	import { fitImageToViewportHeight, imageDisplayGeometry } from "./imageGeometry";
@@ -40,7 +34,7 @@
 	} from "./rawWindowing";
 	import { trackForegroundRequest } from "./requestIndicator";
 	import type { NavigationFrameRef } from "./seriesNavigation";
-	import { isRectangleTool, type ActiveTool } from "./viewerTools";
+	import type { ActiveTool } from "./viewerTools";
 	import { AnnotationStore } from "./viewport/annotationStore.svelte";
 	import { playDisplayCine } from "./viewport/displayCine";
 	import { LiveWindowPreview } from "./viewport/liveWindowPreview";
@@ -80,7 +74,8 @@
 	import RoiList from "./viewport/RoiList.svelte";
 	import RoiLabels from "./viewport/RoiLabels.svelte";
 	import RoiOverlay from "./viewport/RoiOverlay.svelte";
-	import { hitTestRoi, roiCoord, visibleRois as roisOnFrame } from "./viewport/roiEditing";
+	import { visibleRois as roisOnFrame } from "./viewport/roiEditing";
+	import { isViewportChromeTarget, ToolHost } from "./viewport/ToolHost.svelte";
 	import type { ViewStates } from "./viewport/viewStates.svelte";
 	import {
 		clientToImagePoint,
@@ -107,15 +102,6 @@
 	import ZoomControls from "./viewport/ZoomControls.svelte";
 
 	type PipelineMode = "cine" | "diagnostic_wl" | "server_wl" | "overlay";
-	type DragState =
-		| { mode: "pan"; startX: number; startY: number; baseTx: number; baseTy: number }
-		| { mode: "wl"; startX: number; startY: number; baseCenter: number; baseWidth: number; step: number; unit: string | null }
-		| { mode: "zoom_drag"; startY: number; baseScale: number; anchor: ZoomAnchor }
-		| { mode: "scroll_drag"; startY: number; baseFrame: number }
-		| { mode: "draw_roi"; start: ImagePoint; current: ImagePoint }
-		| { mode: "move_roi"; roiIndex: number; start: ImagePoint; original: RoiCoord }
-		| { mode: "resize_roi"; roiIndex: number; handle: RoiHandle; original: RoiCoord }
-		| null;
 
 	let {
 		activeFile,
@@ -172,12 +158,12 @@
 		graphicAnnotation?: GraphicAnnotationSelection | null;
 	} = $props();
 
-	let dragState = $state<DragState>(null);
-	let roiDragTarget: { fileIndex: number; frameIndex: number; original: EmbedRoiAnnotations | null } | null = null;
 	let loading = $state(false);
 	let loadError = $state<string | null>(null);
 	let liveWindowCenter = $state<number | null>(null);
 	let liveWindowWidth = $state<number | null>(null);
+	// The unit of the window a window/level drag began from.
+	let liveWindowUnit = $state<string | null>(null);
 	let viewportEl: HTMLElement | undefined = $state();
 	let viewportSize = $state({ width: 0, height: 0 });
 	let canvasEl: HTMLCanvasElement | undefined = $state();
@@ -263,15 +249,61 @@
 
 	const wlRenderer = new WlRendererClient();
 
-	const FRAME_SCROLL_SPEED_FACTOR = 0.7;
-	const DRAG_PIXELS_PER_FRAME = 10 / FRAME_SCROLL_SPEED_FACTOR;
-	const TRACKPAD_WHEEL_DELTA_THRESHOLD = 50;
-	const MOUSE_WHEEL_ZOOM_SENSITIVITY = 0.0025;
-	const PINCH_ZOOM_SENSITIVITY = 0.01;
 	// Zoom, pan, and orientation belong to the open tab (navigation scope).
 	const activeTransform = $derived(viewStates.transform(activeFile ? navigationScopeKey : ""));
 	const orientation = $derived(viewStates.orientation(navigationScopeKey));
-	const isDragging = $derived(dragState !== null);
+	// Pointer and wheel gestures. The host and its tools read the viewport
+	// through these members at the moment of each event.
+	const tools = new ToolHost({
+		get file() { return activeFile; },
+		get frame() { return currentFrame; },
+		get imageRows() { return imageRows; },
+		get imageColumns() { return imageColumns; },
+		get transform() { return activeTransform; },
+		setTransform: (transform) => updateTransform(transform),
+		toImage: pointFromPointer,
+		zoomAnchor: zoomAnchorFromClient,
+		zoomTransform: zoomTransformForAnchor,
+		navigation: {
+			get count() { return navigationFrameCount; },
+			get position() { return navigationPosition; },
+			go(position) {
+				cinePlaying = false;
+				onnavigationchange(position);
+			},
+		},
+		window: {
+			begin: beginWindowDrag,
+			preview(center, width) {
+				liveWindowCenter = center;
+				liveWindowWidth = width;
+			},
+			commit() {
+				if (liveWindowCenter !== null && liveWindowWidth !== null) {
+					onmanualwindowlevel(liveWindowCenter, liveWindowWidth, liveWindowUnit);
+				}
+			},
+		},
+		rects: {
+			get editable() { return !overlay && presentedMatchesActive && annotationsReady; },
+			get visible() { return visibleRois; },
+			get annotations() { return activeAnnotations; },
+			get selectedIndex() { return selectedRoiIndex; },
+			get coversAllFrames() { return redacting; },
+			select: setSelectedRoi,
+			beginLiveEdit: () => edited.beginLiveEdit(activeFile.index),
+			showDraft: (fileIndex, annotations) => edited.showDraft(fileIndex, annotations),
+			commit: (annotations, selectedIndex) => edited.commit(activeFile.index, annotations, selectedIndex),
+		},
+		get activeTool() { return activeTool; },
+		get displayedFrameIsCurrent() { return presentedMatchesActive; },
+		get viewportHeight() { return viewportSize.height; },
+		zoomAt,
+		scheduleProbe,
+		gestureEnded,
+	});
+	const isDragging = $derived(tools.dragging);
+	const windowDragging = $derived(tools.capturedTool === "window_level");
 	// The displayed frame's value mapping (or the file's latest while that
 	// frame's loads) decides whether the window is in real-world units.
 	const frameMapping = $derived(rawMatchesRequest ? preparedRaw!.mapping : valueMappings.forFrame(activeFile.index, currentFrame));
@@ -329,8 +361,8 @@
 		mapping: overlay ? null : frameMapping,
 		requested: windowCenter !== null && windowWidth !== null
 			? { window: { wc: windowCenter, ww: windowWidth }, unit: windowUnit } : null,
-		live: dragState?.mode === "wl" && liveWindowCenter !== null && liveWindowWidth !== null
-			? { window: { wc: liveWindowCenter, ww: liveWindowWidth }, unit: dragState.unit } : null,
+		live: windowDragging && liveWindowCenter !== null && liveWindowWidth !== null
+			? { window: { wc: liveWindowCenter, ww: liveWindowWidth }, unit: liveWindowUnit } : null,
 		mode: windowMode,
 		defaultWindow: overlay?.sourceFile.default_window ?? activeFile.default_window,
 		server: shownDisplay,
@@ -406,8 +438,8 @@
 		overlay ? [] : roisOnFrame(edited.annotations(presented?.target.file.index ?? activeFile.index), presented?.target.frameIndex ?? currentFrame),
 	);
 	const draftRoi = $derived(
-		dragState?.mode === "draw_roi"
-			? canonicalRect(dragState.start, dragState.current, imageRows, imageColumns)
+		tools.draft
+			? canonicalRect(tools.draft.start, tools.draft.current, imageRows, imageColumns)
 			: null,
 	);
 
@@ -503,8 +535,8 @@
 		probe.pixel = null;
 	}
 
-	function pointFromPointer(event: PointerEvent): ImagePoint | null {
-		const point = imagePointAt(event.clientX, event.clientY);
+	function pointFromPointer(clientX: number, clientY: number): ImagePoint | null {
+		const point = imagePointAt(clientX, clientY);
 		if (!point) return null;
 		return {
 			x: Math.min(imageColumns, Math.max(0, point.x)),
@@ -627,14 +659,14 @@
 		load: ({ wc, ww }, signal) => loadDisplayFrame(
 			activeFile.index,
 			currentFrame,
-			{ wc, ww, windowMode: "default", unit: dragState?.mode === "wl" ? dragState.unit : null, preview: true },
+			{ wc, ww, windowMode: "default", unit: windowDragging ? liveWindowUnit : null, preview: true },
 			signal,
 		),
 		show: drawPreviewFrame,
 	});
 
 	async function drawPreviewFrame({ blob, window, appliedWindow }: DisplayFrame): Promise<void> {
-		const isLive = () => dragState?.mode === "wl" && pipelineMode === "server_wl" && !!canvasEl;
+		const isLive = () => windowDragging && pipelineMode === "server_wl" && !!canvasEl;
 		if (!isLive()) return;
 		const image = await decodeCanvasImage(blob);
 		try {
@@ -644,7 +676,7 @@
 			canvasEl.height = image.height;
 			ctx?.drawImage(image.source, 0, 0);
 			shownDisplay = { window, appliedWindow };
-			shownUnitRequest = dragState?.mode === "wl" && !!dragState.unit && !mappedScale;
+			shownUnitRequest = windowDragging && !!liveWindowUnit && !mappedScale;
 			if (presented) presented = { ...presented, window: resolvedWindow };
 		} finally {
 			image.dispose();
@@ -825,10 +857,6 @@
 		};
 	}
 
-	function isViewportChromeTarget(target: EventTarget | null): boolean {
-		return target instanceof Element && !!target.closest(".zoom-controls, .roi-list");
-	}
-
 	/** Direction of travel for prefetch ordering: cine's, else the last frame step's. */
 	function frameDirectionTo(frame: number): 1 | -1 {
 		if (cinePlaying) {
@@ -878,14 +906,14 @@
 	});
 
 	// An explicit selection supersedes an in-progress local drag as well as
-	// its last preview. A released drag is already cleared by endDrag.
+	// its last preview. A released drag is already cleared by the tool host.
 	$effect(() => {
 		void windowCenter;
 		void windowWidth;
 		void windowUnit;
 		void windowMode;
 		untrack(() => {
-			if (dragState?.mode === "wl") endDrag();
+			if (windowDragging) tools.endGesture();
 		});
 	});
 
@@ -914,7 +942,7 @@
 	$effect(() => {
 		const wc = liveWindowCenter;
 		const ww = liveWindowWidth;
-		if (pipelineMode !== "server_wl" || dragState?.mode !== "wl" || wc === null || ww === null) return;
+		if (pipelineMode !== "server_wl" || !windowDragging || wc === null || ww === null) return;
 		if (resolvedWindow.source === "color" || colorFiles[activeFile.index]) return;
 		untrack(() => livePreview.request({ wc, ww }));
 	});
@@ -1225,7 +1253,7 @@
 		fitActiveImageToViewport();
 		liveWindowCenter = null;
 		liveWindowWidth = null;
-		endDrag();
+		tools.endGesture();
 	}
 
 	function zoomAnchorFromClient(clientX: number, clientY: number): ZoomAnchor | null {
@@ -1245,75 +1273,6 @@
 		const transform = zoomTransformForAnchor(newScale, anchor);
 		if (!transform) return;
 		updateTransform(transform);
-	}
-
-	function startZoomDrag(event: PointerEvent): DragState {
-		const anchor = zoomAnchorFromClient(event.clientX, event.clientY);
-		if (!anchor) return null;
-		return {
-			mode: "zoom_drag",
-			startY: event.clientY,
-			baseScale: activeTransform.scale,
-			anchor,
-		};
-	}
-
-	function applyZoomDrag(drag: Extract<NonNullable<DragState>, { mode: "zoom_drag" }>, clientY: number) {
-		if (!activeFile) return;
-		const dy = clientY - drag.startY;
-		const transform = zoomTransformForAnchor(drag.baseScale * Math.exp(-dy * 0.005), drag.anchor);
-		if (!transform) return;
-		updateTransform(transform);
-	}
-
-	function wheelDeltaPixels(event: WheelEvent): { dx: number; dy: number } {
-		if (event.deltaMode === WheelEvent.DOM_DELTA_LINE) {
-			return { dx: event.deltaX * 16, dy: event.deltaY * 16 };
-		}
-		if (event.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
-			const page = viewportSize.height || window.innerHeight || 800;
-			return { dx: event.deltaX * page, dy: event.deltaY * page };
-		}
-		return { dx: event.deltaX, dy: event.deltaY };
-	}
-
-	function isLikelyTouchpadWheel(event: WheelEvent, dx: number, dy: number): boolean {
-		if (event.deltaMode !== WheelEvent.DOM_DELTA_PIXEL) return false;
-		return Math.abs(dx) > 0 || Math.abs(dy) < TRACKPAD_WHEEL_DELTA_THRESHOLD;
-	}
-
-	function zoomByWheelDelta(deltaY: number, clientX: number, clientY: number, sensitivity: number) {
-		if (deltaY === 0) return;
-		zoomAt(activeTransform.scale * Math.exp(-deltaY * sensitivity), clientX, clientY);
-	}
-
-	function onWheel(event: WheelEvent) {
-		if (!activeFile || !activeFile.has_pixels) return;
-		if (isViewportChromeTarget(event.target)) return;
-		event.preventDefault();
-
-		const { dx, dy } = wheelDeltaPixels(event);
-		if (activeTool === "scroll" && navigationFrameCount > 1 && dy !== 0) {
-			cinePlaying = false;
-			onnavigationchange(navigationPosition + (dy > 0 ? 1 : -1));
-			return;
-		}
-		if (event.ctrlKey || event.metaKey) {
-			zoomByWheelDelta(dy, event.clientX, event.clientY, PINCH_ZOOM_SENSITIVITY);
-			return;
-		}
-
-		if (isLikelyTouchpadWheel(event, dx, dy)) {
-			updateTransform({
-				...activeTransform,
-				tx: activeTransform.tx - dx,
-				ty: activeTransform.ty - dy,
-			});
-			return;
-		}
-
-		zoomByWheelDelta(dy, event.clientX, event.clientY, MOUSE_WHEEL_ZOOM_SENSITIVITY);
-		scheduleProbe(event.clientX, event.clientY);
 	}
 
 	function windowDragStep(baseWindow: { wc: number; ww: number }): number {
@@ -1339,226 +1298,35 @@
 		return 1;
 	}
 
-	function onPointerDown(event: PointerEvent) {
-		if (!activeFile || !activeFile.has_pixels) return;
-		if (isViewportChromeTarget(event.target)) return;
+	/** Starts a window/level drag's live window at the displayed one, when this frame can be windowed now. */
+	function beginWindowDrag(): WindowDragBase | null {
+		if (overlay) return null;
+		if (presented && (presented.target.file.index !== activeFile.index || presented.target.frameIndex !== currentFrame)) return null;
+		if (resolvedWindow.source === "color" || (pipelineMode === "diagnostic_wl" ? !currentRawFrame : !shownDisplay)) return null;
+		const baseWindow = displayWindow ?? { wc: 0, ww: 1 };
+		const step = windowDragStep(baseWindow);
+		liveWindowUnit = resolvedWindow.unit;
+		liveWindowCenter = baseWindow.wc;
+		liveWindowWidth = baseWindow.ww;
+		return { center: baseWindow.wc, width: baseWindow.ww, step };
+	}
 
-		if (event.button === 1) {
-			event.preventDefault();
-			(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
-			dragState = {
-				mode: "pan",
-				startX: event.clientX,
-				startY: event.clientY,
-				baseTx: activeTransform.tx,
-				baseTy: activeTransform.ty,
-			};
-			return;
-		}
-
-		if (event.button === 2) {
-			event.preventDefault();
-			return;
-		}
-
-		if (event.button === 0) {
-			if (overlay && (activeTool === "window_level" || isRectangleTool(activeTool))) {
-				return;
-			}
-			let nextDragState: DragState = null;
-			switch (activeTool) {
-				case "window_level": {
-					if (presented && (presented.target.file.index !== activeFile.index || presented.target.frameIndex !== currentFrame)) break;
-					if (resolvedWindow.source === "color" || (pipelineMode === "diagnostic_wl" ? !currentRawFrame : !shownDisplay)) break;
-					const baseWindow = displayWindow ?? { wc: 0, ww: 1 };
-					nextDragState = {
-						mode: "wl",
-						startX: event.clientX,
-						startY: event.clientY,
-						baseCenter: baseWindow.wc,
-						baseWidth: baseWindow.ww,
-						step: windowDragStep(baseWindow),
-						unit: resolvedWindow.unit,
-					};
-					liveWindowCenter = baseWindow.wc;
-					liveWindowWidth = baseWindow.ww;
-					break;
-				}
-				case "pan":
-					nextDragState = {
-						mode: "pan",
-						startX: event.clientX,
-						startY: event.clientY,
-						baseTx: activeTransform.tx,
-						baseTy: activeTransform.ty,
-					};
-					break;
-				case "zoom":
-					nextDragState = startZoomDrag(event);
-					break;
-				case "scroll":
-					if (navigationFrameCount > 1) {
-						nextDragState = {
-							mode: "scroll_drag",
-							startY: event.clientY,
-							baseFrame: navigationPosition,
-						};
-					}
-					break;
-				case "annotate_rect":
-				case "redact": {
-					if (!presentedMatchesActive || !annotationsReady) break;
-					const point = pointFromPointer(event);
-					if (!point) break;
-					roiDragTarget = { fileIndex: activeFile.index, frameIndex: currentFrame, original: activeAnnotations };
-					event.preventDefault();
-					const hit = hitTestRoi(visibleRois, point, activeTransform.scale);
-					if (hit) {
-						setSelectedRoi(hit.roi.index);
-						edited.beginLiveEdit(activeFile.index);
-						const original = roiCoord(hit.roi);
-						nextDragState = hit.handle
-							? { mode: "resize_roi", roiIndex: hit.roi.index, handle: hit.handle, original }
-							: { mode: "move_roi", roiIndex: hit.roi.index, start: point, original };
-						break;
-					}
-					setSelectedRoi(null);
-					nextDragState = { mode: "draw_roi", start: point, current: point };
-					break;
-				}
-			}
-			if (nextDragState) {
-				event.preventDefault();
-				(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
-				dragState = nextDragState;
-			}
-		}
+	/** The tool host ended a gesture: drop the live window and its previews. */
+	function gestureEnded() {
+		liveWindowCenter = null;
+		liveWindowWidth = null;
+		liveWindowUnit = null;
+		livePreview.stop();
+		edited.endLiveEdit();
 	}
 
 	function onPointerMove(event: PointerEvent) {
 		if (activeFile?.has_pixels && !isViewportChromeTarget(event.target)) {
 			scheduleProbe(event.clientX, event.clientY);
-		} else if (!dragState) {
+		} else if (!tools.dragging) {
 			stopProbe();
 		}
-		if (!activeFile || !dragState) return;
-		if (cancelMismatchedRoiDrag()) return;
-
-		if (dragState.mode === "pan") {
-			const dx = event.clientX - dragState.startX;
-			const dy = event.clientY - dragState.startY;
-			updateTransform({
-				...activeTransform,
-				tx: dragState.baseTx + dx,
-				ty: dragState.baseTy + dy,
-			});
-			return;
-		}
-
-		if (dragState.mode === "wl") {
-			const dx = event.clientX - dragState.startX;
-			const dy = event.clientY - dragState.startY;
-			const nextWidth = Math.max(dragState.step, dragState.baseWidth + dx * 4 * dragState.step);
-			const nextCenter = dragState.baseCenter - dy * 2 * dragState.step;
-			liveWindowCenter = nextCenter;
-			liveWindowWidth = nextWidth;
-			return;
-		}
-
-		if (dragState.mode === "zoom_drag") {
-			applyZoomDrag(dragState, event.clientY);
-			return;
-		}
-
-		if (dragState.mode === "scroll_drag" && navigationFrameCount > 1) {
-			const dy = event.clientY - dragState.startY;
-			const frameDelta = Math.round(dy / DRAG_PIXELS_PER_FRAME);
-			cinePlaying = false;
-			onnavigationchange(
-				Math.max(0, Math.min(navigationFrameCount - 1, dragState.baseFrame + frameDelta)),
-			);
-			return;
-		}
-
-		if (dragState.mode === "draw_roi") {
-			const point = pointFromPointer(event);
-			if (point) {
-				dragState = { ...dragState, current: point };
-			}
-			return;
-		}
-
-		if (dragState.mode === "move_roi" && activeAnnotations) {
-			const point = pointFromPointer(event);
-			if (!point) return;
-			const moved = moveCoord(
-				dragState.original,
-				{ x: point.x - dragState.start.x, y: point.y - dragState.start.y },
-				imageRows,
-				imageColumns,
-			);
-			const next = updateRoiCoord(activeAnnotations, dragState.roiIndex, moved, activeFile.frame_count);
-			edited.showDraft(activeFile.index, next);
-			return;
-		}
-
-		if (dragState.mode === "resize_roi" && activeAnnotations) {
-			const point = pointFromPointer(event);
-			if (!point) return;
-			const resized = resizeCoord(dragState.original, dragState.handle, point, imageRows, imageColumns);
-			if (!resized) return;
-			const next = updateRoiCoord(activeAnnotations, dragState.roiIndex, resized, activeFile.frame_count);
-			edited.showDraft(activeFile.index, next);
-		}
-	}
-
-	function onPointerUp(event: PointerEvent) {
-		const target = event.currentTarget as HTMLElement;
-		if (target.hasPointerCapture(event.pointerId)) {
-			target.releasePointerCapture(event.pointerId);
-		}
-		if (cancelMismatchedRoiDrag()) return;
-		if (dragState?.mode === "wl" && liveWindowCenter !== null && liveWindowWidth !== null) {
-			onmanualwindowlevel(liveWindowCenter, liveWindowWidth, dragState.unit);
-		}
-		if (dragState?.mode === "draw_roi") {
-			const coord = canonicalRect(dragState.start, dragState.current, imageRows, imageColumns);
-			if (coord) {
-				const added = addRoi(activeAnnotations, coord, currentFrame, activeFile.frame_count);
-				// A ROI marks the frame it is drawn on; a redaction box covers every frame.
-				const next = redacting
-					? setRoiFrameScope(added, added.num_roi - 1, "all", currentFrame, activeFile.frame_count)
-					: added;
-				edited.commit(activeFile.index, next, next.num_roi - 1);
-			}
-		}
-		if ((dragState?.mode === "move_roi" || dragState?.mode === "resize_roi") && activeAnnotations) {
-			edited.commit(activeFile.index, activeAnnotations, selectedRoiIndex);
-		}
-		endDrag();
-	}
-
-	function cancelMismatchedRoiDrag(): boolean {
-		if (!roiDragTarget || (presentedMatchesActive && roiDragTarget.fileIndex === activeFile.index
-			&& roiDragTarget.frameIndex === currentFrame)) return false;
-		onPointerCancel();
-		return true;
-	}
-
-	function onPointerCancel() {
-		if (roiDragTarget?.original) {
-			edited.showDraft(roiDragTarget.fileIndex, roiDragTarget.original);
-		}
-		endDrag();
-	}
-
-	function endDrag() {
-		liveWindowCenter = null;
-		liveWindowWidth = null;
-		livePreview.stop();
-		dragState = null;
-		roiDragTarget = null;
-		edited.endLiveEdit();
+		tools.pointerMove(event);
 	}
 
 	function onContextMenu(event: MouseEvent) {
@@ -1587,11 +1355,11 @@
 	class:dragging={isDragging}
 	data-tool={activeTool}
 	role="application"
-	onwheel={onWheel}
-	onpointerdown={onPointerDown}
+	onwheel={(event) => tools.wheel(event)}
+	onpointerdown={(event) => tools.pointerDown(event)}
 	onpointermove={onPointerMove}
-	onpointerup={onPointerUp}
-	onpointercancel={onPointerCancel}
+	onpointerup={(event) => tools.pointerUp(event)}
+	onpointercancel={() => tools.pointerCancel()}
 	onpointerleave={stopProbe}
 	oncontextmenu={onContextMenu}
 	ondblclick={onreset}

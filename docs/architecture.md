@@ -156,6 +156,20 @@ per-frame overlay layers, the ROI annotation store and components, the
 pixel probe and value-mapping conversions behind the readout, and the view
 transform math, including the client-to-image-pixel mapping.
 
+Pointer and wheel events go to one `viewport/ToolHost.svelte.ts`. It owns
+pointer capture, the gestures every tool shares (middle-button pan, wheel pan
+and zoom, pinch, with the wheel classified in one function), the cancel of a
+frame-bound gesture when another file or frame is shown, and the tool that
+holds the pointer. Each tool (Pan, Zoom, Scroll, W/L, and the rectangle tool
+behind both ROI and Redact) is a state machine in `lib/annotation/tools/`
+behind the `Tool` interface of `tool.ts`, with no Svelte in it. Tools reach
+the viewport only through `ToolContext`, which the viewport implements over
+its own state: the view transform, frame navigation, the live window of a
+W/L drag, and the rectangles being edited. The host exposes what the tool
+holding the pointer is drawing (the draft rectangle). The viewport keeps
+rendering, the readout, and the overlays, the presentation state's
+annotations among them.
+
 The viewport retains the last complete presentation until its replacement is
 ready. `viewport/frameLayers.ts` shares cached colorwash and presentation
 payloads and owns decoded layers for each prepared frame. Raw and display
