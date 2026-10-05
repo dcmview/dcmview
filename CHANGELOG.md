@@ -31,6 +31,12 @@ diagnostic viewer.
   The socket is mode `0600`, checks peer user IDs, and is removed on shutdown.
   Socket mode conflicts with `--host` and `--port`, always bypasses VS Code
   routing, and never opens a browser automatically.
+- The viewer reads the access token from its launch link
+  (`http://127.0.0.1:PORT/#token=…`), removes it from the address bar, keeps
+  it for the tab across reloads, and sends it with every API request. Opened
+  without the token, or after dcmview restarted on the same port, it says to
+  open the link printed in the terminal instead of showing a load error;
+  pasting that link into the same tab loads the viewer.
 
 ## 0.3.2 - 2026-10-02
 
