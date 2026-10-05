@@ -776,6 +776,10 @@ mod tests {
             webp(chunks)
         };
 
+        // Every reserved bit set around an alpha flag, then a 3x2 image.
+        let mut reserved_webp = chunk(b"VP8X", &[0xd1, 0xff, 0xff, 0xff, 2, 0, 0, 1, 0, 0], false);
+        reserved_webp.extend(chunk(b"VP8L", &[0x2f, 0x02, 0x40, 0, 0x10], false));
+
         vec![
             // Fill bytes before a marker are legal, in any number.
             Case {
@@ -855,6 +859,19 @@ mod tests {
                     EXIF_SCAN_MAX_BYTES + 6 * BUFFER,
                     EXIF_SCAN_MAX_BYTES / BUFFER + 16,
                 ),
+            },
+            // Readers ignore reserved bits; a later writer may set them.
+            Case {
+                name: "WebP with reserved VP8X bits set",
+                format: FileFormat::Webp,
+                bytes: webp(reserved_webp),
+                outcome: Outcome::Listed(|entry| {
+                    (entry.rows, entry.columns) == (2, 3)
+                        && entry.raster.as_ref().is_some_and(|raster| {
+                            raster.has_alpha && !raster.animated && !raster.has_icc
+                        })
+                }),
+                most: (BUFFER, 1),
             },
             // Everything but the orientation is in the first chunk.
             Case {

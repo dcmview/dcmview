@@ -169,11 +169,9 @@ pub(super) fn webp(input: &mut HeaderReader) -> Result<Header> {
             (b"VP8X", None) => {
                 ensure!(length == 10 && offset == 12, "invalid VP8X header");
                 let bytes = input.read::<10>(start)?;
+                // The reserved bits around the flags are ignored, as the
+                // container specification asks of readers.
                 let flags = bytes[0];
-                ensure!(
-                    flags & 0xc1 == 0 && bytes[1..4] == [0, 0, 0],
-                    "invalid VP8X flags"
-                );
                 let u24 = |b: &[u8]| u32::from(b[0]) | u32::from(b[1]) << 8 | u32::from(b[2]) << 16;
                 let color = if flags & 0x10 != 0 {
                     RasterColorType::Rgba
