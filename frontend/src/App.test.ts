@@ -1,9 +1,10 @@
 // @vitest-environment happy-dom
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/svelte";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "./api";
 import App from "./App.svelte";
 import type { SemanticContextResponse, SeriesSummary } from "./api";
+import { adoptAccessToken } from "./lib/accessToken";
 import { emptySeriesCatalog, fileSummary, filesResponse, rawFrame } from "./testing/fixtures";
 
 vi.mock("./api", async (importOriginal) => ({
@@ -293,6 +294,44 @@ describe("server retry", () => {
 		await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
 		await waitFor(() => expect(screen.queryByText("frame was unreachable")).toBeNull());
 		await waitFor(() => expect(document.querySelector(".dicom-canvas")?.getAttribute("data-capture-rendered")).toBe("0:0"));
+	});
+});
+
+describe("ROI export", () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+		vi.restoreAllMocks();
+	});
+
+	it("fetches the export with the access token and saves it under the server's filename", async () => {
+		window.location.hash = "#token=export-token";
+		adoptAccessToken();
+		await renderApp();
+		const csv = "empi_anon,acc_anon,ROI_coords\n1,2,\"((1, 2, 3, 4),)\"\n";
+		const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => new Response(csv, {
+			headers: { "Content-Type": "text/csv", "Content-Disposition": 'attachment; filename="server-named.csv"' },
+		}));
+		vi.stubGlobal("fetch", fetchMock);
+		const saved: { name: string; blob: Blob | undefined }[] = [];
+		const blobs = new Map<string, Blob>();
+		vi.spyOn(URL, "createObjectURL").mockImplementation((blob) => {
+			const url = `blob:export-${blobs.size}`;
+			blobs.set(url, blob as Blob);
+			return url;
+		});
+		vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+		vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+			saved.push({ name: this.download, blob: blobs.get(this.getAttribute("href") ?? "") });
+		});
+
+		await fireEvent.click(screen.getByRole("button", { name: "Export ROIs" }));
+
+		await waitFor(() => expect(saved).toHaveLength(1));
+		const exports = fetchMock.mock.calls.filter(([url]) => url.includes("annotations/export"));
+		expect(exports).toHaveLength(1);
+		expect(new Headers(exports[0][1]?.headers).get("Authorization")).toBe("Bearer export-token");
+		expect(saved[0].name).toBe("server-named.csv");
+		expect(await saved[0].blob?.text()).toBe(csv);
 	});
 });
 

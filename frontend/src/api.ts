@@ -408,8 +408,18 @@ export async function updateAnnotations(
 	return (await response.json()) as EmbedRoiAnnotations;
 }
 
-export function annotationsExportUrl(): string {
-	return endpointUrl(API_ENDPOINTS.annotationsExport);
+const EXPORT_FALLBACK_FILENAME = "dcmview-annotations.csv";
+
+/**
+ * The ROI export as a file to save: its bytes and the name the server gave
+ * it. A link to the endpoint could not carry the access token, so the
+ * caller saves the blob instead of navigating.
+ */
+export async function fetchAnnotationsExport(): Promise<{ blob: Blob; filename: string }> {
+	const endpoint = API_ENDPOINTS.annotationsExport;
+	const response = await send(endpoint, endpointUrl(endpoint));
+	const named = /filename="?([^";]+)"?/i.exec(response.headers.get("Content-Disposition") ?? "");
+	return { blob: await response.blob(), filename: named?.[1].trim() || EXPORT_FALLBACK_FILENAME };
 }
 
 export function fetchRedactions(fileIndex: number): Promise<EmbedRoiAnnotations> {
