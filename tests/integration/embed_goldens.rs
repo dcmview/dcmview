@@ -112,6 +112,8 @@ const EXPORT_CASES: &[ExportCase] = &[
     // naming a file through the link and a row naming it by its real path
     // both match, and both are exported under the link path the viewer was
     // given: the directory part of a discovered file's path is not resolved.
+    // EXPECTED CHANGE (EMBED parity amendment, 2026-10-05): export will write
+    // the resolved path; both spellings keep matching on import.
     ExportCase {
         name: "symlinked-directory",
         launch: Launch::Link,
@@ -143,9 +145,9 @@ const EXPORT_CASES: &[ExportCase] = &[
         launch: Launch::Root,
         edits: &[],
     },
-    // A frame list out of order and with a repeat is kept as written. This
-    // is today's behaviour only: whether a later release sorts and
-    // de-duplicates such a list on export is an open question for the owner.
+    // A frame list out of order and with a repeat is kept as written. The
+    // owner confirmed this stays (EMBED parity amendment, 2026-10-05): an
+    // unedited list round-trips unchanged.
     ExportCase {
         name: "frames-unsorted",
         launch: Launch::Root,
@@ -210,6 +212,8 @@ const REJECTED_IMPORTS: &[&str] = &[
     "rejected-duplicate-path",
     // A negative coordinate, unlike one past the far edge, is not an
     // unsigned integer and fails the row.
+    // EXPECTED CHANGE (EMBED parity amendment, 2026-10-05): the lenient
+    // import will clamp it to the image and report the row instead.
     "rejected-negative-coordinate",
     // `num_ROI` is not the number of boxes.
     "rejected-num-roi-mismatch",
