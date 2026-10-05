@@ -148,8 +148,14 @@ export class ToolHost {
 		// One gesture at a time: a press by another pointer must not take over
 		// the tools, or the gesture in progress would end neither saved nor undone.
 		if (this.#captured) {
-			if (event.button !== 0) event.preventDefault();
-			return;
+			if (event.pointerId !== this.#pointerId) {
+				if (event.button !== 0) event.preventDefault();
+				return;
+			}
+			// The pointer that holds the gesture cannot press again without having
+			// released: that release never arrived, so the gesture is cancelled and
+			// this press starts the next one.
+			this.pointerCancel();
 		}
 		// A placement left behind by a tool, file or frame change does not take this press.
 		if (this.#liveArmed()) this.#cancelReplacedFrameGesture();
@@ -218,6 +224,15 @@ export class ToolHost {
 		if (frameTool && frameTool !== this.#captured) frameTool.cancel(this.#ctx);
 		this.#captured?.cancel(this.#ctx);
 		this.endGesture();
+	}
+
+	/**
+	 * The element lost the pointer capture. After a release the gesture has
+	 * already ended and this does nothing; while one is still in progress its
+	 * release will never come, so it is cancelled instead of holding the host.
+	 */
+	lostCapture(event: PointerEvent): void {
+		if (this.#captured && event.pointerId === this.#pointerId) this.pointerCancel();
 	}
 
 	/** The viewport shows another tool, file or frame: a placement begun on the last one ends. */

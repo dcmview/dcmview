@@ -1373,6 +1373,7 @@
 	onpointermove={onPointerMove}
 	onpointerup={(event) => tools.pointerUp(event)}
 	onpointercancel={(event) => tools.pointerCancel(event)}
+	onlostpointercapture={(event) => tools.lostCapture(event)}
 	onpointerleave={stopProbe}
 	oncontextmenu={onContextMenu}
 	ondblclick={onreset}

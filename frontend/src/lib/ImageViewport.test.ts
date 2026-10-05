@@ -1447,6 +1447,37 @@ describe("ImageViewport shared gestures", () => {
 		expectTransform({ tx: 0, ty: 0, scale: 1 });
 	});
 
+	// A release can be lost (the browser takes the capture away, or the button comes
+	// up outside the window); the host must not stay locked on that gesture.
+	it.each([
+		["the capture is lost", "lost capture"],
+		["the same pointer presses again", "second press"],
+	] as const)("a ROI move whose release never comes is undone when %s, and the next drag works", async (_name, how) => {
+		const { viewport } = await renderReady("annotate_rect", oneRoi);
+
+		await fireEvent.pointerDown(viewport, { button: 0, clientX: 20, clientY: 20, pointerId: 1 });
+		await fireEvent.pointerMove(viewport, { clientX: 25, clientY: 25, pointerId: 1 });
+		expect(coords()).toEqual(["[15, 15, 35, 35]"]);
+
+		if (how === "lost capture") {
+			await fireEvent.lostPointerCapture(viewport, { pointerId: 1 });
+			expect(coords()).toEqual(["[10, 10, 30, 30]"]);
+			await fireEvent.pointerMove(viewport, { clientX: 28, clientY: 28, pointerId: 1 });
+			expect(coords()).toEqual(["[10, 10, 30, 30]"]);
+		}
+		expect(api.updateAnnotations).not.toHaveBeenCalled();
+
+		// A drag on bare image from (40, 40) to (55, 60) draws a second rectangle.
+		await fireEvent.pointerDown(viewport, { button: 0, clientX: 40, clientY: 40, pointerId: 1 });
+		expect(coords()).toEqual(["[10, 10, 30, 30]"]);
+		await fireEvent.pointerMove(viewport, { clientX: 55, clientY: 60, pointerId: 1 });
+		expect(draft()).not.toBeNull();
+		await fireEvent.pointerUp(viewport, { button: 0, clientX: 55, clientY: 60, pointerId: 1 });
+
+		await waitFor(() => expect(savedBoxes(api.updateAnnotations).map(([, boxes]) => boxes))
+			.toEqual([[[10, 10, 30, 30], [40, 40, 60, 55]]]));
+	});
+
 	it.each([
 		["a rectangle being drawn", "annotate_rect", noRois, false],
 		["a ROI being moved", "annotate_rect", oneRoi, false],
