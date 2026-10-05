@@ -84,13 +84,16 @@ pub(super) fn jpeg(input: &mut HeaderReader) -> Result<Header> {
     let mut orientation = 1;
     let mut has_icc = false;
     loop {
+        input.step()?;
         ensure!(input.read::<1>(offset)?[0] == 0xff, "invalid JPEG marker");
         offset += 1;
-        while input.read::<1>(offset)?[0] == 0xff {
+        let marker = loop {
+            let byte = input.read::<1>(offset)?[0];
             offset += 1;
-        }
-        let marker = input.read::<1>(offset)?[0];
-        offset += 1;
+            if byte != 0xff {
+                break byte;
+            }
+        };
         ensure!(
             !matches!(marker, 0 | 0xd8..=0xda),
             "JPEG ends before a frame header"
@@ -129,7 +132,8 @@ pub(super) fn jpeg(input: &mut HeaderReader) -> Result<Header> {
             return Ok(header);
         }
         if marker == 0xe1 && payload >= 6 && input.read::<6>(start)? == *b"Exif\0\0" {
-            orientation = exif_orientation(&input.bytes(start + 6, payload - 6)?);
+            orientation =
+                exif_orientation(&input.bytes(start + 6, (payload - 6).min(EXIF_SCAN_MAX_BYTES))?);
         } else if marker == 0xe2 && payload >= 14 {
             has_icc |= input.read::<12>(start)? == *b"ICC_PROFILE\0";
         } else if marker == 0xee && payload >= 12 {
@@ -156,6 +160,7 @@ pub(super) fn webp(input: &mut HeaderReader) -> Result<Header> {
     let mut animated = false;
     let mut alpha = false;
     while offset < end {
+        input.step()?;
         ensure!(end - offset >= 8, "truncated WebP chunk");
         let chunk = input.read::<8>(offset)?;
         let length = u64::from(u32::from_le_bytes(chunk[4..].try_into()?));
@@ -212,7 +217,10 @@ pub(super) fn webp(input: &mut HeaderReader) -> Result<Header> {
                 alpha |= bits & (1 << 28) != 0;
             }
             b"ICCP" => has_icc = true,
-            b"EXIF" => orientation = exif_orientation(&input.bytes(start, length)?),
+            b"EXIF" => {
+                orientation =
+                    exif_orientation(&input.bytes(start, length.min(EXIF_SCAN_MAX_BYTES))?);
+            }
             b"ANIM" => {
                 ensure!(length == 6, "invalid ANIM header");
                 animated = true;
