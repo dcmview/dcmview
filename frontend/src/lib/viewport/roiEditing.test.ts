@@ -39,6 +39,14 @@ describe("hitTestRoi", () => {
 		expect(hitTestRoi(rois, { x: 72, y: 72 }, 4)).toMatchObject({ handle: "se" });
 		expect(hitTestRoi(rois, { x: 74, y: 74 }, 4)).toBeNull();
 	});
+
+	it("grabs handles within the tolerance it is given", () => {
+		expect(hitTestRoi(rois, { x: 80, y: 50 }, 1, 10)).toMatchObject({ roi: { index: 1 }, handle: "e" });
+		expect(hitTestRoi(rois, { x: 81, y: 50 }, 1, 10)).toBeNull();
+		// Half of it at 2x.
+		expect(hitTestRoi(rois, { x: 75, y: 50 }, 2, 10)).toMatchObject({ handle: "e" });
+		expect(hitTestRoi(rois, { x: 76, y: 50 }, 2, 10)).toBeNull();
+	});
 });
 
 describe("ROI helpers", () => {

@@ -205,6 +205,22 @@ const cases: { name: string; tool: () => Tool; viewport?: Viewport; steps: Step[
 		effects: [["show", 5, [10, 10, 45, 50]], ["save", [[10, 10, 45, 50]], [[1]], 0]],
 	},
 	{
+		name: "with a mouse, a press nine pixels off a handle misses it and draws",
+		tool: () => new RectangleTool("annotate_rect"),
+		viewport: { rectangles: oneRectangle },
+		steps: [["down", 39, 21], ["move", 50, 40], ["up"]],
+		answers: ["capture"],
+		effects: [["save", [[10, 10, 30, 30], [21, 39, 40, 50]], [[1], [1]], 1]],
+	},
+	{
+		name: "with a trackpad, a press nine pixels off a handle grabs it",
+		tool: () => new RectangleTool("annotate_rect"),
+		viewport: { rectangles: oneRectangle, trackpad: true },
+		steps: [["down", 39, 21], ["move", 50, 40], ["up"]],
+		answers: ["capture"],
+		effects: [["show", 5, [10, 10, 30, 50]], ["save", [[10, 10, 30, 50]], [[1]], 0]],
+	},
+	{
 		name: "a cancelled move puts the rectangle back without saving",
 		tool: () => new RectangleTool("annotate_rect"),
 		viewport: { rectangles: oneRectangle },
