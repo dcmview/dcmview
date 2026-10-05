@@ -1,53 +1,78 @@
-use super::{exif_orientation, Header, HeaderReader};
+use super::{exif_orientation, Header, HeaderReader, EXIF_SCAN_MAX_BYTES};
 use crate::api::contracts::RasterColorType;
 use anyhow::{ensure, Result};
-use std::io::{Read, Seek, SeekFrom};
 
 pub(super) fn png(input: &mut HeaderReader) -> Result<Header> {
-    // Find the header boundary and profile presence without inflating ICC
-    // or text. A valid compressed profile may expand far beyond the file.
+    ensure!(
+        input.read::<8>(0)? == *b"\x89PNG\r\n\x1a\n",
+        "invalid PNG signature"
+    );
     let mut offset = 8;
-    let mut has_icc = false;
-    let header_end = loop {
+    let mut header: Option<Header> = None;
+    let mut palette = false;
+    loop {
+        input.step()?;
         let chunk = input.read::<8>(offset)?;
         let length = u64::from(u32::from_be_bytes(chunk[..4].try_into()?));
-        if &chunk[4..] == b"IDAT" {
-            break offset + 8;
+        let kind = &chunk[4..];
+        let start = offset + 8;
+        if header.is_none() {
+            ensure!(kind == b"IHDR" && length == 13, "missing PNG IHDR");
+            let data = input.read::<13>(start)?;
+            let depth = data[8];
+            let color = match (data[9], depth) {
+                (0, 1 | 2 | 4 | 8 | 16) => RasterColorType::Gray,
+                (2, 8 | 16) => RasterColorType::Rgb,
+                (3, 1 | 2 | 4 | 8) => RasterColorType::Palette,
+                (4, 8 | 16) => RasterColorType::GrayAlpha,
+                (6, 8 | 16) => RasterColorType::Rgba,
+                _ => anyhow::bail!("invalid PNG sample layout"),
+            };
+            ensure!(
+                data[10] == 0 && data[11] == 0 && data[12] <= 1,
+                "invalid PNG encoding"
+            );
+            header = Some(Header::new(
+                u32::from_be_bytes(data[..4].try_into()?),
+                u32::from_be_bytes(data[4..8].try_into()?),
+                color,
+                depth.into(),
+            ));
+        } else {
+            let image = header.as_mut().expect("IHDR read");
+            match kind {
+                b"IDAT" => {
+                    ensure!(
+                        image.metadata.color_type != RasterColorType::Palette || palette,
+                        "missing PNG palette"
+                    );
+                    return Ok(header.expect("IHDR read"));
+                }
+                b"IHDR" | b"IEND" => anyhow::bail!("invalid PNG chunk order"),
+                b"PLTE" => palette = true,
+                b"tRNS" => image.metadata.has_alpha = true,
+                b"iCCP" => image.metadata.has_icc = true,
+                b"acTL" => image.metadata.animated = true,
+                b"sBIT" => {
+                    let expected = match image.metadata.color_type {
+                        RasterColorType::Gray => 1,
+                        RasterColorType::GrayAlpha => 2,
+                        RasterColorType::Rgba => 4,
+                        _ => 3,
+                    };
+                    ensure!(length == expected, "invalid PNG significant bits length");
+                    image.metadata.significant_bits = Some(input.bytes(start, length)?);
+                }
+                b"eXIf" => {
+                    image.metadata.orientation =
+                        exif_orientation(&input.bytes(start, length.min(EXIF_SCAN_MAX_BYTES))?);
+                }
+                _ => {}
+            }
         }
-        ensure!(&chunk[4..] != b"IEND", "PNG ends before image data");
-        input.check_range(offset + 8, length + 4)?;
-        has_icc |= &chunk[4..] == b"iCCP";
-        offset += length + 12;
-    };
-    input.file.seek(SeekFrom::Start(0))?;
-    let mut decoder = png::Decoder::new_with_limits(
-        (&mut input.file).take(header_end),
-        png::Limits {
-            bytes: usize::try_from(input.len).unwrap_or(usize::MAX),
-        },
-    );
-    decoder.set_ignore_iccp_chunk(true);
-    decoder.set_ignore_text_chunk(true);
-    let reader = decoder.read_info()?;
-    let info = reader.info();
-    let color = match info.color_type {
-        png::ColorType::Grayscale => RasterColorType::Gray,
-        png::ColorType::GrayscaleAlpha => RasterColorType::GrayAlpha,
-        png::ColorType::Rgb => RasterColorType::Rgb,
-        png::ColorType::Rgba => RasterColorType::Rgba,
-        png::ColorType::Indexed => RasterColorType::Palette,
-    };
-    let mut header = Header::new(info.width, info.height, color, info.bit_depth as u32);
-    header.metadata.has_alpha |= info.trns.is_some();
-    header.metadata.has_icc = has_icc;
-    header.metadata.significant_bits = info.sbit.as_deref().map(<[u8]>::to_vec);
-    header.metadata.animated = info.animation_control.is_some();
-    header.metadata.orientation = info
-        .exif_metadata
-        .as_deref()
-        .map(exif_orientation)
-        .unwrap_or(1);
-    Ok(header)
+        input.check_range(start, length + 4)?;
+        offset = start + length + 4;
+    }
 }
 
 pub(super) fn jpeg(input: &mut HeaderReader) -> Result<Header> {

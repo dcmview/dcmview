@@ -177,9 +177,56 @@ pub(super) fn inspect_raster(
     _format: FileFormat,
     _check_active: &dyn Fn() -> Result<()>,
 ) -> Result<EntryInspection> {
-    let file = File::open(_path)?;
+    let mut file = File::open(_path)?;
     let len = file.metadata()?.len();
-    let mut input = HeaderReader { file, len };
+    inspect_raster_source(_path, &mut file, len, _format, _check_active)
+}
+
+/// The most bytes header inspection obtains from one file. A TIFF at the
+/// page limit needs about 12 MiB as classic TIFF (a 15-entry IFD is 186
+/// bytes) and about 27 MiB as BigTIFF (20 entries, 416 bytes), plus small
+/// out-of-line values; the other formats need a few kilobytes. 64 MiB admits
+/// all of them twice over and is tens of milliseconds of buffered reading.
+pub(super) const HEADER_SCAN_MAX_BYTES: u64 = 64 * 1024 * 1024;
+
+/// The most reads header inspection issues to one file: eight per page at
+/// the page limit (a TIFF page needs two, and up to four with out-of-line
+/// values). A reader that fetched one byte per read would stop after half a
+/// megabyte instead of walking the file.
+pub(super) const HEADER_SCAN_MAX_READS: u64 = 8 * HEADER_SCAN_MAX_STEPS as u64;
+
+/// The most JPEG segments, PNG chunks, WebP chunks or TIFF pages visited in
+/// one file. Real JPEG, PNG and WebP headers hold tens of them and real
+/// multi-page TIFFs thousands; 65,535 is also the most pages a TIFF may have
+/// and still be listed.
+pub(super) const HEADER_SCAN_MAX_STEPS: u32 = 65_535;
+
+/// The buffer JPEG, PNG and WebP are scanned through.
+pub(super) const HEADER_SCAN_BUFFER_BYTES: usize = 8 * 1024;
+
+/// How much of an EXIF block is read for its orientation. A JPEG `APP1`
+/// segment cannot be longer; IFD0 starts 8 bytes in.
+pub(super) const EXIF_SCAN_MAX_BYTES: u64 = 64 * 1024;
+
+/// What header inspection reads from: the file, or a test's counted bytes.
+pub(super) trait HeaderSource: Read + Seek {}
+
+impl<T: Read + Seek> HeaderSource for T {}
+
+/// [`inspect_raster`] over an open source of `length` bytes positioned at
+/// its start. `inspect_raster` opens the file and delegates here, so this is
+/// the only path a raster header is read through, and the scan budget is
+/// counted against what `source` is asked for: its `read` calls and the
+/// bytes they return. `path` only names the file in the entry and in
+/// messages; it is never opened here.
+pub(super) fn inspect_raster_source(
+    _path: &Path,
+    _source: &mut dyn HeaderSource,
+    _length: u64,
+    _format: FileFormat,
+    _check_active: &dyn Fn() -> Result<()>,
+) -> Result<EntryInspection> {
+    let mut input = HeaderReader::new(_source, _length, _format, _check_active);
     let parsed = match _format {
         FileFormat::Png => headers::png(&mut input),
         FileFormat::Jpeg => headers::jpeg(&mut input),
@@ -189,11 +236,14 @@ pub(super) fn inspect_raster(
     };
     let header = match parsed {
         Ok(header) if header.width > 0 && header.height > 0 => header,
-        Err(error) if is_io_failure(&error) => return Err(error),
+        Err(error) if input.cancelled || is_io_failure(&error) => return Err(error),
         _ => {
+            if let Some(what) = input.exhausted {
+                eprintln!("dcmview: warning — {}: {what}; not loaded", _path.display());
+            }
             return Ok(EntryInspection::Skipped(
                 DiscoveryReason::RasterHeaderInvalid,
-            ))
+            ));
         }
     };
     let raster = header.metadata;
@@ -261,62 +311,6 @@ pub(super) fn inspect_raster(
     })))
 }
 
-/// The most bytes header inspection obtains from one file. A TIFF at the
-/// page limit needs about 12 MiB as classic TIFF (a 15-entry IFD is 186
-/// bytes) and about 27 MiB as BigTIFF (20 entries, 416 bytes), plus small
-/// out-of-line values; the other formats need a few kilobytes. 64 MiB admits
-/// all of them twice over and is tens of milliseconds of buffered reading.
-// Not used until `inspect_raster` reads through the budget; remove the
-// attribute then (also on the four items below).
-#[allow(dead_code)]
-pub(super) const HEADER_SCAN_MAX_BYTES: u64 = 64 * 1024 * 1024;
-
-/// The most reads header inspection issues to one file: eight per page at
-/// the page limit (a TIFF page needs two, and up to four with out-of-line
-/// values). A reader that fetched one byte per read would stop after half a
-/// megabyte instead of walking the file.
-#[allow(dead_code)]
-pub(super) const HEADER_SCAN_MAX_READS: u64 = 8 * HEADER_SCAN_MAX_STEPS as u64;
-
-/// The most JPEG segments, PNG chunks, WebP chunks or TIFF pages visited in
-/// one file. Real JPEG, PNG and WebP headers hold tens of them and real
-/// multi-page TIFFs thousands; 65,535 is also the most pages a TIFF may have
-/// and still be listed.
-#[allow(dead_code)]
-pub(super) const HEADER_SCAN_MAX_STEPS: u32 = 65_535;
-
-/// The buffer JPEG, PNG and WebP are scanned through.
-#[allow(dead_code)]
-pub(super) const HEADER_SCAN_BUFFER_BYTES: usize = 8 * 1024;
-
-/// How much of an EXIF block is read for its orientation. A JPEG `APP1`
-/// segment cannot be longer; IFD0 starts 8 bytes in.
-#[allow(dead_code)]
-pub(super) const EXIF_SCAN_MAX_BYTES: u64 = 64 * 1024;
-
-/// What header inspection reads from: the file, or a test's counted bytes.
-pub(super) trait HeaderSource: Read + Seek {}
-
-impl<T: Read + Seek> HeaderSource for T {}
-
-/// [`inspect_raster`] over an open source of `length` bytes positioned at
-/// its start. `inspect_raster` opens the file and delegates here, so this is
-/// the only path a raster header is read through, and the scan budget is
-/// counted against what `source` is asked for: its `read` calls and the
-/// bytes they return. `path` only names the file in the entry and in
-/// messages; it is never opened here.
-// Not called until `inspect_raster` delegates here; remove the attribute then.
-#[allow(dead_code)]
-pub(super) fn inspect_raster_source(
-    _path: &Path,
-    _source: &mut dyn HeaderSource,
-    _length: u64,
-    _format: FileFormat,
-    _check_active: &dyn Fn() -> Result<()>,
-) -> Result<EntryInspection> {
-    todo!("FMT1 round 2: read every raster header through the scan budget")
-}
-
 struct Header {
     width: u32,
     height: u32,
@@ -354,13 +348,85 @@ impl Header {
     }
 }
 
-// Seek past payloads and validate ranges before allocating metadata buffers.
-struct HeaderReader {
-    file: File,
+// All source reads pass here, including read-ahead. Sequential formats keep
+// skipped bytes already in the buffer; TIFF reads only the requested ranges.
+struct HeaderReader<'a> {
+    source: &'a mut dyn HeaderSource,
     len: u64,
+    buffer: Vec<u8>,
+    buffer_start: u64,
+    buffer_len: usize,
+    bytes_read: u64,
+    reads: u64,
+    steps: u32,
+    format: FileFormat,
+    check_active: &'a dyn Fn() -> Result<()>,
+    cancelled: bool,
+    exhausted: Option<&'static str>,
 }
 
-impl HeaderReader {
+impl<'a> HeaderReader<'a> {
+    fn new(
+        source: &'a mut dyn HeaderSource,
+        len: u64,
+        format: FileFormat,
+        check_active: &'a dyn Fn() -> Result<()>,
+    ) -> Self {
+        Self {
+            source,
+            len,
+            buffer: if format == FileFormat::Tiff {
+                Vec::new()
+            } else {
+                vec![0; HEADER_SCAN_BUFFER_BYTES]
+            },
+            buffer_start: 0,
+            buffer_len: 0,
+            bytes_read: 0,
+            reads: 0,
+            steps: 0,
+            format,
+            check_active,
+            cancelled: false,
+            exhausted: None,
+        }
+    }
+
+    fn step(&mut self) -> Result<()> {
+        (self.check_active)().inspect_err(|_| self.cancelled = true)?;
+        if self.steps == HEADER_SCAN_MAX_STEPS {
+            let what = match self.format {
+                FileFormat::Tiff => "more than 65535 TIFF pages",
+                FileFormat::Jpeg => "more than 65535 JPEG segments before the image",
+                FileFormat::Png => "more than 65535 PNG chunks before the image",
+                FileFormat::Webp => "more than 65535 WebP chunks",
+                FileFormat::Dicom => unreachable!("raster inspection only"),
+            };
+            self.exhausted = Some(what);
+            anyhow::bail!(what);
+        }
+        self.steps += 1;
+        Ok(())
+    }
+
+    fn check_read(&mut self, len: u64) -> Result<()> {
+        if len > HEADER_SCAN_MAX_BYTES - self.bytes_read || self.reads == HEADER_SCAN_MAX_READS {
+            let what = "the image header is larger than 64 MiB";
+            self.exhausted = Some(what);
+            anyhow::bail!(what);
+        }
+        Ok(())
+    }
+
+    fn read_source(&mut self, bytes: &mut [u8]) -> Result<usize> {
+        self.check_read(bytes.len() as u64)?;
+        self.reads += 1;
+        let read = self.source.read(bytes)?;
+        self.bytes_read += read as u64;
+        anyhow::ensure!(read > 0, "truncated raster header");
+        Ok(read)
+    }
+
     fn check_range(&self, offset: u64, len: u64) -> Result<()> {
         anyhow::ensure!(
             offset <= self.len && len <= self.len - offset,
@@ -369,21 +435,49 @@ impl HeaderReader {
         Ok(())
     }
 
+    fn read_into(&mut self, mut offset: u64, mut bytes: &mut [u8]) -> Result<()> {
+        self.check_range(offset, bytes.len() as u64)?;
+        if self.buffer.is_empty() {
+            self.source.seek(SeekFrom::Start(offset))?;
+            while !bytes.is_empty() {
+                let read = self.read_source(bytes)?;
+                bytes = &mut bytes[read..];
+            }
+        } else {
+            while !bytes.is_empty() {
+                if offset < self.buffer_start
+                    || offset - self.buffer_start >= self.buffer_len as u64
+                {
+                    self.source.seek(SeekFrom::Start(offset))?;
+                    let mut buffer = [0; HEADER_SCAN_BUFFER_BYTES];
+                    self.buffer_len = self.read_source(&mut buffer)?;
+                    self.buffer[..self.buffer_len].copy_from_slice(&buffer[..self.buffer_len]);
+                    self.buffer_start = offset;
+                }
+                let start = (offset - self.buffer_start) as usize;
+                let count = bytes.len().min(self.buffer_len - start);
+                bytes[..count].copy_from_slice(&self.buffer[start..start + count]);
+                bytes = &mut bytes[count..];
+                offset += count as u64;
+            }
+        }
+        Ok(())
+    }
+
     fn read<const N: usize>(&mut self, offset: u64) -> Result<[u8; N]> {
-        self.check_range(offset, N as u64)?;
-        self.file.seek(SeekFrom::Start(offset))?;
         let mut bytes = [0; N];
-        self.file.read_exact(&mut bytes)?;
+        self.read_into(offset, &mut bytes)?;
         Ok(bytes)
     }
 
     fn bytes(&mut self, offset: u64, len: u64) -> Result<Vec<u8>> {
         self.check_range(offset, len)?;
-        let mut bytes = Vec::new();
-        bytes.try_reserve_exact(usize::try_from(len)?)?;
-        bytes.resize(len as usize, 0);
-        self.file.seek(SeekFrom::Start(offset))?;
-        self.file.read_exact(&mut bytes)?;
+        // Bound even a TIFF's declared table size before allocating it.
+        if self.buffer.is_empty() {
+            self.check_read(len)?;
+        }
+        let mut bytes = vec![0; usize::try_from(len)?];
+        self.read_into(offset, &mut bytes)?;
         Ok(bytes)
     }
 }
