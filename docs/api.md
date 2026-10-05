@@ -126,8 +126,8 @@ Every success status is `200`.
 | Field | Meaning |
 |---|---|
 | `scan_complete` | `true` after every requested path has been scanned. |
-| `scanned` | Valid DICOM files accepted into the registry. |
-| `skipped` | Files that could not be read as supported DICOM objects. |
+| `scanned` | DICOM and image files accepted into the registry. |
+| `skipped` | Unrecognized or unreadable files, unsupported DICOM objects, invalid raster headers, and recognized formats excluded by `--formats`. |
 | `filtered` | Readable files excluded by `--filter`. |
 | `discovery` | Up to 256 recent skipped or filtered paths (`path`, `disposition` of `skipped` or `filtered`, `reason`). Accepted files appear only in `files`; totals stay in the counters above. |
 
@@ -144,6 +144,58 @@ now let a client reproduce every one, so it is always `true` and
 grayscale display frames carry a display shutter or overlay graphics; neither
 depends on the window, so `presentation-layer` drawn over a frame windowed in
 the browser gives exactly the display frame for that window.
+
+### Raster image summaries
+
+`FileSummary.file_format` is `dicom`, `png`, `jpeg`, `tiff`, or `webp`, detected
+from content. `raster` is `null` for DICOM and the following object for images.
+Rasters have `object_kind: "image"`, empty DICOM identity and transfer-syntax
+strings, `has_pixels: true`, `support_state: "unsupported"`, and
+`support_reason: "raster.decode_not_available"`. Their headers are listed;
+pixel decoding is not available yet. Dimensions and coordinates remain in
+the stored pixel grid.
+
+| `RasterSummary` field | Meaning |
+|---|---|
+| `color_type` | Stored `gray`, `gray_alpha`, `rgb`, `rgba`, `palette`, or `cmyk`. |
+| `bit_depth` | Stored bits per sample, including low-bit palette indices. |
+| `sample_format` | `uint`, `int`, or `float`. |
+| `has_alpha` | Alpha channel or transparency, including PNG `tRNS`. |
+| `orientation` | EXIF/TIFF orientation 1–8; defaults to 1. Reported, never applied to dimensions or coordinates. |
+| `has_icc` | Whether an ICC profile is embedded. |
+| `pages_total` | TIFF pages inspected; 1 for PNG, JPEG, and WebP. |
+| `frame_pages` | Zero-based TIFF page index per frame; `[0]` for other formats. Its length is `frame_count`. |
+| `excluded_pages` | Objects with `page` and `differs`: first difference in order `reduced_resolution`, `mask`, `width`, `height`, `samples_per_pixel`, `sample_format`, `bits_per_sample`, `photometric`, `alpha`, `orientation`. |
+| `animated` | APNG or animated WebP; only the first frame is represented. |
+| `significant_bits` | PNG `sBIT` bytes in stored channel order, or `null`; informational only. |
+
+TIFF page 0 is always frame 0. Later pages join the frame map only if their
+layout and orientation match page 0 and they are neither reduced-resolution
+nor mask pages. A damaged later IFD ends the walk; earlier pages remain listed.
+
+Discovery reasons include `valid_image` for accepted rasters,
+`unrecognized_format` for content that is neither DICOM nor a recognized image
+(replaces `missing_part10_preamble`), `format_not_selected` for a recognized
+format excluded from a directory walk, and `raster_header_invalid` for a
+recognized image whose header cannot be read. Accepted files are represented
+in `files`, not the bounded skipped/filtered `discovery` list.
+
+For a raster file index, the following responses require no DICOM parsing:
+
+| Endpoint suffix under `/api/file/{index}` | Raster response |
+|---|---|
+| `/frame/{frame}`, `/frame/{frame}/raw`, `/frame/{frame}/raw/pixel`, `/frame/{frame}/presentation-layer` | `422 unsupported_pixel_layout`, error text containing `raster.decode_not_available`. Missing pixels and out-of-range frames are checked first; the latter is `404 frame_out_of_range`. The presentation layer rejects before allocating an image. |
+| `/tags` | `200` with `[]`. |
+| `/tags/select` | `400 bad_request`: tag selection is not available for image files. |
+| `/references` | `200` with `source_file_index`, empty `source_sop_instance_uid`, and `references: []`. Rasters are never reference targets. |
+| `/semantic-context` | `200`, `context.kind: "not_applicable"` with a reason, `default_mode: "pixel_preview"`, and `pixel_preview_preserves_stored_values: true`. |
+| `/frame/{frame}/value-mapping` | `200` identity: `stored_value_type` is `integer`, `float32`, or `float64`; `modality` has slope 1, intercept 0, `rescale_type: null`, `lut: null`; `real_world: []`, `voi_lut: null`. Frame range is checked first. |
+| `PUT /redactions/series` | `200` with `file_indices: []`; no boxes are copied because rasters belong to no series. |
+
+Rasters are absent from `/api/series`. DICOM-only overlay, WSI, and presentation
+state operations retain their existing wrong-kind errors rather than attempting
+to open an image as DICOM. Per-file ROI and redaction storage remains available;
+frame requests still return the unsupported-layout response above.
 
 ## Display And Raw Frames
 

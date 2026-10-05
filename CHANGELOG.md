@@ -14,6 +14,13 @@ diagnostic viewer.
 
 ### Breaking changes
 
+- Image files now appear in mixed folders by default. Use `--formats dicom`
+  to restore the previous DICOM-only directory scan; explicitly named files
+  are still inspected regardless of that selection.
+- Discovery reason `missing_part10_preamble` is renamed `unrecognized_format`.
+  Clients that grouped unknown files under the old code must map the new code
+  to that same category; there is no flag that restores the old wire spelling.
+
 - Every `/api` request now requires `Authorization: Bearer <token>` by default,
   including health and downloads, over TCP and Unix sockets. HTTP scripts must
   read `token` and `base_url` from `--startup-json` (or extract the token from
@@ -35,6 +42,18 @@ diagnostic viewer.
   fragment now shows a page asking for the access link.
 
 ### Added
+
+- Header-only, content-based discovery of PNG, JPEG, TIFF (including BigTIFF
+  and compatible multipage stacks), and WebP beside DICOM. Image pixels are
+  not decoded yet and frame endpoints return `422 unsupported_pixel_layout`
+  with `raster.decode_not_available`.
+- `--formats dicom,png,jpeg,tiff,webp` narrows directory discovery, and
+  `--filter format=<name>` and `--filter path=<text>` select by exact format
+  or a substring of the reported path, ignoring case.
+- File summaries add `file_format` and `raster` metadata: stored color and
+  sample layout, orientation, alpha/profile presence, animation, significant
+  bits, and the TIFF frame-to-page map with excluded pages. Rasters use
+  `object_kind: "image"` and empty DICOM identity fields.
 
 - `--cache-budget BYTES` sets the combined display, raw and overlay frame cache
   budget, with proportional shares, binary suffixes such as `256MiB`, and a

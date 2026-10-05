@@ -62,30 +62,31 @@ absolute executable paths.
 
 ## Startup And Discovery
 
-### `dcmview: no valid DICOM files found`
+### `dcmview: no DICOM or image files found`
 
-Symptom: startup exits with a non-zero status and reports that no valid DICOM
-files were found.
+Symptom: startup exits non-zero with `dcmview: no DICOM or image files found`,
+optionally followed by a skip breakdown. If metadata filters excluded the
+readable files, it says `dcmview: no files matched active filters (...)`.
 
-Likely cause: the input path is wrong, the directory contains no readable DICOM
-files, filters exclude every DICOM file, or the files are not valid DICOM
-objects.
+Likely cause: the path is wrong, the directory contains no readable DICOM or
+recognized image headers, or `--formats` or `--filter` excludes every file.
 
 Fix: verify the path, try a known single DICOM file, and temporarily remove
-`--filter` arguments. For directory inputs, remember that recursive scanning is
-enabled by default; use `--no-recursive` only when the DICOM files are directly
+`--filter` and `--formats` arguments. Directory scanning is recursive by
+default; use `--no-recursive` only when the DICOM files are directly
 inside the selected directory.
 
 ### Files are reported as skipped
 
 Symptom: startup or the viewer file registry reports skipped files.
 
-Likely cause: the scan encountered non-DICOM files, unreadable paths, or invalid
-DICOM objects. The startup summary counts skips by reason, for example
-`(3 skipped: 2 not DICOM (no DICM preamble), 1 unparsable DICOM, ...)`. Files
+Likely cause: the scan encountered unrecognized files, unreadable paths,
+invalid DICOM objects or raster headers, or a format excluded by `--formats`.
+The startup summary counts skips by reason, for example
+`(3 skipped: 2 not a DICOM or image file, 1 unparsable DICOM, ...)`. Files
 excluded by metadata filters are counted separately as filtered.
 
-Fix: skipped non-DICOM sidecar files are usually harmless. To see which files
+Fix: skipped unrecognized sidecar files are usually harmless. To see which files
 were skipped and why, run with `RUST_LOG=dcmview=debug`, which logs each skipped
 path and its reason to stderr. If an expected DICOM file is skipped, check file
 permissions and try opening that file directly:
@@ -95,7 +96,14 @@ dcmview ./expected-file.dcm
 ```
 
 If filters are in use, confirm that the field name and value match the file's
-metadata. Filter matching is case-insensitive substring matching.
+metadata. DICOM fields and paths use case-insensitive substring matching;
+`format` matches a whole format name.
+
+### Image files now appear beside DICOM
+
+PNG, JPEG, TIFF, and WebP headers are listed by default, though their pixels
+are not decoded yet. Run `dcmview --formats dicom ./mixed_dir` to restore the
+DICOM-only directory list. An explicitly named image file still loads.
 
 ### The viewer opens before every file appears
 
