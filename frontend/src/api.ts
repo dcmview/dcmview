@@ -23,6 +23,7 @@ import type {
 	WsiFrameContextResponse,
 } from "./generated/api-types";
 import { API_ENDPOINTS, API_RESPONSE_HEADERS, DISPLAY_FRAME_HEADERS, RAW_FRAME_HEADERS } from "./generated/api-types";
+import { accessToken } from "./lib/accessToken";
 import type { RawFrame } from "./rawFrame";
 
 export type {
@@ -171,15 +172,42 @@ function setReachable(reachable: boolean): void {
 }
 
 /**
- * Sends one request and turns non-2xx responses into an `ApiError`. A request
- * that cannot reach the server at all (the process stopped, or the tunnel
- * closed) becomes one with `UNREACHABLE_STATUS` and a plain message instead
- * of the browser's bare "Failed to fetch".
+ * Why the server refused this page: it has no access token (`missing`: opened
+ * without its launch link), or the one it holds is not this server's
+ * (`rejected`: the process restarted on the same port).
+ */
+export type AccessDenial = "missing" | "rejected";
+
+const accessDeniedListeners = new Set<(denial: AccessDenial) => void>();
+
+/** Calls `listener` when the server answers 401. Returns unsubscribe. */
+export function onAccessDenied(listener: (denial: AccessDenial) => void): () => void {
+	accessDeniedListeners.add(listener);
+	return () => accessDeniedListeners.delete(listener);
+}
+
+/** The request's headers plus the bearer token, when the page has one. */
+function withAccessToken(init: RequestInit, token: string | null): RequestInit {
+	if (token === null) return init;
+	const headers = new Headers(init.headers);
+	headers.set("Authorization", `Bearer ${token}`);
+	return { ...init, headers };
+}
+
+/**
+ * Sends one request, with the access token as a bearer header, and turns
+ * non-2xx responses into an `ApiError`. A request that cannot reach the
+ * server at all (the process stopped, or the tunnel closed) becomes one with
+ * `UNREACHABLE_STATUS` and a plain message instead of the browser's bare
+ * "Failed to fetch". Every API resource is loaded through here: the token
+ * travels in no other way, so an `<img>`, a link or a query string cannot
+ * carry it.
  */
 async function send(endpoint: Endpoint, url: string, init: RequestInit = {}): Promise<Response> {
+	const token = accessToken();
 	let response: Response;
 	try {
-		response = await fetch(url, { ...init, method: endpoint.method });
+		response = await fetch(url, { ...withAccessToken(init, token), method: endpoint.method });
 	} catch (error) {
 		if ((error as Error).name === "AbortError") throw error;
 		setReachable(false);
@@ -193,6 +221,10 @@ async function send(endpoint: Endpoint, url: string, init: RequestInit = {}): Pr
 			? body.error
 			: `HTTP ${response.status}: ${endpoint.method} ${url} failed`;
 		const code = typeof body.code === "string" ? body.code : null;
+		// A refusal of a token the page has since replaced says nothing new.
+		if (response.status === 401 && token === accessToken()) {
+			for (const listener of accessDeniedListeners) listener(token === null ? "missing" : "rejected");
+		}
 		throw new ApiError(message, response.status, code);
 	}
 	return response;
@@ -376,8 +408,18 @@ export async function updateAnnotations(
 	return (await response.json()) as EmbedRoiAnnotations;
 }
 
-export function annotationsExportUrl(): string {
-	return endpointUrl(API_ENDPOINTS.annotationsExport);
+const EXPORT_FALLBACK_FILENAME = "dcmview-annotations.csv";
+
+/**
+ * The ROI export as a file to save: its bytes and the name the server gave
+ * it. A link to the endpoint could not carry the access token, so the
+ * caller saves the blob instead of navigating.
+ */
+export async function fetchAnnotationsExport(): Promise<{ blob: Blob; filename: string }> {
+	const endpoint = API_ENDPOINTS.annotationsExport;
+	const response = await send(endpoint, endpointUrl(endpoint));
+	const named = /filename="?([^";]+)"?/i.exec(response.headers.get("Content-Disposition") ?? "");
+	return { blob: await response.blob(), filename: named?.[1].trim() || EXPORT_FALLBACK_FILENAME };
 }
 
 export function fetchRedactions(fileIndex: number): Promise<EmbedRoiAnnotations> {

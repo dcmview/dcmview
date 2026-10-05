@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.parse
 import urllib.request
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -35,6 +36,15 @@ BRIDGE_ENV_KEYS = (
 	"DCMVIEW_VSCODE_BRIDGE_REGISTRY_DIR",
 	"DCMVIEW_VSCODE_BYPASS",
 )
+
+
+def api_request(url: str, path: str) -> urllib.request.Request:
+	base_url, fragment = urllib.parse.urldefrag(url)
+	token = urllib.parse.parse_qs(fragment).get("token", [""])[0]
+	return urllib.request.Request(
+		f"{base_url.rstrip('/')}{path}",
+		headers={"Authorization": f"Bearer {token}"},
+	)
 
 
 class FakeBridge:
@@ -195,7 +205,7 @@ class WrapperBinaryIntegrationTests(unittest.TestCase):
 		if url is not None and url != VSCODE_VIEWER_URL:
 			# The local viewer prints its URL before it installs its Ctrl+C
 			# handler; one served request shows the handler is in place.
-			urllib.request.urlopen(f"{url}/api/health", timeout=10).close()
+			urllib.request.urlopen(api_request(url, "/api/health"), timeout=10).close()
 		os.killpg(process.pid, signal.SIGINT)
 		try:
 			exit_code = process.wait(timeout=10)
@@ -335,7 +345,7 @@ class WrapperBinaryIntegrationTests(unittest.TestCase):
 	def wait_for_json(self, url: str, path: str, ready: Callable[[dict], bool]) -> dict:
 		deadline = time.time() + 10.0
 		while True:
-			with urllib.request.urlopen(f"{url}{path}", timeout=10) as response:
+			with urllib.request.urlopen(api_request(url, path), timeout=10) as response:
 				body = json.loads(response.read())
 			if ready(body) or time.time() > deadline:
 				return body

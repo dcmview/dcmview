@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { onMount } from "svelte";
-	import { annotationsExportUrl, fetchHealth, onReachabilityChange, onServerRestart, type SemanticContextResponse } from "./api";
+	import { fetchAnnotationsExport, fetchHealth, onAccessDenied, onReachabilityChange, onServerRestart, type AccessDenial, type SemanticContextResponse } from "./api";
+	import AccessRequired from "./lib/AccessRequired.svelte";
+	import { adoptAccessToken } from "./lib/accessToken";
 	import FileNavigator from "./lib/FileNavigator.svelte";
 	import FrameSlider from "./lib/FrameSlider.svelte";
 	import GraphicAnnotationBar from "./lib/GraphicAnnotationBar.svelte";
@@ -18,6 +20,7 @@
 	import ValueOverlayBar from "./lib/ValueOverlayBar.svelte";
 	import ViewerToolbar from "./lib/ViewerToolbar.svelte";
 	import Button from "./lib/ui/Button.svelte";
+	import StatusBadge from "./lib/ui/StatusBadge.svelte";
 	import WsiTileContext from "./lib/WsiTileContext.svelte";
 	import { Catalog } from "./lib/app/catalog.svelte";
 	import { annotationEntryFrame, GraphicAnnotations } from "./lib/app/graphicAnnotations.svelte";
@@ -42,6 +45,9 @@
 		rotateClockwise,
 		rotateCounterClockwise,
 	} from "./lib/viewport/viewTransform";
+
+	// Before any request: the launch link's token leaves the address bar.
+	adoptAccessToken();
 
 	// App owns the shared root state; the controllers below hold its parts
 	// and the components receive what they need as props.
@@ -178,13 +184,27 @@
 		viewStates.updateOrientation(tabs.scopeKey, change);
 	}
 
-	function exportAnnotations() {
-		const link = document.createElement("a");
-		link.href = annotationsExportUrl();
-		link.download = "dcmview-annotations.csv";
-		document.body.appendChild(link);
-		link.click();
-		link.remove();
+	/** Why the last ROI export failed; cleared by the next attempt or by dismissing it. */
+	let exportError = $state<string | null>(null);
+
+	/** Saves the ROI export from a blob: a link to the endpoint could not carry the access token. */
+	async function exportAnnotations(): Promise<void> {
+		exportError = null;
+		try {
+			const { blob, filename } = await fetchAnnotationsExport();
+			const url = URL.createObjectURL(blob);
+			const link = document.createElement("a");
+			link.href = url;
+			link.download = filename;
+			document.body.appendChild(link);
+			link.click();
+			link.remove();
+			// Some browsers start the download after the click returns, so the
+			// URL must outlive this call.
+			setTimeout(() => URL.revokeObjectURL(url), 1000);
+		} catch (error) {
+			exportError = (error as Error).message || "The server did not return the export";
+		}
 	}
 
 	/** The single global keyboard dispatcher; bindings live in keyboardShortcuts.ts. */
@@ -284,16 +304,38 @@
 		serverReachable = reachable;
 		if (!reachable) cinePlaying = false;
 	}));
+
+	// A 401 replaces the viewer with what to do about it; see AccessRequired.
+	let accessDenial = $state<AccessDenial | null>(null);
+	onMount(() => onAccessDenied((denial) => {
+		accessDenial = denial;
+		stopPolling?.();
+	}));
+
+	/** The launch link pasted into this tab changes only the fragment, so nothing reloads by itself. */
+	function adoptPastedLink(): void {
+		if (!adoptAccessToken()) return;
+		// A loaded catalog belongs to the server that issued the old token.
+		if (catalog.files) {
+			window.location.reload();
+			return;
+		}
+		accessDenial = null;
+		loadCatalog();
+	}
 </script>
 
 <svelte:window
 	onkeydown={handleWindowKeydown}
 	onresize={() => layout.viewportResized()}
 	onfocus={checkServerOnReturn}
+	onhashchange={adoptPastedLink}
 />
 <svelte:document onvisibilitychange={checkServerOnReturn} />
 
-{#if catalog.loadError}
+{#if accessDenial}
+	<AccessRequired denial={accessDenial} />
+{:else if catalog.loadError}
 	<main class="error">
 		<p>{catalog.loadError}</p>
 		<Button onclick={loadCatalog}>Retry</Button>
@@ -353,8 +395,15 @@
 			onflipV={() => reorient(flipVertical)}
 			onrotateCW={() => reorient(rotateClockwise)}
 			onrotateCCW={() => reorient(rotateCounterClockwise)}
-			onexportAnnotations={exportAnnotations}
+			onexportAnnotations={() => void exportAnnotations()}
 		/>
+		{#if exportError}
+			<div class="action-error" role="alert">
+				<StatusBadge status="negative">Export failed</StatusBadge>
+				<span>{exportError}</span>
+				<Button variant="ghost" onclick={() => exportError = null}>Dismiss</Button>
+			</div>
+		{/if}
 		{#if layout.compactDrawer !== null}
 			<button
 				type="button"
@@ -716,6 +765,32 @@
 		top: 8px;
 		right: 8px;
 		z-index: 6;
+	}
+
+	/* Floats over the workspace: the layout grid has a fixed set of rows. */
+	.action-error {
+		position: fixed;
+		right: 12px;
+		bottom: 38px;
+		z-index: 50;
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		max-width: calc(100vw - 24px);
+		padding: 6px 8px 6px 10px;
+		background: var(--surface);
+		border: 1px solid var(--line);
+		border-radius: var(--radius-md);
+		box-shadow: var(--elev-overlay);
+		color: var(--text);
+		font: 400 12px/16px var(--font-ui);
+	}
+
+	.action-error > span {
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
 	.loading,

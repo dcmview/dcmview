@@ -167,10 +167,10 @@ On your local machine:
 ssh -L 8888:localhost:8888 user@remote-server
 ```
 
-Then open:
+Then open the printed "then open" URL, including its `#token=...` fragment:
 
 ```text
-http://localhost:8888
+http://localhost:8888/#token=<session-token>
 ```
 
 You can also let `dcmview` use an auto-assigned port by omitting `--port`; copy
@@ -180,11 +180,18 @@ The viewer also works behind a reverse proxy that serves it under a path
 prefix, such as a Jupyter proxy route. The proxy must strip the prefix before
 forwarding and serve the page with a trailing slash (`.../8888/`).
 
-The HTTP server is unauthenticated. It binds to `127.0.0.1` by default. If you
-bind to `0.0.0.0` or another public interface, use your own network access
-controls. Anyone who can reach the server may be able to access image pixels,
-DICOM tags, file paths, patient identifiers, study identifiers, and in-memory
-annotations.
+Every HTTP API request requires the session's bearer token by default. The
+printed launch URL includes it; treat that link as a credential. Scripts can
+read `base_url` and `token` from `--startup-json` and send
+`Authorization: Bearer <token>` (see the [API reference](docs/api.md)).
+`DCMVIEW_TOKEN` fixes the value; `--no-token` explicitly disables the check
+for use behind an authenticating proxy and prints a warning.
+
+The server binds to `127.0.0.1` by default. If you bind to `0.0.0.0` or another
+public interface, use your own network access controls: plain HTTP does not
+encrypt tokens or DICOM data. Anyone with the token and access to the listener
+can read image pixels, DICOM tags, file paths, patient identifiers, study
+identifiers, and in-memory annotations.
 
 ## Python Usage
 

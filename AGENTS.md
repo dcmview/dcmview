@@ -597,10 +597,14 @@ dcmview [OPTIONS] <PATH> [PATH ...]
   --filter <FIELD=VALUE>    repeatable metadata filter
   --mask                    mask patient identifiers on screen; fixed for the session
   --unix-socket <path>      listen on a private Unix socket instead of TCP (Unix only)
+  --no-token                serve the API without the bearer token (warns)
 ```
 
-The server is unauthenticated. Keep loopback binding as the default and prefer
-SSH forwarding for remote use. If a public bind is added or changed, preserve
+Every `/api` request needs the session's bearer token unless the process runs
+with `--no-token`; `DCMVIEW_TOKEN` fixes the token, and it is never taken from
+the command line. New endpoints inherit the check and none is exempt. Load API
+resources in the frontend through `send()` only. Keep loopback binding as the
+default and prefer SSH forwarding for remote use. If a public bind is added or changed, preserve
 the warning path in `server/runtime.rs`.
 
 ---

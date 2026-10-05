@@ -6,7 +6,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { posixShim } from '../../terminalInterception';
-import { activeSessionCount } from '../../viewerSessions';
+import { activeSessionCount, forwardedViewerUrl, startupBaseUrl } from '../../viewerSessions';
 
 // These tests drive the real debug binary that `python scripts/check.py e2e`
 // (or `cargo build --bin dcmview`) leaves in target/debug, which the extension
@@ -17,10 +17,10 @@ const fixtureName = 'golden-uncompressed-u16-multiframe.dcm';
 const fixturePath = path.join(repoRoot, 'tests', 'fixtures', fixtureName);
 const debugBinary = path.join(repoRoot, 'target', 'debug', process.platform === 'win32' ? 'dcmview.exe' : 'dcmview');
 
-function getJson(url: string): Promise<{ status: number; body: any }> {
+function getJson(url: string, headers: http.OutgoingHttpHeaders = {}): Promise<{ status: number; body: any }> {
   return new Promise((resolve, reject) => {
     http
-      .get(url, (response) => {
+      .get(url, { headers }, (response) => {
         const chunks: Buffer[] = [];
         response.on('data', (chunk: Buffer) => chunks.push(chunk));
         response.on('end', () =>
@@ -61,9 +61,14 @@ function publishedBridge(): Promise<{ bridgeUrl: string; token: string }> {
 }
 
 async function scannedFiles(viewerUrl: string): Promise<any[]> {
+  const url = new URL(viewerUrl);
+  const token = new URLSearchParams(url.hash.slice(1)).get('token');
+  url.hash = '';
+  url.pathname = '/api/files';
+  const headers = token === null ? {} : { Authorization: `Bearer ${token}` };
   const deadline = Date.now() + 20000;
   for (;;) {
-    const { status, body } = await getJson(`${viewerUrl}/api/files`);
+    const { status, body } = await getJson(url.href, headers);
     assert.strictEqual(status, 200);
     if (body.scan_complete) {
       return body.files;
@@ -74,6 +79,46 @@ async function scannedFiles(viewerUrl: string): Promise<any[]> {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
 }
+
+suite('dcmview startup URL', () => {
+  test('viewer URL comes from base_url and token, with url as the fallback', () => {
+    const baseUrl = 'http://127.0.0.1:43127';
+    const common = { type: 'server_started', host: '127.0.0.1', port: 43127 };
+    const cases = [
+      {
+        name: 'older binary',
+        event: { ...common, url: baseUrl },
+        expected: `${baseUrl}/?theme=dark`,
+      },
+      {
+        name: 'new with token',
+        // A different legacy URL proves the new fields take precedence.
+        event: { ...common, url: 'http://127.0.0.1:9999/#token=stale', base_url: baseUrl, token: 'Xy_test', protocol: 1 },
+        expected: `${baseUrl}/?theme=dark#token=Xy_test`,
+      },
+      {
+        name: 'new without token',
+        event: { ...common, url: baseUrl, base_url: baseUrl, token: null, protocol: 1 },
+        expected: `${baseUrl}/?theme=dark`,
+      },
+      {
+        name: 'Unix socket',
+        event: { type: 'server_started', url: null },
+        expected: null,
+      },
+    ];
+    for (const { name, event, expected } of cases) {
+      if (expected === null) {
+        assert.throws(() => startupBaseUrl(event), /Unix socket/, name);
+      } else {
+        // As in the extension: only the bare origin is forwarded (here by an
+        // identity stand-in for asExternalUri), and the token is added after.
+        const forwarded = vscode.Uri.parse(startupBaseUrl(event));
+        assert.strictEqual(forwardedViewerUrl(event, forwarded, 'dark').href, expected, name);
+      }
+    }
+  });
+});
 
 suite('dcmview viewer launch', () => {
   suiteSetup(async function () {
@@ -115,7 +160,7 @@ suite('dcmview viewer launch', () => {
 
     try {
       const viewerUrl = await waitFor('the shim to report a VS Code viewer URL', () =>
-        /opened in VS Code at (http:\/\/127\.0\.0\.1:\d+)/.exec(stdout)?.[1],
+        /opened in VS Code at (http:\/\/127\.0\.0\.1:\d+[^\s]*)\r?\n/.exec(stdout)?.[1],
       ).catch((error: Error) => {
         throw new Error(`${error.message}\nstdout: ${stdout}\nstderr: ${stderr}`);
       });

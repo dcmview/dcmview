@@ -12,6 +12,12 @@ from the selected file or folder and displays the viewer in an editor webview.
 not clinical diagnosis. Avoid public-facing server binds; the extension launches
 the bundled server on loopback and displays it in an editor webview.
 
+The extension reads the server's `base_url` and `token`, forwards the origin
+through VS Code, and attaches the token afterwards so Remote-SSH forwarding
+keeps API access working. Older binaries that report only `url` remain
+supported. The output channel omits startup credentials; terminal and Python
+bridge launches receive the full local launch URL with its token fragment.
+
 Do not include PHI or sensitive DICOM content in public issue reports. Report
 security issues privately to the maintainers before public disclosure.
 

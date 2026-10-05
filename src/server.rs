@@ -7,7 +7,7 @@ mod tags;
 mod unix_socket;
 mod web;
 
-pub use api::AppState;
+pub use api::{AccessToken, AppState};
 pub use catalog::{FileRegistry, RegistryStatus};
 pub use lifecycle::RequestActivity;
 pub use runtime::{BoundServer, ServerConfig};

@@ -36,6 +36,8 @@ class _OutputMonitor:
 	def __init__(self, process: subprocess.Popen[str]) -> None:
 		self._process = process
 		self._url: Optional[str] = None
+		self._token: Optional[str] = None
+		self._base_url: Optional[str] = None
 		self._url_lock = threading.Lock()
 		self._url_ready = threading.Event()
 		self._scan_settled = threading.Event()
@@ -71,6 +73,16 @@ class _OutputMonitor:
 		with self._url_lock:
 			return self._url
 
+	@property
+	def token(self) -> Optional[str]:
+		with self._url_lock:
+			return self._token
+
+	@property
+	def base_url(self) -> Optional[str]:
+		with self._url_lock:
+			return self._base_url
+
 	def output_ended(self) -> bool:
 		return self._closed.is_set()
 
@@ -83,10 +95,12 @@ class _OutputMonitor:
 		with self._tail_lock:
 			self._tail.append(line)
 
-	def _set_url(self, url: str) -> None:
+	def _set_url(self, url: str, event: dict) -> None:
 		with self._url_lock:
 			if self._url is None:
 				self._url = url
+				self._token = event.get("token") if isinstance(event.get("token"), str) else None
+				self._base_url = event.get("base_url") if isinstance(event.get("base_url"), str) else None
 				self._url_ready.set()
 
 	def _run(self) -> None:
@@ -102,8 +116,8 @@ class _OutputMonitor:
 				self._remember(line)
 				event = _parse_event(line)
 				url = _startup_url(event)
-				if url is not None:
-					self._set_url(url)
+				if url is not None and event is not None:
+					self._set_url(url, event)
 				if event is not None and event.get("type") in _SCAN_SETTLED_EVENT_TYPES:
 					self._scan_succeeded.set()
 					self._scan_settled.set()
@@ -144,6 +158,14 @@ class ShutdownHandle:
 	@property
 	def url(self) -> Optional[str]:
 		return self._monitor.url
+
+	@property
+	def token(self) -> Optional[str]:
+		return self._monitor.token
+
+	@property
+	def base_url(self) -> Optional[str]:
+		return self._monitor.base_url
 
 	def stop(self, timeout: float = _STOP_TIMEOUT_SECONDS) -> int:
 		_LIVE_HANDLES.discard(self)

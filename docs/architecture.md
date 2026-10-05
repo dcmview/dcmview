@@ -334,6 +334,35 @@ The contract is kept consistent by three layers:
   and `tsc` checks `api.ts` against it; the generated `RAW_FRAME_HEADERS`
   must `satisfy` `Record<keyof RawFrameMetadata, string>`.
 
+### Access Token
+
+Every request under `/api` carries `Authorization: Bearer <token>`. The token
+is one value per process, valid for its lifetime: 32 bytes from the OS random
+source as unpadded base64url, or the value of `DCMVIEW_TOKEN`. It is never
+accepted on the command line, in a query parameter or in a cookie.
+`server/api/auth.rs` owns the token type and the check, which wraps the whole
+API router including its fallbacks, so a request without the token gets the
+same `401` `unauthorized` envelope with `WWW-Authenticate: Bearer` whether or
+not the route exists. No endpoint is exempt, `/api/health` included. The
+viewer page and its hashed assets are outside `/api` and public: they hold
+the build and no file data.
+
+The launch URL carries the token in its fragment
+(`http://127.0.0.1:PORT/#token=<token>`), which browsers never send to a
+server. The frontend moves it to `sessionStorage` and out of the address bar
+on load, and `send()` in `api.ts` adds the header, so every API resource is
+loaded with `fetch`: no `<img src="api/...">`, no `<a href="api/...">`,
+and downloads are fetch-then-blob.
+
+`--no-token` turns the check off for a process behind something that already
+authenticates, and warns on stderr. `AppState` without a token is the same
+open mode, which in-process tests use.
+
+The `--startup-json` line is `StartupEvent` in `api/contracts.rs`. `url` is
+the launch URL with the fragment, so a consumer that only knows `url` keeps
+working; `base_url` and `token` give the same facts apart; `protocol` is
+`STARTUP_PROTOCOL`. Fields are only added.
+
 ### Endpoint Invariants
 
 - Every API error is a JSON `ErrorResponse` shaped as

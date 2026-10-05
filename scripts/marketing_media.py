@@ -19,6 +19,7 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Iterable, Sequence
 from pathlib import Path
@@ -525,9 +526,21 @@ def wait_for_startup(process: subprocess.Popen[str], timeout: float = 60.0) -> s
 		except json.JSONDecodeError:
 			continue
 		if event.get("type") == "server_started" and isinstance(event.get("url"), str):
-			return str(event["url"])
+			launch = urllib.parse.urlsplit(str(event["url"]))
+			if event.get("token") is not None:
+				launch = launch._replace(fragment=urllib.parse.urlencode({"token": event["token"]}))
+			return launch.geturl()
 	raise MarketingMediaError(
 		"dcmview did not report startup within the timeout\n" + "\n".join(recent)
+	)
+
+
+def api_request(url: str, path: str) -> urllib.request.Request:
+	base_url, fragment = urllib.parse.urldefrag(url)
+	token = urllib.parse.parse_qs(fragment).get("token", [""])[0]
+	return urllib.request.Request(
+		f"{base_url.rstrip('/')}{path}",
+		headers={"Authorization": f"Bearer {token}"},
 	)
 
 
@@ -536,7 +549,7 @@ def wait_for_catalog(url: str, expected_files: int, timeout: float = 120.0) -> d
 	last_count = 0
 	while time.monotonic() < deadline:
 		try:
-			with urllib.request.urlopen(f"{url.rstrip('/')}/api/files", timeout=5) as response:
+			with urllib.request.urlopen(api_request(url, "/api/files"), timeout=5) as response:
 				catalog = json.load(response)
 		except (OSError, urllib.error.URLError, json.JSONDecodeError):
 			time.sleep(0.2)
@@ -802,7 +815,7 @@ def smoke_capture(args: argparse.Namespace) -> None:
 	destination = args.review_root.resolve() / "smoke"
 	destination.mkdir(parents=True, exist_ok=True)
 	with running_server(binary, fixture, 1) as url:
-		with urllib.request.urlopen(f"{url.rstrip('/')}/api/files", timeout=5) as response:
+		with urllib.request.urlopen(api_request(url, "/api/files"), timeout=5) as response:
 			catalog = json.load(response)
 		file = catalog["files"][0]
 		scene = {

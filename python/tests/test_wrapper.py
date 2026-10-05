@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import subprocess
 import importlib.util
 import sys
@@ -34,6 +35,34 @@ def _load_script_module(name: str, path: Path):
 
 
 class WrapperTests(unittest.TestCase):
+	def test_startup_event_fields_from_old_and_new_binaries(self) -> None:
+		base_url = "http://127.0.0.1:43127"
+		cases = [
+			("older binary", {"url": base_url}, base_url, None, None),
+			("new with token", {
+				"url": base_url + "/#token=Xy_test", "base_url": base_url,
+				"token": "Xy_test", "protocol": 1,
+			}, base_url + "/#token=Xy_test", "Xy_test", base_url),
+			("new without token", {
+				"url": base_url, "base_url": base_url, "token": None, "protocol": 1,
+			}, base_url, None, base_url),
+		]
+		for name, fields, expected_url, expected_token, expected_base_url in cases:
+			with self.subTest(name=name):
+				event = {"type": "server_started", "host": "127.0.0.1", "port": 43127, **fields}
+				process = mock.Mock(
+					stdout=StringIO(json.dumps(event) + "\n"), stderr=StringIO(), returncode=0,
+				)
+				process.poll.return_value = 0
+				monitor = wrapper._OutputMonitor(process)
+				with redirect_stdout(StringIO()):
+					monitor.start()
+					monitor.join()
+				with wrapper.ShutdownHandle(process, monitor) as handle:
+					self.assertEqual(handle.url, expected_url)
+					self.assertEqual(handle.token, expected_token)
+					self.assertEqual(handle.base_url, expected_base_url)
+
 	def test_missing_binary_raises_runtime_error(self) -> None:
 		with mock.patch.dict(os.environ, {}, clear=True):
 			with mock.patch("dcmview_py.wrapper.shutil.which", return_value=None):

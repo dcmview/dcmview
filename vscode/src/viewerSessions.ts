@@ -11,9 +11,9 @@ const STARTUP_EVENT_TYPE = 'server_started';
 
 interface StartupEvent {
   type: string;
-  url: string;
-  host: string;
-  port: number;
+  url?: string | null;
+  base_url?: string | null;
+  token?: string | null;
 }
 
 export interface RunningSession {
@@ -86,15 +86,16 @@ async function startSessionInPanel(
     child.kill('SIGINT');
   });
 
-  let serverUrl: string;
+  let startup: StartupEvent;
   try {
-    serverUrl = await waitForStartupOrTerminate(
+    startup = await waitForStartupEvent(
       child,
       settings.startupTimeoutSeconds * 1000,
       output,
     );
   } catch (error) {
     panelDisposeListener.dispose();
+    child.kill('SIGINT');
     throw error;
   }
 
@@ -102,12 +103,12 @@ async function startSessionInPanel(
     if (panelDisposed) {
       throw new Error('dcmview panel closed before startup completed.');
     }
-    const externalUri = await vscode.env.asExternalUri(vscode.Uri.parse(serverUrl));
+    const externalUri = await vscode.env.asExternalUri(vscode.Uri.parse(startupBaseUrl(startup)));
     if (panelDisposed) {
       throw new Error('dcmview panel closed before startup completed.');
     }
     const theme = viewerTheme(vscode.window.activeColorTheme.kind);
-    const viewerUri = viewerUrl(externalUri, theme);
+    const viewerUri = forwardedViewerUrl(startup, externalUri, theme);
     panel.webview.html = webviewHtml(panel.webview, viewerUri);
     const themeListener = vscode.window.onDidChangeActiveColorTheme((colorTheme) => {
       void panel.webview.postMessage({ type: THEME_MESSAGE_TYPE, theme: viewerTheme(colorTheme.kind) });
@@ -116,7 +117,16 @@ async function startSessionInPanel(
   } catch (error) {
     panelDisposeListener.dispose();
     child.kill('SIGINT');
-    throw error;
+    if (panelDisposed) {
+      throw error;
+    }
+    // URI and forwarding errors can quote their input, including a legacy
+    // URL's token: keep the cause, drop the credential.
+    const cause = (error instanceof Error ? error.message : String(error)).replace(
+      /#token=[^\s"'<>)]*/g,
+      '#token=…',
+    );
+    throw new Error(`Could not load the dcmview viewer URL in VS Code: ${cause}`);
   }
 
   let resolveExitCode: (exitCode: number) => void;
@@ -129,7 +139,7 @@ async function startSessionInPanel(
     process: child,
     output,
     name: title,
-    url: serverUrl,
+    url: startupViewerUrl(startup),
     exitCode,
     stopped: false,
   };
@@ -231,6 +241,14 @@ export function waitForStartup(
   timeoutMs: number,
   output: Pick<vscode.OutputChannel, 'append' | 'appendLine'>,
 ): Promise<string> {
+  return waitForStartupEvent(child, timeoutMs, output).then((event) => startupViewerUrl(event));
+}
+
+function waitForStartupEvent(
+  child: Pick<childProcess.ChildProcessWithoutNullStreams, 'stdout' | 'stderr' | 'once'>,
+  timeoutMs: number,
+  output: Pick<vscode.OutputChannel, 'append' | 'appendLine'>,
+): Promise<StartupEvent> {
   return new Promise((resolve, reject) => {
     let settled = false;
     let stdoutBuffer = '';
@@ -253,14 +271,22 @@ export function waitForStartup(
       const lines = stdoutBuffer.split(/\r?\n/);
       stdoutBuffer = lines.pop() ?? '';
       for (const line of lines) {
-        output.appendLine(line);
-        recentLines.push(line);
+        const safeLine = startupLogLine(line);
+        output.appendLine(safeLine);
+        recentLines.push(safeLine);
         recentLines.splice(0, Math.max(0, recentLines.length - 20));
-        const parsed = parseStartupLine(line);
-        if (parsed && !settled) {
-          settled = true;
-          clearTimeout(timer);
-          resolve(parsed);
+        if (!settled) {
+          try {
+            const parsed = parseStartupEvent(line);
+            if (parsed) {
+              startupViewerUrl(parsed); // Reject socket-only or invalid URLs immediately.
+              settled = true;
+              clearTimeout(timer);
+              resolve(parsed);
+            }
+          } catch {
+            fail(new Error('dcmview did not report a usable HTTP viewer URL; Unix socket launches are not supported in VS Code.'));
+          }
         }
       }
     });
@@ -286,12 +312,17 @@ export function waitForStartup(
 }
 
 export function parseStartupLine(line: string): string | undefined {
+  const event = parseStartupEvent(line);
+  return event ? startupViewerUrl(event) : undefined;
+}
+
+function parseStartupEvent(line: string): StartupEvent | undefined {
   const trimmed = line.trim();
   if (trimmed.startsWith('{')) {
     try {
-      const event = JSON.parse(trimmed) as Partial<StartupEvent>;
-      if (event.type === STARTUP_EVENT_TYPE && typeof event.url === 'string') {
-        return event.url;
+      const event = JSON.parse(trimmed) as StartupEvent | null;
+      if (event?.type === STARTUP_EVENT_TYPE) {
+        return event;
       }
     } catch {
       return undefined;
@@ -299,9 +330,63 @@ export function parseStartupLine(line: string): string | undefined {
   }
 
   if (trimmed.startsWith(STARTUP_PREFIX)) {
-    return trimmed.slice(STARTUP_PREFIX.length);
+    return { type: STARTUP_EVENT_TYPE, url: trimmed.slice(STARTUP_PREFIX.length) };
   }
   return undefined;
+}
+
+/** Only the bare origin of new startup events is sent through port forwarding. */
+export function startupBaseUrl(event: StartupEvent): string {
+  if (typeof event.base_url === 'string') {
+    return event.base_url;
+  }
+  if (typeof event.url === 'string') {
+    return event.url;
+  }
+  throw new Error('dcmview did not report a usable HTTP viewer URL; Unix socket launches are not supported in VS Code.');
+}
+
+/**
+ * The URL the webview loads: the forwarded origin, then the theme query, then
+ * the token fragment. The token is attached last, so it does not depend on
+ * port forwarding keeping fragments.
+ */
+export function forwardedViewerUrl(
+  event: StartupEvent,
+  externalUri: vscode.Uri,
+  theme: 'light' | 'dark',
+): URL {
+  return new URL(startupViewerUrl(event, viewerUrl(externalUri, theme).href));
+}
+
+/** Reattach credentials after forwarding; older binaries retain their URL fallback. */
+export function startupViewerUrl(event: StartupEvent, externalUrl = startupBaseUrl(event)): string {
+  try {
+    const url = new URL(externalUrl);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      throw new Error();
+    }
+    if (typeof event.base_url === 'string' && typeof event.token === 'string') {
+      url.hash = `token=${encodeURIComponent(event.token)}`;
+      return url.href;
+    }
+    return externalUrl;
+  } catch {
+    throw new Error('dcmview did not report a usable HTTP viewer URL.');
+  }
+}
+
+function startupLogLine(line: string): string {
+  const event = parseStartupEvent(line);
+  if (event) {
+    try {
+      return `${STARTUP_PREFIX}${new URL(startupBaseUrl(event)).origin}`;
+    } catch {
+      return 'dcmview: startup event has no usable HTTP viewer URL';
+    }
+  }
+  // Also covers the socket-mode SSH hint printed after its startup event.
+  return line.replace(/#token=[^\s]*/g, '');
 }
 
 /** Message the viewer page accepts from its parent frame; see frontend/src/lib/app/theme.ts. */

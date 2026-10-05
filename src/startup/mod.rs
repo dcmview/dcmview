@@ -2,9 +2,10 @@ mod discovery;
 
 use anyhow::{Context, Result};
 use dcmview::annotations::{AnnotationSource, AnnotationStore};
+use dcmview::api::contracts::TOKEN_ENV_VAR;
 use dcmview::loader;
 use dcmview::masking::Masker;
-use dcmview::server::{AppState, BoundServer, FileRegistry, ServerConfig};
+use dcmview::server::{AccessToken, AppState, BoundServer, FileRegistry, ServerConfig};
 use discovery::{DiscoveryHandle, DiscoveryInputs, DiscoveryOutcome};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -23,6 +24,7 @@ pub(crate) struct LocalViewerOptions {
     pub(crate) timeout_seconds: Option<u64>,
     pub(crate) open_browser: bool,
     pub(crate) startup_json: bool,
+    pub(crate) no_token: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +43,26 @@ impl LocalViewerOutcome {
 }
 
 pub(crate) async fn run_local_viewer(options: LocalViewerOptions) -> Result<LocalViewerOutcome> {
+    let fixed_token = std::env::var_os(TOKEN_ENV_VAR);
+    anyhow::ensure!(
+        !(options.no_token && fixed_token.is_some()),
+        "--no-token cannot be used while DCMVIEW_TOKEN is set"
+    );
+    let access_token = if options.no_token {
+        eprintln!(
+            "dcmview: warning — --no-token: the API is open to anything that can reach the listener"
+        );
+        None
+    } else {
+        Some(match fixed_token {
+            Some(value) => AccessToken::fixed(
+                value
+                    .to_str()
+                    .context("DCMVIEW_TOKEN must contain only A-Z a-z 0-9 - . _ ~")?,
+            )?,
+            None => AccessToken::generate()?,
+        })
+    };
     let annotation_source = options
         .annotation_path
         .as_ref()
@@ -59,7 +81,10 @@ pub(crate) async fn run_local_viewer(options: LocalViewerOptions) -> Result<Loca
     } else {
         AnnotationStore::empty()
     };
-    let state = AppState::new(registry.clone(), annotation_store.clone());
+    let mut state = AppState::new(registry.clone(), annotation_store.clone());
+    if let Some(token) = access_token {
+        state = state.with_access_token(token);
+    }
     let shutdown = CancellationToken::new();
     let config = ServerConfig {
         host: options.host,
@@ -127,6 +152,7 @@ mod tests {
             timeout_seconds: Some(0),
             open_browser: false,
             startup_json: false,
+            no_token: false,
         }
     }
 

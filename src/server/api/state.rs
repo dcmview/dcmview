@@ -1,4 +1,5 @@
 use super::super::{now_unix_ms, FileRegistry, RequestActivity};
+use super::auth::AccessToken;
 use crate::annotations::AnnotationStore;
 use crate::api::contracts::{SemanticContextResponse, TagNode};
 use crate::pixels::{self, FrameCache, OverlayCache, RawFrameCache};
@@ -41,6 +42,7 @@ pub struct AppState {
     redactions: RedactionStore,
     server_start_ms: u64,
     activity: RequestActivity,
+    access_token: Option<AccessToken>,
 }
 
 impl AppState {
@@ -57,7 +59,19 @@ impl AppState {
             redactions: RedactionStore::new(),
             server_start_ms: now_unix_ms(),
             activity: RequestActivity::new(),
+            access_token: None,
         }
+    }
+
+    /// Requires `token` on every `/api` request. Without this call the API
+    /// is open, which is what `--no-token` and in-process tests use.
+    pub fn with_access_token(mut self, token: AccessToken) -> Self {
+        self.access_token = Some(token);
+        self
+    }
+
+    pub fn access_token(&self) -> Option<&AccessToken> {
+        self.access_token.as_ref()
     }
 
     pub fn registry(&self) -> &FileRegistry {

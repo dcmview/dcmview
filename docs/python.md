@@ -5,9 +5,12 @@ Rust binary. It is intended for scripts and notebooks that have already selected
 local DICOM files or directories and need a temporary viewer for research or
 development inspection.
 
-`dcmview` is not for clinical diagnosis. The local HTTP server is
-unauthenticated; keep it bound to `127.0.0.1` unless you have added your own
-network access controls.
+`dcmview` is not for clinical diagnosis. The local HTTP API requires the
+session's bearer token by default; the launch URL carries it in `#token=...`.
+Keep the server bound to `127.0.0.1` and use SSH forwarding for remote work:
+plain HTTP does not encrypt the token or DICOM data. The binary inherits
+`DCMVIEW_TOKEN` when a fixed token is needed. Direct API clients must send
+`Authorization: Bearer <token>`; see the [API reference](api.md).
 
 ## Install
 
@@ -56,9 +59,28 @@ It provides:
 
 | Attribute or method | Behavior |
 |---|---|
-| `url` | Viewer URL when startup has reported one. |
+| `url` | Read-only launch URL, verbatim from startup, including the token fragment when enabled. |
+| `token` | Read-only `str \| None`: bearer token reported at startup; `None` when absent or under `--no-token`. |
+| `base_url` | Read-only `str \| None`: bare HTTP origin reported at startup, without the token fragment; `None` when absent. |
 | `stop(timeout=5.0)` | Ask the viewer to stop, wait for exit, and return the exit code. |
 | Context manager | Calls `stop()` automatically on context exit. |
+
+Older binaries that report only `url` leave `token` and `base_url` as `None`.
+For a local launch with a current binary, call the API with the bearer header:
+
+```python
+import json
+from urllib.request import Request, urlopen
+from dcmview_py import view
+
+with view("./study_dir", browser=False, block=False, vscode_bridge=False) as handle:
+    request = Request(
+        handle.base_url + "/api/files",
+        headers={"Authorization": f"Bearer {handle.token}"},
+    )
+    with urlopen(request) as response:
+        catalog = json.load(response)
+```
 
 Viewers started with `block=False` are stopped when the Python interpreter
 exits, whether or not the handle is still referenced, so a finished script or a
@@ -172,7 +194,8 @@ Then forward the port from your local machine:
 ssh -L 8010:127.0.0.1:8010 user@remote
 ```
 
-Open `http://127.0.0.1:8010` locally.
+Open the printed `http://localhost:8010/#token=...` launch URL locally,
+keeping its token fragment.
 
 ## Return Values and Errors
 
@@ -214,6 +237,13 @@ launches the local viewer. The wrapper hands this to the `dcmview` binary, so
 Python, terminal, and shell launches follow the same rule. `url`, `stop()`,
 and blocking calls behave the same for a VS Code-managed viewer; `stop()`
 closes the VS Code viewer.
+
+The bridge reports a launch URL with its token fragment, so `handle.url`
+continues to work. Its session event currently has no separate `token` or
+`base_url` fields, so those handle properties remain `None`. A `DCMVIEW_TOKEN`
+set only in the launching terminal or notebook is not forwarded through the
+bridge: the viewer inherits the extension host's environment and otherwise
+generates its own token.
 
 Set `vscode_bridge=False` for one call:
 

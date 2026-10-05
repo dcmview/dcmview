@@ -41,6 +41,7 @@ import threading
 import time
 import traceback
 import urllib.error
+import urllib.parse
 import urllib.request
 import zlib
 from datetime import datetime, timezone
@@ -204,7 +205,10 @@ class ViewerProcess:
                     except ValueError:
                         continue
                     if isinstance(event, dict) and event.get("type") == "server_started":
-                        return str(event["url"]).rstrip("/")
+                        launch = urllib.parse.urlsplit(str(event["url"]))
+                        if event.get("token") is not None:
+                            launch = launch._replace(fragment=urllib.parse.urlencode({"token": event["token"]}))
+                        return launch.geturl().rstrip("/")
                 if self.process.poll() is not None:
                     raise CampaignError(f"dcmview exited during startup with code {self.process.returncode}")
                 self._changed.wait(timeout=0.1)
@@ -224,8 +228,13 @@ class ViewerProcess:
 
 
 def http_get(base_url: str, path: str, timeout: float) -> dict[str, Any]:
+    base_url, fragment = urllib.parse.urldefrag(base_url)
+    token = urllib.parse.parse_qs(fragment).get("token", [""])[0]
+    request = urllib.request.Request(
+        f"{base_url.rstrip('/')}{path}", headers={"Authorization": f"Bearer {token}"}
+    )
     try:
-        with urllib.request.urlopen(f"{base_url}{path}", timeout=timeout) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             status, headers, body = response.status, response.headers, response.read()
     except urllib.error.HTTPError as error:
         status, headers, body = error.code, error.headers, error.read()

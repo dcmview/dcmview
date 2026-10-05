@@ -1,4 +1,5 @@
 mod integration {
+    mod access_token;
     mod annotations_endpoint;
     mod api_contract;
     mod codec_contract;

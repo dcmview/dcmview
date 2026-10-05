@@ -327,11 +327,16 @@ async function main() {
 			*, *::before, *::after { animation: none !important; transition: none !important; caret-color: transparent !important; }
 			.status { display: none !important; }
 		` });
-		const catalog = await frame.evaluate(async () => {
-			const response = await fetch("/api/files");
+		const frameElement = await frame.frameElement();
+		const launchUrl = await frameElement.getAttribute("src");
+		const token = new URLSearchParams(new URL(launchUrl).hash.slice(1)).get("token");
+		const catalog = await frame.evaluate(async (token) => {
+			const response = await fetch("/api/files", {
+				headers: { Authorization: `Bearer ${token}` },
+			});
 			if (!response.ok) throw new Error(`files endpoint returned ${response.status}`);
 			return response.json();
-		});
+		}, token);
 		const unexpectedPatientIds = [...new Set(catalog.files
 			.map((file) => file.patient_id)
 			.filter(Boolean)

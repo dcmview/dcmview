@@ -4,9 +4,45 @@ The browser UI talks to the local Rust server through this API. It is internal
 to the viewer and meant for `dcmview` debugging, smoke tests, and local
 automation. It is not a stable public integration contract.
 
-The server is unauthenticated. Keep it bound to loopback and use SSH forwarding
-for remote work. Responses can expose DICOM metadata, file paths, annotations,
-and pixel data.
+Every request under `/api` requires `Authorization: Bearer <token>` unless
+started with `--no-token`. No endpoint is exempt, including `/api/health`,
+exports, and unknown API routes. The scheme is case-insensitive; the token is
+case-sensitive and compared in constant time. Cookies and query parameters
+are never accepted as credentials. `index.html` and hashed `assets/*` files
+remain public; they contain the viewer build, not DICOM data.
+
+A missing, malformed, or incorrect header returns HTTP `401`, with
+`WWW-Authenticate: Bearer` and the same JSON envelope for every API path:
+
+```json
+{"code":"unauthorized","error":"missing or invalid access token: send Authorization: Bearer <token>"}
+```
+
+The process generates one token from 32 OS-random bytes (43 unpadded base64url
+characters), valid until it exits, with no expiry or rotation. `DCMVIEW_TOKEN`
+can fix the value; `--no-token` disables authentication and warns on stderr.
+The launch URL carries `#token=<token>`; fragments are not sent in HTTP
+requests. Treat the printed launch URL and startup JSON as credentials.
+Keep the listener on loopback and use SSH forwarding for remote work: plain
+HTTP does not encrypt bearer headers or DICOM data.
+
+For scripts, start with `dcmview --no-browser --startup-json ./study_dir`.
+Its `server_started` JSON line provides `base_url`, `token`, and `protocol`,
+along with the launch `url`. In another shell, paste that JSON line when
+`read` waits, then request the API (requires `jq` and `curl`):
+
+```bash
+read -r startup
+base_url=$(printf '%s' "$startup" | jq -r '.base_url')
+token=$(printf '%s' "$startup" | jq -r '.token')
+printf 'Authorization: Bearer %s\n' "$token" |
+  curl --fail --header @- "$base_url/api/files"
+```
+
+Use `base_url` when appending API paths; never append them after the launch
+URL's fragment. Unix-socket startup reports `socket` and `token`, with
+`url: null` and no `base_url`; send the same header with curl's
+`--unix-socket <path>` and an `http://localhost/api/...` URL.
 
 Every API response, including errors and unknown API routes, includes
 `X-Server-Instance`: the server's Unix-millisecond start time, identical to
@@ -424,6 +460,7 @@ Branch on `code`; `error` is diagnostic text and may change.
 | Status | Codes |
 |---|---|
 | `400` | `invalid_path`, `invalid_query`, `invalid_json` (malformed body), `bad_request`, `invalid_window` |
+| `401` | `unauthorized` (missing, malformed, or incorrect bearer token; `WWW-Authenticate: Bearer`) |
 | `403` | `masked` (content a `--mask` session withholds) |
 | `404` | `not_found`, `route_not_found`, `asset_not_found`, `no_pixel_data`, `frame_out_of_range`, `overlay_not_covering_frame` |
 | `405` | `method_not_allowed` |

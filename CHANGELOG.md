@@ -10,7 +10,27 @@ diagnostic viewer.
 
 ## Unreleased
 
+### Breaking changes
+
+- Every `/api` request now requires `Authorization: Bearer <token>` by default,
+  including health and downloads, over TCP and Unix sockets. HTTP scripts must
+  read `token` and `base_url` from `--startup-json` (or extract the token from
+  the launch URL fragment and remove the fragment before adding API paths).
+  Missing or invalid credentials return `401 unauthorized` with
+  `WWW-Authenticate: Bearer`. Startup `url` now carries `#token=...`; JSON adds
+  `base_url`, `token`, and `protocol`. `DCMVIEW_TOKEN` fixes the session token;
+  `--no-token` explicitly disables authentication with a warning for use behind
+  an authenticating proxy. Public binds still warn about unencrypted HTTP.
+
 ### Added
+
+- Python non-blocking handles expose read-only `token` and `base_url` startup
+  fields for authenticated API calls, while `url` remains the launch URL.
+  Older binaries leave the new properties as `None`.
+- VS Code reads `base_url` and `token` separately so the token survives port
+  forwarding, with `url` as the fallback for older binaries. Bridge launch
+  URLs retain the token fragment, extension output omits startup credentials,
+  and socket-only startup events report an unsupported-launch error.
 
 - `--unix-socket PATH` serves the viewer through a private Unix domain socket
   on Linux and macOS, for shared-server inspection with SSH forwarding.
@@ -19,6 +39,14 @@ diagnostic viewer.
   The socket is mode `0600`, checks peer user IDs, and is removed on shutdown.
   Socket mode conflicts with `--host` and `--port`, always bypasses VS Code
   routing, and never opens a browser automatically.
+- The viewer reads the access token from its launch link
+  (`http://127.0.0.1:PORT/#token=…`), removes it from the address bar, keeps
+  it for the tab across reloads, and sends it with every API request. Opened
+  without the token, or after dcmview restarted on the same port, it says to
+  open the link printed in the terminal instead of showing a load error;
+  pasting that link into the same tab loads the viewer.
+- Export ROIs reports a failed export in the viewer instead of leaving the
+  browser on an error page or doing nothing.
 
 ## 0.3.2 - 2026-10-02
 
