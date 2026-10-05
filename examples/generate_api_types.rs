@@ -8,8 +8,9 @@ use dcmview::api::contracts::{
     FrameQuery, FrameValueMapping, FrameWindowApplied, GraphicAnnotationsQuery,
     GraphicAnnotationsResponse, HealthResponse, ParametricMapOverlayQuery, PixelQuery,
     RawFrameMetadata, RedactionSeriesResponse, ReferenceCatalogResponse, SemanticContextResponse,
-    SeriesCatalogResponse, TagNode, TagQuery, WsiFrameContextResponse, API_PREFIX,
-    API_RESPONSE_HEADERS, DISPLAY_FRAME_HEADERS, RAW_FRAME_HEADERS,
+    SeriesCatalogResponse, TagNode, TagQuery, ThumbnailQuery, ThumbnailSource,
+    WsiFrameContextResponse, API_PREFIX, API_RESPONSE_HEADERS, DISPLAY_FRAME_HEADERS,
+    RAW_FRAME_HEADERS, THUMBNAIL_DEFAULT_SIZE, THUMBNAIL_HEADERS, THUMBNAIL_SIZE_BUCKETS,
 };
 use std::any::TypeId;
 use std::collections::{BTreeMap, HashSet};
@@ -73,6 +74,8 @@ fn render() -> String {
     declarations.visit::<TagNode>();
     declarations.visit::<TagQuery>();
     declarations.visit::<PixelQuery>();
+    declarations.visit::<ThumbnailQuery>();
+    declarations.visit::<ThumbnailSource>();
     declarations.visit::<EmbedRoiAnnotations>();
     declarations.visit::<ErrorResponse>();
 
@@ -111,6 +114,25 @@ fn render() -> String {
         writeln!(out, "\t{field}: \"{name}\",").expect("write to string");
     }
     out.push_str("} as const satisfies Record<keyof RawFrameMetadata, string>;\n\n");
+
+    out.push_str("export const THUMBNAIL_HEADERS = {\n");
+    for (field, name) in THUMBNAIL_HEADERS {
+        writeln!(out, "\t{field}: \"{name}\",").expect("write to string");
+    }
+    out.push_str("} as const;\n\n");
+
+    let buckets = THUMBNAIL_SIZE_BUCKETS.map(|bucket| bucket.to_string());
+    writeln!(
+        out,
+        "export const THUMBNAIL_SIZE_BUCKETS = [{}] as const;",
+        buckets.join(", ")
+    )
+    .expect("write to string");
+    writeln!(
+        out,
+        "export const THUMBNAIL_DEFAULT_SIZE = {THUMBNAIL_DEFAULT_SIZE};\n"
+    )
+    .expect("write to string");
 
     let declarations = declarations.by_name.into_values().collect::<Vec<_>>();
     out.push_str(&declarations.join("\n\n"));

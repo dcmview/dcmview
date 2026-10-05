@@ -20,6 +20,7 @@ export const API_ENDPOINTS = {
 	fileFrame: { method: "GET", path: "/api/file/{index}/frame/{frame}" },
 	fileRawFrame: { method: "GET", path: "/api/file/{index}/frame/{frame}/raw" },
 	fileRawPixel: { method: "GET", path: "/api/file/{index}/frame/{frame}/raw/pixel" },
+	fileThumbnail: { method: "GET", path: "/api/file/{index}/frame/{frame}/thumbnail" },
 	fileTags: { method: "GET", path: "/api/file/{index}/tags" },
 	fileTagSelect: { method: "GET", path: "/api/file/{index}/tags/select" },
 	fileAnnotationsGet: { method: "GET", path: "/api/file/{index}/annotations" },
@@ -54,6 +55,14 @@ export const RAW_FRAME_HEADERS = {
 	paddingLow: "X-Frame-Padding-Low",
 	paddingHigh: "X-Frame-Padding-High",
 } as const satisfies Record<keyof RawFrameMetadata, string>;
+
+export const THUMBNAIL_HEADERS = {
+	source: "X-Thumbnail-Source",
+	cacheControl: "Cache-Control",
+} as const;
+
+export const THUMBNAIL_SIZE_BUCKETS = [128, 256, 512, 1024] as const;
+export const THUMBNAIL_DEFAULT_SIZE = 256;
 
 export type ApiErrorCode = "invalid_path" | "invalid_query" | "invalid_json" | "bad_request" | "not_found" | "route_not_found" | "asset_not_found" | "method_not_allowed" | "no_pixel_data" | "frame_out_of_range" | "invalid_window" | "unsupported_transfer_syntax" | "unsupported_pixel_layout" | "semantic_mapping_unavailable" | "overlay_not_covering_frame" | "pixel_decode_failed" | "masked" | "unauthorized" | "internal_error";
 
@@ -521,6 +530,30 @@ justification: TextJustification | null, anchor: [number, number] | null,
  * Whether a line joins the text to its anchor point.
  */
 anchor_visible: boolean, };
+
+/**
+ * Thumbnail query.
+ */
+export type ThumbnailQuery = { 
+/**
+ * Longest edge wanted, in device pixels: 1 to the largest of
+ * [`THUMBNAIL_SIZE_BUCKETS`], snapped up to the next bucket; absent
+ * means [`THUMBNAIL_DEFAULT_SIZE`]. Anything else is `400
+ * invalid_query`.
+ */
+size?: number, 
+/**
+ * `default` (when absent) for the frame's default presentation, or
+ * `full_dynamic`. A thumbnail takes no explicit window.
+ */
+window_mode?: WindowMode, };
+
+/**
+ * The step that produced a thumbnail, reported in
+ * [`THUMBNAIL_HEADER_SOURCE`]. `ThumbnailCache` and `FullDecode` are sent
+ * today; the others are reserved for the cheaper sources that follow.
+ */
+export type ThumbnailSource = "thumbnail_cache" | "display_cache" | "raw_cache" | "reduced_decode" | "full_decode";
 
 /**
  * `value = values[clamp(stored - first_value_mapped, 0, values.length - 1)]`.
