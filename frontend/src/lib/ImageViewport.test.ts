@@ -1174,7 +1174,6 @@ describe("ImageViewport shared gestures", () => {
 
 	it.each([
 		...TOOL_ORDER.map((tool) => [tool, "middle", 1, true] as const),
-		...TOOL_ORDER.map((tool) => [tool, "right", 2, false] as const),
 		["pan", "left", 0, true] as const,
 	])("%s tool: a %s-button drag pans or does nothing, and never starts another tool's gesture", async (tool, _name, button, pans) => {
 		const { viewport, onnavigationchange, onmanualwindowlevel } = await renderReady(tool);
@@ -1191,6 +1190,33 @@ describe("ImageViewport shared gestures", () => {
 		await fireEvent.pointerMove(viewport, { clientX: 60, clientY: 60, pointerId: 1 });
 
 		expectTransform(moved);
+		expect(onnavigationchange).not.toHaveBeenCalled();
+		expect(onmanualwindowlevel).not.toHaveBeenCalled();
+		expect(api.updateAnnotations).not.toHaveBeenCalled();
+		expect(api.updateRedactions).not.toHaveBeenCalled();
+		if (tool === "window_level") expect(windowHud()).toBe("W: 1 · C: 0.5");
+	});
+
+	it.each(TOOL_ORDER)("%s tool: a right-button drag zooms about where it began, and a right click changes nothing", async (tool) => {
+		const { viewport, onnavigationchange, onmanualwindowlevel } = await renderReady(tool);
+
+		await fireEvent.pointerDown(viewport, { button: 2, clientX: 10, clientY: 10, pointerId: 1 });
+		await fireEvent.pointerUp(viewport, { button: 2, clientX: 10, clientY: 10, pointerId: 1 });
+		expectTransform({ tx: 0, ty: 0, scale: 1 });
+
+		// Six pixels up from (10, 10), at 0.5% a pixel.
+		const scale = Math.exp(0.03);
+		const zoomed = { scale, tx: 10 - 10 * scale, ty: 10 - 10 * scale };
+		await fireEvent.pointerDown(viewport, { button: 2, clientX: 10, clientY: 10, pointerId: 1 });
+		expect(viewport.hasPointerCapture(1)).toBe(true);
+		await fireEvent.pointerMove(viewport, { clientX: 25, clientY: 4, pointerId: 1 });
+		expectTransform(zoomed);
+		expect(draft()).toBeNull();
+		await fireEvent.pointerUp(viewport, { button: 2, clientX: 25, clientY: 4, pointerId: 1 });
+		expect(viewport.hasPointerCapture(1)).toBe(false);
+		await fireEvent.pointerMove(viewport, { clientX: 60, clientY: 60, pointerId: 1 });
+
+		expectTransform(zoomed);
 		expect(onnavigationchange).not.toHaveBeenCalled();
 		expect(onmanualwindowlevel).not.toHaveBeenCalled();
 		expect(api.updateAnnotations).not.toHaveBeenCalled();

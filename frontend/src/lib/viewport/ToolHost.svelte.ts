@@ -34,8 +34,8 @@ function toolPointer(event: PointerEvent): ToolPointer {
 
 /**
  * Routes the viewport's pointer and wheel events: it owns pointer capture,
- * the gestures every tool shares (middle-button pan, wheel pan and zoom,
- * pinch), the input profile that tells a mouse wheel from a trackpad, the
+ * the gestures every tool shares (middle-button pan, right-button zoom,
+ * wheel pan and zoom, pinch), the input profile that tells a mouse wheel from a trackpad, the
  * cancel of a gesture whose file or frame was replaced, and the tool that
  * holds the pointer. The tools are state machines behind `Tool`.
  */
@@ -139,8 +139,10 @@ export class ToolHost {
 			return;
 		}
 
+		// A right-drag zooms in every tool; a right click that does not move changes nothing.
 		if (event.button === 2) {
 			event.preventDefault();
+			this.#begin(this.#tools.zoom, event);
 			return;
 		}
 
