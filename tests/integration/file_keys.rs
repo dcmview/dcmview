@@ -413,14 +413,11 @@ async fn each_catalog_entry_shows_the_key_its_file_has() {
             Shown::Pending => panic!("file {index} still has no key"),
         };
         assert_eq!(full, expected_keys[index], "file {index}");
-        // Rasters have no decoder on this path; DICOM frames carry the key.
-        if entry["file_format"] == "dicom" {
-            assert_eq!(
-                frame_key(&server, index).await.as_deref(),
-                Some(full.as_str()),
-                "file {index}"
-            );
-        }
+        assert_eq!(
+            frame_key(&server, index).await.as_deref(),
+            Some(full.as_str()),
+            "file {index}"
+        );
         assert_eq!(
             registry.file_for_shown_key(&full),
             Some(
@@ -1464,27 +1461,60 @@ async fn stopping_key_work_reads_nothing_more_and_records_no_failure() {
 /// its first frame is sent". Nobody asks for it here.
 #[tokio::test]
 async fn a_viewed_file_without_a_key_is_hashed_without_being_asked_for() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let pending = dir.path().join("no-uid.dcm");
-    let never_viewed = dir.path().join("never-viewed.dcm");
-    write_dicom(&pending, None, 7, 8);
-    write_dicom(&never_viewed, None, 8, 8);
-    let (server, registry) = serve(&[pending.clone(), never_viewed]).await;
+    // A raster and a DICOM file without a UID are the two kinds of file
+    // that have no key until they are hashed, and a display frame and a raw
+    // frame are the two responses that count as viewing.
+    for raster in [false, true] {
+        for raw in [false, true] {
+            let context = format!("raster: {raster}, raw frame: {raw}");
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (pending, never_viewed) = if raster {
+                let paths = (dir.path().join("viewed.png"), dir.path().join("never.png"));
+                write_png(&paths.0, 0x40);
+                write_png(&paths.1, 0x80);
+                paths
+            } else {
+                let paths = (dir.path().join("viewed.dcm"), dir.path().join("never.dcm"));
+                write_dicom(&paths.0, None, 7, 8);
+                write_dicom(&paths.1, None, 8, 8);
+                paths
+            };
+            let (server, registry) = serve(&[pending.clone(), never_viewed]).await;
+            let requests = ["/api/file/0/frame/0", "/api/file/0/frame/0/raw"];
 
-    assert_eq!(frame_key(&server, 0).await, None);
-    hashing_done(&registry).await;
-    let stats = registry.key_stats();
-    assert_eq!(
-        (stats.files_hashed, stats.bytes_hashed),
-        (1, size(&pending)),
-        "the viewed file is read once, the other never"
-    );
-    let listed = catalog(&server, "").await;
-    assert_eq!(
-        (shown(&entries(&listed)[0]), shown(&entries(&listed)[1])),
-        (Shown::Key(b3(&pending)), Shown::Pending)
-    );
-    assert_eq!(frame_key(&server, 0).await, Some(b3(&pending)));
+            let first = server.get(requests[usize::from(raw)]).await;
+            first.assert_status_ok();
+            assert!(
+                first.maybe_header("x-file-key").is_none(),
+                "{context}: a file without a key sends no key header"
+            );
+            hashing_done(&registry).await;
+            let stats = registry.key_stats();
+            assert_eq!(
+                (stats.files_hashed, stats.bytes_hashed),
+                (1, size(&pending)),
+                "{context}: the viewed file is read once, the other never"
+            );
+            let listed = catalog(&server, "").await;
+            assert_eq!(
+                (shown(&entries(&listed)[0]), shown(&entries(&listed)[1])),
+                (Shown::Key(b3(&pending)), Shown::Pending),
+                "{context}"
+            );
+            // Once the key is known, every display and raw frame carries
+            // it, and nothing is hashed again.
+            for request in requests {
+                let response = server.get(request).await;
+                response.assert_status_ok();
+                assert_eq!(
+                    response.header("x-file-key"),
+                    b3(&pending).as_str(),
+                    "{context}: {request}"
+                );
+            }
+            assert_eq!(registry.key_stats(), stats, "{context}");
+        }
+    }
 }
 
 /// Only a frame served for viewing starts a hash or carries the key. A
@@ -1495,11 +1525,13 @@ async fn thumbnails_probes_and_failed_frames_start_no_hash_and_send_no_key() {
     let dir = tempfile::tempdir().expect("temp dir");
     let keyed = dir.path().join("keyed.dcm");
     let pending = dir.path().join("pending.dcm");
+    let raster = dir.path().join("raster.png");
     write_dicom(&keyed, Some("1.2.826.0.1.3680043.10.520.1"), 1, 8);
     write_dicom(&pending, None, 2, 8);
-    let (server, registry) = serve(&[keyed, pending]).await;
+    write_png(&raster, 0x40);
+    let (server, registry) = serve(&[keyed, pending, raster]).await;
 
-    for index in 0..2 {
+    for index in 0..3 {
         // (request, whether it is answered)
         for (request, answered) in [
             (format!("/api/file/{index}/frame/0/thumbnail"), true),
@@ -1529,8 +1561,9 @@ async fn thumbnails_probes_and_failed_frames_start_no_hash_and_send_no_key() {
     // The frame itself does both.
     assert!(frame_key(&server, 0).await.is_some());
     assert_eq!(frame_key(&server, 1).await, None);
+    assert_eq!(frame_key(&server, 2).await, None);
     hashing_done(&registry).await;
-    assert_eq!(registry.key_stats().files_hashed, 1);
+    assert_eq!(registry.key_stats().files_hashed, 2);
 }
 
 /// One file reached by two paths is two entries and one file. Both entries

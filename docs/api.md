@@ -204,7 +204,9 @@ explicit key request retries a failed digest.
 
 Discovery performs no reads for keys. A file needing a digest starts hashing
 in the background after its first successful display or raw frame, or when a
-caller explicitly requests its settled key. Thumbnails, pixel probes and
+caller explicitly requests its settled key. That holds for an image file as
+for a DICOM file without a usable UID: its frames decode like any other, the
+first one served starts its hashing, and later ones carry its key. Thumbnails, pixel probes and
 frames that fail do not start hashing and carry no `X-File-Key`.
 Display and raw frame responses include `X-File-Key` once a key is available;
 the frame response never waits for hashing. The current viewer needs no change.

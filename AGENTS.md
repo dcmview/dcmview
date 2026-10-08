@@ -121,8 +121,8 @@ would remove behavior, raise it as a question instead of acting.
 - **Raster images have no metadata tree and no decode admission.** A
   raster's tag tree is empty, and nothing bounds how many large raster
   frames decode at once beyond the decode permits (one frame near the pixel
-  limit takes gigabytes). The metadata tree (which must honour `--mask`),
-  byte-based decode admission and file keys are the planned follow-ups in
+  limit takes gigabytes). The metadata tree (which must honour `--mask`)
+  and byte-based decode admission are the planned follow-ups in
   `docs/design/image-formats.md`.
 - **Some TIFF layouts the design lists are not decoded.** JPEG-compressed
   and 1-bit TIFF are reported as `raster.unsupported_compression` and

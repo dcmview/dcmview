@@ -1042,8 +1042,9 @@ needs it and somebody has a use for the key:
 
 - **After a frame of the file is served.** The first display or raw frame
   response for a file without a key queues its digest
-  (`FileRegistry::frame_sent`). Thumbnails do not count: scrolling a gallery
-  never reads a folder of images a second time.
+  (`FileRegistry::frame_sent`), for a raster as for a DICOM file without a
+  usable UID: both are served by the same two handlers. Thumbnails do not
+  count: scrolling a gallery never reads a folder of images a second time.
 - **On request.** `FileRegistry::ensure_key` returns a file's key once it is
   settled, hashing first what that takes: nothing for a DICOM file whose UID
   no other loaded file has; the file itself for one without a key; and, for
