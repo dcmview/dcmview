@@ -54,9 +54,8 @@ diagnostic viewer.
   not listed. Refused images report `raster.unsupported_color`,
   `raster.unsupported_sample_format`, `raster.unsupported_compression`,
   `raster.jpeg_unsupported_process`, or `raster.too_large`. JPEG-compressed
-  and 1-, 2- and 4-bit TIFF are not decoded in this version, and gray profiles
-  are not carried. These item-specific limits follow the frozen decode
-  contract and await the owner's confirmation; they were not revisited here.
+  and 1-, 2- and 4-bit TIFF are not decoded, and gray profiles are not
+  carried.
 - `--formats dicom,png,jpeg,tiff,webp` narrows directory discovery, and
   `--filter format=<name>` and `--filter path=<text>` select by exact format
   or a substring of the reported path, ignoring case.
