@@ -20,7 +20,7 @@ use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc, Mutex, MutexGuard,
+    Arc, Mutex, MutexGuard, PoisonError,
 };
 use tokio::sync::Notify;
 
@@ -370,9 +370,64 @@ struct HashWork {
     stats: KeyStats,
 }
 
+// Own the worker's queue claim even when its future unwinds or is dropped.
+struct HashWorkerGuard<'a> {
+    registry: &'a FileRegistry,
+    armed: bool,
+}
+
+impl Drop for HashWorkerGuard<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let registry = self.registry;
+        let panicking = std::thread::panicking();
+        let active = {
+            let work = registry
+                .hashing
+                .work
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            work.active
+        };
+        if panicking {
+            if let Some(index) = active {
+                // Do not try to repair a poisoned registry while unwinding.
+                if let Ok(mut inner) = registry.inner.write() {
+                    let changes = inner.keys.resolve(index, Err(KeyFailure::Unreadable));
+                    registry.apply_key_changes(&mut inner, &changes);
+                }
+            }
+        }
+        {
+            let mut work = registry
+                .hashing
+                .work
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            // Keep the worker claim until the outcome is recorded, so a
+            // replacement cannot race its predecessor's cleanup.
+            work.running = false;
+            work.active = None;
+            if let Some(index) = active {
+                work.pending.remove(&index);
+                if panicking {
+                    work.stats.files_hashed += 1;
+                }
+            }
+        }
+        registry.hashing.changed.notify_waiters();
+        registry.notify.notify_waiters();
+        if panicking {
+            registry.queue_keys(Vec::new(), false);
+        }
+    }
+}
+
 impl Hashing {
     fn work(&self) -> MutexGuard<'_, HashWork> {
-        self.work.lock().expect("key hashing lock poisoned")
+        self.work.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Makes the worker panic when it takes `index` from the queue, once.
@@ -436,6 +491,10 @@ impl FileRegistry {
     }
 
     async fn hash_worker(self) {
+        let mut guard = HashWorkerGuard {
+            registry: &self,
+            armed: true,
+        };
         loop {
             let next = {
                 let mut work = self.hashing.work();
@@ -450,6 +509,7 @@ impl FileRegistry {
                         ))
                     }
                     None => {
+                        guard.armed = false;
                         work.running = false;
                         None
                     }
