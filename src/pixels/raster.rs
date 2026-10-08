@@ -117,7 +117,9 @@ pub fn raster_read_budget(file: &FileEntry) -> Option<u64> {
 }
 
 /// The most heap one decode of a frame of `file`, from a file of `length`
-/// bytes, may hold at once on the decoding thread:
+/// bytes, may hold at once on the decoding thread. With the entry's
+/// `raster.file_length` as `length`, it is also what the decode reserves of
+/// the decode memory budget before it starts (`admission::decode_estimate`):
 ///
 /// ```text
 /// RASTER_DECODE_HEAP_BASE_BYTES
@@ -183,6 +185,10 @@ impl<T: Read + Seek> RasterSource for T {}
 /// - `Err(PixelError::Decode { .. })` (`PixelError::frame_decode`) for
 ///   everything else: a truncated or corrupt stream, a file that no longer
 ///   matches its entry, a limit below reached. The message says which.
+///   `length` greater than the entry's `raster.file_length` is one of
+///   these, decided before anything is read: the memory reserved for the
+///   decode (`admission::decode_estimate`) was computed for the length
+///   discovery measured, and a file that has grown may hold more.
 ///
 /// It never panics, whatever `source` holds: a panic inside a decoder crate
 /// is caught here and is a decode error. A PNG or TIFF that ends before its
@@ -376,6 +382,12 @@ pub fn decode_raster_frame(
     let expected = raster_frame_bytes(file)
         .ok_or_else(|| PixelError::UnsupportedLayout("raster.too_large".into()))?;
     let budget = raster_read_budget(file).expect("checked frame size");
+    let listed = file.raster.as_ref().map_or(0, |raster| raster.file_length);
+    if length > listed {
+        return Err(PixelError::frame_decode(anyhow::anyhow!(
+            "raster file has grown since it was listed"
+        )));
+    }
     if file.format != crate::api::contracts::FileFormat::Tiff && length > budget {
         return Err(PixelError::frame_decode(anyhow::anyhow!(
             "raster length exceeds read budget"

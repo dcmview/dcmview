@@ -704,8 +704,18 @@ fn hostile_files() -> Vec<Hostile> {
         // A frame is never padded out where the page has no strip.
         Hostile::new("tiff with strips for half its rows", tiff_half, Fails),
         // As many tags as a page may have decode; one more does not.
-        Hostile::new("tiff at the tag limit", plain_tiff.clone(), Decodes)
-            .replaced_by(tagged(RASTER_TIFF_MAX_TAGS)),
+        // Listed at the length it is decoded at: a file that has grown
+        // since it was listed is refused, whatever it holds.
+        Hostile::new(
+            "tiff at the tag limit",
+            {
+                let mut listed = plain_tiff.clone();
+                listed.resize(tagged(RASTER_TIFF_MAX_TAGS).len(), 0);
+                listed
+            },
+            Decodes,
+        )
+        .replaced_by(tagged(RASTER_TIFF_MAX_TAGS)),
         Hostile::new("tiff over the tag limit", plain_tiff.clone(), Fails)
             .replaced_by(tagged(RASTER_TIFF_MAX_TAGS + 1)),
     ]
