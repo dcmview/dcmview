@@ -1020,21 +1020,33 @@ where
     Ok(cache.lock().map_err(|_| cache_poisoned())?.scheduler())
 }
 
-/// A permit for drawing one presentation layer of `file`
-/// ([`DecodeWork::PresentationLayer`]): interactive, waited for by the
-/// request. The caller moves it into the blocking work that draws and
-/// encodes the layer, so it is held until that work ends.
-pub async fn admit_presentation_layer(
+/// Runs `draw`, which draws and encodes one presentation layer of `file`,
+/// on the blocking pool under an interactive permit for
+/// [`DecodeWork::PresentationLayer`].
+///
+/// The request waits for the permit itself, so one that is dropped while it
+/// waits draws nothing. The permit then belongs to the blocking work and is
+/// held until `draw` returns, whether or not the request is still there.
+pub async fn draw_presentation_layer<T: Send + 'static>(
     scheduler: &Arc<DecodeScheduler>,
     file: &FileEntry,
-) -> PixelResult<DecodePermit> {
-    admission::admit(
+    draw: impl FnOnce() -> T + Send + 'static,
+) -> PixelResult<T> {
+    let permit = admission::admit(
         scheduler,
         DecodeClass::Interactive,
         file,
         DecodeWork::PresentationLayer,
     )
+    .await?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        draw()
+    })
     .await
+    .map_err(|error| {
+        PixelError::frame_decode(anyhow::anyhow!("presentation layer task failed: {error}"))
+    })
 }
 
 fn cache_poisoned() -> PixelError {

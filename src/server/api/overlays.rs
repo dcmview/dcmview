@@ -137,16 +137,13 @@ pub(super) async fn presentation_layer(
         return Ok(overlay_response(png, true, OverlayEncoding::Png));
     }
     // The layer is four bytes a pixel whatever the file holds, so it is
-    // drawn under a permit like a decode, held until the drawing ends.
-    let permit = pixels::admit_presentation_layer(&state.decode_scheduler(), &file)
-        .await
-        .map_err(error::pixel_error)?;
-    let png = task::spawn_blocking(move || {
-        let _permit = permit;
-        pixels::encode_presentation_layer_png(&file, frame, &redaction.boxes)
+    // drawn under a permit like a decode.
+    let drawn = file.clone();
+    let png = pixels::draw_presentation_layer(&state.decode_scheduler(), &file, move || {
+        pixels::encode_presentation_layer_png(&drawn, frame, &redaction.boxes)
     })
     .await
-    .map_err(|error| ApiError::internal(format!("presentation layer task failed: {error}")))?
+    .map_err(error::pixel_error)?
     .map_err(|error| ApiError::internal(format!("{error:#}")))?;
     if cacheable {
         state.cache_overlay(key, png.clone());

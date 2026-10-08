@@ -64,7 +64,7 @@ pub use schedule::{
 pub use segmentation::encode_segmentation_overlay_png;
 pub(crate) use segmentation::segmentation_has_only_binary_samples;
 pub use service::{
-    admit_presentation_layer, load_frame, load_raw_frame, load_redacted_frame,
+    draw_presentation_layer, load_frame, load_raw_frame, load_redacted_frame,
     load_redacted_raw_frame, load_thumbnail, raw_pixel, FrameRequest, FrameResponse,
     RawFrameRequest, RawFrameResponse,
 };
