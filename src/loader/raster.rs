@@ -195,6 +195,12 @@ use std::path::Path;
 /// the stderr line above, since a frame map that silently stops would shift
 /// what "the last frame" means.
 ///
+/// A page whose IFD holds any tag twice cannot be read: TIFF readers
+/// disagree on which entry counts, so the layout listed here would not be
+/// the one a decoder is given. Page 0 with a repeated tag makes the file
+/// `RasterHeaderInvalid`; a later page ends the walk there, like any page
+/// that cannot be read. Entries need not be in ascending tag order.
+///
 /// `raster.frame_offsets` holds the file offset of each frame's IFD, in
 /// frame order, so a frame is decoded from its own page. Later pages may be
 /// compressed differently from page 0; the decoder checks each page it

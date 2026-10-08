@@ -254,9 +254,16 @@ fn read_page(input: &mut HeaderReader, encoding: Encoding, offset: u64) -> Resul
     let table = input.bytes(start, table_len)?;
     let mut tags = BTreeMap::new();
     let mut icc = false;
+    // One bit per tag number. A page that holds any tag twice is refused:
+    // readers disagree on which entry counts, so what this lists would not
+    // be what a decoder is given (`pixels/raster.rs` refuses it again).
+    let mut seen = [0_u64; 1024];
     let entries_len = table.len() - encoding.offset_size() as usize;
     for entry in table[..entries_len].chunks_exact(entry_size as usize) {
         let tag = encoding.number(&entry[..2]);
+        let (word, bit) = ((tag / 64) as usize, 1_u64 << (tag % 64));
+        ensure!(seen[word] & bit == 0, "duplicate TIFF tag");
+        seen[word] |= bit;
         if tag == 34675 {
             icc = true;
         }
@@ -282,10 +289,9 @@ fn read_page(input: &mut HeaderReader, encoding: Encoding, offset: u64) -> Resul
             _ if optional => continue,
             _ => anyhow::bail!("invalid TIFF layout tag type"),
         };
-        if optional && (tags.contains_key(&tag) || values == 0 || values > u64::from(u16::MAX)) {
+        if optional && (values == 0 || values > u64::from(u16::MAX)) {
             continue;
         }
-        ensure!(!tags.contains_key(&tag), "duplicate TIFF layout tag");
         ensure!(values > 0, "empty TIFF layout tag");
         ensure!(
             values <= u64::from(u16::MAX),

@@ -750,6 +750,90 @@ async fn crafted_headers_are_skipped_and_the_tiff_page_limit_is_exact() {
     assert_eq!(most["raster"]["pages_total"], PAGE_LIMIT);
 }
 
+/// A TIFF page that holds any tag twice is not listed: readers disagree on
+/// which entry counts, so what the catalog said of it would not be what a
+/// decoder is given. As page 0 it makes the file unreadable; as a later
+/// page it ends the walk, like any page that cannot be read. Entries in
+/// descending order are no reason to refuse a file.
+#[tokio::test]
+async fn a_tiff_page_that_repeats_a_tag_is_not_listed() {
+    use raster_files::{tiff_file, TiffPage, TiffValue};
+    let page = || TiffPage::strip((8, 8), &[8], 1, vec![5; 64]);
+    // A second entry for `tag`, after the one the page has.
+    let twice = |mut page: TiffPage, tag: u16, value: TiffValue| {
+        page.tags.push((tag, value));
+        page
+    };
+    let skipped = [
+        // A tag discovery reads, one only a decoder reads, and two that
+        // nothing reads.
+        (
+            "photometric.tif",
+            twice(page(), 262, TiffValue::Short(vec![0])),
+        ),
+        (
+            "strip-rows.tif",
+            twice(page(), 278, TiffValue::Long(vec![1])),
+        ),
+        (
+            "description.tif",
+            twice(
+                page().with(270, TiffValue::Bytes(b"one\0".to_vec())),
+                270,
+                TiffValue::Bytes(b"two\0".to_vec()),
+            ),
+        ),
+        (
+            "private.tif",
+            twice(
+                page().with(40_000, TiffValue::Short(vec![1])),
+                40_000,
+                TiffValue::Short(vec![1]),
+            ),
+        ),
+    ];
+    let dir = tempdir().expect("temp dir");
+    for (name, page) in &skipped {
+        let bytes = tiff_file(false, std::slice::from_ref(page)).0;
+        fs::write(dir.path().join(name), bytes).expect("write TIFF");
+    }
+    let later = tiff_file(
+        false,
+        &[
+            page(),
+            twice(page(), 262, TiffValue::Short(vec![0])),
+            page(),
+        ],
+    )
+    .0;
+    fs::write(dir.path().join("later-page.tif"), later).expect("write TIFF");
+    let (mut descending, pages) = tiff_file(true, &[page()]);
+    let ifd = pages[0] as usize;
+    let count = usize::from(u16::from_be_bytes([descending[ifd], descending[ifd + 1]]));
+    let entries: Vec<u8> = descending[ifd + 2..ifd + 2 + 12 * count]
+        .chunks(12)
+        .rev()
+        .flatten()
+        .copied()
+        .collect();
+    descending[ifd + 2..ifd + 2 + 12 * count].copy_from_slice(&entries);
+    fs::write(dir.path().join("descending.tif"), descending).expect("write TIFF");
+
+    let scan = scan_dir(dir.path()).await;
+
+    let mut expected = skipped
+        .iter()
+        .map(|(name, _)| (name.to_string(), "raster_header_invalid".to_string()))
+        .collect::<Vec<_>>();
+    expected.sort();
+    assert_eq!(scan.not_loaded(), expected);
+    assert_eq!(scan.loaded(), ["descending.tif", "later-page.tif"]);
+    let later = scan.file("later-page.tif");
+    assert_eq!(later["frame_count"], 1);
+    assert_eq!(later["raster"]["pages_total"], 1);
+    assert_eq!(scan.file("descending.tif")["frame_count"], 1);
+}
+
 /// A TIFF whose layout no decoder will take is still listed, and says why,
 /// instead of vanishing as an unreadable file. A file with many excluded
 /// pages counts them all and lists the first few.
