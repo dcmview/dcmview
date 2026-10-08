@@ -132,14 +132,18 @@ async function framePaints(frame) {
     .catch(() => false);
 }
 
-/** Wait for a viewer frame not in `known` that has the token and paints. */
+/**
+ * Wait for a viewer frame not in `known` that paints. The page drops the
+ * `#token=` fragment from its URL once read, and every frame request needs
+ * the token, so a painted frame is the proof that it arrived.
+ */
 async function waitForNewPaintedViewer(page, known) {
   const deadline = Date.now() + PAINT_TIMEOUT_MS;
   let seen = [];
   while (Date.now() < deadline) {
     seen = viewerFrames(page).filter((frame) => !known.has(frame));
     for (const frame of seen) {
-      if (new URL(frame.url()).hash.startsWith('#token=') && (await framePaints(frame))) {
+      if (await framePaints(frame)) {
         known.add(frame);
         return { painted: true, url: new URL(frame.url()).origin };
       }
