@@ -1,7 +1,10 @@
 //! The BLAKE3 digest of one file's bytes, read in bounded slices.
 
 use super::KeyFailure;
+use std::fs::File;
+use std::io::{ErrorKind, Read};
 use std::path::Path;
+use std::time::SystemTime;
 
 /// The most of a file's expected bytes one [`FileHasher::next_slice`] call
 /// reads; the last call reads one probe byte more. A slice is the
@@ -34,7 +37,12 @@ pub enum HashProgress {
 /// reaches the expected length reads the probe byte as well, so that one
 /// call may read `KEY_HASH_SLICE_BYTES + 1` bytes.
 pub struct FileHasher {
-    _private: (),
+    file: File,
+    expected_len: u64,
+    modified: Option<SystemTime>,
+    hasher: blake3::Hasher,
+    buffer: Box<[u8]>,
+    bytes_read: u64,
 }
 
 impl FileHasher {
@@ -46,8 +54,29 @@ impl FileHasher {
     /// path that cannot be inspected or opened is `Unreadable`. A regular
     /// file whose length is not `expected_len` is [`KeyFailure::Changed`].
     pub fn open(path: &Path, expected_len: u64) -> Result<Self, KeyFailure> {
-        let _ = (path, expected_len);
-        todo!("FND4: check the path is a regular file of the expected length and open it")
+        let metadata = std::fs::metadata(path).map_err(|_| KeyFailure::Unreadable)?;
+        if !metadata.is_file() {
+            return Err(KeyFailure::Unreadable);
+        }
+        if metadata.len() != expected_len {
+            return Err(KeyFailure::Changed);
+        }
+        let file = File::open(path).map_err(|_| KeyFailure::Unreadable)?;
+        let opened = file.metadata().map_err(|_| KeyFailure::Unreadable)?;
+        if !opened.is_file() {
+            return Err(KeyFailure::Unreadable);
+        }
+        if opened.len() != expected_len || opened.modified().ok() != metadata.modified().ok() {
+            return Err(KeyFailure::Changed);
+        }
+        Ok(Self {
+            file,
+            expected_len,
+            modified: opened.modified().ok(),
+            hasher: blake3::Hasher::new(),
+            buffer: vec![0; 1024 * 1024].into_boxed_slice(),
+            bytes_read: 0,
+        })
     }
 
     /// Reads and hashes the next slice.
@@ -64,12 +93,46 @@ impl FileHasher {
     ///
     /// Not called again after `Done` or an error.
     pub fn next_slice(&mut self) -> Result<HashProgress, KeyFailure> {
-        todo!("FND4: hash up to one slice and finish with the growth probe and the second stat")
+        let end = self.bytes_read + (self.expected_len - self.bytes_read).min(KEY_HASH_SLICE_BYTES);
+        while self.bytes_read < end {
+            let count = (end - self.bytes_read).min(self.buffer.len() as u64) as usize;
+            let read = self.read(count)?;
+            if read == 0 {
+                return Err(KeyFailure::Changed);
+            }
+            self.hasher.update(&self.buffer[..read]);
+        }
+        if self.bytes_read < self.expected_len {
+            return Ok(HashProgress::More);
+        }
+        if self.read(1)? != 0 {
+            return Err(KeyFailure::Changed);
+        }
+        let metadata = self.file.metadata().map_err(|_| KeyFailure::Unreadable)?;
+        if metadata.len() != self.expected_len || metadata.modified().ok() != self.modified {
+            return Err(KeyFailure::Changed);
+        }
+        Ok(HashProgress::Done(*self.hasher.finalize().as_bytes()))
     }
 
     /// The bytes read from the file so far, the growth probe included.
     pub fn bytes_read(&self) -> u64 {
-        todo!("FND4: the count of bytes read")
+        self.bytes_read
+    }
+}
+
+impl FileHasher {
+    fn read(&mut self, count: usize) -> Result<usize, KeyFailure> {
+        loop {
+            match self.file.read(&mut self.buffer[..count]) {
+                Ok(read) => {
+                    self.bytes_read += read as u64;
+                    return Ok(read);
+                }
+                Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+                Err(_) => return Err(KeyFailure::Unreadable),
+            }
+        }
     }
 }
 
