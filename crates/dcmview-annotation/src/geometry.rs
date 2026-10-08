@@ -232,6 +232,11 @@ impl Geometry {
     /// [`crate::limits::MAX_MASK_TILES`] tiles are looked at; a geometry with
     /// more is refused on its count alone.
     ///
+    /// A number that is not finite is reported as `non_finite`, once, at that
+    /// number, and nothing else is concluded from it: a rectangle or an
+    /// ellipse is checked for `degenerate`, `bad_angle` and its bounding box
+    /// only when all of its numbers are finite.
+    ///
     /// Violation codes: `non_finite`, `out_of_bounds`, `degenerate` (a
     /// rectangle with no area or with corners out of order, an ellipse radius
     /// that is not positive), `bad_angle`, `too_few_points`,

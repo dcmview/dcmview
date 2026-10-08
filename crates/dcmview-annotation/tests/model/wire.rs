@@ -402,6 +402,17 @@ fn reading_refuses_other_formats_versions_and_malformed_values() {
             vec![Edit::Set("/version", json!("1.0-beta"))],
             Read::UnsupportedVersion,
         ),
+        // The major version is the text `1` and nothing else.
+        (
+            "a major version with a leading zero",
+            vec![Edit::Set("/version", json!("01.0"))],
+            Read::UnsupportedVersion,
+        ),
+        (
+            "a major version padded to nine digits",
+            vec![Edit::Set("/version", json!("000000001.0"))],
+            Read::UnsupportedVersion,
+        ),
         (
             "a minor version of nine digits",
             vec![Edit::Set("/version", json!("1.999999999"))],

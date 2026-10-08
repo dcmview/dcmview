@@ -175,6 +175,18 @@ impl<F: Fn(&FileKey) -> Option<ImageSize>> FileSizes for F {
 /// | `text` | a string of at most `max_length` bytes, and never more than 65,536 ([`crate::limits::MAX_TEXT_BYTES`]) (`value_type`, `too_long`) |
 ///
 /// `required` is advisory and never makes a value or a record invalid.
+///
+/// # Cost
+///
+/// One validation call does work linear in the size of the value it checks
+/// plus the parts of the schema that value names. Whatever it looks up in
+/// the schema (a class or a field by id, an option of a field, an attribute
+/// or geometry type of a class, a target kind of a field) it finds through
+/// an index built at most once in the call, and only when first needed, so
+/// a `Batch` of 10,000 operations or a record with 1,024 attributes does not
+/// scan a schema list once per item, and a small operation against a large
+/// schema does not pay for the whole schema. Where two schema items share an
+/// id the first one is the one found.
 #[derive(Clone, Copy)]
 pub struct Context<'a> {
     pub files: &'a dyn FileSizes,

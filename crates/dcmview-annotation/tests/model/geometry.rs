@@ -323,6 +323,45 @@ fn a_geometry_is_checked_against_its_image() {
     }
 }
 
+/// A number that is not finite is the one thing wrong with a shape that is
+/// otherwise sound: nothing is concluded from comparing it with the others,
+/// so the report does not also call the shape degenerate or its angle bad.
+#[test]
+fn a_number_that_is_not_finite_is_reported_as_that_alone() {
+    for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let sound = [30.0, 20.0, 90.0, 60.0];
+        let rects = (0..4).map(|slot| {
+            let mut n = sound;
+            n[slot] = value;
+            Geometry::Rect {
+                x0: n[0],
+                y0: n[1],
+                x1: n[2],
+                y1: n[3],
+            }
+        });
+        let sound = [100.0, 80.0, 50.0, 30.0, 45.0];
+        let ellipses = (0..5).map(|slot| {
+            let mut n = sound;
+            n[slot] = value;
+            Geometry::Ellipse {
+                cx: n[0],
+                cy: n[1],
+                rx: n[2],
+                ry: n[3],
+                angle: n[4],
+            }
+        });
+        for geometry in rects.chain(ellipses) {
+            let invalid = geometry
+                .validate(SIZE)
+                .expect_err("a number that is not finite");
+            let codes: Vec<ViolationCode> = invalid.violations.iter().map(|v| v.code).collect();
+            assert_eq!(codes, vec![ViolationCode::NonFinite], "{geometry:?}");
+        }
+    }
+}
+
 /// A tile starts inside the image when `tx * 64 < columns`, for every `tx` a
 /// key can hold: the product does not fit 32 bits.
 #[test]

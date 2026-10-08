@@ -109,10 +109,11 @@ impl Document {
     /// parsed, and JSON nested deeper than serde_json's limit of 128 levels
     /// is refused by the parser. Never panics on any input.
     ///
-    /// `format` must be [`FORMAT`]. `version` must be two decimal numbers
-    /// joined by one `.`, the first equal to [`VERSION_MAJOR`]; any minor
-    /// version reads. Records are read for shape only; call
-    /// [`Document::validate`] for the strict check.
+    /// `format` must be [`FORMAT`]. `version` must be `<major>.<minor>`:
+    /// the major is [`VERSION_MAJOR`] written the one way this crate writes
+    /// it, the text `1` (`01.0` and `+1.0` are refused), and the minor is 1
+    /// to 9 ASCII digits; any minor version reads. Records are read for
+    /// shape only; call [`Document::validate`] for the strict check.
     pub fn from_json_str(text: &str) -> Result<Document, DocumentError> {
         let limit = crate::limits::MAX_DOCUMENT_BYTES;
         if text.len() > limit {
@@ -169,7 +170,11 @@ impl Document {
     ///   (`duplicate_label`).
     ///
     /// Work is linear in the size of the document, and stops after 32
-    /// violations ([`crate::limits::MAX_VIOLATIONS`]).
+    /// violations ([`crate::limits::MAX_VIOLATIONS`]). Linear includes the
+    /// schema: a class, a field, an option, a class's attribute or geometry
+    /// type and a field's target kind are each found through an index built
+    /// once, never by scanning a list of the schema for each record that
+    /// names one.
     pub fn validate(&self) -> Result<(), Invalid> {
         crate::Check::check(self, ())
     }
