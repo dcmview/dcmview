@@ -561,7 +561,14 @@ is cached between requests.
   happen later (`docs/design/annotation-model.md` 1.7).
 - Hash only through `keys::FileHasher`, one slice per `Background` decode
   permit, on the blocking pool. Only `FileRegistry::ensure_key` waits for a
-  digest; no frame, catalog or tag request does.
+  digest; no frame, catalog or tag request does. `FileHasher` is given the
+  length and the modification time of discovery's `stat`
+  (`FileEntry::size_bytes`, `FileEntry::modified`) and checks them on the
+  file it opened, never on the path.
+- `keys::KeyTable` holds clones of the registry's entries (`KeyedFile`) and
+  no string of its own per file: do not copy a UID or a path into it or
+  build a `sop:` key before one is sent. `tests/key_table_memory.rs` bounds
+  what a file costs there; do not raise the bound to pass it.
 - A file key leaves the process only in the form `shown_key`
   (`server/catalog/keys.rs`) gives it, so a masked session never sends a
   real UID inside a key. A key that comes back from a client is resolved
@@ -574,8 +581,12 @@ is cached between requests.
 - A change to which key a file gets, or to how a key is written, raises
   `KEY_RULES`.
 - Code that needs a key for a write or an export awaits `ensure_key`; it
-  does not read `file_key` from the catalog, which may be an unchecked
-  alias or about to be replaced.
+  does not read `file_key` from the catalog or `X-File-Key`, which may be
+  provisional: an unchecked alias, or about to be replaced. A key
+  `ensure_key` returned is settled and stays the file's key for the session
+  (`KeyTable`, rule 4); nothing found or hashed later changes it.
+- A `FileRekey` names a file by `index`. Apply it to what is held for that
+  file, never to everything held under `old_key`.
 
 **Annotations**
 

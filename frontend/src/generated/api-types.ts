@@ -100,7 +100,9 @@ export type FileKeyError = "unreadable" | "changed";
  * 1.7). A client applies it in one step to everything it holds under
  * `old_key` for the file `index`: records, queued operations, history and
  * selection. For the rest of the session the server accepts `old_key` as
- * naming the first file that held it.
+ * naming the first file that held it, which can be another file than
+ * `index`, so what is held under `old_key` for other files stays. A key
+ * the server has returned for a write or an export is never replaced.
  */
 export type FileRekey = { 
 /**
@@ -177,12 +179,16 @@ pixel_aspect_ratio: number | null, transfer_syntax_uid: string, default_window: 
  *   failed.
  * - Otherwise the key in full.
  *
- * A key is at most 132 bytes. It is stable for the life of the process
- * except that a `sop:` key is replaced, once, by a `b3:` key when the
- * file turns out to share its UID with different bytes; `rekeys` in
- * [`FilesResponse`] reports each replacement. In a masked session a
- * `sop:` key is built from the masked UID, so the rule for leaving it
- * out is unchanged and no real UID is sent.
+ * A key is at most 132 bytes. This is the key as it stands, which may
+ * not be settled: a `sop:` key is replaced, once, by a `b3:` key when
+ * the file turns out to share its UID with different bytes, and
+ * `rekeys` in [`FilesResponse`] reports each replacement. A `b3:` key,
+ * and a `sop:` key the server has returned for a write or an export,
+ * never change. A file found after the key of its UID was settled has
+ * `null` here until it has been compared with the first file that
+ * carries the UID. In a masked session a `sop:` key is built from the
+ * masked UID, so the rule for leaving it out is unchanged and no real
+ * UID is sent.
  */
 file_key?: string | null, 
 /**
@@ -190,7 +196,8 @@ file_key?: string | null,
  * that is another file: the two are one image under two paths and share
  * annotations. Left out otherwise. Two DICOM files with one UID and one
  * size are aliases without their bytes having been compared; comparing
- * them later may give both a `b3:` key instead.
+ * them, which happens before a key of theirs is written down, may give
+ * both a `b3:` key instead.
  */
 alias_of?: number, 
 /**

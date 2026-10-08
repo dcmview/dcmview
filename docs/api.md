@@ -163,17 +163,44 @@ digest of the stored file bytes, as 64 lowercase hex characters. A masked
 session builds `sop:` keys from masked UIDs and accepts only that shown form;
 `b3:` keys are sent unchanged.
 
+A `sop:` key is built from the data set's SOP Instance UID (0008,0018), not
+from the Media Storage SOP Instance UID of the file meta. Discovery reads it
+as text and takes the first value when the element holds several separated
+by a backslash, without the NUL or spaces that pad the value and without
+surrounding white space. What is left is used as written, with no case
+folding and no other normalisation, when it is 1 to 128 of the characters
+above; a missing element, an empty value and any other value give the file a
+`b3:` key. Tooling that computes keys for the same files has to read the UID
+the same way to arrive at the same key: this reading is part of the rules
+`key_rules` versions.
+
 `alias_of`, when present, is the index of the first entry that held the same
 key. Files with the same UID and length provisionally share a key; their
-bytes are compared only when a caller needs a settled key. If any files of
-that UID differ, the group uses content keys. Existing UID keys remain until
-replaced by a digest, except that a failed digest removes such a key.
-`key_error`, when present, is `unreadable` or `changed` (the file is no longer
-what discovery saw). A later explicit key request retries a failed digest.
+bytes are compared only when a caller needs a settled key, and then every
+file with that UID is read, whichever of them the caller asked about. If
+they differ, each takes its content key; existing UID keys remain until
+replaced by a digest, except that a failed digest removes such a key. If
+they agree, the UID key is settled.
+
+A settled key is final: every `b3:` key, and a `sop:` key once it has been
+returned for a write or an export. It stays the file's key for the rest of
+the session and is never replaced. A file with the same UID that is found
+afterwards has `file_key: null` until it has been compared with the first
+file that carries the UID, and then shares the key or takes a content key
+of its own; so does a file of the group that could not be read when the key
+was settled. The key an entry or `X-File-Key` shows is the key as it
+stands and may not be settled yet.
+
+`key_error`, when present, is `unreadable` or `changed`. `changed` means the
+file is not the one discovery saw: its length or its modification time
+differs, or it changed while it was read. A file rewritten with other bytes
+of the same length is recognised by its modification time alone. A later
+explicit key request retries a failed digest.
 
 Discovery performs no reads for keys. A file needing a digest starts hashing
 in the background after its first successful display or raw frame, or when a
-caller explicitly requests its settled key. Thumbnails do not start hashing.
+caller explicitly requests its settled key. Thumbnails, pixel probes and
+frames that fail do not start hashing and carry no `X-File-Key`.
 Display and raw frame responses include `X-File-Key` once a key is available;
 the frame response never waits for hashing. The current viewer needs no change.
 
@@ -194,11 +221,19 @@ index. A `since` greater than the current catalog revision returns
 Otherwise `reset` is false. `keys_hashing` counts queued files plus the file
 currently being hashed. Key changes can arrive after `scan_complete`.
 
+One response is one moment of the catalog: its entries, `scan_complete`,
+the counters, `discovery` and `keys_hashing` are read together. A response
+with `scan_complete: true` lists every file the scan found, and a file that
+is queued for hashing when the entries are read is counted.
+
 `rekeys` contains replacements after the requested cursor and through the
 returned revision, oldest first. Each has `revision`, `index`, `old_key` and
-`new_key`; a file replaces its key at most once. The replacement takes the
+`new_key`; a file replaces its key at most once, a `sop:` key by a `b3:`
+key, and never once the key has been settled. The replacement takes the
 revision of its changed entry. A plain request includes all replacements.
-An old key continues to name its first holder for the rest of the session.
+An old key continues to name its first holder for the rest of the session,
+which can be another file than `index`: apply a replacement to what is held
+for the file `index`, not to everything held under `old_key`.
 Existing clients may keep requesting the full catalog without a cursor.
 
 ### Raster image summaries

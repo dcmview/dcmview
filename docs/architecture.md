@@ -52,7 +52,7 @@ application module:
 | HTTP wire model | `src/api/contracts.rs` | Plain `endpoints` table, media types, header names, wire structs (query names are `FrameQuery`/`TagQuery` fields), and error envelope. |
 | Launch and startup contract | `crates/dcmview-protocol` | `StartupEvent` (the `--startup-json` line), `launch_url`, `STARTUP_PROTOCOL`, the token fragment parameter and the token environment variable. Re-exported by `src/api/contracts.rs`. Fields are only added. |
 | Annotation model | `crates/dcmview-annotation` | The model's types and wire format, `validate` on each of them, `FileKey` and `KEY_RULES`, `Op` and `OpEnvelope`, the size bounds in `limits`, and the generated TypeScript and JSON Schema. The root package takes `FileKey` and `KEY_RULES` from it (`src/keys.rs`) and nothing else: `src/annotations.rs` is the EMBED store behind the annotation endpoints. |
-| File keys | `src/keys/` | `KeyTable`: which key each loaded file has, as a plain data structure with no I/O. `FileHasher`: one file's BLAKE3 digest in bounded slices. See [File Keys And The Catalog Cursor](#file-keys-and-the-catalog-cursor). |
+| File keys | `src/keys/` | `KeyTable`: which key each loaded file has and whether it is settled, as a plain data structure with no I/O that holds no string per file. `FileHasher`: one file's BLAKE3 digest in bounded slices. See [File Keys And The Catalog Cursor](#file-keys-and-the-catalog-cursor). |
 | HTTP runtime | `src/server/` | Listener/runtime, route registration, handlers, state, registry, activity tracking, tags, and embedded assets. `server/catalog.rs` holds the registry with its key table and catalog revisions; `server/catalog/keys.rs` holds background hashing and what a session shows for a key. |
 | Pixel service | `src/pixels/` | Typed display, raw and thumbnail requests, cache behavior, transfer-syntax classification, decoding, the render seam (`render.rs` `DisplayBuffer`), decode classes (`schedule.rs`), and `PixelError`. |
 | Patient geometry | `src/geometry.rs` | Normalized per-frame position, orientation, pixel spacing, coplanarity checks, and target-to-source pixel transforms. |
@@ -852,24 +852,61 @@ In short:
 | File | Key |
 |---|---|
 | DICOM with a usable SOP Instance UID (1 to 128 characters of `A-Z a-z 0-9 . - _`) that nothing contradicts | `sop:<uid>` |
-| Another loaded file with the same UID and the same length | The same `sop:<uid>`: the two are aliases, and their bytes have not been compared |
-| Files with one UID that are known to differ (their lengths differ, or their digests do) | `b3:<digest>` each, so byte-identical copies among them still share a key |
+| Another loaded file with the same UID and the same length | The same `sop:<uid>`, provisionally: their bytes have not been compared |
+| Files with one UID that are known to differ (their lengths differ, or their digests do) before any key of theirs was relied on | `b3:<digest>` each, so byte-identical copies among them still share a key |
 | Raster, DICOM without a UID, or with a UID that is not usable | `b3:<digest>` |
 
 `<digest>` is the BLAKE3 digest of the file's bytes exactly as stored, as 64
-lowercase hex characters. The rule does not depend on the order files are
-found in. Keys are session-scoped: they are stable for the life of the
-process, except that a `sop:` key is replaced once by a `b3:` key when its
-file turns out to share the UID with different bytes.
+lowercase hex characters. The UID is the data set's SOP Instance UID as
+discovery reads it: the first value, without its padding and surrounding
+white space, and otherwise as written (`docs/api.md`, "File keys"). That
+reading is part of the rules `KEY_RULES` versions, since other tooling has to
+read the same UID to compute the same key.
+
+**A key that is shown and a key that is relied on.** The catalog and the
+frame header show a file's key as it stands, and that key can still change:
+`sop:<uid>` shared by UID and length is unchecked, and a file found later
+can contradict it. A key is *settled* when it can no longer change: every
+`b3:` key, and `sop:<uid>` once `KeyTable::rely_on` has returned it. Only
+`FileRegistry::ensure_key` settles a key, and only a settled key goes into
+a record or an export. To settle `sop:<uid>` for a file whose UID other
+loaded files of the same length carry, every one of those files is hashed
+first (`docs/design/annotation-model.md` 1.7: verified "before the first
+annotation write on either file"), so two files with one settled key hold
+the same bytes, whatever order they were found or asked about in.
+
+**After a key was relied on.** `sop:<uid>` then names the bytes of the first
+file with that UID for the rest of the session, and nothing replaces it. A
+file with the UID that is found afterwards has no key until it has been
+compared with that first file; it then shares the key, or takes a `b3:` key
+of its own if it differs. A file of the group that could not be read when
+the key was settled loses the provisional key it showed and is treated the
+same way. Keys are session-scoped: the same folder opened again, or found
+in another order while a key is asked for, can give a file another key, and
+anything stored is matched on reload through its `FileRef` evidence, not by
+key alone.
+
+A key is replaced by another (`sop:` by `b3:`, once) only for a file whose
+group was shown to differ before any key of it was relied on.
 
 ### Discovery Adds No Read
 
 Discovery never hashes. A file's length comes from the `stat` discovery
-already makes (`FileEntry::size_bytes`), and the path that tells one file
-reached twice from two files is the one the discovery record already
-resolved (`FileRegistry::record_selected`). Registering a file is a constant
-number of hash-map operations under the registry lock it already took. A
-file that needs its bytes read for a key is registered without a key.
+already makes (`FileEntry::size_bytes`), as does its modification time
+(`FileEntry::modified`), and the path that tells one file reached twice from
+two files is the one the discovery record already resolved
+(`FileRegistry::record_selected`). Registering a file is a constant number
+of hash-map operations under the registry lock it already took. A file that
+needs its bytes read for a key is registered without a key.
+
+The key table copies nothing out of a file. It is given the registry's own
+entry (`KeyedFile`, implemented by `Keyed` in `server/catalog/keys.rs`) and
+keeps clones of that handle in its vectors and maps, so a file whose UID and
+path are its own costs about a hundred bytes there whatever their length,
+and no allocation. A `sop:` key is not stored as text: it is `sop:` plus the
+UID the entry already holds, and it is written out where it is sent.
+`tests/key_table_memory.rs` holds the bound with a counting allocator, and
+the timing script reports resident memory after the scan.
 
 The rule is measured, not assumed: `scripts/startup_timing.py` times first
 response, first file and scan completion against the released baseline on
@@ -886,24 +923,38 @@ needs it and somebody has a use for the key:
   response for a file without a key queues its digest
   (`FileRegistry::frame_sent`). Thumbnails do not count: scrolling a gallery
   never reads a folder of images a second time.
-- **On request.** `FileRegistry::ensure_key` returns a file's key once it can
-  be relied on for a write or an export, hashing first what that takes:
-  nothing for an ordinary DICOM file, the file itself for one without a key,
-  and the file and the one it is an alias of for an unchecked alias. Aliases
-  are therefore compared two at a time and only when asked, so a dataset
-  that holds a copy of every file is not read twice for being opened.
+- **On request.** `FileRegistry::ensure_key` returns a file's key once it is
+  settled, hashing first what that takes: nothing for a DICOM file whose UID
+  no other loaded file has; the file itself for one without a key; and, for
+  a file whose UID other files of the same length carry, every one of those
+  files, whichever of them is asked about. That last case costs the bytes
+  of the group's files, each read once, and is paid only when a key of the
+  group is relied on: a dataset that holds a copy of every file is not read
+  twice for being opened. A folder whose files all carry one UID and one
+  length is read whole before the first key of it is returned.
+- **For a file found after its UID's key was relied on,** when a frame of it
+  is served: the file and, if it was never hashed, the first file with the
+  UID, since the late file has no key until the two are compared.
 
 The catalog hashes one file at a time, in slices of at most 8 MiB
 (`keys::KEY_HASH_SLICE_BYTES`) on the blocking pool. Each slice holds a
 `Background` decode permit and gives it back before the next, so a viewer's
 decode never waits behind more than one slice. Digests asked for through
-`ensure_key` go ahead of those queued by viewing. `FileHasher` hashes only
-the file discovery saw: a file whose length differs, that changes while it
-is read, or that cannot be read gets no digest and its entry reports
-`key_error`; at most one byte past the discovered length is ever read.
+`ensure_key` go ahead of those queued by viewing. `FileHasher` opens the
+path once, without waiting (`O_NONBLOCK` on Unix, so a FIFO in a file's
+place cannot hold a pool thread), and checks the opened file, not the path:
+a file whose length or modification time is not what discovery's `stat`
+saw, that changes while it is read, or that cannot be read gets no digest
+and its entry reports `key_error`; at most one byte past the discovered
+length is ever read. Length and modification time are all that tie the
+bytes to the file discovery saw, so a file rewritten at the same length
+with its modification time set back is hashed as what it now holds, and a
+file that was only touched is refused for the rest of the session.
 Hashing needs a Tokio runtime to start; a registry filled outside one keeps
-its queue until a call arrives inside one. `FileRegistry::stop_key_work`
-ends it at shutdown.
+its queue until a call arrives inside one. A worker that panics fails the
+file it held as unreadable and a new worker takes the rest of the queue, so
+a fault cannot leave `ensure_key` waiting. `FileRegistry::stop_key_work`
+ends hashing at shutdown.
 
 ### What A Client Sees
 
@@ -911,14 +962,17 @@ ends it at shutdown.
   `sop_instance_uid` (an ordinary DICOM file adds no bytes to the catalog),
   `null` while the file has no key, and the key otherwise. `alias_of` names
   the first file that holds the same key. `key_error` is `unreadable` or
-  `changed`.
+  `changed`. What an entry shows is the key as it stands, settled or not.
 - Display and raw frame responses carry `X-File-Key` whenever the file has a
   key, so a viewer showing a file whose key was pending learns it from the
   next frame.
 - A replaced key is one `FileRekey` (`index`, `old_key`, `new_key`,
   `revision`) in `FilesResponse.rekeys`, delivered with the changed entry. A
-  file's key is replaced at most once. The old key keeps naming the first
-  file that held it (`FileRegistry::file_for_shown_key`).
+  file's key is replaced at most once, and never after `ensure_key` returned
+  it. The old key keeps naming the first file that held it
+  (`FileRegistry::file_for_shown_key`), which may be another file than
+  `index`: a replacement is applied to what is held for that file, not to
+  everything held under the old key.
 - The `--startup-json` line reports `key_rules`.
 
 A file key built from a SOP Instance UID is an identifier. A masked session
@@ -1168,14 +1222,20 @@ installation and VS Code Electron integration can also use network/cache state;
 - Discovery lifecycle tests drive the real loader over copies of committed
   fixtures for completion, cancellation, annotation failure, no-files, and
   all-filtered cases.
-- File key tests are in three places. `src/keys/table.rs` tables the key
-  rules with no filesystem. `src/keys/hash.rs` hashes real temporary files,
-  including ones that change under it. `tests/integration/file_keys.rs`
+- File key tests are in four places. `src/keys/table.rs` tables the key
+  rules with no filesystem, each group shape in every registration order.
+  `src/keys/hash.rs` hashes real temporary files, including ones that change
+  under it or are swapped for a FIFO at the moment they are opened.
+  `tests/key_table_memory.rs` is its own binary with a counting allocator
+  and bounds what the table holds per file. `tests/integration/file_keys.rs`
   runs the real loader into a registry and reads the catalog, the cursor,
   the frame header and key replacement as a client does; it bounds hashing
   by `FileRegistry::key_stats` (files, bytes and slices read), never by
-  elapsed time, and takes a `DecodeScheduler` of its own to hold the permits
-  hashing waits for.
+  elapsed time, takes a `DecodeScheduler` of its own to hold the permits
+  hashing waits for, and waits on the registry's change signal instead of
+  sleeping. Two seams exist for what no outside call can arrange: the
+  registry's `after_page` hook (the catalog handler's one-read rule) and the
+  worker fault of `server/catalog/keys.rs` (a worker that panics).
 - `BoundServer::bind` is separate from `serve`, so bind ordering and occupied
   ports are deterministic.
 - `server::router(AppState)` supports in-process `axum-test` coverage for the
@@ -1330,6 +1390,11 @@ Not current correctness blockers:
 - Discovery never reads a file for its key, and no request path waits for a
   digest except `FileRegistry::ensure_key`. Hash only through `FileHasher`,
   one slice per `Background` permit.
+- A key is written into a record or an export only as `ensure_key` returned
+  it. The key an entry or a frame header shows may be provisional.
+- The key table holds no copy of a UID or a path and builds no key string
+  per file; keep `tests/key_table_memory.rs` passing without raising its
+  bound.
 - Every place a file key leaves the process sends `shown_key`'s form, so a
   masked session never sends a real UID inside a key.
 - A catalog entry that changes after it was registered takes a new revision;
