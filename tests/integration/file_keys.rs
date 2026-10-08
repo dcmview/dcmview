@@ -1784,6 +1784,102 @@ fn a_queue_filled_outside_a_runtime_is_hashed_once_a_runtime_calls() {
     assert_eq!(registry.key_stats().files_hashed, 1);
 }
 
+/// `ensure_key` is cancel safe: a caller that stops waiting, before the
+/// worker has run at all or while the worker holds the file, leaves the
+/// work queued, and it finishes without anyone asking again.
+#[tokio::test]
+async fn a_key_request_that_is_dropped_leaves_its_work_to_finish() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let paths = [dir.path().join("a.dcm"), dir.path().join("b.dcm")];
+    write_dicom(&paths[0], None, 1, 8);
+    write_dicom(&paths[1], None, 2, 8);
+    let (registry, _scheduler, viewer) = held(1).await;
+    let (_server, registry) = serve_with(registry, &paths).await;
+
+    // Dropped after one poll, before the worker's first.
+    {
+        let mut asked = std::pin::pin!(registry.ensure_key(0));
+        assert!(futures::poll!(asked.as_mut()).is_pending());
+    }
+    assert_eq!(registry.files_page(None, None).keys_hashing, 1);
+
+    // Dropped while the worker holds the first file and waits for a permit.
+    let_tasks_run().await;
+    {
+        let mut asked = std::pin::pin!(registry.ensure_key(1));
+        assert!(futures::poll!(asked.as_mut()).is_pending());
+        let_tasks_run().await;
+        assert!(futures::poll!(asked.as_mut()).is_pending());
+    }
+    assert_eq!(registry.files_page(None, None).keys_hashing, 2);
+    assert_eq!(registry.key_stats(), KeyStats::default());
+
+    drop(viewer);
+    tokio::time::timeout(Duration::from_secs(30), hashing_done(&registry))
+        .await
+        .expect("the work a dropped request queued never finishes");
+    for (index, path) in paths.iter().enumerate() {
+        assert_eq!(key_text(&registry, index), Some(b3(path)), "file {index}");
+    }
+    assert_eq!(registry.key_stats().files_hashed, 2);
+}
+
+/// A file with the same UID that is found while a caller waits for the
+/// group's files to be hashed is part of the answer: it is read before the
+/// key is returned, so the key returned is final whether the new file is a
+/// copy or differs.
+#[tokio::test]
+async fn a_file_found_while_a_key_request_waits_is_read_before_the_key_is_returned() {
+    const UID: &str = "1.2.826.0.1.3680043.10.523.1";
+    for differs in [false, true] {
+        let context = format!("the file found meanwhile differs: {differs}");
+        let dir = tempfile::tempdir().expect("temp dir");
+        let paths = (0..3)
+            .map(|index| dir.path().join(format!("{index}.dcm")))
+            .collect::<Vec<_>>();
+        write_dicom(&paths[0], Some(UID), 1, 8);
+        fs::copy(&paths[0], &paths[1]).expect("copy");
+        write_dicom(&paths[2], Some(UID), if differs { 2 } else { 1 }, 8);
+        let (registry, _scheduler, viewer) = held(1).await;
+        scan(&registry, &paths[0]).await;
+        scan(&registry, &paths[1]).await;
+
+        let asked = tokio::spawn({
+            let registry = registry.clone();
+            async move { registry.ensure_key(0).await }
+        });
+        hashing_queued(&registry, 2).await;
+        scan(&registry, &paths[2]).await;
+        drop(viewer);
+
+        let key = tokio::time::timeout(Duration::from_secs(30), asked)
+            .await
+            .unwrap_or_else(|_| panic!("{context}: the key is never returned"))
+            .expect("task")
+            .expect("key");
+        let expected = if differs {
+            b3(&paths[0])
+        } else {
+            format!("sop:{UID}")
+        };
+        assert_eq!(key.as_str(), expected, "{context}");
+        let late = registry.key_status(2).expect("registered");
+        assert!(
+            late.digest.is_some(),
+            "{context}: the file found meanwhile was not read"
+        );
+        assert_eq!(registry.key_stats().files_hashed, 3, "{context}");
+        // The key that was returned stays the file's key.
+        hashing_done(&registry).await;
+        let status = registry.key_status(0).expect("registered");
+        assert_eq!(
+            (status.key.as_ref().map(FileKey::as_str), status.settled),
+            (Some(expected.as_str()), true),
+            "{context}"
+        );
+    }
+}
+
 /// A runtime that goes away takes the hashing worker with it, wherever the
 /// worker was: not polled yet, or holding a file and waiting for a permit.
 /// Nothing was wrong with any file, so none has a failure, none is dropped

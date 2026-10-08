@@ -1024,6 +1024,10 @@ mod tests {
         Option<usize>,
     );
 
+    /// What becomes of a group's third file once it is tried: the outcome
+    /// of hashing it, the key the first two files end with, and its own.
+    type TriedCase = (Result<[u8; 32], KeyFailure>, String, Option<String>);
+
     /// One file of a group case: a path, a size and the byte its digest is
     /// made of, so equal bytes stand for equal content.
     #[derive(Debug, Clone, Copy)]
@@ -1885,6 +1889,221 @@ mod tests {
             keys(&table),
             vec![(key(&sop(UID)), None), (key(&sop(UID)), Some(0))]
         );
+    }
+
+    /// A shared key is relied on only when every file of the group was
+    /// tried. Two copies that agree are not enough while a third file has
+    /// neither a digest nor a failure: it could be the one that differs,
+    /// and a key that was relied on is never taken back.
+    #[test]
+    fn a_shared_key_waits_for_every_file_of_the_group_to_be_tried() {
+        // (what becomes of the third file, the key the first two end with,
+        // the third file's key)
+        let cases: Vec<TriedCase> = vec![
+            (Ok(digest(1)), sop(UID), key(&sop(UID))),
+            (Ok(digest(2)), b3(1), key(&b3(2))),
+            (Err(KeyFailure::Unreadable), sop(UID), None),
+            (Err(KeyFailure::Changed), sop(UID), None),
+        ];
+        for (third, expected, third_key) in cases {
+            let context = format!("the third file gives {:?}", third.map(|bytes| bytes[0]));
+            let mut table = Table::new();
+            for path in ["/a", "/b", "/c"] {
+                table.register(file(UID, 10, path));
+            }
+            table.resolve(0, Ok(digest(1)));
+            table.resolve(1, Ok(digest(1)));
+            let before = keys(&table);
+            for asked in [0, 1] {
+                let (reliance, changes) = table.rely_on(asked);
+                assert_eq!(reliance, Some(Reliance::Wanted), "{context}: file {asked}");
+                assert_eq!(changes, KeyChanges::default(), "{context}");
+                assert!(!table.settled(asked), "{context}: file {asked}");
+            }
+            assert_eq!(keys(&table), before, "{context}");
+            assert_eq!(
+                table.required_for(1),
+                vec![2],
+                "{context}: the file that was not tried is asked for"
+            );
+
+            table.resolve(2, third);
+            for asked in [0, 1] {
+                assert_eq!(
+                    table.rely_on(asked).0,
+                    Some(Reliance::Final(FileKey::parse(&expected).expect("key"))),
+                    "{context}: file {asked}"
+                );
+            }
+            assert_eq!(key_of(&table, 2), third_key, "{context}");
+        }
+    }
+
+    /// A small deterministic generator, so a failing seed fails again.
+    struct Sequence(u64);
+
+    impl Sequence {
+        fn below(&mut self, bound: usize) -> usize {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            (self.0 % bound as u64) as usize
+        }
+    }
+
+    /// What a settled key promises, held against a few thousand random
+    /// sequences of everything a table can be asked to do: files found in
+    /// any order (the same path twice, shared UIDs, no UID), viewed, hashed
+    /// with success or either failure, and relied on, with and without the
+    /// reads `required_for` names.
+    ///
+    /// - A settled key never changes and never stops being settled.
+    /// - No replacement is reported for a file whose key was settled.
+    /// - Two files with the same settled key hold the same bytes, or are
+    ///   one file.
+    /// - `file_for_key` of a settled key names the same file every time,
+    ///   and that file holds the bytes the key was given for.
+    /// - A caller that hashed everything `required_for` named gets an
+    ///   answer, never `Wanted`, which it would wait on for ever; and it
+    ///   gets `Failed` only when the file itself or the group's first file
+    ///   cannot be read.
+    #[test]
+    fn settled_keys_hold_under_any_sequence_of_operations() {
+        const UIDS: [&str; 5] = [UID, UID, "1.2.3", "", "not a uid"];
+        for seed in 1..=4000_u64 {
+            let mut random = Sequence(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+            // The files that exist: a UID, a size, the byte their digest is
+            // made of (equal bytes are equal content; files of different
+            // sizes never share it), and whether they can be read.
+            let pool = (0..2 + random.below(6))
+                .map(|_| {
+                    let uid = UIDS[random.below(UIDS.len())];
+                    let size = 10 + random.below(2) as u64;
+                    let content = size as u8 * 16 + random.below(2) as u8;
+                    (uid, size, content, random.below(6) != 0)
+                })
+                .collect::<Vec<_>>();
+            let mut table = Table::new();
+            // The pool position of each registered index.
+            let mut found: Vec<usize> = Vec::new();
+            // Each settled file's key and the file that key named.
+            let mut settled: std::collections::HashMap<usize, (String, usize)> =
+                std::collections::HashMap::new();
+            let mut log = vec![format!("seed {seed}: {pool:?}")];
+
+            for _ in 0..5 + random.below(40) {
+                let count = table.len();
+                let mut rekeyed = Vec::new();
+                let operation = if count == 0 { 0 } else { random.below(10) };
+                match operation {
+                    0..=2 => {
+                        let position = random.below(pool.len());
+                        let (uid, size, _, _) = pool[position];
+                        log.push(format!("register file {position} as {count}"));
+                        found.push(position);
+                        let changes = table.register(file(uid, size, &format!("/{position}")));
+                        rekeyed.extend(changes.rekeys);
+                    }
+                    3 => {
+                        let index = random.below(count);
+                        log.push(format!("view {index}"));
+                        table.frame_sent(index);
+                    }
+                    4..=6 => {
+                        let index = random.below(count);
+                        let (_, _, content, _) = pool[found[index]];
+                        let outcome = match random.below(4) {
+                            0 => Err(KeyFailure::Unreadable),
+                            1 => Err(KeyFailure::Changed),
+                            _ => Ok(digest(content)),
+                        };
+                        log.push(format!("resolve {index}: {:?}", outcome.map(|d| d[0])));
+                        rekeyed.extend(table.resolve(index, outcome).rekeys);
+                    }
+                    7..=8 => {
+                        let index = random.below(count);
+                        log.push(format!("read what {index} requires, then rely on it"));
+                        let outcome = |file: usize| {
+                            let (_, _, content, readable) = pool[found[file]];
+                            if readable {
+                                Ok(digest(content))
+                            } else {
+                                Err(KeyFailure::Unreadable)
+                            }
+                        };
+                        let (reliance, _, changes) = rely(&mut table, index, &outcome);
+                        rekeyed.extend(changes.into_iter().flat_map(|changes| changes.rekeys));
+                        let context = log.join("\n");
+                        match reliance {
+                            Reliance::Final(given) => {
+                                assert!(table.settled(index), "{context}");
+                                assert_eq!(key_of(&table, index), key(given.as_str()), "{context}");
+                            }
+                            Reliance::Wanted => panic!("nothing is left to read:\n{context}"),
+                            Reliance::Failed(_) => {
+                                let first = (0..count)
+                                    .find(|&other| pool[found[other]].0 == pool[found[index]].0)
+                                    .expect("the file itself");
+                                assert!(
+                                    !pool[found[index]].3 || !pool[found[first]].3,
+                                    "the file and its group's first file can be read:\n{context}"
+                                );
+                            }
+                        }
+                    }
+                    _ => {
+                        let index = random.below(count);
+                        log.push(format!("rely on {index}"));
+                        let (reliance, changes) = table.rely_on(index);
+                        rekeyed.extend(changes.rekeys);
+                        if let Some(Reliance::Final(_)) = reliance {
+                            assert!(table.settled(index), "{}", log.join("\n"));
+                        }
+                    }
+                }
+
+                let context = log.join("\n");
+                let same_bytes = |a: usize, b: usize| {
+                    found[a] == found[b] || pool[found[a]].2 == pool[found[b]].2
+                };
+                for rekey in &rekeyed {
+                    assert!(
+                        !settled.contains_key(&rekey.index),
+                        "the settled key of file {} was replaced:\n{context}",
+                        rekey.index
+                    );
+                }
+                let mut holders = std::collections::HashMap::new();
+                for index in 0..table.len() {
+                    if !table.settled(index) {
+                        assert!(
+                            !settled.contains_key(&index),
+                            "file {index} is no longer settled:\n{context}"
+                        );
+                        continue;
+                    }
+                    let text = key_of(&table, index).expect("a settled file has a key");
+                    let named = table
+                        .file_for_key(&FileKey::parse(&text).expect("key"))
+                        .expect("a settled key names a file");
+                    assert!(
+                        same_bytes(named, index),
+                        "the key of file {index} names other bytes:\n{context}"
+                    );
+                    let first = settled.entry(index).or_insert((text.clone(), named));
+                    assert_eq!(
+                        *first,
+                        (text.clone(), named),
+                        "the settled key of file {index} changed:\n{context}"
+                    );
+                    let holder = *holders.entry(text).or_insert(index);
+                    assert!(
+                        same_bytes(holder, index),
+                        "files {holder} and {index} share a settled key and differ:\n{context}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
