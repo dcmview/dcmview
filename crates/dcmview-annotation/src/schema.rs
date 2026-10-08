@@ -160,7 +160,7 @@ pub struct FieldDef {
 /// `Deserialize` drops those from the map; without that every field would
 /// be written with `type` and its type's members twice.
 #[derive(Deserialize)]
-#[serde(rename = "FieldDef")]
+#[serde(rename = "FieldDef", expecting = "struct FieldDef")]
 struct FieldDefWire {
     id: String,
     name: String,
