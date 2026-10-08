@@ -7,6 +7,11 @@
 //! registers them. Each path is scanned on its own so that indexes follow
 //! the order the test names them in; a real scan is parallel and its order
 //! is not fixed.
+//!
+//! Nothing here waits for a length of time to see that something happened:
+//! a test waits on the registry's own change signal (`hashing_done`), holds
+//! the decode permits hashing needs, or asks for a key. `let_tasks_run` is
+//! only ever followed by assertions that something has not happened.
 
 use super::support;
 use axum::http::StatusCode;
@@ -23,7 +28,8 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 use tokio::sync::mpsc;
 
 // ---------------------------------------------------------------------------
@@ -93,6 +99,22 @@ fn size(path: &Path) -> u64 {
     fs::metadata(path).expect("file metadata").len()
 }
 
+fn modified(path: &Path) -> SystemTime {
+    fs::metadata(path)
+        .expect("file metadata")
+        .modified()
+        .expect("modification time")
+}
+
+fn set_modified(path: &Path, time: SystemTime) {
+    fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .expect("reopen")
+        .set_modified(time)
+        .expect("set modification time");
+}
+
 /// The key a file's bytes hash to.
 fn b3(path: &Path) -> String {
     let bytes = fs::read(path).expect("read file");
@@ -138,7 +160,12 @@ async fn scan(registry: &FileRegistry, path: &Path) {
 /// A server over `paths`, scanned one after another so that the file at
 /// `paths[i]` has index `i`.
 async fn serve(paths: &[PathBuf]) -> (TestServer, FileRegistry) {
-    let registry = FileRegistry::new();
+    serve_with(FileRegistry::new(), paths).await
+}
+
+/// [`serve`] into a registry the test made, for one that hashes under a
+/// decode scheduler of its own.
+async fn serve_with(registry: FileRegistry, paths: &[PathBuf]) -> (TestServer, FileRegistry) {
     for path in paths {
         scan(&registry, path).await;
     }
@@ -148,6 +175,54 @@ async fn serve(paths: &[PathBuf]) -> (TestServer, FileRegistry) {
         registry.clone(),
     )));
     (server, registry)
+}
+
+/// A registry that hashes under `scheduler`, and every permit of it held:
+/// hashing queues and reads nothing until the permits are dropped.
+async fn held(
+    permits: usize,
+) -> (
+    FileRegistry,
+    Arc<DecodeScheduler>,
+    Vec<dcmview::pixels::DecodePermit>,
+) {
+    let scheduler = DecodeScheduler::new(permits);
+    let registry = FileRegistry::new().with_decode_scheduler(scheduler.clone());
+    let mut viewer = Vec::new();
+    for _ in 0..permits {
+        viewer.push(scheduler.acquire(DecodeClass::Interactive).await);
+    }
+    (registry, scheduler, viewer)
+}
+
+/// Returns once no file is being hashed or queued for it, woken by the
+/// registry's change signal and never by a timer.
+async fn hashing_done(registry: &FileRegistry) {
+    loop {
+        let changed = registry.changed();
+        tokio::pin!(changed);
+        changed.as_mut().enable();
+        if registry.files_page(None, None).keys_hashing == 0 {
+            return;
+        }
+        changed.await;
+    }
+}
+
+/// Returns once `count` files are being hashed or queued. Queueing is not
+/// announced, so this lets the tasks that queue run until they have.
+async fn hashing_queued(registry: &FileRegistry, count: usize) {
+    while registry.files_page(None, None).keys_hashing < count {
+        tokio::task::yield_now().await;
+    }
+}
+
+fn key_text(registry: &FileRegistry, index: usize) -> Option<String> {
+    registry
+        .key_status(index)
+        .expect("registered file")
+        .key
+        .map(|key| key.as_str().to_string())
 }
 
 async fn catalog(server: &TestServer, query: &str) -> Value {
@@ -443,6 +518,7 @@ async fn a_changed_or_missing_file_has_no_key_until_it_can_be_read() {
     let (server, registry) = serve(&[changed.clone(), missing.clone()]).await;
 
     let original = fs::read(&changed).expect("read");
+    let seen = modified(&changed);
     let mut longer = original.clone();
     longer.extend_from_slice(&[0; 4096]);
     fs::write(&changed, &longer).expect("grow the file");
@@ -474,13 +550,401 @@ async fn a_changed_or_missing_file_has_no_key_until_it_can_be_read() {
         ]
     );
 
-    // The file is as discovery saw it again: asking retries, and succeeds.
+    // The file is as discovery saw it again, its modification time
+    // included: asking retries, and succeeds.
     fs::write(&changed, &original).expect("restore the file");
+    set_modified(&changed, seen);
     let key = registry.ensure_key(0).await.expect("key after restore");
     assert_eq!(key.as_str(), b3(&changed));
     let listed = catalog(&server, "").await;
     assert_eq!(shown(&entries(&listed)[0]), Shown::Key(b3(&changed)));
     assert!(entries(&listed)[0].get("key_error").is_none());
+}
+
+/// Discovery reads a header and a `stat`. A file replaced afterwards by
+/// other bytes of the same length is not the file the catalog lists, and
+/// only its modification time says so.
+#[tokio::test]
+async fn a_file_rewritten_at_the_same_length_after_discovery_has_no_key() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("rewritten.dcm");
+    write_dicom(&path, None, 1, 8);
+    let original = fs::read(&path).expect("read");
+    let seen = modified(&path);
+    let (server, registry) = serve(std::slice::from_ref(&path)).await;
+
+    // Other pixels, the same length, written after discovery. The time is
+    // set outright so the test does not depend on the filesystem's tick.
+    write_dicom(&path, None, 0x7777, 8);
+    assert_eq!(size(&path), original.len() as u64);
+    assert_ne!(fs::read(&path).expect("read"), original);
+    set_modified(&path, seen + Duration::from_secs(10));
+
+    assert_eq!(
+        registry.ensure_key(0).await,
+        Err(KeyError::Unavailable(KeyFailure::Changed)),
+        "the bytes on disk are not the file discovery saw"
+    );
+    assert_eq!(
+        registry.key_stats().bytes_hashed,
+        0,
+        "refused from its modification time, before any read"
+    );
+    let listed = catalog(&server, "").await;
+    assert_eq!(
+        (
+            shown(&entries(&listed)[0]),
+            entries(&listed)[0]["key_error"].clone()
+        ),
+        (Shown::Pending, Value::from("changed"))
+    );
+
+    // As discovery saw it again: the key is the one of the original bytes.
+    fs::write(&path, &original).expect("restore the bytes");
+    set_modified(&path, seen);
+    let key = registry.ensure_key(0).await.expect("key after restore");
+    assert_eq!(
+        key.as_str(),
+        FileKey::blake3(blake3::hash(&original).as_bytes()).as_str()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Keys that are relied on
+
+/// Every order of `0..count`.
+fn orders(count: usize) -> Vec<Vec<usize>> {
+    if count == 0 {
+        return vec![Vec::new()];
+    }
+    let mut all = Vec::new();
+    for shorter in orders(count - 1) {
+        for position in 0..=shorter.len() {
+            let mut order = shorter.clone();
+            order.insert(position, count - 1);
+            all.push(order);
+        }
+    }
+    all
+}
+
+/// `docs/design/annotation-model.md` 1.7: a key shared by UID and size is
+/// verified "before the first annotation write on either file". Whichever
+/// file of such a group is asked about first, in whatever order the files
+/// were found, the key `ensure_key` returns is the one the file ends the
+/// session with; two files given one key hold the same bytes; and every
+/// file of the group was read once to know it.
+#[tokio::test]
+async fn a_key_that_was_asked_for_is_final_whatever_order_files_are_found_and_asked_in() {
+    const UID: &str = "1.2.826.0.1.3680043.10.516.1";
+    let dir = tempfile::tempdir().expect("temp dir");
+    let at = |name: &str| dir.path().join(name);
+    write_dicom(&at("a.dcm"), Some(UID), 1, 8);
+    write_dicom(&at("b.dcm"), Some(UID), 2, 8);
+    write_dicom(&at("c.dcm"), Some(UID), 3, 8);
+    fs::copy(at("a.dcm"), at("a-copy.dcm")).expect("copy");
+    fs::copy(at("a.dcm"), at("a-copy-2.dcm")).expect("copy");
+    assert_eq!(size(&at("a.dcm")), size(&at("b.dcm")));
+    assert_eq!(size(&at("a.dcm")), size(&at("c.dcm")));
+
+    // Each group is one UID and one size.
+    let groups: Vec<(&str, Vec<&str>)> = vec![
+        ("two copies", vec!["a.dcm", "a-copy.dcm"]),
+        ("two files that differ", vec!["a.dcm", "b.dcm"]),
+        (
+            "two copies and one that differs",
+            vec!["a.dcm", "b.dcm", "a-copy.dcm"],
+        ),
+        ("three copies", vec!["a.dcm", "a-copy.dcm", "a-copy-2.dcm"]),
+        ("three that differ", vec!["a.dcm", "b.dcm", "c.dcm"]),
+    ];
+    for (name, group) in groups {
+        let identical = group.iter().all(|file| b3(&at(file)) == b3(&at(group[0])));
+        let group_bytes = group.iter().map(|file| size(&at(file))).sum::<u64>();
+        for order in orders(group.len()) {
+            let paths = order
+                .iter()
+                .map(|&position| at(group[position]))
+                .collect::<Vec<_>>();
+            let expected = paths
+                .iter()
+                .map(|path| {
+                    if identical {
+                        format!("sop:{UID}")
+                    } else {
+                        b3(path)
+                    }
+                })
+                .collect::<Vec<_>>();
+            for first_asked in 0..group.len() {
+                let context = format!("{name}, found {order:?}, asked {first_asked} first");
+                let (server, registry) = serve(&paths).await;
+                // Found, listed, and nothing read.
+                assert_eq!(registry.key_stats(), KeyStats::default(), "{context}");
+
+                let key = registry
+                    .ensure_key(first_asked)
+                    .await
+                    .unwrap_or_else(|error| panic!("{context}: {error}"));
+                assert_eq!(key.as_str(), expected[first_asked], "{context}");
+                // A key the files share is returned only when every one of
+                // them was read. A key of the file's own content is known as
+                // soon as one file is seen to differ.
+                let stats = registry.key_stats();
+                if identical {
+                    assert_eq!(
+                        (stats.files_hashed, stats.bytes_hashed),
+                        (group.len() as u64, group_bytes),
+                        "{context}"
+                    );
+                } else {
+                    assert!(
+                        (2..=group.len() as u64).contains(&stats.files_hashed),
+                        "{context}: {stats:?}"
+                    );
+                }
+                let returned_at = registry.files_page(None, None).revision;
+                let named = registry
+                    .file_for_shown_key(key.as_str())
+                    .expect("the key names a file");
+                assert_eq!(
+                    b3(&paths[named]),
+                    b3(&paths[first_asked]),
+                    "{context}: the key names a file with the same bytes"
+                );
+
+                // Each file ends with the key of its content, or the UID key
+                // when all agree, and the whole group cost one read of each
+                // file however many keys were asked for.
+                for (index, expected) in expected.iter().enumerate() {
+                    let key = registry.ensure_key(index).await.expect("key");
+                    assert_eq!(key.as_str(), expected, "{context}: file {index}");
+                }
+                hashing_done(&registry).await;
+                let stats = registry.key_stats();
+                assert_eq!(
+                    (stats.files_hashed, stats.bytes_hashed),
+                    (group.len() as u64, group_bytes),
+                    "{context}: every file is read once"
+                );
+                for (index, expected) in expected.iter().enumerate() {
+                    let status = registry.key_status(index).expect("registered");
+                    assert_eq!(
+                        (status.key.as_ref().map(FileKey::as_str), status.settled),
+                        (Some(expected.as_str()), true),
+                        "{context}: file {index}"
+                    );
+                    assert_eq!(
+                        frame_key(&server, index).await.as_deref(),
+                        Some(expected.as_str()),
+                        "{context}: file {index}"
+                    );
+                }
+                // The key that was returned is not replaced afterwards: a
+                // replacement the catalog logged for that file happened
+                // before it was returned. No file's key is replaced twice.
+                let page = registry.files_page(Some(0), None);
+                let mut replaced = page
+                    .rekeys
+                    .iter()
+                    .map(|rekey| rekey.index)
+                    .collect::<Vec<_>>();
+                replaced.sort_unstable();
+                replaced.dedup();
+                assert_eq!(
+                    replaced.len(),
+                    page.rekeys.len(),
+                    "{context}: {:?}",
+                    page.rekeys
+                );
+                assert!(
+                    page.rekeys
+                        .iter()
+                        .all(|rekey| rekey.index != first_asked || rekey.revision <= returned_at),
+                    "{context}: {:?}",
+                    page.rekeys
+                );
+                assert_eq!(
+                    registry.file_for_shown_key(key.as_str()),
+                    Some(named),
+                    "{context}: the key still names the same file"
+                );
+            }
+        }
+    }
+}
+
+/// What the late file gets is a decision the design leaves open, and the
+/// owner's to confirm: 1.7 would rekey the earlier file ("or even
+/// annotated"); here the key that was returned stands, the late file has no
+/// key until it was compared with the first file, and it then shares the UID
+/// key or takes a content key of its own.
+#[tokio::test]
+async fn a_file_found_after_a_key_was_returned_never_changes_that_key() {
+    const UID: &str = "1.2.826.0.1.3680043.10.517.1";
+    let dir = tempfile::tempdir().expect("temp dir");
+    let first = dir.path().join("first.dcm");
+    write_dicom(&first, Some(UID), 1, 8);
+    let copy = dir.path().join("copy.dcm");
+    fs::copy(&first, &copy).expect("copy");
+    let same_size = dir.path().join("same-size.dcm");
+    write_dicom(&same_size, Some(UID), 2, 8);
+    let other_size = dir.path().join("other-size.dcm");
+    write_dicom(&other_size, Some(UID), 1, 9);
+
+    // (late file, whether it holds the first file's bytes, whether the
+    // first file has to be read to know)
+    for (name, late, same_bytes, compares) in [
+        ("a copy", &copy, true, true),
+        ("the same size, other bytes", &same_size, false, true),
+        ("another size", &other_size, false, false),
+    ] {
+        for viewed in [false, true] {
+            let context = format!("{name}, viewed first: {viewed}");
+            let (server, registry) = serve(std::slice::from_ref(&first)).await;
+            // The only file with its UID: its key is returned at once, and
+            // not a byte is read for it.
+            let key = registry.ensure_key(0).await.expect("key");
+            assert_eq!(key.as_str(), format!("sop:{UID}"), "{context}");
+            assert_eq!(registry.key_stats(), KeyStats::default(), "{context}");
+            let since = registry.files_page(None, None).revision;
+
+            // Discovery then finds a second file with the UID.
+            scan(&registry, late).await;
+            let listed = catalog(&server, "").await;
+            assert_eq!(
+                (shown(&entries(&listed)[0]), shown(&entries(&listed)[1])),
+                (Shown::Implied, Shown::Pending),
+                "{context}: the late file waits, the first shows what it showed"
+            );
+            assert_eq!(alias_of(&entries(&listed)[1]), None, "{context}");
+
+            let expected = if same_bytes {
+                format!("sop:{UID}")
+            } else {
+                b3(late)
+            };
+            let read = size(late) + if compares { size(&first) } else { 0 };
+            if viewed {
+                // Viewing it is enough: what its comparison needs is read
+                // in the background, the first file included.
+                assert_eq!(frame_key(&server, 1).await, None, "{context}");
+                hashing_done(&registry).await;
+                assert_eq!(registry.key_stats().bytes_hashed, read, "{context}");
+                assert_eq!(key_text(&registry, 1), Some(expected.clone()), "{context}");
+            }
+            let late_key = registry.ensure_key(1).await.expect("late key");
+            assert_eq!(late_key.as_str(), expected, "{context}");
+            assert_eq!(
+                registry.key_stats().bytes_hashed,
+                read,
+                "{context}: the late file and what it is compared with, each once"
+            );
+
+            // The key that was returned is the first file's still, was not
+            // replaced, and names the first file.
+            assert_eq!(registry.ensure_key(0).await, Ok(key.clone()), "{context}");
+            assert_eq!(
+                frame_key(&server, 0).await,
+                Some(format!("sop:{UID}")),
+                "{context}"
+            );
+            assert_eq!(
+                registry.file_for_shown_key(&format!("sop:{UID}")),
+                Some(0),
+                "{context}"
+            );
+            let after = catalog(&server, &format!("?since={since}")).await;
+            assert_eq!(
+                after["rekeys"],
+                Value::Array(Vec::new()),
+                "{context}: no key of the group is replaced"
+            );
+            let listed = catalog(&server, "").await;
+            assert_eq!(shown(&entries(&listed)[0]), Shown::Implied, "{context}");
+            assert_eq!(
+                (shown(&entries(&listed)[1]), alias_of(&entries(&listed)[1])),
+                if same_bytes {
+                    (Shown::Implied, Some(0))
+                } else {
+                    (Shown::Key(expected.clone()), None)
+                },
+                "{context}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_file_that_cannot_be_read_fails_only_the_keys_that_depend_on_it() {
+    const UID: &str = "1.2.826.0.1.3680043.10.518.1";
+    // (which file of three copies is gone, the file asked about, whether
+    // its key can be had)
+    for (gone, asked, available) in [
+        (2_usize, 0_usize, true),
+        (1, 2, true),
+        (2, 2, false),
+        (0, 1, false),
+    ] {
+        let context = format!("file {gone} gone, file {asked} asked");
+        let dir = tempfile::tempdir().expect("temp dir");
+        let paths = ["first.dcm", "copy.dcm", "copy-2.dcm"]
+            .map(|name| dir.path().join(name))
+            .to_vec();
+        write_dicom(&paths[0], Some(UID), 1, 8);
+        fs::copy(&paths[0], &paths[1]).expect("copy");
+        fs::copy(&paths[0], &paths[2]).expect("copy");
+        let (server, registry) = serve(&paths).await;
+        fs::remove_file(&paths[gone]).expect("remove a file");
+
+        let key = registry.ensure_key(asked).await;
+        if available {
+            assert_eq!(
+                key.as_ref().map(FileKey::as_str),
+                Ok(format!("sop:{UID}").as_str()),
+                "{context}"
+            );
+            // The file that could not be read no longer shows the key the
+            // others were given: nothing says it is the same image.
+            let listed = catalog(&server, "").await;
+            for (index, entry) in entries(&listed).iter().enumerate() {
+                let state = (shown(entry), entry.get("key_error").cloned());
+                if index == gone {
+                    assert_eq!(
+                        state,
+                        (Shown::Pending, Some(Value::from("unreadable"))),
+                        "{context}: file {index}"
+                    );
+                } else {
+                    assert_eq!(state, (Shown::Implied, None), "{context}: file {index}");
+                }
+            }
+            assert_eq!(
+                registry.ensure_key(gone).await,
+                Err(KeyError::Unavailable(KeyFailure::Unreadable)),
+                "{context}"
+            );
+            assert_eq!(registry.ensure_key(asked).await, key, "{context}");
+        } else {
+            // Its own bytes, or those of the first file its key would name,
+            // cannot be read: no key, and nothing shown changes but the
+            // failure.
+            assert_eq!(
+                key,
+                Err(KeyError::Unavailable(KeyFailure::Unreadable)),
+                "{context}"
+            );
+            let listed = catalog(&server, "").await;
+            for (index, entry) in entries(&listed).iter().enumerate() {
+                assert_eq!(shown(entry), Shown::Implied, "{context}: file {index}");
+                assert_eq!(
+                    entry.get("key_error").is_some(),
+                    index == gone,
+                    "{context}: file {index}"
+                );
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -691,6 +1155,84 @@ async fn paging_ends_with_the_current_catalog_while_it_grows_and_keys_change() {
     }
 }
 
+/// One event can change several entries: a file that splits a group takes
+/// the alias from every copy at once. Each changed entry has a revision of
+/// its own, so a client that pages one entry at a time is handed every one
+/// of them and can stop after any.
+#[tokio::test]
+async fn entries_changed_by_one_event_are_paged_one_at_a_time_without_loss() {
+    const UID: &str = "1.2.826.0.1.3680043.10.519.1";
+    const COPIES: usize = 4;
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut paths = vec![dir.path().join("0.dcm")];
+    write_dicom(&paths[0], Some(UID), 1, 8);
+    for number in 1..=COPIES {
+        let path = dir.path().join(format!("{number}.dcm"));
+        fs::copy(&paths[0], &path).expect("copy");
+        paths.push(path);
+    }
+    let (server, registry) = serve(&paths).await;
+    let before = catalog(&server, "").await;
+    for entry in &entries(&before)[1..] {
+        assert_eq!(alias_of(entry), Some(0));
+    }
+    let since = before["revision"].as_u64().expect("revision");
+
+    // A file with the UID and another length: the copies are no longer
+    // known to be one image, all in one registration.
+    let other = dir.path().join("other.dcm");
+    write_dicom(&other, Some(UID), 1, 9);
+    scan(&registry, &other).await;
+    let current = catalog(&server, "").await;
+    assert_eq!(
+        current["revision"].as_u64().expect("revision"),
+        since + COPIES as u64 + 1,
+        "one revision for each entry the event changed"
+    );
+
+    let mut client = entries(&before)
+        .iter()
+        .map(|entry| (entry["index"].as_u64().expect("index"), entry.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let mut listed = Vec::new();
+    let mut cursor = since;
+    loop {
+        let page = catalog(&server, &format!("?since={cursor}&limit=1")).await;
+        let revision = page["revision"].as_u64().expect("revision");
+        apply(&mut client, &page);
+        listed.extend(
+            entries(&page)
+                .iter()
+                .map(|entry| entry["index"].as_u64().expect("index")),
+        );
+        if page["more"] == false {
+            assert_eq!(revision, since + COPIES as u64 + 1);
+            break;
+        }
+        assert_eq!(entries(&page).len(), 1);
+        assert_eq!(
+            revision,
+            cursor + 1,
+            "each page moves the cursor by one entry"
+        );
+        assert!(listed.len() <= COPIES + 1, "paging does not end");
+        cursor = revision;
+    }
+    assert_eq!(
+        listed,
+        (1..=COPIES as u64 + 1).collect::<Vec<_>>(),
+        "every changed entry, each once, in the order it changed"
+    );
+    assert_eq!(
+        client.into_values().collect::<Vec<_>>(),
+        *entries(&current),
+        "the pages add up to the catalog as it is now"
+    );
+    for entry in &entries(&current)[1..=COPIES] {
+        assert_eq!(alias_of(entry), None);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Background hashing
 
@@ -779,4 +1321,324 @@ async fn stopping_key_work_reads_nothing_more_and_records_no_failure() {
     let status = registry.key_status(0).expect("registered");
     assert_eq!((status.key, status.failure), (None, None));
     assert_eq!(registry.ensure_key(0).await, Err(KeyError::Stopped));
+}
+
+/// The design's rule for a file without a key: "Its key is computed after
+/// its first frame is sent". Nobody asks for it here.
+#[tokio::test]
+async fn a_viewed_file_without_a_key_is_hashed_without_being_asked_for() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let pending = dir.path().join("no-uid.dcm");
+    let never_viewed = dir.path().join("never-viewed.dcm");
+    write_dicom(&pending, None, 7, 8);
+    write_dicom(&never_viewed, None, 8, 8);
+    let (server, registry) = serve(&[pending.clone(), never_viewed]).await;
+
+    assert_eq!(frame_key(&server, 0).await, None);
+    hashing_done(&registry).await;
+    let stats = registry.key_stats();
+    assert_eq!(
+        (stats.files_hashed, stats.bytes_hashed),
+        (1, size(&pending)),
+        "the viewed file is read once, the other never"
+    );
+    let listed = catalog(&server, "").await;
+    assert_eq!(
+        (shown(&entries(&listed)[0]), shown(&entries(&listed)[1])),
+        (Shown::Key(b3(&pending)), Shown::Pending)
+    );
+    assert_eq!(frame_key(&server, 0).await, Some(b3(&pending)));
+}
+
+/// Only a frame served for viewing starts a hash or carries the key. A
+/// thumbnail, a pixel probe and a frame that could not be served do
+/// neither: scrolling a gallery must not read a folder a second time.
+#[tokio::test]
+async fn thumbnails_probes_and_failed_frames_start_no_hash_and_send_no_key() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let keyed = dir.path().join("keyed.dcm");
+    let pending = dir.path().join("pending.dcm");
+    write_dicom(&keyed, Some("1.2.826.0.1.3680043.10.520.1"), 1, 8);
+    write_dicom(&pending, None, 2, 8);
+    let (server, registry) = serve(&[keyed, pending]).await;
+
+    for index in 0..2 {
+        // (request, whether it is answered)
+        for (request, answered) in [
+            (format!("/api/file/{index}/frame/0/thumbnail"), true),
+            (
+                format!("/api/file/{index}/frame/0/raw/pixel?row=0&column=0"),
+                true,
+            ),
+            (format!("/api/file/{index}/frame/7"), false),
+            (format!("/api/file/{index}/frame/7/raw"), false),
+        ] {
+            let response = server.get(&request).await;
+            assert_eq!(
+                response.status_code().is_success(),
+                answered,
+                "{request}: {}",
+                response.status_code()
+            );
+            assert!(
+                response.maybe_header("x-file-key").is_none(),
+                "{request} carries a file key"
+            );
+        }
+    }
+    // A request that had queued a file would show here, hashed or waiting.
+    assert_eq!(registry.key_stats(), KeyStats::default());
+    assert_eq!(registry.files_page(None, None).keys_hashing, 0);
+    // The frame itself does both.
+    assert!(frame_key(&server, 0).await.is_some());
+    assert_eq!(frame_key(&server, 1).await, None);
+    hashing_done(&registry).await;
+    assert_eq!(registry.key_stats().files_hashed, 1);
+}
+
+/// One file reached by two paths is two entries and one file. Both entries
+/// are viewed while hashing cannot start, so both are queued; the second
+/// finds its digest known and is not read.
+#[tokio::test]
+async fn a_file_whose_digest_is_known_is_not_hashed_again() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("no-uid.dcm");
+    write_dicom(&path, None, 3, 8);
+    let (registry, _scheduler, viewer) = held(2).await;
+    let (server, registry) = serve_with(registry, &[path.clone(), path.clone()]).await;
+
+    assert_eq!(frame_key(&server, 0).await, None);
+    assert_eq!(frame_key(&server, 1).await, None);
+    assert_eq!(registry.files_page(None, None).keys_hashing, 2);
+    assert_eq!(registry.key_stats(), KeyStats::default());
+
+    drop(viewer);
+    hashing_done(&registry).await;
+    let stats = registry.key_stats();
+    assert_eq!((stats.files_hashed, stats.bytes_hashed), (1, size(&path)));
+    for index in 0..2 {
+        assert_eq!(key_text(&registry, index), Some(b3(&path)), "entry {index}");
+    }
+}
+
+/// A key somebody waits for is hashed before the keys viewing queued. The
+/// order hashing finished in is read from the catalog: each file's entry
+/// takes the next revision when its key arrives.
+#[tokio::test]
+async fn a_key_that_is_asked_for_is_hashed_before_those_viewing_queued() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut paths = Vec::new();
+    for number in 0..4_u16 {
+        let path = dir.path().join(format!("{number}.dcm"));
+        write_dicom(&path, None, number, 8);
+        paths.push(path);
+    }
+    let (registry, _scheduler, viewer) = held(2).await;
+    let (server, registry) = serve_with(registry, &paths).await;
+
+    // Three files are viewed, then the key of the fourth is asked for.
+    for index in 0..3 {
+        assert_eq!(frame_key(&server, index).await, None);
+    }
+    let asked = tokio::spawn({
+        let registry = registry.clone();
+        async move { registry.ensure_key(3).await }
+    });
+    hashing_queued(&registry, 4).await;
+    assert_eq!(registry.key_stats(), KeyStats::default());
+    let since = registry.files_page(None, None).revision;
+
+    drop(viewer);
+    asked.await.expect("task").expect("key");
+    hashing_done(&registry).await;
+    let order = registry
+        .files_page(Some(since), None)
+        .files
+        .iter()
+        .map(|entry| entry.index)
+        .collect::<Vec<_>>();
+    let position = |index: usize| {
+        order
+            .iter()
+            .position(|listed| *listed == index)
+            .unwrap_or_else(|| panic!("file {index} was not hashed: {order:?}"))
+    };
+    // The worker may already hold the first viewed file; nothing else goes
+    // ahead of the request.
+    assert!(
+        position(3) < position(1) && position(3) < position(2),
+        "hashed in the order {order:?}"
+    );
+    assert!(position(1) < position(2), "viewed files keep their order");
+}
+
+/// Hashing asks for background permits, which a pool of four grants two of
+/// at a time. With both of those held nothing is read, though two permits
+/// are free for a viewer's decode.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn hashing_waits_for_a_background_permit_and_takes_no_viewer_permit() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("no-uid.dcm");
+    write_dicom(&path, None, 4, 8);
+    let scheduler = DecodeScheduler::new(4);
+    assert_eq!(dcmview::pixels::background_limit(4), 2);
+    let registry = FileRegistry::new().with_decode_scheduler(scheduler.clone());
+    scan(&registry, &path).await;
+    let background = [
+        scheduler.acquire(DecodeClass::Background).await,
+        scheduler.acquire(DecodeClass::Background).await,
+    ];
+
+    let waiting = tokio::spawn({
+        let registry = registry.clone();
+        async move { registry.ensure_key(0).await }
+    });
+    hashing_queued(&registry, 1).await;
+    let_tasks_run().await;
+    assert_eq!(
+        registry.key_stats(),
+        KeyStats::default(),
+        "read under a permit that is not a background one"
+    );
+    // A viewer's decode is not held up by the waiting hash.
+    drop(scheduler.acquire(DecodeClass::Interactive).await);
+
+    drop(background);
+    assert_eq!(
+        waiting.await.expect("task").expect("key").as_str(),
+        b3(&path)
+    );
+}
+
+/// Callers that wait on one file share one attempt, also a failing one:
+/// thirty-two requests for the key of a file that is gone read (or try to
+/// read) it once.
+#[tokio::test]
+async fn callers_waiting_on_one_file_share_one_attempt_that_fails() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("gone.dcm");
+    write_dicom(&path, None, 5, 8);
+    let (_server, registry) = serve(std::slice::from_ref(&path)).await;
+    fs::remove_file(&path).expect("remove the file");
+
+    // On this single-threaded runtime every caller has asked before the
+    // worker's first turn, so none of them arrives after the attempt.
+    let callers = (0..32)
+        .map(|_| {
+            let registry = registry.clone();
+            tokio::spawn(async move { registry.ensure_key(0).await })
+        })
+        .collect::<Vec<_>>();
+    for caller in callers {
+        assert_eq!(
+            caller.await.expect("task"),
+            Err(KeyError::Unavailable(KeyFailure::Unreadable))
+        );
+    }
+    assert_eq!(registry.key_stats().files_hashed, 1);
+    assert_eq!(registry.files_page(None, None).keys_hashing, 0);
+    // A caller that arrives afterwards tries again, once.
+    assert_eq!(
+        registry.ensure_key(0).await,
+        Err(KeyError::Unavailable(KeyFailure::Unreadable))
+    );
+    assert_eq!(registry.key_stats().files_hashed, 2);
+}
+
+/// A file can be queued where no runtime is running to hash it (a registry
+/// filled by plain code). The queue is kept, and hashing starts with the
+/// next call that arrives inside a runtime, whatever that call is about.
+#[test]
+fn a_queue_filled_outside_a_runtime_is_hashed_once_a_runtime_calls() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let pending = dir.path().join("no-uid.dcm");
+    let keyed = dir.path().join("uid.dcm");
+    write_dicom(&pending, None, 6, 8);
+    write_dicom(&keyed, Some("1.2.826.0.1.3680043.10.521.1"), 6, 8);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let registry = FileRegistry::new();
+    runtime.block_on(async {
+        scan(&registry, &pending).await;
+        scan(&registry, &keyed).await;
+    });
+
+    // Outside any runtime.
+    registry.frame_sent(0);
+    assert_eq!(registry.files_page(None, None).keys_hashing, 1);
+    assert_eq!(registry.key_stats(), KeyStats::default());
+
+    // A frame of another file, which has its key, served inside a runtime.
+    runtime.block_on(async {
+        registry.frame_sent(1);
+        hashing_done(&registry).await;
+    });
+    assert_eq!(key_text(&registry, 0), Some(b3(&pending)));
+    assert_eq!(registry.key_stats().files_hashed, 1);
+}
+
+/// A hub that computes keys with other tooling has to read the UID the way
+/// discovery does, or it builds another key for the same file. This is that
+/// reading: the data set's SOP Instance UID, its first value, without
+/// padding or surrounding white space, and otherwise exactly as written.
+#[tokio::test]
+async fn a_uid_key_is_built_from_the_uid_as_discovery_reads_it() {
+    // (the value as written in the file, the key it gives)
+    let cases: Vec<(&str, Option<&str>)> = vec![
+        (
+            "1.2.826.0.1.3680043.10.522.1",
+            Some("sop:1.2.826.0.1.3680043.10.522.1"),
+        ),
+        // An odd length is padded in the file; the padding is not the UID.
+        (
+            "1.2.826.0.1.3680043.10.522.10",
+            Some("sop:1.2.826.0.1.3680043.10.522.10"),
+        ),
+        (
+            "  1.2.826.0.1.3680043.10.522.2 ",
+            Some("sop:1.2.826.0.1.3680043.10.522.2"),
+        ),
+        // Two values: the first.
+        (
+            "1.2.826.0.1.3680043.10.522.3\\1.2.826.0.1.3680043.10.522.99",
+            Some("sop:1.2.826.0.1.3680043.10.522.3"),
+        ),
+        // Not a conforming UID, and kept as written: no case folding.
+        ("Anon-0007_aB", Some("sop:Anon-0007_aB")),
+        // White space inside is not removed, so the value cannot be a key.
+        ("1.2.826 0.1", None),
+        ("", None),
+    ];
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut paths = Vec::new();
+    for (number, (written, _)) in cases.iter().enumerate() {
+        let path = dir.path().join(format!("{number}.dcm"));
+        write_dicom(&path, Some(written), number as u16, 8);
+        paths.push(path);
+    }
+    let (server, registry) = serve(&paths).await;
+    let listed = catalog(&server, "").await;
+    for (index, (written, expected)) in cases.iter().enumerate() {
+        assert_eq!(
+            key_text(&registry, index).as_deref(),
+            *expected,
+            "written as {written:?}"
+        );
+        let entry = &entries(&listed)[index];
+        match expected {
+            // The entry's own UID is the one the key is built from.
+            Some(key) => {
+                assert_eq!(shown(entry), Shown::Implied, "written as {written:?}");
+                assert_eq!(
+                    format!("sop:{}", entry["sop_instance_uid"].as_str().expect("UID")),
+                    *key
+                );
+            }
+            None => assert_eq!(shown(entry), Shown::Pending, "written as {written:?}"),
+        }
+    }
+    assert_eq!(registry.key_stats(), KeyStats::default());
 }
