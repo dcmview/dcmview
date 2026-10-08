@@ -314,6 +314,24 @@ Up/Down shortcuts use that order (including the active filter), so file
 selection follows the explorer presentation rather than registry insertion
 order.
 
+Raster image files (`file_format` other than `dicom`, never inferred from
+empty UIDs) stay out of the clinical tree. The Study view lists them in one
+"Images" group after the patients, shaped by `buildImageGroup` in
+`lib/fileTree.ts` as the directory tree of those files
+(`docs/design/image-formats.md` section 7); a masked session lists them flat
+under their display names, since only the Directory view shows real paths.
+The explorer filter's `format:` scope matches any format (`jpg` and `tif` are
+aliases); an unscoped term matches a raster's format name but never `dicom`.
+Unscoped terms also match the path the current view shows for a file, never
+a folder every listed file shares: in the Directory view the path below the
+folders all files share, in the Study view a raster's path below the folders
+all rasters share and a DICOM file's name, and nothing in a masked Study
+view. `lib/rasterSupport.ts` decides from the catalog entry
+that a raster cannot be drawn; `ImageViewport` then views it as a file
+without pixels, shows why, and requests no frame, value mapping or layer.
+The tag panel's heading and the accessible names of its shell come from
+`tagPanelNames`: "Metadata" for a raster.
+
 `App.svelte` gives `ImageViewport` one ordered logical-frame sequence for the
 active tab. A sequence may describe frames from one multiframe object, many
 single-frame CT/MR objects, or a mixture of both. Viewport display and raw

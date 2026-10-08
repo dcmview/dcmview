@@ -5,9 +5,14 @@
 		activeStudyPathKeys,
 		buildDirectoryTree,
 		buildFileTree,
+		buildImageGroup,
+		clinicalFiles,
 		directoryFileOrder,
 		fileAriaLabel,
-		fileMatchesFilter,
+		fileKindLabel,
+		filterFiles,
+		imageGroupAriaLabel,
+		isRasterFile,
 		nodeAriaLabel,
 		patientDetailWithCounts,
 		seriesDetailWithCounts,
@@ -16,6 +21,7 @@
 		type DirectoryNode,
 	} from "./fileTree";
 	import { fileIcon } from "./objectIcons";
+	import { unsupportedImageReason } from "./rasterSupport";
 	import Button from "./ui/Button.svelte";
 	import Icon from "./ui/Icon.svelte";
 	import StatusBadge from "./ui/StatusBadge.svelte";
@@ -61,7 +67,7 @@
 			return false;
 		}
 		if (!key.includes("/")) {
-			return tree.length > 1;
+			return tree.length + (imageGroup ? 1 : 0) > 1;
 		}
 		return key.includes("/study:") || key.includes("/series:");
 	}
@@ -84,17 +90,26 @@
 	}
 
 	const filterActive = $derived(filterQuery.trim().length > 0);
+	// A masked session shows real folder and file names only in the directory
+	// tree, so only there do they label, group or match anything.
+	const pathsShown = $derived(!masked || viewMode === "directory");
 	const filteredFiles = $derived.by(() => {
 		if (!filterActive) return files;
-		return files.filter((file) => fileMatchesFilter(file, filterQuery));
+		return filterFiles(files, filterQuery, { paths: pathsShown ? viewMode : "hidden" });
 	});
 
-	const tree = $derived(buildFileTree(filteredFiles));
+	// Study view: DICOM in the clinical tree, raster files in "Images" after it.
+	const tree = $derived(buildFileTree(clinicalFiles(filteredFiles)));
+	const imageGroup = $derived(buildImageGroup(filteredFiles, { folders: !masked }));
 	const directoryTree = $derived(buildDirectoryTree(filteredFiles));
 	const activeStudyPath = $derived(activeStudyPathKeys(tree, activeFileIndex));
-	const activeDirectoryPath = $derived(activeDirectoryPathKeys(directoryTree, activeFileIndex));
+	const imageGroupOrder = $derived(directoryFileOrder(imageGroup?.children ?? []));
+	const activeDirectoryPath = $derived(activeDirectoryPathKeys(
+		viewMode === "study" ? imageGroup?.children ?? [] : directoryTree,
+		activeFileIndex,
+	));
 	const navigationOrder = $derived(
-		viewMode === "study" ? studyFileOrder(tree) : directoryFileOrder(directoryTree),
+		viewMode === "study" ? [...studyFileOrder(tree), ...imageGroupOrder] : directoryFileOrder(directoryTree),
 	);
 
 	$effect(() => {
@@ -108,7 +123,7 @@
 
 {#snippet fileState(file: FileSummary, detail: string)}
 	{#if file.support_state === "unsupported"}
-		<StatusBadge status="negative" title={file.support_reason ?? undefined}>Unsupported</StatusBadge>
+		<StatusBadge status="negative" title={unsupportedImageReason(file) ?? file.support_reason ?? undefined}>Unsupported</StatusBadge>
 	{:else if !file.has_pixels}
 		<StatusBadge status="unknown">No pixels</StatusBadge>
 	{:else if detail}
@@ -157,14 +172,15 @@
 				class="directory-row directory-file"
 				class:active={node.file.index === activeFileIndex}
 				class:unsupported={node.file.support_state === "unsupported"}
+				class:raster={isRasterFile(node.file)}
 				class:dim={!node.file.has_pixels}
 				aria-current={node.file.index === activeFileIndex ? "true" : undefined}
-				title={node.file.path}
+				title={pathsShown ? node.file.path : node.file.display_name}
 				onclick={() => onopenfile(node.file.index)}
 			>
 				<span class="tier"><Icon name={fileIcon(node.file)} size={14} /></span>
 				<span class="directory-label">{node.label}</span>
-				{#if node.file.modality}<span class="modality">{node.file.modality}</span>{/if}
+				{#if fileKindLabel(node.file)}<span class="modality">{fileKindLabel(node.file)}</span>{/if}
 				<span class="directory-detail">{@render fileState(node.file, node.detail)}</span>
 			</button>
 		{/if}
@@ -200,7 +216,7 @@
 		<div class="navigator-filter">
 			<SearchField
 				bind:value={filterQuery}
-				placeholder="patient, study, series, modality"
+				placeholder="patient, study, series, modality, format"
 				aria-label="Filter file hierarchy"
 			/>
 			{#if filterActive}
@@ -217,7 +233,7 @@
 			{/if}
 		</div>
 		{#if viewMode === "study"}
-		<div class="tree study-tree" role="tree" aria-label="DICOM file hierarchy">
+		<div class="tree study-tree" role="tree" aria-label="File hierarchy">
 			{#each tree as patient}
 				{@const patientDetail = patientDetailWithCounts(patient)}
 				<section class="tree-group">
@@ -290,6 +306,26 @@
 					{/if}
 				</section>
 			{/each}
+			{#if imageGroup}
+				<section class="tree-group">
+					<button
+						type="button"
+						class="tree-header depth-0"
+						class:active-path={activeFileIndex !== null && imageGroupOrder.includes(activeFileIndex)}
+						aria-label={imageGroupAriaLabel(imageGroup, isCollapsed(imageGroup.key))}
+						aria-expanded={!isCollapsed(imageGroup.key)}
+						onclick={() => toggleNode(imageGroup.key)}
+					>
+						{@render twisty(isCollapsed(imageGroup.key))}
+						{@render nodeContent("image", imageGroup.label, imageGroup.detail)}
+					</button>
+					{#if !isCollapsed(imageGroup.key)}
+						<div class="image-folders" role="group">
+							{@render directoryNodes(imageGroup.children, 1)}
+						</div>
+					{/if}
+				</section>
+			{/if}
 		</div>
 		{:else}
 			<div class="tree directory-tree" role="tree" aria-label="Directory file hierarchy">
@@ -402,6 +438,12 @@
 		margin: 0 4px;
 	}
 
+	.image-folders {
+		display: flex;
+		flex-direction: column;
+		margin: 0 6px;
+	}
+
 	.series-files {
 		margin: 0 0 2px 13px;
 		padding-left: 8px;
@@ -474,6 +516,11 @@
 	.directory-row.unsupported:hover {
 		border: 1px dashed var(--red);
 		background: var(--red-wash);
+	}
+
+	/* Every raster is unsupported for now: the open one still reads as selected. */
+	.directory-row.raster.unsupported.active {
+		background: var(--selection-fill);
 	}
 
 	.dim .node-label,

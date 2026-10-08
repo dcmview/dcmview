@@ -2,6 +2,8 @@
 import { fireEvent, render, screen } from "@testing-library/svelte";
 import { expect, it, vi } from "vitest";
 import * as api from "../api";
+import { fileSummary, rasterSummary } from "../testing/fixtures";
+import { tagPanelNames } from "./rasterSupport";
 import TagPanel from "./TagPanel.svelte";
 vi.mock("../api", async (original) => ({ ...await original<typeof import("../api")>(), fetchTags: vi.fn() }));
 
@@ -37,4 +39,15 @@ it("leaves child button activation native and keeps copy/expand keys out of glob
 		expect(expand.parentElement?.closest('button, [role="button"]')).toBeNull();
 		expect(value.parentElement?.closest('button, [role="button"]')).toBeNull();
 	} finally { window.removeEventListener("keydown", globalKey); }
+});
+
+it.each([
+	{ file: fileSummary(1), title: "DICOM tags", panel: "DICOM tag panel" },
+	{ file: rasterSummary(1), title: "Metadata", panel: "metadata panel" },
+])("titles the panel $title", async ({ file, title, panel }) => {
+	vi.mocked(api.fetchTags).mockResolvedValue([]);
+	const names = tagPanelNames(file);
+	expect(names).toEqual({ title, panel });
+	render(TagPanel, { props: { fileIndex: 1, title: names.title } });
+	expect(screen.getByRole("heading", { name: title })).toBeTruthy();
 });

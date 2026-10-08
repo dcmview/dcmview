@@ -36,6 +36,17 @@ diagnostic viewer.
   listed regardless of their size on disk. TIFFs with more than 65,535 pages
   are skipped; describable unsupported TIFF layouts remain listed with
   `raster.unsupported_color` or `raster.unsupported_sample_format`.
+- The Explorer's Study view lists PNG, JPEG, TIFF and WebP files in an
+  "Images" group after the patients, in their folder tree, with their own
+  icon and a format chip; DICOM files stay in the patient tree even without
+  identifiers. The Explorer filter's `format:png` (or `jpg`, `tif`,
+  `webp`, `dicom`) selects by format; a plain term also matches an image
+  file's format name and the path the current view shows for a file, never
+  a folder that every listed file shares. Opening an image file says that it
+  cannot be displayed yet instead of failing a frame request, and its tag
+  panel is titled "Metadata". In a `--mask` session the Study view lists
+  image files as `File N` without folders and its filter does not match
+  paths.
 - `--formats dicom,png,jpeg,tiff,webp` narrows directory discovery, and
   `--filter format=<name>` and `--filter path=<text>` select by exact format
   or a substring of the reported path, ignoring case.

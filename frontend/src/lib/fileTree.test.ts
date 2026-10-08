@@ -8,6 +8,7 @@ import {
 	buildFileTree,
 	directoryFileOrder,
 	fileMatchesFilter,
+	filterFiles,
 	patientDetailWithCounts,
 	studyFileOrder,
 } from "./fileTree";
@@ -145,6 +146,30 @@ describe("file tree shaping", () => {
 		expect(fileMatchesFilter(image, "patient:jane modality:ct")).toBe(true);
 		expect(fileMatchesFilter(image, "study:chest modality:mr")).toBe(false);
 		expect(fileMatchesFilter(image, "series:axial")).toBe(true);
+	});
+
+	it.each([
+		// A folder every file shares never matches, so `ct` is not the folder `ct_study`.
+		{ query: "ct", paths: "directory", matched: [] },
+		{ query: "sub", paths: "directory", matched: [1] },
+		{ query: "slice.png", paths: "directory", matched: [2] },
+		// The Study view shows a raster's place among the rasters and a DICOM file's name.
+		{ query: "sub", paths: "study", matched: [] },
+		{ query: "b.dcm", paths: "study", matched: [1] },
+		{ query: "sub", paths: "hidden", matched: [] },
+		// `format:` selects any format; unscoped, a format name matches rasters only.
+		{ query: "format:dicom", paths: "directory", matched: [0, 1] },
+		{ query: "dicom", paths: "directory", matched: [] },
+		{ query: "com", paths: "directory", matched: [] },
+		{ query: "png", paths: "hidden", matched: [2] },
+		{ query: "format:png", paths: "hidden", matched: [2] },
+	] as const)("filters files by shown path and format: $query ($paths)", ({ query, paths, matched }) => {
+		const files = [
+			file({ index: 0, path: "/home/ct_study/a.dcm", modality: "MR" }),
+			file({ index: 1, path: "/home/ct_study/sub/b.dcm", modality: "MR" }),
+			file({ index: 2, path: "/home/ct_study/slice.png", modality: "", file_format: "png", object_kind: "image" }),
+		];
+		expect(filterFiles(files, query, { paths }).map((entry) => entry.index)).toEqual(matched);
 	});
 
 	it("uses file identifiers for fallback keys without assuming density", () => {
