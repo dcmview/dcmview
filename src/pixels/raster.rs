@@ -11,6 +11,8 @@
 //! `service.rs`, so a raster frame takes the same caches, decode permits,
 //! redaction and thumbnail paths as a DICOM frame.
 
+mod reader;
+
 use super::error::{PixelError, PixelResult};
 use super::render::{DisplayBuffer, DisplayPng};
 use crate::api::contracts::{RawFrameMetadata, WindowMode};
@@ -266,7 +268,34 @@ pub fn decode_raster_frame(
     _source: &mut dyn RasterSource,
     _length: u64,
 ) -> PixelResult<RasterFrame> {
-    todo!("FMT2: decode a raster frame within its read and memory limits")
+    let (file, frame, source, length) = (_file, _frame, _source, _length);
+    PixelError::ensure_frame(frame, file.frame_count)?;
+    if let Some(reason) = super::syntax::classify_pixel_support(file).reason_id() {
+        return Err(PixelError::UnsupportedLayout(reason.into()));
+    }
+    let expected = raster_frame_bytes(file)
+        .ok_or_else(|| PixelError::UnsupportedLayout("raster.too_large".into()))?;
+    let budget = raster_read_budget(file).expect("checked frame size");
+    if file.format != crate::api::contracts::FileFormat::Tiff && length > budget {
+        return Err(PixelError::frame_decode(anyhow::anyhow!(
+            "raster length exceeds read budget"
+        )));
+    }
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut reader = reader::Reader::new(source, length, budget);
+        let decoded = decode_format(file, frame, &mut reader, length, expected, budget)?;
+        if decoded.bytes.len() as u64 != expected {
+            return Err(PixelError::frame_decode(anyhow::anyhow!(
+                "raster sample count differs from catalog"
+            )));
+        }
+        Ok(decoded)
+    }))
+    .unwrap_or_else(|_| {
+        Err(PixelError::frame_decode(anyhow::anyhow!(
+            "raster decoder panicked"
+        )))
+    })
 }
 
 /// Renders a decoded raster frame for display: what a display frame and a
@@ -387,4 +416,17 @@ pub(super) async fn decode_raster_to_png(
             PixelError::frame_decode(anyhow::anyhow!("raster encode task failed: {error}"))
         })?
         .map_err(PixelError::frame_decode)
+}
+
+fn decode_format(
+    _file: &FileEntry,
+    _frame: u32,
+    _reader: &mut reader::Reader<'_>,
+    _length: u64,
+    _expected: u64,
+    _budget: u64,
+) -> PixelResult<RasterFrame> {
+    Err(PixelError::frame_decode(anyhow::anyhow!(
+        "raster codec not implemented"
+    )))
 }
