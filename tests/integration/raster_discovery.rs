@@ -11,7 +11,7 @@
 //! Until then a raster is listed, described, and reported as not decodable,
 //! and no endpoint answers a server error for it.
 
-use super::support;
+use super::{raster_files, support};
 use axum_test::TestServer;
 use dcmview::api::contracts::endpoints;
 use dcmview::loader::{self, DiscoverOptions, FormatSelection};
@@ -88,27 +88,6 @@ fn jpeg(color: ExtendedColorType, width: u32, height: u32) -> Vec<u8> {
         .encode(&vec![0x40; bytes], width, height, color)
         .expect("encode JPEG");
     out
-}
-
-/// `jpeg` with an EXIF `APP1` segment, holding only the orientation tag,
-/// inserted straight after the start-of-image marker.
-fn with_exif_orientation(mut jpeg: Vec<u8>, orientation: u16) -> Vec<u8> {
-    let mut exif = b"Exif\0\0".to_vec();
-    // Little-endian TIFF header, then IFD0 at offset 8 with one SHORT entry.
-    exif.extend_from_slice(b"II\x2a\0\x08\0\0\0");
-    exif.extend_from_slice(&1_u16.to_le_bytes());
-    exif.extend_from_slice(&0x0112_u16.to_le_bytes());
-    exif.extend_from_slice(&3_u16.to_le_bytes());
-    exif.extend_from_slice(&1_u32.to_le_bytes());
-    exif.extend_from_slice(&orientation.to_le_bytes());
-    exif.extend_from_slice(&[0, 0]);
-    exif.extend_from_slice(&0_u32.to_le_bytes());
-    let mut segment = vec![0xff, 0xe1];
-    segment.extend_from_slice(&(exif.len() as u16 + 2).to_be_bytes());
-    segment.extend_from_slice(&exif);
-    assert_eq!(&jpeg[..2], [0xff, 0xd8], "JPEG starts with SOI");
-    jpeg.splice(2..2, segment);
-    jpeg
 }
 
 /// Four pages: 4x3 16-bit, a 2x2 16-bit thumbnail, 4x3 16-bit again, and a
@@ -494,7 +473,7 @@ fn raster_cases() -> Vec<Expected> {
         // Orientation is reported and never applied: 8 wide, 6 high as stored.
         Expected {
             name: "rotated.jpg",
-            bytes: with_exif_orientation(jpeg(ExtendedColorType::Rgb8, 8, 6), 6),
+            bytes: raster_files::with_exif_orientation(jpeg(ExtendedColorType::Rgb8, 8, 6), 6),
             format: "jpeg",
             size: (6, 8),
             frames: 1,
