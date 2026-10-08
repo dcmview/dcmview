@@ -371,17 +371,17 @@ struct HashWork {
 }
 
 // Own the worker's queue claim even when its future unwinds or is dropped.
-struct HashWorkerGuard<'a> {
-    registry: &'a FileRegistry,
+struct HashWorkerGuard {
+    registry: FileRegistry,
     armed: bool,
 }
 
-impl Drop for HashWorkerGuard<'_> {
+impl Drop for HashWorkerGuard {
     fn drop(&mut self) {
         if !self.armed {
             return;
         }
-        let registry = self.registry;
+        let registry = &self.registry;
         let panicking = std::thread::panicking();
         let active = {
             let work = registry
@@ -486,15 +486,15 @@ impl FileRegistry {
         };
         if let Some(runtime) = start {
             let registry = self.clone();
-            runtime.spawn(async move { registry.hash_worker().await });
+            let guard = HashWorkerGuard {
+                registry: self.clone(),
+                armed: true,
+            };
+            runtime.spawn(async move { registry.hash_worker(guard).await });
         }
     }
 
-    async fn hash_worker(self) {
-        let mut guard = HashWorkerGuard {
-            registry: &self,
-            armed: true,
-        };
+    async fn hash_worker(self, mut guard: HashWorkerGuard) {
         loop {
             let next = {
                 let mut work = self.hashing.work();
