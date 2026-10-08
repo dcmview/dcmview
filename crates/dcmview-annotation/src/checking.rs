@@ -1142,3 +1142,202 @@ impl Checks {
         Ok(())
     }
 }
+
+use crate::{LayerPatch, Op, OpEnvelope, Patch};
+checked!(Op, &Context<'_>, op);
+checked!(OpEnvelope, &Context<'_>, envelope);
+
+fn patch_members(patch: &Patch) -> [bool; 5] {
+    [
+        patch.geometry.is_some(),
+        patch.class.is_some(),
+        patch.attributes.is_some(),
+        patch.frames.is_some(),
+        patch.layer.is_some(),
+    ]
+}
+
+fn layer_patch_members(patch: &LayerPatch) -> [bool; 4] {
+    [
+        patch.name.is_some(),
+        patch.color.is_some(),
+        patch.exclusive_masks.is_some(),
+        patch.readonly.is_some(),
+    ]
+}
+
+impl Checks {
+    fn envelope(&mut self, envelope: &OpEnvelope, path: &str, context: &Context<'_>) -> Checked {
+        self.uuid(envelope.op_id, &format!("{path}/op_id"))?;
+        self.op(&envelope.op, &format!("{path}/op"), context)
+    }
+
+    fn patch_members(&mut self, before: &[bool], after: &[bool], path: &str) -> Checked {
+        self.require(
+            after.iter().any(|present| *present),
+            EmptyPatch,
+            &format!("{path}/after"),
+            "A patch must set at least one member.",
+        )?;
+        self.require(
+            before == after,
+            PatchFieldsMismatch,
+            path,
+            "Before and after must set exactly the same members.",
+        )
+    }
+
+    fn op(&mut self, op: &Op, path: &str, context: &Context<'_>) -> Checked {
+        match op {
+            Op::CreateAnnotation { annotation } => {
+                self.annotation(annotation, &format!("{path}/annotation"), context)?
+            }
+            Op::UpdateAnnotation {
+                id,
+                file,
+                before,
+                after,
+                ..
+            } => {
+                self.uuid(*id, &format!("{path}/id"))?;
+                self.patch_members(&patch_members(before), &patch_members(after), path)?;
+                if let Some(size) = context.files.size_of(file) {
+                    if let Some(geometry) = &after.geometry {
+                        self.geometry(geometry, &format!("{path}/after/geometry"), size)?;
+                    }
+                    if let Some(frames) = &after.frames {
+                        self.frames(frames, &format!("{path}/after/frames"), size.frames)?;
+                    }
+                } else {
+                    self.require(
+                        false,
+                        UnknownFile,
+                        &format!("{path}/file"),
+                        "The operation must name a known file.",
+                    )?;
+                }
+            }
+            Op::DeleteAnnotation { id, snapshot, .. }
+            | Op::RestoreAnnotation { id, snapshot, .. } => {
+                self.uuid(*id, &format!("{path}/id"))?;
+                self.require(
+                    *id == snapshot.id,
+                    SnapshotIdMismatch,
+                    &format!("{path}/snapshot/id"),
+                    "The snapshot must have the operation's identifier.",
+                )?;
+            }
+            Op::MaskTiles {
+                id,
+                file,
+                frame,
+                tiles,
+                ..
+            } => {
+                self.uuid(*id, &format!("{path}/id"))?;
+                let size = context.files.size_of(file);
+                self.require(
+                    size.is_some(),
+                    UnknownFile,
+                    &format!("{path}/file"),
+                    "The operation must name a known file.",
+                )?;
+                if let Some(size) = size {
+                    self.require(
+                        *frame < size.frames,
+                        FrameOutOfRange,
+                        &format!("{path}/frame"),
+                        "The frame index is outside the file.",
+                    )?;
+                }
+                let path = format!("{path}/tiles");
+                if !self.bound(tiles.len(), MAX_MASK_TILES, TooManyTiles, &path)? {
+                    return Ok(());
+                }
+                self.require(
+                    !tiles.is_empty(),
+                    EmptyPatch,
+                    &path,
+                    "A tile operation must contain a tile change.",
+                )?;
+                let mut seen = HashSet::new();
+                for (i, tile) in tiles.iter().enumerate() {
+                    let path = format!("{path}/{i}");
+                    self.require(
+                        seen.insert(tile.coord()),
+                        DuplicateId,
+                        &path,
+                        "A tile position must occur only once.",
+                    )?;
+                    if let Some(size) = size {
+                        self.tile(tile.coord(), 64, size, &path)?;
+                    }
+                    if let Some(payload) = &tile.before {
+                        self.payload(payload, &format!("{path}/before"))?;
+                    }
+                    if let Some(payload) = &tile.after {
+                        self.payload(payload, &format!("{path}/after"))?;
+                    }
+                }
+            }
+            Op::SetLabel {
+                id,
+                target,
+                field,
+                after,
+                ..
+            } => {
+                self.uuid(*id, &format!("{path}/id"))?;
+                self.label_content(target, field, after.as_ref(), "after", path, context)?;
+            }
+            Op::CreateLayer { layer } => self.layer(layer, &format!("{path}/layer"), ())?,
+            Op::UpdateLayer { before, after, .. } => {
+                self.patch_members(
+                    &layer_patch_members(before),
+                    &layer_patch_members(after),
+                    path,
+                )?;
+                if let Some(name) = &after.name {
+                    self.layer_name(name, &format!("{path}/after/name"))?;
+                }
+                if let Some(Some(color)) = &after.color {
+                    self.color(color, &format!("{path}/after/color"))?;
+                }
+            }
+            Op::DeleteLayer { id, snapshot, .. } => {
+                self.require(
+                    *id == snapshot.id,
+                    SnapshotIdMismatch,
+                    &format!("{path}/snapshot/id"),
+                    "The snapshot must have the operation's identifier.",
+                )?;
+            }
+            Op::Batch { ops } => {
+                let path = format!("{path}/ops");
+                if !self.bound(ops.len(), MAX_BATCH_OPS, TooManyOps, &path)? {
+                    return Ok(());
+                }
+                self.require(
+                    !ops.is_empty(),
+                    EmptyBatch,
+                    &path,
+                    "A batch must contain an operation.",
+                )?;
+                for (i, op) in ops.iter().enumerate() {
+                    let path = format!("{path}/{i}");
+                    if matches!(op, Op::Batch { .. }) {
+                        self.require(
+                            false,
+                            NestedBatch,
+                            &path,
+                            "A batch must not contain a batch.",
+                        )?;
+                    } else {
+                        self.op(op, &path, context)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}

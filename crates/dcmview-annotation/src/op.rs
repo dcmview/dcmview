@@ -54,8 +54,21 @@ impl Patch {
     /// [`Annotation::validate`], because whether a class allows a geometry
     /// can only be judged on the result.
     pub fn apply_to(&self, annotation: &mut Annotation) {
-        let _ = annotation;
-        todo!("FND3: apply an annotation patch")
+        if let Some(geometry) = &self.geometry {
+            annotation.geometry = geometry.clone();
+        }
+        if let Some(class) = &self.class {
+            annotation.class = class.clone();
+        }
+        if let Some(attributes) = &self.attributes {
+            annotation.attributes = attributes.clone();
+        }
+        if let Some(frames) = &self.frames {
+            annotation.frames = frames.clone();
+        }
+        if let Some(layer) = &self.layer {
+            annotation.layer = layer.clone();
+        }
     }
 }
 
@@ -210,7 +223,38 @@ impl Op {
     /// | `set_label` on any other target | the target's canonical id |
     /// | `create_layer`, `update_layer`, `delete_layer` | the layer id |
     pub fn queue_keys(&self) -> Vec<QueueKey> {
-        todo!("FND3: list an operation's queue keys")
+        let mut keys = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        // Iterative even for an invalid, deeply nested Rust-built batch.
+        let mut pending = vec![self];
+        while let Some(op) = pending.pop() {
+            let key = match op {
+                Self::CreateAnnotation { annotation } => QueueKey::File(annotation.file.clone()),
+                Self::DeleteAnnotation { snapshot, .. }
+                | Self::RestoreAnnotation { snapshot, .. } => QueueKey::File(snapshot.file.clone()),
+                Self::UpdateAnnotation { file, .. } | Self::MaskTiles { file, .. } => {
+                    QueueKey::File(file.clone())
+                }
+                Self::SetLabel { target, .. } => match target {
+                    LabelTarget::File { file } | LabelTarget::Frame { frame: file, .. } => {
+                        QueueKey::File(file.clone())
+                    }
+                    _ => QueueKey::Target(target.canonical_id()),
+                },
+                Self::CreateLayer { layer } => QueueKey::Layer(layer.id.clone()),
+                Self::UpdateLayer { id, .. } | Self::DeleteLayer { id, .. } => {
+                    QueueKey::Layer(id.clone())
+                }
+                Self::Batch { ops } => {
+                    pending.extend(ops.iter().rev());
+                    continue;
+                }
+            };
+            if seen.insert(key.clone()) {
+                keys.push(key);
+            }
+        }
+        keys
     }
 
     /// Checks what can be checked about an operation without the store's
@@ -248,8 +292,7 @@ impl Op {
     ///
     /// Bounded work: an over-long list is refused on its length alone.
     pub fn validate(&self, context: &Context<'_>) -> Result<(), Invalid> {
-        let _ = context;
-        todo!("FND3: validate an operation")
+        crate::Check::check(self, context)
     }
 }
 
@@ -288,15 +331,20 @@ impl OpEnvelope {
     /// is refused by the parser. Never panics on any input. The envelope is
     /// not validated; call [`OpEnvelope::validate`].
     pub fn from_json_str(text: &str) -> Result<OpEnvelope, EnvelopeError> {
-        let _ = text;
-        todo!("FND3: read an operation envelope")
+        let limit = crate::limits::MAX_ENVELOPE_BYTES;
+        if text.len() > limit {
+            return Err(EnvelopeError::TooLarge {
+                bytes: text.len(),
+                limit,
+            });
+        }
+        serde_json::from_str(text).map_err(|error| EnvelopeError::Malformed(error.to_string()))
     }
 
     /// `op_id` is a UUIDv7 (`id_not_uuid_v7`), and the operation is valid
     /// ([`Op::validate`]).
     pub fn validate(&self, context: &Context<'_>) -> Result<(), Invalid> {
-        let _ = context;
-        todo!("FND3: validate an operation envelope")
+        crate::Check::check(self, context)
     }
 }
 
