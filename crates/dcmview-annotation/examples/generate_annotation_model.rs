@@ -31,6 +31,8 @@ fn main() -> ExitCode {
                 stale = true;
             }
         } else {
+            let directory = path.parent().expect("generated file has a directory");
+            std::fs::create_dir_all(directory).expect("create the generated file's directory");
             std::fs::write(&path, rendered).expect("write generated model file");
         }
     }
