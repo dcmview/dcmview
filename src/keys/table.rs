@@ -1,7 +1,9 @@
 //! Which key each loaded file has.
 
 use super::FileKey;
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// What discovery knows about a file that decides its key. None of it needs
 /// a read beyond the header discovery already parsed.
@@ -138,18 +140,55 @@ pub struct FileKeyStatus {
 /// which visits each file of the group once. A table of `n` files therefore
 /// costs `O(n)` over its whole life however the files are grouped.
 pub struct KeyTable {
-    _private: (),
+    entries: Vec<Entry>,
+    paths: HashMap<PathBuf, usize>,
+    files: Vec<PhysicalFile>,
+    uids: HashMap<String, usize>,
+    groups: Vec<Group>,
+    holders: HashMap<Arc<FileKey>, usize>,
+}
+
+struct Entry {
+    file: usize,
+    group: Option<usize>,
+    key: Option<Arc<FileKey>>,
+    alias_of: Option<usize>,
+    failure: Option<KeyFailure>,
+    served: bool,
+    wanted: bool,
+}
+
+#[derive(Default)]
+struct PhysicalFile {
+    entries: Vec<usize>,
+    digest: Option<[u8; 32]>,
+    failure: Option<KeyFailure>,
+}
+
+struct Group {
+    key: Arc<FileKey>,
+    size: u64,
+    digest: Option<[u8; 32]>,
+    split: bool,
+    members: Vec<usize>,
 }
 
 impl KeyTable {
     /// An empty table.
     pub fn new() -> Self {
-        todo!("FND4: an empty key table")
+        Self {
+            entries: Vec::new(),
+            paths: HashMap::new(),
+            files: Vec::new(),
+            uids: HashMap::new(),
+            groups: Vec::new(),
+            holders: HashMap::new(),
+        }
     }
 
     /// The number of registered files.
     pub fn len(&self) -> usize {
-        todo!("FND4: the number of registered files")
+        self.entries.len()
     }
 
     /// Whether no file is registered.
@@ -167,22 +206,73 @@ impl KeyTable {
     /// this call, and those that are served and still without a digest are
     /// in `wanted`.
     pub fn register(&mut self, identity: FileIdentity) -> KeyChanges {
-        let _ = identity;
-        todo!("FND4: register a file and assign its key")
+        let index = self.entries.len();
+        let file = *self.paths.entry(identity.path).or_insert_with(|| {
+            let file = self.files.len();
+            self.files.push(PhysicalFile::default());
+            file
+        });
+        self.files[file].entries.push(index);
+        let group = if let Some(&group) = self.uids.get(&identity.sop_instance_uid) {
+            Some(group)
+        } else if let Ok(key) = FileKey::sop(&identity.sop_instance_uid) {
+            let group = self.groups.len();
+            self.uids.insert(identity.sop_instance_uid, group);
+            self.groups.push(Group {
+                key: Arc::new(key),
+                size: identity.size_bytes,
+                digest: None,
+                split: false,
+                members: Vec::new(),
+            });
+            Some(group)
+        } else {
+            None
+        };
+        self.entries.push(Entry {
+            file,
+            group,
+            key: None,
+            alias_of: None,
+            failure: None,
+            served: false,
+            wanted: false,
+        });
+        let mut affected = Vec::new();
+        if let Some(group) = group {
+            self.check_group(
+                group,
+                identity.size_bytes,
+                self.files[file].digest,
+                &mut affected,
+            );
+            if !self.groups[group].split {
+                self.groups[group].members.push(index);
+            }
+        }
+        affected.push(index);
+        let mut changes = self.refresh(affected);
+        if changes.updated.last() != Some(&index) {
+            changes.updated.push(index);
+        }
+        changes
     }
 
     /// Records that a frame of the file has been served. Only `wanted` of
     /// the result can be non-empty. An index that is not registered changes
     /// nothing.
     pub fn frame_sent(&mut self, index: usize) -> KeyChanges {
-        let _ = index;
-        todo!("FND4: mark the file served and report a wanted digest")
+        let mut changes = KeyChanges::default();
+        if let Some(entry) = self.entries.get_mut(index) {
+            entry.served = true;
+            self.want(index, &mut changes);
+        }
+        changes
     }
 
     /// Whether [`KeyTable::frame_sent`] has been called for the file.
     pub fn served(&self, index: usize) -> bool {
-        let _ = index;
-        todo!("FND4: whether a frame of the file has been served")
+        self.entries.get(index).is_some_and(|entry| entry.served)
     }
 
     /// The files whose digests must be computed before the key of `index`
@@ -201,8 +291,25 @@ impl KeyTable {
     /// split needs nothing: its `sop:` key is its own until a copy is shown
     /// to differ.
     pub fn required_for(&self, index: usize) -> Vec<usize> {
-        let _ = index;
-        todo!("FND4: the digests a settled key still needs")
+        let Some(entry) = self.entries.get(index) else {
+            return Vec::new();
+        };
+        let alias = entry
+            .alias_of
+            .filter(|&alias| self.entries[alias].file != entry.file);
+        let mut required = Vec::new();
+        if self.files[entry.file].digest.is_none()
+            && (entry.key.is_none() || self.content_key(entry) || alias.is_some())
+        {
+            required.push(index);
+        }
+        if let Some(alias) = alias {
+            if self.files[self.entries[alias].file].digest.is_none() {
+                required.push(alias);
+            }
+        }
+        required.sort_unstable();
+        required
     }
 
     /// Records the outcome of hashing the file, for every entry of it.
@@ -220,22 +327,52 @@ impl KeyTable {
     /// digest for a file that already has one replaces nothing: the first
     /// digest stands.
     pub fn resolve(&mut self, index: usize, outcome: Result<[u8; 32], KeyFailure>) -> KeyChanges {
-        let _ = (index, outcome);
-        todo!("FND4: record a digest or a failure and apply its consequences")
+        let Some(entry) = self.entries.get(index) else {
+            return KeyChanges::default();
+        };
+        let file = entry.file;
+        if self.files[file].digest.is_some() {
+            return KeyChanges::default();
+        }
+        match outcome {
+            Ok(digest) => {
+                self.files[file].digest = Some(digest);
+                self.files[file].failure = None;
+            }
+            Err(failure) => self.files[file].failure = Some(failure),
+        }
+        let mut affected = self.files[file].entries.clone();
+        if let Ok(digest) = outcome {
+            for position in 0..self.files[file].entries.len() {
+                let member = self.files[file].entries[position];
+                if let Some(group) = self.entries[member].group {
+                    self.check_group(group, self.groups[group].size, Some(digest), &mut affected);
+                }
+            }
+        }
+        self.refresh(affected)
     }
 
     /// What a catalog entry shows of the file's key, borrowed, or `None` for
     /// an index that is not registered. The catalog reads this for every
     /// file it registers and every frame it serves, so it allocates nothing.
     pub fn view(&self, index: usize) -> Option<KeyView<'_>> {
-        let _ = index;
-        todo!("FND4: one file's key, alias and failure, borrowed")
+        self.entries.get(index).map(|entry| KeyView {
+            key: entry.key.as_deref(),
+            alias_of: entry.alias_of,
+            failure: entry.failure,
+        })
     }
 
     /// The file's key state, or `None` for an index that is not registered.
     pub fn status(&self, index: usize) -> Option<FileKeyStatus> {
-        let _ = index;
-        todo!("FND4: one file's key state")
+        self.entries.get(index).map(|entry| FileKeyStatus {
+            key: entry.key.as_deref().cloned(),
+            alias_of: entry.alias_of,
+            failure: entry.failure,
+            digest: self.files[entry.file].digest,
+            settled: entry.key.is_some() && self.required_for(index).is_empty(),
+        })
     }
 
     /// The file a key names. A `sop:` key names the first file registered
@@ -245,8 +382,89 @@ impl KeyTable {
     /// its file. A `b3:` key names the first file that came to hold it.
     /// `None` for a key no file has held.
     pub fn file_for_key(&self, key: &FileKey) -> Option<usize> {
-        let _ = key;
-        todo!("FND4: the file a current or replaced key names")
+        self.holders.get(key).copied()
+    }
+}
+
+impl KeyTable {
+    fn content_key(&self, entry: &Entry) -> bool {
+        entry.group.is_none_or(|group| self.groups[group].split)
+    }
+
+    fn check_group(
+        &mut self,
+        group: usize,
+        size: u64,
+        digest: Option<[u8; 32]>,
+        affected: &mut Vec<usize>,
+    ) {
+        let group = &mut self.groups[group];
+        if group.split {
+            return;
+        }
+        if group.size != size || matches!((group.digest, digest), (Some(a), Some(b)) if a != b) {
+            group.split = true;
+            affected.append(&mut group.members);
+        } else if group.digest.is_none() {
+            group.digest = digest;
+        }
+    }
+
+    fn want(&mut self, index: usize, changes: &mut KeyChanges) {
+        let entry = &self.entries[index];
+        let file = &self.files[entry.file];
+        if entry.served
+            && !entry.wanted
+            && file.digest.is_none()
+            && file.failure.is_none()
+            && self.content_key(entry)
+        {
+            self.entries[index].wanted = true;
+            changes.wanted.push(index);
+        }
+    }
+
+    fn refresh(&mut self, mut affected: Vec<usize>) -> KeyChanges {
+        affected.sort_unstable();
+        affected.dedup();
+        let mut changes = KeyChanges::default();
+        for index in affected {
+            let entry = &self.entries[index];
+            let file = &self.files[entry.file];
+            let content = self.content_key(entry);
+            let key = if content {
+                match (file.digest, file.failure) {
+                    (Some(digest), _) => Some(Arc::new(FileKey::blake3(&digest))),
+                    (_, Some(_)) => None,
+                    _ => entry.key.clone(),
+                }
+            } else {
+                entry.group.map(|group| self.groups[group].key.clone())
+            };
+            let alias_of = key.as_ref().and_then(|key| {
+                let first = *self.holders.entry(key.clone()).or_insert(index);
+                (first != index && !(content && file.digest.is_none())).then_some(first)
+            });
+            let failure = file.failure;
+            let entry = &mut self.entries[index];
+            if entry.key != key || entry.alias_of != alias_of || entry.failure != failure {
+                if let (Some(old), Some(new)) = (&entry.key, &key) {
+                    if old != new {
+                        changes.rekeys.push(Rekey {
+                            index,
+                            old_key: (**old).clone(),
+                            new_key: (**new).clone(),
+                        });
+                    }
+                }
+                entry.key = key;
+                entry.alias_of = alias_of;
+                entry.failure = failure;
+                changes.updated.push(index);
+            }
+            self.want(index, &mut changes);
+        }
+        changes
     }
 }
 
