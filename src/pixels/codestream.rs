@@ -393,8 +393,7 @@ fn read_jpeg(frame: &[u8], kind: CodestreamKind) -> Result<Declared> {
                 },
             });
         }
-        if !matches!(process, 0xC4 | 0xDB | 0xDD | 0xFE | 0xE0..=0xEF)
-            && !(is_ls && process == 0xF8)
+        if !(matches!(process, 0xC4 | 0xDB | 0xDD | 0xFE | 0xE0..=0xEF) || is_ls && process == 0xF8)
         {
             return Err(anyhow!(
                 "unexpected JPEG marker {process:02X} before frame header"
