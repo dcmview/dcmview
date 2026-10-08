@@ -639,6 +639,69 @@ one fragment per frame).
 
 See [the HTTP API reference](api.md) for endpoint payloads and headers.
 
+### Compressed Frames Are Held To The Header
+
+A compressed frame describes its own image a second time, inside its
+codestream, and the codec libraries size their buffers and loops from that
+description. The catalog entry holds what the data set says: Rows, Columns,
+Samples per Pixel and Bits Allocated. `pixels/codestream.rs` makes the two
+agree before any codec library sees a frame, so a frame costs what its
+entry's image costs whatever its own header declares.
+
+- `codestream::declared` reads what the frame declares from its encoded
+  bytes alone, and allocates nothing that grows with it. `codestream::agrees`
+  compares that with the entry by the accept table in its documentation,
+  which is the whole rule. `codestream::checked` runs both, and every decoder
+  calls it: `pixels/jpeg2000.rs` `decode_checked` for JPEG 2000, and
+  `pixels/pixeldata_frame.rs` `decode_object` for JPEG, JPEG-LS and JPEG XL.
+  The display, raw and raw-pixel endpoints, the overlay endpoints
+  that decode another object's frames, and discovery's scan of a fractional
+  segmentation all decode through those two functions.
+- A frame that fails is a decode error for that frame (`500
+  pixel_decode_failed`, or the overlay endpoints' own error) whose message
+  contains `codestream::CODESTREAM_MISMATCH`, "pixel data disagrees with the
+  header". The file stays listed and its other frames decode.
+
+| Syntax | Read from the frame, and how far | Compared with the entry |
+|---|---|---|
+| JPEG Baseline, JPEG Lossless | The frame header (`SOFn`), after at most 1,024 marker segments, each stepped over by its length; then the scans are counted to the end of the frame | Rows, columns, components; precision against Bits Allocated by process (8 in 8 for the DCT processes; for lossless 8 in 8, any other precision in 16); at most 100 scans |
+| JPEG-LS | The frame header (`SOF55`), after at most 1,024 marker segments | Rows, columns, components; precision 2 to 8 in 8 bits allocated, 9 to 16 in 16 |
+| JPEG 2000 | `SIZ`, then every coding style (`COD`, `COC`) of the main header (at most 1,024 marker segments) and of each tile-part header; a JP2 file's boxes up to its codestream box (at most 64) | Rows, columns (from the image size and offset), components, all at full resolution and one depth; precision at most Bits Allocated; at most 4,096 tiles; at most 65,536 packets for a component of a tile, or one for every 64 pixels of the tile if that is more |
+| JPEG XL | The image header, read by the decoder from at most the first 4 MiB + 64 KiB of the frame | Rows, columns, channels (colour and alpha); integer samples of at most Bits Allocated; no animation |
+
+What the table does not name is not compared: the colour transform, the
+number of resolution levels, chroma subsampling, restart intervals, a
+lossless point transform, Bits Stored and the sign of the samples differ
+between honest files and their headers, and such files decode as before.
+
+Three more rules close the same gap where there is no header to compare:
+
+- **JPEG 2000 in a JP2 file.** The decoder is given the contents of the
+  codestream box only, so the file's other boxes (a palette, a channel
+  definition, an image header box that repeats the size) take no part in the
+  decode.
+- **JPEG XL.** A frame's image header does not bound its decode: a frame
+  header, extra channels and reference frames can each ask for more. The
+  frame is decoded by `codestream::decode_jpeg_xl` with the decoder's
+  allocation tracker limited to `codestream::jxl_decode_limit` (4 MiB plus 64
+  bytes for each sample of the entry's frame), and the output buffer is
+  sized from the entry. An embedded colour profile is the exception: the
+  decoder reads it under its own cap of 256 MiB encoded and 256 MiB decoded
+  and does not count it against the tracker.
+- **Deflated Image Frame.** `codestream::inflate_frame` reads the frame's
+  packed size plus one byte out of the inflater and no more; a frame that
+  inflates to anything else is refused.
+
+The data set a decode reads is compared with the entry as well
+(`codestream::header_agrees`): a file can be replaced after it was listed,
+and the codec adapters size their output from the data set they are given.
+`encapsulated::open_for_frame_decode` hands a decoder an object that holds
+the requested frame as its only fragment, so the bytes that were checked are
+the bytes that are decoded.
+
+RLE Lossless and native pixel data need none of this: their decoders size
+every buffer from the entry (`pixels/rle.rs`, `pixels/native.rs`).
+
 ## Lifecycle And Discovery Ownership
 
 Local startup follows a strict order:
@@ -749,6 +812,21 @@ installation and VS Code Electron integration can also use network/cache state;
   complete HTTP boundary.
 - Generated DICOM fixtures exercise real discovery and codec paths. Integration
   tests do not mock the DICOM layer.
+- Codestream tests state what a compressed DICOM frame may cost in things
+  that are counted, never timed. `integration::codestream_agreement`
+  decodes honest codestreams written by
+  encoders the viewer does not link (OpenJPEG, libjpeg, DCMTK, libjxl; the
+  bytes are in `tests/integration/codestream_files.rs`) under headers that
+  differ from them only as the standard allows, and requests frames that
+  declare another image at every endpoint that decodes one.
+  `tests/codestream_cost/` reads the headers of honest, cut, edited and
+  random frames, checks `codestream::agrees` against its accept table row by
+  row, and serves frames a few hundred bytes long that declare images of
+  millions of pixels, asserting the heap the whole process holds while each
+  is refused. Its counting allocator counts every thread, because decoders
+  run on blocking threads, so its tests run one at a time; it decodes no
+  honest JPEG 2000 frame, because the JPEG 2000 decoder does not tolerate a
+  counting allocator in a debug build.
 - Discovery builds each file's catalog metadata in one parse (`loader/entry.rs`
   `read_discovery_header`): it builds the metadata object from the parser's
   tokens up to the earliest standard pixel-data tag, exactly as
@@ -859,6 +937,8 @@ Not current correctness blockers:
   exit or error path.
 - Keep CPU, codec, filesystem, and Rayon work off the async executor.
 - Do not hold cache or registry locks across I/O, decode, encode, or await.
+- No codec library is handed a compressed frame before
+  `pixels::codestream::checked` has accepted it for the catalog entry.
 - Treat `src/api/contracts.rs` plus its generated TypeScript as one contract.
 - Keep `crates/dcmview-protocol` free of viewer, server and DICOM
   dependencies, and only add fields to its types.
