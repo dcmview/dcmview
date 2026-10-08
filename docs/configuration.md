@@ -113,9 +113,10 @@ total reserved by the decodes running at once within `--decode-memory`
 - Thumbnails may use half of the budget between them, so they never hold up
   the image you open. A frame too large for that half has no thumbnail and
   still opens in the viewer.
-- If more than 1,024 frame requests (256 for thumbnails) are already
-  waiting for memory, the next is answered `503` with `Retry-After: 1`
-  instead of waiting; the same request succeeds once decodes finish.
+- If more than 1,024 frame requests are already waiting for memory, the
+  next is answered `503` with `Retry-After: 1` instead of waiting; the same
+  request succeeds once decodes finish. Thumbnails have a queue of their
+  own, of the same length.
 
 This limits the memory of decodes in progress, not total process memory. The
 frame caches (`--cache-budget`), responses being sent, and browser memory are

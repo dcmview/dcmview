@@ -273,8 +273,8 @@ support state. Cached frames remain available.
 
 For ordinary viewer use this requires large frames decoding while over a
 thousand interactive requests accumulate: the queue holds 1,024 waiting
-requests. Thumbnails have a separate queue of 256. Reduce the number of
-requests in flight if an API client repeatedly reaches the limit.
+requests. Thumbnails have a separate queue of the same length. Reduce the
+number of requests in flight if an API client repeatedly reaches the limit.
 
 ### Image frame returns unsupported transfer syntax
 

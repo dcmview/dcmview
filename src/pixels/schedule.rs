@@ -79,9 +79,15 @@ pub const DECODE_MEMORY_MIN_BYTES: u64 = 256 * 1024 * 1024;
 /// large frames and requests keep arriving.
 pub const DECODE_QUEUE_INTERACTIVE: usize = 1024;
 
-/// The most background requests that may wait for a permit at once. A
-/// gallery keeps a handful in flight and abandons the ones it scrolls past.
-pub const DECODE_QUEUE_BACKGROUND: usize = 256;
+/// The most background requests that may wait for a permit at once: the
+/// same number as [`DECODE_QUEUE_INTERACTIVE`]. The next is refused with
+/// [`DecodeRefusal::Busy`].
+///
+/// A gallery asks for every tile it shows at once and abandons the ones it
+/// scrolls past, so a folder of several hundred images puts that many
+/// thumbnails in the queue in one step. They hold no decode memory while
+/// they wait, and the viewer's frames do not wait behind them.
+pub const DECODE_QUEUE_BACKGROUND: usize = 1024;
 
 /// The share of a decode memory budget of `memory_bytes` that background
 /// decodes may reserve between them: half, rounded down. The other half is

@@ -242,6 +242,25 @@ async fn a_request_that_would_wait_behind_a_full_queue_is_refused_as_busy() {
         }
         drop((interactive, background));
         idle(&scheduler).await;
+
+        // The viewer's own limits: a gallery that asks for a thousand
+        // thumbnails at once is made to wait, not refused, and so is the
+        // viewer; the request after the 1,024th waiting one is refused.
+        assert_eq!(pixels::DECODE_QUEUE_INTERACTIVE, 1024);
+        assert_eq!(pixels::DECODE_QUEUE_BACKGROUND, 1024);
+        let scheduler = default_scheduler(1);
+        let held = granted(&scheduler, Interactive, 0).await;
+        let mut requests = Vec::new();
+        for (class, queued) in [(Background, (0, 1024)), (Interactive, (1024, 1024))] {
+            requests.extend((0..1024).map(|_| request(&scheduler, class, 1)));
+            waiting(&scheduler, queued.0, queued.1).await;
+            let refusal = eventually("a refusal", scheduler.admit(class, 1)).await;
+            assert_eq!(refusal.err(), Some(DecodeRefusal::Busy), "{class:?}");
+        }
+        // Dropped while they wait, they all leave their queues.
+        requests.iter().for_each(JoinHandle::abort);
+        waiting(&scheduler, 0, 0).await;
+        drop(held);
     })
     .await;
 }

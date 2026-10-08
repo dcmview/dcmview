@@ -824,8 +824,8 @@ dropped, so the bytes reserved are always those of decodes that are running:
   which says how much was needed and names `--decode-memory`. The file stays
   `renderable` in the catalog; a larger budget decodes it;
 - a request that would have to wait while its class already has 1,024
-  interactive or 256 background requests waiting is refused:
-  `503 decode_busy` with `Retry-After: 1`. A waiting request holds no decode
+  requests waiting (each class has its own queue of that length) is
+  refused: `503 decode_busy` with `Retry-After: 1`. A waiting request holds no decode
   memory, so the queue limits bound tasks and delay, not bytes.
 
 Requests the caches can answer take no permit, so a busy viewer still serves
