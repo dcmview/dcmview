@@ -22,6 +22,7 @@ mod layout;
 mod raster_cases;
 #[path = "../integration/raster_files.rs"]
 mod raster_files;
+mod scale;
 
 /// Every test of this binary runs on the counting allocator
 /// (`heap::peak_during`).
