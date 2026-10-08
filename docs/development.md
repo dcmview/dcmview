@@ -183,7 +183,7 @@ The [architecture and test model](architecture.md) is normative. In brief:
 - `crates/dcmview-protocol` owns the launch and startup contract (the
   `--startup-json` line); `api/contracts.rs` re-exports it.
 - `crates/dcmview-annotation` owns the neutral annotation model, its
-  validation and its operations. The viewer does not use it yet.
+  validation and its operations. The root package does not depend on it.
 - `server/` separates runtime, lifecycle, catalog, API, tags, and embedded web
   assets. `pixels/` separates service, codecs, caches, windowing, and rendering.
 - `App.svelte` composes `FileNavigator`, `OpenImageTabs`, the viewer controls,

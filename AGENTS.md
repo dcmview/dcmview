@@ -210,8 +210,8 @@ Frontend (Svelte 5, compiled into the binary via rust-embed):
   operations (`Op`, `OpEnvelope`, `ApplyResult`) and the `validate`
   functions. It is a pure model with no viewer, server or DICOM dependency
   and no filesystem, network or environment access; `new_id` is its one
-  function that reads the clock and the random number generator. The viewer
-  does not use it yet. Its TypeScript
+  function that reads the clock and the random number generator. The root
+  package does not depend on it. Its TypeScript
   (`frontend/src/generated/annotation-types.ts`) and JSON Schema
   (`crates/dcmview-annotation/schema/`) are generated; never hand-edit them.
 - `src/api/contracts.rs` is the source of truth for the HTTP contract: the
