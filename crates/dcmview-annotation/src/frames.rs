@@ -73,21 +73,29 @@ impl FrameScope {
     /// [`FrameScope::validate`] refuses. Reading an empty list as "every
     /// frame" is the importing adapter's decision, made before it calls this.
     pub fn from_written(frames: Vec<u32>) -> FrameScope {
-        let _ = frames;
-        todo!("FND3: build a frame scope from a list as written")
+        let mut set = frames.clone();
+        set.sort_unstable();
+        set.dedup();
+        let as_written = (set != frames).then_some(frames);
+        Self::Set(FrameSet { set, as_written })
     }
 
     /// The frame list to write back to a format that keeps order and
     /// repeats: `as_written` when present, otherwise `set`. `None` for
     /// `All`.
     pub fn written(&self) -> Option<&[u32]> {
-        todo!("FND3: read a frame scope's list as written")
+        match self {
+            Self::All => None,
+            Self::Set(frames) => Some(frames.as_written.as_deref().unwrap_or(&frames.set)),
+        }
     }
 
     /// Whether the scope covers `frame`. `All` covers every frame.
     pub fn contains(&self, frame: u32) -> bool {
-        let _ = frame;
-        todo!("FND3: test a frame against a scope")
+        match self {
+            Self::All => true,
+            Self::Set(frames) => frames.set.contains(&frame),
+        }
     }
 
     /// Checks the invariants on [`FrameSet`] for a file of `frame_count`
@@ -100,8 +108,7 @@ impl FrameScope {
     /// `frame_out_of_range`, `frames_as_written_mismatch`,
     /// `too_many_frames`.
     pub fn validate(&self, frame_count: u32) -> Result<(), Invalid> {
-        let _ = frame_count;
-        todo!("FND3: validate a frame scope")
+        crate::Check::check(self, frame_count)
     }
 }
 

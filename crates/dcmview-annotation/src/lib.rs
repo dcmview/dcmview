@@ -52,6 +52,7 @@
 //! - The wire shapes are pinned by the fixtures under `tests/fixtures/`.
 //!   Extend them when a member is added.
 
+mod checking;
 pub mod document;
 pub mod file;
 pub mod frames;
@@ -87,3 +88,9 @@ pub use schema::{
     ClassDef, Code, FieldDef, FieldType, LabelSchema, OptionDef, TargetKind, IMPLICIT_CLASS_ID,
 };
 pub use validate::{Context, FileSizes, Invalid, Violation, ViolationCode};
+
+// Private dispatch keeps the shared collector and every validation helper
+// private while the frozen public methods remain the entry points.
+trait Check<C> {
+    fn check(&self, context: C) -> Result<(), Invalid>;
+}

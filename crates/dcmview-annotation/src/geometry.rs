@@ -50,8 +50,15 @@ pub struct ImageSize {
 ///
 /// `quantize(12.3456) == 12.346`, `quantize(-0.0004) == 0.0` (positive).
 pub fn quantize(value: f64) -> f64 {
-    let _ = value;
-    todo!("FND3: quantize a coordinate")
+    if !value.is_finite() {
+        return value;
+    }
+    let rounded = (value * QUANTA_PER_PIXEL).round() / QUANTA_PER_PIXEL;
+    if rounded == 0.0 {
+        0.0
+    } else {
+        rounded
+    }
 }
 
 /// One position: `x` is the column, `y` the row.
@@ -201,7 +208,7 @@ impl Geometry {
     /// The same geometry with every number [`quantize`]d. A mask is returned
     /// unchanged. This is what a store applies when it commits a write.
     pub fn quantized(&self) -> Geometry {
-        todo!("FND3: quantize a geometry")
+        map_numbers(self, |value, _| quantize(value))
     }
 
     /// Checks the invariants in the type's documentation against an image of
@@ -223,8 +230,7 @@ impl Geometry {
     /// that is not positive), `bad_angle`, `too_few_points`,
     /// `too_many_points`, and the mask codes listed on [`Mask`].
     pub fn validate(&self, size: ImageSize) -> Result<(), Invalid> {
-        let _ = size;
-        todo!("FND3: validate a geometry")
+        crate::Check::check(self, size)
     }
 
     /// Rounds the geometry onto `snap`'s grid, then moves every position that
@@ -244,8 +250,34 @@ impl Geometry {
     /// than failing the import; it is rounded first, then clamped, and the
     /// row is reported. `rounded` and `moved` are what the report needs.
     pub fn clamped(&self, size: ImageSize, snap: Snap) -> Clamped {
-        let _ = (size, snap);
-        todo!("FND3: clamp a geometry to its image")
+        let mut rounded = false;
+        let mut moved = false;
+        let geometry = match self {
+            Self::Ellipse { .. } | Self::Mask(_) => self.clone(),
+            _ => map_numbers(self, |value, x| {
+                if !value.is_finite() {
+                    return value;
+                }
+                let snapped = match snap {
+                    Snap::PixelEdges => value.round(),
+                    Snap::Quantum => quantize(value),
+                };
+                rounded |= snapped != value;
+                let clamped =
+                    snapped.clamp(0.0, f64::from(if x { size.columns } else { size.rows }));
+                moved |= clamped != snapped;
+                if clamped == 0.0 {
+                    0.0
+                } else {
+                    clamped
+                }
+            }),
+        };
+        Clamped {
+            geometry,
+            rounded,
+            moved,
+        }
     }
 }
 
@@ -277,8 +309,17 @@ impl TryFrom<String> for TileCoord {
     /// sign, space or leading zero, joined by one comma; a string longer
     /// than 21 bytes is refused on its length.
     fn try_from(text: String) -> Result<Self, Self::Error> {
-        let _ = text;
-        todo!("FND3: parse a tile coordinate")
+        if text.len() <= 21 {
+            if let Some((x, y)) = text.split_once(',') {
+                if let (Some(tx), Some(ty)) = (decimal_index(x), decimal_index(y)) {
+                    return Ok(Self { tx, ty });
+                }
+            }
+        }
+        Err(crate::key::InvalidValue {
+            kind: "tile coordinate",
+            reason: "Expected two canonical decimal indices.".to_owned(),
+        })
     }
 }
 
@@ -316,8 +357,12 @@ impl TryFrom<String> for FrameIndex {
 
     /// Parses a decimal `u32` without sign, space or leading zero.
     fn try_from(text: String) -> Result<Self, Self::Error> {
-        let _ = text;
-        todo!("FND3: parse a frame index key")
+        decimal_index(&text)
+            .map(Self)
+            .ok_or_else(|| crate::key::InvalidValue {
+                kind: "frame index",
+                reason: "Expected a canonical decimal index.".to_owned(),
+            })
     }
 }
 
@@ -385,5 +430,69 @@ impl Mask {
     /// carry.
     pub fn frame_scope(&self) -> FrameScope {
         FrameScope::set(self.frames.keys().map(|frame| frame.0).collect())
+    }
+}
+
+fn decimal_index(text: &str) -> Option<u32> {
+    if text.is_empty()
+        || text.len() > 10
+        || (text.len() > 1 && text.starts_with('0'))
+        || !text.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    text.parse().ok()
+}
+
+fn map_numbers(geometry: &Geometry, mut map: impl FnMut(f64, bool) -> f64) -> Geometry {
+    match geometry {
+        Geometry::Point { x, y } => Geometry::Point {
+            x: map(*x, true),
+            y: map(*y, false),
+        },
+        Geometry::Rect { x0, y0, x1, y1 } => Geometry::Rect {
+            x0: map(*x0, true),
+            y0: map(*y0, false),
+            x1: map(*x1, true),
+            y1: map(*y1, false),
+        },
+        Geometry::Ellipse {
+            cx,
+            cy,
+            rx,
+            ry,
+            angle,
+        } => Geometry::Ellipse {
+            cx: map(*cx, true),
+            cy: map(*cy, false),
+            rx: map(*rx, true),
+            ry: map(*ry, false),
+            angle: map(*angle, false),
+        },
+        Geometry::Line { points } => Geometry::Line {
+            points: points.map(|p| Point {
+                x: map(p.x, true),
+                y: map(p.y, false),
+            }),
+        },
+        Geometry::Polyline { points } => Geometry::Polyline {
+            points: points
+                .iter()
+                .map(|p| Point {
+                    x: map(p.x, true),
+                    y: map(p.y, false),
+                })
+                .collect(),
+        },
+        Geometry::Polygon { points } => Geometry::Polygon {
+            points: points
+                .iter()
+                .map(|p| Point {
+                    x: map(p.x, true),
+                    y: map(p.y, false),
+                })
+                .collect(),
+        },
+        Geometry::Mask(mask) => Geometry::Mask(mask.clone()),
     }
 }

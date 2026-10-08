@@ -17,8 +17,14 @@ pub(crate) fn serialize_number<S: Serializer>(
     value: &f64,
     serializer: S,
 ) -> Result<S::Ok, S::Error> {
-    let _ = (value, serializer);
-    todo!("FND3: serialize a number")
+    if !value.is_finite() {
+        return Err(serde::ser::Error::custom("A number must be finite."));
+    }
+    if value.fract() == 0.0 && value.abs() < 9_007_199_254_740_992.0 {
+        serializer.serialize_i64(*value as i64)
+    } else {
+        serializer.serialize_f64(*value)
+    }
 }
 
 /// [`serialize_number`] for an optional member: `None` is `null`.
@@ -46,6 +52,5 @@ pub(crate) fn serialize_coordinate<S: Serializer>(
     value: &f64,
     serializer: S,
 ) -> Result<S::Ok, S::Error> {
-    let _ = (value, serializer);
-    todo!("FND3: serialize a geometry number")
+    serialize_number(&crate::geometry::quantize(*value), serializer)
 }
