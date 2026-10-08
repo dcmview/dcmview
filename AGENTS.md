@@ -204,6 +204,14 @@ Frontend (Svelte 5, compiled into the binary via rust-embed):
   `TOKEN_FRAGMENT_PARAM`, `TOKEN_ENV_VAR`) and depends on `serde` only.
   `src/api/contracts.rs` re-exports those items. Fields of the startup event
   are only added, and member crates carry the viewer's version.
+- `crates/dcmview-annotation` owns the neutral annotation model: the wire
+  types (`Document`, `FileRef`, `Annotation`, `Label`, `Layer`,
+  `LabelSchema`, `Geometry`, `FrameScope`), `FileKey` and `KEY_RULES`, the
+  operations (`Op`, `OpEnvelope`, `ApplyResult`) and the `validate`
+  functions. It is a pure model with no viewer, server or DICOM dependency,
+  and the viewer does not use it yet. Its TypeScript
+  (`frontend/src/generated/annotation-types.ts`) and JSON Schema
+  (`crates/dcmview-annotation/schema/`) are generated; never hand-edit them.
 - `src/api/contracts.rs` is the source of truth for the HTTP contract: the
   `endpoints` table (method, path, response media type, response headers,
   success status) that the router and `tests/integration/api_contract.rs`
@@ -326,6 +334,10 @@ dcmview/
 |   |-- svelte.config.js
 |   `-- vite.config.ts
 |-- crates/
+|   |-- dcmview-annotation/  workspace member: the neutral annotation model,
+|   |                        its validation, operations, JSON Schema and
+|   |                        hand-written wire fixtures (no axum, tokio or
+|   |                        DICOM crates)
 |   `-- dcmview-protocol/  workspace member: launch and startup contract
 |                          (serde only; no axum, tokio or DICOM crates)
 |-- python/dcmview_py/  Python subprocess wrapper and package entrypoint
@@ -377,6 +389,7 @@ python scripts/check.py corpus --corpus /path/to/prepared-corpus
 # Targeted iteration remains valid
 DCMVIEW_SKIP_FRONTEND_BUILD=1 cargo test --workspace --locked
 npm --prefix frontend run generate:types   # after changing src/api/contracts.rs
+cargo run -p dcmview-annotation --example generate_annotation_model   # after changing a model type
 npm --prefix frontend run test
 npm --prefix frontend run typecheck
 ```
@@ -489,6 +502,22 @@ is cached between requests.
 - API edits replace the in-memory annotations for one file and are validated
   against image bounds and frame count.
 - Export writes a fresh EMBED-style CSV from the current in-memory store.
+
+**Annotation model (`crates/dcmview-annotation`)**
+
+- Reading checks shape; the `validate` functions check every invariant, and
+  every write goes through them. Do not move an invariant into
+  deserialization: records the lenient EMBED import read must stay readable.
+- Nothing in the crate panics on input. A parser or validator refuses input
+  past the constants in `limits` before doing work in proportion to it; a
+  new list or string gets a bound there, stated as a fixed number.
+- A new member of a wire type is optional on read and is added to
+  `tests/fixtures/document.json` or `operations.json`; then regenerate the
+  TypeScript and JSON Schema. A new geometry type, operation or enum value
+  needs a new document major version.
+- Floating-point members serialize through `number.rs`, so a whole number is
+  written without a fraction.
+- Redaction boxes are not annotations and never enter this crate.
 
 ### Svelte 5 / TypeScript frontend
 
@@ -647,6 +676,7 @@ the warning path in `server/runtime.rs`.
 | `src/loader/` | Cancellable DICOM discovery and metadata extraction |
 | `src/pixels/` | Pixel service, codecs, display/raw paths, caches, and windowing |
 | `src/annotations.rs` | ROI CSV import/export, validation, in-memory store |
+| `crates/dcmview-annotation/` | Neutral annotation model, validation, operations, generated schema |
 | `src/types.rs` | Internal domain, transfer-syntax, and cache-key types |
 | `build.rs` | Frontend build integration and Cargo fingerprints |
 | `scripts/check.py` | Canonical check profiles used locally and in CI |
@@ -658,6 +688,7 @@ the warning path in `server/runtime.rs`.
 | `python/dcmview_py/wrapper.py` | Python subprocess wrapper |
 | `examples/generate_test_fixtures.rs` | Synthetic fixture generator |
 | `examples/generate_api_types.rs` | TypeScript contract generator and drift check |
+| `crates/dcmview-annotation/examples/generate_annotation_model.rs` | Annotation model TypeScript and JSON Schema generator and drift check |
 
 ---
 
@@ -737,6 +768,10 @@ default suite.
   contract.
 - The EMBED-style CSV export of the real binary equals the committed goldens in
   `tests/fixtures/embed-goldens/` byte for byte, rows in any order.
+- The annotation model's fixture document and one envelope per operation
+  round-trip unchanged; a value that breaks one rule reports that rule's
+  violation code; oversized and hostile input is an error, never a panic;
+  the committed annotation TypeScript and JSON Schema match the model.
 - A masked session shows no fixture identifier in the catalog, series catalog,
   tag tree or selected elements, and its hashed UIDs agree across endpoints.
 - A redaction box blanks the display and raw frame, is a cache `MISS` after a

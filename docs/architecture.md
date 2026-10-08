@@ -21,6 +21,7 @@ repository may depend on without the viewer:
 |---|---|---|---|
 | `dcmview` | `.` | The viewer binary and library. | Everything, including the members. |
 | `dcmview-protocol` | `crates/dcmview-protocol` | The launch and startup contract: `StartupEvent`, `launch_url`, `STARTUP_PROTOCOL`, `TOKEN_FRAGMENT_PARAM`, `TOKEN_ENV_VAR`, and the test that pins the startup line. | `serde` only. No axum, tokio or DICOM crates. |
+| `dcmview-annotation` | `crates/dcmview-annotation` | The neutral annotation model: file keys, file references, geometry, frame scopes, the label schema, labels, layers, annotations, the document, operations, and the validation of all of them. See [Annotation Model](#annotation-model). | `serde`, `serde_json`, `thiserror`, `uuid`, `ts-rs`, `schemars`. No axum, tokio, DICOM or pixel-pipeline crates; no filesystem or network access. |
 
 Rules for the workspace:
 
@@ -29,8 +30,8 @@ Rules for the workspace:
   project URLs; every package inherits them.
 - Every member has the viewer's version. Other repositories pin a member by
   dcmview release tag, so the tag is the only version a consumer selects, and
-  wire compatibility is carried by `STARTUP_PROTOCOL` rather than by the crate
-  version. The root `[package].version` stays a literal because release
+  wire compatibility is carried by `STARTUP_PROTOCOL`, by the annotation
+  document's `version` and by `KEY_RULES` rather than by the crate version. The root `[package].version` stays a literal because release
   tooling reads it; `scripts/check_versions.py` compares each
   `crates/*/Cargo.toml` with it.
 - Plain `cargo build`, `cargo run` and `cargo test` at the root act on the
@@ -50,6 +51,7 @@ application module:
 | Local startup | `src/startup/` | `LocalViewerOptions`, `LocalViewerOutcome`, and `DiscoveryHandle`. |
 | HTTP wire model | `src/api/contracts.rs` | Plain `endpoints` table, media types, header names, wire structs (query names are `FrameQuery`/`TagQuery` fields), and error envelope. |
 | Launch and startup contract | `crates/dcmview-protocol` | `StartupEvent` (the `--startup-json` line), `launch_url`, `STARTUP_PROTOCOL`, the token fragment parameter and the token environment variable. Re-exported by `src/api/contracts.rs`. Fields are only added. |
+| Annotation model | `crates/dcmview-annotation` | The model's types and wire format, `validate` on each of them, `FileKey` and `KEY_RULES`, `Op` and `OpEnvelope`, the size bounds in `limits`, and the generated TypeScript and JSON Schema. The viewer does not use it yet: `src/annotations.rs` remains the EMBED store behind the annotation endpoints. |
 | HTTP runtime | `src/server/` | Listener/runtime, route registration, handlers, state, registry, activity tracking, tags, and embedded assets. |
 | Pixel service | `src/pixels/` | Typed display/raw requests, cache behavior, transfer-syntax classification, decoding, rendering, and `PixelError`. |
 | Patient geometry | `src/geometry.rs` | Normalized per-frame position, orientation, pixel spacing, coplanarity checks, and target-to-source pixel transforms. |
@@ -66,6 +68,7 @@ application module:
 | Frontend client | `frontend/src/api.ts` | Typed fetch wrappers over the generated endpoint paths and wire types. |
 | VS Code extension | `vscode/src/` | `extension.ts` wires activation only. `viewerSessions.ts` owns viewer processes and their webview panels; `customEditor.ts` and `commands.ts` open files through it; `bridgeServer.ts` serves the loopback launch/stop/wait bridge; `bridgeRegistry.ts` publishes and refreshes the registry file; `terminalInterception.ts` sets the terminal environment and PATH shims. |
 | Cross-language generation | `examples/generate_api_types.rs` | Checked-in `frontend/src/generated/api-types.ts` rendered with `ts-rs` from the Rust HTTP contract. |
+| Annotation model generation | `crates/dcmview-annotation/examples/generate_annotation_model.rs` | Checked-in `frontend/src/generated/annotation-types.ts` (`ts-rs`) and `crates/dcmview-annotation/schema/dcmview.annotations.schema.json` (`schemars`), rendered from the model's serde attributes. |
 
 Axum integration tests execute the router without a process; discovery and
 lifecycle tests drive the real loader; end-to-end profiles exercise a real
@@ -639,6 +642,76 @@ one fragment per frame).
 
 See [the HTTP API reference](api.md) for endpoint payloads and headers.
 
+## Annotation Model
+
+`crates/dcmview-annotation` is the one definition of what an annotation is.
+It is a pure model: types, their JSON form, and the rules a value must meet.
+It holds no state and applies no operation; a store does that. The viewer
+does not depend on it yet. The design it implements is
+`docs/design/annotation-model.md`.
+
+| Module | Holds |
+|---|---|
+| `key` | `FileKey` (`sop:<uid>` or `b3:<64 lowercase hex>`), `KEY_RULES`, and the other strings with one fixed syntax: `LayerId`, `Author`, `Timestamp`. |
+| `file` | `FileRef`: every identifier known for a file, its dimensions and frame count. |
+| `geometry` | `Geometry` (point, line, polyline, polygon, rect, ellipse, mask), `quantize`, `Geometry::validate`, `Geometry::clamped`. |
+| `frames` | `FrameScope`: `"all"`, or a set of frames with the list as it was written. |
+| `schema` | `LabelSchema`: classes, fields and options; `LabelSchema::implicit` for a session without one. |
+| `label`, `layer`, `record` | `LabelTarget` and its canonical id, `LabelValue`, `Label`; `Layer`, `LayerPatch`; `Annotation`, `RecordMeta`, `new_id`. |
+| `document` | `Document`, `FORMAT` (`dcmview.annotations`) and `VERSION`. |
+| `op` | `Op` (ten operations, `Batch` included), `OpEnvelope`, `Patch`, `QueueKey`, `ApplyResult`. |
+| `validate` | `Violation`, the closed `ViolationCode` list, `Invalid`, and the `Context` (files and schema) a validation is given. |
+| `limits` | Every size bound, as a constant. |
+| `generate` | `typescript()` and `json_schema()`. |
+
+Rules the crate keeps:
+
+- **Reading checks shape, validating checks invariants.** Deserialization
+  accepts any value of the right shape whose file keys, layer ids, authors
+  and timestamps have their fixed syntax. The `validate` functions are the
+  strict check, and every write goes through them. A record the lenient EMBED
+  CSV import read (a rectangle past the edge, with no area, or with its
+  corners out of order) is held and written back unchanged until it is
+  edited, and `Geometry::clamped` is how an import or an edit brings one
+  inside its image: rounded first, then moved onto the nearest edge.
+- **Coordinates** are corner-origin and continuous in the stored pixel grid,
+  `x` the column and `y` the row, valid over `[0, columns]` by `[0, rows]`,
+  quantized to 1/1000 px. Every comparison a validation makes is on quantized
+  values.
+- **Numbers are written one way.** A whole number has no fraction (`340`,
+  never `340.0` or `-0.0`), and a geometry number is written quantized, so a
+  Rust writer and a JavaScript writer produce the same text.
+- **Frame lists are kept as written.** A frame set holds the frames sorted
+  and distinct in `set`, and beside it the list an import read when that
+  differs (`as_written`), so an unedited EMBED row writes back the list it
+  was read from. An explicit list that names every frame is not `"all"`.
+- **Unknown members survive.** A document, file, layer, annotation, label
+  and schema item keep members this version does not know and write them
+  back. Within a document major version members are only added; a new
+  geometry type, operation or enum value is a new major version.
+- **Ids.** Record and operation ids are UUIDv7. Layer ids and schema ids are
+  1 to 64 characters of `A-Z a-z 0-9 . - _`.
+- **Queue keys.** `Op::queue_keys` gives what a client orders an operation
+  by: the file key for annotation operations and for labels on a file or
+  frame, the label target's canonical id (`patient:`, `study:`, `series:`,
+  `folder:<root>/<path>`) otherwise, and the layer id for layer operations.
+- **Bounded input.** Every parser and validator returns an error and never
+  panics, and refuses input past the constants in `limits` before doing work
+  in proportion to it. A validation reports at most 32 violations.
+- **Redaction boxes are not part of the model.** They stay in
+  `src/redactions.rs`, outside the model, its operations and every export.
+
+The fixtures under `crates/dcmview-annotation/tests/fixtures/` pin the wire
+format: `document.json` uses every member, and `operations.json` holds one
+envelope per operation with its queue keys. They are written by hand; a new
+member is added to them in the change that adds it.
+
+`cargo run -p dcmview-annotation --example generate_annotation_model`
+rewrites the generated TypeScript and JSON Schema, and `--check` fails when
+either is stale. The crate's tests make the same comparison, so the `core`
+profile catches drift; the frontend type check compiles the generated
+TypeScript.
+
 ## Lifecycle And Discovery Ownership
 
 Local startup follows a strict order:
@@ -740,6 +813,11 @@ installation and VS Code Electron integration can also use network/cache state;
 
 ### What Each Layer Covers
 
+- The annotation model's tests (`crates/dcmview-annotation/tests/`) go
+  through its public API only: the two hand-written fixtures round-trip
+  unchanged, table rows break one rule each and name the violation code
+  expected, hostile and oversized input must come back as an error, and the
+  committed TypeScript and JSON Schema must equal what the model renders.
 - Discovery lifecycle tests drive the real loader over copies of committed
   fixtures for completion, cancellation, annotation failure, no-files, and
   all-filtered cases.
@@ -848,6 +926,10 @@ Not current correctness blockers:
    register its route, regenerate the checked-in TypeScript, and add a wrapper
    in `frontend/src/api.ts`; the runtime contract test covers it through
    `endpoints::ALL`.
+5. When adding a member to an annotation model type, make it optional on
+   read, add it to `tests/fixtures/document.json` or `operations.json`, and
+   regenerate the TypeScript and JSON Schema in the same change. A new
+   violation code is added at the end of `ViolationCode`.
 
 ## Maintainer Invariants
 
@@ -862,6 +944,11 @@ Not current correctness blockers:
 - Treat `src/api/contracts.rs` plus its generated TypeScript as one contract.
 - Keep `crates/dcmview-protocol` free of viewer, server and DICOM
   dependencies, and only add fields to its types.
+- Keep `crates/dcmview-annotation` a pure model: no viewer, server, DICOM or
+  pixel-pipeline dependency, no filesystem or network access, no state. Raise
+  `KEY_RULES` with any change to file-key syntax or derivation. Do not lower
+  a bound in `limits`.
+- Keep redaction boxes out of the annotation model.
 - Add endpoint fetches through `frontend/src/api.ts`.
 - Use generated synthetic fixtures for integration coverage; never commit PHI.
 - Run the narrow profile while iterating, then the profile required by the
