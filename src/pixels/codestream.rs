@@ -288,7 +288,8 @@ pub enum Structure {
 pub fn declared(kind: CodestreamKind, frame: &[u8]) -> Result<Declared> {
     match kind {
         CodestreamKind::Jpeg | CodestreamKind::JpegLs => read_jpeg(frame, kind),
-        CodestreamKind::Jpeg2000 | CodestreamKind::JpegXl => {
+        CodestreamKind::Jpeg2000 => read_jpeg2000(frame),
+        CodestreamKind::JpegXl => {
             todo!("read the remaining codestream headers")
         }
     }
@@ -322,6 +323,14 @@ impl<'a> HeaderReader<'a> {
 
     fn u16(&mut self) -> Result<u16> {
         Ok(u16::from_be_bytes(self.take(2)?.try_into()?))
+    }
+
+    fn u32(&mut self) -> Result<u32> {
+        Ok(u32::from_be_bytes(self.take(4)?.try_into()?))
+    }
+
+    fn u64(&mut self) -> Result<u64> {
+        Ok(u64::from_be_bytes(self.take(8)?.try_into()?))
     }
 
     fn segment(&mut self) -> Result<HeaderReader<'a>> {
@@ -426,6 +435,214 @@ fn jpeg_scans(mut reader: HeaderReader<'_>) -> u32 {
         }
     }
     scans
+}
+
+fn jp2_codestream(frame: &[u8]) -> Result<Range<usize>> {
+    if !frame.starts_with(b"\x00\x00\x00\x0CjP  \x0D\x0A\x87\x0A") {
+        return Ok(0..frame.len());
+    }
+    let mut reader = HeaderReader { remaining: frame };
+    for _ in 0..JP2_MAX_BOXES {
+        let length = reader.u32()?;
+        let kind = reader.take(4)?;
+        let payload_length = match length {
+            0 => reader.remaining.len(),
+            1 => usize::try_from(
+                reader
+                    .u64()?
+                    .checked_sub(16)
+                    .ok_or_else(|| anyhow!("JP2 box is shorter than its header"))?,
+            )?,
+            _ => usize::try_from(
+                length
+                    .checked_sub(8)
+                    .ok_or_else(|| anyhow!("JP2 box is shorter than its header"))?,
+            )?,
+        };
+        let start = frame.len() - reader.remaining.len();
+        reader.take(payload_length)?;
+        if kind == b"jp2c" {
+            return Ok(start..frame.len() - reader.remaining.len());
+        }
+    }
+    Err(anyhow!("no codestream within the JP2 box limit"))
+}
+
+fn read_jpeg2000(frame: &[u8]) -> Result<Declared> {
+    let codestream = jp2_codestream(frame)?;
+    let bytes = frame
+        .get(codestream.clone())
+        .ok_or_else(|| anyhow!("invalid JPEG 2000 codestream range"))?;
+    let mut reader = HeaderReader { remaining: bytes };
+    if reader.u32()? != 0xFF4FFF51 {
+        return Err(anyhow!("missing JPEG 2000 SOC and SIZ"));
+    }
+    let mut siz = reader.segment()?;
+    let siz_length = siz.remaining.len();
+    siz.take(2)?; // Rsiz
+    let xs = siz.u32()?;
+    let ys = siz.u32()?;
+    let xo = siz.u32()?;
+    let yo = siz.u32()?;
+    let xt = siz.u32()?;
+    let yt = siz.u32()?;
+    let xto = siz.u32()?;
+    let yto = siz.u32()?;
+    let components = siz.u16()?;
+    if !(1..=4).contains(&components) || siz_length != 36 + 3 * usize::from(components) {
+        return Err(anyhow!("invalid JPEG 2000 SIZ component count or length"));
+    }
+    if xs <= xo || ys <= yo || xt == 0 || yt == 0 || xto > xo || yto > yo {
+        return Err(anyhow!("invalid JPEG 2000 image or tile geometry"));
+    }
+    let columns = xs - xo;
+    let rows = ys - yo;
+    let mut first_ssiz = None;
+    let mut uniform = true;
+    for _ in 0..components {
+        let ssiz = siz.byte()?;
+        let xr = siz.byte()?;
+        let yr = siz.byte()?;
+        if xr == 0 || yr == 0 {
+            return Err(anyhow!("zero JPEG 2000 component sampling interval"));
+        }
+        uniform &= ssiz == *first_ssiz.get_or_insert(ssiz) && xr == 1 && yr == 1;
+    }
+    let precision =
+        u32::from(first_ssiz.ok_or_else(|| anyhow!("missing JPEG 2000 component"))? & 0x7F) + 1;
+    let tiles =
+        u64::from(xs - xto).div_ceil(u64::from(xt)) * u64::from(ys - yto).div_ceil(u64::from(yt));
+    let mut styles = J2kStyles {
+        width: u64::from(xt.min(columns)),
+        height: u64::from(yt.min(rows)),
+        layers: 0,
+        precincts: 0,
+    };
+    let mut marker = read_j2k_header(&mut reader, &mut styles, false)?;
+    if styles.layers == 0 {
+        return Err(anyhow!("JPEG 2000 main header has no COD"));
+    }
+    while marker != 0xFFD9 {
+        if marker != 0xFF90 {
+            return Err(anyhow!("expected JPEG 2000 tile-part or end marker"));
+        }
+        let start = bytes
+            .len()
+            .checked_sub(reader.remaining.len())
+            .and_then(|position| position.checked_sub(2))
+            .ok_or_else(|| anyhow!("invalid tile-part position"))?;
+        let mut sot = reader.segment()?;
+        if sot.remaining.len() != 8 {
+            return Err(anyhow!("JPEG 2000 Lsot must be 10"));
+        }
+        sot.take(2)?; // Isot
+        let psot = usize::try_from(sot.u32()?)?;
+        let end = start
+            .checked_add(psot)
+            .filter(|end| *end <= bytes.len())
+            .ok_or_else(|| anyhow!("JPEG 2000 tile-part passes the codestream end"))?;
+        if psot != 0 && psot < 14 {
+            return Err(anyhow!("JPEG 2000 Psot is less than 14"));
+        }
+        read_j2k_header(&mut reader, &mut styles, true)?;
+        if psot == 0 || end == bytes.len() {
+            break;
+        }
+        reader.remaining = bytes
+            .get(end..)
+            .ok_or_else(|| anyhow!("invalid JPEG 2000 tile-part end"))?;
+        marker = reader.u16()?;
+    }
+    Ok(Declared {
+        columns,
+        rows,
+        components: u32::from(components),
+        precision,
+        structure: Structure::Jpeg2000 {
+            codestream,
+            uniform,
+            tiles,
+            tile_pixels: styles.width * styles.height,
+            packets: styles.layers.saturating_mul(styles.precincts),
+        },
+    })
+}
+
+struct J2kStyles {
+    width: u64,
+    height: u64,
+    layers: u64,
+    precincts: u64,
+}
+
+fn read_j2k_header(
+    reader: &mut HeaderReader<'_>,
+    styles: &mut J2kStyles,
+    tile_part: bool,
+) -> Result<u16> {
+    let mut segments = 0;
+    loop {
+        let marker = reader.u16()?;
+        if (tile_part && marker == 0xFF93) || (!tile_part && matches!(marker, 0xFF90 | 0xFFD9)) {
+            return Ok(marker);
+        }
+        if marker >> 8 != 0xFF {
+            return Err(anyhow!("invalid JPEG 2000 header marker"));
+        }
+        if segments == CODESTREAM_MAX_HEADER_SEGMENTS {
+            return Err(anyhow!("too many JPEG 2000 header segments"));
+        }
+        let segment = reader.segment()?;
+        if matches!(marker, 0xFF52 | 0xFF53) {
+            styles.read(marker, segment)?;
+        }
+        segments += 1;
+    }
+}
+
+impl J2kStyles {
+    fn read(&mut self, marker: u16, mut segment: HeaderReader<'_>) -> Result<()> {
+        let flags = if marker == 0xFF52 {
+            let flags = segment.byte()?;
+            segment.take(1)?; // progression
+            let layers = segment.u16()?;
+            if layers == 0 {
+                return Err(anyhow!("JPEG 2000 coding style has zero layers"));
+            }
+            self.layers = self.layers.max(u64::from(layers));
+            segment.take(1)?; // transform
+            flags
+        } else {
+            segment.take(1)?; // component
+            segment.byte()?
+        };
+        let levels = segment.byte()?;
+        if levels > 32 {
+            return Err(anyhow!("JPEG 2000 decomposition levels exceed 32"));
+        }
+        segment.take(4)?;
+        let mut precincts = 0_u64;
+        for resolution in 0..=levels {
+            let precinct = if flags & 1 != 0 {
+                segment.byte()?
+            } else {
+                0xFF
+            };
+            let width = ceil_shift(self.width, levels - resolution);
+            let height = ceil_shift(self.height, levels - resolution);
+            precincts = precincts.saturating_add(
+                ceil_shift(width, precinct & 0x0F)
+                    .saturating_mul(ceil_shift(height, precinct >> 4)),
+            );
+        }
+        self.precincts = self.precincts.max(precincts);
+        Ok(())
+    }
+}
+
+// Callers bound the exponent by 32 and dimensions by u32::MAX.
+fn ceil_shift(value: u64, exponent: u8) -> u64 {
+    (value + (1_u64 << exponent) - 1) >> exponent
 }
 
 /// Whether what a frame declares is what the entry says, so that decoding
