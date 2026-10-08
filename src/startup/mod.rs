@@ -5,7 +5,7 @@ use dcmview::annotations::{AnnotationSource, AnnotationStore};
 use dcmview::api::contracts::TOKEN_ENV_VAR;
 use dcmview::loader;
 use dcmview::masking::Masker;
-use dcmview::pixels::CacheBudget;
+use dcmview::pixels::{CacheBudget, DecodeLimits};
 use dcmview::server::{AccessToken, AppState, BoundServer, FileRegistry, ServerConfig};
 use discovery::{DiscoveryHandle, DiscoveryInputs, DiscoveryOutcome};
 use std::path::PathBuf;
@@ -26,6 +26,8 @@ pub(crate) struct LocalViewerOptions {
     pub(crate) unix_socket: Option<PathBuf>,
     pub(crate) timeout_seconds: Option<u64>,
     pub(crate) cache_budget: Option<CacheBudget>,
+    /// `--decode-memory`; [`DecodeLimits::DEFAULT`] when the flag is absent.
+    pub(crate) decode_limits: DecodeLimits,
     pub(crate) exit_with_parent: bool,
     pub(crate) open_browser: bool,
     pub(crate) startup_json: bool,
@@ -86,7 +88,8 @@ pub(crate) async fn run_local_viewer(options: LocalViewerOptions) -> Result<Loca
     } else {
         AnnotationStore::empty()
     };
-    let mut state = AppState::new(registry.clone(), annotation_store.clone());
+    let mut state = AppState::new(registry.clone(), annotation_store.clone())
+        .with_decode_limits(options.decode_limits);
     if let Some(budget) = options.cache_budget {
         state = state.with_cache_budget(budget);
     }
@@ -165,6 +168,7 @@ mod tests {
             unix_socket: None,
             timeout_seconds: Some(0),
             cache_budget: None,
+            decode_limits: DecodeLimits::DEFAULT,
             exit_with_parent: false,
             open_browser: false,
             startup_json: false,
