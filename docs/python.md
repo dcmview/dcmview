@@ -12,9 +12,10 @@ plain HTTP does not encrypt the token or DICOM data. The binary inherits
 `DCMVIEW_TOKEN` when a fixed token is needed. Direct API clients must send
 `Authorization: Bearer <token>`; see the [API reference](api.md).
 
-Folders now list PNG, JPEG, TIFF, and WebP image files beside DICOM, detected
-by content; image pixels are not decoded yet. `python -m dcmview_py` forwards
-all arguments to the binary, including `--formats dicom ./mixed_dir` to get a
+Folders now display PNG, JPEG, TIFF, and WebP image files beside DICOM,
+detected by content, with pixel readout, thumbnails, and redaction support.
+`python -m dcmview_py` forwards all arguments to the binary, including
+`--formats dicom ./mixed_dir` to get a
 DICOM-only directory list. `view()` has no `formats` keyword; its existing
 `filters=["format=dicom"]` can select DICOM files (and applies to explicitly
 named inputs too).

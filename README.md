@@ -7,8 +7,8 @@ Point it at one or more DICOM files from the command line or Python, and it
 starts a local browser viewer for images, tags, cine playback, and rectangular
 ROI annotations. Stop the process and the server is gone.
 
-PNG, JPEG, TIFF, and WebP image files are now listed beside DICOM by content,
-with size and frame metadata, but their pixels are not decoded yet. Use
+PNG, JPEG, TIFF, and WebP image files are detected by content and displayed
+beside DICOM, with raw pixel readout, thumbnails, and redaction support. Use
 `dcmview --formats dicom ./mixed_dir` for a DICOM-only directory list.
 
 The main problem it solves is remote-server inspection. Medical imaging research

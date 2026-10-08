@@ -28,14 +28,31 @@ diagnostic viewer.
 - Background thumbnail decodes yield to viewer decodes, with a capped share
   of cores and a one-second interactive idle window on one-core hosts.
 - Header-only, content-based discovery of PNG, JPEG, TIFF (including BigTIFF
-  and compatible multipage stacks), and WebP beside DICOM. Image pixels are
-  not decoded yet and frame endpoints return `422 unsupported_pixel_layout`
-  with `raster.decode_not_available`. Header scans have fixed byte, read and
-  step budgets with cancellation checks; oversized headers are skipped with
-  an actionable warning. Highly compressed PNGs, including blank masks, are
+  and compatible multipage stacks), and WebP beside DICOM. Header scans have
+  fixed byte, read and step budgets with cancellation checks; oversized
+  headers are skipped with an actionable warning. Highly compressed PNGs, including blank masks, are
   listed regardless of their size on disk. TIFFs with more than 65,535 pages
   are skipped; describable unsupported TIFF layouts remain listed with
   `raster.unsupported_color` or `raster.unsupported_sample_format`.
+- Raster decoding for display, raw pixel readout, thumbnails and redaction:
+  PNG at every depth and color type (including palettes and Adam7), 8-bit
+  baseline, extended sequential and progressive JPEG, still WebP, and
+  multi-page TIFF with strips or tiles, BigTIFF and either byte order. TIFF
+  supports 8/16/32-bit signed and unsigned gray, 32/64-bit float gray, and
+  8/16-bit unsigned RGB/RGBA with none, LZW, Deflate or PackBits compression.
+  Animated PNG and WebP show their first frame only. Raw samples stay in the
+  stored grid: low-bit PNG values are unscaled, WhiteIsZero TIFF values are
+  un-inverted, and associated alpha is un-premultiplied. Gray defaults to its
+  stored range at 8 bits or fewer, a TIFF's declared range, or frame
+  percentiles. Display flattens alpha over black and carries valid RGB ICC
+  profiles up to 4 MiB, dropping converted CMYK JPEG profiles. Each frame is
+  capped at 268,435,456 pixels; reads, TIFF tags and chunks, JPEG scans, and
+  decode memory are bounded. Refused images report `raster.unsupported_color`,
+  `raster.unsupported_sample_format`, `raster.unsupported_compression`,
+  `raster.jpeg_unsupported_process`, or `raster.too_large`. JPEG-compressed
+  and 1-, 2- and 4-bit TIFF are not decoded in this version, and gray profiles
+  are not carried. These item-specific limits follow the frozen decode
+  contract and await the owner's confirmation; they were not revisited here.
 - `--formats dicom,png,jpeg,tiff,webp` narrows directory discovery, and
   `--filter format=<name>` and `--filter path=<text>` select by exact format
   or a substring of the reported path, ignoring case.
