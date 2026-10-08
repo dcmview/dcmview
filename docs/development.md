@@ -40,6 +40,7 @@ python scripts/check.py external
 | `core` | Frontend checks/build, Rust format and Clippy, deterministic fixture regeneration that must leave the current fixture tree unchanged, the default-feature, non-ignored locked Rust suite, Python unit tests, and VS Code compilation. |
 | `e2e` | `core`, then a real debug-binary build, Python wrapper binary integration, debug-binary HTTP smoke, and VS Code Electron integration. |
 | `external` | Only the feature-gated ignored remote-fixture integration tests after building frontend assets. It is separate from `e2e`. |
+| `timing` | Startup and discovery timing of this checkout against the released baseline. Opt-in and local; see [Startup And Discovery Timing](#startup-and-discovery-timing). |
 
 Pass `--install` when npm dependencies should be installed from their lockfiles.
 Without it, the profiles reuse existing `node_modules`. CI runs focused
@@ -183,11 +184,98 @@ The [architecture and test model](architecture.md) is normative. In brief:
 - `crates/dcmview-protocol` owns the launch and startup contract (the
   `--startup-json` line); `api/contracts.rs` re-exports it.
 - `crates/dcmview-annotation` owns the neutral annotation model, its
-  validation and its operations. The root package does not depend on it.
+  validation and its operations. The root package takes file keys from it
+  (`src/keys/`) and nothing else.
 - `server/` separates runtime, lifecycle, catalog, API, tags, and embedded web
   assets. `pixels/` separates service, codecs, caches, windowing, and rendering.
 - `App.svelte` composes `FileNavigator`, `OpenImageTabs`, the viewer controls,
   viewport, frame slider, tag panel, and status bar.
+
+## Startup And Discovery Timing
+
+File identity must not slow startup or discovery
+(`docs/design/annotation-model.md` 1.7). `scripts/startup_timing.py` is the
+check. It is opt-in and local: no profile that CI runs calls it, because a
+shared runner's timing is not a gate.
+
+```bash
+# This checkout against the released baseline, v0.4.0
+python scripts/startup_timing.py run
+
+# Exit 1 when a gated metric is past the threshold
+python scripts/startup_timing.py run --enforce
+
+# Two binaries you already have; one profile; more runs
+python scripts/startup_timing.py run --baseline A --candidate B --profile cohort --runs 15
+
+# The same through the check runner
+python scripts/check.py timing
+```
+
+**Binaries.** The candidate is a release build of the working tree as it is
+on disk, copied to `target/timing/candidate/`, or `--candidate PATH`, or
+`--candidate-ref REF`. The baseline is a release build of the tag `v0.4.0`,
+or `--baseline PATH`, or `--baseline-ref REF`. A ref is built from
+`git archive` into `target/timing/refs/<commit>/`, so no branch is switched
+and no worktree is made, and it is kept by commit, so it is built once. Every
+build reuses this checkout's built `frontend/dist` with
+`DCMVIEW_SKIP_FRONTEND_BUILD=1` (the embedded page plays no part in what is
+timed) and compiles into one shared `target/timing/build/`, so the
+dependencies are built once and the checkout's own `target/release` is not
+used. Nothing under `target/` is committed. `DCMVIEW_TIMING_DIR` moves the
+whole directory. The binaries and the shared build directory take about
+0.7 GB.
+
+**Inputs.** Synthetic folders written on first use under
+`target/timing/inputs/` (about 0.5 GB), with no real data and no download:
+
+| Profile | Files |
+|---|---|
+| `small` | 16 DICOM files in one folder |
+| `study` | 2,000 DICOM files, one study of 8 series |
+| `tree` | 20,000 DICOM files, 100 patients in nested folders |
+| `cohort` | 100,000 DICOM files, 500 patients in nested folders |
+| `duplicated` | 5,000 DICOM files and a byte-identical copy of the whole tree |
+| `images` | 5,000 PNG files in 20 folders |
+
+Each DICOM file is a small CT image with a header of ordinary size;
+discovery reads a file only up to its pixel data, so the header is what is
+timed. A profile is compared only when both binaries list the same number
+of files from it: `v0.4.0` reads no raster images, so `images` is skipped
+against it and is useful between two builds that do.
+
+**What is timed**, from just before the process is spawned with
+`--no-browser --no-token --startup-json --port 0`:
+
+| Metric | Ends at | Gated |
+|---|---|---|
+| first response | the first `200` from `/api/health`, requested as soon as the `server_started` line names the port | yes |
+| first file | the first health response that counts a file, polled every millisecond | yes |
+| scan complete | the `scan_complete` line | yes |
+| catalog listing | one `GET /api/files` after the scan, with its size in bytes | no, reported |
+
+Each binary gets one discarded warm-up run per profile, then the two
+alternate for 9 timed runs each, so drift in the machine's load falls on
+both.
+
+**Threshold.** The best (fastest) run of each binary is compared, because
+other work on the machine only ever adds time: the fastest run repeats to
+within a few percent where the median does not. A metric passes when
+
+```text
+candidate best <= baseline best x 1.05 + 3 ms
+```
+
+The 3 ms floor covers the metrics that take a few milliseconds, where
+scheduling jitter is a large fraction. Both numbers are
+`THRESHOLD_PERCENT` and `THRESHOLD_FLOOR_MS` at the top of the script. The
+percentage is set by what the instrument can tell apart: the same binary
+timed against itself differs by up to about 3% between two best-of-9 sets
+on a machine that is doing other work. A failure that two further runs do
+not repeat is noise; one that repeats is a regression to fix, not a
+threshold to raise. A metric that passes but is more than 2% slower in
+repeated runs is reported with the change, since it is a cost even when it
+is under the gate.
 
 ## Cache Budgets
 

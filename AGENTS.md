@@ -225,7 +225,8 @@ Frontend (Svelte 5, compiled into the binary via rust-embed):
   functions. It is a pure model with no viewer, server or DICOM dependency
   and no filesystem, network or environment access; `new_id` is its one
   function that reads the clock and the random number generator. The root
-  package does not depend on it. Its TypeScript
+  package takes `FileKey` and `KEY_RULES` from it (`src/keys.rs`) and nothing
+  else. Its TypeScript
   (`frontend/src/generated/annotation-types.ts`) and JSON Schema
   (`crates/dcmview-annotation/schema/`) are generated; never hand-edit them.
 - `src/api/contracts.rs` is the source of truth for the HTTP contract: the
@@ -243,7 +244,13 @@ Frontend (Svelte 5, compiled into the binary via rust-embed):
 - `server/api/state.rs` owns private `AppState` resources: `FileRegistry`,
   display/raw/thumbnail/tag caches, `AnnotationStore`, server start
   time, and `RequestActivity`. Construct it through `AppState::new`.
-- `server/catalog.rs` owns progressive registry contents and scan counters.
+- `server/catalog.rs` owns progressive registry contents, scan counters,
+  each file's key (`keys::KeyTable`) and the catalog revision that
+  `/api/files?since=` reads; `server/catalog/keys.rs` owns background
+  hashing and the form a session sends a key in. `src/keys/` owns the key
+  rules and the bounded file hasher and does no I/O of its own beyond
+  reading the one file it is given. `docs/architecture.md`, "File Keys And
+  The Catalog Cursor", is normative.
 - `startup/discovery.rs` owns discovery cancellation, task handles, typed
   outcomes, registry completion, and failure notification.
 
@@ -309,6 +316,8 @@ dcmview/
 |   |-- api/contracts.rs canonical HTTP endpoint and wire contract
 |   |-- loader/          cancellable discovery of DICOM and raster image files,
 |   |                    format detection, and FileEntry creation
+|   |-- keys/            which key each file has (KeyTable) and the bounded
+|   |                    whole-file hasher behind b3: keys
 |   |-- annotations.rs   EMBED-style ROI parsing, validation, memory store
 |   |-- masking.rs       --mask display masking rules and the PS3.15 profile list
 |   |-- redactions.rs    in-memory redaction boxes and their revisions
@@ -382,6 +391,8 @@ dcmview/
 |   |-- windowing-cases.json  windowing oracle shared with rawWindowing.test.ts
 |   `-- fixtures/       Small generated DICOM fixtures
 |-- scripts/check.py    Canonical local and CI check profiles
+|-- scripts/startup_timing.py  Opt-in startup and discovery timing against
+|                       the released baseline
 |-- examples/generate_test_fixtures.rs
 |-- examples/generate_api_types.rs
 |-- build.rs
@@ -417,6 +428,11 @@ python scripts/check.py vscode-remote-ssh --install
 # Ignored prepared-corpus tests against a local prepared corpus (flat `all`
 # or per-profile layout); fails if the corpus path is missing
 python scripts/check.py corpus --corpus /path/to/prepared-corpus
+
+# Startup and discovery timing against the released baseline (release builds;
+# local only, never in CI). Run it for any change to discovery, the registry
+# or the catalog listing
+python scripts/check.py timing
 
 # Targeted iteration remains valid
 DCMVIEW_SKIP_FRONTEND_BUILD=1 cargo test --workspace --locked
@@ -528,6 +544,30 @@ is cached between requests.
   presentation layer). A new endpoint that returns source pixels must apply
   them too, key any cache of its output on the boxes' revision, and refuse
   what a masked session withholds (`ensure_pixels_shown`).
+
+**File keys**
+
+- Discovery never reads a file for its key. `FileRegistry::insert` and
+  `record_selected` do a constant amount of hash-map work per file; anything
+  that needs a file's bytes leaves the file without a key and lets hashing
+  happen later (`docs/design/annotation-model.md` 1.7).
+- Hash only through `keys::FileHasher`, one slice per `Background` decode
+  permit, on the blocking pool. Only `FileRegistry::ensure_key` waits for a
+  digest; no frame, catalog or tag request does.
+- A file key leaves the process only in the form `shown_key`
+  (`server/catalog/keys.rs`) gives it, so a masked session never sends a
+  real UID inside a key. A key that comes back from a client is resolved
+  with `FileRegistry::file_for_shown_key`.
+- A new endpoint that serves a frame for viewing calls `note_frame_served`
+  (`server/api/handlers.rs`); thumbnails do not.
+- A member of `FileSummary` that can change after the file is registered
+  must give the entry a new catalog revision, or clients that poll with
+  `since` never see the change.
+- A change to which key a file gets, or to how a key is written, raises
+  `KEY_RULES`.
+- Code that needs a key for a write or an export awaits `ensure_key`; it
+  does not read `file_key` from the catalog, which may be an unchecked
+  alias or about to be replaced.
 
 **Annotations**
 
@@ -716,11 +756,13 @@ the warning path in `server/runtime.rs`.
 | `src/server/` | Axum runtime, lifecycle, catalog, API, tags, and web assets |
 | `src/loader/` | Cancellable DICOM and raster discovery and metadata extraction |
 | `src/pixels/` | Pixel service, codecs, display/raw/thumbnail paths, render seam, decode classes, caches, and windowing |
+| `src/keys/` | File key rules (`KeyTable`) and the bounded whole-file hasher |
 | `src/annotations.rs` | ROI CSV import/export, validation, in-memory store |
 | `crates/dcmview-annotation/` | Neutral annotation model, validation, operations, generated schema |
 | `src/types.rs` | Internal domain, transfer-syntax, and cache-key types |
 | `build.rs` | Frontend build integration and Cargo fingerprints |
 | `scripts/check.py` | Canonical check profiles used locally and in CI |
+| `scripts/startup_timing.py` | Startup and discovery timing against the released baseline |
 | `frontend/src/api.ts` | Typed frontend fetch wrappers |
 | `frontend/src/generated/api-types.ts` | Generated TypeScript HTTP contract |
 | `frontend/src/App.svelte` | Root frontend state and layout |
@@ -815,6 +857,18 @@ default suite.
   the committed annotation TypeScript and JSON Schema match the model.
 - A masked session shows no fixture identifier in the catalog, series catalog,
   tag tree or selected elements, and its hashed UIDs agree across endpoints.
+- A file's catalog entry shows the key its UID and the other loaded files
+  give it: left out for an ordinary DICOM file, `null` until hashed for a
+  raster or a file without a usable UID, an alias for a copy; the key does
+  not depend on discovery order.
+- Discovery and viewing hash nothing but files without a key, counted in
+  bytes read; a file that changed or vanished gets no key.
+- A replaced key reaches a client once, as one `rekeys` entry with the
+  changed catalog entry, and the old key still names its file.
+- Paging `/api/files` with `since` and `limit` ends with the current catalog
+  while files are added and keys change; a cursor from another process is
+  answered with `reset`.
+- A masked session sends file keys built from masked UIDs only.
 - A thumbnail is the default display frame shrunk, within JPEG tolerance; it
   is blanked under a redaction box, a cache `MISS` after the boxes change,
   refused for label images in a masked session, and never fills the display
@@ -843,6 +897,10 @@ feature-gated remote fixtures so codec and metadata behavior stay exercised.
 **Performance targets** should be verified with timing instrumentation, not
 mocks:
 
+- Startup and discovery must not regress against the released baseline:
+  `python scripts/check.py timing` compares release builds on synthetic
+  folders and fails when the best run is slower by more than 5% plus 3 ms
+  (`docs/development.md`, "Startup And Discovery Timing").
 - Startup for a small file set should stay well under interactive latency
   thresholds.
 - First decoded frame should be fast enough for iterative inspection when codec
