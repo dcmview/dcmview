@@ -1,0 +1,30 @@
+[package]
+name = "dcmview-annotation"
+# Always the viewer's version: other repositories pin this crate by dcmview
+# release tag, and `scripts/check_versions.py` rejects drift.
+version = "0.4.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "The neutral dcmview annotation model: records, file keys, operations and their validation"
+publish = false
+
+# A pure model crate: no axum, tokio, DICOM or pixel-pipeline dependency, and
+# no filesystem or network access (docs/design/seams.md, section 13).
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+# Record and operation ids are UUIDv7 (docs/design/annotation-model.md 6.1).
+uuid = { version = "1", features = ["serde", "v7"] }
+# TypeScript for the frontend and JSON Schema for Python and ML consumers,
+# both derived from the same serde attributes as the wire format.
+# `no-serde-warnings`: ts-rs otherwise prints a note for every serde
+# attribute it does not model (`try_from`, `serialize_with`, ...); the types
+# that use one state their TypeScript with `#[ts(type = ...)]`.
+# Cargo.lock holds schemars at 1.2.1: 1.2.2 moves its derive to syn 3, which
+# would build a second copy of syn beside the one every other derive uses.
+ts-rs = { version = "12", features = ["no-serde-warnings", "serde-json-impl", "uuid-impl"] }
+schemars = { version = "1", features = ["uuid1"] }
