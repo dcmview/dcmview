@@ -303,6 +303,43 @@ fn decode_page(
             && (samples != 4 || (alpha[0] == 1) == raster.alpha_associated),
         "TIFF page differs from catalog"
     );
+    // read_image iterates the offset table, leaving missing chunks as zeros.
+    // Require complete coverage rather than accepting a partially filled frame.
+    let (offset_tag, count_tag, chunks) = if page.entry(324).is_some() {
+        let width = page.scalar(reader, 322, 0, length)?;
+        let height = page.scalar(reader, 323, 0, length)?;
+        ensure!(width > 0 && height > 0, "invalid TIFF tile dimensions");
+        if page.scalar(reader, 317, 1, length)? == 3 {
+            // tiff 0.9 allocates this padded predictor row without consulting
+            // Limits. Leave room in the fixed heap allowance for codec state
+            // and the retained profile, independently of declared tile width.
+            let row = width
+                .checked_mul(samples)
+                .and_then(|n| n.checked_mul(depth / 8))
+                .context("TIFF predictor row size overflow")?;
+            ensure!(
+                row <= expected + RASTER_ICC_MAX_BYTES as u64,
+                "TIFF predictor row exceeds heap allowance"
+            );
+        }
+        (
+            324,
+            325,
+            u64::from(file.columns).div_ceil(width) * u64::from(file.rows).div_ceil(height),
+        )
+    } else {
+        let rows = page.scalar(reader, 278, u64::from(file.rows), length)?;
+        ensure!(rows > 0, "invalid TIFF strip height");
+        (273, 279, u64::from(file.rows).div_ceil(rows))
+    };
+    ensure!(
+        page.entry(offset_tag)
+            .is_some_and(|entry| entry.count == chunks)
+            && page
+                .entry(count_tag)
+                .is_some_and(|entry| entry.count == chunks),
+        "TIFF chunks do not cover the frame"
+    );
     // The crate's Deflate reader ignores byte counts, but other codecs may
     // buffer them. Reject oversized claims before handing the page to it.
     for tag in [279, 325] {
