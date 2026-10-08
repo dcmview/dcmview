@@ -8,10 +8,17 @@
 
 use super::FileRegistry;
 use crate::api::contracts::{FileKeyError, FileRekey, FileSummary};
-use crate::keys::{FileKey, FileKeyStatus, KeyFailure, KeyScheme, KeyView};
+use crate::keys::{
+    FileHasher, FileKey, FileKeyStatus, HashProgress, KeyFailure, KeyScheme, KeyView,
+};
 use crate::masking::Masker;
-use crate::pixels::DecodeScheduler;
-use std::sync::Arc;
+use crate::pixels::{self, DecodeClass, DecodeScheduler};
+use std::collections::{HashSet, VecDeque};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex, MutexGuard,
+};
+use tokio::sync::Notify;
 
 /// One answer to `GET /api/files`, before the fields the handler adds. The
 /// members are those of `FilesResponse` with the same names, and their
@@ -111,23 +118,25 @@ impl FileRegistry {
     /// pool they alone hold permits of. Call it before the registry is
     /// cloned or a file is registered.
     pub fn with_decode_scheduler(self, scheduler: Arc<DecodeScheduler>) -> Self {
-        let _ = scheduler;
-        todo!("FND4: keep the scheduler background hashing takes its permits from")
+        self.hashing.work().scheduler = Some(scheduler);
+        self
     }
 
     /// The file's key state, or `None` for an index that is not registered.
     /// The key here is the real one, whatever the session shows.
     pub fn key_status(&self, index: usize) -> Option<FileKeyStatus> {
-        let _ = index;
-        todo!("FND4: one file's key state from the key table")
+        self.read().keys.status(index)
     }
 
     /// The file's key as this session sends it (see `shown_key`), or `None`
     /// while it has none. This is the value of `X-File-Key` and, written in
     /// full, of the entry's `file_key`.
     pub fn shown_file_key(&self, index: usize) -> Option<String> {
-        let _ = index;
-        todo!("FND4: the key the session shows for a file")
+        self.read()
+            .keys
+            .view(index)?
+            .key
+            .map(|key| shown_key(key, self.masker.as_deref()))
     }
 
     /// The file a key received from a client names: `key` is a key as this
@@ -136,8 +145,14 @@ impl FileRegistry {
     /// have been sent names nothing. `None` for text that is not a file key
     /// and for a key no file has held.
     pub fn file_for_shown_key(&self, key: &str) -> Option<usize> {
-        let _ = key;
-        todo!("FND4: resolve a shown key, current or replaced, to its file")
+        let key = FileKey::parse(key).ok()?;
+        let inner = self.read();
+        let real = if self.masker.is_some() && key.scheme() == KeyScheme::Sop {
+            inner.shown_keys.get(key.as_str())?
+        } else {
+            &key
+        };
+        inner.keys.file_for_key(real)
     }
 
     /// Notes that a frame of the file was served, which is when a file
@@ -148,8 +163,13 @@ impl FileRegistry {
     /// (`KeyTable::served` under the read lock otherwise), never blocks on
     /// hashing and never fails. An index that is not registered is ignored.
     pub fn frame_sent(&self, index: usize) {
-        let _ = index;
-        todo!("FND4: mark the file served and queue a wanted digest")
+        let served = self.read().keys.served(index);
+        let wanted = if served {
+            Vec::new()
+        } else {
+            self.write().keys.frame_sent(index).wanted
+        };
+        self.queue_keys(wanted, false);
     }
 
     /// The file's key once it can be relied on for a write or an export,
@@ -168,13 +188,59 @@ impl FileRegistry {
     /// Cancel safe: dropping the future leaves the queued work to finish in
     /// the background.
     pub async fn ensure_key(&self, index: usize) -> Result<FileKey, KeyError> {
-        let _ = index;
-        todo!("FND4: hash what the key needs and return it")
+        let mut asked = HashSet::new();
+        loop {
+            let changed = self.hashing.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if self.hashing.stopped.load(Ordering::Acquire) {
+                return Err(KeyError::Stopped);
+            }
+            // Sample queue membership before the table. Outcomes update the
+            // table before leaving the pending set, so an absent request is
+            // complete when its failure is inspected below.
+            let pending = {
+                let work = self.hashing.work();
+                asked
+                    .iter()
+                    .copied()
+                    .filter(|index| work.pending.contains(index))
+                    .collect::<HashSet<_>>()
+            };
+            let needed = {
+                let inner = self.read();
+                let state = inner.keys.view(index).ok_or(KeyError::NotFound(index))?;
+                let required = inner.keys.required_for(index);
+                if required.is_empty() {
+                    return state.key.cloned().ok_or(KeyError::Unavailable(
+                        state.failure.unwrap_or(KeyFailure::Unreadable),
+                    ));
+                }
+                let mut needed = Vec::new();
+                for file in required {
+                    if asked.contains(&file) {
+                        if !pending.contains(&file) {
+                            if let Some(failure) =
+                                inner.keys.view(file).and_then(|state| state.failure)
+                            {
+                                return Err(KeyError::Unavailable(failure));
+                            }
+                        }
+                    } else {
+                        asked.insert(file);
+                        needed.push(file);
+                    }
+                }
+                needed
+            };
+            self.queue_keys(needed, true);
+            changed.await;
+        }
     }
 
     /// The hashing done so far.
     pub fn key_stats(&self) -> KeyStats {
-        todo!("FND4: the hashing counters")
+        self.hashing.work().stats
     }
 
     /// Stops hashing: no further slice starts, queued digests are dropped
@@ -183,6 +249,204 @@ impl FileRegistry {
     /// slice being read, if any, finishes first; it is at most
     /// `KEY_HASH_SLICE_BYTES` long. Idempotent, and final for this registry.
     pub fn stop_key_work(&self) {
-        todo!("FND4: cancel background hashing")
+        {
+            let mut work = self.hashing.work();
+            self.hashing.stopped.store(true, Ordering::Release);
+            work.queue.clear();
+            let active = work.active;
+            work.pending.retain(|index| Some(*index) == active);
+        }
+        self.hashing.stop.notify_waiters();
+        self.hashing.changed.notify_waiters();
+    }
+}
+
+#[derive(Default)]
+pub(super) struct Hashing {
+    work: Mutex<HashWork>,
+    stopped: AtomicBool,
+    pub(super) changed: Notify,
+    stop: Notify,
+}
+
+#[derive(Default)]
+struct HashWork {
+    queue: VecDeque<usize>,
+    pending: HashSet<usize>,
+    active: Option<usize>,
+    running: bool,
+    scheduler: Option<Arc<DecodeScheduler>>,
+    stats: KeyStats,
+}
+
+impl Hashing {
+    fn work(&self) -> MutexGuard<'_, HashWork> {
+        self.work.lock().expect("key hashing lock poisoned")
+    }
+}
+
+impl FileRegistry {
+    pub(super) fn hashing_count(&self) -> usize {
+        self.hashing.work().pending.len()
+    }
+
+    pub(super) fn queue_keys(&self, indexes: Vec<usize>, front: bool) {
+        let start = {
+            let mut work = self.hashing.work();
+            if self.hashing.stopped.load(Ordering::Acquire) {
+                return;
+            }
+            if front {
+                // Move an already queued request too: explicit callers
+                // take precedence over files queued by viewing.
+                for index in indexes.into_iter().rev() {
+                    if work.active == Some(index) {
+                        continue;
+                    }
+                    if !work.pending.insert(index) {
+                        work.queue.retain(|queued| *queued != index);
+                    }
+                    work.queue.push_front(index);
+                }
+            } else {
+                for index in indexes {
+                    if work.pending.insert(index) {
+                        work.queue.push_back(index);
+                    }
+                }
+            }
+            if !work.running && !work.queue.is_empty() {
+                tokio::runtime::Handle::try_current()
+                    .ok()
+                    .inspect(|_| work.running = true)
+            } else {
+                None
+            }
+        };
+        if let Some(runtime) = start {
+            let registry = self.clone();
+            runtime.spawn(async move { registry.hash_worker().await });
+        }
+    }
+
+    async fn hash_worker(self) {
+        loop {
+            let next = {
+                let mut work = self.hashing.work();
+                match work.queue.pop_front() {
+                    Some(index) => {
+                        work.active = Some(index);
+                        Some((
+                            index,
+                            work.scheduler
+                                .clone()
+                                .unwrap_or_else(|| pixels::decode_scheduler().clone()),
+                        ))
+                    }
+                    None => {
+                        work.running = false;
+                        None
+                    }
+                }
+            };
+            let Some((index, scheduler)) = next else {
+                return;
+            };
+            let known = self
+                .read()
+                .keys
+                .status(index)
+                .is_some_and(|state| state.digest.is_some());
+            let outcome = if known {
+                None
+            } else {
+                self.hash_file(index, scheduler).await
+            };
+            let wanted = if let Some(outcome) = outcome {
+                if self.hashing.stopped.load(Ordering::Acquire) {
+                    Vec::new()
+                } else {
+                    let mut inner = self.write();
+                    let changes = inner.keys.resolve(index, outcome);
+                    self.apply_key_changes(&mut inner, &changes);
+                    drop(inner);
+                    self.hashing.work().stats.files_hashed += 1;
+                    changes.wanted
+                }
+            } else {
+                Vec::new()
+            };
+            {
+                let mut work = self.hashing.work();
+                work.active = None;
+                work.pending.remove(&index);
+            }
+            self.queue_keys(wanted, false);
+            self.hashing.changed.notify_waiters();
+            self.notify.notify_waiters();
+        }
+    }
+
+    async fn hash_file(
+        &self,
+        index: usize,
+        scheduler: Arc<DecodeScheduler>,
+    ) -> Option<Result<[u8; 32], KeyFailure>> {
+        if self.hashing.stopped.load(Ordering::Acquire) {
+            return None;
+        }
+        let file = self.get(index)?;
+        let opened =
+            tokio::task::spawn_blocking(move || FileHasher::open(&file.path, file.size_bytes))
+                .await;
+        let mut hasher = match opened {
+            Ok(Ok(hasher)) => hasher,
+            Ok(Err(failure)) => return Some(Err(failure)),
+            Err(_) => return Some(Err(KeyFailure::Unreadable)),
+        };
+        loop {
+            let stopped = self.hashing.stop.notified();
+            tokio::pin!(stopped);
+            stopped.as_mut().enable();
+            if self.hashing.stopped.load(Ordering::Acquire) {
+                return None;
+            }
+            let permit = tokio::select! {
+                _ = stopped => return None,
+                permit = scheduler.acquire(DecodeClass::Background) => permit,
+            };
+            if self.hashing.stopped.load(Ordering::Acquire) {
+                return None;
+            }
+            let hashing = self.hashing.clone();
+            let sliced = tokio::task::spawn_blocking(move || {
+                {
+                    let mut work = hashing.work();
+                    if hashing.stopped.load(Ordering::Acquire) {
+                        return None;
+                    }
+                    work.stats.slices += 1;
+                }
+                let before = hasher.bytes_read();
+                let outcome = hasher.next_slice();
+                let bytes = hasher.bytes_read() - before;
+                drop(permit);
+                Some((hasher, outcome, bytes))
+            })
+            .await;
+            match sliced {
+                Ok(None) => return None,
+                Ok(Some((next, outcome, bytes))) => {
+                    self.hashing.work().stats.bytes_hashed += bytes;
+                    hasher = next;
+                    match outcome {
+                        Ok(HashProgress::More) => {}
+                        Ok(HashProgress::Done(digest)) => return Some(Ok(digest)),
+                        Err(failure) => return Some(Err(failure)),
+                    }
+                }
+                Err(_) => return Some(Err(KeyFailure::Unreadable)),
+            }
+        }
     }
 }

@@ -2,6 +2,7 @@ use crate::api::contracts::{
     FileSummary, FrameRefSummary, SeriesCatalogResponse, SeriesStackSummary, SeriesSummary,
     SeriesWarningSummary,
 };
+use crate::keys::{FileIdentity, FileKey, KeyChanges, KeyTable};
 use crate::loader::{DiscoveryDisposition, DiscoveryRecord};
 use crate::masking::Masker;
 use crate::series::{
@@ -11,7 +12,7 @@ use crate::series::{
 use crate::types::FileEntry;
 use bytes::Bytes;
 use dicom_dictionary_std::uids;
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use tokio::sync::{futures::Notified, Notify};
@@ -32,6 +33,7 @@ pub struct FileRegistry {
     catalog: Arc<Mutex<Option<(usize, bool, Bytes)>>>,
     /// Present in a masked session: the catalog is masked as it is built.
     masker: Option<Arc<Masker>>,
+    hashing: Arc<keys::Hashing>,
 }
 
 /// Files and scan counters share one lock so every status read is a
@@ -47,6 +49,12 @@ struct FileRegistryInner {
     skipped: usize,
     filtered: usize,
     scan_complete: bool,
+    keys: KeyTable,
+    revision: u64,
+    entry_revisions: Vec<u64>,
+    by_revision: BTreeMap<u64, usize>,
+    rekeys: BTreeMap<u64, crate::api::contracts::FileRekey>,
+    shown_keys: HashMap<String, FileKey>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -65,6 +73,7 @@ impl FileRegistry {
             notify: Arc::new(Notify::new()),
             catalog: Arc::new(Mutex::new(None)),
             masker: None,
+            hashing: Arc::new(keys::Hashing::default()),
         }
     }
 
@@ -120,9 +129,6 @@ impl FileRegistry {
     /// Registers `file`, whose key identity is its SOP Instance UID, its
     /// `size_bytes` and `resolved` (`crate::keys::FileIdentity`).
     fn insert_identified(&self, mut file: FileEntry, resolved: PathBuf) -> usize {
-        // FND4: register the identity with the key table, write the key
-        // state of every entry it changed and give each a revision.
-        let _ = resolved;
         let mut inner = self.write();
         let index = inner.files.len();
         file.index = index;
@@ -130,9 +136,25 @@ impl FileRegistry {
             Some(masker) => masker.summary(&file),
             None => FileSummary::from(&file),
         };
+        if let Some(masker) = self.masker.as_deref() {
+            if let Ok(key) = FileKey::sop(&file.sop_instance_uid) {
+                inner
+                    .shown_keys
+                    .insert(keys::shown_key(&key, Some(masker)), key);
+            }
+        }
+        let changes = inner.keys.register(FileIdentity {
+            sop_instance_uid: file.sop_instance_uid.clone(),
+            size_bytes: file.size_bytes,
+            path: resolved,
+        });
         inner.files.push(Arc::new(file));
         inner.summaries.push(summary);
+        inner.entry_revisions.push(0);
+        self.apply_key_changes(&mut inner, &changes);
         drop(inner);
+        self.queue_keys(changes.wanted, false);
+        self.hashing.changed.notify_waiters();
         self.notify.notify_waiters();
         index
     }
@@ -201,18 +223,71 @@ impl FileRegistry {
     /// client that polls with the current revision costs the same whether
     /// the catalog holds ten files or a million.
     pub fn files_page(&self, since: Option<u64>, limit: Option<usize>) -> FilesPage {
-        if since.is_none() && limit.is_none() {
-            // FND4: the catalog's revision, hashing count and rekey log.
-            return FilesPage {
-                files: self.summaries_snapshot(),
-                revision: 0,
-                reset: false,
-                more: false,
-                keys_hashing: 0,
-                rekeys: Vec::new(),
-            };
+        let keys_hashing = self.hashing_count();
+        let inner = self.read();
+        let reset = since.is_some_and(|since| since > inner.revision);
+        let after = if reset { 0 } else { since.unwrap_or(0) };
+        let mut revision = inner.revision;
+        let mut more = false;
+        let files = if since.is_none() && limit.is_none() {
+            inner.summaries.clone()
+        } else {
+            use std::ops::Bound::{Excluded, Unbounded};
+            let mut entries = inner.by_revision.range((Excluded(after), Unbounded));
+            let mut files = Vec::new();
+            let mut last = after;
+            for (&at, &index) in entries.by_ref().take(limit.unwrap_or(usize::MAX)) {
+                files.push(inner.summaries[index].clone());
+                last = at;
+            }
+            more = entries.next().is_some();
+            if more {
+                revision = last;
+            }
+            files
+        };
+        let rekeys = if after < revision {
+            use std::ops::Bound::{Excluded, Included};
+            inner
+                .rekeys
+                .range((Excluded(after), Included(revision)))
+                .map(|(_, rekey)| rekey.clone())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        FilesPage {
+            files,
+            revision,
+            reset,
+            more,
+            keys_hashing,
+            rekeys,
         }
-        todo!("FND4: the entries changed after a revision, in change order")
+    }
+
+    fn apply_key_changes(&self, inner: &mut FileRegistryInner, changes: &KeyChanges) {
+        for &index in &changes.updated {
+            inner.by_revision.remove(&inner.entry_revisions[index]);
+            inner.revision += 1;
+            inner.entry_revisions[index] = inner.revision;
+            inner.by_revision.insert(inner.revision, index);
+            if let Some(view) = inner.keys.view(index) {
+                keys::show_key_state(&mut inner.summaries[index], view, self.masker.as_deref());
+            }
+        }
+        for rekey in &changes.rekeys {
+            let revision = inner.entry_revisions[rekey.index];
+            inner.rekeys.insert(
+                revision,
+                crate::api::contracts::FileRekey {
+                    revision,
+                    index: rekey.index,
+                    old_key: keys::shown_key(&rekey.old_key, self.masker.as_deref()),
+                    new_key: keys::shown_key(&rekey.new_key, self.masker.as_deref()),
+                },
+            );
+        }
     }
 
     /// The series catalog, serialized as its API response.

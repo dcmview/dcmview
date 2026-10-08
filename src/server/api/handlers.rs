@@ -577,6 +577,7 @@ pub(super) async fn frame(
             window.width.to_string(),
         );
     }
+    note_frame_served(&state, index, response.headers_mut());
     Ok(response)
 }
 
@@ -598,11 +599,13 @@ pub(super) async fn raw_frame(
     .await
     .map_err(|failure| error::gone_or(&source, error::pixel_error(failure)))?;
 
-    Ok(raw_response_with_headers(
+    let mut response = raw_response_with_headers(
         raw_response.body,
         &raw_response.metadata,
         raw_response.cache_hit,
-    ))
+    );
+    note_frame_served(&state, index, response.headers_mut());
+    Ok(response)
 }
 
 pub(super) async fn raw_pixel(
