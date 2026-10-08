@@ -31,6 +31,8 @@ function file(overrides: Partial<FileSummary>): FileSummary {
 		sop_instance_uid: "1.2.3.image",
 		sop_class_uid: "1.2.840.10008.5.1.4.1.1.2",
 		object_kind: "classic_image",
+		file_format: "dicom",
+		raster: null,
 		support_state: "renderable",
 		support_reason: null,
 		raw_windowing_compatible: true,

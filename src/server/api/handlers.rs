@@ -140,6 +140,16 @@ pub(super) async fn references(
 ) -> Result<Response, ApiError> {
     let Path(index) = path.map_err(error::path_rejection)?;
     let source = registered_file(&state, index, "file")?;
+    if source.format.is_raster() {
+        return uid_masked_json(
+            &state,
+            ReferenceCatalogResponse {
+                source_file_index: index,
+                source_sop_instance_uid: String::new(),
+                references: Vec::new(),
+            },
+        );
+    }
     let source_path = source.path.clone();
     let edges = task::spawn_blocking(move || references::extract_reference_edges(&source_path))
         .await
@@ -149,6 +159,7 @@ pub(super) async fn references(
         .registry()
         .files_snapshot()
         .into_iter()
+        .filter(|file| !file.format.is_raster())
         .map(|file| ReferenceCandidate::from_file(&file))
         .collect::<Vec<_>>();
     let resolved = references::resolve_reference_edges(&edges, &candidates)
@@ -190,6 +201,16 @@ pub(super) async fn semantic_context_for(
     source: Arc<FileEntry>,
     files: Vec<Arc<FileEntry>>,
 ) -> anyhow::Result<Arc<SemanticContextResponse>> {
+    if source.format.is_raster() {
+        return Ok(Arc::new(SemanticContextResponse {
+            source_file_index: source.index,
+            default_mode: "pixel_preview".to_string(),
+            pixel_preview_preserves_stored_values: true,
+            context: crate::api::contracts::SemanticContext::NotApplicable {
+                reason: "semantic context is not available for image files".to_string(),
+            },
+        }));
+    }
     let key = (source.index, files.len());
     if let Some(context) = state.cached_semantic_context(key) {
         return Ok(context);
@@ -255,6 +276,9 @@ pub(super) async fn value_mappings_for(
     state: &AppState,
     file: Arc<FileEntry>,
 ) -> anyhow::Result<Arc<FileValueMappings>> {
+    if file.format.is_raster() {
+        return Ok(Arc::new(FileValueMappings::identity(&file)));
+    }
     let files = state.registry().files_snapshot();
     let key = (file.index, files.len());
     if let Some(mappings) = state.cached_value_mappings(key) {
@@ -366,13 +390,19 @@ pub(super) async fn apply_redactions_to_series(
 ) -> Result<Json<RedactionSeriesResponse>, ApiError> {
     let Path(index) = path.map_err(error::path_rejection)?;
     let source = registered_file(&state, index, "file")?;
+    if source.format.is_raster() {
+        return Ok(Json(RedactionSeriesResponse {
+            file_indices: Vec::new(),
+        }));
+    }
     let boxes = state
         .redactions()
         .get(index)
         .map_err(|error| ApiError::internal(error.to_string()))?;
     let mut file_indices = Vec::new();
     for file in state.registry().files_snapshot() {
-        let same_series = file.index != source.index
+        let same_series = !file.format.is_raster()
+            && file.index != source.index
             && file.study_instance_uid == source.study_instance_uid
             && file.series_instance_uid == source.series_instance_uid
             && (file.rows, file.columns) == (source.rows, source.columns);
@@ -698,6 +728,9 @@ pub(super) async fn tags(
     let Path(index) = path.map_err(error::path_rejection)?;
     let file = registered_file(&state, index, "file")?;
 
+    if file.format.is_raster() {
+        return Ok(Json(Vec::new()));
+    }
     if let Some(nodes) = state.cached_tags(index) {
         return Ok(Json(nodes));
     }
@@ -729,6 +762,11 @@ pub(super) async fn select_tag(
     let Path(index) = path.map_err(error::path_rejection)?;
     let Query(query) = query.map_err(error::query_rejection)?;
     let file = registered_file(&state, index, "file")?;
+    if file.format.is_raster() {
+        return Err(ApiError::bad_request(
+            "tag selection is not available for image files",
+        ));
+    }
     let path = file.path.clone();
     let selector = query.path.clone();
     let offset = query.offset.unwrap_or(0);

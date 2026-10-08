@@ -72,6 +72,7 @@ async fn json_endpoints_match_frontend_contract_shapes() {
             "columns",
             "default_window",
             "display_name",
+            "file_format",
             "frame_count",
             "has_pixels",
             "index",
@@ -84,6 +85,7 @@ async fn json_endpoints_match_frontend_contract_shapes() {
             "patient_name",
             "pixel_aspect_ratio",
             "presentation_layer",
+            "raster",
             "raw_windowing_compatible",
             "raw_windowing_reason",
             "rows",
@@ -119,6 +121,8 @@ async fn json_endpoints_match_frontend_contract_shapes() {
         ],
     );
     assert_eq!(file["object_kind"], "classic_image");
+    assert_eq!(file["file_format"], "dicom");
+    assert!(file["raster"].is_null());
     assert_eq!(file["support_state"], "renderable");
     assert!(file["support_reason"].is_null());
     assert_eq!(info["object_kind"], "classic_image");
@@ -586,6 +590,7 @@ async fn color_display_omits_the_applied_window_header() {
         dcmview::loader::DiscoverOptions {
             recursive: false,
             filters: Vec::new(),
+            formats: Default::default(),
         },
     )
     .await
@@ -666,6 +671,7 @@ async fn segmentation_context_always_includes_a_string_array_of_warnings() {
             dcmview::loader::DiscoverOptions {
                 recursive: true,
                 filters: vec![],
+                formats: Default::default(),
             },
         )
         .await

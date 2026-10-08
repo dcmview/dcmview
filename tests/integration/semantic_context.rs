@@ -41,6 +41,7 @@ async fn fractional_seg_binary_fallback_is_object_wide_and_preserves_preview() {
             dcmview::loader::DiscoverOptions {
                 recursive: true,
                 filters: vec![],
+                formats: Default::default(),
             },
         )
         .await

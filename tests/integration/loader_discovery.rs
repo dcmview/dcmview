@@ -17,6 +17,7 @@ fn discover_options(recursive: bool) -> DiscoverOptions {
     DiscoverOptions {
         recursive,
         filters: Vec::new(),
+        formats: Default::default(),
     }
 }
 
@@ -72,6 +73,7 @@ async fn progressive_discovery_applies_backpressure_and_reports_each_disposition
             DiscoverOptions {
                 recursive: true,
                 filters: vec!["modality=CT".parse().expect("filter parses")],
+                formats: Default::default(),
             },
             events_tx,
             loader::DiscoveryCancellation::new(),
@@ -96,10 +98,8 @@ async fn progressive_discovery_applies_backpressure_and_reports_each_disposition
             loader::DiscoveryEvent::SkippedInput(record) => {
                 skipped_events += 1;
                 assert_eq!(record.disposition, loader::DiscoveryDisposition::Skipped);
-                assert_eq!(
-                    record.reason,
-                    loader::DiscoveryReason::MissingPart10Preamble
-                );
+                assert_eq!(record.reason, loader::DiscoveryReason::UnrecognizedFormat);
+                assert_eq!(record.reason.code(), "unrecognized_format");
                 assert_eq!(record.path, expected_root.join("not-dicom.bin"));
             }
             loader::DiscoveryEvent::FilteredInput(record) => {
@@ -343,6 +343,7 @@ async fn filters_matching_subset_by_metadata_field() {
         DiscoverOptions {
             recursive: true,
             filters: vec!["modality=MR".parse().expect("filter parses")],
+            formats: Default::default(),
         },
     )
     .await
@@ -366,6 +367,7 @@ async fn accepts_case_insensitive_filter_field_names() {
         DiscoverOptions {
             recursive: true,
             filters: vec!["Modality=MR".parse().expect("filter parses")],
+            formats: Default::default(),
         },
     )
     .await
@@ -391,6 +393,7 @@ async fn filters_and_multiple_terms_together() {
                 "modality=mr".parse().expect("modality filter parses"),
                 "patient_id=002".parse().expect("patient filter parses"),
             ],
+            formats: Default::default(),
         },
     )
     .await
@@ -412,6 +415,7 @@ async fn filters_matching_nothing_report_the_filtered_files() {
         DiscoverOptions {
             recursive: true,
             filters: vec!["modality=MR".parse().expect("filter parses")],
+            formats: Default::default(),
         },
     )
     .await

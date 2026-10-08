@@ -62,30 +62,31 @@ absolute executable paths.
 
 ## Startup And Discovery
 
-### `dcmview: no valid DICOM files found`
+### `dcmview: no DICOM or image files found`
 
-Symptom: startup exits with a non-zero status and reports that no valid DICOM
-files were found.
+Symptom: startup exits non-zero with `dcmview: no DICOM or image files found`,
+optionally followed by a skip breakdown. If metadata filters excluded the
+readable files, it says `dcmview: no files matched active filters (...)`.
 
-Likely cause: the input path is wrong, the directory contains no readable DICOM
-files, filters exclude every DICOM file, or the files are not valid DICOM
-objects.
+Likely cause: the path is wrong, the directory contains no readable DICOM or
+recognized image headers, or `--formats` or `--filter` excludes every file.
 
 Fix: verify the path, try a known single DICOM file, and temporarily remove
-`--filter` arguments. For directory inputs, remember that recursive scanning is
-enabled by default; use `--no-recursive` only when the DICOM files are directly
+`--filter` and `--formats` arguments. Directory scanning is recursive by
+default; use `--no-recursive` only when the DICOM files are directly
 inside the selected directory.
 
 ### Files are reported as skipped
 
 Symptom: startup or the viewer file registry reports skipped files.
 
-Likely cause: the scan encountered non-DICOM files, unreadable paths, or invalid
-DICOM objects. The startup summary counts skips by reason, for example
-`(3 skipped: 2 not DICOM (no DICM preamble), 1 unparsable DICOM, ...)`. Files
+Likely cause: the scan encountered unrecognized files, unreadable paths,
+invalid DICOM objects or raster headers, or a format excluded by `--formats`.
+The startup summary counts skips by reason, for example
+`(3 skipped: 2 not a DICOM or image file, 1 unparsable DICOM, ...)`. Files
 excluded by metadata filters are counted separately as filtered.
 
-Fix: skipped non-DICOM sidecar files are usually harmless. To see which files
+Fix: skipped unrecognized sidecar files are usually harmless. To see which files
 were skipped and why, run with `RUST_LOG=dcmview=debug`, which logs each skipped
 path and its reason to stderr. If an expected DICOM file is skipped, check file
 permissions and try opening that file directly:
@@ -95,7 +96,48 @@ dcmview ./expected-file.dcm
 ```
 
 If filters are in use, confirm that the field name and value match the file's
-metadata. Filter matching is case-insensitive substring matching.
+metadata. DICOM fields and paths use case-insensitive substring matching;
+`format` matches a whole format name.
+
+Raster headers that exhaust the fixed scan budget are skipped as
+`raster_header_invalid` and print one line on stderr:
+
+```text
+dcmview: warning — {path}: {what}; not loaded
+```
+
+`{what}` is `more than 65535 TIFF pages`, `more than 65535 JPEG segments before
+the image`, `more than 65535 PNG chunks before the image`, `more than 65535
+WebP chunks`, or `the image header is larger than 64 MiB` (also used when the
+read-count budget runs out). Split the file into smaller files, keeping TIFF
+stacks to at most 65,535 pages each. For images with excessive metadata, also
+remove unnecessary metadata from a copy before retrying.
+
+The limits count what header inspection reads and the segments, chunks or
+pages it visits, never the size of the file. Pixel data and other payloads are
+skipped without being read, so a large file with an ordinary header is listed
+whatever its size, and blank PNG masks are listed even when they compress to
+less than one row of pixels. A WebP animation is described from its first
+chunk; its frames are walked, one chunk each and without reading them, only
+when the file declares EXIF metadata, which is stored after the frames. Bytes
+that must be read to find the header do count: a JPEG padded with tens of
+megabytes of fill bytes before a marker is skipped.
+
+A listed image file can also print notes in the same style, for example when
+a TIFF page chain cannot be read past some page (the pages before it are
+listed) or a page's ICC profile presence differs from the first page's:
+
+```text
+dcmview: warning — {path}: {note}
+```
+
+Each file prints at most 16 notes; the last one counts any that are not shown.
+
+### Image files now appear beside DICOM
+
+PNG, JPEG, TIFF, and WebP headers are listed by default, though their pixels
+are not decoded yet. Run `dcmview --formats dicom ./mixed_dir` to restore the
+DICOM-only directory list. An explicitly named image file still loads.
 
 ### The viewer opens before every file appears
 

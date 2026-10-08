@@ -10,6 +10,15 @@ diagnostic viewer.
 
 ## Unreleased
 
+### Breaking changes
+
+- Image files now appear in mixed folders by default. Use `--formats dicom`
+  to restore the previous DICOM-only directory scan; explicitly named files
+  are still inspected regardless of that selection.
+- Discovery reason `missing_part10_preamble` is renamed `unrecognized_format`.
+  Clients that grouped unknown files under the old code must map the new code
+  to that same category; there is no flag that restores the old wire spelling.
+
 ### Added
 
 - `GET /api/file/{index}/frame/{frame}/thumbnail` returns JPEG previews at
@@ -18,6 +27,25 @@ diagnostic viewer.
   overlay planes, and use their own cache without evicting viewer frames.
 - Background thumbnail decodes yield to viewer decodes, with a capped share
   of cores and a one-second interactive idle window on one-core hosts.
+- Header-only, content-based discovery of PNG, JPEG, TIFF (including BigTIFF
+  and compatible multipage stacks), and WebP beside DICOM. Image pixels are
+  not decoded yet and frame endpoints return `422 unsupported_pixel_layout`
+  with `raster.decode_not_available`. Header scans have fixed byte, read and
+  step budgets with cancellation checks; oversized headers are skipped with
+  an actionable warning. Highly compressed PNGs, including blank masks, are
+  listed regardless of their size on disk. TIFFs with more than 65,535 pages
+  are skipped; describable unsupported TIFF layouts remain listed with
+  `raster.unsupported_color` or `raster.unsupported_sample_format`.
+- `--formats dicom,png,jpeg,tiff,webp` narrows directory discovery, and
+  `--filter format=<name>` and `--filter path=<text>` select by exact format
+  or a substring of the reported path, ignoring case.
+- File summaries add `file_format` and `raster` metadata: stored color and
+  sample layout, orientation, alpha/profile presence, animation, significant
+  bits, and the TIFF frame-to-page map with the first 16 excluded pages and
+  their full `excluded_pages_total` count. Rasters use `object_kind: "image"`
+  and empty DICOM identity fields. Notes about a listed file, such as a TIFF
+  page chain that could not be read to its end, are printed to stderr during
+  discovery: at most 16 per file, the last counting any that are not shown.
 
 ### Changed
 

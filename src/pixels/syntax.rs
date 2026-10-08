@@ -1,5 +1,5 @@
 use crate::api::contracts::SupportState;
-use crate::types::{FileEntry, NativePixelDataKind};
+use crate::types::{FileEntry, NativePixelDataKind, RasterUnsupported};
 
 /// The decoder that handles one transfer syntax's pixel data.
 ///
@@ -124,6 +124,14 @@ pub enum PixelSupportReason {
     GenericColorRenderingOnly,
     PaletteColorNotSupported,
     PhotometricInterpretationNotSupported,
+    /// A raster image file: discovered and described, with no decoder yet.
+    /// The raster decoders replace this with `Renderable` or a specific
+    /// `raster.*` reason.
+    RasterDecodeNotAvailable,
+    /// A raster whose colour layout the viewer does not decode.
+    RasterUnsupportedColor,
+    /// A raster whose sample format the viewer does not decode at its depth.
+    RasterUnsupportedSampleFormat,
 }
 
 impl PixelSupportReason {
@@ -143,6 +151,9 @@ impl PixelSupportReason {
             Self::PhotometricInterpretationNotSupported => {
                 "pixel_layout.photometric_interpretation_not_supported"
             }
+            Self::RasterDecodeNotAvailable => "raster.decode_not_available",
+            Self::RasterUnsupportedColor => "raster.unsupported_color",
+            Self::RasterUnsupportedSampleFormat => "raster.unsupported_sample_format",
         }
     }
 }
@@ -187,7 +198,24 @@ impl PixelSupport {
 ///
 /// Semantic interpretation such as segmentation or parametric mapping is
 /// separate.
+///
+/// A raster image is `Unsupported`: with `raster.unsupported_color` or
+/// `raster.unsupported_sample_format` when its header declares a layout no
+/// decoder will take, else with `raster.decode_not_available`: it has
+/// pixels and no transfer syntax, and nothing decodes it yet. The display,
+/// raw, raw-pixel and presentation-layer endpoints answer
+/// `422 unsupported_pixel_layout` naming that reason.
 pub fn classify_pixel_support(file: &FileEntry) -> PixelSupport {
+    if file.format.is_raster() {
+        let unsupported = file.raster.as_deref().and_then(|raster| raster.unsupported);
+        return PixelSupport::unsupported(match unsupported {
+            Some(RasterUnsupported::Color) => PixelSupportReason::RasterUnsupportedColor,
+            Some(RasterUnsupported::SampleFormat) => {
+                PixelSupportReason::RasterUnsupportedSampleFormat
+            }
+            None => PixelSupportReason::RasterDecodeNotAvailable,
+        });
+    }
     if !file.has_pixels {
         return PixelSupport::metadata_only(PixelSupportReason::PixelDataAbsentOrUnrecognized);
     }
@@ -273,6 +301,8 @@ mod tests {
 
     fn file(transfer_syntax_uid: &str) -> FileEntry {
         FileEntry {
+            format: Default::default(),
+            raster: None,
             index: 0,
             path: PathBuf::from("fixture.dcm"),
             label: String::new(),

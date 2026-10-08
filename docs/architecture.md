@@ -62,7 +62,7 @@ application module:
 | Redaction boxes | `src/redactions.rs`, `src/pixels/redaction.rs` | `RedactionStore`: per-file boxes and their revision, in memory. The pixel service paints them into display PNGs and thumbnails (revision in the display and thumbnail cache keys), fills them in raw frame copies, and the presentation layer paints them too. |
 | WSI tile context | `src/wsi.rs` | Bounded positioning of one selected WSI tile without stitching or Total Pixel Matrix reconstruction. |
 | Attribute readers | `src/dicom_values.rs` | Lenient string, number, and sequence readers shared by discovery, references, semantic context, and WSI context. |
-| DICOM discovery | `src/loader/` | `discovery.rs` progressive events, cancellation, and reports; `entry.rs` `FileEntry` construction; `metadata.rs` geometry, LUT, overlay, and shutter extraction; `filter.rs` metadata filters. |
+| File discovery | `src/loader/` | `discovery.rs` progressive events, cancellation, and reports; `entry.rs` format detection from content and DICOM `FileEntry` construction; `format.rs` the `--formats` selection and raster signatures; `raster.rs` header-only inspection of PNG, JPEG, TIFF and WebP into a `FileEntry`; `metadata.rs` geometry, LUT, overlay, and shutter extraction; `filter.rs` `--filter` predicates. |
 | Frontend client | `frontend/src/api.ts` | Typed fetch wrappers over the generated endpoint paths and wire types. |
 | VS Code extension | `vscode/src/` | `extension.ts` wires activation only. `viewerSessions.ts` owns viewer processes and their webview panels; `customEditor.ts` and `commands.ts` open files through it; `bridgeServer.ts` serves the loopback launch/stop/wait bridge; `bridgeRegistry.ts` publishes and refreshes the registry file; `terminalInterception.ts` sets the terminal environment and PATH shims. |
 | Cross-language generation | `examples/generate_api_types.rs` | Checked-in `frontend/src/generated/api-types.ts` rendered with `ts-rs` from the Rust HTTP contract. |
@@ -738,6 +738,81 @@ that had already started.
 
 See [the HTTP API reference](api.md) for endpoint payloads and headers.
 
+### Raster Image Files
+
+Discovery lists PNG, JPEG, TIFF and still WebP files beside DICOM
+(`docs/design/image-formats.md`; on by default by the owner's decision 12.2).
+
+- **Format is decided from content, never from the name.** `DICM` at offset
+  128 makes a file DICOM whatever its first bytes are, so a DICOM WSI file
+  whose preamble is a TIFF header stays DICOM. Otherwise the first bytes
+  select PNG, JPEG, TIFF (classic or BigTIFF, either byte order) or WebP. A
+  file shorter than the 132-byte Part 10 prefix is still matched. Anything
+  else is skipped with the discovery reason `unrecognized_format`, which
+  replaced `missing_part10_preamble` (owner's decision 12.3).
+- **`--formats`** narrows what a directory walk loads to the listed formats
+  (`dicom`, `png`, `jpeg`, `tiff`, `webp`; default all). A recognized file
+  outside the list is skipped with `format_not_selected` before its header is
+  parsed. A file named as an input path is loaded in whatever supported
+  format it has, whatever the list says. `--formats dicom` gives the
+  DICOM-only behaviour of earlier versions.
+- **Raster discovery is header-only**, like DICOM discovery: PNG chunks up to
+  the first `IDAT`, JPEG markers up to the first frame header, the TIFF IFD
+  chain, the WebP chunk headers. No pixel data is decoded and no file is read
+  whole. A raster signature whose header does not parse is skipped with
+  `raster_header_invalid`. Selected rasters carry the reason `valid_image`.
+- **A raster header has a fixed scan budget**, the same for every file
+  whatever its size or what it declares (`loader/raster.rs` holds the numbers
+  and why): at most 64 MiB obtained from the file, a bounded number of reads,
+  and at most 65,535 JPEG segments, PNG chunks, WebP chunks or TIFF pages.
+  JPEG, PNG and WebP are scanned through one small buffer; a TIFF IFD is read
+  with reads of exactly its own length, because pages lie between pixel
+  data. Nothing is read or allocated in proportion to a declared length: a
+  payload that is not needed is skipped, an EXIF block is read for its first
+  64 KiB only, and no limit is derived from the file's size (a blank mask is
+  smaller on disk than one of its rows). Every step checks discovery
+  cancellation. A file that spends the budget before its header is complete
+  is skipped with `raster_header_invalid` and a stderr line saying what ran
+  out. There are no wall-clock limits. All of it is read through one function
+  over a `Read + Seek` source, which the unit tests count.
+- **A TIFF may have at most 65,535 pages.** A file with more is skipped, not
+  truncated, since a frame map that stops early would move the last frame.
+  (This narrows the design's "walk the whole IFD chain".) The catalog lists
+  the first 16 excluded pages and counts the rest in `excluded_pages_total`.
+- **A TIFF layout no decoder will take is listed, not skipped**:
+  `raster.unsupported_color` (with `color_type` `other`) for CIELab, more
+  than four bands or an extra sample that is not alpha, and
+  `raster.unsupported_sample_format` for 16-bit float. Only a header that
+  cannot be described at all is `raster_header_invalid`.
+- **A raster `FileEntry`** has `format` set, `raster: Some(RasterMetadata)`,
+  empty DICOM identity strings and an empty `transfer_syntax_uid`. Its
+  `rows`, `columns` and sample layout describe the stored pixel grid and the
+  raw frames a decoder serves (`loader/raster.rs` has the table); the EXIF or
+  TIFF orientation is recorded and never applied. A multi-page TIFF is one
+  file whose frames are the pages that match page 0; the others are listed
+  as excluded with the property that differs.
+- **On the wire** `FileSummary.file_format` names the format and
+  `FileSummary.raster` is a `RasterSummary` for rasters and `null` for DICOM;
+  `object_kind` is `image`. Rasters have no Study or Series UID, so the series
+  catalog leaves them out and each is its own tab; for the same reason
+  `redactions/series` copies a raster's boxes to no other file, and a raster
+  is never the target of a DICOM reference.
+- **Filters.** `--filter format=<name>` matches the format name exactly and
+  `--filter path=<text>` matches a substring of the reported path, both
+  ignoring case. The DICOM filter fields are empty for a raster, so any DICOM
+  filter excludes rasters.
+- **Until the raster decoders exist** a raster is `unsupported` with
+  `support_reason` `raster.decode_not_available` (or one of the two layout
+  reasons above), and the display, raw,
+  raw-pixel and presentation-layer endpoints answer
+  `422 unsupported_pixel_layout` naming its reason, so nothing is allocated
+  from a raster header's dimensions. `/tags` answers an empty tree. `/value-mapping` answers the identity
+  mapping, `/references` an empty list and `/semantic-context`
+  `not_applicable`, none of which opens the file. No endpoint answers a
+  server error for a raster.
+- **Masked sessions** give a raster no patient: its patient fields stay empty
+  and it takes no pseudonym. Its display name is the session's `File N`.
+
 ## Lifecycle And Discovery Ownership
 
 Local startup follows a strict order:
@@ -849,6 +924,10 @@ installation and VS Code Electron integration can also use network/cache state;
   complete HTTP boundary.
 - Generated DICOM fixtures exercise real discovery and codec paths. Integration
   tests do not mock the DICOM layer.
+- Raster discovery tests (`tests/integration/raster_discovery.rs`) write small
+  PNG, JPEG, TIFF and WebP files with the linked encoders, run the real
+  loader over them and assert on `/api/files`; the expected values are the
+  ones the files were written with.
 - Discovery builds each file's catalog metadata in one parse (`loader/entry.rs`
   `read_discovery_header`): it builds the metadata object from the parser's
   tokens up to the earliest standard pixel-data tag, exactly as
@@ -949,7 +1028,10 @@ Not current correctness blockers:
    cache-memory thresholds in CI.
 3. Keep external upstream fixtures opt-in unless their availability and cache
    behavior become deterministic enough for normal CI.
-4. When adding an endpoint, add it to `endpoints` in the Rust contract,
+4. A new raster format is a `FileFormat` variant, a signature in
+   `loader/format.rs`, a header reader in `loader/raster.rs`, and a decoder
+   in `pixels/`; nothing else names formats.
+5. When adding an endpoint, add it to `endpoints` in the Rust contract,
    register its route, regenerate the checked-in TypeScript, and add a wrapper
    in `frontend/src/api.ts`; the runtime contract test covers it through
    `endpoints::ALL`.

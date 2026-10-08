@@ -59,6 +59,7 @@ async fn raw_endpoint_returns_correct_metadata_headers_for_uncompressed() {
         dcmview::loader::DiscoverOptions {
             recursive: false,
             filters: Vec::new(),
+            formats: Default::default(),
         },
     )
     .await

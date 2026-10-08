@@ -28,6 +28,7 @@ async fn serve_paths(paths: &[PathBuf], registry: FileRegistry) -> TestServer {
         DiscoverOptions {
             recursive: false,
             filters: Vec::new(),
+            formats: Default::default(),
         },
     )
     .await

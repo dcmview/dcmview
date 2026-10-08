@@ -181,12 +181,14 @@ impl Masker {
 
     /// The catalog entry of a masked session.
     pub fn summary(&self, file: &FileEntry) -> FileSummary {
-        let patient = self.patient(file);
         let mut summary = FileSummary::from(file);
         summary.display_name = format!("File {}", file.index + 1);
-        summary.patient_id = patient.id();
-        summary.patient_name = patient.name();
-        summary.study_date = patient.shift_date(&file.study_date);
+        if !file.format.is_raster() {
+            let patient = self.patient(file);
+            summary.patient_id = patient.id();
+            summary.patient_name = patient.name();
+            summary.study_date = patient.shift_date(&file.study_date);
+        }
         summary.label = crate::loader::build_label(
             &summary.patient_id,
             &summary.modality,

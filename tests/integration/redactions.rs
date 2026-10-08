@@ -29,6 +29,7 @@ async fn serve() -> TestServer {
         DiscoverOptions {
             recursive: false,
             filters: Vec::new(),
+            formats: Default::default(),
         },
     )
     .await

@@ -7,6 +7,10 @@ Point it at one or more DICOM files from the command line or Python, and it
 starts a local browser viewer for images, tags, cine playback, and rectangular
 ROI annotations. Stop the process and the server is gone.
 
+PNG, JPEG, TIFF, and WebP image files are now listed beside DICOM by content,
+with size and frame metadata, but their pixels are not decoded yet. Use
+`dcmview --formats dicom ./mixed_dir` for a DICOM-only directory list.
+
 The main problem it solves is remote-server inspection. Medical imaging research
 often happens where the data already live: an SSH session, a shared compute
 server, or a locked-down institutional network. Viewing those images usually
@@ -145,7 +149,7 @@ dcmview: server running at http://127.0.0.1:<port>/#token=<session-token>
 
 Press Ctrl+C to stop the server.
 
-If startup reports skipped files, no valid DICOM files, a port conflict, or a
+If startup reports skipped files, no DICOM or image files, a port conflict, or a
 browser launch failure, see the
 [troubleshooting guide](docs/troubleshooting.md).
 

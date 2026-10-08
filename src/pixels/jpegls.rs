@@ -177,6 +177,8 @@ mod tests {
             .unwrap();
 
         FileEntry {
+            format: Default::default(),
+            raster: None,
             index: 0,
             path: path.to_path_buf(),
             label: "fixture".to_string(),
