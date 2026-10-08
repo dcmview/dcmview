@@ -10,6 +10,39 @@ diagnostic viewer.
 
 ## Unreleased
 
+### Added
+
+- A right-button drag zooms in every tool, up to zoom in and down to zoom
+  out, about the point it began on. A right click that does not move still
+  does nothing.
+- Alt+wheel steps frames in every tool, with a mouse or a trackpad.
+- The ROI and Redact tools place a rectangle with two clicks as well as a
+  drag: click one corner, move, click the opposite one. Esc cancels, as does
+  changing the tool, file or frame.
+
+### Changed
+
+- The viewer tells a mouse wheel from a trackpad one gesture at a time
+  instead of one event at a time, and remembers the device for the session.
+  A fast two-finger swipe no longer jumps from panning to zooming halfway,
+  and a wheel that reports small steps zooms instead of panning once the
+  viewer has seen it is a wheel. After changing device, the first two
+  gestures may still act as the previous one.
+- In the Scroll tool a trackpad scroll steps one frame per 30 px of travel
+  instead of one per wheel event, and stepping slows to a stop as the
+  momentum after the fingers lift decays instead of running on through all of
+  it. The stop is tuned on constructed traces, not recorded ones, so some
+  trackpads may run a few frames further. A mouse wheel still steps one frame
+  per notch.
+- In the trackpad profile a rectangle's handles are grabbed from 10 screen
+  pixels away instead of 8.
+
+### Fixed
+
+- A trackpad pinch in the Scroll tool zooms instead of stepping frames.
+- A ROI moved or resized while a second pointer pressed its middle button is
+  saved where it was dropped; it used to stay drawn there unsaved.
+
 ## 0.4.0 - 2026-10-08
 
 ### Breaking changes
@@ -66,30 +99,6 @@ diagnostic viewer.
   pasting that link into the same tab loads the viewer.
 - Export ROIs reports a failed export in the viewer instead of leaving the
   browser on an error page or doing nothing.
-- A right-button drag zooms in every tool, up to zoom in and down to zoom
-  out, about the point it began on. A right click that does not move still
-  does nothing.
-- Alt+wheel steps frames in every tool, with a mouse or a trackpad.
-- The ROI and Redact tools place a rectangle with two clicks as well as a
-  drag: click one corner, move, click the opposite one. Esc cancels, as does
-  changing the tool, file or frame.
-
-### Changed
-
-- The viewer tells a mouse wheel from a trackpad one gesture at a time
-  instead of one event at a time, and remembers the device for the session.
-  A fast two-finger swipe no longer jumps from panning to zooming halfway,
-  and a wheel that reports small steps zooms instead of panning once the
-  viewer has seen it is a wheel. After changing device, the first two
-  gestures may still act as the previous one.
-- In the Scroll tool a trackpad scroll steps one frame per 30 px of travel
-  instead of one per wheel event, and stepping slows to a stop as the
-  momentum after the fingers lift decays instead of running on through all of
-  it. The stop is tuned on constructed traces, not recorded ones, so some
-  trackpads may run a few frames further. A mouse wheel still steps one frame
-  per notch.
-- In the trackpad profile a rectangle's handles are grabbed from 10 screen
-  pixels away instead of 8.
 
 ### Changed
 
@@ -112,10 +121,6 @@ diagnostic viewer.
   the built Linux wheel and VSIX.
 
 ### Fixed
-
-- A trackpad pinch in the Scroll tool zooms instead of stepping frames.
-- A ROI moved or resized while a second pointer pressed its middle button is
-  saved where it was dropped; it used to stay drawn there unsaved.
 
 - A redaction box change can no longer leave a frame cached without the new
   box. A frame requested at the same instant as the change could be rendered
