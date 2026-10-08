@@ -116,8 +116,60 @@ pub enum DecodeWork {
 ///
 /// [`raster_decode_heap_limit`]: super::raster::raster_decode_heap_limit
 pub fn decode_estimate(file: &FileEntry, work: DecodeWork) -> u64 {
-    let _ = (file, work);
-    todo!("FMT4: estimate the bytes a piece of decode work reserves")
+    use super::syntax::Codec;
+
+    let pixels = u64::from(file.rows).saturating_mul(u64::from(file.columns));
+    let samples = pixels.saturating_mul(u64::from(file.samples_per_pixel));
+    let bytes_per_sample = u64::from(file.bits_allocated).saturating_add(7) / 8;
+    let bytes_per_sample = bytes_per_sample.max(1);
+    let frame = samples.saturating_mul(bytes_per_sample);
+    let display = pixels.saturating_mul(if file.samples_per_pixel < 3 {
+        1
+    } else if bytes_per_sample == 1 {
+        3
+    } else {
+        6
+    });
+    let wide = if bytes_per_sample >= 4 {
+        samples.saturating_mul(32)
+    } else {
+        0
+    };
+
+    let decode = if file.format.is_raster() {
+        let length = file.raster.as_ref().map_or(0, |raster| raster.file_length);
+        let Some(limit) = super::raster::raster_decode_heap_limit(file, length) else {
+            return u64::MAX;
+        };
+        limit
+    } else {
+        let buffers = match super::syntax::codec_for_file(file) {
+            Some(Codec::JpegBaseline | Codec::JpegLossless | Codec::JpegLs) => {
+                frame.saturating_mul(5)
+            }
+            Some(Codec::Jpeg2000 | Codec::JpegXl) => samples
+                .saturating_mul(16)
+                .saturating_add(frame.saturating_mul(2)),
+            _ => frame.saturating_mul(3),
+        };
+        DICOM_DECODE_BASE_BYTES.saturating_add(buffers)
+    };
+
+    match work {
+        DecodeWork::RawFrame => decode,
+        DecodeWork::DisplayFrame => decode
+            .saturating_add(wide)
+            .saturating_add(display.saturating_mul(3))
+            .saturating_add(DISPLAY_BASE_BYTES),
+        DecodeWork::Thumbnail => decode
+            .saturating_add(wide)
+            .saturating_add(display)
+            .saturating_add(THUMBNAIL_BASE_BYTES),
+        DecodeWork::PresentationLayer => {
+            pixels.saturating_mul(9).saturating_add(DISPLAY_BASE_BYTES)
+        }
+        DecodeWork::RawRedaction => frame,
+    }
 }
 
 /// A permit of `class` for `work` on one frame of `file`, reserving
