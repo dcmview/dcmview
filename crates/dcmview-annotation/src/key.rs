@@ -68,22 +68,46 @@ impl FileKey {
     /// a digest of the wrong length or with an uppercase or non-hex
     /// character.
     pub fn parse(text: &str) -> Result<Self, InvalidValue> {
-        let _ = text;
-        todo!("FND3: parse a file key")
+        if text.len() > 4 + crate::limits::MAX_SOP_UID_BYTES {
+            return Err(invalid("file key"));
+        }
+        let valid = if let Some(uid) = text.strip_prefix("sop:") {
+            !uid.is_empty()
+                && uid.len() <= crate::limits::MAX_SOP_UID_BYTES
+                && uid.bytes().all(id_byte)
+        } else if let Some(digest) = text.strip_prefix("b3:") {
+            digest.len() == 64
+                && digest
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        } else {
+            false
+        };
+        if valid {
+            Ok(Self(text.to_owned()))
+        } else {
+            Err(invalid("file key"))
+        }
     }
 
     /// The key `sop:<uid>` for a SOP Instance UID. Fails exactly when
     /// [`FileKey::parse`] would refuse the resulting string.
     pub fn sop(uid: &str) -> Result<Self, InvalidValue> {
-        let _ = uid;
-        todo!("FND3: build a sop: key")
+        if uid.len() > crate::limits::MAX_SOP_UID_BYTES {
+            return Err(invalid("file key"));
+        }
+        Self::parse(&format!("sop:{uid}"))
     }
 
     /// The key `b3:<hex>` for a BLAKE3 digest of a file's bytes, written as
     /// 64 lowercase hex characters, first byte first.
     pub fn blake3(digest: &[u8; 32]) -> Self {
-        let _ = digest;
-        todo!("FND3: build a b3: key")
+        let mut text = String::with_capacity(67);
+        text.push_str("b3:");
+        for byte in digest {
+            text.push_str(&format!("{byte:02x}"));
+        }
+        Self(text)
     }
 
     /// The key as written on the wire.
@@ -93,13 +117,17 @@ impl FileKey {
 
     /// Which form the key has.
     pub fn scheme(&self) -> KeyScheme {
-        todo!("FND3: read the scheme of a file key")
+        if self.0.starts_with("sop:") {
+            KeyScheme::Sop
+        } else {
+            KeyScheme::Blake3
+        }
     }
 
     /// The part after the scheme: the UID of a `sop:` key or the 64 hex
     /// characters of a `b3:` key.
     pub fn body(&self) -> &str {
-        todo!("FND3: read the body of a file key")
+        self.0.split_once(':').map_or("", |(_, body)| body)
     }
 }
 
@@ -119,8 +147,11 @@ impl LayerId {
     /// Parses a layer id. Fails for an empty or over-long string and for any
     /// character outside the set in the type's documentation.
     pub fn parse(text: &str) -> Result<Self, InvalidValue> {
-        let _ = text;
-        todo!("FND3: parse a layer id")
+        if text.is_empty() || text.len() > crate::limits::MAX_ID_BYTES || !text.bytes().all(id_byte)
+        {
+            return Err(invalid("layer id"));
+        }
+        Ok(Self(text.to_owned()))
     }
 
     /// The id as written on the wire.
@@ -156,8 +187,25 @@ pub struct Author(String);
 impl Author {
     /// Parses an author string in one of the three forms.
     pub fn parse(text: &str) -> Result<Self, InvalidValue> {
-        let _ = text;
-        todo!("FND3: parse an author string")
+        if text.len() > crate::limits::MAX_NAME_BYTES {
+            return Err(invalid("author"));
+        }
+        let valid = match text.split_once(':') {
+            Some((kind @ ("user" | "model" | "import"), body)) => {
+                !body.is_empty()
+                    && !body.chars().any(|c| c.is_whitespace() || c.is_control())
+                    && (kind != "model"
+                        || body
+                            .rsplit_once('@')
+                            .is_some_and(|(name, version)| !name.is_empty() && !version.is_empty()))
+            }
+            _ => false,
+        };
+        if valid {
+            Ok(Self(text.to_owned()))
+        } else {
+            Err(invalid("author"))
+        }
     }
 
     /// The author as written on the wire.
@@ -167,7 +215,13 @@ impl Author {
 
     /// Which of the three forms the author has.
     pub fn kind(&self) -> AuthorKind {
-        todo!("FND3: read the kind of an author")
+        if self.0.starts_with("user:") {
+            AuthorKind::User
+        } else if self.0.starts_with("model:") {
+            AuthorKind::Model
+        } else {
+            AuthorKind::Import
+        }
     }
 }
 
@@ -188,8 +242,39 @@ pub struct Timestamp(String);
 impl Timestamp {
     /// Parses a timestamp in the one accepted form.
     pub fn parse(text: &str) -> Result<Self, InvalidValue> {
-        let _ = text;
-        todo!("FND3: parse a timestamp")
+        if text.len() != 24 {
+            return Err(invalid("timestamp"));
+        }
+        for (index, byte) in text.bytes().enumerate() {
+            let valid = match index {
+                4 | 7 => byte == b'-',
+                10 => byte == b'T',
+                13 | 16 => byte == b':',
+                19 => byte == b'.',
+                23 => byte == b'Z',
+                _ => byte.is_ascii_digit(),
+            };
+            if !valid {
+                return Err(invalid("timestamp"));
+            }
+        }
+        for (start, min, max) in [
+            (5, 1, 12),
+            (8, 1, 31),
+            (11, 0, 23),
+            (14, 0, 59),
+            (17, 0, 59),
+        ] {
+            let value = text
+                .bytes()
+                .skip(start)
+                .take(2)
+                .fold(0_u32, |v, b| v * 10 + u32::from(b - b'0'));
+            if !(min..=max).contains(&value) {
+                return Err(invalid("timestamp"));
+            }
+        }
+        Ok(Self(text.to_owned()))
     }
 
     /// The timestamp as written on the wire.
@@ -259,3 +344,14 @@ validated_string!(
     "Timestamp",
     "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
 );
+
+fn invalid(kind: &'static str) -> InvalidValue {
+    InvalidValue {
+        kind,
+        reason: "The string does not match the required syntax.".to_owned(),
+    }
+}
+
+fn id_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_')
+}
