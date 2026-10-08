@@ -3,7 +3,8 @@
 use super::KeyFailure;
 use std::path::Path;
 
-/// The most bytes one [`FileHasher::next_slice`] call reads. A slice is the
+/// The most of a file's expected bytes one [`FileHasher::next_slice`] call
+/// reads; the last call reads one probe byte more. A slice is the
 /// unit of background work: the catalog takes a background decode permit for
 /// each one and gives it back before the next, so a viewer's decode never
 /// waits behind more than one slice of hashing.
@@ -29,7 +30,9 @@ pub enum HashProgress {
 /// The work is bounded by what discovery saw, not by what the file has
 /// become: across all calls at most `expected_len + 1` bytes are read (the
 /// one extra byte is the probe that detects growth), and each call reads at
-/// most [`KEY_HASH_SLICE_BYTES`].
+/// most [`KEY_HASH_SLICE_BYTES`] of the file's expected bytes. The call that
+/// reaches the expected length reads the probe byte as well, so that one
+/// call may read `KEY_HASH_SLICE_BYTES + 1` bytes.
 pub struct FileHasher {
     _private: (),
 }
