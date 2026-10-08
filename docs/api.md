@@ -343,8 +343,9 @@ of a real-world window (windows
 that render alike, such as `wc=-0` and `wc=0` or widths below 1, share a key);
 the raw cache key is file and frame only. Both endpoints send `X-Cache: HIT` or
 `X-Cache: MISS`. A request for a frame another request is already decoding
-waits for that decode and reports `HIT`, and a decode whose client
-disconnected still fills the cache. A display request can fill the raw cache
+waits for that decode and reports `HIT`. A decode that has started still
+fills the cache when its client disconnects; one that is still waiting for
+decode capacity when its last client disconnects is not started. A display request can fill the raw cache
 too (grayscale frames are windowed from decoded samples kept there), so a raw
 request after a display request of the same frame may report `HIT`.
 

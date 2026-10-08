@@ -24,10 +24,11 @@ use dcmview::pixels::{
 };
 use dcmview::server;
 use dcmview::types::FileEntry;
+use futures::poll;
 use serde_json::{json, Value};
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tempfile::tempdir;
 use tokio::task::JoinHandle;
@@ -1030,57 +1031,145 @@ async fn one_permit_serves_raw_and_display_requests_for_the_same_cold_frames() {
     .await;
 }
 
-/// A thumbnail or a preview that is dropped while it waits starts no work
-/// and reserves nothing; a display frame that is dropped while it waits is
-/// still decoded and cached, as before.
+/// A request that is dropped while it waits starts no work and reserves
+/// nothing, whatever it asked for: a thumbnail and a preview wait in the
+/// request itself, and the decode of a display or raw frame leaves the
+/// queue when the last request waiting for it is gone.
 #[tokio::test]
 async fn a_request_dropped_while_it_waits_reserves_nothing() {
     finishes(async {
         let dir = tempdir().expect("temp dir");
         let entry = listed_raster(dir.path(), "image.png", &gray_png(64)).await;
-        let display = pixels::decode_estimate(&entry, DecodeWork::DisplayFrame);
         let scheduler = default_scheduler(1);
         let server = serve(vec![entry], &scheduler);
         let held = granted(&scheduler, Interactive, 0).await;
 
-        for (path, queues) in [
+        let paths = [
             ("/api/file/0/frame/0/thumbnail", (0, 1)),
             ("/api/file/0/frame/0?preview=true&wc=10&ww=20", (1, 0)),
-        ] {
+            ("/api/file/0/frame/0", (1, 0)),
+            ("/api/file/0/frame/0/raw", (1, 0)),
+        ];
+        for (path, queues) in paths {
             let dropped = get(&server, path);
             waiting(&scheduler, queues.0, queues.1).await;
             dropped.abort();
             assert!(eventually("the abort", dropped).await.is_err());
-            let load = scheduler.load();
-            assert_eq!(
-                (load.waiting_interactive, load.waiting_background),
-                (0, 0),
-                "{path}"
-            );
+            waiting(&scheduler, 0, 0).await;
         }
-        let kept = get(&server, "/api/file/0/frame/0");
-        waiting(&scheduler, 1, 0).await;
-        kept.abort();
-        assert!(eventually("the abort", kept).await.is_err());
-        assert_eq!(
-            scheduler.load().waiting_interactive,
-            1,
-            "a display frame stays queued"
-        );
 
         drop(held);
         let load = idle(&scheduler).await;
+        assert_eq!(load.peak_reserved_bytes, 0, "nothing was decoded");
+        // Nothing was kept for them either: each is new work when asked again.
+        for (path, _) in paths.iter().rev() {
+            let response = server.get(path).await;
+            assert_eq!(response.status_code(), 200, "{path}");
+            assert_eq!(response.header("x-cache"), "MISS", "{path}");
+        }
+    })
+    .await;
+}
+
+/// Display and raw frames whose requests were all dropped while their
+/// decodes waited leave the queue: it has room again, the next request is
+/// served as if they had never been asked for, and none of them is decoded.
+#[tokio::test]
+async fn decodes_whose_requests_were_all_dropped_leave_the_queue() {
+    finishes(async {
+        const QUEUED: usize = 12;
+        let entries = listed(&[fixture("golden-uncompressed-u16-multiframe.dcm")]).await;
+        assert!(entries[0].frame_count >= 2);
+        let display = pixels::decode_estimate(&entries[0], DecodeWork::DisplayFrame);
+        let scheduler =
+            DecodeScheduler::with_limits(1, limits(pixels::DECODE_MEMORY_DEFAULT_BYTES, QUEUED, 0));
+        let server = serve(entries, &scheduler);
+        let held = granted(&scheduler, Interactive, 0).await;
+
+        // Each window of a frame is a decode of its own, and so is its raw
+        // frame: the queue is full of them.
+        let window = |index: usize| format!("/api/file/0/frame/0?wc={}&ww=40", 100 + index);
+        let mut abandoned: Vec<_> = (1..QUEUED)
+            .map(|index| get(&server, &window(index)))
+            .collect();
+        abandoned.push(get(&server, "/api/file/0/frame/0/raw"));
+        waiting(&scheduler, QUEUED, 0).await;
+        assert_eq!(server.get("/api/file/0/frame/1").await.status_code(), 503);
+
+        abandoned.iter().for_each(JoinHandle::abort);
+        waiting(&scheduler, 0, 0).await;
+
+        // A request that is still wanted finds the queue empty.
+        let wanted = get(&server, "/api/file/0/frame/1");
+        waiting(&scheduler, 1, 0).await;
+        drop(held);
+        assert_eq!(status(wanted).await, 200);
+        let load = idle(&scheduler).await;
         assert_eq!(
             load.peak_reserved_bytes, display,
-            "only the display frame was decoded"
+            "only the request that was still wanted was decoded"
         );
-        for (path, cache) in [
-            ("/api/file/0/frame/0", "HIT"),
-            ("/api/file/0/frame/0/thumbnail", "MISS"),
-        ] {
-            let response = server.get(path).await;
-            assert_eq!(response.header("x-cache"), cache, "{path}");
+
+        // A frame that was given up is decoded when it is asked for again.
+        for path in ["/api/file/0/frame/0/raw".to_string(), window(1)] {
+            let response = server.get(&path).await;
+            assert_eq!(response.status_code(), 200, "{path}");
+            assert_eq!(response.header("x-cache"), "MISS", "{path}");
         }
+        idle(&scheduler).await;
+    })
+    .await;
+}
+
+/// A decode that two requests wait for stays queued when one of them is
+/// dropped, and serves the other.
+#[tokio::test]
+async fn a_queued_decode_goes_on_while_one_of_its_requests_still_waits() {
+    finishes(async {
+        let entry = Arc::new(
+            listed(&[fixture("golden-uncompressed-u16-multiframe.dcm")])
+                .await
+                .remove(0),
+        );
+        let scheduler = default_scheduler(1);
+        let cache = Arc::new(Mutex::new(pixels::RawFrameCache::with_scheduler(
+            1 << 24,
+            scheduler.clone(),
+        )));
+        let raw_frame = || {
+            Box::pin(pixels::load_raw_frame(
+                entry.clone(),
+                cache.clone(),
+                pixels::RawFrameRequest { frame: 0 },
+            ))
+        };
+        let held = granted(&scheduler, Interactive, 0).await;
+
+        // Polled once, each request has announced the decode or joined it.
+        let (mut first, mut second) = (raw_frame(), raw_frame());
+        assert!(poll!(&mut first).is_pending());
+        assert!(poll!(&mut second).is_pending());
+        waiting(&scheduler, 1, 0).await;
+
+        // The decode's task is given its turn (the test's runtime has one
+        // thread) and has nothing to do: a request is still waiting.
+        drop(first);
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(scheduler.load().waiting_interactive, 1);
+
+        drop(held);
+        let served = eventually("the remaining request", second)
+            .await
+            .expect("the shared decode");
+        assert!(served.cache_hit, "the second request shared the first's");
+        let load = idle(&scheduler).await;
+        assert_eq!(
+            load.peak_reserved_bytes,
+            pixels::decode_estimate(&entry, DecodeWork::RawFrame),
+            "one decode served it"
+        );
     })
     .await;
 }

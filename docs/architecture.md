@@ -141,7 +141,8 @@ modules, not the reverse:
 6. `pixels/service.rs` is the server-facing pixel boundary. Codec, cache,
    rendering, and window modules remain below it. A cache miss registers an
    in-flight decode that later requests for the key await; the decode runs as
-   its own task and caches its result even if its client disconnected, and
+   its own task and, once it has started, caches its result even if its
+   client disconnected, and
    `schedule.rs` bounds concurrent decodes to the core count and to the
    decode memory budget and grants permits by decode class (see "Render
    Seam, Thumbnails And Decode Classes" and "Decode Admission"). The frame
@@ -739,8 +740,10 @@ from) is `Interactive`. The scheduler:
 - considers waiting interactive requests first whenever a permit returns;
 - forgets a request that stops waiting.
 
-An interactive decode waits for its permit inside its own task, as before,
-so it finishes and is cached even when its client disconnects. A thumbnail
+An interactive decode waits for its permit inside its own task, which the
+requests for that frame share. Once it holds the permit it finishes and is
+cached even when its client disconnects; while it still waits, it leaves the
+queue when the last request waiting for it is dropped. A thumbnail
 waits for its permit inside the request, so a tile the user scrolled past is
 dropped before any work starts; once it holds a permit its render runs as
 its own task and is cached regardless.
@@ -831,9 +834,13 @@ dropped, so the bytes reserved are always those of decodes that are running:
 Requests the caches can answer take no permit, so a busy viewer still serves
 what it holds.
 
-**Who waits where.** An interactive decode waits inside its own task and is
-decoded and cached even when its client disconnects; a refusal is the
-result for every request that shared it. A thumbnail, a preview and the
+**Who waits where.** An interactive decode waits inside its own task, and a
+refusal is the result for every request that shared it. The task counts the
+requests waiting for it: when the last of them is dropped before the permit
+is granted, the decode leaves the queue, frees its place there and is never
+started, and the next request for the frame announces a decode of its own.
+A decode that has been granted its permit runs to its end and is cached
+whoever is still waiting. A thumbnail, a preview and the
 copy made for redaction boxes in a raw frame wait inside the request, so one
 that is dropped while it waits starts no work and reserves nothing. Once any
 of them holds a permit, its work runs in a task of its own and keeps the
@@ -1311,7 +1318,8 @@ installation and VS Code Electron integration can also use network/cache state;
   reserved never pass the budget, thumbnails keep to their half, a full
   queue answers 503 with `Retry-After` on the decoding endpoints and on no
   other, a frame too large for the budget answers 422 and stays renderable,
-  and a permit comes back however its holder ends. On Unix a decode is held
+  a permit comes back however its holder ends, and a queued decode whose
+  requests have all been dropped leaves the queue. On Unix a decode is held
   in place by a pipe put where its file was, to show that a request dropped
   after its decode began stays counted until the decode ends.
 - Discovery builds each file's catalog metadata in one parse (`loader/entry.rs`

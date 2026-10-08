@@ -102,6 +102,10 @@ diagnostic viewer.
   the viewer to inspect it again at its new length.
 - A dropped window/level preview no longer frees its decode permit while
   its decode is still running.
+- A display or raw frame request that is abandoned while it waits for
+  decode capacity is no longer decoded, so requests a client gave up on do
+  not delay the ones it still wants. A decode that has started still
+  finishes and is cached.
 
 - `--cache-budget BYTES` now also covers the thumbnail cache, and its default
   total is 768 MiB instead of 704 MiB: 256, 384, 64 and 64 MiB for the

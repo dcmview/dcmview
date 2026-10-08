@@ -537,6 +537,11 @@ requires an existing `frontend/dist/index.html`.
   the request future and then runs in its own task, which owns the permit
   until the blocking work ends. Do not hold a permit in a request future
   across `spawn_blocking`.
+- A decode that requests share waits for its permit in its own task
+  (`spawn_decode_with_permit`) and counts the requests waiting for it
+  (`BudgetedLru::join_flight`). It leaves the queue when the last of them
+  is dropped before the permit is granted. Wait for a shared decode only
+  through `join_flight`, under the cache lock, so that count stays true.
 - Tests of admission read `DecodeScheduler::load` and wait with
   `load_when`; they do not sleep or time anything.
 
@@ -917,7 +922,8 @@ default suite.
   503 with `Retry-After` on the decoding endpoints only; a frame too large
   for the budget answers 422 and stays renderable; a permit comes back
   however its holder ends, and a request dropped after its decode began
-  stays counted until the decode ends.
+  stays counted until the decode ends. A queued decode whose requests were
+  all dropped is not started and frees its place in the queue.
 - No path of the pixel service holds more heap for a frame than it reserved,
   for hostile raster files too, and many requests at once hold no more than
   the budget.

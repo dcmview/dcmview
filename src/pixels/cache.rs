@@ -8,7 +8,9 @@ use futures::future::{BoxFuture, Shared};
 use lru::LruCache;
 use std::collections::HashMap;
 use std::hash::Hash;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use tokio::sync::Notify;
 
 // Keep these budgets in sync with README memory guidance and frontend frame retention.
 pub const FRAME_CACHE_MAX_BYTES: usize = 256 * 1024 * 1024; // 256 MiB
@@ -53,6 +55,66 @@ impl FrameBody for (Bytes, RawFrameMetadata) {
 /// A decode other requests for the same key await instead of repeating.
 pub(crate) type InFlight<V> = Shared<BoxFuture<'static, Result<V, Arc<PixelError>>>>;
 
+/// A decode announced for a key, and how many requests are waiting for it.
+///
+/// A request waits through [`BudgetedLru::join_flight`], which counts it
+/// until it has its answer or is dropped. The decode's own task reads the
+/// count while it waits to be admitted: a decode nobody is waiting for any
+/// longer gives up its place in the queue
+/// ([`BudgetedLru::abandon_flight_if_unwanted`]).
+pub(crate) struct Flight<V> {
+    decode: InFlight<V>,
+    waiters: Arc<FlightWaiters>,
+}
+
+/// The requests waiting for one [`Flight`].
+#[derive(Default)]
+pub(crate) struct FlightWaiters {
+    count: AtomicUsize,
+    /// Notified when the count returns to zero. Only the decode's task
+    /// listens, so one stored notification is never lost.
+    left: Notify,
+}
+
+impl FlightWaiters {
+    /// Resolves once no request is waiting. A request may have joined again
+    /// by the time the caller acts on it: the count is only settled under
+    /// the cache's lock, where requests join.
+    pub(crate) async fn none_left(&self) {
+        while self.count.load(Ordering::SeqCst) != 0 {
+            self.left.notified().await;
+        }
+    }
+}
+
+/// One request's place among the waiters of a [`Flight`], given up when it
+/// is dropped: with the answer, or because the request was.
+pub(crate) struct JoinedFlight<V> {
+    decode: InFlight<V>,
+    waiters: Arc<FlightWaiters>,
+}
+
+impl<V: Clone> JoinedFlight<V> {
+    /// The decode's result.
+    pub(crate) async fn result(self) -> Result<V, Arc<PixelError>> {
+        self.decode.clone().await
+    }
+}
+
+impl<V> Drop for JoinedFlight<V> {
+    fn drop(&mut self) {
+        if self.waiters.count.fetch_sub(1, Ordering::SeqCst) == 1 {
+            self.waiters.left.notify_one();
+        }
+    }
+}
+
+impl<V> Flight<V> {
+    pub(crate) fn new(decode: InFlight<V>, waiters: Arc<FlightWaiters>) -> Self {
+        Self { decode, waiters }
+    }
+}
+
 /// An LRU bounded by the total bytes of its bodies, plus the decodes
 /// currently running for keys it does not hold yet. Entries are not counted:
 /// a cine loop of small PNGs must fit as long as its bytes do.
@@ -68,7 +130,7 @@ pub struct BudgetedLru<K: Hash + Eq, V> {
     entries: LruCache<K, V>,
     bytes: usize,
     max_bytes: usize,
-    in_flight: HashMap<K, InFlight<V>>,
+    in_flight: HashMap<K, Flight<V>>,
     scheduler: Arc<DecodeScheduler>,
 }
 
@@ -96,16 +158,58 @@ impl<K: Hash + Eq, V: FrameBody> BudgetedLru<K, V> {
         Arc::clone(&self.scheduler)
     }
 
-    pub(crate) fn in_flight(&self, key: &K) -> Option<InFlight<V>> {
-        self.in_flight.get(key).cloned()
+    /// Joins the decode announced for `key`, if there is one, as one more
+    /// request waiting for it.
+    pub(crate) fn join_flight(&self, key: &K) -> Option<JoinedFlight<V>> {
+        let flight = self.in_flight.get(key)?;
+        flight.waiters.count.fetch_add(1, Ordering::SeqCst);
+        Some(JoinedFlight {
+            decode: flight.decode.clone(),
+            waiters: Arc::clone(&flight.waiters),
+        })
     }
 
-    pub(crate) fn start_flight(&mut self, key: K, decode: InFlight<V>) {
-        self.in_flight.insert(key, decode);
+    /// Whether a decode is announced for `key`.
+    pub(crate) fn has_flight(&self, key: &K) -> bool {
+        self.in_flight.contains_key(key)
     }
 
-    pub(crate) fn finish_flight(&mut self, key: &K) {
-        self.in_flight.remove(key);
+    /// Announces `flight` as the decode for `key` and joins it.
+    pub(crate) fn start_flight(&mut self, key: K, flight: Flight<V>) -> JoinedFlight<V>
+    where
+        K: Clone,
+    {
+        self.in_flight.insert(key.clone(), flight);
+        self.join_flight(&key)
+            .expect("the flight was just announced")
+    }
+
+    /// Forgets the decode announced for `key` if it is the one `waiters`
+    /// belongs to, so a decode that ends late never removes its successor.
+    pub(crate) fn finish_flight(&mut self, key: &K, waiters: &Arc<FlightWaiters>) {
+        if self
+            .in_flight
+            .get(key)
+            .is_some_and(|flight| Arc::ptr_eq(&flight.waiters, waiters))
+        {
+            self.in_flight.remove(key);
+        }
+    }
+
+    /// Forgets the decode announced for `key` when it is the one `waiters`
+    /// belongs to and no request is waiting for it, and says whether it
+    /// did. Requests join under the same lock, so after `true` none can:
+    /// the next request for `key` announces a decode of its own.
+    pub(crate) fn abandon_flight_if_unwanted(
+        &mut self,
+        key: &K,
+        waiters: &Arc<FlightWaiters>,
+    ) -> bool {
+        if waiters.count.load(Ordering::SeqCst) != 0 {
+            return false;
+        }
+        self.finish_flight(key, waiters);
+        true
     }
 
     pub(crate) fn get(&mut self, key: &K) -> Option<V> {

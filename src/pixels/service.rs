@@ -13,7 +13,9 @@ use std::hash::Hash;
 use std::sync::{Arc, Mutex};
 
 use super::admission::{self, DecodeWork};
-use super::cache::{BudgetedLru, FrameBody, FrameCache, InFlight, RawFrameCache, ThumbnailCache};
+use super::cache::{
+    BudgetedLru, Flight, FlightWaiters, FrameBody, FrameCache, RawFrameCache, ThumbnailCache,
+};
 use super::deflated_frame::{
     decode_deflated_binary_frame_to_png, decode_raw_deflated_binary_frame,
     render_deflated_binary_frame,
@@ -423,7 +425,7 @@ pub async fn load_thumbnail(
         if let Some(body) = lock.get(&key) {
             return Ok(thumbnail_response(body, true));
         }
-        (lock.in_flight(&key), lock.scheduler())
+        (lock.join_flight(&key), lock.scheduler())
     };
     let (flight, cache_hit) = match flight {
         Some(flight) => (flight, true),
@@ -441,7 +443,7 @@ pub async fn load_thumbnail(
             if let Some(body) = lock.get(&key) {
                 return Ok(thumbnail_response(body, true));
             }
-            match lock.in_flight(&key) {
+            match lock.join_flight(&key) {
                 Some(flight) => {
                     drop(permit);
                     (flight, true)
@@ -481,13 +483,12 @@ pub async fn load_thumbnail(
                         std::future::ready(Ok(Some(permit))),
                         render,
                     );
-                    lock.start_flight(key, flight.clone());
-                    (flight, false)
+                    (lock.start_flight(key, flight), false)
                 }
             }
         }
     };
-    let body = flight.await.map_err(|error| error.duplicate())?;
+    let body = flight.result().await.map_err(|error| error.duplicate())?;
     Ok(thumbnail_response(body, cache_hit))
 }
 
@@ -857,7 +858,10 @@ async fn cached_or_rendered(
 ///
 /// The task first waits for an interactive permit for `work` on `file` from
 /// the cache's scheduler. A refusal is the decode's result, for every
-/// request that shared it, and nothing is cached.
+/// request that shared it, and nothing is cached. While it waits, the
+/// decode is only as wanted as its requests: when the last request waiting
+/// for it is dropped, it leaves the scheduler's queue and is never started,
+/// and a later request for `key` announces a new decode.
 async fn cached_or_decoded<K, V>(
     cache: &Arc<Mutex<BudgetedLru<K, V>>>,
     key: K,
@@ -874,7 +878,7 @@ where
         if let Some(value) = lock.get(&key) {
             return Ok((value, true));
         }
-        match lock.in_flight(&key) {
+        match lock.join_flight(&key) {
             Some(flight) => (flight, true),
             None => {
                 let scheduler = lock.scheduler();
@@ -884,12 +888,12 @@ where
                         .map(Some)
                 };
                 let flight = spawn_decode_with_permit(cache, key.clone(), permit, decode);
-                lock.start_flight(key, flight.clone());
-                (flight, false)
+                (lock.start_flight(key, flight), false)
             }
         }
     };
     flight
+        .result()
         .await
         .map(|value| (value, cache_hit))
         .map_err(|error| error.duplicate())
@@ -911,33 +915,27 @@ where
     K: Hash + Eq + Clone + Send + 'static,
     V: FrameBody + Send + Sync + 'static,
 {
-    let mut decode = Some(decode);
     let flight = {
         let mut lock = cache.lock().map_err(|_| cache_poisoned())?;
         if let Some(value) = lock.get(&key) {
             return Ok((value, true));
         }
-        match (lock.in_flight(&key), decode.take()) {
-            (None, Some(decode)) => {
-                let flight = spawn_decode_with_permit(
-                    cache,
-                    key.clone(),
-                    std::future::ready(Ok(None)),
-                    decode,
-                );
-                lock.start_flight(key.clone(), flight.clone());
-                Ok(flight)
-            }
-            (_, decode) => Err(decode),
+        if lock.has_flight(&key) {
+            Err(decode)
+        } else {
+            let flight =
+                spawn_decode_with_permit(cache, key.clone(), std::future::ready(Ok(None)), decode);
+            Ok(lock.start_flight(key.clone(), flight))
         }
     };
     match flight {
         Ok(flight) => flight
+            .result()
             .await
             .map(|value| (value, false))
             .map_err(|error| error.duplicate()),
         Err(decode) => {
-            let value = decode.expect("the decode was not announced").await?;
+            let value = decode.await?;
             if let Ok(mut lock) = cache.lock() {
                 lock.insert(key, value.clone());
             }
@@ -954,22 +952,58 @@ where
 /// The permit future is awaited in the detached task for viewer work; for
 /// thumbnails it is an already granted permit moved out of the request, and
 /// for a decode its caller's permit covers it is no permit at all.
+///
+/// While the permit future is pending, the task also watches the requests
+/// waiting for the flight ([`BudgetedLru::join_flight`]). When the last of
+/// them is dropped before the permit is granted, the flight is abandoned:
+/// its in-flight entry is removed, the permit future is dropped, which
+/// gives up its place in the scheduler's queue, and `decode` is never
+/// polled. A decode whose permit has been granted runs to its end and is
+/// cached whoever is still waiting.
 fn spawn_decode_with_permit<K, V>(
     cache: &Arc<Mutex<BudgetedLru<K, V>>>,
     key: K,
     permit: impl Future<Output = PixelResult<Option<DecodePermit>>> + Send + 'static,
     decode: impl Future<Output = PixelResult<V>> + Send + 'static,
-) -> InFlight<V>
+) -> Flight<V>
 where
     K: Hash + Eq + Clone + Send + 'static,
     V: FrameBody + Send + Sync + 'static,
 {
-    let (task_cache, task_key) = (Arc::clone(cache), key.clone());
+    let waiters = Arc::new(FlightWaiters::default());
+    let (task_cache, task_key, task_waiters) =
+        (Arc::clone(cache), key.clone(), Arc::clone(&waiters));
     let task = tokio::spawn(async move {
+        let admitted = {
+            let mut permit = std::pin::pin!(permit);
+            loop {
+                tokio::select! {
+                    // A permit that is ready is taken, wanted or not: the
+                    // scheduler has already granted it.
+                    biased;
+                    admitted = &mut permit => break Some(admitted),
+                    () = task_waiters.none_left() => {
+                        // Requests join under the cache lock, so under it
+                        // "nobody is waiting" stays true once seen.
+                        // A poisoned cache serves nobody: give up as well.
+                        let abandoned = task_cache.lock().map_or(true, |mut lock| {
+                            lock.abandon_flight_if_unwanted(&task_key, &task_waiters)
+                        });
+                        if abandoned {
+                            break None;
+                        }
+                    }
+                }
+            }
+        };
+        let Some(admitted) = admitted else {
+            // Nobody holds this flight any longer, so nobody reads this.
+            return Err(PixelError::DecodeBusy);
+        };
         // Cleanup belongs to the task too: even an abandoned request, a
         // refused permit and a panicked render must leave no in-flight
         // entry behind.
-        let result = match permit.await {
+        let result = match admitted {
             Ok(permit) => {
                 let result = std::panic::AssertUnwindSafe(decode)
                     .catch_unwind()
@@ -985,21 +1019,21 @@ where
             Err(refusal) => Err(refusal),
         };
         if let Ok(mut lock) = task_cache.lock() {
-            lock.finish_flight(&task_key);
+            lock.finish_flight(&task_key, &task_waiters);
             if let Ok(value) = &result {
                 lock.insert(task_key, value.clone());
             }
         }
         result
     });
-    let cache = Arc::clone(cache);
-    async move {
+    let (cache, flight_waiters) = (Arc::clone(cache), Arc::clone(&waiters));
+    let decode = async move {
         match task.await {
             Ok(result) => result.map_err(Arc::new),
             Err(join_error) => {
                 // A panicked decode never reached its own cleanup.
                 if let Ok(mut lock) = cache.lock() {
-                    lock.finish_flight(&key);
+                    lock.finish_flight(&key, &flight_waiters);
                 }
                 Err(Arc::new(PixelError::frame_decode(anyhow::anyhow!(
                     "decode task failed: {join_error}"
@@ -1008,7 +1042,8 @@ where
         }
     }
     .boxed()
-    .shared()
+    .shared();
+    Flight::new(decode, waiters)
 }
 
 /// The scheduler that admits the decodes filling `cache`.
