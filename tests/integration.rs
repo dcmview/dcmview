@@ -24,6 +24,8 @@ mod integration {
     mod server_minimal;
     mod support;
     mod tags_endpoint;
+    mod thumbnail_timing;
+    mod thumbnails;
     mod unix_socket;
     mod windowing_oracle;
     mod wsi_context;

@@ -18,17 +18,19 @@ mod pixeldata_frame;
 mod redaction;
 mod render;
 mod rle;
+mod schedule;
 mod segmentation;
 mod service;
 mod shutter;
 mod stored_bits;
 mod syntax;
+mod thumbnail;
 mod window;
 
 pub use cache::{
-    new_cache, new_overlay_cache, new_raw_cache, parse_byte_size, CacheBudget, FrameCache,
-    OverlayCache, RawFrameCache, FRAME_CACHE_MAX_BYTES, OVERLAY_CACHE_MAX_BYTES,
-    RAW_CACHE_MAX_BYTES,
+    new_cache, new_overlay_cache, new_raw_cache, new_thumbnail_cache, parse_byte_size, CacheBudget,
+    FrameCache, OverlayCache, RawFrameCache, ThumbnailCache, FRAME_CACHE_MAX_BYTES,
+    OVERLAY_CACHE_MAX_BYTES, RAW_CACHE_MAX_BYTES, THUMBNAIL_CACHE_MAX_BYTES,
 };
 pub(crate) use color::cielab_to_srgb8;
 pub use colorwash::{
@@ -41,14 +43,22 @@ pub(crate) use native_layout::{NativeByteOrder, NativeFrameLayout};
 pub use redaction::Redaction;
 pub(crate) use render::encode_presentation_layer_png;
 pub use render::AppliedWindow;
+pub use schedule::{
+    background_limit, decode_scheduler, DecodeClass, DecodePermit, DecodeScheduler,
+    INTERACTIVE_LATENCY_TARGET, ONE_CORE_IDLE_WINDOW,
+};
 pub use segmentation::encode_segmentation_overlay_png;
 pub(crate) use segmentation::segmentation_has_only_binary_samples;
 pub use service::{
-    load_frame, load_raw_frame, load_redacted_frame, load_redacted_raw_frame, raw_pixel,
-    FrameRequest, FrameResponse, RawFrameRequest, RawFrameResponse,
+    load_frame, load_raw_frame, load_redacted_frame, load_redacted_raw_frame, load_thumbnail,
+    raw_pixel, FrameRequest, FrameResponse, RawFrameRequest, RawFrameResponse,
 };
 pub use syntax::{
     classify_pixel_support, codec_for_syntax, Codec, PixelSupport, PixelSupportReason,
+};
+pub use thumbnail::{
+    thumbnail_bucket, thumbnail_dimensions, ThumbnailRequest, ThumbnailResponse,
+    THUMBNAIL_JPEG_QUALITY,
 };
 pub(crate) use window::read_pixel_padding_range;
 pub use window::{apply_window, resolve_window, resolve_window_with_mode};

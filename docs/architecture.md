@@ -51,7 +51,7 @@ application module:
 | HTTP wire model | `src/api/contracts.rs` | Plain `endpoints` table, media types, header names, wire structs (query names are `FrameQuery`/`TagQuery` fields), and error envelope. |
 | Launch and startup contract | `crates/dcmview-protocol` | `StartupEvent` (the `--startup-json` line), `launch_url`, `STARTUP_PROTOCOL`, the token fragment parameter and the token environment variable. Re-exported by `src/api/contracts.rs`. Fields are only added. |
 | HTTP runtime | `src/server/` | Listener/runtime, route registration, handlers, state, registry, activity tracking, tags, and embedded assets. |
-| Pixel service | `src/pixels/` | Typed display/raw requests, cache behavior, transfer-syntax classification, decoding, rendering, and `PixelError`. |
+| Pixel service | `src/pixels/` | Typed display, raw and thumbnail requests, cache behavior, transfer-syntax classification, decoding, the render seam (`render.rs` `DisplayBuffer`), decode classes (`schedule.rs`), and `PixelError`. |
 | Patient geometry | `src/geometry.rs` | Normalized per-frame position, orientation, pixel spacing, coplanarity checks, and target-to-source pixel transforms. |
 | Plane stacks | `src/plane_stack.rs` | RT Dose grids and Parametric Map frames as parallel planes; coverage and bracketing-plane sampling of a displayed frame. |
 | Value mapping | `src/value_mapping.rs` | Per-frame Modality transform and Real World Value Mappings (or Dose Grid Scaling) that convert stored samples. |
@@ -59,7 +59,7 @@ application module:
 | Semantic context | `src/semantic.rs` | Conservative SEG, Parametric Map, and RT Dose metadata interpretation layered beside unchanged pixel preview. |
 | Presentation states | `src/presentation_state.rs` | PIXEL-unit graphic and text annotations of softcopy presentation states, and which image frames each annotation item applies to. |
 | Display masking | `src/masking.rs` | `Masker`: the per-process keyed replacements of a `--mask` session (patient pseudonym, date shift, UID hash) and the tag rules, with the PS3.15 Table E.1-1 attribute list in `masking/profile.rs`. The registry holds it and masks the catalog as files register; handlers mask tag trees, semantic context and UID fields of other responses. |
-| Redaction boxes | `src/redactions.rs`, `src/pixels/redaction.rs` | `RedactionStore`: per-file boxes and their revision, in memory. The pixel service paints them into display PNGs (revision in the display cache key), fills them in raw frame copies, and the presentation layer paints them too. |
+| Redaction boxes | `src/redactions.rs`, `src/pixels/redaction.rs` | `RedactionStore`: per-file boxes and their revision, in memory. The pixel service paints them into display PNGs and thumbnails (revision in the display and thumbnail cache keys), fills them in raw frame copies, and the presentation layer paints them too. |
 | WSI tile context | `src/wsi.rs` | Bounded positioning of one selected WSI tile without stitching or Total Pixel Matrix reconstruction. |
 | Attribute readers | `src/dicom_values.rs` | Lenient string, number, and sequence readers shared by discovery, references, semantic context, and WSI context. |
 | File discovery | `src/loader/` | `discovery.rs` progressive events, cancellation, and reports; `entry.rs` format detection from content and DICOM `FileEntry` construction; `format.rs` the `--formats` selection and raster signatures; `raster.rs` header-only inspection of PNG, JPEG, TIFF and WebP into a `FileEntry`; `metadata.rs` geometry, LUT, overlay, and shutter extraction; `filter.rs` `--filter` predicates. |
@@ -138,9 +138,10 @@ modules, not the reverse:
 6. `pixels/service.rs` is the server-facing pixel boundary. Codec, cache,
    rendering, and window modules remain below it. A cache miss registers an
    in-flight decode that later requests for the key await; the decode runs as
-   its own task and caches its result even if its client disconnected, and a
-   semaphore bounds concurrent decodes to the core count. The frame caches are
-   bounded by bytes only. Grayscale 8- and 16-bit frames are presented through
+   its own task and caches its result even if its client disconnected, and
+   `schedule.rs` bounds concurrent decodes to the core count and grants
+   permits by decode class (see "Render Seam, Thumbnails And Decode
+   Classes"). The frame caches are bounded by bytes only. Grayscale 8- and 16-bit frames are presented through
    a per-stored-value lookup table (`render.rs`), with automatic windows from a
    histogram of stored values. `pixels/native_layout.rs`
    validates native frame sizing and normalizes bit-packed, planar, subsampled,
@@ -506,6 +507,13 @@ Fields are only added, and the crate's own test pins the exact shapes.
   cached render on a hit; color and VOI LUT frames, and frames windowed in a
   real-world `unit`, include neither. A `unit` window that cannot apply
   reports the default window the frame is shown with.
+- `/api/file/{index}/frame/{frame}/thumbnail?size=&window_mode=` returns a
+  small `image/jpeg` preview for the gallery with `X-Cache`,
+  `X-Thumbnail-Source` and `Cache-Control: no-store` (file indexes are valid
+  for one process only). `size` is the longest edge wanted, 1 to 1024,
+  snapped up to a bucket (128, 256, 512, 1024; 256 when absent); a size
+  outside that range is `400 invalid_query`. Its errors are otherwise the
+  display frame's. See "Render Seam, Thumbnails And Decode Classes".
 - Raw responses include all required `X-Frame-*` metadata headers. Default
   window headers are present only when the DICOM supplies a default window.
 - Unsupported transfer syntaxes are `422`, as are layouts the catalog marks
@@ -598,10 +606,14 @@ same operations from the frame's `presentation-layer` over its own windowed
 image, so a shutter or overlay no longer keeps a file on server windowing.
 
 Color display frames take the same shutter. Every color decode path converts
-to interleaved RGB and ends in `render::encode_rgb8_display_png`, which fills
+to interleaved RGB and ends in a `DisplayBuffer` (`DisplayBuffer::rgb8`), on
+which the display path fills
 pixels outside the opening with the Shutter Presentation Color CIELab Value
 converted from D50 PCS-values to sRGB, else the gray P-value on all three
 channels; the 16-bit JPEG 2000 RGB path scales that fill to its precision.
+The shutter and overlay planes are drawn on the render seam's buffer
+(`DisplayBuffer::draw_presentation_graphics`), after every decode path has
+produced its pixels and before PNG encoding.
 Each frame's shutter is its Per-frame Functional Groups Frame Display Shutter,
 else the Shared Functional Groups one, else the Display Shutter modules.
 
@@ -636,6 +648,93 @@ Extended Offset Table, and with a valid Extended or Basic Offset Table the
 reader seeks to the frame's first item; without one it steps over item
 headers, reading only each fragment's end to find a JPEG end marker (RLE has
 one fragment per frame).
+
+### Render Seam, Thumbnails And Decode Classes
+
+**Render seam.** Every decode path renders a frame to a `DisplayBuffer`
+(`pixels/render.rs`): 8-bit grayscale or RGB pixels in the stored pixel grid
+(16-bit RGB for the one JPEG 2000 path that has it), after everything that
+depends on the samples (Modality LUT or rescale, VOI LUT or window,
+MONOCHROME1 inversion, Pixel Padding, palette and YBR conversion) and before
+anything is drawn over it or encoded. Rendering and encoding are separate
+steps, and the buffer a decode path returns never has graphics or redaction
+on it, so one render serves either presentation:
+
+- a display frame draws the display shutter and overlay planes on the buffer
+  and encodes a PNG (`DisplayBuffer::into_display_png`), then paints the
+  frame's redaction boxes;
+- a thumbnail draws no shutter and no overlay planes, paints the redaction
+  boxes on the buffer (`DisplayBuffer::redact`), resamples it and encodes a
+  JPEG (`pixels/thumbnail.rs`).
+
+A new decoder (a raster format, for example) produces a `DisplayBuffer` and
+gets both presentations.
+
+**Thumbnails.** A thumbnail is the frame's whole field of view in the stored
+pixel grid, resampled to its physical aspect and fitted inside the size
+bucket; it is never cropped, rotated, flipped or enlarged, so a stored-grid
+position maps to a thumbnail position by one scale per axis.
+`pixels::thumbnail_dimensions` is the one statement of that geometry. The
+presentation is the same whatever produced the image: the frame's default
+window (or `window_mode=full_dynamic`), no shutter, no overlay planes, an
+area filter in display space, JPEG quality 85, no ICC profile.
+`X-Thumbnail-Source` is therefore diagnostic. The sources today are
+`thumbnail_cache` and `full_decode`; `display_cache`, `raw_cache` and
+`reduced_decode` are declared for the cheaper sources that follow.
+
+Thumbnails are withheld and redacted exactly where display frames are, so
+the gallery cannot show what the viewer hides:
+
+- a masked session (`--mask`) answers `403 masked` for the files whose
+  frames it withholds (slide label and overview images);
+- a frame's redaction boxes are painted black on the buffer before it is
+  resampled, so no redacted pixel contributes to any thumbnail pixel;
+- the thumbnail cache key is file, frame, bucket, window mode and the
+  revision of the file's redaction boxes (0 when the frame has none), so a
+  change to the boxes makes every cached thumbnail of the file unreachable.
+
+Thumbnails are written to their own cache only (`ThumbnailCache`, 64 MiB of
+encoded JPEGs by default). They never write the display or raw caches, which
+hold the viewer's working set, and do not read them. Identical concurrent
+requests share one render.
+
+**Decode classes.** Every decode holds a permit of the process's
+`DecodeScheduler` (`pixels/schedule.rs`), which has one permit per core. A
+request names its class. Thumbnails are `Background`; every other decode
+(display frames, raw frames, previews, the frames overlays are resampled
+from) is `Interactive`. The scheduler:
+
+- grants an interactive request as soon as a permit is free;
+- grants a background request only when a permit is free, background work
+  holds fewer than `background_limit(permits)` permits (half of them, at
+  least one, and never all of them on a multi-core host, so one permit is
+  always left for interactive work), and no interactive request is waiting;
+- on a one-core host, where no permit can be reserved, additionally holds a
+  background request back until no interactive request has arrived for
+  `ONE_CORE_IDLE_WINDOW` (one second);
+- considers waiting interactive requests first whenever a permit returns;
+- forgets a request that stops waiting.
+
+An interactive decode waits for its permit inside its own task, as before,
+so it finishes and is cached even when its client disconnects. A thumbnail
+waits for its permit inside the request, so a tile the user scrolled past is
+dropped before any work starts; once it holds a permit its render runs as
+its own task and is cached regardless.
+
+The class belongs to the endpoint. It is unrelated to
+`X-Dcmview-Background: 1`, which only keeps a request off the idle clock: a
+thumbnail of a tile the user is looking at is background decode work and
+user activity at once, and the header never changes how a request is served.
+
+A decode that holds a permit runs to completion, so the classes bound the
+delay the gallery adds to the viewer rather than remove it.
+`pixels::INTERACTIVE_LATENCY_TARGET` (100 ms) is that bound: while
+thumbnails load, the 95th percentile of the extra time an interactive
+display frame takes over the same frames on an idle server, end to end at
+the HTTP boundary, on a host with four cores or more. The opt-in measurement
+`integration::thumbnail_timing` reports it and enforces it in a release
+build on such a host. On a one-core host the bound is one background decode
+that had already started.
 
 See [the HTTP API reference](api.md) for endpoint payloads and headers.
 
@@ -753,9 +852,9 @@ join guarantees after hard task abortion.
 
 ### Process Seams For A Supervising Parent
 
-- `--cache-budget BYTES` sets one total for the display, raw and overlay
-  frame caches. `pixels::CacheBudget` splits it in the proportions of the
-  defaults (256, 384 and 64 MiB), and `AppState::with_cache_budget` builds
+- `--cache-budget BYTES` sets one total for the display, raw, overlay and
+  thumbnail caches. `pixels::CacheBudget` splits it in the proportions of
+  the defaults (256, 384, 64 and 64 MiB), and `AppState::with_cache_budget` builds
   the caches from it before the router exists. Tag, semantic and value
   mapping caches are bounded by entry count and are not part of the budget.
 - `--exit-with-parent` (hidden) treats end of file on stdin as a stop signal
@@ -764,7 +863,8 @@ join guarantees after hard task abortion.
   keeps its write end open: a closed or null stdin is an immediate end of
   file.
 - A request carrying `X-Dcmview-Background: 1` is served and drained like
-  any other but does not move the idle clock that `--timeout` reads. The
+  any other but does not move the idle clock that `--timeout` reads. It does
+  not select a decode class; the endpoint does. The
   viewer's own polling does not send it in a standalone launch, so
   `--timeout` behaves there as before.
 
@@ -911,6 +1011,11 @@ installation and VS Code Electron integration can also use network/cache state;
   broader compatibility is manual or reported with de-identified data.
 - Performance targets require explicit timing and memory instrumentation. They
   are not inferred from mocked or ordinary correctness tests.
+- `integration::thumbnail_timing` is such an instrument and is ignored in
+  normal runs: it measures the delay thumbnails add to display frames
+  against `pixels::INTERACTIVE_LATENCY_TARGET` over files it generates. Run
+  it in a release build (`cargo test --release --test integration
+  thumbnail_timing -- --ignored --nocapture`). The `corpus` profile skips it.
 
 ## Extension Points
 
@@ -941,6 +1046,11 @@ Not current correctness blockers:
   exit or error path.
 - Keep CPU, codec, filesystem, and Rayon work off the async executor.
 - Do not hold cache or registry locks across I/O, decode, encode, or await.
+- Every decode takes a `DecodeScheduler` permit of the right class; only
+  gallery and other non-interactive work is `Background`.
+- Thumbnails write their own cache only, and anything that returns source
+  pixels applies the frame's redaction boxes and the masked-session refusal
+  before encoding.
 - Treat `src/api/contracts.rs` plus its generated TypeScript as one contract.
 - Keep `crates/dcmview-protocol` free of viewer, server and DICOM
   dependencies, and only add fields to its types.

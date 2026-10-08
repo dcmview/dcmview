@@ -85,7 +85,7 @@ struct Cli {
         long = "cache-budget",
         value_name = "BYTES",
         value_parser = parse_cache_budget,
-        help = "Total memory for the frame caches, such as 256MiB; default about 700MiB"
+        help = "Total memory for the frame caches, such as 256MiB; default 768MiB"
     )]
     cache_budget: Option<CacheBudget>,
 

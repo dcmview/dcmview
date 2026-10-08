@@ -437,8 +437,10 @@ compiles the VS Code extension.
 
 See the [development reference](docs/development.md) for source builds, frontend
 proxy behavior, fixture policy, test commands, architecture notes, and cache
-budget guidance. On smaller machines, `--cache-budget 256MiB` reduces the
-server's retained frame caches; it does not cap total process or browser
+budget guidance. The server defaults to 768 MiB across four caches: 256 MiB
+for display PNGs, 384 MiB for raw frames, 64 MiB for overlays and 64 MiB for
+thumbnail JPEGs. On smaller machines, `--cache-budget 256MiB` reduces these
+retained caches proportionally; it does not cap total process or browser
 memory. See [frame cache memory](docs/configuration.md#frame-cache-memory)
 for accepted sizes and limits.
 

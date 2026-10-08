@@ -105,7 +105,8 @@ would remove behavior, raise it as a question instead of acting.
 - **Redaction boxes** - rectangles drawn with the Redact tool over burned-in
   text, per file, covering every frame unless scoped, in server memory for
   the session and never exported. The server applies them in both frame
-  endpoints and the presentation layer, so a redacted region is never sent.
+  endpoints, the presentation layer and thumbnails, so a redacted region is
+  never sent.
   "Apply to series" copies a file's boxes to the same-sized files of its
   series. Available with or without `--mask`.
 
@@ -230,7 +231,7 @@ Frontend (Svelte 5, compiled into the binary via rust-embed):
   types. It re-exports selected wire types for compatibility but does not own
   them.
 - `server/api/state.rs` owns private `AppState` resources: `FileRegistry`,
-  display/raw/tag caches, `AnnotationStore`, server start
+  display/raw/thumbnail/tag caches, `AnnotationStore`, server start
   time, and `RequestActivity`. Construct it through `AppState::new`.
 - `server/catalog.rs` owns progressive registry contents and scan counters.
 - `startup/discovery.rs` owns discovery cancellation, task handles, typed
@@ -269,6 +270,21 @@ syntaxes and unsupported raw component layouts return 422 or a decode error.
 Both display and raw frame endpoints must include `X-Cache: HIT` or
 `X-Cache: MISS`.
 
+Every decode path renders to a `DisplayBuffer` (`pixels/render.rs`), the seam
+between rendering and encoding: the display path draws the shutter and
+overlay planes on it and encodes a PNG, the thumbnail path paints redaction
+boxes on it, shrinks it and encodes a JPEG. A new decoder returns a
+`DisplayBuffer`; it does not encode. Thumbnails
+(`/api/file/{index}/frame/{frame}/thumbnail`) are gallery previews in the
+stored pixel grid with the default presentation, kept in their own cache and
+never written to the display or raw caches.
+
+Every decode takes a permit from `pixels::decode_scheduler()` and names its
+`DecodeClass`: `Background` for thumbnails and other work nobody is waiting
+on, `Interactive` for everything else. The class is fixed by the endpoint,
+not by the `X-Dcmview-Background` header. `docs/architecture.md`, "Render
+Seam, Thumbnails And Decode Classes", is normative for both.
+
 ---
 
 ## Key Directories
@@ -287,8 +303,8 @@ dcmview/
 |   |-- masking.rs       --mask display masking rules and the PS3.15 profile list
 |   |-- redactions.rs    in-memory redaction boxes and their revisions
 |   |-- signals.rs       stop-signal listeners registered before startup output
-|   |-- pixels/          service, caches, codecs, rendering, windowing, shutters,
-|   |                    overlay colorwash
+|   |-- pixels/          service, caches, codecs, render seam, thumbnails, decode
+|   |                    classes, windowing, shutters, overlay colorwash
 |   |-- server/          API, catalog, lifecycle, runtime, tags, web assets
 |   |-- dicom_values.rs  shared lenient attribute readers
 |   |-- object_kind.rs   SOP class to object-kind classification
@@ -493,8 +509,10 @@ is cached between requests.
 - Masked values are computed from the process's random keys; never persist
   them or derive them from anything stable across runs.
 - Redaction boxes are applied where frames leave the pixel service
-  (`load_redacted_frame`, `load_redacted_raw_frame`, the presentation
-  layer). A new endpoint that returns source pixels must apply them too.
+  (`load_redacted_frame`, `load_redacted_raw_frame`, `load_thumbnail`, the
+  presentation layer). A new endpoint that returns source pixels must apply
+  them too, key any cache of its output on the boxes' revision, and refuse
+  what a masked session withholds (`ensure_pixels_shown`).
 
 **Annotations**
 
@@ -659,7 +677,7 @@ the warning path in `server/runtime.rs`.
 | `src/api/contracts.rs` | Canonical HTTP endpoint and wire contract |
 | `src/server/` | Axum runtime, lifecycle, catalog, API, tags, and web assets |
 | `src/loader/` | Cancellable DICOM and raster discovery and metadata extraction |
-| `src/pixels/` | Pixel service, codecs, display/raw paths, caches, and windowing |
+| `src/pixels/` | Pixel service, codecs, display/raw/thumbnail paths, render seam, decode classes, caches, and windowing |
 | `src/annotations.rs` | ROI CSV import/export, validation, in-memory store |
 | `src/types.rs` | Internal domain, transfer-syntax, and cache-key types |
 | `build.rs` | Frontend build integration and Cargo fingerprints |
@@ -753,6 +771,12 @@ default suite.
   `tests/fixtures/embed-goldens/` byte for byte, rows in any order.
 - A masked session shows no fixture identifier in the catalog, series catalog,
   tag tree or selected elements, and its hashed UIDs agree across endpoints.
+- A thumbnail is the default display frame shrunk, within JPEG tolerance; it
+  is blanked under a redaction box, a cache `MISS` after the boxes change,
+  refused for label images in a masked session, and never fills the display
+  or raw cache.
+- Interactive decode requests are granted permits before background ones,
+  and a request that stops waiting takes none.
 - A redaction box blanks the display and raw frame, is a cache `MISS` after a
   change, copies to the same-sized files of the series, and stays out of the
   ROI export.

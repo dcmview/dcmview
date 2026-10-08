@@ -29,6 +29,11 @@ impl ApiError {
         }
     }
 
+    /// A well-formed query whose value is outside what the endpoint takes.
+    pub(super) fn invalid_query(message: impl Into<String>) -> Self {
+        Self::coded(StatusCode::BAD_REQUEST, ApiErrorCode::InvalidQuery, message)
+    }
+
     pub(super) fn not_found(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::NOT_FOUND,

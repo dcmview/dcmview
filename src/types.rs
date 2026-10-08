@@ -429,6 +429,21 @@ impl FrameCacheKey {
     }
 }
 
+/// A cached thumbnail: one frame at one size bucket and window mode. Every
+/// thumbnail source yields the same presentation, so the key has no source.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ThumbnailCacheKey {
+    pub file_index: usize,
+    pub frame: u32,
+    /// One of `contracts::THUMBNAIL_SIZE_BUCKETS`.
+    pub bucket: u32,
+    pub window_mode: WindowMode,
+    /// Revision of the redaction boxes painted on the frame; 0 without any.
+    /// A change to a file's boxes moves the revision, so a thumbnail
+    /// rendered before the change is never served after it.
+    pub redaction: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WindowRequest {
     center: Option<f64>,

@@ -21,11 +21,24 @@ use super::icc::select_icc_profile;
 use super::native_layout::{native_pixel_element_tag, NativeByteOrder, NativeFrameLayout};
 use super::palette::palette_indices_to_rgb8;
 use super::render::{
-    encode_rgb8_display_png, encode_windowed_luminance_png, DisplayPng, LuminanceRenderOptions,
-    StoredSamples,
+    render_windowed_luminance, DisplayBuffer, DisplayPng, LuminanceRenderOptions, StoredSamples,
 };
 use super::stored_bits::canonicalize_integer_samples;
 use super::syntax::Codec;
+
+pub(crate) async fn render_uncompressed(
+    file: Arc<FileEntry>,
+    frame: u32,
+    requested_wc: Option<f64>,
+    requested_ww: Option<f64>,
+    window_mode: WindowMode,
+) -> Result<DisplayBuffer> {
+    task::spawn_blocking(move || {
+        render_uncompressed_blocking(&file, frame, requested_wc, requested_ww, window_mode)
+    })
+    .await
+    .context("uncompressed decode task failed")?
+}
 
 pub(crate) async fn decode_uncompressed_to_png(
     file: Arc<FileEntry>,
@@ -41,13 +54,13 @@ pub(crate) async fn decode_uncompressed_to_png(
     .context("uncompressed decode task failed")?
 }
 
-fn decode_uncompressed_to_png_blocking(
+fn render_uncompressed_blocking(
     file: &FileEntry,
     frame: u32,
     requested_wc: Option<f64>,
     requested_ww: Option<f64>,
     window_mode: WindowMode,
-) -> Result<DisplayPng> {
+) -> Result<DisplayBuffer> {
     let rows = file.rows;
     let columns = file.columns;
     let samples_per_pixel = file.samples_per_pixel.max(1);
@@ -86,15 +99,8 @@ fn decode_uncompressed_to_png_blocking(
             Some(samples) => color_samples_to_rgb8(samples, &frame_bytes, pixel_count, 0)?,
             None => palette_indices_to_rgb8(&object, &frame_bytes, bits_allocated)?,
         };
-        return encode_rgb8_display_png(
-            file,
-            frame,
-            rgb,
-            columns,
-            rows,
-            select_icc_profile(&object),
-        )
-        .context("color PNG encoding failed");
+        return DisplayBuffer::rgb8(rgb, columns, rows, select_icc_profile(&object))
+            .context("color PNG encoding failed");
     }
     if samples_per_pixel != 1 || !matches!(photometric.as_str(), "MONOCHROME1" | "MONOCHROME2") {
         return Err(anyhow!(
@@ -120,7 +126,7 @@ fn decode_uncompressed_to_png_blocking(
         _ => None,
     };
     if let Some(container) = container {
-        return encode_windowed_luminance_png(
+        return render_windowed_luminance(
             file,
             StoredSamples::Integer {
                 bytes: &frame_bytes,
@@ -137,7 +143,18 @@ fn decode_uncompressed_to_png_blocking(
         false,
         kind,
     )?;
-    encode_windowed_luminance_png(file, StoredSamples::Values(&stored), options)
+    render_windowed_luminance(file, StoredSamples::Values(&stored), options)
+}
+
+fn decode_uncompressed_to_png_blocking(
+    file: &FileEntry,
+    frame: u32,
+    requested_wc: Option<f64>,
+    requested_ww: Option<f64>,
+    window_mode: WindowMode,
+) -> Result<DisplayPng> {
+    render_uncompressed_blocking(file, frame, requested_wc, requested_ww, window_mode)?
+        .into_display_png(file, frame)
 }
 
 fn native_frame_layout(file: &FileEntry) -> NativeFrameLayout<'_> {
