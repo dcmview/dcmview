@@ -145,6 +145,7 @@
     "@vscode/vsce": "^3.9.2",
     "mocha": "^11.3.0",
     "ovsx": "1.1.0",
+    "playwright-core": "^1.64.0",
     "typescript": "^5.7.2"
   },
   "overrides": {

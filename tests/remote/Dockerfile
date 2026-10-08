@@ -1,12 +1,13 @@
 # The "remote server" for the remote-ssh check profile: an SSH host with
 # Python and a normal user, and no dcmview. The suite copies in the wheel
-# under test and the user's key at run time.
+# under test and the user's key at run time. curl lets VS Code Remote-SSH
+# download its server, as it does on a real host.
 ARG BASE_IMAGE=ubuntu:22.04
 FROM ${BASE_IMAGE}
 
 RUN apt-get update \
 	&& DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-		openssh-server python3 python3-venv procps \
+		openssh-server python3 python3-venv procps curl ca-certificates \
 	&& rm -rf /var/lib/apt/lists/* \
 	&& mkdir -p /run/sshd \
 	&& useradd --create-home --shell /bin/bash annot \

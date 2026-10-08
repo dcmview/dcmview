@@ -5,11 +5,13 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import zipfile
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -286,28 +288,80 @@ class CheckRunner:
 			env=env,
 		)
 
+	def remote_wheel(self) -> Path:
+		"""The manylinux wheel the remote profiles test: named, or built here."""
+		wheel = os.environ.get("DCMVIEW_REMOTE_WHEEL")
+		if wheel:
+			return Path(wheel).resolve()
+		run("Build the manylinux wheel", ["bash", "scripts/build_linux_wheel.sh"])
+		built = sorted(
+			(REPO_ROOT / "dist").glob("dcmview_py-*-manylinux_2_28_x86_64.whl"),
+			key=lambda path: path.stat().st_mtime,
+		)
+		if not built:
+			raise CheckError("scripts/build_linux_wheel.sh left no manylinux wheel in dist/")
+		return built[-1]
+
 	def remote_ssh(self) -> None:
 		"""Run the remote-server workflow over real SSH against a manylinux wheel."""
-		wheel = os.environ.get("DCMVIEW_REMOTE_WHEEL")
-		if not wheel:
-			run("Build the manylinux wheel", ["bash", "scripts/build_linux_wheel.sh"])
-			built = sorted(
-				(REPO_ROOT / "dist").glob("dcmview_py-*-manylinux_2_28_x86_64.whl"),
-				key=lambda path: path.stat().st_mtime,
-			)
-			if not built:
-				raise CheckError("scripts/build_linux_wheel.sh left no manylinux wheel in dist/")
-			wheel = str(built[-1])
+		wheel = self.remote_wheel()
 		if self.install:
 			run("Install Playwright", [self.python, "-m", "pip", "install", f"playwright=={PLAYWRIGHT_VERSION}"])
 			run("Install Chromium for Playwright", [self.python, "-m", "playwright", "install", "--with-deps", "chromium"])
 		env = os.environ.copy()
-		env["DCMVIEW_REMOTE_WHEEL"] = str(Path(wheel).resolve())
+		env["DCMVIEW_REMOTE_WHEEL"] = str(wheel)
 		run(
 			"Run remote SSH workflow tests",
 			[self.python, "-m", "unittest", "-v", "python.tests.remote_ssh_integration"],
 			env=env,
 		)
+
+	def vscode_remote_ssh(self) -> None:
+		"""Run VS Code over Remote-SSH against the linux-x64 VSIX and the wheel's binary."""
+		wheel = self.remote_wheel()
+		self.install_vscode()
+		vsix = os.environ.get("DCMVIEW_REMOTE_VSIX")
+		if not vsix:
+			vsix = str(self.package_linux_vsix(wheel))
+		env = os.environ.copy()
+		env["DCMVIEW_REMOTE_WHEEL"] = str(wheel)
+		env["DCMVIEW_REMOTE_VSIX"] = str(Path(vsix).resolve())
+		run(
+			"Run VS Code Remote-SSH workflow tests",
+			[self.python, "-m", "unittest", "-v", "python.tests.vscode_remote_ssh_integration"],
+			env=env,
+		)
+
+	def package_linux_vsix(self, wheel: Path) -> Path:
+		"""Package the linux-x64 VSIX around the wheel's binary, as release does."""
+		staging = Path(tempfile.mkdtemp(prefix="dcmview-remote-vsix-"))
+		binary = staging / "dcmview"
+		with zipfile.ZipFile(wheel) as archive:
+			binary.write_bytes(archive.read("dcmview_py/bin/dcmview"))
+		binary.chmod(0o755)
+		version = json.loads((REPO_ROOT / "vscode" / "package.json").read_text(encoding="utf-8"))["version"]
+		run(
+			"Package the Linux release archive",
+			[
+				self.python, "scripts/package_release_archive.py",
+				"--version", version,
+				"--archive-suffix", "x86_64-unknown-linux-gnu",
+				"--binary", str(binary),
+				"--binary-name", "dcmview",
+				"--format", "tar.gz",
+				"--out-dir", str(staging / "artifacts"),
+			],
+		)
+		run(
+			"Package the linux-x64 VSIX",
+			[
+				self.python, "scripts/package_vscode_targets.py",
+				"--artifacts-dir", str(staging / "artifacts"),
+				"--out-dir", str(staging),
+				"--target", "linux-x64",
+			],
+		)
+		return staging / f"dcmview-{version}-linux-x64.vsix"
 
 	def quick(self) -> None:
 		self.versions()
@@ -390,6 +444,7 @@ def parse_args() -> argparse.Namespace:
 			"e2e",
 			"external",
 			"remote-ssh",
+			"vscode-remote-ssh",
 			"marketing",
 		],
 		help="check profile to execute",
@@ -429,6 +484,7 @@ def main() -> int:
 		"e2e": runner.e2e,
 		"external": runner.external,
 		"remote-ssh": runner.remote_ssh,
+		"vscode-remote-ssh": runner.vscode_remote_ssh,
 		"marketing": runner.marketing,
 	}
 

@@ -173,22 +173,22 @@ class RemoteHost:
 		).stdout.splitlines()[0]
 		self.port = int(published.rsplit(":", 1)[1])
 
-		self._copy(self.key.with_suffix(".pub"), f"{REMOTE_HOME}/.ssh/authorized_keys")
-		self._copy(self.wheel, f"/tmp/{self.wheel.name}")
-		self._copy(FIXTURE_FILE, REMOTE_FIXTURE)
+		self.copy(self.key.with_suffix(".pub"), f"{REMOTE_HOME}/.ssh/authorized_keys")
+		self.copy(self.wheel, f"/tmp/{self.wheel.name}")
+		self.copy(FIXTURE_FILE, REMOTE_FIXTURE)
 		self._wait_for_ssh()
 		# The wheel's bundled binary is the same build as the Linux release
 		# archive's, so it also stands in for a plain binary install.
 		with zipfile.ZipFile(self.wheel) as archive:
 			binary = self.workdir / "dcmview"
 			binary.write_bytes(archive.read("dcmview_py/bin/dcmview"))
-		self._copy(binary, REMOTE_BINARY)
+		self.copy(binary, REMOTE_BINARY)
 		self.run(
 			f"chmod +x {REMOTE_BINARY} && python3 -m venv {REMOTE_VENV} "
 			f"&& {REMOTE_VENV}/bin/pip install --quiet --no-index /tmp/{self.wheel.name}"
 		)
 
-	def _copy(self, source: Path, destination: str) -> None:
+	def copy(self, source: Path, destination: str) -> None:
 		assert self.container is not None
 		subprocess.run(
 			["docker", "exec", self.container, "install", "-d", "-o", "annot", "-g", "annot", str(Path(destination).parent)],

@@ -366,6 +366,10 @@ python scripts/check.py external
 # container; set DCMVIEW_REMOTE_WHEEL to skip building one
 python scripts/check.py remote-ssh --install
 
+# VS Code with Remote-SSH against the same container and the linux-x64 VSIX;
+# needs a display (xvfb-run on Linux) and network for VS Code and Remote-SSH
+python scripts/check.py vscode-remote-ssh --install
+
 # Ignored prepared-corpus tests against a local prepared corpus (flat `all`
 # or per-profile layout); fails if the corpus path is missing
 python scripts/check.py corpus --corpus /path/to/prepared-corpus
