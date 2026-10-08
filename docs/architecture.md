@@ -706,6 +706,7 @@ flowchart TD
     corpus["corpus"] --> players["ignored lib and integration tests<br/>over a local generated corpus"]
     external["external"] --> xlayers["feature-gated remote fixtures<br/>network or local cache allowed"]
     remote["remote-ssh"] --> slayers["manylinux wheel in an SSH server container<br/>real ssh -L, headless Chromium paint"]
+    vremote["vscode-remote-ssh"] --> vlayers["linux-x64 VSIX over real Remote-SSH<br/>webview paint, terminal routing"]
     marketing["marketing"] --> mlayers["capture manifest and driver checks<br/>media drift gate when published"]
     ci["CI component jobs"] -. "reuse focused profiles" .-> qlayers
     ci -.-> clayers
@@ -727,6 +728,7 @@ The supported development baselines are Rust 1.88+, Node.js 20.19+, and Python
 | `corpus` | Stored generated corpus, unit and integration level | Builds frontend assets and runs every ignored lib and integration test except the remote-fixture ones, with `DCMVIEW_PREPARED_CORPUS` set from `--corpus PATH` or the environment. Those tests read cases from a local dicom-test-suite corpus, either one flat `all` corpus or per-profile `core`/`extended`/`extended-deflate` roots; the ICC test's JPEG XL and JPEG 2000 re-encodings run only when their per-profile roots exist. It fails before building when the corpus is unset or not a directory, never generates one, and no CI workflow runs it. |
 | `external` | Opt-in upstream DICOM compatibility | Builds frontend assets and runs only ignored integration tests behind `remote-fixtures`; those tests may download or populate the `dicom-test-files` cache. It is separate from `e2e`. |
 | `remote-ssh` | Remote-server workflow | Copies a manylinux wheel (`DCMVIEW_REMOTE_WHEEL`, else one built with `scripts/build_linux_wheel.sh`) into a throwaway SSH server container built from `tests/remote/Dockerfile` (Ubuntu 22.04 by default, `DCMVIEW_REMOTE_BASE_IMAGE` overrides), then reaches it only with the real `ssh` client. `python/tests/remote_ssh_integration.py` launches the bundled binary, the console scripts, `python -m dcmview_py` and `view(block=False)` over SSH; forwards what the printed hint names, over TCP and `--unix-socket`; checks that the page shell is public and the API needs the token; checks in headless Chromium that the forwarded `#token=` link paints a frame; and checks that Ctrl+C, `--timeout` and a dropped interactive session stop the server. Needs Docker, `ssh` and Python Playwright with Chromium (`--install` installs Playwright). CI runs it on the wheel the packaging job built. |
+| `vscode-remote-ssh` | VS Code Remote-SSH workflow | Uses the same container and wheel as `remote-ssh`, plus a linux-x64 VSIX (`DCMVIEW_REMOTE_VSIX`, else one packaged around the wheel's binary with the release scripts). `tests/remote/vscode_remote_ssh.mjs` downloads VS Code (`DCMVIEW_VSCODE_REMOTE_VERSION`, default `stable`) and the Marketplace Remote-SSH extension into throwaway directories and connects once so the VS Code Server installs; the VSIX then goes in with that server's CLI. Playwright's Electron driver then opens the fixture in the custom editor and runs `dcmview` and the wheel's `dcmview-py` in remote integrated terminals. Each flow passes only when the viewer frame inside the webview, loaded through VS Code's port forward with its `#token=`, paints. After all editors close, no dcmview may be left on the remote. Needs Node, a display (`xvfb-run`), and network access for VS Code, Remote-SSH and the VS Code Server. |
 | `marketing` | Capture tooling and release media | Validates tracked source/capture manifests, syntax-checks the browser and VS Code capture drivers, runs marketing-media unit tests, and—once an approved bundle is committed—verifies published hashes and the capture-input digest without ignored DICOM sources. |
 
 Pass `--install` when the profile should run `npm ci` for the frontend and, when
@@ -800,8 +802,8 @@ installation and VS Code Electron integration can also use network/cache state;
   computable. The corpus is handled locally only; no CI workflow runs it. For
   codec or display changes, every check that passed on the base commit must
   still pass. See `scripts/compatibility/README.md`.
-- Apart from the `remote-ssh` paint check, no profile automates a real
-  browser. Manual acceptance uses the actual
+- Apart from the `remote-ssh` and `vscode-remote-ssh` paint checks, no
+  profile automates a real browser. Manual acceptance uses the actual
   Svelte app and fixture server to exercise canvas/network behavior: metadata-only and unsupported states,
   pixel-preview/semantic-context switching, typed references, SEG/Parametric
   Map/RT Dose context and colorwash overlays, presentation state annotations

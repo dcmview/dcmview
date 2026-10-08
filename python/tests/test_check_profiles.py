@@ -178,5 +178,22 @@ class CheckProfileCompositionTests(unittest.TestCase):
 		self.assertEqual(command[-1], "python.tests.remote_ssh_integration")
 		self.assertEqual(run.call_args.kwargs["env"]["DCMVIEW_REMOTE_WHEEL"], "/tmp/dcmview.whl")
 
+	def test_vscode_remote_ssh_tests_the_named_artifacts_without_packaging(self) -> None:
+		runner = RecordingRunner()
+		with (
+			mock.patch.dict(
+				os.environ,
+				{"DCMVIEW_REMOTE_WHEEL": "/tmp/dcmview.whl", "DCMVIEW_REMOTE_VSIX": "/tmp/dcmview.vsix"},
+			),
+			mock.patch.object(runner, "package_linux_vsix") as package,
+			mock.patch.object(check, "run") as run,
+		):
+			runner.vscode_remote_ssh()
+
+		package.assert_not_called()
+		_label, command = run.call_args.args
+		self.assertEqual(command[-1], "python.tests.vscode_remote_ssh_integration")
+		self.assertEqual(run.call_args.kwargs["env"]["DCMVIEW_REMOTE_VSIX"], "/tmp/dcmview.vsix")
+
 if __name__ == "__main__":
 	unittest.main()
