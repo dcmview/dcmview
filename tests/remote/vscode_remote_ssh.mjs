@@ -154,9 +154,24 @@ async function waitForNewPaintedViewer(page, known) {
 }
 
 async function typeInTerminal(page, line) {
-  await page.locator('.terminal-wrapper.active .xterm, .terminal .xterm').first().click();
+  // Creating a terminal focuses it; typing goes to its xterm textarea.
+  await page.locator('.xterm-helper-textarea').last().waitFor({ state: 'attached' });
   await page.keyboard.type(line);
   await page.keyboard.press('Enter');
+}
+
+/** What a failed flow left on screen: terminal text and editor tab titles. */
+async function diagnostics(page) {
+  const terminal = await page
+    .locator('.xterm-rows')
+    .last()
+    .innerText({ timeout: 2_000 })
+    .catch(() => '');
+  const tabs = await page
+    .locator('.tabs-container .tab .label-name')
+    .allInnerTexts()
+    .catch(() => []);
+  return { terminal: terminal.split('\n').filter((row) => row.trim()).slice(-15), tabs };
 }
 
 function report(name, ok, detail = {}) {
@@ -221,7 +236,10 @@ async function scenarios(executable) {
       try {
         await open();
         const result = await waitForNewPaintedViewer(page, known);
-        if (!result.painted) await screenshot(page, name);
+        if (!result.painted) {
+          await screenshot(page, name);
+          Object.assign(result, await diagnostics(page));
+        }
         report(name, result.painted, result);
       } catch (error) {
         await screenshot(page, name);
