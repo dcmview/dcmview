@@ -300,9 +300,11 @@ describe("ImageViewport window/level path", () => {
 	});
 
 	it.each([
-		"raster.decode_not_available",
 		"raster.unsupported_color",
 		"raster.unsupported_sample_format",
+		"raster.unsupported_compression",
+		"raster.jpeg_unsupported_process",
+		"raster.too_large",
 	])("says an image file cannot be displayed instead of requesting its frames (%s)", async (support_reason) => {
 		vi.mocked(api.fetchPresentationLayerBlob).mockClear();
 		vi.mocked(api.fetchSelectedTag).mockClear();
