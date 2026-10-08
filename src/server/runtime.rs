@@ -125,7 +125,8 @@ impl BoundServer {
             Self::Unix(socket) => {
                 StartupEvent::unix_socket(&socket.path().to_string_lossy(), token)
             }
-        };
+        }
+        .with_key_rules(crate::keys::KEY_RULES);
 
         if state.registry().masker().is_some() {
             crate::status_line!(

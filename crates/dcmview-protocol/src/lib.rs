@@ -75,6 +75,14 @@ pub struct StartupEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub socket: Option<String>,
     pub protocol: u32,
+    /// Version of the file-key rules the process applies
+    /// (`docs/design/seams.md`, section 12): which key a file gets and how
+    /// it is written. A parent that stored records under keys refuses a
+    /// child whose number differs. Absent from a process older than file
+    /// keys. The number itself is `KEY_RULES` of the `dcmview-annotation`
+    /// crate; this crate only carries it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_rules: Option<u32>,
 }
 
 /// Never prints the token or the URL that carries it.
@@ -85,6 +93,7 @@ impl std::fmt::Debug for StartupEvent {
             .field("base_url", &self.base_url)
             .field("socket", &self.socket)
             .field("protocol", &self.protocol)
+            .field("key_rules", &self.key_rules)
             .finish_non_exhaustive()
     }
 }
@@ -104,6 +113,7 @@ impl StartupEvent {
             port: Some(port),
             socket: None,
             protocol: STARTUP_PROTOCOL,
+            key_rules: None,
         }
     }
 
@@ -118,7 +128,15 @@ impl StartupEvent {
             port: None,
             socket: Some(socket.to_string()),
             protocol: STARTUP_PROTOCOL,
+            key_rules: None,
         }
+    }
+
+    /// The same event reporting the file-key rules version the process
+    /// applies.
+    pub fn with_key_rules(mut self, key_rules: u32) -> Self {
+        self.key_rules = Some(key_rules);
+        self
     }
 }
 
@@ -174,6 +192,34 @@ mod tests {
                     "token": "Xy-_09",
                     "socket": "/run/user/1000/dcmview/scan.sock",
                     "protocol": 1
+                }),
+            ),
+            // What the viewer prints: both listeners with the key-rules
+            // version.
+            (
+                StartupEvent::tcp("http://127.0.0.1:43127", "127.0.0.1", 43127, Some("Xy-_09"))
+                    .with_key_rules(1),
+                json!({
+                    "type": "server_started",
+                    "url": "http://127.0.0.1:43127/#token=Xy-_09",
+                    "base_url": "http://127.0.0.1:43127",
+                    "token": "Xy-_09",
+                    "host": "127.0.0.1",
+                    "port": 43127,
+                    "protocol": 1,
+                    "key_rules": 1
+                }),
+            ),
+            (
+                StartupEvent::unix_socket("/run/user/1000/dcmview/scan.sock", None)
+                    .with_key_rules(1),
+                json!({
+                    "type": "server_started",
+                    "url": null,
+                    "token": null,
+                    "socket": "/run/user/1000/dcmview/scan.sock",
+                    "protocol": 1,
+                    "key_rules": 1
                 }),
             ),
         ];
