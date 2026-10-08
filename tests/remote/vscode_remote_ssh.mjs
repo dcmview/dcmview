@@ -153,6 +153,16 @@ async function waitForNewPaintedViewer(page, known) {
   return { painted: false, frames: seen.map((frame) => new URL(frame.url()).origin) };
 }
 
+/**
+ * Open an integrated terminal on the remote. The command palette also lists
+ * "Create New Terminal (Local)", which a prefix match can pick, so this uses
+ * the default keybinding of workbench.action.terminal.new instead.
+ */
+async function newRemoteTerminal(page) {
+  await page.keyboard.press('Control+Shift+Backquote');
+  await page.waitForTimeout(3_000);
+}
+
 async function typeInTerminal(page, line) {
   // Creating a terminal focuses it; typing goes to its xterm textarea.
   await page.locator('.xterm-helper-textarea').last().waitFor({ state: 'attached' });
@@ -218,16 +228,14 @@ async function scenarios(executable) {
       [
         'terminal-dcmview',
         async () => {
-          await runCommand(page, 'Terminal: Create New Terminal');
-          await page.waitForTimeout(2_000);
+          await newRemoteTerminal(page);
           await typeInTerminal(page, `dcmview ${config.fixtureName}`);
         },
       ],
       [
         'terminal-python',
         async () => {
-          await runCommand(page, 'Terminal: Create New Terminal');
-          await page.waitForTimeout(2_000);
+          await newRemoteTerminal(page);
           await typeInTerminal(page, `${config.pythonEntry} ${config.fixtureName}`);
         },
       ],
