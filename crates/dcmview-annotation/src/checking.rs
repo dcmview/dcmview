@@ -329,3 +329,702 @@ impl Checks {
         Ok(())
     }
 }
+
+use crate::{
+    Annotation, Code, Context, FieldDef, FieldType, FileRef, KeyScheme, Label, LabelSchema,
+    LabelTarget, LabelValue, Layer, LayerKind, RecordMeta,
+};
+use std::collections::HashSet;
+use uuid::Uuid;
+
+checked!(LabelSchema, (), schema);
+checked!(FileRef, (), file);
+checked!(Layer, (), layer);
+checked!(LabelTarget, (), target);
+checked!(Annotation, &Context<'_>, annotation);
+checked!(Label, &Context<'_>, label);
+
+fn id_syntax(text: &str) -> bool {
+    !text.is_empty()
+        && text.len() <= MAX_ID_BYTES
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+}
+
+fn pointer_member(text: &str) -> String {
+    text.replace('~', "~0").replace('/', "~1")
+}
+
+fn digest_syntax(text: &str, schemes: &[&str]) -> bool {
+    text.len() <= 71
+        && text.split_once(':').is_some_and(|(scheme, body)| {
+            schemes.contains(&scheme)
+                && body.len() == 64
+                && body
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        })
+}
+
+impl Checks {
+    fn name(&mut self, text: &str, path: &str) -> Checked {
+        self.require(
+            text.len() <= MAX_NAME_BYTES,
+            TooLong,
+            path,
+            "The name exceeds its byte bound.",
+        )
+    }
+
+    fn id(&mut self, text: &str, path: &str) -> Checked {
+        self.require(
+            id_syntax(text),
+            BadId,
+            path,
+            "The identifier must use the bounded identifier syntax.",
+        )
+    }
+
+    fn color(&mut self, text: &str, path: &str) -> Checked {
+        self.require(
+            text.len() == 7
+                && text.starts_with('#')
+                && text.bytes().skip(1).all(|b| b.is_ascii_hexdigit()),
+            BadColor,
+            path,
+            "The color must be # followed by six hex digits.",
+        )
+    }
+
+    fn code(&mut self, code: &Option<Code>, path: &str) -> Checked {
+        if let Some(code) = code {
+            self.name(&code.scheme, &format!("{path}/scheme"))?;
+            self.name(&code.value, &format!("{path}/value"))?;
+            self.name(&code.meaning, &format!("{path}/meaning"))?;
+        }
+        Ok(())
+    }
+
+    fn schema(&mut self, schema: &LabelSchema, path: &str, _: ()) -> Checked {
+        self.id(&schema.schema_id, &format!("{path}/schema_id"))?;
+        let fields_bounded = self.bound(
+            schema.fields.len(),
+            MAX_SCHEMA_ITEMS,
+            TooManyItems,
+            &format!("{path}/fields"),
+        )?;
+        let mut fields = HashSet::new();
+        if fields_bounded {
+            for (i, field) in schema.fields.iter().enumerate() {
+                let path = format!("{path}/fields/{i}");
+                self.id(&field.id, &format!("{path}/id"))?;
+                if field.id.len() <= MAX_ID_BYTES {
+                    self.require(
+                        fields.insert(field.id.as_str()),
+                        DuplicateId,
+                        &format!("{path}/id"),
+                        "Field identifiers must be distinct.",
+                    )?;
+                }
+                self.name(&field.name, &format!("{path}/name"))?;
+                self.bound(
+                    field.applies_to.len(),
+                    MAX_SCHEMA_ITEMS,
+                    TooManyItems,
+                    &format!("{path}/applies_to"),
+                )?;
+                match &field.field_type {
+                    FieldType::Category { options, .. } | FieldType::MultiCategory { options } => {
+                        let path = format!("{path}/options");
+                        if !self.bound(options.len(), MAX_SCHEMA_ITEMS, TooManyItems, &path)? {
+                            continue;
+                        }
+                        self.require(
+                            !options.is_empty(),
+                            BadSchema,
+                            &path,
+                            "A categorical field needs an option.",
+                        )?;
+                        let mut ids = HashSet::new();
+                        for (i, option) in options.iter().enumerate() {
+                            let path = format!("{path}/{i}");
+                            self.id(&option.id, &format!("{path}/id"))?;
+                            if option.id.len() <= MAX_ID_BYTES {
+                                self.require(
+                                    ids.insert(option.id.as_str()),
+                                    DuplicateId,
+                                    &format!("{path}/id"),
+                                    "Option identifiers must be distinct within a field.",
+                                )?;
+                            }
+                            self.name(&option.name, &format!("{path}/name"))?;
+                            self.code(&option.code, &format!("{path}/code"))?;
+                        }
+                    }
+                    FieldType::Number { min, max, unit, .. } => {
+                        self.require(
+                            min.is_none_or(f64::is_finite)
+                                && max.is_none_or(f64::is_finite)
+                                && !matches!((min, max), (Some(min), Some(max)) if min > max),
+                            BadSchema,
+                            &path,
+                            "Numeric bounds must be finite and ordered.",
+                        )?;
+                        if let Some(unit) = unit {
+                            self.name(unit, &format!("{path}/unit"))?;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if self.bound(
+            schema.classes.len(),
+            MAX_SCHEMA_ITEMS,
+            TooManyItems,
+            &format!("{path}/classes"),
+        )? {
+            let mut ids = HashSet::new();
+            for (i, class) in schema.classes.iter().enumerate() {
+                let path = format!("{path}/classes/{i}");
+                self.id(&class.id, &format!("{path}/id"))?;
+                if class.id.len() <= MAX_ID_BYTES {
+                    self.require(
+                        ids.insert(class.id.as_str()),
+                        DuplicateId,
+                        &format!("{path}/id"),
+                        "Class identifiers must be distinct.",
+                    )?;
+                }
+                self.name(&class.name, &format!("{path}/name"))?;
+                if let Some(color) = &class.color {
+                    self.color(color, &format!("{path}/color"))?;
+                }
+                self.code(&class.code, &format!("{path}/code"))?;
+                self.bound(
+                    class.geometry.len(),
+                    MAX_SCHEMA_ITEMS,
+                    TooManyItems,
+                    &format!("{path}/geometry"),
+                )?;
+                self.require(
+                    !class.geometry.is_empty(),
+                    BadSchema,
+                    &format!("{path}/geometry"),
+                    "A class must allow a geometry type.",
+                )?;
+                if self.bound(
+                    class.attributes.len(),
+                    MAX_SCHEMA_ITEMS,
+                    TooManyItems,
+                    &format!("{path}/attributes"),
+                )? {
+                    for (i, attribute) in class.attributes.iter().enumerate() {
+                        self.id(attribute, &format!("{path}/attributes/{i}"))?;
+                        if fields_bounded {
+                            self.require(
+                                attribute.len() <= MAX_ID_BYTES
+                                    && fields.contains(attribute.as_str()),
+                                UnknownField,
+                                &format!("{path}/attributes/{i}"),
+                                "The attribute must name a schema field.",
+                            )?;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn file(&mut self, file: &FileRef, path: &str, _: ()) -> Checked {
+        for (name, dimension) in [("rows", file.rows), ("columns", file.columns)] {
+            self.require(
+                dimension <= MAX_IMAGE_DIMENSION,
+                BadFileRef,
+                &format!("{path}/{name}"),
+                "The image dimension exceeds its bound.",
+            )?;
+        }
+        self.require(
+            !file.path.is_empty(),
+            BadFileRef,
+            &format!("{path}/path"),
+            "The file path must not be empty.",
+        )?;
+        self.require(
+            file.path.len() <= MAX_PATH_BYTES,
+            TooLong,
+            &format!("{path}/path"),
+            "The path exceeds its byte bound.",
+        )?;
+        for (name, text) in [
+            ("sop_instance_uid", &file.sop_instance_uid),
+            ("sop_class_uid", &file.sop_class_uid),
+            ("study_instance_uid", &file.study_instance_uid),
+            ("series_instance_uid", &file.series_instance_uid),
+            ("patient_id", &file.patient_id),
+            ("external_id", &file.external_id),
+        ] {
+            if let Some(text) = text {
+                self.name(text, &format!("{path}/{name}"))?;
+            }
+        }
+        self.name(&file.format, &format!("{path}/format"))?;
+        if file.key.scheme() == KeyScheme::Sop {
+            self.require(
+                file.sop_instance_uid.as_deref() == Some(file.key.body()),
+                BadFileRef,
+                &format!("{path}/sop_instance_uid"),
+                "The SOP key must name the file's instance UID.",
+            )?;
+        }
+        if let Some(digest) = &file.digest {
+            self.require(
+                digest_syntax(digest, &["b3", "sha256"]),
+                BadDigest,
+                &format!("{path}/digest"),
+                "The file digest must be a full lowercase digest with a known scheme.",
+            )?;
+        }
+        if let Some(orientation) = file.space.exif_orientation {
+            self.require(
+                (1..=8).contains(&orientation),
+                BadFileRef,
+                &format!("{path}/space/exif_orientation"),
+                "The EXIF orientation must be between 1 and 8.",
+            )?;
+        }
+        if self.frame_list(
+            file.pixel_digest.len(),
+            file.frames,
+            &format!("{path}/pixel_digest"),
+        )? {
+            for (i, digest) in file.pixel_digest.iter().enumerate() {
+                if let Some(digest) = digest {
+                    self.require(
+                        digest_syntax(digest, &["px"]),
+                        BadDigest,
+                        &format!("{path}/pixel_digest/{i}"),
+                        "A pixel digest must be a full lowercase px digest.",
+                    )?;
+                }
+            }
+        }
+        if let Some(source) = &file.frame_source {
+            self.frame_list(source.len(), file.frames, &format!("{path}/frame_source"))?;
+        }
+        if let Some(spacing) = &file.spacing {
+            if self.frame_list(spacing.len(), file.frames, &format!("{path}/spacing"))? {
+                for (i, spacing) in spacing.iter().enumerate() {
+                    if let Some(spacing) = spacing {
+                        let path = format!("{path}/spacing/{i}");
+                        for (name, value) in
+                            [("row_mm", spacing.row_mm), ("col_mm", spacing.col_mm)]
+                        {
+                            self.require(
+                                value.is_finite() && value > 0.0,
+                                BadFileRef,
+                                &format!("{path}/{name}"),
+                                "Spacing must be finite and positive.",
+                            )?;
+                        }
+                        self.name(&spacing.source, &format!("{path}/source"))?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn frame_list(&mut self, len: usize, frames: u32, path: &str) -> Result<bool, ()> {
+        let valid = len == 0 || len as u64 == u64::from(frames);
+        self.require(
+            valid,
+            BadFileRef,
+            path,
+            "A nonempty per-frame list must match the frame count.",
+        )?;
+        Ok(valid)
+    }
+
+    fn layer_name(&mut self, name: &str, path: &str) -> Checked {
+        self.name(name, path)?;
+        self.require(
+            !name.is_empty(),
+            BadLayer,
+            path,
+            "The layer name must not be empty.",
+        )
+    }
+
+    fn layer(&mut self, layer: &Layer, path: &str, _: ()) -> Checked {
+        self.layer_name(&layer.name, &format!("{path}/name"))?;
+        if let Some(color) = &layer.color {
+            self.color(color, &format!("{path}/color"))?;
+        }
+        self.require(
+            layer.kind != LayerKind::Review || layer.readonly,
+            BadLayer,
+            &format!("{path}/readonly"),
+            "A review layer must be read-only.",
+        )
+    }
+
+    fn target(&mut self, target: &LabelTarget, path: &str, _: ()) -> Checked {
+        match target {
+            LabelTarget::Patient { patient: id }
+            | LabelTarget::Study { study: id }
+            | LabelTarget::Series { series: id } => {
+                let member = match target {
+                    LabelTarget::Patient { .. } => "patient",
+                    LabelTarget::Study { .. } => "study",
+                    _ => "series",
+                };
+                self.require(
+                    !id.is_empty()
+                        && id.len() <= MAX_NAME_BYTES
+                        && !id.chars().any(char::is_control),
+                    BadTarget,
+                    &format!("{path}/{member}"),
+                    "The target identifier must be nonempty, bounded and free of controls.",
+                )?;
+            }
+            LabelTarget::Folder { folder, root } => {
+                self.require(
+                    id_syntax(root),
+                    BadTarget,
+                    &format!("{path}/root"),
+                    "The folder root must use the identifier syntax.",
+                )?;
+                self.require(
+                    folder.len() <= MAX_PATH_BYTES
+                        && !folder.chars().any(|c| c == '\\' || c.is_control())
+                        && (folder.is_empty()
+                            || folder
+                                .split('/')
+                                .all(|part| !matches!(part, "" | "." | ".."))),
+                    BadTarget,
+                    &format!("{path}/folder"),
+                    "The folder must be a bounded relative path without empty or dot segments.",
+                )?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn uuid(&mut self, id: Uuid, path: &str) -> Checked {
+        self.require(
+            id.get_version_num() == 7 && id.get_variant() == uuid::Variant::RFC4122,
+            IdNotUuidV7,
+            path,
+            "The identifier must be an RFC 4122 UUIDv7.",
+        )
+    }
+
+    fn meta(&mut self, meta: &RecordMeta, path: &str) -> Checked {
+        if let Some(id) = meta.derived_from {
+            self.uuid(id, &format!("{path}/derived_from"))?;
+        }
+        if let Some(score) = meta.score {
+            self.require(
+                score.is_finite() && (0.0..=1.0).contains(&score),
+                BadScore,
+                &format!("{path}/score"),
+                "The score must be finite and between zero and one.",
+            )?;
+        }
+        Ok(())
+    }
+
+    fn field<'a>(
+        &mut self,
+        id: &str,
+        schema: &'a LabelSchema,
+        path: &str,
+    ) -> Result<Option<&'a FieldDef>, ()> {
+        if !self.bound(schema.fields.len(), MAX_SCHEMA_ITEMS, TooManyItems, path)? {
+            return Ok(None);
+        }
+        let field = if id.len() <= MAX_ID_BYTES {
+            schema.fields.iter().find(|field| field.id == id)
+        } else {
+            None
+        };
+        self.require(
+            field.is_some(),
+            UnknownField,
+            path,
+            "The field must exist in the schema.",
+        )?;
+        Ok(field)
+    }
+
+    fn value(&mut self, value: &LabelValue, field: &FieldDef, path: &str) -> Checked {
+        match (&field.field_type, value) {
+            (FieldType::Boolean, LabelValue::Bool(_)) => {}
+            (
+                FieldType::Number {
+                    min, max, integer, ..
+                },
+                LabelValue::Number(n),
+            ) => {
+                self.require(
+                    n.is_finite()
+                        && min.is_none_or(|min| *n >= min)
+                        && max.is_none_or(|max| *n <= max)
+                        && (!integer || n.fract() == 0.0),
+                    ValueOutOfRange,
+                    path,
+                    "The number must satisfy the field's range and integer rule.",
+                )?;
+            }
+            (FieldType::Text { max_length }, LabelValue::Text(text)) => {
+                let max =
+                    max_length.map_or(MAX_TEXT_BYTES, |max| (max as usize).min(MAX_TEXT_BYTES));
+                self.require(
+                    text.len() <= max,
+                    TooLong,
+                    path,
+                    "The text exceeds the field's byte bound.",
+                )?;
+            }
+            (FieldType::Category { options, .. }, LabelValue::Text(id)) => {
+                if self.bound(options.len(), MAX_SCHEMA_ITEMS, TooManyItems, path)? {
+                    self.require(
+                        id.len() <= MAX_ID_BYTES && options.iter().any(|option| option.id == *id),
+                        UnknownOption,
+                        path,
+                        "The option must exist in the field.",
+                    )?;
+                }
+            }
+            (FieldType::MultiCategory { options }, LabelValue::Many(ids)) => {
+                if !self.bound(ids.len(), MAX_VALUES, TooManyItems, path)? {
+                    return Ok(());
+                }
+                if !self.bound(options.len(), MAX_SCHEMA_ITEMS, TooManyItems, path)? {
+                    return Ok(());
+                }
+                let mut seen = HashSet::new();
+                for (i, id) in ids.iter().enumerate() {
+                    let path = format!("{path}/{i}");
+                    self.require(
+                        id.len() <= MAX_ID_BYTES && options.iter().any(|option| option.id == *id),
+                        UnknownOption,
+                        &path,
+                        "The option must exist in the field.",
+                    )?;
+                    if id.len() <= MAX_ID_BYTES {
+                        self.require(
+                            seen.insert(id),
+                            DuplicateId,
+                            &path,
+                            "A multi-category value must not repeat an option.",
+                        )?;
+                    }
+                }
+            }
+            _ => self.require(
+                false,
+                ValueType,
+                path,
+                "The value has the wrong type for the field.",
+            )?,
+        }
+        Ok(())
+    }
+
+    fn annotation(
+        &mut self,
+        annotation: &Annotation,
+        path: &str,
+        context: &Context<'_>,
+    ) -> Checked {
+        self.uuid(annotation.id, &format!("{path}/id"))?;
+        if let Some(size) = context.files.size_of(&annotation.file) {
+            self.geometry(&annotation.geometry, &format!("{path}/geometry"), size)?;
+            self.frames(&annotation.frames, &format!("{path}/frames"), size.frames)?;
+        } else {
+            self.require(
+                false,
+                UnknownFile,
+                &format!("{path}/file"),
+                "The annotation must name a known file.",
+            )?;
+        }
+        if let Geometry::Mask(mask) = &annotation.geometry {
+            // Compare without allocating a scope from an unchecked mask.
+            let matches = match &annotation.frames {
+                FrameScope::Set(frames)
+                    if frames.as_written.is_none()
+                        && frames.set.len() <= MAX_FRAMES_IN_SET
+                        && frames.set.len() == mask.frames.len() =>
+                {
+                    frames
+                        .set
+                        .iter()
+                        .copied()
+                        .eq(mask.frames.keys().map(|f| f.0))
+                }
+                _ => false,
+            };
+            self.require(
+                matches,
+                MaskFramesMismatch,
+                &format!("{path}/frames"),
+                "A mask scope must equal its tile frames without an original list.",
+            )?;
+        }
+        if self.bound(
+            context.schema.classes.len(),
+            MAX_SCHEMA_ITEMS,
+            TooManyItems,
+            &format!("{path}/class"),
+        )? {
+            let class = if annotation.class.len() <= MAX_ID_BYTES {
+                context
+                    .schema
+                    .classes
+                    .iter()
+                    .find(|class| class.id == annotation.class)
+            } else {
+                None
+            };
+            self.require(
+                class.is_some(),
+                UnknownClass,
+                &format!("{path}/class"),
+                "The annotation class must exist in the schema.",
+            )?;
+            if let Some(class) = class {
+                if self.bound(
+                    class.geometry.len(),
+                    MAX_SCHEMA_ITEMS,
+                    TooManyItems,
+                    &format!("{path}/class"),
+                )? {
+                    self.require(
+                        class
+                            .geometry
+                            .contains(&annotation.geometry.geometry_type()),
+                        GeometryNotAllowed,
+                        &format!("{path}/geometry"),
+                        "The class must allow this geometry type.",
+                    )?;
+                }
+                if self.bound(
+                    annotation.attributes.len(),
+                    MAX_VALUES,
+                    TooManyItems,
+                    &format!("{path}/attributes"),
+                )? && self.bound(
+                    class.attributes.len(),
+                    MAX_SCHEMA_ITEMS,
+                    TooManyItems,
+                    &format!("{path}/class"),
+                )? {
+                    for (id, value) in &annotation.attributes {
+                        if id.len() > MAX_ID_BYTES {
+                            self.require(
+                                false,
+                                AttributeNotAllowed,
+                                &format!("{path}/attributes"),
+                                "The attribute is not allowed by the class.",
+                            )?;
+                            continue;
+                        }
+                        let value_path = format!("{path}/attributes/{}", pointer_member(id));
+                        self.require(
+                            class.attributes.contains(id),
+                            AttributeNotAllowed,
+                            &value_path,
+                            "The attribute is not allowed by the class.",
+                        )?;
+                        if let Some(field) = self.field(id, context.schema, &value_path)? {
+                            self.value(value, field, &value_path)?;
+                        }
+                    }
+                }
+            } else {
+                self.bound(
+                    annotation.attributes.len(),
+                    MAX_VALUES,
+                    TooManyItems,
+                    &format!("{path}/attributes"),
+                )?;
+            }
+        }
+        self.meta(&annotation.meta, path)
+    }
+
+    fn label_content(
+        &mut self,
+        target: &LabelTarget,
+        field: &str,
+        value: Option<&LabelValue>,
+        value_member: &str,
+        path: &str,
+        context: &Context<'_>,
+    ) -> Checked {
+        self.target(target, &format!("{path}/target"), ())?;
+        let file = match target {
+            LabelTarget::File { file } => Some((file, None)),
+            LabelTarget::Frame { frame, index } => Some((frame, Some(index))),
+            _ => None,
+        };
+        if let Some((file, frame)) = file {
+            if let Some(size) = context.files.size_of(file) {
+                if let Some(frame) = frame {
+                    self.require(
+                        *frame < size.frames,
+                        FrameOutOfRange,
+                        &format!("{path}/target/index"),
+                        "The frame index is outside the file.",
+                    )?;
+                }
+            } else {
+                self.require(
+                    false,
+                    UnknownFile,
+                    &format!("{path}/target"),
+                    "The target must name a known file.",
+                )?;
+            }
+        }
+        if let Some(field) = self.field(field, context.schema, &format!("{path}/field"))? {
+            if self.bound(
+                field.applies_to.len(),
+                MAX_SCHEMA_ITEMS,
+                TooManyItems,
+                &format!("{path}/field"),
+            )? {
+                self.require(
+                    field.applies_to.contains(&target.kind()),
+                    TargetNotAllowed,
+                    &format!("{path}/target"),
+                    "The field must apply to this target kind.",
+                )?;
+            }
+            if let Some(value) = value {
+                self.value(value, field, &format!("{path}/{value_member}"))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn label(&mut self, label: &Label, path: &str, context: &Context<'_>) -> Checked {
+        self.uuid(label.id, &format!("{path}/id"))?;
+        self.label_content(
+            &label.target,
+            &label.field,
+            Some(&label.value),
+            "value",
+            path,
+            context,
+        )?;
+        self.meta(&label.meta, path)
+    }
+}

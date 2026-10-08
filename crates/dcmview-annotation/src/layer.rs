@@ -79,7 +79,7 @@ pub struct Layer {
 impl Layer {
     /// Checks the invariants in the type's documentation.
     pub fn validate(&self) -> Result<(), Invalid> {
-        todo!("FND3: validate a layer")
+        crate::Check::check(self, ())
     }
 }
 
@@ -110,8 +110,18 @@ impl LayerPatch {
     /// Sets on `layer` every member this patch carries, and nothing else
     /// (`rev` included: the store owns it).
     pub fn apply_to(&self, layer: &mut Layer) {
-        let _ = layer;
-        todo!("FND3: apply a layer patch")
+        if let Some(name) = &self.name {
+            layer.name = name.clone();
+        }
+        if let Some(color) = &self.color {
+            layer.color = color.clone();
+        }
+        if let Some(exclusive_masks) = self.exclusive_masks {
+            layer.exclusive_masks = exclusive_masks;
+        }
+        if let Some(readonly) = self.readonly {
+            layer.readonly = readonly;
+        }
     }
 }
 

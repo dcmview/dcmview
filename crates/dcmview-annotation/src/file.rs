@@ -150,6 +150,6 @@ impl FileRef {
 
     /// Checks the invariants in the type's documentation.
     pub fn validate(&self) -> Result<(), Invalid> {
-        todo!("FND3: validate a file reference")
+        crate::Check::check(self, ())
     }
 }

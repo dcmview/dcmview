@@ -90,14 +90,21 @@ impl LabelTarget {
     /// | file | the file key |
     /// | frame | `<file key>#<index>`, the index in decimal |
     pub fn canonical_id(&self) -> String {
-        todo!("FND3: write a label target's canonical id")
+        match self {
+            Self::Patient { patient } => format!("patient:{patient}"),
+            Self::Study { study } => format!("study:{study}"),
+            Self::Series { series } => format!("series:{series}"),
+            Self::File { file } => file.to_string(),
+            Self::Frame { frame, index } => format!("{frame}#{index}"),
+            Self::Folder { folder, root } => format!("folder:{root}/{folder}"),
+        }
     }
 
     /// Checks the invariants in the type's documentation.
     ///
     /// Violation code: `bad_target`.
     pub fn validate(&self) -> Result<(), Invalid> {
-        todo!("FND3: validate a label target")
+        crate::Check::check(self, ())
     }
 }
 
@@ -161,7 +168,6 @@ impl Label {
     /// The implicit schema has no fields, so under it every label is
     /// `unknown_field`.
     pub fn validate(&self, context: &Context<'_>) -> Result<(), Invalid> {
-        let _ = context;
-        todo!("FND3: validate a label")
+        crate::Check::check(self, context)
     }
 }

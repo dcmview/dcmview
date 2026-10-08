@@ -230,6 +230,6 @@ impl LabelSchema {
     /// Bounded work: a list longer than
     /// [`crate::limits::MAX_SCHEMA_ITEMS`] is refused on its length alone.
     pub fn validate(&self) -> Result<(), Invalid> {
-        todo!("FND3: validate a label schema")
+        crate::Check::check(self, ())
     }
 }

@@ -119,7 +119,6 @@ impl Annotation {
     /// [`crate::Document::validate`] checks it for a document, and a store
     /// checks it for an operation.
     pub fn validate(&self, context: &Context<'_>) -> Result<(), Invalid> {
-        let _ = context;
-        todo!("FND3: validate an annotation")
+        crate::Check::check(self, context)
     }
 }
