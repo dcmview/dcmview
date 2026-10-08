@@ -266,6 +266,90 @@ async fn a_request_that_would_wait_behind_a_full_queue_is_refused_as_busy() {
     .await;
 }
 
+/// A request that stops waiting tells the scheduler's other waiters: the
+/// request behind it is granted what it was in the way of, and whoever
+/// watches the load sees the queue shorten.
+#[tokio::test]
+async fn a_request_that_stops_waiting_wakes_those_behind_it() {
+    finishes(async {
+        let scheduler = DecodeScheduler::with_limits(4, limits(100, 8, 8));
+        let held = granted(&scheduler, Interactive, 60).await;
+
+        // 50 bytes do not fit beside 60, and 40 would but are behind them.
+        let front = request(&scheduler, Interactive, 50);
+        waiting(&scheduler, 1, 0).await;
+        let behind = request(&scheduler, Interactive, 40);
+        waiting(&scheduler, 2, 0).await;
+        front.abort();
+        let behind = joined(behind).await;
+        assert_eq!(scheduler.load().reserved_bytes, 100);
+
+        // With nothing to grant, the departure is still a change of load.
+        let alone = request(&scheduler, Interactive, 50);
+        waiting(&scheduler, 1, 0).await;
+        let mut emptied = Box::pin(scheduler.load_when(|load| load.waiting_interactive == 0));
+        assert!(poll!(&mut emptied).is_pending());
+        alone.abort();
+        let load = eventually("the queue to empty", emptied).await;
+        assert_eq!((load.running, load.reserved_bytes), (2, 100));
+        drop((held, behind));
+        idle(&scheduler).await;
+    })
+    .await;
+}
+
+/// Requests that take a permit alone (`acquire`) and requests admitted by
+/// bytes share the permits and the queues of a scheduler with limits: a
+/// permit-only request reserves nothing, counts as waiting, and keeps its
+/// place in arrival order.
+#[tokio::test]
+async fn permit_only_requests_share_the_permits_and_queues_of_admitted_ones() {
+    finishes(async {
+        let scheduler = DecodeScheduler::with_limits(1, limits(100, 2, 2));
+        let held = eventually("a permit", scheduler.acquire(Interactive)).await;
+        assert_eq!(held.reserved_bytes(), 0);
+        let load = scheduler.load();
+        assert_eq!((load.running, load.reserved_bytes), (1, 0));
+
+        let permit_only = tokio::spawn({
+            let scheduler = scheduler.clone();
+            async move { scheduler.acquire(Interactive).await }
+        });
+        waiting(&scheduler, 1, 0).await;
+        let admitted = request(&scheduler, Interactive, 10);
+        waiting(&scheduler, 2, 0).await;
+        // The permit-only request fills the queue like any other.
+        let refusal = eventually("a refusal", scheduler.admit(Interactive, 10)).await;
+        assert_eq!(refusal.err(), Some(DecodeRefusal::Busy));
+
+        // Arrival order across both kinds.
+        drop(held);
+        let permit_only = eventually("the permit-only request", permit_only)
+            .await
+            .expect("request task");
+        let load = waiting(&scheduler, 1, 0).await;
+        assert_eq!((load.running, load.reserved_bytes), (1, 0));
+        drop(permit_only);
+        let admitted = joined(admitted).await;
+        assert_eq!(scheduler.load().reserved_bytes, 10);
+
+        // A permit held with bytes is the permit a permit-only request waits for.
+        let permit_only = tokio::spawn({
+            let scheduler = scheduler.clone();
+            async move { scheduler.acquire(Interactive).await }
+        });
+        waiting(&scheduler, 1, 0).await;
+        drop(admitted);
+        drop(
+            eventually("the permit-only request", permit_only)
+                .await
+                .expect("request task"),
+        );
+        assert_eq!(idle(&scheduler).await.peak_reserved_bytes, 10);
+    })
+    .await;
+}
+
 /// A scheduler told to stop making requests wait (a viewer shutting down)
 /// refuses everything that is waiting, and everything that would wait from
 /// then on, as busy. What is running keeps its permit, and what fits beside
@@ -485,12 +569,18 @@ fn the_estimate_is_the_documented_formula_of_the_catalog_entry() {
     // (transfer syntax, samples per pixel, bits allocated,
     //  the decode beside its 16 MiB, V, D, F)
     let p = PIXELS;
-    let cases: [(&str, u32, u32, u64, u64, u64, u64); 16] = [
+    let cases: [(&str, u32, u32, u64, u64, u64, u64); 19] = [
         // Native, 16-bit gray: F = 2 P; decode 3 F.
         (EXPLICIT_LE, 1, 16, 6 * p, 0, p, 2 * p),
         ("1.2.840.10008.1.2", 1, 8, 3 * p, 0, p, p),
         // One bit a sample is served a byte a sample.
         (EXPLICIT_LE, 1, 1, 3 * p, 0, p, p),
+        // Bits that do not fill a byte take the next whole one: 12 bits are
+        // two bytes a sample, 17 are three. An entry that claims no bits is
+        // still reserved a byte a sample.
+        (EXPLICIT_LE, 1, 12, 6 * p, 0, p, 2 * p),
+        (EXPLICIT_LE, 1, 17, 9 * p, 0, p, 3 * p),
+        (EXPLICIT_LE, 1, 0, 3 * p, 0, p, p),
         // 8-bit colour: F = 3 P, D = 3 P. Deeper colour: D = 6 P.
         (EXPLICIT_LE, 3, 8, 9 * p, 0, 3 * p, 3 * p),
         (EXPLICIT_LE, 3, 16, 18 * p, 0, 6 * p, 6 * p),
@@ -855,6 +945,29 @@ async fn a_frame_too_large_for_the_budget_is_refused_for_the_request_and_stays_r
             assert_eq!(file["support_reason"], Value::Null, "budget {budget}");
             let load = idle(&scheduler).await;
             assert!(load.peak_reserved_bytes <= budget);
+        }
+
+        // The refusal names what was needed and the limit that was passed:
+        // the budget for a frame, the share of it for a thumbnail.
+        let budget = display - 1;
+        let server = serve(
+            vec![entry.clone()],
+            &DecodeScheduler::with_limits(2, limits(budget, 8, 8)),
+        );
+        let explained = |path: &'static str| {
+            let server = server.clone();
+            async move { server.get(path).await.json::<Value>()["error"].to_string() }
+        };
+        let frame = explained(paths[0]).await;
+        assert!(frame.contains(&display.to_string()), "{frame}");
+        assert!(frame.contains(&budget.to_string()), "{frame}");
+        assert!(!frame.contains("thumbnail"), "{frame}");
+        let small = explained(paths[4]).await;
+        assert!(small.contains(&thumbnail.to_string()), "{small}");
+        assert!(small.contains(&(budget / 2).to_string()), "{small}");
+        assert!(small.contains("thumbnail"), "{small}");
+        for text in [&frame, &small] {
+            assert!(text.contains("--decode-memory"), "{text}");
         }
 
         // A viewer nobody configured has the default budget: a frame that
@@ -1559,6 +1672,47 @@ async fn a_request_dropped_after_its_decode_began_keeps_its_permit_until_the_dec
             let load = idle(&scheduler).await;
             assert_eq!(load.peak_reserved_bytes, estimate, "{suffix}");
         }
+    })
+    .await;
+}
+
+/// A presentation layer whose request is dropped while it is drawn keeps
+/// its permit and its bytes until the drawing ends: the permit belongs to
+/// the blocking work, not to the request.
+#[tokio::test]
+async fn a_presentation_layer_dropped_while_it_is_drawn_keeps_its_permit() {
+    finishes(async {
+        let entry = listed(&[fixture("golden-uncompressed-u16-multiframe.dcm")])
+            .await
+            .remove(0);
+        let estimate = pixels::decode_estimate(&entry, DecodeWork::PresentationLayer);
+        let scheduler = default_scheduler(2);
+
+        // The drawing stops until the test lets it go on.
+        let (go_on, held) = std::sync::mpsc::channel::<()>();
+        let dropped = tokio::spawn({
+            let scheduler = scheduler.clone();
+            async move {
+                pixels::draw_presentation_layer(&scheduler, &entry, move || {
+                    let _ = held.recv();
+                })
+                .await
+            }
+        });
+        let load = eventually(
+            "the drawing to start",
+            scheduler.load_when(|load| load.running == 1),
+        )
+        .await;
+        assert_eq!(load.reserved_bytes, estimate);
+        dropped.abort();
+        assert!(eventually("the abort", dropped).await.is_err());
+
+        // The request is gone and its drawing is not.
+        let load = scheduler.load();
+        assert_eq!((load.running, load.reserved_bytes), (1, estimate));
+        go_on.send(()).expect("the drawing is waiting");
+        assert_eq!(idle(&scheduler).await.peak_reserved_bytes, estimate);
     })
     .await;
 }
