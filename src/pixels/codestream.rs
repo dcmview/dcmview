@@ -286,8 +286,146 @@ pub enum Structure {
 /// which caps the profile at 256 MiB encoded and 256 MiB decoded and does
 /// not count it against the tracker.
 pub fn declared(kind: CodestreamKind, frame: &[u8]) -> Result<Declared> {
-    let _ = (kind, frame);
-    todo!("DCM1: read what the codestream declares")
+    match kind {
+        CodestreamKind::Jpeg | CodestreamKind::JpegLs => read_jpeg(frame, kind),
+        CodestreamKind::Jpeg2000 | CodestreamKind::JpegXl => {
+            todo!("read the remaining codestream headers")
+        }
+    }
+}
+
+// Advancing a borrowed slice avoids unchecked offset arithmetic. Segments
+// borrow their contents too; none of these reads allocates a payload buffer.
+struct HeaderReader<'a> {
+    remaining: &'a [u8],
+}
+
+impl<'a> HeaderReader<'a> {
+    fn take(&mut self, length: usize) -> Result<&'a [u8]> {
+        let bytes = self
+            .remaining
+            .get(..length)
+            .ok_or_else(|| anyhow!("truncated codestream header"))?;
+        self.remaining = self
+            .remaining
+            .get(length..)
+            .ok_or_else(|| anyhow!("truncated codestream header"))?;
+        Ok(bytes)
+    }
+
+    fn byte(&mut self) -> Result<u8> {
+        self.take(1)?
+            .first()
+            .copied()
+            .ok_or_else(|| anyhow!("missing header byte"))
+    }
+
+    fn u16(&mut self) -> Result<u16> {
+        Ok(u16::from_be_bytes(self.take(2)?.try_into()?))
+    }
+
+    fn segment(&mut self) -> Result<HeaderReader<'a>> {
+        let length = self
+            .u16()?
+            .checked_sub(2)
+            .ok_or_else(|| anyhow!("segment length is less than 2"))?;
+        Ok(HeaderReader {
+            remaining: self.take(usize::from(length))?,
+        })
+    }
+
+    fn jpeg_marker(&mut self) -> Result<u8> {
+        loop {
+            while self.byte()? != 0xFF {}
+            let mut code = self.byte()?;
+            while code == 0xFF {
+                code = self.byte()?;
+            }
+            if code != 0 {
+                return Ok(code);
+            }
+        }
+    }
+}
+
+fn read_jpeg(frame: &[u8], kind: CodestreamKind) -> Result<Declared> {
+    let mut reader = HeaderReader { remaining: frame };
+    if reader.u16()? != 0xFFD8 {
+        return Err(anyhow!("missing JPEG start of image"));
+    }
+    let is_ls = kind == CodestreamKind::JpegLs;
+    let mut segments = 0;
+    loop {
+        let process = reader.jpeg_marker()?;
+        let is_header = if is_ls {
+            process == 0xF7
+        } else {
+            matches!(process, 0xC0..=0xCF) && !matches!(process, 0xC4 | 0xC8 | 0xCC)
+        };
+        if is_header {
+            let mut header = reader.segment()?;
+            let precision = u32::from(header.byte()?);
+            let rows = u32::from(header.u16()?);
+            let columns = u32::from(header.u16()?);
+            let components = header.byte()?;
+            if rows == 0 || columns == 0 || components == 0 {
+                return Err(anyhow!("JPEG dimensions and components must be nonzero"));
+            }
+            if header.remaining.len() != 3 * usize::from(components) {
+                return Err(anyhow!(
+                    "JPEG frame header length does not match components"
+                ));
+            }
+            return Ok(Declared {
+                columns,
+                rows,
+                components: u32::from(components),
+                precision,
+                structure: Structure::Jpeg {
+                    process,
+                    scans: if is_ls { 0 } else { jpeg_scans(reader) },
+                },
+            });
+        }
+        if !matches!(process, 0xC4 | 0xDB | 0xDD | 0xFE | 0xE0..=0xEF)
+            && !(is_ls && process == 0xF8)
+        {
+            return Err(anyhow!(
+                "unexpected JPEG marker {process:02X} before frame header"
+            ));
+        }
+        if segments == CODESTREAM_MAX_HEADER_SEGMENTS {
+            return Err(anyhow!("too many JPEG header segments"));
+        }
+        reader.segment()?;
+        segments += 1;
+    }
+}
+
+fn jpeg_scans(mut reader: HeaderReader<'_>) -> u32 {
+    let mut scans = 0;
+    let mut in_scan = false;
+    while let Ok(marker) = reader.jpeg_marker() {
+        if marker == 0xD9 {
+            break;
+        }
+        // Stuffed bytes are skipped by jpeg_marker, as are repeated FFs.
+        // Restart markers have no length and remain part of the scan data.
+        if in_scan && matches!(marker, 0xD0..=0xD7) {
+            continue;
+        }
+        in_scan = marker == 0xDA;
+        if marker == 0xDA {
+            scans += 1;
+            if scans > JPEG_MAX_SCANS {
+                break;
+            }
+        }
+        if reader.segment().is_err() {
+            break;
+        }
+    }
+    scans
 }
 
 /// Whether what a frame declares is what the entry says, so that decoding
