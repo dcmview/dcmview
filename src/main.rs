@@ -12,12 +12,13 @@ use std::path::PathBuf;
 #[command(
     name = "dcmview",
     version,
-    about = "Start a temporary local DICOM inspection viewer",
-    long_about = "Start a temporary local web server for inspecting DICOM files, directories, image frames, tags, and optional ROI annotations. dcmview is intended for research and development inspection, not clinical diagnosis.",
+    about = "Start a temporary local viewer for DICOM and image files",
+    long_about = "Start a temporary local web server for inspecting DICOM and image files, directories, image frames, tags, and optional ROI annotations. dcmview is intended for research and development inspection, not clinical diagnosis.",
     after_long_help = "\
 Examples:
   dcmview ./scan.dcm
   dcmview ./study_dir
+  dcmview --formats dicom ./mixed_dir
   dcmview --no-recursive ./study_dir
   dcmview --no-browser --host 127.0.0.1 --port 8010 ./study_dir
   ssh -L 8010:127.0.0.1:8010 user@remote
@@ -32,7 +33,7 @@ struct Cli {
     #[arg(
         value_name = "PATH",
         required_unless_present = "vscode_bridge_client",
-        help = "DICOM file or directory to inspect; repeat for multiple inputs"
+        help = "DICOM and image files or directories to inspect; repeat for multiple inputs"
     )]
     paths: Vec<PathBuf>,
 
@@ -84,7 +85,7 @@ struct Cli {
         long = "cache-budget",
         value_name = "BYTES",
         value_parser = parse_cache_budget,
-        help = "Total memory for the frame caches, such as 256MiB; default about 700MiB"
+        help = "Total memory for the frame caches, such as 256MiB; default 768MiB"
     )]
     cache_budget: Option<CacheBudget>,
 
@@ -114,6 +115,15 @@ struct Cli {
     filters: Vec<loader::ScanFilter>,
 
     #[arg(
+        long = "formats",
+        value_name = "LIST",
+        value_parser = parse_formats,
+        help = "File formats to load from directories, as a comma-separated list of \
+                dicom, png, jpeg, tiff, webp; default all. A file named as a PATH is always loaded"
+    )]
+    formats: Option<loader::FormatSelection>,
+
+    #[arg(
         long = "mask",
         help = "Replace patient identifiers in everything the viewer displays, for screen sharing. \
                 Display only: files are not modified and this is not de-identification"
@@ -137,6 +147,10 @@ struct Cli {
 }
 
 fn parse_scan_filter(raw: &str) -> std::result::Result<loader::ScanFilter, String> {
+    raw.parse()
+}
+
+fn parse_formats(raw: &str) -> std::result::Result<loader::FormatSelection, String> {
     raw.parse()
 }
 

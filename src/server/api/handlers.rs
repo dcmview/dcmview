@@ -5,17 +5,19 @@ use crate::api::contracts::RedactionSeriesResponse;
 use crate::api::contracts::{
     DiscoveryResult, EmbedRoiAnnotations, FileSummary, FilesResponse, FrameInfo, FrameQuery,
     GraphicAnnotationsQuery, GraphicAnnotationsResponse, HealthResponse, PixelQuery,
-    ReferenceCatalogResponse, SemanticContextResponse, TagNode, TagQuery, ViewerIdentity,
-    CACHE_HEADER, CACHE_HIT, CACHE_MISS, CSV_MEDIA_TYPE, DISPLAY_FRAME_HEADER_WINDOW_APPLIED,
-    DISPLAY_FRAME_HEADER_WINDOW_CENTER, DISPLAY_FRAME_HEADER_WINDOW_WIDTH,
-    EXPORT_CONTENT_DISPOSITION_HEADER, EXPORT_CONTENT_DISPOSITION_VALUE, OCTET_STREAM_MEDIA_TYPE,
+    ReferenceCatalogResponse, SemanticContextResponse, TagNode, TagQuery, ThumbnailQuery,
+    ViewerIdentity, CACHE_HEADER, CACHE_HIT, CACHE_MISS, CSV_MEDIA_TYPE,
+    DISPLAY_FRAME_HEADER_WINDOW_APPLIED, DISPLAY_FRAME_HEADER_WINDOW_CENTER,
+    DISPLAY_FRAME_HEADER_WINDOW_WIDTH, EXPORT_CONTENT_DISPOSITION_HEADER,
+    EXPORT_CONTENT_DISPOSITION_VALUE, JPEG_MEDIA_TYPE, OCTET_STREAM_MEDIA_TYPE,
     RAW_FRAME_HEADER_BITS_ALLOCATED, RAW_FRAME_HEADER_COLUMNS, RAW_FRAME_HEADER_DEFAULT_WC,
     RAW_FRAME_HEADER_DEFAULT_WW, RAW_FRAME_HEADER_PADDING_HIGH, RAW_FRAME_HEADER_PADDING_LOW,
     RAW_FRAME_HEADER_PHOTOMETRIC_INTERPRETATION, RAW_FRAME_HEADER_PIXEL_REPRESENTATION,
     RAW_FRAME_HEADER_RESCALE_INTERCEPT, RAW_FRAME_HEADER_RESCALE_SLOPE, RAW_FRAME_HEADER_ROWS,
-    RAW_FRAME_HEADER_SAMPLES_PER_PIXEL,
+    RAW_FRAME_HEADER_SAMPLES_PER_PIXEL, THUMBNAIL_CACHE_CONTROL, THUMBNAIL_HEADER_SOURCE,
+    THUMBNAIL_SIZE_BUCKETS,
 };
-use crate::pixels::{self, FrameRequest, RawFrameRequest};
+use crate::pixels::{self, FrameRequest, RawFrameRequest, ThumbnailRequest};
 use crate::references::{self, ReferenceCandidate};
 use crate::server::tags;
 use crate::types::{FileEntry, WindowMode, WindowRequest};
@@ -138,6 +140,16 @@ pub(super) async fn references(
 ) -> Result<Response, ApiError> {
     let Path(index) = path.map_err(error::path_rejection)?;
     let source = registered_file(&state, index, "file")?;
+    if source.format.is_raster() {
+        return uid_masked_json(
+            &state,
+            ReferenceCatalogResponse {
+                source_file_index: index,
+                source_sop_instance_uid: String::new(),
+                references: Vec::new(),
+            },
+        );
+    }
     let source_path = source.path.clone();
     let edges = task::spawn_blocking(move || references::extract_reference_edges(&source_path))
         .await
@@ -147,6 +159,7 @@ pub(super) async fn references(
         .registry()
         .files_snapshot()
         .into_iter()
+        .filter(|file| !file.format.is_raster())
         .map(|file| ReferenceCandidate::from_file(&file))
         .collect::<Vec<_>>();
     let resolved = references::resolve_reference_edges(&edges, &candidates)
@@ -188,6 +201,16 @@ pub(super) async fn semantic_context_for(
     source: Arc<FileEntry>,
     files: Vec<Arc<FileEntry>>,
 ) -> anyhow::Result<Arc<SemanticContextResponse>> {
+    if source.format.is_raster() {
+        return Ok(Arc::new(SemanticContextResponse {
+            source_file_index: source.index,
+            default_mode: "pixel_preview".to_string(),
+            pixel_preview_preserves_stored_values: true,
+            context: crate::api::contracts::SemanticContext::NotApplicable {
+                reason: "semantic context is not available for image files".to_string(),
+            },
+        }));
+    }
     let key = (source.index, files.len());
     if let Some(context) = state.cached_semantic_context(key) {
         return Ok(context);
@@ -253,6 +276,9 @@ pub(super) async fn value_mappings_for(
     state: &AppState,
     file: Arc<FileEntry>,
 ) -> anyhow::Result<Arc<FileValueMappings>> {
+    if file.format.is_raster() {
+        return Ok(Arc::new(FileValueMappings::identity(&file)));
+    }
     let files = state.registry().files_snapshot();
     let key = (file.index, files.len());
     if let Some(mappings) = state.cached_value_mappings(key) {
@@ -364,13 +390,19 @@ pub(super) async fn apply_redactions_to_series(
 ) -> Result<Json<RedactionSeriesResponse>, ApiError> {
     let Path(index) = path.map_err(error::path_rejection)?;
     let source = registered_file(&state, index, "file")?;
+    if source.format.is_raster() {
+        return Ok(Json(RedactionSeriesResponse {
+            file_indices: Vec::new(),
+        }));
+    }
     let boxes = state
         .redactions()
         .get(index)
         .map_err(|error| ApiError::internal(error.to_string()))?;
     let mut file_indices = Vec::new();
     for file in state.registry().files_snapshot() {
-        let same_series = file.index != source.index
+        let same_series = !file.format.is_raster()
+            && file.index != source.index
             && file.study_instance_uid == source.study_instance_uid
             && file.series_instance_uid == source.series_instance_uid
             && (file.rows, file.columns) == (source.rows, source.columns);
@@ -571,6 +603,63 @@ pub(super) async fn raw_pixel(
     Ok(raw_response_with_headers(body, &metadata, raw.cache_hit))
 }
 
+/// The gallery thumbnail of one frame. It is refused and redacted exactly
+/// where the display frame is: a masked session withholds it for label and
+/// overview images, and the frame's redaction boxes are painted before it is
+/// encoded and are part of its cache key.
+pub(super) async fn thumbnail(
+    State(state): State<AppState>,
+    path: Result<Path<(usize, u32)>, PathRejection>,
+    query: Result<Query<ThumbnailQuery>, QueryRejection>,
+) -> Result<Response, ApiError> {
+    let Path((index, frame)) = path.map_err(error::path_rejection)?;
+    let Query(query) = query.map_err(error::query_rejection)?;
+    let file = registered_file(&state, index, "file")?;
+    ensure_pixels_shown(&state, &file)?;
+    let bucket = pixels::thumbnail_bucket(query.size).ok_or_else(|| {
+        ApiError::invalid_query(format!(
+            "size must be between 1 and {}",
+            THUMBNAIL_SIZE_BUCKETS[THUMBNAIL_SIZE_BUCKETS.len() - 1]
+        ))
+    })?;
+    let source = file.path.clone();
+
+    let thumbnail = pixels::load_thumbnail(
+        file,
+        state.thumbnail_cache(),
+        ThumbnailRequest {
+            frame,
+            bucket,
+            window_mode: query.window_mode.unwrap_or_default(),
+        },
+        frame_redaction(&state, index, frame)?,
+    )
+    .await
+    .map_err(|failure| error::gone_or(&source, error::pixel_error(failure)))?;
+
+    let cache_header = if thumbnail.cache_hit {
+        CACHE_HIT
+    } else {
+        CACHE_MISS
+    };
+    let mut response = Response::new(axum::body::Body::from(thumbnail.body));
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static(JPEG_MEDIA_TYPE),
+    );
+    headers.insert(CACHE_HEADER, HeaderValue::from_static(cache_header));
+    headers.insert(
+        THUMBNAIL_HEADER_SOURCE,
+        HeaderValue::from_static(thumbnail.source.as_str()),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(THUMBNAIL_CACHE_CONTROL),
+    );
+    Ok(response)
+}
+
 /// A raw-frame response: the samples, `X-Cache`, and the metadata headers.
 fn raw_response_with_headers(
     body: bytes::Bytes,
@@ -639,6 +728,9 @@ pub(super) async fn tags(
     let Path(index) = path.map_err(error::path_rejection)?;
     let file = registered_file(&state, index, "file")?;
 
+    if file.format.is_raster() {
+        return Ok(Json(Vec::new()));
+    }
     if let Some(nodes) = state.cached_tags(index) {
         return Ok(Json(nodes));
     }
@@ -670,6 +762,11 @@ pub(super) async fn select_tag(
     let Path(index) = path.map_err(error::path_rejection)?;
     let Query(query) = query.map_err(error::query_rejection)?;
     let file = registered_file(&state, index, "file")?;
+    if file.format.is_raster() {
+        return Err(ApiError::bad_request(
+            "tag selection is not available for image files",
+        ));
+    }
     let path = file.path.clone();
     let selector = query.path.clone();
     let offset = query.offset.unwrap_or(0);

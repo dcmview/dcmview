@@ -12,6 +12,13 @@ plain HTTP does not encrypt the token or DICOM data. The binary inherits
 `DCMVIEW_TOKEN` when a fixed token is needed. Direct API clients must send
 `Authorization: Bearer <token>`; see the [API reference](api.md).
 
+Folders now list PNG, JPEG, TIFF, and WebP image files beside DICOM, detected
+by content; image pixels are not decoded yet. `python -m dcmview_py` forwards
+all arguments to the binary, including `--formats dicom ./mixed_dir` to get a
+DICOM-only directory list. `view()` has no `formats` keyword; its existing
+`filters=["format=dicom"]` can select DICOM files (and applies to explicitly
+named inputs too).
+
 ## Install
 
 ```bash
@@ -200,8 +207,8 @@ keeping its token fragment.
 ## Return Values and Errors
 
 Blocking calls return `None` after a successful viewer exit. Non-blocking calls
-return a shutdown handle once the viewer has found DICOM files (or VS Code has
-taken the launch), usually within milliseconds; if the scan finds none, the
+return a shutdown handle once the viewer has found DICOM or image files (or
+VS Code has taken the launch), usually within milliseconds; if the scan finds none, the
 call raises `subprocess.CalledProcessError` instead of returning a handle whose
 viewer has already exited.
 

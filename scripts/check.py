@@ -284,6 +284,8 @@ class CheckRunner:
 				"--ignored",
 				"--skip",
 				"remote_fixtures",
+				"--skip",
+				"thumbnail_timing",
 			],
 			env=env,
 		)

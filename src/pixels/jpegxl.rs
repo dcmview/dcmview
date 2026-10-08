@@ -9,8 +9,7 @@ use super::color::color_samples_to_rgb8;
 use super::error::{PixelError, PixelResult};
 use super::pixeldata_frame::{self, DecodedFrame};
 use super::render::{
-    encode_rgb8_display_png, encode_windowed_luminance_png, DisplayPng, LuminanceRenderOptions,
-    StoredSamples,
+    render_windowed_luminance, DisplayBuffer, DisplayPng, LuminanceRenderOptions, StoredSamples,
 };
 use super::syntax::{Codec, ColorSamples};
 
@@ -22,8 +21,37 @@ pub(crate) async fn decode_jpeg_xl_to_png(
     window_mode: WindowMode,
 ) -> PixelResult<DisplayPng> {
     task::spawn_blocking(move || {
-        let decoded = decode_frame(&file, frame).map_err(PixelError::frame_decode)?;
-        match (decoded.bits_allocated, decoded.samples_per_pixel) {
+        render_jpeg_xl_blocking(&file, frame, requested_wc, requested_ww, window_mode)?
+            .into_display_png(&file, frame)
+            .map_err(PixelError::frame_decode)
+    })
+    .await
+    .map_err(|error| PixelError::frame_decode(anyhow!("JPEG XL decode task failed: {error}")))?
+}
+
+pub(crate) async fn render_jpeg_xl(
+    file: Arc<FileEntry>,
+    frame: u32,
+    requested_wc: Option<f64>,
+    requested_ww: Option<f64>,
+    window_mode: WindowMode,
+) -> PixelResult<DisplayBuffer> {
+    task::spawn_blocking(move || {
+        render_jpeg_xl_blocking(&file, frame, requested_wc, requested_ww, window_mode)
+    })
+    .await
+    .map_err(|error| PixelError::frame_decode(anyhow!("JPEG XL decode task failed: {error}")))?
+}
+
+fn render_jpeg_xl_blocking(
+    file: &FileEntry,
+    frame: u32,
+    requested_wc: Option<f64>,
+    requested_ww: Option<f64>,
+    window_mode: WindowMode,
+) -> PixelResult<DisplayBuffer> {
+    let decoded = decode_frame(file, frame).map_err(PixelError::frame_decode)?;
+    match (decoded.bits_allocated, decoded.samples_per_pixel) {
             (8, 3) => {
                 let photometric = file.photometric_interpretation.trim().to_ascii_uppercase();
                 let samples = Codec::JpegXl.color_samples(&photometric, 8).ok_or_else(|| {
@@ -35,10 +63,7 @@ pub(crate) async fn decode_jpeg_xl_to_png(
                 let pixel_count = decoded.bytes.len() / 3;
                 let rgb = color_samples_to_rgb8(samples, &decoded.bytes, pixel_count, 0)
                     .map_err(PixelError::frame_decode)?;
-                encode_rgb8_display_png(
-                    &file,
-                    frame,
-                    rgb,
+                DisplayBuffer::rgb8(rgb,
                     decoded.columns,
                     decoded.rows,
                     decoded.icc_profile,
@@ -51,8 +76,8 @@ pub(crate) async fn decode_jpeg_xl_to_png(
                     bits_allocated: 8,
                     signed: false,
                 };
-                encode_monochrome(
-                    &file,
+                render_monochrome(
+                    file,
                     samples,
                     frame,
                     decoded.rows,
@@ -68,8 +93,8 @@ pub(crate) async fn decode_jpeg_xl_to_png(
                     bits_allocated: 16,
                     signed: file.pixel_representation == 1,
                 };
-                encode_monochrome(
-                    &file,
+                render_monochrome(
+                    file,
                     samples,
                     frame,
                     decoded.rows,
@@ -83,9 +108,6 @@ pub(crate) async fn decode_jpeg_xl_to_png(
                 "JPEG XL Lossless display does not support BitsAllocated {bits} with SamplesPerPixel {samples}"
             ))),
         }
-    })
-    .await
-    .map_err(|error| PixelError::frame_decode(anyhow!("JPEG XL decode task failed: {error}")))?
 }
 
 pub(crate) async fn decode_raw_jpeg_xl(
@@ -135,7 +157,7 @@ fn decode_frame(file: &FileEntry, frame: u32) -> Result<DecodedFrame> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn encode_monochrome(
+fn render_monochrome(
     file: &FileEntry,
     samples: StoredSamples<'_>,
     frame: u32,
@@ -144,8 +166,8 @@ fn encode_monochrome(
     requested_wc: Option<f64>,
     requested_ww: Option<f64>,
     window_mode: WindowMode,
-) -> PixelResult<DisplayPng> {
-    encode_windowed_luminance_png(
+) -> PixelResult<DisplayBuffer> {
+    render_windowed_luminance(
         file,
         samples,
         LuminanceRenderOptions {
@@ -241,6 +263,8 @@ mod tests {
             .unwrap();
 
         FileEntry {
+            format: Default::default(),
+            raster: None,
             index: 0,
             path: path.to_path_buf(),
             label: "fixture".to_string(),

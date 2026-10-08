@@ -53,7 +53,7 @@ application module:
 | Launch and startup contract | `crates/dcmview-protocol` | `StartupEvent` (the `--startup-json` line), `launch_url`, `STARTUP_PROTOCOL`, the token fragment parameter and the token environment variable. Re-exported by `src/api/contracts.rs`. Fields are only added. |
 | Annotation model | `crates/dcmview-annotation` | The model's types and wire format, `validate` on each of them, `FileKey` and `KEY_RULES`, `Op` and `OpEnvelope`, the size bounds in `limits`, and the generated TypeScript and JSON Schema. The root package does not depend on it: `src/annotations.rs` is the EMBED store behind the annotation endpoints. |
 | HTTP runtime | `src/server/` | Listener/runtime, route registration, handlers, state, registry, activity tracking, tags, and embedded assets. |
-| Pixel service | `src/pixels/` | Typed display/raw requests, cache behavior, transfer-syntax classification, decoding, rendering, and `PixelError`. |
+| Pixel service | `src/pixels/` | Typed display, raw and thumbnail requests, cache behavior, transfer-syntax classification, decoding, the render seam (`render.rs` `DisplayBuffer`), decode classes (`schedule.rs`), and `PixelError`. |
 | Patient geometry | `src/geometry.rs` | Normalized per-frame position, orientation, pixel spacing, coplanarity checks, and target-to-source pixel transforms. |
 | Plane stacks | `src/plane_stack.rs` | RT Dose grids and Parametric Map frames as parallel planes; coverage and bracketing-plane sampling of a displayed frame. |
 | Value mapping | `src/value_mapping.rs` | Per-frame Modality transform and Real World Value Mappings (or Dose Grid Scaling) that convert stored samples. |
@@ -61,10 +61,10 @@ application module:
 | Semantic context | `src/semantic.rs` | Conservative SEG, Parametric Map, and RT Dose metadata interpretation layered beside unchanged pixel preview. |
 | Presentation states | `src/presentation_state.rs` | PIXEL-unit graphic and text annotations of softcopy presentation states, and which image frames each annotation item applies to. |
 | Display masking | `src/masking.rs` | `Masker`: the per-process keyed replacements of a `--mask` session (patient pseudonym, date shift, UID hash) and the tag rules, with the PS3.15 Table E.1-1 attribute list in `masking/profile.rs`. The registry holds it and masks the catalog as files register; handlers mask tag trees, semantic context and UID fields of other responses. |
-| Redaction boxes | `src/redactions.rs`, `src/pixels/redaction.rs` | `RedactionStore`: per-file boxes and their revision, in memory. The pixel service paints them into display PNGs (revision in the display cache key), fills them in raw frame copies, and the presentation layer paints them too. |
+| Redaction boxes | `src/redactions.rs`, `src/pixels/redaction.rs` | `RedactionStore`: per-file boxes and their revision, in memory. The pixel service paints them into display PNGs and thumbnails (revision in the display and thumbnail cache keys), fills them in raw frame copies, and the presentation layer paints them too. |
 | WSI tile context | `src/wsi.rs` | Bounded positioning of one selected WSI tile without stitching or Total Pixel Matrix reconstruction. |
 | Attribute readers | `src/dicom_values.rs` | Lenient string, number, and sequence readers shared by discovery, references, semantic context, and WSI context. |
-| DICOM discovery | `src/loader/` | `discovery.rs` progressive events, cancellation, and reports; `entry.rs` `FileEntry` construction; `metadata.rs` geometry, LUT, overlay, and shutter extraction; `filter.rs` metadata filters. |
+| File discovery | `src/loader/` | `discovery.rs` progressive events, cancellation, and reports; `entry.rs` format detection from content and DICOM `FileEntry` construction; `format.rs` the `--formats` selection and raster signatures; `raster.rs` header-only inspection of PNG, JPEG, TIFF and WebP into a `FileEntry`; `metadata.rs` geometry, LUT, overlay, and shutter extraction; `filter.rs` `--filter` predicates. |
 | Frontend client | `frontend/src/api.ts` | Typed fetch wrappers over the generated endpoint paths and wire types. |
 | VS Code extension | `vscode/src/` | `extension.ts` wires activation only. `viewerSessions.ts` owns viewer processes and their webview panels; `customEditor.ts` and `commands.ts` open files through it; `bridgeServer.ts` serves the loopback launch/stop/wait bridge; `bridgeRegistry.ts` publishes and refreshes the registry file; `terminalInterception.ts` sets the terminal environment and PATH shims. |
 | Cross-language generation | `examples/generate_api_types.rs` | Checked-in `frontend/src/generated/api-types.ts` rendered with `ts-rs` from the Rust HTTP contract. |
@@ -141,9 +141,10 @@ modules, not the reverse:
 6. `pixels/service.rs` is the server-facing pixel boundary. Codec, cache,
    rendering, and window modules remain below it. A cache miss registers an
    in-flight decode that later requests for the key await; the decode runs as
-   its own task and caches its result even if its client disconnected, and a
-   semaphore bounds concurrent decodes to the core count. The frame caches are
-   bounded by bytes only. Grayscale 8- and 16-bit frames are presented through
+   its own task and caches its result even if its client disconnected, and
+   `schedule.rs` bounds concurrent decodes to the core count and grants
+   permits by decode class (see "Render Seam, Thumbnails And Decode
+   Classes"). The frame caches are bounded by bytes only. Grayscale 8- and 16-bit frames are presented through
    a per-stored-value lookup table (`render.rs`), with automatic windows from a
    histogram of stored values. `pixels/native_layout.rs`
    validates native frame sizing and normalizes bit-packed, planar, subsampled,
@@ -315,6 +316,24 @@ publishes the corresponding flattened file order to `App.svelte`. Global
 Up/Down shortcuts use that order (including the active filter), so file
 selection follows the explorer presentation rather than registry insertion
 order.
+
+Raster image files (`file_format` other than `dicom`, never inferred from
+empty UIDs) stay out of the clinical tree. The Study view lists them in one
+"Images" group after the patients, shaped by `buildImageGroup` in
+`lib/fileTree.ts` as the directory tree of those files
+(`docs/design/image-formats.md` section 7); a masked session lists them flat
+under their display names, since only the Directory view shows real paths.
+The explorer filter's `format:` scope matches any format (`jpg` and `tif` are
+aliases); an unscoped term matches a raster's format name but never `dicom`.
+Unscoped terms also match the path the current view shows for a file, never
+a folder every listed file shares: in the Directory view the path below the
+folders all files share, in the Study view a raster's path below the folders
+all rasters share and a DICOM file's name, and nothing in a masked Study
+view. `lib/rasterSupport.ts` decides from the catalog entry
+that a raster cannot be drawn; `ImageViewport` then views it as a file
+without pixels, shows why, and requests no frame, value mapping or layer.
+The tag panel's heading and the accessible names of its shell come from
+`tagPanelNames`: "Metadata" for a raster.
 
 `App.svelte` gives `ImageViewport` one ordered logical-frame sequence for the
 active tab. A sequence may describe frames from one multiframe object, many
@@ -509,6 +528,13 @@ Fields are only added, and the crate's own test pins the exact shapes.
   cached render on a hit; color and VOI LUT frames, and frames windowed in a
   real-world `unit`, include neither. A `unit` window that cannot apply
   reports the default window the frame is shown with.
+- `/api/file/{index}/frame/{frame}/thumbnail?size=&window_mode=` returns a
+  small `image/jpeg` preview for the gallery with `X-Cache`,
+  `X-Thumbnail-Source` and `Cache-Control: no-store` (file indexes are valid
+  for one process only). `size` is the longest edge wanted, 1 to 1024,
+  snapped up to a bucket (128, 256, 512, 1024; 256 when absent); a size
+  outside that range is `400 invalid_query`. Its errors are otherwise the
+  display frame's. See "Render Seam, Thumbnails And Decode Classes".
 - Raw responses include all required `X-Frame-*` metadata headers. Default
   window headers are present only when the DICOM supplies a default window.
 - Unsupported transfer syntaxes are `422`, as are layouts the catalog marks
@@ -601,10 +627,14 @@ same operations from the frame's `presentation-layer` over its own windowed
 image, so a shutter or overlay no longer keeps a file on server windowing.
 
 Color display frames take the same shutter. Every color decode path converts
-to interleaved RGB and ends in `render::encode_rgb8_display_png`, which fills
+to interleaved RGB and ends in a `DisplayBuffer` (`DisplayBuffer::rgb8`), on
+which the display path fills
 pixels outside the opening with the Shutter Presentation Color CIELab Value
 converted from D50 PCS-values to sRGB, else the gray P-value on all three
 channels; the 16-bit JPEG 2000 RGB path scales that fill to its precision.
+The shutter and overlay planes are drawn on the render seam's buffer
+(`DisplayBuffer::draw_presentation_graphics`), after every decode path has
+produced its pixels and before PNG encoding.
 Each frame's shutter is its Per-frame Functional Groups Frame Display Shutter,
 else the Shared Functional Groups one, else the Display Shutter modules.
 
@@ -640,7 +670,169 @@ reader seeks to the frame's first item; without one it steps over item
 headers, reading only each fragment's end to find a JPEG end marker (RLE has
 one fragment per frame).
 
+### Render Seam, Thumbnails And Decode Classes
+
+**Render seam.** Every decode path renders a frame to a `DisplayBuffer`
+(`pixels/render.rs`): 8-bit grayscale or RGB pixels in the stored pixel grid
+(16-bit RGB for the one JPEG 2000 path that has it), after everything that
+depends on the samples (Modality LUT or rescale, VOI LUT or window,
+MONOCHROME1 inversion, Pixel Padding, palette and YBR conversion) and before
+anything is drawn over it or encoded. Rendering and encoding are separate
+steps, and the buffer a decode path returns never has graphics or redaction
+on it, so one render serves either presentation:
+
+- a display frame draws the display shutter and overlay planes on the buffer
+  and encodes a PNG (`DisplayBuffer::into_display_png`), then paints the
+  frame's redaction boxes;
+- a thumbnail draws no shutter and no overlay planes, paints the redaction
+  boxes on the buffer (`DisplayBuffer::redact`), resamples it and encodes a
+  JPEG (`pixels/thumbnail.rs`).
+
+A new decoder (a raster format, for example) produces a `DisplayBuffer` and
+gets both presentations.
+
+**Thumbnails.** A thumbnail is the frame's whole field of view in the stored
+pixel grid, resampled to its physical aspect and fitted inside the size
+bucket; it is never cropped, rotated, flipped or enlarged, so a stored-grid
+position maps to a thumbnail position by one scale per axis.
+`pixels::thumbnail_dimensions` is the one statement of that geometry. The
+presentation is the same whatever produced the image: the frame's default
+window (or `window_mode=full_dynamic`), no shutter, no overlay planes, an
+area filter in display space, JPEG quality 85, no ICC profile.
+`X-Thumbnail-Source` is therefore diagnostic. The sources today are
+`thumbnail_cache` and `full_decode`; `display_cache`, `raw_cache` and
+`reduced_decode` are declared for the cheaper sources that follow.
+
+Thumbnails are withheld and redacted exactly where display frames are, so
+the gallery cannot show what the viewer hides:
+
+- a masked session (`--mask`) answers `403 masked` for the files whose
+  frames it withholds (slide label and overview images);
+- a frame's redaction boxes are painted black on the buffer before it is
+  resampled, so no redacted pixel contributes to any thumbnail pixel;
+- the thumbnail cache key is file, frame, bucket, window mode and the
+  revision of the file's redaction boxes (0 when the frame has none), so a
+  change to the boxes makes every cached thumbnail of the file unreachable.
+
+Thumbnails are written to their own cache only (`ThumbnailCache`, 64 MiB of
+encoded JPEGs by default). They never write the display or raw caches, which
+hold the viewer's working set, and do not read them. Identical concurrent
+requests share one render.
+
+**Decode classes.** Every decode holds a permit of the process's
+`DecodeScheduler` (`pixels/schedule.rs`), which has one permit per core. A
+request names its class. Thumbnails are `Background`; every other decode
+(display frames, raw frames, previews, the frames overlays are resampled
+from) is `Interactive`. The scheduler:
+
+- grants an interactive request as soon as a permit is free;
+- grants a background request only when a permit is free, background work
+  holds fewer than `background_limit(permits)` permits (half of them, at
+  least one, and never all of them on a multi-core host, so one permit is
+  always left for interactive work), and no interactive request is waiting;
+- on a one-core host, where no permit can be reserved, additionally holds a
+  background request back until no interactive request has arrived for
+  `ONE_CORE_IDLE_WINDOW` (one second);
+- considers waiting interactive requests first whenever a permit returns;
+- forgets a request that stops waiting.
+
+An interactive decode waits for its permit inside its own task, as before,
+so it finishes and is cached even when its client disconnects. A thumbnail
+waits for its permit inside the request, so a tile the user scrolled past is
+dropped before any work starts; once it holds a permit its render runs as
+its own task and is cached regardless.
+
+The class belongs to the endpoint. It is unrelated to
+`X-Dcmview-Background: 1`, which only keeps a request off the idle clock: a
+thumbnail of a tile the user is looking at is background decode work and
+user activity at once, and the header never changes how a request is served.
+
+A decode that holds a permit runs to completion, so the classes bound the
+delay the gallery adds to the viewer rather than remove it.
+`pixels::INTERACTIVE_LATENCY_TARGET` (100 ms) is that bound: while
+thumbnails load, the 95th percentile of the extra time an interactive
+display frame takes over the same frames on an idle server, end to end at
+the HTTP boundary, on a host with four cores or more. The opt-in measurement
+`integration::thumbnail_timing` reports it and enforces it in a release
+build on such a host. On a one-core host the bound is one background decode
+that had already started.
+
 See [the HTTP API reference](api.md) for endpoint payloads and headers.
+
+### Raster Image Files
+
+Discovery lists PNG, JPEG, TIFF and still WebP files beside DICOM
+(`docs/design/image-formats.md`; on by default by the owner's decision 12.2).
+
+- **Format is decided from content, never from the name.** `DICM` at offset
+  128 makes a file DICOM whatever its first bytes are, so a DICOM WSI file
+  whose preamble is a TIFF header stays DICOM. Otherwise the first bytes
+  select PNG, JPEG, TIFF (classic or BigTIFF, either byte order) or WebP. A
+  file shorter than the 132-byte Part 10 prefix is still matched. Anything
+  else is skipped with the discovery reason `unrecognized_format`, which
+  replaced `missing_part10_preamble` (owner's decision 12.3).
+- **`--formats`** narrows what a directory walk loads to the listed formats
+  (`dicom`, `png`, `jpeg`, `tiff`, `webp`; default all). A recognized file
+  outside the list is skipped with `format_not_selected` before its header is
+  parsed. A file named as an input path is loaded in whatever supported
+  format it has, whatever the list says. `--formats dicom` gives the
+  DICOM-only behaviour of earlier versions.
+- **Raster discovery is header-only**, like DICOM discovery: PNG chunks up to
+  the first `IDAT`, JPEG markers up to the first frame header, the TIFF IFD
+  chain, the WebP chunk headers. No pixel data is decoded and no file is read
+  whole. A raster signature whose header does not parse is skipped with
+  `raster_header_invalid`. Selected rasters carry the reason `valid_image`.
+- **A raster header has a fixed scan budget**, the same for every file
+  whatever its size or what it declares (`loader/raster.rs` holds the numbers
+  and why): at most 64 MiB obtained from the file, a bounded number of reads,
+  and at most 65,535 JPEG segments, PNG chunks, WebP chunks or TIFF pages.
+  JPEG, PNG and WebP are scanned through one small buffer; a TIFF IFD is read
+  with reads of exactly its own length, because pages lie between pixel
+  data. Nothing is read or allocated in proportion to a declared length: a
+  payload that is not needed is skipped, an EXIF block is read for its first
+  64 KiB only, and no limit is derived from the file's size (a blank mask is
+  smaller on disk than one of its rows). Every step checks discovery
+  cancellation. A file that spends the budget before its header is complete
+  is skipped with `raster_header_invalid` and a stderr line saying what ran
+  out. There are no wall-clock limits. All of it is read through one function
+  over a `Read + Seek` source, which the unit tests count.
+- **A TIFF may have at most 65,535 pages.** A file with more is skipped, not
+  truncated, since a frame map that stops early would move the last frame.
+  (This narrows the design's "walk the whole IFD chain".) The catalog lists
+  the first 16 excluded pages and counts the rest in `excluded_pages_total`.
+- **A TIFF layout no decoder will take is listed, not skipped**:
+  `raster.unsupported_color` (with `color_type` `other`) for CIELab, more
+  than four bands or an extra sample that is not alpha, and
+  `raster.unsupported_sample_format` for 16-bit float. Only a header that
+  cannot be described at all is `raster_header_invalid`.
+- **A raster `FileEntry`** has `format` set, `raster: Some(RasterMetadata)`,
+  empty DICOM identity strings and an empty `transfer_syntax_uid`. Its
+  `rows`, `columns` and sample layout describe the stored pixel grid and the
+  raw frames a decoder serves (`loader/raster.rs` has the table); the EXIF or
+  TIFF orientation is recorded and never applied. A multi-page TIFF is one
+  file whose frames are the pages that match page 0; the others are listed
+  as excluded with the property that differs.
+- **On the wire** `FileSummary.file_format` names the format and
+  `FileSummary.raster` is a `RasterSummary` for rasters and `null` for DICOM;
+  `object_kind` is `image`. Rasters have no Study or Series UID, so the series
+  catalog leaves them out and each is its own tab; for the same reason
+  `redactions/series` copies a raster's boxes to no other file, and a raster
+  is never the target of a DICOM reference.
+- **Filters.** `--filter format=<name>` matches the format name exactly and
+  `--filter path=<text>` matches a substring of the reported path, both
+  ignoring case. The DICOM filter fields are empty for a raster, so any DICOM
+  filter excludes rasters.
+- **Until the raster decoders exist** a raster is `unsupported` with
+  `support_reason` `raster.decode_not_available` (or one of the two layout
+  reasons above), and the display, raw,
+  raw-pixel and presentation-layer endpoints answer
+  `422 unsupported_pixel_layout` naming its reason, so nothing is allocated
+  from a raster header's dimensions. `/tags` answers an empty tree. `/value-mapping` answers the identity
+  mapping, `/references` an empty list and `/semantic-context`
+  `not_applicable`, none of which opens the file. No endpoint answers a
+  server error for a raster.
+- **Masked sessions** give a raster no patient: its patient fields stay empty
+  and it takes no pseudonym. Its display name is the session's `File N`.
 
 ## Annotation Model
 
@@ -784,9 +976,9 @@ join guarantees after hard task abortion.
 
 ### Process Seams For A Supervising Parent
 
-- `--cache-budget BYTES` sets one total for the display, raw and overlay
-  frame caches. `pixels::CacheBudget` splits it in the proportions of the
-  defaults (256, 384 and 64 MiB), and `AppState::with_cache_budget` builds
+- `--cache-budget BYTES` sets one total for the display, raw, overlay and
+  thumbnail caches. `pixels::CacheBudget` splits it in the proportions of
+  the defaults (256, 384, 64 and 64 MiB), and `AppState::with_cache_budget` builds
   the caches from it before the router exists. Tag, semantic and value
   mapping caches are bounded by entry count and are not part of the budget.
 - `--exit-with-parent` (hidden) treats end of file on stdin as a stop signal
@@ -795,7 +987,8 @@ join guarantees after hard task abortion.
   keeps its write end open: a closed or null stdin is an immediate end of
   file.
 - A request carrying `X-Dcmview-Background: 1` is served and drained like
-  any other but does not move the idle clock that `--timeout` reads. The
+  any other but does not move the idle clock that `--timeout` reads. It does
+  not select a decode class; the endpoint does. The
   viewer's own polling does not send it in a standalone launch, so
   `--timeout` behaves there as before.
 
@@ -860,6 +1053,10 @@ installation and VS Code Electron integration can also use network/cache state;
   complete HTTP boundary.
 - Generated DICOM fixtures exercise real discovery and codec paths. Integration
   tests do not mock the DICOM layer.
+- Raster discovery tests (`tests/integration/raster_discovery.rs`) write small
+  PNG, JPEG, TIFF and WebP files with the linked encoders, run the real
+  loader over them and assert on `/api/files`; the expected values are the
+  ones the files were written with.
 - Discovery builds each file's catalog metadata in one parse (`loader/entry.rs`
   `read_discovery_header`): it builds the metadata object from the parser's
   tokens up to the earliest standard pixel-data tag, exactly as
@@ -943,6 +1140,11 @@ installation and VS Code Electron integration can also use network/cache state;
   broader compatibility is manual or reported with de-identified data.
 - Performance targets require explicit timing and memory instrumentation. They
   are not inferred from mocked or ordinary correctness tests.
+- `integration::thumbnail_timing` is such an instrument and is ignored in
+  normal runs: it measures the delay thumbnails add to display frames
+  against `pixels::INTERACTIVE_LATENCY_TARGET` over files it generates. Run
+  it in a release build (`cargo test --release --test integration
+  thumbnail_timing -- --ignored --nocapture`). The `corpus` profile skips it.
 
 ## Extension Points
 
@@ -955,7 +1157,10 @@ Not current correctness blockers:
    cache-memory thresholds in CI.
 3. Keep external upstream fixtures opt-in unless their availability and cache
    behavior become deterministic enough for normal CI.
-4. When adding an endpoint, add it to `endpoints` in the Rust contract,
+4. A new raster format is a `FileFormat` variant, a signature in
+   `loader/format.rs`, a header reader in `loader/raster.rs`, and a decoder
+   in `pixels/`; nothing else names formats.
+5. When adding an endpoint, add it to `endpoints` in the Rust contract,
    register its route, regenerate the checked-in TypeScript, and add a wrapper
    in `frontend/src/api.ts`; the runtime contract test covers it through
    `endpoints::ALL`.
@@ -974,6 +1179,11 @@ Not current correctness blockers:
   exit or error path.
 - Keep CPU, codec, filesystem, and Rayon work off the async executor.
 - Do not hold cache or registry locks across I/O, decode, encode, or await.
+- Every decode takes a `DecodeScheduler` permit of the right class; only
+  gallery and other non-interactive work is `Background`.
+- Thumbnails write their own cache only, and anything that returns source
+  pixels applies the frame's redaction boxes and the masked-session refusal
+  before encoding.
 - Treat `src/api/contracts.rs` plus its generated TypeScript as one contract.
 - Keep `crates/dcmview-protocol` free of viewer, server and DICOM
   dependencies, and only add fields to its types.

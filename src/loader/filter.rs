@@ -12,6 +12,10 @@ pub enum ScanFilterField {
     SeriesNumber,
     SeriesUid,
     Modality,
+    /// The file's format, by its `FileFormat` name.
+    Format,
+    /// The file's path as the catalog reports it.
+    Path,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,40 +24,75 @@ pub struct ScanFilter {
     pub value: String,
 }
 
-/// Each filterable field with its two accepted spellings: the snake_case name
-/// (used when printing a filter) and the DICOM keyword. Both parse
-/// case-insensitively.
-const FIELDS: &[(ScanFilterField, &str, &str)] = &[
-    (ScanFilterField::PatientId, "patient_id", "PatientID"),
-    (ScanFilterField::PatientName, "patient_name", "PatientName"),
+/// Each filterable field with its accepted spellings: the snake_case name
+/// (used when printing a filter) and, for a DICOM attribute, its keyword.
+/// Both parse case-insensitively. `format` and `path` describe the file
+/// rather than an attribute and have the one spelling.
+const FIELDS: &[(ScanFilterField, &str, Option<&str>)] = &[
+    (ScanFilterField::PatientId, "patient_id", Some("PatientID")),
+    (
+        ScanFilterField::PatientName,
+        "patient_name",
+        Some("PatientName"),
+    ),
     (
         ScanFilterField::StudyDescription,
         "study_description",
-        "StudyDescription",
+        Some("StudyDescription"),
     ),
-    (ScanFilterField::StudyDate, "study_date", "StudyDate"),
-    (ScanFilterField::StudyUid, "study_uid", "StudyInstanceUID"),
+    (ScanFilterField::StudyDate, "study_date", Some("StudyDate")),
+    (
+        ScanFilterField::StudyUid,
+        "study_uid",
+        Some("StudyInstanceUID"),
+    ),
     (
         ScanFilterField::SeriesDescription,
         "series_description",
-        "SeriesDescription",
+        Some("SeriesDescription"),
     ),
     (
         ScanFilterField::SeriesNumber,
         "series_number",
-        "SeriesNumber",
+        Some("SeriesNumber"),
     ),
     (
         ScanFilterField::SeriesUid,
         "series_uid",
-        "SeriesInstanceUID",
+        Some("SeriesInstanceUID"),
     ),
-    (ScanFilterField::Modality, "modality", "Modality"),
+    (ScanFilterField::Modality, "modality", Some("Modality")),
+    (ScanFilterField::Format, "format", None),
+    (ScanFilterField::Path, "path", None),
 ];
 
 impl ScanFilter {
+    /// Whether `entry` passes this filter.
+    ///
+    /// The DICOM fields match when the entry's value contains the filter's
+    /// value, ignoring case. A raster's DICOM fields are empty, so any DICOM
+    /// filter excludes rasters.
+    ///
+    /// `format` matches when the filter's value equals the entry's
+    /// `FileFormat` name, ignoring case: `format=png` selects PNG files and
+    /// `format=dicom` DICOM files. It is an equality, not a substring.
+    ///
+    /// `path` matches when the entry's path, written as the catalog reports
+    /// it (`FileEntry::path` through `Path::display`, not canonicalized),
+    /// contains the filter's value, ignoring case.
     pub fn matches(&self, entry: &FileEntry) -> bool {
         let haystack = match self.field {
+            ScanFilterField::Format => {
+                return entry.format.as_str().eq_ignore_ascii_case(&self.value)
+            }
+            ScanFilterField::Path => {
+                return entry
+                    .path
+                    .display()
+                    .to_string()
+                    .to_lowercase()
+                    .contains(&self.value.to_lowercase())
+            }
             ScanFilterField::PatientId => &entry.patient_id,
             ScanFilterField::PatientName => &entry.patient_name,
             ScanFilterField::StudyDescription => &entry.study_description,
@@ -84,6 +123,8 @@ impl std::fmt::Display for ScanFilterField {
     }
 }
 
+/// Parses `FIELD=VALUE`. A `format` filter's value must be a `FileFormat`
+/// name (ignoring case); any other value is an error that lists the names.
 impl FromStr for ScanFilter {
     type Err = String;
 
@@ -95,12 +136,19 @@ impl FromStr for ScanFilter {
         let (field, _, _) = FIELDS
             .iter()
             .find(|(_, name, keyword)| {
-                field.eq_ignore_ascii_case(name) || field.eq_ignore_ascii_case(keyword)
+                field.eq_ignore_ascii_case(name)
+                    || keyword.is_some_and(|keyword| field.eq_ignore_ascii_case(keyword))
             })
             .ok_or_else(|| scan_filter_parse_error(raw))?;
         let value = value.trim();
         if value.is_empty() {
             return Err(scan_filter_parse_error(raw));
+        }
+        if *field == ScanFilterField::Format {
+            crate::types::FileFormat::ALL
+                .into_iter()
+                .find(|format| format.as_str().eq_ignore_ascii_case(value))
+                .ok_or_else(|| scan_filter_parse_error(raw))?;
         }
         Ok(Self {
             field: *field,
@@ -112,12 +160,17 @@ impl FromStr for ScanFilter {
 fn scan_filter_parse_error(raw: &str) -> String {
     let fields = FIELDS
         .iter()
-        .map(|(_, name, keyword)| format!("{name} ({keyword})"))
+        .map(|(_, name, keyword)| match keyword {
+            Some(keyword) => format!("{name} ({keyword})"),
+            None => name.to_string(),
+        })
         .collect::<Vec<_>>()
         .join(", ");
+    let formats = crate::types::FileFormat::ALL.map(crate::types::FileFormat::as_str);
     format!(
         "invalid scan filter `{raw}`; expected FIELD=VALUE where FIELD is one of: {fields} \
-         (case-insensitive)"
+         (case-insensitive); format values: {}",
+        formats.join(", ")
     )
 }
 
@@ -132,15 +185,21 @@ mod tests {
     #[test]
     fn both_spellings_parse_case_insensitively_and_print_snake_case() {
         for (field, name, keyword) in FIELDS {
-            for spelling in [
-                name.to_string(),
-                keyword.to_string(),
-                keyword.to_ascii_uppercase(),
-                name.to_ascii_uppercase(),
-            ] {
-                let filter: ScanFilter = format!(" {spelling} = value ").parse().expect(&spelling);
+            // A format filter only accepts a format name as its value.
+            let value = if *field == ScanFilterField::Format {
+                "png"
+            } else {
+                "value"
+            };
+            let mut spellings = vec![name.to_string(), name.to_ascii_uppercase()];
+            if let Some(keyword) = keyword {
+                spellings.extend([keyword.to_string(), keyword.to_ascii_uppercase()]);
+            }
+            for spelling in spellings {
+                let filter: ScanFilter =
+                    format!(" {spelling} = {value} ").parse().expect(&spelling);
                 assert_eq!(filter.field, *field);
-                assert_eq!(filter.to_string(), format!("{name}=value"));
+                assert_eq!(filter.to_string(), format!("{name}={value}"));
             }
         }
     }
@@ -157,6 +216,8 @@ mod tests {
             ScanFilterField::SeriesNumber,
             ScanFilterField::SeriesUid,
             ScanFilterField::Modality,
+            ScanFilterField::Format,
+            ScanFilterField::Path,
         ];
         assert_eq!(FIELDS.len(), fields.len());
         for field in fields {

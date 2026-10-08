@@ -37,7 +37,11 @@
 	const VR_COLUMN_MIN_PX = 28;
 	const VR_COLUMN_MAX_PX = 140;
 
-	let { fileIndex }: { fileIndex: number } = $props();
+	let { fileIndex, title = "DICOM tags" }: {
+		fileIndex: number;
+		/** "Metadata" for a raster image file; see `tagPanelNames`. */
+		title?: string;
+	} = $props();
 
 	let filter = $state("");
 	let tagResourcesByFile = $state.raw<Record<number, AsyncResourceSnapshot<TagNode[]> | undefined>>({});
@@ -202,7 +206,7 @@
 
 <aside class="panel">
 	<header>
-		<h2>DICOM tags</h2>
+		<h2>{title}</h2>
 		<SearchField bind:value={filter} placeholder="keyword, tag or value" aria-label="Filter tags" />
 	</header>
 	{#if error}

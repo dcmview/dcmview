@@ -6,7 +6,7 @@ use dcmview::annotations::{AnnotationStore, EmbedRoiAnnotations};
 use dcmview::api::contracts::{
     endpoints, Endpoint, ResponseHeaders, CACHE_HEADER, CACHE_HIT, CACHE_MISS,
     DISPLAY_FRAME_HEADERS, EXPORT_CONTENT_DISPOSITION_HEADER, EXPORT_CONTENT_DISPOSITION_VALUE,
-    RAW_FRAME_HEADERS, SERVER_INSTANCE_HEADER,
+    RAW_FRAME_HEADERS, SERVER_INSTANCE_HEADER, THUMBNAIL_HEADERS,
 };
 use dcmview::server;
 use dcmview::types::WindowPreset;
@@ -72,6 +72,7 @@ async fn json_endpoints_match_frontend_contract_shapes() {
             "columns",
             "default_window",
             "display_name",
+            "file_format",
             "frame_count",
             "has_pixels",
             "index",
@@ -84,6 +85,7 @@ async fn json_endpoints_match_frontend_contract_shapes() {
             "patient_name",
             "pixel_aspect_ratio",
             "presentation_layer",
+            "raster",
             "raw_windowing_compatible",
             "raw_windowing_reason",
             "rows",
@@ -119,6 +121,8 @@ async fn json_endpoints_match_frontend_contract_shapes() {
         ],
     );
     assert_eq!(file["object_kind"], "classic_image");
+    assert_eq!(file["file_format"], "dicom");
+    assert!(file["raster"].is_null());
     assert_eq!(file["support_state"], "renderable");
     assert!(file["support_reason"].is_null());
     assert_eq!(info["object_kind"], "classic_image");
@@ -478,6 +482,19 @@ fn assert_declared_response_headers(endpoint: &Endpoint, response: &TestResponse
             assert_no_display_frame_headers(endpoint, response);
             assert_no_export_header(endpoint, response);
         }
+        ResponseHeaders::Thumbnail => {
+            assert_cache_header(endpoint, response);
+            for (_, name) in THUMBNAIL_HEADERS {
+                assert!(
+                    response.maybe_header(*name).is_some(),
+                    "{} is missing thumbnail header {name}",
+                    endpoint.id
+                );
+            }
+            assert_no_raw_frame_headers(endpoint, response);
+            assert_no_display_frame_headers(endpoint, response);
+            assert_no_export_header(endpoint, response);
+        }
         ResponseHeaders::Export => {
             assert_no_cache_header(endpoint, response);
             assert_no_raw_frame_headers(endpoint, response);
@@ -573,6 +590,7 @@ async fn color_display_omits_the_applied_window_header() {
         dcmview::loader::DiscoverOptions {
             recursive: false,
             filters: Vec::new(),
+            formats: Default::default(),
         },
     )
     .await
@@ -653,6 +671,7 @@ async fn segmentation_context_always_includes_a_string_array_of_warnings() {
             dcmview::loader::DiscoverOptions {
                 recursive: true,
                 filters: vec![],
+                formats: Default::default(),
             },
         )
         .await

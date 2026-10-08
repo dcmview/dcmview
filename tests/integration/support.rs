@@ -76,6 +76,8 @@ pub fn write_encapsulated_dicom(path: &Path, transfer_syntax_uid: &str, fragment
 
 pub fn file_entry(path: PathBuf, transfer_syntax_uid: &str, frame_count: u32) -> FileEntry {
     FileEntry {
+        format: Default::default(),
+        raster: None,
         index: 0,
         path,
         label: "fixture".to_string(),

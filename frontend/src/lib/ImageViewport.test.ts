@@ -2,7 +2,7 @@
 import { act, createEvent, fireEvent, render, screen, waitFor } from "@testing-library/svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "../api";
-import { fileSummary, rawFrame } from "../testing/fixtures";
+import { fileSummary, rasterSummary, rawFrame } from "../testing/fixtures";
 import ImageViewport from "./ImageViewport.svelte";
 import * as frameOverlay from "./viewport/frameOverlay";
 import { navigationFramesForFile } from "./seriesNavigation";
@@ -297,6 +297,25 @@ describe("ImageViewport window/level path", () => {
 		await Promise.resolve();
 		expect(fetchDisplayFrame).not.toHaveBeenCalled();
 		expect(fetchRawFrame).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		"raster.decode_not_available",
+		"raster.unsupported_color",
+		"raster.unsupported_sample_format",
+	])("says an image file cannot be displayed instead of requesting its frames (%s)", async (support_reason) => {
+		vi.mocked(api.fetchPresentationLayerBlob).mockClear();
+		vi.mocked(api.fetchSelectedTag).mockClear();
+		const view = renderViewport({ file: rasterSummary(2, { support_reason }), activeTool: "window_level" });
+
+		expect(screen.getByRole("status").textContent).toContain("This image cannot be displayed yet");
+		await fireEvent.pointerMove(view.container.querySelector(".viewport")!, { clientX: 10, clientY: 10 });
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(fetchDisplayFrame).not.toHaveBeenCalled();
+		expect(fetchRawFrame).not.toHaveBeenCalled();
+		expect(fetchFrameValueMapping).not.toHaveBeenCalled();
+		expect(api.fetchPresentationLayerBlob).not.toHaveBeenCalled();
+		expect(api.fetchSelectedTag).not.toHaveBeenCalled();
 	});
 });
 

@@ -9,12 +9,33 @@ use super::color::color_samples_to_rgb8;
 use super::error::{PixelError, PixelResult};
 use super::pixeldata_frame::decode_frame;
 use super::render::{
-    encode_rgb8_display_png, encode_windowed_luminance_png, DisplayPng, LuminanceRenderOptions,
-    StoredSamples,
+    render_windowed_luminance, DisplayBuffer, DisplayPng, LuminanceRenderOptions, StoredSamples,
 };
 use super::syntax::{Codec, ColorSamples};
 
 /// Displays one JPEG Baseline or JPEG Lossless frame decoded by dicom-pixeldata.
+pub(crate) async fn render_compressed_frame(
+    codec: Codec,
+    file: Arc<FileEntry>,
+    frame: u32,
+    requested_wc: Option<f64>,
+    requested_ww: Option<f64>,
+    window_mode: WindowMode,
+) -> Result<DisplayBuffer> {
+    task::spawn_blocking(move || {
+        render_compressed_frame_blocking(
+            codec,
+            &file,
+            frame,
+            requested_wc,
+            requested_ww,
+            window_mode,
+        )
+    })
+    .await
+    .context("compressed decode task failed")?
+}
+
 pub(crate) async fn decode_compressed_frame_to_png(
     codec: Codec,
     file: Arc<FileEntry>,
@@ -37,14 +58,14 @@ pub(crate) async fn decode_compressed_frame_to_png(
     .context("compressed decode task failed")?
 }
 
-fn decode_compressed_frame_to_png_blocking(
+fn render_compressed_frame_blocking(
     codec: Codec,
     file: &FileEntry,
     frame: u32,
     requested_wc: Option<f64>,
     requested_ww: Option<f64>,
     window_mode: WindowMode,
-) -> Result<DisplayPng> {
+) -> Result<DisplayBuffer> {
     let decoded = decode_frame(file, frame, "JPEG")?;
     if decoded.samples_per_pixel == 3 {
         if decoded.bits_allocated != 8 {
@@ -63,15 +84,8 @@ fn decode_compressed_frame_to_png_blocking(
             }
             Some(ColorSamples::Rgb) | None => decoded.bytes,
         };
-        return encode_rgb8_display_png(
-            file,
-            frame,
-            rgb,
-            decoded.columns,
-            decoded.rows,
-            decoded.icc_profile,
-        )
-        .context("color PNG encoding failed");
+        return DisplayBuffer::rgb8(rgb, decoded.columns, decoded.rows, decoded.icc_profile)
+            .context("color PNG encoding failed");
     }
     if decoded.samples_per_pixel != 1 {
         return Err(anyhow!(
@@ -85,7 +99,7 @@ fn decode_compressed_frame_to_png_blocking(
             decoded.bits_allocated
         ));
     }
-    encode_windowed_luminance_png(
+    render_windowed_luminance(
         file,
         StoredSamples::Integer {
             bytes: &decoded.bytes,
@@ -101,6 +115,18 @@ fn decode_compressed_frame_to_png_blocking(
             window_mode,
         },
     )
+}
+
+fn decode_compressed_frame_to_png_blocking(
+    codec: Codec,
+    file: &FileEntry,
+    frame: u32,
+    requested_wc: Option<f64>,
+    requested_ww: Option<f64>,
+    window_mode: WindowMode,
+) -> Result<DisplayPng> {
+    render_compressed_frame_blocking(codec, file, frame, requested_wc, requested_ww, window_mode)?
+        .into_display_png(file, frame)
 }
 
 pub(crate) async fn read_raw_jpeg_samples(
@@ -259,6 +285,8 @@ mod tests {
         .unwrap();
 
         let file = FileEntry {
+            format: Default::default(),
+            raster: None,
             index: 0,
             path,
             label: "fixture".to_string(),

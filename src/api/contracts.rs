@@ -12,6 +12,7 @@ pub const API_PREFIX: &str = "/api";
 
 pub const JSON_MEDIA_TYPE: &str = "application/json";
 pub const PNG_MEDIA_TYPE: &str = "image/png";
+pub const JPEG_MEDIA_TYPE: &str = "image/jpeg";
 pub const OCTET_STREAM_MEDIA_TYPE: &str = "application/octet-stream";
 pub const CSV_MEDIA_TYPE: &str = "text/csv; charset=utf-8";
 
@@ -115,6 +116,53 @@ pub const RAW_FRAME_HEADERS: &[(&str, &str)] = &[
     ("paddingHigh", RAW_FRAME_HEADER_PADDING_HIGH),
 ];
 
+/// Thumbnail response header naming the step that produced the image, as a
+/// [`ThumbnailSource`] value. Diagnostic only: every source yields the same
+/// presentation.
+pub const THUMBNAIL_HEADER_SOURCE: &str = "X-Thumbnail-Source";
+/// `Cache-Control` of a thumbnail. File indexes are valid within one server
+/// process only, so a browser must not keep a thumbnail across a restart.
+pub const THUMBNAIL_CACHE_CONTROL: &str = "no-store";
+
+/// Thumbnail response headers, keyed by their name in the generated
+/// TypeScript table. Both are sent on every thumbnail, with [`CACHE_HEADER`].
+pub const THUMBNAIL_HEADERS: &[(&str, &str)] = &[
+    ("source", THUMBNAIL_HEADER_SOURCE),
+    ("cacheControl", "Cache-Control"),
+];
+
+/// The longest-edge sizes a thumbnail is rendered at, ascending. A requested
+/// `size` is snapped up to the next bucket so cache keys stay few; the client
+/// scales down.
+pub const THUMBNAIL_SIZE_BUCKETS: [u32; 4] = [128, 256, 512, 1024];
+/// The bucket of a request that names no `size`.
+pub const THUMBNAIL_DEFAULT_SIZE: u32 = 256;
+
+/// The step that produced a thumbnail, reported in
+/// [`THUMBNAIL_HEADER_SOURCE`]. `ThumbnailCache` and `FullDecode` are sent
+/// today; the others are reserved for the cheaper sources that follow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ThumbnailSource {
+    ThumbnailCache,
+    DisplayCache,
+    RawCache,
+    ReducedDecode,
+    FullDecode,
+}
+
+impl ThumbnailSource {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ThumbnailCache => "thumbnail_cache",
+            Self::DisplayCache => "display_cache",
+            Self::RawCache => "raw_cache",
+            Self::ReducedDecode => "reduced_decode",
+            Self::FullDecode => "full_decode",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ApiMethod {
     Get,
@@ -141,6 +189,8 @@ pub enum ResponseHeaders {
     DisplayFrame,
     /// [`CACHE_HEADER`] plus [`RAW_FRAME_HEADERS`].
     RawFrame,
+    /// [`CACHE_HEADER`] plus [`THUMBNAIL_HEADERS`].
+    Thumbnail,
     /// [`EXPORT_CONTENT_DISPOSITION_HEADER`].
     Export,
 }
@@ -161,7 +211,7 @@ pub struct Endpoint {
 
 pub mod endpoints {
     use super::{
-        ApiMethod, Endpoint, ResponseHeaders, CSV_MEDIA_TYPE, JSON_MEDIA_TYPE,
+        ApiMethod, Endpoint, ResponseHeaders, CSV_MEDIA_TYPE, JPEG_MEDIA_TYPE, JSON_MEDIA_TYPE,
         OCTET_STREAM_MEDIA_TYPE, PNG_MEDIA_TYPE,
     };
 
@@ -302,6 +352,19 @@ pub mod endpoints {
         OCTET_STREAM_MEDIA_TYPE,
         ResponseHeaders::RawFrame,
     );
+    /// Small lossy JPEG preview of the frame for the gallery; query
+    /// `ThumbnailQuery`. The whole frame in the stored pixel grid, resampled
+    /// to its physical aspect and fitted inside the size bucket, never
+    /// cropped, rotated, flipped or enlarged. It has the frame's default
+    /// presentation without the display shutter and overlay graphics, and
+    /// the frame's redaction boxes painted black. A masked session withholds
+    /// it for the files whose display frames it withholds.
+    pub const FILE_THUMBNAIL: Endpoint = binary(
+        "fileThumbnail",
+        "/file/{index}/frame/{frame}/thumbnail",
+        JPEG_MEDIA_TYPE,
+        ResponseHeaders::Thumbnail,
+    );
     /// `TagNode[]`.
     pub const FILE_TAGS: Endpoint = json("fileTags", ApiMethod::Get, "/file/{index}/tags");
     /// One `TagNode`; query `TagQuery`.
@@ -366,6 +429,7 @@ pub mod endpoints {
         FILE_FRAME,
         FILE_RAW_FRAME,
         FILE_RAW_PIXEL,
+        FILE_THUMBNAIL,
         FILE_TAGS,
         FILE_TAG_SELECT,
         FILE_ANNOTATIONS_GET,
@@ -403,7 +467,15 @@ pub struct FileSummary {
     pub instance_number: String,
     pub sop_instance_uid: String,
     pub sop_class_uid: String,
+    /// The object family: a DICOM family from the SOP Class, or `image` for a
+    /// raster file.
     pub object_kind: String,
+    /// What the file is, detected from its content and never from its name.
+    /// A raster (anything but `dicom`) has empty DICOM identity strings and
+    /// an empty `transfer_syntax_uid`.
+    pub file_format: FileFormat,
+    /// What discovery read from a raster file's header; `null` for DICOM.
+    pub raster: Option<RasterSummary>,
     pub support_state: SupportState,
     pub support_reason: Option<String>,
     /// Whether client-side raw windowing preserves every declared presentation
@@ -427,6 +499,136 @@ pub struct FileSummary {
     pub pixel_aspect_ratio: Option<f64>,
     pub transfer_syntax_uid: String,
     pub default_window: Option<WindowPreset>,
+}
+
+/// The container format of a discovered file, detected from its content
+/// (`docs/design/image-formats.md` section 3). The serialized names are also
+/// the values of `--formats` and of the `format` scan filter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum FileFormat {
+    #[default]
+    Dicom,
+    Png,
+    Jpeg,
+    Tiff,
+    Webp,
+}
+
+impl FileFormat {
+    /// Every format, in the order lists of formats are printed.
+    pub const ALL: [Self; 5] = [Self::Dicom, Self::Png, Self::Jpeg, Self::Tiff, Self::Webp];
+
+    /// The serialized name: `dicom`, `png`, `jpeg`, `tiff` or `webp`.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Dicom => "dicom",
+            Self::Png => "png",
+            Self::Jpeg => "jpeg",
+            Self::Tiff => "tiff",
+            Self::Webp => "webp",
+        }
+    }
+
+    /// Whether this is a raster image format, that is, anything but DICOM.
+    pub const fn is_raster(self) -> bool {
+        !matches!(self, Self::Dicom)
+    }
+}
+
+/// How a raster file stores colour, before any expansion on decode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum RasterColorType {
+    Gray,
+    GrayAlpha,
+    Rgb,
+    Rgba,
+    /// Indexed colour; decoded frames hold the expanded colours.
+    Palette,
+    /// CMYK or YCCK JPEG; decoded frames hold an approximate sRGB conversion.
+    Cmyk,
+    /// A stored layout none of the above describes and the viewer does not
+    /// decode: CIELab, more than four bands, or an extra sample that is not
+    /// alpha. The file is listed with `support_reason`
+    /// `raster.unsupported_color`.
+    Other,
+}
+
+/// The numeric kind of a raster file's stored samples.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum RasterSampleFormat {
+    Uint,
+    Int,
+    Float,
+}
+
+/// Why a TIFF page is not one of the file's frames: the first property, in
+/// this order, in which it differs from page 0, or the subfile flag that
+/// marks it as not a full image
+/// (`docs/design/image-formats.md` section 2.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum RasterPageDifference {
+    /// `NewSubfileType` bit 0: a reduced-resolution copy, such as a thumbnail.
+    ReducedResolution,
+    /// `NewSubfileType` bit 2: a transparency mask.
+    Mask,
+    Width,
+    Height,
+    SamplesPerPixel,
+    SampleFormat,
+    BitsPerSample,
+    Photometric,
+    /// The extra-sample (alpha) type.
+    Alpha,
+    Orientation,
+}
+
+/// A TIFF page left out of the frame map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+pub struct RasterExcludedPage {
+    /// Zero-based IFD index in the file's page chain.
+    pub page: u32,
+    pub differs: RasterPageDifference,
+}
+
+/// What discovery read from a raster file's header. Every field holds for
+/// every frame of the file. Nothing here is decoded from pixel data.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+pub struct RasterSummary {
+    pub color_type: RasterColorType,
+    /// Bits per sample as stored in the file (1, 2, 4, 8, 16, 32 or 64).
+    /// Raw frames serve low-bit samples one byte each, at this depth's values.
+    pub bit_depth: u32,
+    pub sample_format: RasterSampleFormat,
+    /// Whether the file carries an alpha channel or palette transparency.
+    pub has_alpha: bool,
+    /// The EXIF or TIFF orientation, 1 to 8; 1 when the file declares none or
+    /// an invalid one. `rows`, `columns`, raw samples and every coordinate
+    /// stay in the stored pixel grid: this is a display hint only.
+    pub orientation: u8,
+    /// Whether the file embeds an ICC profile.
+    pub has_icc: bool,
+    /// Pages (IFDs) in the file: 1 for PNG, JPEG and WebP, at most 65,535
+    /// for TIFF (a file with more is not listed).
+    pub pages_total: u32,
+    /// The zero-based page (IFD index) of each frame, in frame order. Its
+    /// length is the file's `frame_count`; `[0]` for PNG, JPEG and WebP.
+    pub frame_pages: Vec<u32>,
+    /// The first pages that are not frames, in page order: at most 16, so a
+    /// file with many excluded pages does not grow every catalog response.
+    pub excluded_pages: Vec<RasterExcludedPage>,
+    /// How many pages are not frames; `pages_total` is this plus the length
+    /// of `frame_pages`.
+    pub excluded_pages_total: u32,
+    /// An animated PNG or WebP; only its first frame is a frame here.
+    pub animated: bool,
+    /// PNG `sBIT`: the original precision of each stored channel, in file
+    /// order. Informational only: it never narrows a window or value range.
+    /// `null` when the file has no `sBIT` chunk.
+    pub significant_bits: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -1150,6 +1352,20 @@ pub struct FrameQuery {
     /// `true` for a window/level drag preview: served from the display cache
     /// when present, otherwise rendered without being cached.
     pub preview: Option<bool>,
+}
+
+/// Thumbnail query.
+#[derive(Debug, Clone, Copy, Deserialize, TS)]
+#[ts(optional_fields)]
+pub struct ThumbnailQuery {
+    /// Longest edge wanted, in device pixels: 1 to the largest of
+    /// [`THUMBNAIL_SIZE_BUCKETS`], snapped up to the next bucket; absent
+    /// means [`THUMBNAIL_DEFAULT_SIZE`]. Anything else is `400
+    /// invalid_query`.
+    pub size: Option<u32>,
+    /// `default` (when absent) for the frame's default presentation, or
+    /// `full_dynamic`. A thumbnail takes no explicit window.
+    pub window_mode: Option<WindowMode>,
 }
 
 /// Raw-pixel query: the zero-based image row and column.

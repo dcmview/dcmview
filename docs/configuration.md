@@ -21,18 +21,26 @@ dcmview [OPTIONS] <PATH> [PATH ...]
 
 | Option | Default | Description |
 |---|---:|---|
-| `<PATH>...` | required | DICOM file or directory to inspect; repeat for multiple inputs. |
+| `<PATH>...` | required | DICOM or image file or directory to inspect; repeat for multiple inputs. |
 | `-p, --port <PORT>` | `0` | Local HTTP port to bind. `0` asks the OS for an available port. |
 | `--host <ADDR>` | `127.0.0.1` | Local interface to bind. Keep the default for normal and SSH-forwarded use. |
 | `--unix-socket <PATH>` | none | Listen on a private Unix domain socket instead of TCP; Linux and macOS only. Conflicts with explicit `--host` and `--port`. |
 | `--no-token` | `false` | Serve the API without the access token; for use behind a proxy that already authenticates. Warns that the API is open to anything that can reach the listener. |
 | `--no-browser` | `false` | Print the viewer URL instead of opening a browser automatically. |
 | `--timeout <SECONDS>` | none | Exit after this many seconds without API or browser requests once the scan has finished. |
-| `--cache-budget <BYTES>` | `704MiB` | Total memory for cached display, raw and overlay frame bodies; minimum `16MiB`. |
+| `--cache-budget <BYTES>` | `768MiB` | Total memory for cached display, raw, overlay and thumbnail frame bodies; minimum `16MiB`. |
 | `--no-recursive` | `false` | Scan only the top level of input directories. |
 | `--annotations <CSV>` | none | Load EMBED-style ROI annotations from CSV without modifying the file. |
-| `--filter <FIELD=VALUE>` | none | Include only files whose metadata field contains the value; repeatable. |
+| `--formats <NAMES>` | all five formats | Comma-separated `dicom,png,jpeg,tiff,webp`; narrows directory walks only. |
+| `--filter <FIELD=VALUE>` | none | Include only files matching a metadata, format, or path filter; repeatable. |
 | `--mask` | `false` | Replace patient identifiers in everything the viewer displays, for screen sharing. Display only: files are not modified and this is not de-identification. Fixed for the session. |
+
+`--formats` accepts those five names case-insensitively, with whitespace
+around names and repeated names allowed. Empty items and aliases such as `jpg`,
+`tif`, or `all` are errors. A recognized file outside the selection is counted
+as skipped (`format_not_selected`). A file named explicitly as an input path
+is always inspected regardless of the selection; filters still apply.
+Use `dcmview --formats dicom ./mixed_dir` for a DICOM-only directory scan.
 
 Filter fields, by snake_case name or DICOM keyword (either spelling, any
 case):
@@ -48,9 +56,16 @@ case):
 | `series_number` | `SeriesNumber` |
 | `series_uid` | `SeriesInstanceUID` |
 | `modality` | `Modality` |
+| `format` | — |
+| `path` | — |
 
-Matching is case-insensitive substring matching; multiple filters are combined
-with AND semantics.
+DICOM fields use case-insensitive substring matching. `format` requires one of
+`dicom`, `png`, `jpeg`, `tiff`, or `webp` and matches the whole format name,
+ignoring case. `path` matches a case-insensitive substring of the path reported
+by `/api/files`, without canonicalizing it. Multiple filters use AND semantics.
+Rasters have empty DICOM fields, so a DICOM filter such as `modality=MG`
+excludes them. For example, `--filter format=png --filter path=exports` selects
+PNG files whose reported path contains `exports`.
 
 `--startup-json` and `--vscode-bridge-client` are hidden integration flags for
 wrappers and VS Code terminal interception. They are not part of the normal user
@@ -64,10 +79,10 @@ followed by `KiB`, `MiB` or `GiB`, case-insensitively and without spaces.
 Fractions, signs, decimal suffixes such as `MB`, overflow and totals below
 `16MiB` (`16777216` bytes) are rejected.
 
-The total is split proportionally among display, raw and overlay frame caches
-using their default sizes of 256, 384 and 64 MiB. Each share rounds down;
-frames larger than their cache's share are served without being retained.
-Without the flag, those defaults are unchanged.
+The total defaults to 768 MiB and is split proportionally among display, raw,
+overlay and thumbnail caches using their default sizes of 256, 384, 64 and
+64 MiB. Each share rounds down; frames larger than their cache's share are
+served without being retained.
 
 This limits retained frame bodies, not total process memory. It does not cover
 in-flight decoding and responses, cache metadata, the file catalog, annotations,

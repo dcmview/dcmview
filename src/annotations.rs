@@ -1004,6 +1004,8 @@ mod tests {
 
     fn file_entry(index: usize, path: PathBuf, frame_count: u32) -> Arc<FileEntry> {
         Arc::new(FileEntry {
+            format: Default::default(),
+            raster: None,
             index,
             path,
             label: "fixture".to_string(),

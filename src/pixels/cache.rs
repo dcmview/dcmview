@@ -1,7 +1,7 @@
 use super::error::PixelError;
 use super::render::DisplayPng;
 use crate::api::contracts::RawFrameMetadata;
-use crate::types::{FrameCacheKey, OverlayCacheKey, RawFrameCacheKey};
+use crate::types::{FrameCacheKey, OverlayCacheKey, RawFrameCacheKey, ThumbnailCacheKey};
 use bytes::Bytes;
 use futures::future::{BoxFuture, Shared};
 use lru::LruCache;
@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 pub const FRAME_CACHE_MAX_BYTES: usize = 256 * 1024 * 1024; // 256 MiB
 pub const RAW_CACHE_MAX_BYTES: usize = 384 * 1024 * 1024; // 384 MiB
 pub const OVERLAY_CACHE_MAX_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
+pub const THUMBNAIL_CACHE_MAX_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
 
 /// Encoded display frames keyed by file, frame, and window request.
 pub type FrameCache = BudgetedLru<FrameCacheKey, DisplayPng>;
@@ -20,6 +21,10 @@ pub type FrameCache = BudgetedLru<FrameCacheKey, DisplayPng>;
 pub type RawFrameCache = BudgetedLru<RawFrameCacheKey, (Bytes, RawFrameMetadata)>;
 /// Encoded overlay PNGs keyed by overlay object (and SEG frame) and displayed frame.
 pub type OverlayCache = BudgetedLru<OverlayCacheKey, Bytes>;
+/// Encoded thumbnail JPEGs keyed by file, frame, size bucket, window mode
+/// and redaction revision. Thumbnails are written here only: a gallery
+/// scroll must not evict the viewer's display and raw frames.
+pub type ThumbnailCache = BudgetedLru<ThumbnailCacheKey, Bytes>;
 
 /// A cached value whose memory cost is the length of its frame body.
 pub trait FrameBody: Clone {
@@ -110,13 +115,14 @@ impl<K: Hash + Eq, V: FrameBody> BudgetedLru<K, V> {
     }
 }
 
-/// One byte budget divided among the display, raw and overlay caches
-/// (`--cache-budget`), in the proportions of the defaults.
+/// One byte budget divided among the display, raw, overlay and thumbnail
+/// caches (`--cache-budget`), in the proportions of the defaults.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CacheBudget {
     pub frame_bytes: usize,
     pub raw_bytes: usize,
     pub overlay_bytes: usize,
+    pub thumbnail_bytes: usize,
 }
 
 impl CacheBudget {
@@ -124,6 +130,7 @@ impl CacheBudget {
         frame_bytes: FRAME_CACHE_MAX_BYTES,
         raw_bytes: RAW_CACHE_MAX_BYTES,
         overlay_bytes: OVERLAY_CACHE_MAX_BYTES,
+        thumbnail_bytes: THUMBNAIL_CACHE_MAX_BYTES,
     };
 
     /// Smallest accepted total. A frame larger than its cache's share is
@@ -133,7 +140,7 @@ impl CacheBudget {
     pub const MIN_TOTAL_BYTES: u64 = 16 * 1024 * 1024;
 
     /// Splits `total_bytes` in the proportions of [`Self::DEFAULT`], rounding
-    /// each share down so the three never exceed the total. A total below
+    /// each share down so the four never exceed the total. A total below
     /// [`Self::MIN_TOTAL_BYTES`] is an error that names the minimum.
     pub fn from_total(total_bytes: u64) -> Result<Self, String> {
         if total_bytes < Self::MIN_TOTAL_BYTES {
@@ -152,11 +159,15 @@ impl CacheBudget {
             frame_bytes: share(Self::DEFAULT.frame_bytes)?,
             raw_bytes: share(Self::DEFAULT.raw_bytes)?,
             overlay_bytes: share(Self::DEFAULT.overlay_bytes)?,
+            thumbnail_bytes: share(Self::DEFAULT.thumbnail_bytes)?,
         })
     }
 
     pub fn total_bytes(&self) -> u64 {
-        self.frame_bytes as u64 + self.raw_bytes as u64 + self.overlay_bytes as u64
+        self.frame_bytes as u64
+            + self.raw_bytes as u64
+            + self.overlay_bytes as u64
+            + self.thumbnail_bytes as u64
     }
 }
 
@@ -191,6 +202,10 @@ pub fn new_raw_cache() -> Arc<Mutex<RawFrameCache>> {
 
 pub fn new_overlay_cache() -> Arc<Mutex<OverlayCache>> {
     Arc::new(Mutex::new(OverlayCache::new(OVERLAY_CACHE_MAX_BYTES)))
+}
+
+pub fn new_thumbnail_cache() -> Arc<Mutex<ThumbnailCache>> {
+    Arc::new(Mutex::new(ThumbnailCache::new(THUMBNAIL_CACHE_MAX_BYTES)))
 }
 
 #[cfg(test)]
@@ -316,20 +331,22 @@ mod tests {
             Ok(CacheBudget::DEFAULT)
         );
         assert_eq!(
-            CacheBudget::from_total(352 * MIB),
+            CacheBudget::from_total(384 * MIB),
             Ok(CacheBudget {
                 frame_bytes: 128 * 1024 * 1024,
                 raw_bytes: 192 * 1024 * 1024,
                 overlay_bytes: 32 * 1024 * 1024,
+                thumbnail_bytes: 32 * 1024 * 1024,
             })
         );
         // Totals that do not divide evenly round down and never exceed the total.
         for total in [16 * MIB, 16 * MIB + 1, 100 * MIB + 7, 8 * 1024 * MIB] {
             let budget = CacheBudget::from_total(total).expect("budget");
             assert!(budget.total_bytes() <= total, "{total}");
-            assert!(total - budget.total_bytes() < 3, "{total}");
+            assert!(total - budget.total_bytes() < 4, "{total}");
             assert!(budget.raw_bytes > budget.frame_bytes, "{total}");
             assert!(budget.frame_bytes > budget.overlay_bytes, "{total}");
+            assert_eq!(budget.thumbnail_bytes, budget.overlay_bytes, "{total}");
         }
         assert!(CacheBudget::from_total(CacheBudget::MIN_TOTAL_BYTES - 1).is_err());
         assert!(CacheBudget::from_total(0).is_err());

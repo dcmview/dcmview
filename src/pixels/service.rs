@@ -1,34 +1,40 @@
-use crate::api::contracts::{RawFrameMetadata, RealWorldValueMap, SupportState, WindowMode};
+use crate::api::contracts::{
+    RawFrameMetadata, RealWorldValueMap, SupportState, ThumbnailSource, WindowMode,
+};
 use crate::types::{
-    FileEntry, FrameCacheKey, NativePixelDataKind, RawFrameCacheKey, ResolvedWindow, WindowRequest,
+    FileEntry, FrameCacheKey, NativePixelDataKind, RawFrameCacheKey, ResolvedWindow,
+    ThumbnailCacheKey, WindowRequest,
 };
 use anyhow::Context;
 use bytes::Bytes;
 use futures::FutureExt;
 use std::future::Future;
 use std::hash::Hash;
-use std::sync::{Arc, LazyLock, Mutex};
-use tokio::sync::Semaphore;
+use std::sync::{Arc, Mutex};
 
-use super::cache::{BudgetedLru, FrameBody, FrameCache, InFlight, RawFrameCache};
+use super::cache::{BudgetedLru, FrameBody, FrameCache, InFlight, RawFrameCache, ThumbnailCache};
 use super::deflated_frame::{
     decode_deflated_binary_frame_to_png, decode_raw_deflated_binary_frame,
+    render_deflated_binary_frame,
 };
 use super::error::{PixelError, PixelResult};
 use super::jpeg::{
     decode_compressed_frame_to_png, decode_raw_jpeg_lossless, read_raw_jpeg_samples,
+    render_compressed_frame,
 };
-use super::jpeg2000::{decode_jp2_fragment_to_png, decode_raw_jp2_samples};
-use super::jpegls::{decode_jpeg_ls_to_png, decode_raw_jpeg_ls};
-use super::jpegxl::{decode_jpeg_xl_to_png, decode_raw_jpeg_xl};
-use super::native::{decode_uncompressed_to_png, read_raw_uncompressed};
+use super::jpeg2000::{decode_jp2_fragment_to_png, decode_raw_jp2_samples, render_jp2_fragment};
+use super::jpegls::{decode_jpeg_ls_to_png, decode_raw_jpeg_ls, render_jpeg_ls};
+use super::jpegxl::{decode_jpeg_xl_to_png, decode_raw_jpeg_xl, render_jpeg_xl};
+use super::native::{decode_uncompressed_to_png, read_raw_uncompressed, render_uncompressed};
 use super::redaction::{redact_png, redact_raw, RawLayout, Redaction};
 use super::render::{
-    encode_real_world_windowed_png, encode_windowed_luminance_png, AppliedWindow, DisplayPng,
-    LuminanceRenderOptions, StoredSamples,
+    encode_real_world_windowed_png, encode_windowed_luminance_png, AppliedWindow, DisplayBuffer,
+    DisplayPng, LuminanceRenderOptions, StoredSamples,
 };
-use super::rle::{decode_raw_rle, decode_rle_to_png};
+use super::rle::{decode_raw_rle, decode_rle_to_png, render_rle};
+use super::schedule::{decode_scheduler, DecodeClass, DecodePermit};
 use super::syntax::{classify_pixel_support, codec_for_syntax, Codec, PixelSupportReason};
+use super::thumbnail::{encode_thumbnail_jpeg, ThumbnailRequest, ThumbnailResponse};
 
 #[derive(Debug, Clone)]
 pub struct RawFrameRequest {
@@ -69,6 +75,14 @@ pub async fn load_raw_frame(
         });
     }
     PixelError::ensure_frame(request.frame, file.frame_count)?;
+    if file.format.is_raster() {
+        return Err(PixelError::UnsupportedLayout(
+            classify_pixel_support(&file)
+                .reason_id()
+                .unwrap_or_default()
+                .to_string(),
+        ));
+    }
 
     let codec = codec_or_unsupported(&file)?;
     reject_unsupported_layout(&file, FrameKind::Raw)?;
@@ -200,6 +214,14 @@ pub async fn load_redacted_frame(
         });
     }
     PixelError::ensure_frame(request.frame, file.frame_count)?;
+    if file.format.is_raster() {
+        return Err(PixelError::UnsupportedLayout(
+            classify_pixel_support(&file)
+                .reason_id()
+                .unwrap_or_default()
+                .to_string(),
+        ));
+    }
 
     let window = WindowRequest::new(
         request.window_center,
@@ -277,6 +299,154 @@ pub async fn load_redacted_frame(
     };
 
     Ok(FrameResponse::png(display, cache_hit))
+}
+
+/// The gallery thumbnail of one frame: a small JPEG of the whole frame with
+/// the redaction boxes painted black.
+///
+/// Errors as [`load_redacted_frame`] does for the same file and frame: no
+/// pixel data, frame out of range, unsupported transfer syntax, a layout the
+/// display path does not present, a failed decode.
+///
+/// The cache key is the file, frame, bucket, window mode and the revision of
+/// `redaction` (0 when it has no box for this frame), so a thumbnail
+/// rendered before a file's boxes changed is never served after the change.
+///
+/// 1. A thumbnail the cache holds is returned as it is: source
+///    `ThumbnailCache`, a cache hit.
+/// 2. A render of the same key already under way is awaited instead of
+///    repeated, and counts as a cache hit with source `ThumbnailCache`.
+/// 3. Otherwise the request waits for a [`DecodeClass::Background`] permit
+///    of [`decode_scheduler`] inside this future, so a request that is
+///    dropped while it waits starts no work. Once it holds the permit, the
+///    render runs as its own task, keeps the permit until it ends, and
+///    caches its result whether or not the request is still there. Source
+///    `FullDecode`, a cache miss.
+///
+/// The render decodes the frame with its codec's display renderer at the
+/// default window of `request.window_mode` (no explicit center or width, no
+/// real-world unit), paints `redaction.boxes` on the buffer
+/// ([`DisplayBuffer::redact`]) and encodes it
+/// (`thumbnail::encode_thumbnail_jpeg`, with the file's effective pixel
+/// aspect ratio). It does not draw the display shutter or overlay planes.
+///
+/// It never reads or writes the display cache and never writes the raw
+/// cache: those hold the viewer's working set, which a gallery scroll must
+/// not evict. In this version it does not read the raw cache either.
+///
+/// [`DecodeClass::Background`]: super::schedule::DecodeClass::Background
+/// [`decode_scheduler`]: super::schedule::decode_scheduler
+/// [`DisplayBuffer::redact`]: super::render::DisplayBuffer::redact
+pub async fn load_thumbnail(
+    file: Arc<FileEntry>,
+    cache: Arc<Mutex<ThumbnailCache>>,
+    request: ThumbnailRequest,
+    redaction: Redaction,
+) -> PixelResult<ThumbnailResponse> {
+    if !file.has_pixels {
+        return Err(PixelError::NoPixelData {
+            file_index: file.index,
+        });
+    }
+    PixelError::ensure_frame(request.frame, file.frame_count)?;
+    if file.format.is_raster() {
+        return Err(PixelError::UnsupportedLayout(
+            classify_pixel_support(&file)
+                .reason_id()
+                .unwrap_or_default()
+                .to_string(),
+        ));
+    }
+    let codec = codec_or_unsupported(&file)?;
+    reject_unsupported_layout(&file, FrameKind::Display)?;
+    let key = ThumbnailCacheKey {
+        file_index: file.index,
+        frame: request.frame,
+        bucket: request.bucket,
+        window_mode: request.window_mode,
+        redaction: if redaction.is_empty() {
+            0
+        } else {
+            redaction.revision
+        },
+    };
+    let flight = {
+        let mut lock = cache.lock().map_err(|_| cache_poisoned())?;
+        if let Some(body) = lock.get(&key) {
+            return Ok(thumbnail_response(body, true));
+        }
+        lock.in_flight(&key)
+    };
+    let (flight, cache_hit) = match flight {
+        Some(flight) => (flight, true),
+        None => {
+            let permit = decode_scheduler().acquire(DecodeClass::Background).await;
+            // Another request may have started or finished this key while
+            // we queued. Claim a flight only while holding the cache lock.
+            let mut lock = cache.lock().map_err(|_| cache_poisoned())?;
+            if let Some(body) = lock.get(&key) {
+                return Ok(thumbnail_response(body, true));
+            }
+            match lock.in_flight(&key) {
+                Some(flight) => {
+                    drop(permit);
+                    (flight, true)
+                }
+                None => {
+                    let render = async move {
+                        let mut buffer = render_display_frame(
+                            codec,
+                            file.clone(),
+                            DisplayWindow {
+                                frame: request.frame,
+                                center: None,
+                                width: None,
+                                mode: request.window_mode,
+                                redaction: 0,
+                            },
+                        )
+                        .await?;
+                        tokio::task::spawn_blocking(move || {
+                            buffer.redact(&redaction.boxes);
+                            encode_thumbnail_jpeg(
+                                buffer,
+                                request.bucket,
+                                file.series_metadata
+                                    .native_pixel
+                                    .effective_pixel_aspect_ratio(),
+                            )
+                        })
+                        .await
+                        .context("thumbnail encoding task failed")
+                        .and_then(|result| result)
+                        .map_err(PixelError::frame_decode)
+                    };
+                    let flight = spawn_decode_with_permit(
+                        &cache,
+                        key.clone(),
+                        std::future::ready(permit),
+                        render,
+                    );
+                    lock.start_flight(key, flight.clone());
+                    (flight, false)
+                }
+            }
+        }
+    };
+    let body = flight.await.map_err(|error| error.duplicate())?;
+    Ok(thumbnail_response(body, cache_hit))
+}
+
+fn thumbnail_response(body: Bytes, cache_hit: bool) -> ThumbnailResponse {
+    ThumbnailResponse {
+        body,
+        cache_hit,
+        source: if cache_hit {
+            ThumbnailSource::ThumbnailCache
+        } else {
+            ThumbnailSource::FullDecode
+        },
+    }
 }
 
 impl FrameResponse {
@@ -364,6 +534,40 @@ async fn decode_display_frame(
             .await
             .map_err(PixelError::frame_decode)?,
         Codec::Rle => decode_rle_to_png(file, frame, center, width, mode).await?,
+    })
+}
+
+/// Renders the same codec paths without presentation graphics or encoding.
+async fn render_display_frame(
+    codec: Codec,
+    file: Arc<FileEntry>,
+    window: DisplayWindow,
+) -> PixelResult<DisplayBuffer> {
+    let DisplayWindow {
+        frame,
+        center,
+        width,
+        mode,
+        ..
+    } = window;
+    Ok(match codec {
+        Codec::DeflatedImageFrame => {
+            render_deflated_binary_frame(file, frame, center, width, mode).await?
+        }
+        Codec::JpegBaseline | Codec::JpegLossless => {
+            render_compressed_frame(codec, file, frame, center, width, mode)
+                .await
+                .map_err(PixelError::frame_decode)?
+        }
+        Codec::Jpeg2000 => render_jp2_fragment(file, frame, center, width, mode)
+            .await
+            .map_err(PixelError::frame_decode)?,
+        Codec::JpegXl => render_jpeg_xl(file, frame, center, width, mode).await?,
+        Codec::JpegLs => render_jpeg_ls(file, frame, center, width, mode).await?,
+        Codec::Native => render_uncompressed(file, frame, center, width, mode)
+            .await
+            .map_err(PixelError::frame_decode)?,
+        Codec::Rle => render_rle(file, frame, center, width, mode).await?,
     })
 }
 
@@ -530,19 +734,9 @@ async fn cached_or_rendered(
     if !preview {
         return cached_or_decoded(cache, key, render).await;
     }
-    let _permit = DECODE_PERMITS
-        .acquire()
-        .await
-        .map_err(|_| PixelError::frame_decode(anyhow::anyhow!("decoder shut down")))?;
+    let _permit = decode_scheduler().acquire(DecodeClass::Interactive).await;
     Ok((render.await?, false))
 }
-
-/// Decodes run on the blocking pool; bounding them to the core count keeps
-/// concurrent requests from multiplying peak memory (one large frame can take
-/// hundreds of MB while it decodes) without speeding anything up.
-static DECODE_PERMITS: LazyLock<Semaphore> = LazyLock::new(|| {
-    Semaphore::new(std::thread::available_parallelism().map_or(4, |cores| cores.get()))
-});
 
 /// The cached value for `key` (`true`), or the result of `decode` (`false`).
 ///
@@ -590,14 +784,39 @@ where
     K: Hash + Eq + Clone + Send + 'static,
     V: FrameBody + Send + Sync + 'static,
 {
+    spawn_decode_with_permit(
+        cache,
+        key,
+        decode_scheduler().acquire(DecodeClass::Interactive),
+        decode,
+    )
+}
+
+// The permit future is awaited in the detached task for viewer work; for
+// thumbnails it is an already granted permit moved out of the request.
+fn spawn_decode_with_permit<K, V>(
+    cache: &Arc<Mutex<BudgetedLru<K, V>>>,
+    key: K,
+    permit: impl Future<Output = DecodePermit> + Send + 'static,
+    decode: impl Future<Output = PixelResult<V>> + Send + 'static,
+) -> InFlight<V>
+where
+    K: Hash + Eq + Clone + Send + 'static,
+    V: FrameBody + Send + Sync + 'static,
+{
     let (task_cache, task_key) = (Arc::clone(cache), key.clone());
     let task = tokio::spawn(async move {
-        let result = match DECODE_PERMITS.acquire().await {
-            Ok(_permit) => decode.await,
-            Err(_) => Err(PixelError::frame_decode(anyhow::anyhow!(
-                "decoder shut down"
-            ))),
-        };
+        let _permit = permit.await;
+        // Cleanup belongs to the task too: even an abandoned request and a
+        // panicked render must leave no in-flight entry behind.
+        let result = std::panic::AssertUnwindSafe(decode)
+            .catch_unwind()
+            .await
+            .unwrap_or_else(|_| {
+                Err(PixelError::frame_decode(anyhow::anyhow!(
+                    "decode task panicked"
+                )))
+            });
         if let Ok(mut lock) = task_cache.lock() {
             lock.finish_flight(&task_key);
             if let Ok(value) = &result {

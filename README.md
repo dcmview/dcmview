@@ -7,6 +7,13 @@ Point it at one or more DICOM files from the command line or Python, and it
 starts a local browser viewer for images, tags, cine playback, and rectangular
 ROI annotations. Stop the process and the server is gone.
 
+PNG, JPEG, TIFF, and WebP image files are now listed beside DICOM by content,
+with size and frame metadata, but their pixels are not decoded yet. The
+Explorer's Study view groups them by folder under "Images" after the patients,
+and its filter takes `format:png` (or `jpg`, `tif`, `webp`, `dicom`) and path
+fragments. Use `dcmview --formats dicom ./mixed_dir` for a DICOM-only
+directory list.
+
 The main problem it solves is remote-server inspection. Medical imaging research
 often happens where the data already live: an SSH session, a shared compute
 server, or a locked-down institutional network. Viewing those images usually
@@ -145,7 +152,7 @@ dcmview: server running at http://127.0.0.1:<port>/#token=<session-token>
 
 Press Ctrl+C to stop the server.
 
-If startup reports skipped files, no valid DICOM files, a port conflict, or a
+If startup reports skipped files, no DICOM or image files, a port conflict, or a
 browser launch failure, see the
 [troubleshooting guide](docs/troubleshooting.md).
 
@@ -363,7 +370,9 @@ What masking does **not** cover:
 - **Free text** inside values that are kept, such as descriptions.
 - **Folder and file names.** The Directory view shows them as they are on
   disk, under a "Not masked" note, and tabs follow that view while it is
-  showing. The Study view and everything else use `File N`.
+  showing. The Study view and everything else use `File N`; its "Images"
+  group lists image files without their folders, and its filter does not
+  match paths.
 - Anything outside the viewer page: the terminal, VS Code's own editor tab and
   Explorer, and the exported ROI CSV, which keeps real paths.
 
@@ -433,8 +442,10 @@ compiles the VS Code extension.
 
 See the [development reference](docs/development.md) for source builds, frontend
 proxy behavior, fixture policy, test commands, architecture notes, and cache
-budget guidance. On smaller machines, `--cache-budget 256MiB` reduces the
-server's retained frame caches; it does not cap total process or browser
+budget guidance. The server defaults to 768 MiB across four caches: 256 MiB
+for display PNGs, 384 MiB for raw frames, 64 MiB for overlays and 64 MiB for
+thumbnail JPEGs. On smaller machines, `--cache-budget 256MiB` reduces these
+retained caches proportionally; it does not cap total process or browser
 memory. See [frame cache memory](docs/configuration.md#frame-cache-memory)
 for accepted sizes and limits.
 

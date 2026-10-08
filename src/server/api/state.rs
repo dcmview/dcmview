@@ -2,7 +2,7 @@ use super::super::{now_unix_ms, FileRegistry, RequestActivity};
 use super::auth::AccessToken;
 use crate::annotations::AnnotationStore;
 use crate::api::contracts::{SemanticContextResponse, TagNode};
-use crate::pixels::{self, FrameCache, OverlayCache, RawFrameCache};
+use crate::pixels::{self, FrameCache, OverlayCache, RawFrameCache, ThumbnailCache};
 use crate::redactions::RedactionStore;
 use crate::types::OverlayCacheKey;
 use crate::value_mapping::FileValueMappings;
@@ -38,6 +38,7 @@ pub struct AppState {
     semantic_cache: Arc<Mutex<LruCache<FileSetCacheKey, Arc<SemanticContextResponse>>>>,
     value_mapping_cache: Arc<Mutex<LruCache<FileSetCacheKey, Arc<FileValueMappings>>>>,
     overlay_cache: Arc<Mutex<OverlayCache>>,
+    thumbnail_cache: Arc<Mutex<ThumbnailCache>>,
     annotations: AnnotationStore,
     redactions: RedactionStore,
     server_start_ms: u64,
@@ -55,6 +56,7 @@ impl AppState {
             semantic_cache: Arc::new(Mutex::new(LruCache::new(SEMANTIC_CACHE_MAX_FILES))),
             value_mapping_cache: Arc::new(Mutex::new(LruCache::new(VALUE_MAPPING_CACHE_MAX_FILES))),
             overlay_cache: pixels::new_overlay_cache(),
+            thumbnail_cache: pixels::new_thumbnail_cache(),
             annotations,
             redactions: RedactionStore::new(),
             server_start_ms: now_unix_ms(),
@@ -70,12 +72,13 @@ impl AppState {
         self
     }
 
-    /// Replaces the display, raw and overlay caches with ones sized by
+    /// Replaces the display, raw, overlay and thumbnail caches with ones sized by
     /// `budget`. Call it before the state is cloned into a router.
     pub fn with_cache_budget(mut self, budget: pixels::CacheBudget) -> Self {
         self.pixel_cache = Arc::new(Mutex::new(FrameCache::new(budget.frame_bytes)));
         self.raw_cache = Arc::new(Mutex::new(RawFrameCache::new(budget.raw_bytes)));
         self.overlay_cache = Arc::new(Mutex::new(OverlayCache::new(budget.overlay_bytes)));
+        self.thumbnail_cache = Arc::new(Mutex::new(ThumbnailCache::new(budget.thumbnail_bytes)));
         self
     }
 
@@ -97,6 +100,10 @@ impl AppState {
 
     pub(crate) fn raw_cache(&self) -> Arc<Mutex<RawFrameCache>> {
         self.raw_cache.clone()
+    }
+
+    pub(crate) fn thumbnail_cache(&self) -> Arc<Mutex<ThumbnailCache>> {
+        self.thumbnail_cache.clone()
     }
 
     pub(crate) fn cached_tags(&self, index: usize) -> Option<Vec<TagNode>> {

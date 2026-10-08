@@ -14,6 +14,7 @@ mod integration {
     mod pixels_jpeg_decode;
     mod pixels_raw_endpoint;
     mod pixels_uncompressed;
+    mod raster_discovery;
     mod redactions;
     mod remote_fixtures;
     mod semantic_context;
@@ -23,6 +24,8 @@ mod integration {
     mod server_minimal;
     mod support;
     mod tags_endpoint;
+    mod thumbnail_timing;
+    mod thumbnails;
     mod unix_socket;
     mod windowing_oracle;
     mod wsi_context;

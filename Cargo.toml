@@ -72,8 +72,13 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 csv = "1"
 
-# Image encoding
-image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+# Image encoding, and the raster formats discovery recognizes. The codecs are
+# named here so they do not depend on another crate's default features; `png`
+# and `tiff` are the versions `image` already links, used directly for
+# header-only reads (docs/design/image-formats.md section 4).
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "tiff", "webp"] }
+png = "0.17"
+tiff = "0.9"
 flate2 = "1.1"
 jpeg2k = { version = "0.10", default-features = false, features = ["openjp2"] }
 

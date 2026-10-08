@@ -1,14 +1,19 @@
-//! Cancellable DICOM discovery and `FileEntry` construction.
+//! Cancellable file discovery and `FileEntry` construction.
 //!
 //! `discovery` walks input paths and streams one event per candidate,
-//! `entry` inspects a candidate into a `FileEntry`, `metadata` extracts the
-//! geometry, LUT, overlay, and shutter details that entry carries, and
-//! `filter` owns the `--filter` metadata predicates.
+//! `entry` decides a candidate's format from its content and inspects a
+//! DICOM file into a `FileEntry`, `format` owns the `--formats` selection and
+//! the raster signatures, `raster` inspects a raster image's header into a
+//! `FileEntry`, `metadata` extracts the geometry, LUT, overlay, and shutter
+//! details a DICOM entry carries, and `filter` owns the `--filter` metadata
+//! predicates.
 
 mod discovery;
 mod entry;
 mod filter;
+mod format;
 mod metadata;
+mod raster;
 #[cfg(test)]
 mod test_fixtures;
 
@@ -19,6 +24,7 @@ pub use discovery::{
 };
 pub(crate) use entry::build_label;
 pub use filter::{ScanFilter, ScanFilterField};
+pub use format::FormatSelection;
 
 /// Root of the independently generated DICOM corpus that `#[ignore]` tests
 /// read, from `DCMVIEW_PREPARED_CORPUS` (`python scripts/check.py corpus`).
