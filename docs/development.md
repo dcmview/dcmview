@@ -264,6 +264,21 @@ timed. A profile is compared only when both binaries list the same number
 of files from it: `v0.4.0` reads no raster images, so `images` is skipped
 against it and is useful between two builds that do.
 
+**A binary that cannot serve.** A profile is skipped in that one case: the
+baseline answers, lists none of the profile's files, and the candidate
+serves it. Nothing else is a skip:
+
+| What happened | Printed | Exit status |
+|---|---|---|
+| The candidate cannot serve a profile (it exits, never answers, or lists none of the files) | `FAILED`, with the process's exit status and the last lines of its standard error | 1, with or without `--enforce` |
+| The baseline cannot serve a profile for any reason but listing none of its files | `NOT COMPARED`, with the same evidence | 2 |
+| A process dies during the timed runs | its exit status and standard error; the profile's timed runs are made once more, and a second death is one of the two rows above | as above |
+| No local port can be assigned (`Can't assign requested address`: other work holds the machine's ports) | that, in plain words; nothing is compared | 2 |
+
+Status 2 says the comparison could not be made, not that the candidate is
+slower: run it again. A merge base that cannot serve is left out of the
+report and changes no status.
+
 **What is timed**, from just before the process is spawned with
 `--no-browser --no-token --startup-json --port 0`:
 

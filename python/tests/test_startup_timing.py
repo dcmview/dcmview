@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+import contextlib
+import io
+import os
+import stat
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from scripts import startup_timing as timing
 
@@ -62,6 +68,98 @@ class ThresholdTests(unittest.TestCase):
 			measured.resident_kib = kib
 		self.assertEqual(timing.resident_mib(runs), 3.0)
 		self.assertIsNone(timing.resident_mib([run(1)]))
+
+
+def failure(message: str, **flags: bool) -> timing.RunFailed:
+	error = timing.RunFailed(message, **flags)
+	error.status = 3
+	error.stderr_tail = ["the last line it wrote"]
+	return error
+
+
+class ServingTests(unittest.TestCase):
+	"""What a run says when a binary cannot serve a profile."""
+
+	def measured(self, timed_run: object, base: Path | None = None) -> tuple[list[timing.ProfileResult], list[timing.Failure], str]:
+		output = io.StringIO()
+		with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, {"DCMVIEW_TIMING_DIR": directory}), contextlib.redirect_stdout(output):
+			with mock.patch.object(timing, "timed_run", timed_run) if timed_run else contextlib.nullcontext():
+				results, failures = timing.measure(self.baseline, self.candidate, [timing.PROFILES[0]], 2, base)
+		return results, failures, output.getvalue()
+
+	baseline = Path("baseline")
+	candidate = Path("candidate")
+
+	@unittest.skipIf(os.name == "nt", "the stub is a shell script")
+	def test_a_candidate_that_exits_at_once_fails_the_gate(self) -> None:
+		with tempfile.TemporaryDirectory() as directory:
+			stub = Path(directory, "dcmview-stub")
+			stub.write_text("#!/bin/sh\necho 'stub: cannot start' >&2\nexit 3\n")
+			stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
+			self.baseline = self.candidate = stub
+			results, failures, output = self.measured(None)
+		self.assertEqual(results, [])
+		self.assertEqual([(failure.profile, failure.binary) for failure in failures], [("small", "candidate")])
+		# The evidence is printed: what the process said and how it ended.
+		self.assertIn("exited with status 3", output)
+		self.assertIn("stub: cannot start", output)
+		for enforce in (False, True):
+			with contextlib.redirect_stdout(io.StringIO()):
+				self.assertEqual(timing.verdict(results, failures, enforce), timing.EXIT_GATE_FAILED)
+
+	def test_only_a_baseline_that_lists_nothing_is_skipped(self) -> None:
+		def dies(binary: str, error: timing.RunFailed, after: int = 0) -> object:
+			calls = {"count": 0}
+
+			def timed_run(run_binary: Path, folder: Path, arguments: tuple[str, ...] = ()) -> timing.Run:
+				if run_binary.name == binary:
+					calls["count"] += 1
+					if calls["count"] > after:
+						raise error
+				return run(100)
+
+			return timed_run
+
+		def dies_once(binary: str) -> object:
+			calls = {"count": 0}
+
+			def timed_run(run_binary: Path, folder: Path, arguments: tuple[str, ...] = ()) -> timing.Run:
+				if run_binary.name == binary:
+					calls["count"] += 1
+					if calls["count"] == 2:
+						raise failure("stopped serving")
+				return run(100)
+
+			return timed_run
+
+		cases = [
+			# (what happens, timed_run, profiles compared, who failed, exit status)
+			("both serve", dies("neither", failure("unused")), 1, [], 0),
+			("the baseline lists none of the files", dies("baseline", failure("listed no file", listed_nothing=True)), 0, [], 0),
+			("the candidate lists none of the files", dies("candidate", failure("listed no file", listed_nothing=True)), 0, ["candidate"], timing.EXIT_GATE_FAILED),
+			("the baseline cannot serve", dies("baseline", failure("did not report server_started")), 0, ["baseline"], timing.EXIT_NOT_COMPARED),
+			("the candidate dies in a timed run, once", dies_once("candidate"), 1, [], 0),
+			("the candidate dies in every timed run", dies("candidate", failure("stopped serving"), after=1), 0, ["candidate"], timing.EXIT_GATE_FAILED),
+			("the baseline dies in every timed run", dies("baseline", failure("stopped serving"), after=1), 0, ["baseline"], timing.EXIT_NOT_COMPARED),
+		]
+		for name, timed_run, compared, failed, status in cases:
+			with self.subTest(name=name):
+				results, failures, output = self.measured(timed_run)
+				self.assertEqual(len(results), compared)
+				self.assertEqual([failure.binary for failure in failures], failed)
+				if failed:
+					self.assertIn("exited with status 3", output)
+					self.assertIn("the last line it wrote", output)
+				with contextlib.redirect_stdout(io.StringIO()):
+					self.assertEqual(timing.verdict(results, failures, enforce=True), status)
+
+	def test_a_machine_without_a_local_port_is_an_error_and_not_a_skip(self) -> None:
+		def timed_run(binary: Path, folder: Path, arguments: tuple[str, ...] = ()) -> timing.Run:
+			raise failure("stopped serving: [Errno 49] Can't assign requested address", listed_nothing=True, no_port=True)
+
+		with self.assertRaises(timing.NoLocalPort):
+			self.measured(timed_run)
+		self.assertNotEqual(timing.EXIT_NOT_COMPARED, timing.EXIT_GATE_FAILED)
 
 
 class SyntheticInputTests(unittest.TestCase):

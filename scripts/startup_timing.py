@@ -12,6 +12,12 @@ that CI runs calls it, because a shared runner's timing is not a gate.
     python scripts/startup_timing.py run --enforce   # exit 1 past the threshold
     python scripts/startup_timing.py build-ref v0.4.0
 
+Exit status of `run`: 0 when no gated metric is past the threshold (or, without
+`--enforce`, whatever the metrics say); 1 when one is and `--enforce` is given,
+and whenever the candidate could not serve a profile; 2 when the comparison
+could not be made, because the baseline could not serve a profile or no local
+port could be assigned.
+
 Beside the gated comparison with the release it reports, without gating, the
 same metrics against the commit this branch left the main branch at, so that
 what a change costs is not hidden in (or blamed for) what other merged work
@@ -24,6 +30,7 @@ The method, the profiles and the threshold are described in
 from __future__ import annotations
 
 import argparse
+import errno
 import http.client
 import json
 import os
@@ -73,6 +80,15 @@ REPORTED_METRICS = (("catalog_ms", "catalog listing"),)
 
 #: The main branch, in the order tried, for finding where this branch left it.
 MAIN_BRANCHES = ("origin/main", "main")
+
+#: Exit statuses of `run`. A candidate that is slower, or that cannot serve,
+#: fails the gate; a comparison that could not be made is another matter and
+#: says nothing about the candidate.
+EXIT_GATE_FAILED = 1
+EXIT_NOT_COMPARED = 2
+
+#: How many of a failed process's last standard error lines are printed.
+STDERR_TAIL_LINES = 12
 
 #: Seconds between two polls for the first file. Each poll is one request on
 #: a connection that is kept open, so the resolution of "first file" is this
@@ -423,7 +439,40 @@ class Run:
 
 
 class RunFailed(RuntimeError):
-	"""A binary could not serve a folder, for example because it lists no file from it."""
+	"""A binary could not serve a folder.
+
+	`listed_nothing` tells the one failure that is expected of a baseline: it
+	answered, counted no file of the folder and finished its scan or exited
+	(a release older than a file format). `no_port` is set when the cause is
+	this machine, which had no local port to give. `status` is the process's
+	exit status, `None` when it was still running, and `stderr_tail` the end
+	of what it wrote to standard error; `timed_run` fills both in.
+	"""
+
+	def __init__(self, message: str, *, listed_nothing: bool = False, no_port: bool = False) -> None:
+		super().__init__(message)
+		self.listed_nothing = listed_nothing
+		self.no_port = no_port
+		self.status: int | None = None
+		self.stderr_tail: list[str] = []
+		#: Which of the timed binaries failed; `measure` fills it in.
+		self.binary = ""
+
+	def describe(self) -> str:
+		"""The failure with the process's exit status and the end of its standard error."""
+		status = "it was still running" if self.status is None else f"it exited with status {self.status}"
+		lines = [f"{self}; {status}"]
+		if self.stderr_tail:
+			lines.append("  the end of its standard error:")
+			lines.extend(f"    {line}" for line in self.stderr_tail)
+		else:
+			lines.append("  it wrote nothing to standard error")
+		return "\n".join(lines)
+
+
+def _no_port(error: BaseException) -> bool:
+	"""Whether `error` is the system refusing a local address (`EADDRNOTAVAIL`)."""
+	return isinstance(error, OSError) and error.errno == errno.EADDRNOTAVAIL
 
 
 def _get(port: int, path: str) -> tuple[int, bytes]:
@@ -465,7 +514,10 @@ def timed_run(binary: Path, folder: Path, arguments: tuple[str, ...] = ()) -> Ru
 	details: dict[str, object] = {}
 	command = [str(binary), "--no-browser", "--no-token", "--startup-json", "--port", "0", *arguments, str(folder)]
 	started = time.perf_counter()
-	process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+	# Standard error goes to a file, not a pipe: nobody reads it while the
+	# run is timed, and a full pipe would stop the process.
+	stderr = tempfile.TemporaryFile()
+	process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=stderr, text=True)
 	assert process.stdout is not None
 
 	def read_startup_lines() -> None:
@@ -493,6 +545,7 @@ def timed_run(binary: Path, folder: Path, arguments: tuple[str, ...] = ()) -> Ru
 		wait_for("server_started")
 		port = int(details["server_started"]["port"])  # type: ignore[index]
 		first_response = first_file = None
+		answered = False
 		health = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
 		try:
 			while first_file is None:
@@ -501,16 +554,21 @@ def timed_run(binary: Path, folder: Path, arguments: tuple[str, ...] = ()) -> Ru
 					response = health.getresponse()
 					status, body = response.status, response.read()
 				except (OSError, http.client.HTTPException) as error:
-					# A binary that finds nothing to load exits, and its listener with it.
-					raise RunFailed(f"{binary.name} stopped serving: {error}") from error
+					# A binary that finds nothing to load exits, and its listener
+					# with it: that is the case when it had answered and counted
+					# no file. One that never answered did not serve at all.
+					raise RunFailed(f"{binary.name} stopped serving: {error}", listed_nothing=answered, no_port=_no_port(error)) from error
 				now = time.perf_counter()
 				if status != 200:
 					raise RunFailed(f"/api/health answered {status}")
+				answered = True
 				first_response = first_response or now
 				if json.loads(body)["file_count"] > 0:
 					first_file = now
-				elif "scan_complete" in events or time.perf_counter() > deadline:
-					raise RunFailed(f"{binary.name} listed no file")
+				elif "scan_complete" in events:
+					raise RunFailed(f"{binary.name} listed no file", listed_nothing=True)
+				elif time.perf_counter() > deadline:
+					raise RunFailed(f"{binary.name} listed no file in {RUN_TIMEOUT_SECONDS:.0f} s")
 				else:
 					time.sleep(FIRST_FILE_POLL_SECONDS)
 		finally:
@@ -519,7 +577,10 @@ def timed_run(binary: Path, folder: Path, arguments: tuple[str, ...] = ()) -> Ru
 		# Before the listing, whose response is a transient allocation of its own.
 		resident = resident_kib(process.pid)
 		before = time.perf_counter()
-		status, body = _get(port, "/api/files")
+		try:
+			status, body = _get(port, "/api/files")
+		except (OSError, http.client.HTTPException) as error:
+			raise RunFailed(f"{binary.name} stopped serving before it listed its files: {error}", no_port=_no_port(error)) from error
 		catalog = time.perf_counter() - before
 		if status != 200:
 			raise RunFailed(f"/api/files answered {status}")
@@ -532,6 +593,18 @@ def timed_run(binary: Path, folder: Path, arguments: tuple[str, ...] = ()) -> Ru
 			file_count=int(details["scan_complete"]["file_count"]),  # type: ignore[index]
 			resident_kib=resident,
 		)
+	except RunFailed as error:
+		# A process that is on its way out gets a moment to finish, so that
+		# its own exit status is reported and not the one of being stopped.
+		try:
+			error.status = process.wait(timeout=2)
+		except subprocess.TimeoutExpired:
+			error.status = None
+		stderr.seek(0)
+		text = stderr.read().decode("utf-8", errors="replace")
+		error.stderr_tail = text.splitlines()[-STDERR_TAIL_LINES:]
+		error.no_port = error.no_port or os.strerror(errno.EADDRNOTAVAIL) in text
+		raise
 	finally:
 		if process.poll() is None:
 			process.terminate()
@@ -541,6 +614,8 @@ def timed_run(binary: Path, folder: Path, arguments: tuple[str, ...] = ()) -> Ru
 				process.kill()
 				process.wait()
 		reader.join(timeout=5)
+		process.stdout.close()
+		stderr.close()
 
 
 # ---------------------------------------------------------------------------
@@ -633,39 +708,125 @@ def resident_mib(runs: list[Run]) -> float | None:
 	return statistics.median(values) / 1024 if values else None
 
 
-def measure(baseline: Path, candidate: Path, profiles: Iterable[Profile], runs: int, base: Path | None = None) -> list[ProfileResult]:
-	"""Time `candidate` against `baseline` (gated) and, when given, `base` (reported)."""
+@dataclass
+class Failure:
+	"""A profile that gave no comparison, and whose doing that was."""
+
+	profile: str
+	#: "candidate": it could not serve, which fails the gate. "baseline": the
+	#: comparison could not be made, which says nothing about the candidate.
+	binary: str
+	reason: str
+
+
+class NoLocalPort(RuntimeError):
+	"""This machine had no local port to give, so nothing can be timed now."""
+
+
+def _run_of(name: str, binary: Path, folder: Path, arguments: tuple[str, ...]) -> Run:
+	"""`timed_run`, with a failure marked with which binary it was."""
+	try:
+		return timed_run(binary, folder, arguments)
+	except RunFailed as error:
+		error.binary = name
+		if error.no_port:
+			raise NoLocalPort(f"no local port could be assigned ({os.strerror(errno.EADDRNOTAVAIL)}) while timing the {name}:\n{error.describe()}") from error
+		raise
+
+
+def measure(baseline: Path, candidate: Path, profiles: Iterable[Profile], runs: int, base: Path | None = None) -> tuple[list[ProfileResult], list[Failure]]:
+	"""Time `candidate` against `baseline` (gated) and, when given, `base` (reported).
+
+	Returns the profiles that were compared and those that could not be. A
+	profile is skipped, and is in neither list, in one case only: the
+	baseline lists none of its files while the candidate serves it. Any
+	other failure of a binary to serve a profile is a `Failure`. A process
+	that dies during the timed runs is reported with its exit status and
+	standard error, and the profile's timed runs are made once more before
+	it counts. Raises `NoLocalPort` when the machine cannot give a port.
+	"""
 	selected = list(profiles)
 	inputs = prepare_inputs(timing_root() / "inputs", selected)
-	results = []
+	results: list[ProfileResult] = []
+	failures: list[Failure] = []
 	for profile in selected:
 		folder, files = inputs[profile.name]
 		# One discarded run each warms the page cache and the binary's pages.
+		# The candidate first: it has to serve every profile, whatever the
+		# baseline does with it.
 		try:
-			timed_run(baseline, folder, profile.arguments)
-			timed_run(candidate, folder, profile.arguments)
+			_run_of("candidate", candidate, folder, profile.arguments)
 		except RunFailed as error:
-			# A baseline older than a file format lists nothing from a folder of it.
-			print(f"\n{profile.name}: skipped, not comparable: {error}", flush=True)
+			print(f"\n{profile.name}: FAILED, the candidate cannot serve it: {error.describe()}", flush=True)
+			failures.append(Failure(profile.name, "candidate", str(error)))
+			continue
+		try:
+			_run_of("baseline", baseline, folder, profile.arguments)
+		except RunFailed as error:
+			if error.listed_nothing:
+				# A baseline older than a file format lists nothing from a folder of it.
+				print(f"\n{profile.name}: skipped, not comparable: the baseline lists none of its files ({error})", flush=True)
+			else:
+				print(f"\n{profile.name}: NOT COMPARED, the baseline cannot serve it: {error.describe()}", flush=True)
+				failures.append(Failure(profile.name, "baseline", str(error)))
 			continue
 		timed_base = base
 		if timed_base:
 			try:
-				timed_run(timed_base, folder, profile.arguments)
+				_run_of("merge base", timed_base, folder, profile.arguments)
 			except RunFailed:
 				timed_base = None
-		before: list[Run] = []
-		between: list[Run] = []
-		after: list[Run] = []
-		# Alternate, so drift in the machine's load falls on every binary.
-		for _ in range(runs):
-			before.append(timed_run(baseline, folder, profile.arguments))
-			if timed_base:
-				between.append(timed_run(timed_base, folder, profile.arguments))
-			after.append(timed_run(candidate, folder, profile.arguments))
-		results.append(compare(profile, files, before, after, between or None))
-		print_profile(results[-1])
-	return results
+		failed_before = False
+		while True:
+			before: list[Run] = []
+			between: list[Run] = []
+			after: list[Run] = []
+			try:
+				# Alternate, so drift in the machine's load falls on every binary.
+				for _ in range(runs):
+					before.append(_run_of("baseline", baseline, folder, profile.arguments))
+					if timed_base:
+						between.append(_run_of("merge base", timed_base, folder, profile.arguments))
+					after.append(_run_of("candidate", candidate, folder, profile.arguments))
+			except RunFailed as error:
+				if error.binary == "merge base":
+					# Only reported: the gate does not need it.
+					print(f"\n{profile.name}: the merge base died during the timed runs and is left out: {error.describe()}", flush=True)
+					timed_base = None
+				elif not failed_before:
+					print(f"\n{profile.name}: the {error.binary} died during the timed runs; timing the profile once more: {error.describe()}", flush=True)
+					failed_before = True
+				else:
+					word = "FAILED" if error.binary == "candidate" else "NOT COMPARED"
+					print(f"\n{profile.name}: {word}, the {error.binary} died during the timed runs again: {error.describe()}", flush=True)
+					failures.append(Failure(profile.name, error.binary, str(error)))
+					break
+				continue
+			results.append(compare(profile, files, before, after, between or None))
+			print_profile(results[-1])
+			break
+	return results, failures
+
+
+def verdict(results: list[ProfileResult], failures: list[Failure], enforce: bool) -> int:
+	"""Print what the run found and return the exit status that says it."""
+	regressions = [f"{result.profile}: {metric.label}" for result in results for metric in result.metrics if not metric.passed]
+	broken = [failure for failure in failures if failure.binary == "candidate"]
+	uncompared = [failure for failure in failures if failure.binary != "candidate"]
+	if regressions:
+		print("\npast the threshold: " + "; ".join(regressions))
+	if broken:
+		print("\nthe candidate could not serve: " + "; ".join(f"{failure.profile} ({failure.reason})" for failure in broken))
+	if uncompared:
+		print("\nnot compared, the baseline could not serve: " + "; ".join(f"{failure.profile} ({failure.reason})" for failure in uncompared))
+	if broken:
+		return EXIT_GATE_FAILED
+	if uncompared:
+		return EXIT_NOT_COMPARED
+	if regressions:
+		return EXIT_GATE_FAILED if enforce else 0
+	print("\nno gated metric is past the threshold")
+	return 0
 
 
 def print_profile(result: ProfileResult) -> None:
@@ -762,7 +923,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 	run.add_argument("--profile", action="append", choices=[profile.name for profile in PROFILES], help="profile to run; repeatable (default: all)")
 	run.add_argument("--runs", type=int, default=DEFAULT_RUNS, help=f"timed runs per binary and profile (default: {DEFAULT_RUNS})")
 	run.add_argument("--json", type=Path, help="also write the results as JSON to this file")
-	run.add_argument("--enforce", action="store_true", help="exit 1 when a gated metric is past the threshold")
+	run.add_argument("--enforce", action="store_true", help="exit 1 when a gated metric is past the threshold (a candidate that cannot serve exits 1 either way)")
 	return parser.parse_args(argv)
 
 
@@ -796,15 +957,14 @@ def main(argv: list[str] | None = None) -> int:
 	print(f"compiler:  rustc {toolchain()}")
 	print(f"threshold: baseline best x {1 + THRESHOLD_PERCENT / 100:.2f} + {THRESHOLD_FLOOR_MS:.0f} ms; best of {args.runs} runs each")
 	print("a gated metric that passes with a change above 2% is still worth a second run and a line in the report")
-	results = measure(baseline, candidate, profiles, args.runs, base)
+	try:
+		results, failures = measure(baseline, candidate, profiles, args.runs, base)
+	except NoLocalPort as error:
+		print(f"\nnothing was compared: {error}\nother work on this machine holds the local ports; run again when it has finished")
+		return EXIT_NOT_COMPARED
 	if args.json:
 		args.json.write_text(json.dumps(to_json(results, baseline, candidate, args.runs, base), indent="\t") + "\n")
-	failed = [f"{result.profile}: {metric.label}" for result in results for metric in result.metrics if not metric.passed]
-	if failed:
-		print("\npast the threshold: " + "; ".join(failed))
-		return 1 if args.enforce else 0
-	print("\nno gated metric is past the threshold")
-	return 0
+	return verdict(results, failures, args.enforce)
 
 
 if __name__ == "__main__":
