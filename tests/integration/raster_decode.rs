@@ -9,7 +9,8 @@
 //! and with alpha flattened. No expected value is one a decoder returned.
 
 use super::raster_cases::{
-    be16, flat, jpeg_cases, le16, png_cases, tiff_cases, tiff_pages, webp_cases,
+    be16, flat, jpeg_cases, le16, png_cases, tiff_cases, tiff_pages, tiled_image, tiles_stored_in,
+    webp_cases,
 };
 use super::raster_discovery::{scan_dir, scan_into, Scan};
 use super::raster_files::{self as files, TiffPage, TiffValue};
@@ -261,6 +262,14 @@ async fn display_frames_window_gray_once_and_flatten_alpha() {
             "",
             Some(full(8)),
             vec![255, 254, 55, 0],
+        ),
+        // Tiles stored last first are shown where they belong.
+        gray(
+            "tiles-reversed.tif",
+            tiles_stored_in(&[3, 2, 1, 0]),
+            "",
+            Some(full(8)),
+            tiled_image(),
         ),
         // Samples without a default window, shown over their own range.
         gray(

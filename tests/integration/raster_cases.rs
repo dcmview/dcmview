@@ -89,6 +89,37 @@ where
 /// The linked TIFF encoder writing into memory.
 type Encoder<'a> = TiffEncoder<&'a mut Cursor<Vec<u8>>>;
 
+/// 32 x 32 gray samples, different in every tile of 16 x 16 and along
+/// both axes.
+pub fn tiled_image() -> Vec<u8> {
+    (0..32 * 32_usize)
+        .map(|index| ((index / 32) * 5 + (index % 32) * 3) as u8)
+        .collect()
+}
+
+/// [`tiled_image`] as a TIFF of four uncompressed 16 x 16 tiles, stored in
+/// the file in the order `stored` names them.
+pub fn tiles_stored_in(stored: &[usize]) -> Vec<u8> {
+    let image = tiled_image();
+    let mut tiles = Vec::new();
+    for top in [0, 16] {
+        for left in [0, 16] {
+            let mut tile = Vec::new();
+            for row in top..top + 16 {
+                tile.extend_from_slice(&image[row * 32 + left..row * 32 + left + 16]);
+            }
+            tiles.push(tile);
+        }
+    }
+    let mut page = TiffPage::strip((32, 32), &[8], 1, Vec::new());
+    page.tags.retain(|(tag, _)| *tag != 278);
+    page.tags.push((322, TiffValue::Long(vec![16])));
+    page.tags.push((323, TiffValue::Long(vec![16])));
+    page.chunks = tiles;
+    page.tiled = true;
+    files::tiff_stored_in(page, stored)
+}
+
 // ---------------------------------------------------------------------------
 // Cases
 
@@ -882,6 +913,22 @@ pub fn tiff_cases() -> Vec<Case> {
             (1, 2),
             (4, 16, 0, "RGBA"),
             le16(&unassociated16),
+        ),
+        // Four tiles stored last first, and the same tiles stored out of
+        // any order: a writer may put them anywhere in the file.
+        Case::lossless(
+            "tiles-reversed.tif",
+            tiles_stored_in(&[3, 2, 1, 0]),
+            (32, 32),
+            GRAY8,
+            tiled_image(),
+        ),
+        Case::lossless(
+            "tiles-shuffled.tif",
+            tiles_stored_in(&[2, 0, 3, 1]),
+            (32, 32),
+            GRAY8,
+            tiled_image(),
         ),
         Case {
             name: "stack.tif",

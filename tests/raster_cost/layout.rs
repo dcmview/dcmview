@@ -17,29 +17,6 @@ fn page_overhead(chunks: u64) -> u64 {
     6 * BUFFER + 2 * 2 * 4 * chunks
 }
 
-/// `page`, whose chunks are given in the order they are decoded, written
-/// with the chunks stored in the order `stored` names them (`stored[k]` is
-/// the chunk stored `k`-th).
-fn stored_in(mut page: TiffPage, stored: &[usize]) -> Vec<u8> {
-    let mut offsets = vec![0_u32; page.chunks.len()];
-    // `files::tiff_file` writes the first page's chunks straight after the
-    // eight-byte header.
-    let mut at = 8;
-    for &index in stored {
-        offsets[index] = at;
-        at += page.chunks[index].len() as u32;
-    }
-    let counts = page.chunks.iter().map(|chunk| chunk.len() as u32).collect();
-    let (offsets_tag, counts_tag) = if page.tiled { (324, 325) } else { (273, 279) };
-    page.tags.push((offsets_tag, TiffValue::Long(offsets)));
-    page.tags.push((counts_tag, TiffValue::Long(counts)));
-    page.chunks = stored
-        .iter()
-        .map(|&index| page.chunks[index].clone())
-        .collect();
-    files::tiff_file(false, &[page]).0
-}
-
 /// PackBits of `data`, as literal runs.
 fn packbits(data: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
@@ -182,7 +159,7 @@ async fn strips_and_tiles_cost_their_own_bytes_in_whatever_order_they_are_stored
     let mut cases = Vec::new();
     for (name, page, samples) in &pages {
         for (order, stored) in &orders {
-            let file = stored_in(page.clone(), &stored(page.chunks.len()));
+            let file = files::tiff_stored_in(page.clone(), &stored(page.chunks.len()));
             cases.push((
                 format!("{name}, {order}"),
                 file,

@@ -268,6 +268,29 @@ pub fn tiff_file(big_endian: bool, pages: &[TiffPage]) -> (Vec<u8>, Vec<u64>) {
     (out, ifd_offsets)
 }
 
+/// A classic little-endian TIFF of one `page`, whose chunks are given in the
+/// order they are decoded, written with the chunks stored in the order
+/// `stored` names them (`stored[k]` is the chunk stored `k`-th).
+pub fn tiff_stored_in(mut page: TiffPage, stored: &[usize]) -> Vec<u8> {
+    let mut offsets = vec![0_u32; page.chunks.len()];
+    // `tiff_file` writes the first page's chunks straight after the
+    // eight-byte header.
+    let mut at = 8;
+    for &index in stored {
+        offsets[index] = at;
+        at += page.chunks[index].len() as u32;
+    }
+    let counts = page.chunks.iter().map(|chunk| chunk.len() as u32).collect();
+    let (offsets_tag, counts_tag) = if page.tiled { (324, 325) } else { (273, 279) };
+    page.tags.push((offsets_tag, TiffValue::Long(offsets)));
+    page.tags.push((counts_tag, TiffValue::Long(counts)));
+    page.chunks = stored
+        .iter()
+        .map(|&index| page.chunks[index].clone())
+        .collect();
+    tiff_file(false, &[page]).0
+}
+
 // ---------------------------------------------------------------------------
 // JPEG and WebP
 
