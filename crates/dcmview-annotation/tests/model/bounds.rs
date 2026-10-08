@@ -420,16 +420,23 @@ fn cost_test_id(index: usize) -> uuid::Uuid {
 ///
 /// Nothing in the public API counts lookups (the ids are plain strings), so
 /// this compares two times, which is the one measure left. It is not a time
-/// budget: each wide document is compared with a narrow one, timed just
-/// before it in the same process, that holds the same number of names in
-/// more records against a schema of 32 items, where a scan costs nothing.
-/// With an index the two take about the same time; with a scan per name the
-/// wide one took 55 and 90 times as long (debug build, when this was
-/// written). The factor allowed, 10, is far from both, so neither the speed
-/// of the machine nor a busy one decides the outcome.
+/// budget: each wide document is compared with a narrow one, timed in the
+/// same process, that holds the same number of names in more records
+/// against a schema of 32 items, where a scan costs nothing. With an index
+/// the two take about the same time; with a scan per name the wide one took
+/// 55 and 90 times as long (debug build, when this was written).
+///
+/// Each side is validated three times, narrow and wide in turn, and the
+/// shortest time of each is compared. Other work on the machine only ever
+/// adds to a sample, so the minimum is the sample least disturbed: one
+/// sample of each side has reached a ratio of 5.9 on a loaded machine, and
+/// a single interruption cannot do that to all three. The factor allowed,
+/// 10, stays far from both 1 and 55, so neither the speed of the machine
+/// nor a busy one decides the outcome.
 #[test]
 fn validation_cost_does_not_multiply_records_by_schema_size() {
     const FACTOR: u32 = 10;
+    const SAMPLES: usize = 3;
     type Build = fn(usize, usize, usize) -> Document;
     // (name, builder, records and names per record: wide, then narrow)
     let cases: [(&str, Build, usize, usize); 2] = [
@@ -442,7 +449,7 @@ fn validation_cost_does_not_multiply_records_by_schema_size() {
         ("options of a field", document_with_options, 400, 12_800),
     ];
     for (name, build, wide_records, narrow_records) in cases {
-        let timed = |document: Document| {
+        let timed = |document: &Document| {
             let start = Instant::now();
             let outcome = document.validate();
             let taken = start.elapsed();
@@ -450,12 +457,17 @@ fn validation_cost_does_not_multiply_records_by_schema_size() {
             assert_outcome(name, outcome, Expect::Valid);
             taken
         };
-        let narrow: Duration = timed(build(32, narrow_records, 32));
-        let wide = timed(build(4_096, wide_records, 1_024));
+        let narrow_document = build(32, narrow_records, 32);
+        let wide_document = build(4_096, wide_records, 1_024);
+        let (mut narrow, mut wide) = (Duration::MAX, Duration::MAX);
+        for _ in 0..SAMPLES {
+            narrow = narrow.min(timed(&narrow_document));
+            wide = wide.min(timed(&wide_document));
+        }
         assert!(
             wide < narrow * FACTOR,
             "{name}: {wide:?} for the wide schema, {narrow:?} for the same names \
-             against a narrow one; allowed {FACTOR} times"
+             against a narrow one (shortest of {SAMPLES} each); allowed {FACTOR} times"
         );
     }
 }
