@@ -960,10 +960,14 @@ bytes to the file discovery saw, so a file rewritten at the same length
 with its modification time set back is hashed as what it now holds, and a
 file that was only touched is refused for the rest of the session.
 Hashing needs a Tokio runtime to start; a registry filled outside one keeps
-its queue until a call arrives inside one. A worker that panics fails the
-file it held as unreadable and a new worker takes the rest of the queue, so
-a fault cannot leave `ensure_key` waiting. `FileRegistry::stop_key_work`
-ends hashing at shutdown.
+its queue until a call arrives inside one. A worker that panics on a file
+records that file as unreadable and goes on with the rest of the queue, so
+a fault cannot leave `ensure_key` waiting. A worker whose runtime goes away
+puts the file it held back at the front of the queue with no failure, and
+the next call inside a runtime starts a worker again. A digest that becomes
+wanted is queued before the registry lock is released, so a catalog page
+never shows a file waiting for its key beside a `keys_hashing` that leaves
+it out. `FileRegistry::stop_key_work` ends hashing at shutdown.
 
 ### What A Client Sees
 
