@@ -1,7 +1,7 @@
 //! Geometry invariants, quantization and clamping.
 
 use super::support::{assert_outcome, Expect, SIZE};
-use dcmview_annotation::{quantize, Geometry, Point, Snap, ViolationCode};
+use dcmview_annotation::{quantize, Geometry, ImageSize, Point, Snap, ViolationCode};
 use serde_json::{json, Value};
 
 fn geometry(value: Value) -> Geometry {
@@ -323,6 +323,40 @@ fn a_geometry_is_checked_against_its_image() {
     }
 }
 
+/// A tile starts inside the image when `tx * 64 < columns`, for every `tx` a
+/// key can hold: the product does not fit 32 bits.
+#[test]
+fn a_tile_position_is_checked_without_overflow() {
+    use Expect::{Code, Valid};
+    use ViolationCode::MaskTileOutOfBounds;
+
+    // The widest and tallest image a file may declare: 16,384 tiles a side.
+    let size = ImageSize {
+        columns: 1_048_576,
+        rows: 1_048_576,
+        frames: 1,
+    };
+    let cases: Vec<(&str, Expect)> = vec![
+        ("0,0", Valid),
+        ("16383,16383", Valid),
+        ("16384,0", Code(MaskTileOutOfBounds)),
+        ("0,16384", Code(MaskTileOutOfBounds)),
+        // 2^26 * 64 is 2^32, which is 0 in 32 bits.
+        ("67108864,0", Code(MaskTileOutOfBounds)),
+        ("0,67108864", Code(MaskTileOutOfBounds)),
+        ("67108865,1", Code(MaskTileOutOfBounds)),
+        ("4294967295,0", Code(MaskTileOutOfBounds)),
+        ("0,4294967295", Code(MaskTileOutOfBounds)),
+    ];
+    for (tile, expected) in cases {
+        let mask = geometry(json!({
+            "type": "mask", "encoding": "tiles-v1", "tile": 64, "depth": 1,
+            "frames": { "0": { tile: "AAAA" } }
+        }));
+        assert_outcome(tile, mask.validate(size), expected);
+    }
+}
+
 /// Owner decision (EMBED parity amendment, 2026-10-05): a coordinate that is
 /// negative or not an integer is clamped with a warning. It is rounded to
 /// the nearest pixel first, a negative value becomes 0, a value past the
@@ -466,5 +500,28 @@ fn clamping_rounds_first_then_moves_onto_the_edge() {
         assert_eq!(clamped.geometry, output, "{name}");
         assert_eq!(clamped.rounded, rounded, "{name}: rounded");
         assert_eq!(clamped.moved, moved, "{name}: moved");
+    }
+
+    for snap in [Snap::PixelEdges, Snap::Quantum] {
+        // Zero is positive zero however it was reached, so it is written `0`
+        // and compares equal bit for bit with a zero that was typed.
+        let zero = Geometry::Point { x: -0.4, y: -0.0 }.clamped(SIZE, snap);
+        let Geometry::Point { x, y } = zero.geometry else {
+            panic!("a point stays a point");
+        };
+        assert_eq!((x, y), (0.0, 0.0), "{snap:?}");
+        assert!(x.is_sign_positive() && y.is_sign_positive(), "{snap:?}");
+
+        // A number that is not finite is left for the strict check to report.
+        let left = Geometry::Point {
+            x: f64::NAN,
+            y: f64::NEG_INFINITY,
+        }
+        .clamped(SIZE, snap);
+        let Geometry::Point { x, y } = left.geometry else {
+            panic!("a point stays a point");
+        };
+        assert!(x.is_nan() && y == f64::NEG_INFINITY, "{snap:?}");
+        assert!(!left.rounded && !left.moved, "{snap:?}");
     }
 }

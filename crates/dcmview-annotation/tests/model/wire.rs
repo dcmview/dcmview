@@ -320,12 +320,24 @@ fn numbers_are_written_quantized_and_whole_numbers_without_a_fraction() {
         (0.5, "0.5"),
         (-2.0, "-2"),
         (12.3456, "12.3456"),
+        // The largest whole number written without a fraction is 2^53 - 1,
+        // the largest a JavaScript reader takes exactly. From 2^53 on a
+        // number is written as serde_json writes any `f64`.
+        (9_007_199_254_740_991.0, "9007199254740991"),
+        (-9_007_199_254_740_991.0, "-9007199254740991"),
+        (9_007_199_254_740_992.0, "9007199254740992.0"),
+        (-9_007_199_254_740_992.0, "-9007199254740992.0"),
     ];
     for (value, text) in label_numbers {
         assert_eq!(
             serde_json::to_string(&LabelValue::Number(*value)).expect("value serializes"),
             *text,
             "label number {value}"
+        );
+        assert_eq!(
+            serde_json::from_str::<LabelValue>(text).expect("value reads"),
+            LabelValue::Number(if *value == 0.0 { 0.0 } else { *value }),
+            "label number {value} read back"
         );
     }
 
@@ -389,6 +401,36 @@ fn reading_refuses_other_formats_versions_and_malformed_values() {
             "a version with a suffix",
             vec![Edit::Set("/version", json!("1.0-beta"))],
             Read::UnsupportedVersion,
+        ),
+        (
+            "a minor version of nine digits",
+            vec![Edit::Set("/version", json!("1.999999999"))],
+            Read::Ok,
+        ),
+        (
+            "a minor version of ten digits",
+            vec![Edit::Set("/version", json!("1.9999999999"))],
+            Read::UnsupportedVersion,
+        ),
+        (
+            "a version without its minor",
+            vec![Edit::Set("/version", json!("1."))],
+            Read::UnsupportedVersion,
+        ),
+        (
+            "a version of three numbers",
+            vec![Edit::Set("/version", json!("1.0.0"))],
+            Read::UnsupportedVersion,
+        ),
+        (
+            "a signed version",
+            vec![Edit::Set("/version", json!("+1.0"))],
+            Read::UnsupportedVersion,
+        ),
+        (
+            "a version that is a number",
+            vec![Edit::Set("/version", json!(1.0))],
+            Read::Malformed,
         ),
         ("no format", vec![Edit::Remove("/format")], Read::Malformed),
         (
@@ -467,6 +509,88 @@ fn reading_refuses_other_formats_versions_and_malformed_values() {
                 json!({ "0;0": "AAAA" }),
             )],
             Read::Malformed,
+        ),
+        // Tile positions and frame indices are object keys, so each has one
+        // spelling: decimal, no sign, no space, no leading zero.
+        (
+            "a tile position with a leading zero",
+            vec![Edit::Set(
+                "/annotations/7/geometry/frames/0",
+                json!({ "01,2": "AAAA" }),
+            )],
+            Read::Malformed,
+        ),
+        (
+            "a tile row with a leading zero",
+            vec![Edit::Set(
+                "/annotations/7/geometry/frames/0",
+                json!({ "1,02": "AAAA" }),
+            )],
+            Read::Malformed,
+        ),
+        (
+            "a tile position with a space",
+            vec![Edit::Set(
+                "/annotations/7/geometry/frames/0",
+                json!({ "1, 2": "AAAA" }),
+            )],
+            Read::Malformed,
+        ),
+        (
+            "a tile position of three numbers",
+            vec![Edit::Set(
+                "/annotations/7/geometry/frames/0",
+                json!({ "1,2,3": "AAAA" }),
+            )],
+            Read::Malformed,
+        ),
+        (
+            "a tile column past u32",
+            vec![Edit::Set(
+                "/annotations/7/geometry/frames/0",
+                json!({ "4294967296,0": "AAAA" }),
+            )],
+            Read::Malformed,
+        ),
+        (
+            "the largest tile position reads",
+            vec![Edit::Set(
+                "/annotations/7/geometry/frames/0",
+                json!({ "4294967295,4294967295": "AAAA" }),
+            )],
+            Read::Ok,
+        ),
+        (
+            "a frame index with a leading zero",
+            vec![Edit::Set(
+                "/annotations/7/geometry/frames",
+                json!({ "00": { "0,0": "AAAA" } }),
+            )],
+            Read::Malformed,
+        ),
+        (
+            "a frame index with a sign",
+            vec![Edit::Set(
+                "/annotations/7/geometry/frames",
+                json!({ "+1": { "0,0": "AAAA" } }),
+            )],
+            Read::Malformed,
+        ),
+        (
+            "a frame index past u32",
+            vec![Edit::Set(
+                "/annotations/7/geometry/frames",
+                json!({ "4294967296": { "0,0": "AAAA" } }),
+            )],
+            Read::Malformed,
+        ),
+        (
+            "the largest frame index reads",
+            vec![Edit::Set(
+                "/annotations/7/geometry/frames",
+                json!({ "4294967295": { "0,0": "AAAA" } }),
+            )],
+            Read::Ok,
         ),
         (
             "an unknown layer kind",

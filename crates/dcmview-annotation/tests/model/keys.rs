@@ -129,6 +129,7 @@ fn layer_ids_authors_and_timestamps_each_have_one_syntax() {
         "User:alice",
         "user:alice smith",
         "user:alice\n",
+        "user:al\u{7f}ice",
         "model:detector",
         "model:@2.1",
         "model:detector@",

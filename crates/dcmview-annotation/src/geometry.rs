@@ -250,7 +250,8 @@ impl Geometry {
     /// box with no area means. Applies to `point`, `line`, `polyline`,
     /// `polygon` and `rect`. An `ellipse` and a `mask` are returned unchanged
     /// with both flags false. Numbers that are not finite are left as they
-    /// are and reported by [`Geometry::validate`].
+    /// are, set neither flag, and are reported by [`Geometry::validate`]. A
+    /// result of zero is positive zero.
     ///
     /// Owner decision, EMBED parity amendment of 2026-10-05: a coordinate
     /// that is negative or not an integer is clamped with a warning rather

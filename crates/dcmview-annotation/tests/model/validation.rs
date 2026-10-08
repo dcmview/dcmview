@@ -139,6 +139,24 @@ fn a_document_that_breaks_one_rule_reports_it() {
             vec![Set("/annotations/6/derived_from", json!(UUID_V4))],
             Code(IdNotUuidV7),
         ),
+        // Version 7 by its version digit alone is not a UUIDv7: the variant
+        // must be the RFC one (the first digit of the fourth group is 8 to b).
+        (
+            "annotation id of version 7 in the Microsoft variant",
+            vec![Set(
+                "/annotations/0/id",
+                json!("0199c0de-0000-7000-c000-00000000bbbb"),
+            )],
+            Code(IdNotUuidV7),
+        ),
+        (
+            "label id of version 7 in the NCS variant",
+            vec![Set(
+                "/labels/0/id",
+                json!("0199c0de-0000-7000-0000-00000000bbbb"),
+            )],
+            Code(IdNotUuidV7),
+        ),
         (
             "two annotations with one id",
             vec![Set("/annotations/1/id", first_annotation_id)],
@@ -274,6 +292,17 @@ fn a_document_that_breaks_one_rule_reports_it() {
             vec![Set("/labels/3/value", json!("x".repeat(201)))],
             Code(TooLong),
         ),
+        // Lengths are counted in bytes, not characters.
+        (
+            "text of 200 bytes in two-byte characters",
+            vec![Set("/labels/3/value", json!("\u{e9}".repeat(100)))],
+            Valid,
+        ),
+        (
+            "text of 101 two-byte characters",
+            vec![Set("/labels/3/value", json!("\u{e9}".repeat(101)))],
+            Code(TooLong),
+        ),
         (
             "field that does not apply to the target",
             vec![Set("/labels/2/target", json!({ "patient": "P1" }))],
@@ -288,6 +317,26 @@ fn a_document_that_breaks_one_rule_reports_it() {
         (
             "patient id with a control character",
             vec![Set("/labels/0/target/patient", json!("P1\u{0}"))],
+            Code(BadTarget),
+        ),
+        (
+            "patient id of 256 bytes",
+            vec![Set("/labels/0/target/patient", json!("p".repeat(256)))],
+            Valid,
+        ),
+        (
+            "patient id of 257 bytes",
+            vec![Set("/labels/0/target/patient", json!("p".repeat(257)))],
+            Code(BadTarget),
+        ),
+        (
+            "patient id of 129 two-byte characters",
+            vec![Set("/labels/0/target/patient", json!("\u{e9}".repeat(129)))],
+            Code(BadTarget),
+        ),
+        (
+            "folder with a dot segment",
+            vec![Set("/labels/5/target/folder", json!("a/./b"))],
             Code(BadTarget),
         ),
         (
@@ -361,6 +410,31 @@ fn a_document_that_breaks_one_rule_reports_it() {
             "orientation value that does not exist",
             vec![Set("/files/2/space/exif_orientation", json!(9))],
             Code(BadFileRef),
+        ),
+        (
+            "orientation value 0",
+            vec![Set("/files/2/space/exif_orientation", json!(0))],
+            Code(BadFileRef),
+        ),
+        (
+            "the first orientation value",
+            vec![Set("/files/2/space/exif_orientation", json!(1))],
+            Valid,
+        ),
+        (
+            "the last orientation value",
+            vec![Set("/files/2/space/exif_orientation", json!(8))],
+            Valid,
+        ),
+        (
+            "file patient id of 256 bytes",
+            vec![Set("/files/0/patient_id", json!("p".repeat(256)))],
+            Valid,
+        ),
+        (
+            "file patient id of 257 bytes",
+            vec![Set("/files/0/patient_id", json!("p".repeat(257)))],
+            Code(TooLong),
         ),
         (
             "spacing of zero",
@@ -491,11 +565,145 @@ fn a_document_that_breaks_one_rule_reports_it() {
             vec![Set("/schema/classes/0/name", json!("n".repeat(257)))],
             Code(TooLong),
         ),
+        (
+            "class name of 256 bytes in two-byte characters",
+            vec![Set("/schema/classes/0/name", json!("\u{e9}".repeat(128)))],
+            Valid,
+        ),
+        (
+            "class name of 129 two-byte characters",
+            vec![Set("/schema/classes/0/name", json!("\u{e9}".repeat(129)))],
+            Code(TooLong),
+        ),
     ];
 
     for (name, edits, expected) in cases {
-        assert_outcome(name, validate(apply(fixture.clone(), &edits)), expected);
+        let edited = apply(fixture.clone(), &edits);
+        let outcome = validate(edited.clone());
+        // A client shows a violation at its path, so the path names
+        // something that is in the document.
+        if let Err(invalid) = &outcome {
+            for violation in &invalid.violations {
+                assert!(
+                    edited.pointer(&violation.path).is_some(),
+                    "{name}: {:?} is not in the document",
+                    violation.path
+                );
+            }
+        }
+        assert_outcome(name, outcome, expected);
     }
+}
+
+/// A violation's path is a JSON Pointer from the validated value to the
+/// member that is wrong: from the document for a document, from the record
+/// for a record. A member name is escaped as RFC 6901 says (`~` as `~0`, `/`
+/// as `~1`).
+#[test]
+fn a_violation_names_the_member_that_is_wrong() {
+    use Edit::Set;
+    use ViolationCode::*;
+
+    let cases: Vec<(&str, Vec<Edit>, ViolationCode, &str)> = vec![
+        (
+            "a rect corner",
+            vec![Set("/annotations/0/geometry/x1", json!(241))],
+            OutOfBounds,
+            "/annotations/0/geometry/x1",
+        ),
+        (
+            "the second vertex of a polygon",
+            vec![Set("/annotations/5/geometry/points/1/y", json!(9999))],
+            OutOfBounds,
+            "/annotations/5/geometry/points/1/y",
+        ),
+        (
+            "the class of the fourth annotation",
+            vec![Set("/annotations/3/class", json!("nope"))],
+            UnknownClass,
+            "/annotations/3/class",
+        ),
+        (
+            "an attribute whose name needs escaping",
+            vec![Set("/annotations/0/attributes", json!({ "a/b~c": true }))],
+            AttributeNotAllowed,
+            "/annotations/0/attributes/a~1b~0c",
+        ),
+        (
+            "an attribute's value",
+            vec![Set("/annotations/0/attributes/clip_shape", json!("nope"))],
+            UnknownOption,
+            "/annotations/0/attributes/clip_shape",
+        ),
+        (
+            "the field of the third label",
+            vec![Set("/labels/2/field", json!("nope"))],
+            UnknownField,
+            "/labels/2/field",
+        ),
+        (
+            "a label's value",
+            vec![Set("/labels/1/value", json!(101))],
+            ValueOutOfRange,
+            "/labels/1/value",
+        ),
+        (
+            "the second option id of a value",
+            vec![Set("/labels/6/value", json!(["calc", "nope"]))],
+            UnknownOption,
+            "/labels/6/value/1",
+        ),
+        (
+            "a layer's color",
+            vec![Set("/layers/1/color", json!("#12345"))],
+            BadColor,
+            "/layers/1/color",
+        ),
+        (
+            "a class's color",
+            vec![Set("/schema/classes/0/color", json!("red"))],
+            BadColor,
+            "/schema/classes/0/color",
+        ),
+        (
+            "a file's orientation",
+            vec![Set("/files/2/space/exif_orientation", json!(9))],
+            BadFileRef,
+            "/files/2/space/exif_orientation",
+        ),
+    ];
+    for (name, edits, code, path) in cases {
+        let invalid = validate(apply(document_value(), &edits)).expect_err(name);
+        assert!(
+            invalid
+                .violations
+                .iter()
+                .any(|violation| violation.code == code && violation.path == path),
+            "{name}: expected {code:?} at {path}, got {:?}",
+            invalid.violations
+        );
+    }
+
+    // The same record validated on its own is its own root.
+    let fixture = super::support::fixture();
+    let context = Context {
+        files: &fixture.files,
+        schema: &fixture.schema,
+    };
+    let mut annotation = document().annotations[0].clone();
+    annotation.geometry = Geometry::Rect {
+        x0: 30.0,
+        y0: 20.0,
+        x1: 241.0,
+        y1: 60.0,
+    };
+    let invalid = annotation.validate(&context).expect_err("past the edge");
+    assert_eq!(invalid.violations[0].path, "/geometry/x1");
+    let invalid = annotation
+        .geometry
+        .validate(super::support::SIZE)
+        .expect_err("past the edge");
+    assert_eq!(invalid.violations[0].path, "/x1");
 }
 
 /// A session without a schema has one class, `roi`, that allows every
