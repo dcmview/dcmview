@@ -6,7 +6,7 @@ use dcmview::annotations::{AnnotationStore, EmbedRoiAnnotations};
 use dcmview::api::contracts::{
     endpoints, Endpoint, ResponseHeaders, CACHE_HEADER, CACHE_HIT, CACHE_MISS,
     DISPLAY_FRAME_HEADERS, EXPORT_CONTENT_DISPOSITION_HEADER, EXPORT_CONTENT_DISPOSITION_VALUE,
-    RAW_FRAME_HEADERS, SERVER_INSTANCE_HEADER,
+    RAW_FRAME_HEADERS, SERVER_INSTANCE_HEADER, THUMBNAIL_HEADERS,
 };
 use dcmview::server;
 use dcmview::types::WindowPreset;
@@ -479,6 +479,19 @@ fn assert_declared_response_headers(endpoint: &Endpoint, response: &TestResponse
                     endpoint.id
                 );
             }
+            assert_no_display_frame_headers(endpoint, response);
+            assert_no_export_header(endpoint, response);
+        }
+        ResponseHeaders::Thumbnail => {
+            assert_cache_header(endpoint, response);
+            for (_, name) in THUMBNAIL_HEADERS {
+                assert!(
+                    response.maybe_header(*name).is_some(),
+                    "{} is missing thumbnail header {name}",
+                    endpoint.id
+                );
+            }
+            assert_no_raw_frame_headers(endpoint, response);
             assert_no_display_frame_headers(endpoint, response);
             assert_no_export_header(endpoint, response);
         }

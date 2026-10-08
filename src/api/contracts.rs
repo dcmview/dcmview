@@ -12,6 +12,7 @@ pub const API_PREFIX: &str = "/api";
 
 pub const JSON_MEDIA_TYPE: &str = "application/json";
 pub const PNG_MEDIA_TYPE: &str = "image/png";
+pub const JPEG_MEDIA_TYPE: &str = "image/jpeg";
 pub const OCTET_STREAM_MEDIA_TYPE: &str = "application/octet-stream";
 pub const CSV_MEDIA_TYPE: &str = "text/csv; charset=utf-8";
 
@@ -115,6 +116,53 @@ pub const RAW_FRAME_HEADERS: &[(&str, &str)] = &[
     ("paddingHigh", RAW_FRAME_HEADER_PADDING_HIGH),
 ];
 
+/// Thumbnail response header naming the step that produced the image, as a
+/// [`ThumbnailSource`] value. Diagnostic only: every source yields the same
+/// presentation.
+pub const THUMBNAIL_HEADER_SOURCE: &str = "X-Thumbnail-Source";
+/// `Cache-Control` of a thumbnail. File indexes are valid within one server
+/// process only, so a browser must not keep a thumbnail across a restart.
+pub const THUMBNAIL_CACHE_CONTROL: &str = "no-store";
+
+/// Thumbnail response headers, keyed by their name in the generated
+/// TypeScript table. Both are sent on every thumbnail, with [`CACHE_HEADER`].
+pub const THUMBNAIL_HEADERS: &[(&str, &str)] = &[
+    ("source", THUMBNAIL_HEADER_SOURCE),
+    ("cacheControl", "Cache-Control"),
+];
+
+/// The longest-edge sizes a thumbnail is rendered at, ascending. A requested
+/// `size` is snapped up to the next bucket so cache keys stay few; the client
+/// scales down.
+pub const THUMBNAIL_SIZE_BUCKETS: [u32; 4] = [128, 256, 512, 1024];
+/// The bucket of a request that names no `size`.
+pub const THUMBNAIL_DEFAULT_SIZE: u32 = 256;
+
+/// The step that produced a thumbnail, reported in
+/// [`THUMBNAIL_HEADER_SOURCE`]. `ThumbnailCache` and `FullDecode` are sent
+/// today; the others are reserved for the cheaper sources that follow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ThumbnailSource {
+    ThumbnailCache,
+    DisplayCache,
+    RawCache,
+    ReducedDecode,
+    FullDecode,
+}
+
+impl ThumbnailSource {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ThumbnailCache => "thumbnail_cache",
+            Self::DisplayCache => "display_cache",
+            Self::RawCache => "raw_cache",
+            Self::ReducedDecode => "reduced_decode",
+            Self::FullDecode => "full_decode",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ApiMethod {
     Get,
@@ -141,6 +189,8 @@ pub enum ResponseHeaders {
     DisplayFrame,
     /// [`CACHE_HEADER`] plus [`RAW_FRAME_HEADERS`].
     RawFrame,
+    /// [`CACHE_HEADER`] plus [`THUMBNAIL_HEADERS`].
+    Thumbnail,
     /// [`EXPORT_CONTENT_DISPOSITION_HEADER`].
     Export,
 }
@@ -161,7 +211,7 @@ pub struct Endpoint {
 
 pub mod endpoints {
     use super::{
-        ApiMethod, Endpoint, ResponseHeaders, CSV_MEDIA_TYPE, JSON_MEDIA_TYPE,
+        ApiMethod, Endpoint, ResponseHeaders, CSV_MEDIA_TYPE, JPEG_MEDIA_TYPE, JSON_MEDIA_TYPE,
         OCTET_STREAM_MEDIA_TYPE, PNG_MEDIA_TYPE,
     };
 
@@ -302,6 +352,19 @@ pub mod endpoints {
         OCTET_STREAM_MEDIA_TYPE,
         ResponseHeaders::RawFrame,
     );
+    /// Small lossy JPEG preview of the frame for the gallery; query
+    /// `ThumbnailQuery`. The whole frame in the stored pixel grid, resampled
+    /// to its physical aspect and fitted inside the size bucket, never
+    /// cropped, rotated, flipped or enlarged. It has the frame's default
+    /// presentation without the display shutter and overlay graphics, and
+    /// the frame's redaction boxes painted black. A masked session withholds
+    /// it for the files whose display frames it withholds.
+    pub const FILE_THUMBNAIL: Endpoint = binary(
+        "fileThumbnail",
+        "/file/{index}/frame/{frame}/thumbnail",
+        JPEG_MEDIA_TYPE,
+        ResponseHeaders::Thumbnail,
+    );
     /// `TagNode[]`.
     pub const FILE_TAGS: Endpoint = json("fileTags", ApiMethod::Get, "/file/{index}/tags");
     /// One `TagNode`; query `TagQuery`.
@@ -366,6 +429,7 @@ pub mod endpoints {
         FILE_FRAME,
         FILE_RAW_FRAME,
         FILE_RAW_PIXEL,
+        FILE_THUMBNAIL,
         FILE_TAGS,
         FILE_TAG_SELECT,
         FILE_ANNOTATIONS_GET,
@@ -1288,6 +1352,20 @@ pub struct FrameQuery {
     /// `true` for a window/level drag preview: served from the display cache
     /// when present, otherwise rendered without being cached.
     pub preview: Option<bool>,
+}
+
+/// Thumbnail query.
+#[derive(Debug, Clone, Copy, Deserialize, TS)]
+#[ts(optional_fields)]
+pub struct ThumbnailQuery {
+    /// Longest edge wanted, in device pixels: 1 to the largest of
+    /// [`THUMBNAIL_SIZE_BUCKETS`], snapped up to the next bucket; absent
+    /// means [`THUMBNAIL_DEFAULT_SIZE`]. Anything else is `400
+    /// invalid_query`.
+    pub size: Option<u32>,
+    /// `default` (when absent) for the frame's default presentation, or
+    /// `full_dynamic`. A thumbnail takes no explicit window.
+    pub window_mode: Option<WindowMode>,
 }
 
 /// Raw-pixel query: the zero-based image row and column.

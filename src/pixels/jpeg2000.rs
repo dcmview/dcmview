@@ -2,8 +2,6 @@ use crate::api::contracts::{RawFrameMetadata, WindowMode};
 use crate::types::FileEntry;
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
-use image::{ImageBuffer, ImageFormat, Rgb};
-use std::io::Cursor;
 use std::sync::Arc;
 use tokio::task;
 
@@ -12,10 +10,22 @@ use super::error::{PixelError, PixelResult};
 use super::header::open_header;
 use super::icc::select_icc_profile;
 use super::render::{
-    encode_rgb8_display_png, encode_windowed_luminance_png, DisplayPng, LuminanceRenderOptions,
-    StoredSamples,
+    render_windowed_luminance, DisplayBuffer, DisplayPng, LuminanceRenderOptions, StoredSamples,
 };
-use super::shutter;
+
+pub(crate) async fn render_jp2_fragment(
+    file: Arc<FileEntry>,
+    frame: u32,
+    requested_wc: Option<f64>,
+    requested_ww: Option<f64>,
+    window_mode: WindowMode,
+) -> Result<DisplayBuffer> {
+    task::spawn_blocking(move || {
+        render_jp2_fragment_blocking(&file, frame, requested_wc, requested_ww, window_mode)
+    })
+    .await
+    .context("jp2 fragment decode task failed")?
+}
 
 pub(crate) async fn decode_jp2_fragment_to_png(
     file: Arc<FileEntry>,
@@ -31,13 +41,13 @@ pub(crate) async fn decode_jp2_fragment_to_png(
     .context("jp2 fragment decode task failed")?
 }
 
-fn decode_jp2_fragment_to_png_blocking(
+fn render_jp2_fragment_blocking(
     file: &FileEntry,
     frame: u32,
     requested_wc: Option<f64>,
     requested_ww: Option<f64>,
     window_mode: WindowMode,
-) -> Result<DisplayPng> {
+) -> Result<DisplayBuffer> {
     let fragment = read_encapsulated_fragment_blocking(&file.path, frame)?;
 
     let jp2_image = jpeg2k::Image::from_bytes(&fragment)
@@ -48,8 +58,6 @@ fn decode_jp2_fragment_to_png_blocking(
     if comps.is_empty() {
         return Err(anyhow!("JP2 image has no components"));
     }
-
-    let mut buffer = Cursor::new(Vec::<u8>::new());
 
     if comps.len() == 1 {
         // Grayscale shares the presentation pipeline used by every other
@@ -72,7 +80,7 @@ fn decode_jp2_fragment_to_png_blocking(
             comps[0].is_signed(),
             file.pixel_representation,
         ) {
-            return encode_windowed_luminance_png(
+            return render_windowed_luminance(
                 file,
                 StoredSamples::Integer {
                     bytes: &bytes,
@@ -83,11 +91,7 @@ fn decode_jp2_fragment_to_png_blocking(
             );
         }
         let stored_samples: Vec<f64> = data.iter().map(|&value| f64::from(value)).collect();
-        return encode_windowed_luminance_png(
-            file,
-            StoredSamples::Values(&stored_samples),
-            options,
-        );
+        render_windowed_luminance(file, StoredSamples::Values(&stored_samples), options)
     } else if comps.len() == 3 {
         // RGB — rare in medical imaging but handle it
         let width = comps[0].width();
@@ -104,32 +108,36 @@ fn decode_jp2_fragment_to_png_blocking(
                 .collect();
             // Only 8-bit color carries an ICC profile into the PNG.
             let icc_profile = select_icc_profile(&*open_header(&file.path)?);
-            return encode_rgb8_display_png(file, frame, interleaved, width, height, icc_profile)
-                .context("JP2 decode failed: png encoding failed");
+            DisplayBuffer::rgb8(interleaved, width, height, icc_profile)
+                .context("JP2 decode failed: png encoding failed")
         } else if precision <= 16 {
             let r = comps[0].data_u16();
             let g = comps[1].data_u16();
             let b = comps[2].data_u16();
-            let mut interleaved: Vec<u16> = r
+            let interleaved: Vec<u16> = r
                 .zip(g)
                 .zip(b)
                 .flat_map(|((rv, gv), bv)| [rv, gv, bv])
                 .collect();
             let full_scale = u16::try_from((1_u32 << precision) - 1).unwrap_or(u16::MAX);
-            shutter::apply_to_rgb16(&mut interleaved, full_scale, file, frame, height, width);
-            let image = ImageBuffer::<Rgb<u16>, Vec<u16>>::from_raw(width, height, interleaved)
-                .ok_or_else(|| anyhow!("JP2 decoded buffer size mismatch"))?;
-            image::DynamicImage::ImageRgb16(image)
-                .write_to(&mut buffer, ImageFormat::Png)
-                .context("JP2 decode failed: png encoding failed")?;
+            DisplayBuffer::rgb16(interleaved, full_scale, width, height)
         } else {
-            return Err(anyhow!("unsupported JP2 component layout"));
+            Err(anyhow!("unsupported JP2 component layout"))
         }
     } else {
-        return Err(anyhow!("unsupported JP2 component layout"));
+        Err(anyhow!("unsupported JP2 component layout"))
     }
+}
 
-    Ok(DisplayPng::color(Bytes::from(buffer.into_inner())))
+fn decode_jp2_fragment_to_png_blocking(
+    file: &FileEntry,
+    frame: u32,
+    requested_wc: Option<f64>,
+    requested_ww: Option<f64>,
+    window_mode: WindowMode,
+) -> Result<DisplayPng> {
+    render_jp2_fragment_blocking(file, frame, requested_wc, requested_ww, window_mode)?
+        .into_display_png(file, frame)
 }
 
 pub(crate) async fn decode_raw_jp2_samples(

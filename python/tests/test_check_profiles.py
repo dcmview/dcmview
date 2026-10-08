@@ -151,6 +151,9 @@ class CheckProfileCompositionTests(unittest.TestCase):
 				"--ignored",
 				"--skip",
 				"remote_fixtures",
+				# An opt-in timing measurement, not a corpus test.
+				"--skip",
+				"thumbnail_timing",
 			],
 		)
 		self.assertEqual(run.call_args.kwargs["env"]["DCMVIEW_PREPARED_CORPUS"], runner.corpus)

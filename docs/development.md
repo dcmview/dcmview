@@ -185,9 +185,11 @@ The [architecture and test model](architecture.md) is normative. In brief:
 ## Cache Budgets
 
 Backend frame cache budgets default to 256 MiB for display PNGs, 384 MiB for
-raw sample frames and 64 MiB for overlays. `--cache-budget` sets one total
-that is split in those proportions. The frontend also keeps active frame blobs, raw buffers,
-and rendered bitmaps in memory for responsiveness. Frontend retention follows
+raw sample frames, 64 MiB for overlays and 64 MiB for thumbnail JPEGs (768 MiB
+total). `--cache-budget` sets one total that is split in those proportions.
+Thumbnails only fill their own cache, preserving the viewer's working set.
+The frontend also keeps active frame blobs, raw buffers, and rendered bitmaps
+in memory for responsiveness. Frontend retention follows
 the selected logical stack rather than an individual source file, and releases
 entries through byte-budgeted LRU eviction or stack disposal. Cache budget
 changes should therefore consider total browser plus server memory pressure.

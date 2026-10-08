@@ -21,6 +21,12 @@ diagnostic viewer.
 
 ### Added
 
+- `GET /api/file/{index}/frame/{frame}/thumbnail` returns JPEG previews at
+  bucketed sizes in physical aspect, with the default or full-dynamic window.
+  Thumbnails honour redaction boxes and display masking, omit shutters and
+  overlay planes, and use their own cache without evicting viewer frames.
+- Background thumbnail decodes yield to viewer decodes, with a capped share
+  of cores and a one-second interactive idle window on one-core hosts.
 - Header-only, content-based discovery of PNG, JPEG, TIFF (including BigTIFF
   and compatible multipage stacks), and WebP beside DICOM. Image pixels are
   not decoded yet and frame endpoints return `422 unsupported_pixel_layout`
@@ -51,6 +57,12 @@ diagnostic viewer.
   and empty DICOM identity fields. Notes about a listed file, such as a TIFF
   page chain that could not be read to its end, are printed to stderr during
   discovery: at most 16 per file, the last counting any that are not shown.
+
+### Changed
+
+- `--cache-budget BYTES` now also covers the thumbnail cache, and its default
+  total is 768 MiB instead of 704 MiB: 256, 384, 64 and 64 MiB for the
+  display, raw, overlay and thumbnail caches respectively.
 
 ## 0.4.0 - 2026-10-08
 
