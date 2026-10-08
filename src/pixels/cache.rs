@@ -79,8 +79,9 @@ impl<K: Hash + Eq, V: FrameBody> BudgetedLru<K, V> {
         Self::with_scheduler(max_bytes, Arc::clone(decode_scheduler()))
     }
 
-    /// A cache whose misses are admitted by `scheduler`.
-    pub(crate) fn with_scheduler(max_bytes: usize, scheduler: Arc<DecodeScheduler>) -> Self {
+    /// A cache of at most `max_bytes` of frame bodies whose misses are
+    /// admitted by `scheduler`.
+    pub fn with_scheduler(max_bytes: usize, scheduler: Arc<DecodeScheduler>) -> Self {
         Self {
             entries: LruCache::unbounded(),
             bytes: 0,
