@@ -381,12 +381,12 @@ fn decode_page(
     if photometric == 0 {
         let entry = page.entry(262).context("missing TIFF photometric")?;
         ensure!(
-            entry.kind == 3 && entry.count == 1,
-            "TIFF photometric is not one SHORT"
+            matches!(entry.kind, 3 | 4) && entry.count == 1,
+            "TIFF photometric is not one SHORT or LONG"
         );
         patches.push(Patch {
             offset: entry.position,
-            bytes: page.order.bytes(1, 2),
+            bytes: page.order.bytes(1, if entry.kind == 3 { 2 } else { 4 }),
         });
     }
     reader.seek(SeekFrom::Start(0))?;
