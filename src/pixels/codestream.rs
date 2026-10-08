@@ -705,8 +705,96 @@ fn read_jpeg_xl(frame: &[u8]) -> Result<Declared> {
 /// The error says which rule failed and both values; it does not need to
 /// contain [`CODESTREAM_MISMATCH`], [`checked`] adds it.
 pub fn agrees(file: &FileEntry, declared: &Declared) -> Result<()> {
-    let _ = (file, declared);
-    todo!("DCM1: compare what the codestream declares with the entry")
+    for (rule, actual, expected) in [
+        ("columns", declared.columns, file.columns),
+        ("rows", declared.rows, file.rows),
+        ("components", declared.components, file.samples_per_pixel),
+    ] {
+        if actual != expected {
+            return Err(anyhow!("{rule} is {actual}, the entry says {expected}"));
+        }
+    }
+    let precision = declared.precision;
+    let allocated = file.bits_allocated;
+    match &declared.structure {
+        Structure::Jpeg { process, scans } => {
+            let fits = match process {
+                0xC0..=0xC2 => precision == 8 && allocated == 8,
+                0xC3 => {
+                    (precision == 8 && allocated == 8)
+                        || (matches!(precision, 2..=7 | 9..=16) && allocated == 16)
+                }
+                0xF7 => {
+                    ((2..=8).contains(&precision) && allocated == 8)
+                        || ((9..=16).contains(&precision) && allocated == 16)
+                }
+                _ => {
+                    return Err(anyhow!(
+                        "JPEG process is {process:02X}, supported processes are C0, C1, C2, C3 and F7"
+                    ));
+                }
+            };
+            if !fits {
+                return Err(anyhow!(
+                    "process {process:02X} precision {precision} does not fit Bits Allocated {allocated}"
+                ));
+            }
+            if *process != 0xF7 && *scans > JPEG_MAX_SCANS {
+                return Err(anyhow!(
+                    "JPEG scans is {scans}, the limit is {JPEG_MAX_SCANS}"
+                ));
+            }
+        }
+        Structure::Jpeg2000 {
+            uniform,
+            tiles,
+            tile_pixels,
+            packets,
+            ..
+        } => {
+            if !uniform {
+                return Err(anyhow!(
+                    "JPEG 2000 uniform components is {uniform}, required true"
+                ));
+            }
+            precision_fits(precision, allocated)?;
+            if *tiles > J2K_MAX_TILES {
+                return Err(anyhow!(
+                    "JPEG 2000 tiles is {tiles}, the limit is {J2K_MAX_TILES}"
+                ));
+            }
+            let budget = J2K_MIN_PACKET_BUDGET.max(tile_pixels / J2K_PIXELS_PER_PACKET);
+            if *packets > budget {
+                return Err(anyhow!(
+                    "JPEG 2000 packets is {packets}, the limit is {budget}"
+                ));
+            }
+        }
+        Structure::JpegXl {
+            integer_samples,
+            animated,
+        } => {
+            if !integer_samples {
+                return Err(anyhow!(
+                    "JPEG XL integer samples is {integer_samples}, required true"
+                ));
+            }
+            precision_fits(precision, allocated)?;
+            if *animated {
+                return Err(anyhow!("JPEG XL animated is {animated}, required false"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn precision_fits(precision: u32, allocated: u32) -> Result<()> {
+    if !(1..=allocated).contains(&precision) {
+        return Err(anyhow!(
+            "precision is {precision}, required 1 through Bits Allocated {allocated}"
+        ));
+    }
+    Ok(())
 }
 
 /// What `frame` declares, once it is known to agree with `file`.
