@@ -266,12 +266,15 @@ impl FileRegistry {
     /// hashing and never fails. An index that is not registered is ignored.
     pub fn frame_sent(&self, index: usize) {
         let served = self.read().keys.served(index);
-        let wanted = if served {
-            Vec::new()
+        if served {
+            // Nothing new to hash; a queue filled where no runtime could
+            // run a worker still starts here.
+            self.queue_keys(Vec::new(), false);
         } else {
-            self.write().keys.frame_sent(index).wanted
-        };
-        self.queue_keys(wanted, false);
+            let mut inner = self.write();
+            let wanted = inner.keys.frame_sent(index).wanted;
+            self.queue_keys(wanted, false);
+        }
     }
 
     /// The file's key once it is settled, which is what a record or an
@@ -373,11 +376,11 @@ impl FileRegistry {
                 if needed.is_empty() {
                     let (reliance, changes) = inner.keys.rely_on(index);
                     self.apply_key_changes(&mut inner, &changes);
+                    self.queue_keys(changes.wanted, false);
                     drop(inner);
                     if !changes.updated.is_empty() {
                         self.notify.notify_waiters();
                     }
-                    self.queue_keys(changes.wanted, false);
                     match reliance {
                         Some(Reliance::Final(key)) => return Ok(key),
                         Some(Reliance::Failed(failure)) => {
@@ -387,7 +390,6 @@ impl FileRegistry {
                         None => return Err(KeyError::NotFound(index)),
                     }
                 } else {
-                    drop(inner);
                     waiting.extend(needed.iter().copied());
                     self.queue_keys(needed, true);
                 }
@@ -508,6 +510,16 @@ impl FileRegistry {
         self.hashing.work().pending.len()
     }
 
+    /// Queues `indexes` for hashing, at the front or the back, and starts
+    /// the worker when none runs and a runtime is there to run it.
+    ///
+    /// A caller that learned from the key table that these digests are
+    /// wanted calls this while it still holds the registry's write lock.
+    /// The table then says "waiting for a digest" and the queue counts the
+    /// file in one step as far as any reader can tell, so a catalog page
+    /// never shows a file without a key beside a `keys_hashing` that does
+    /// not count it. The queue's lock is taken under the registry's and
+    /// never the other way round.
     pub(super) fn queue_keys(&self, indexes: Vec<usize>, front: bool) {
         let start = {
             let mut work = self.hashing.work();
@@ -625,9 +637,9 @@ impl FileRegistry {
         let mut inner = self.write();
         let changes = inner.keys.resolve(index, outcome);
         self.apply_key_changes(&mut inner, &changes);
+        self.queue_keys(changes.wanted, false);
         drop(inner);
         self.hashing.work().stats.files_hashed += 1;
-        self.queue_keys(changes.wanted, false);
     }
 
     /// Records that the worker panicked while it held `index`. A registry
@@ -636,7 +648,6 @@ impl FileRegistry {
         if let Ok(mut inner) = self.inner.write() {
             let changes = inner.keys.resolve(index, Err(KeyFailure::Unreadable));
             self.apply_key_changes(&mut inner, &changes);
-            drop(inner);
             self.queue_keys(changes.wanted, false);
         }
         self.hashing.work().stats.files_hashed += 1;

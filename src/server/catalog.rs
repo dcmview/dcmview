@@ -172,8 +172,8 @@ impl FileRegistry {
         }
         inner.entry_revisions.push(0);
         self.apply_key_changes(&mut inner, &changes);
-        drop(inner);
         self.queue_keys(changes.wanted, false);
+        drop(inner);
         self.hashing.changed.notify_waiters();
         self.notify.notify_waiters();
         index
@@ -227,7 +227,9 @@ impl FileRegistry {
     /// so the page is one moment of the registry: a page that says the scan
     /// is complete lists every file the scan found, and a file that is
     /// queued for hashing when the page is read is counted in
-    /// `keys_hashing`. A handler builds its response from this value alone
+    /// `keys_hashing`. A file whose digest became wanted is queued before
+    /// the registry is let go of (`FileRegistry::queue_keys`), so no page
+    /// shows a file waiting for its key beside a count that leaves it out. A handler builds its response from this value alone
     /// and reads nothing else of the registry for it; two reads can be of
     /// two moments, and a client stops polling on `scan_complete`.
     ///
