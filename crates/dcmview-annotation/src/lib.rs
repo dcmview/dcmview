@@ -51,7 +51,7 @@
 //!   before it is parsed; it builds every list the text holds, however long.
 //!   `validate` then compares each list and string with its bound in
 //!   [`limits`] before it visits the items, and its work is linear in the
-//!   size of the value.
+//!   size of the value plus what it indexes of the schema ([`Context`]).
 //! - Within a document major version, members are only added. A member this
 //!   version does not know is kept and written back on the types that have an
 //!   `unknown` map: the document, the schema and its classes, fields and

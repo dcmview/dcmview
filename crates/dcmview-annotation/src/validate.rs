@@ -178,15 +178,26 @@ impl<F: Fn(&FileKey) -> Option<ImageSize>> FileSizes for F {
 ///
 /// # Cost
 ///
-/// One validation call does work linear in the size of the value it checks
-/// plus the parts of the schema that value names. Whatever it looks up in
-/// the schema (a class or a field by id, an option of a field, an attribute
-/// or geometry type of a class, a target kind of a field) it finds through
-/// an index built at most once in the call, and only when first needed, so
-/// a `Batch` of 10,000 operations or a record with 1,024 attributes does not
-/// scan a schema list once per item, and a small operation against a large
-/// schema does not pay for the whole schema. Where two schema items share an
-/// id the first one is the one found.
+/// Whatever a validation call looks up in the schema it finds through an
+/// index built at most once in the call, and only when first needed, so a
+/// `Batch` of 10,000 operations or a record with 1,024 attributes does not
+/// scan a schema list once per item. There are two kinds of index:
+///
+/// - The map from field id to field is built from the whole field list the
+///   first time the call looks up any field, and the map from class id to
+///   class from the whole class list the first time it looks up any class.
+///   A call that names one field of a schema with 4,096 pays for 4,096 map
+///   entries, once.
+/// - The set of one field's option ids, of one field's target kinds, of one
+///   class's attributes and of one class's geometry types is built the
+///   first time a value is checked against that field or class, and only
+///   for that one. A call never pays for the options of a field it does not
+///   name.
+///
+/// One call therefore does work linear in the size of the value it checks,
+/// plus the number of fields and of classes in the schema when it looks one
+/// up, plus the size of each field and class the value names. Where two
+/// schema items share an id the first one is the one found.
 #[derive(Clone, Copy)]
 pub struct Context<'a> {
     pub files: &'a dyn FileSizes,

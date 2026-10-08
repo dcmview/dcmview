@@ -716,9 +716,13 @@ Rules the crate keeps:
   panics. Reading refuses text longer than its bound (256 MiB for a
   document, 16 MiB for an operation envelope) before parsing it, and within
   that bound builds every list the text holds. A validation compares each
-  list and string with its constant in `limits` before visiting its items,
-  does work linear in the size of the value, and reports at most 32
-  violations.
+  list and string with its constant in `limits` before visiting its items
+  and reports at most 32 violations. Its work is linear in the size of the
+  value plus what it indexes of the schema: the first lookup of a field or
+  of a class in a call builds the map from id to item for the whole field
+  list or class list, and the first check against one field's options or
+  target kinds, or one class's attributes or geometry types, builds a set
+  for that field or class alone. Each is built at most once per call.
 - **An operation is at most 16 MiB of text.** Create, delete and restore
   carry the whole annotation, mask included, so a mask of more tiles than
   fit in one envelope cannot travel as one of them: about 2,000 tiles at the
