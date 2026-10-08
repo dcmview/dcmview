@@ -696,16 +696,19 @@ Rules the crate keeps:
   an unknown member there is ignored when read. A label target with one is
   refused. Within a document major version members are only added; a new
   geometry type, operation or enum value is a new major version.
-- **Each member is written once.** A member the model names is refused when
-  the text holds it twice. A repeated key inside a map whose keys are data
+- **Each member is written once.** A field writes its own members and its
+  type's members from the field, and leaves out an unknown member with one
+  of those names, so a field whose type was changed in code still names
+  nothing twice. A member the model names is refused when the text read
+  holds it twice. A repeated key inside a map whose keys are data
   (`attributes`, `extensions`, a mask's frames and tiles, the unknown
   members) is not: the last one is kept.
 - **Absent is left out.** An optional member is not written when it is
   absent, and `null` is read as absent: a record read with `"score": null`
   or `"derived_from": null` is written back without the member. The members
-  written as `null` are a file's identifiers and digests, a layer's `color`,
-  a document's `schema`, and an operation's `base_rev`, `before` and
-  `after`.
+  written as `null` are a file's identifiers, digests and `frame_source`, a
+  layer's `color`, a document's `schema`, and an operation's `base_rev`,
+  `before` and `after`.
 - **Ids.** Record and operation ids are UUIDv7. Layer ids and schema ids are
   1 to 64 characters of `A-Z a-z 0-9 . - _`.
 - **Queue keys.** `Op::queue_keys` gives what a client orders an operation
