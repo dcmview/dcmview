@@ -16,7 +16,9 @@ use crate::loader::DiscoveryRecord;
 use crate::masking::Masker;
 use crate::pixels::{self, DecodeClass, DecodeScheduler};
 use crate::types::FileEntry;
-use std::collections::{HashSet, VecDeque};
+use std::collections::hash_map::RandomState;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::hash::BuildHasher;
 use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -115,6 +117,52 @@ impl KeyedFile for Keyed {
     }
 }
 
+/// In a masked session, the first file that carries each masked SOP
+/// Instance UID, found by that masked UID: the way from a `sop:` key a
+/// client was sent back to a file.
+///
+/// It holds no string. A masked UID is already in the catalog entry of the
+/// file that carries it (`FileSummary::sop_instance_uid`), so a file is
+/// found by the hash of the text and confirmed against its entry. Two
+/// masked UIDs with one hash are both kept, the later one in `collided`,
+/// so a lookup is exact whatever the hashes do.
+#[derive(Default)]
+pub(super) struct ShownUids {
+    first: HashMap<u64, usize>,
+    collided: Vec<usize>,
+    hasher: RandomState,
+}
+
+impl ShownUids {
+    /// Notes file `index`, whose entry `summaries[index]` shows its masked
+    /// UID. A UID an earlier file shows keeps naming that file.
+    pub(super) fn insert(&mut self, index: usize, summaries: &[FileSummary]) {
+        let shown = summaries[index].sop_instance_uid.as_str();
+        let earlier = *self
+            .first
+            .entry(self.hasher.hash_one(shown))
+            .or_insert(index);
+        if summaries[earlier].sop_instance_uid != shown
+            && !self
+                .collided
+                .iter()
+                .any(|&other| summaries[other].sop_instance_uid == shown)
+        {
+            self.collided.push(index);
+        }
+    }
+
+    /// The first file whose entry shows the masked UID `shown`.
+    fn get(&self, shown: &str, summaries: &[FileSummary]) -> Option<usize> {
+        let shows = |index: &usize| summaries[*index].sop_instance_uid == shown;
+        self.first
+            .get(&self.hasher.hash_one(shown))
+            .copied()
+            .filter(shows)
+            .or_else(|| self.collided.iter().copied().find(shows))
+    }
+}
+
 /// A key as this session sends it. A masked session never sends a real
 /// instance UID: a `sop:` key is built from the masked UID, which is what
 /// the entry's `sop_instance_uid` shows, so the two still agree. A `b3:` key
@@ -142,9 +190,11 @@ pub(super) fn show_key_state(
     masker: Option<&Masker>,
 ) {
     let implied = match (state.key, masker) {
-        // The entry shows the masked UID, and the key is sent built from
-        // that same masked UID.
-        (Some(KeyRef::Sop(uid)), Some(masker)) => masker.uid(uid) == summary.sop_instance_uid,
+        // A masked entry shows the masked form of its file's UID
+        // (`Masker::summary`), and the key is sent built from that same
+        // masked UID (`shown_key`): the two agree without masking the UID
+        // again to compare them.
+        (Some(KeyRef::Sop(_)), Some(_)) => true,
         (Some(KeyRef::Sop(uid)), None) => uid == summary.sop_instance_uid,
         _ => false,
     };
@@ -193,7 +243,9 @@ impl FileRegistry {
         let key = FileKey::parse(key).ok()?;
         let inner = self.read();
         if self.masker.is_some() && key.scheme() == KeyScheme::Sop {
-            let carrier = inner.files.get(*inner.shown_uids.get(key.body())?)?;
+            let carrier = inner
+                .files
+                .get(inner.shown_uids.get(key.body(), &inner.summaries)?)?;
             let real = FileKey::sop(&carrier.sop_instance_uid).ok()?;
             inner.keys.file_for_key(&real)
         } else {

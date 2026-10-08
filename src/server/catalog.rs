@@ -59,9 +59,9 @@ struct FileRegistryInner {
     entry_revisions: Vec<u64>,
     by_revision: BTreeMap<u64, usize>,
     rekeys: BTreeMap<u64, crate::api::contracts::FileRekey>,
-    /// In a masked session: each masked SOP Instance UID a `sop:` key was
-    /// built from, with the first file that carries the UID behind it.
-    shown_uids: HashMap<String, usize>,
+    /// In a masked session: the first file behind each masked SOP Instance
+    /// UID a `sop:` key is built from.
+    shown_uids: keys::ShownUids,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -158,19 +158,18 @@ impl FileRegistry {
             None => FileSummary::from(&file),
         };
         let file = Arc::new(file);
-        if let Some(masker) = self.masker.as_deref() {
-            if crate::keys::FileKey::is_sop_uid(&file.sop_instance_uid) {
-                inner
-                    .shown_uids
-                    .entry(masker.uid(&file.sop_instance_uid))
-                    .or_insert(index);
-            }
-        }
         let changes = inner
             .keys
             .register(keys::Keyed::new(file.clone(), resolved));
+        let keyed_by_uid = crate::keys::FileKey::is_sop_uid(&file.sop_instance_uid);
         inner.files.push(file);
         inner.summaries.push(summary);
+        if self.masker.is_some() && keyed_by_uid {
+            // The summary already holds the masked UID: it is not computed
+            // again, and no second copy of it is kept.
+            let inner = &mut *inner;
+            inner.shown_uids.insert(index, &inner.summaries);
+        }
         inner.entry_revisions.push(0);
         self.apply_key_changes(&mut inner, &changes);
         drop(inner);
