@@ -1,5 +1,7 @@
 //! The image crate leaves JPEG and WebP samples in the stored orientation.
-use super::{checked_profile, raster_decode_heap_limit, reader::Reader, RasterFrame};
+use super::{
+    checked_profile, raster_decode_heap_limit, reader::Reader, RasterFrame, RASTER_ICC_MAX_BYTES,
+};
 use crate::api::contracts::{FileFormat, RasterSampleFormat};
 use crate::types::FileEntry;
 use anyhow::{ensure, Context, Result};
@@ -18,15 +20,17 @@ pub(super) fn decode(
             image::codecs::jpeg::JpegDecoder::new(source)?,
             length,
             expected,
+            true,
         ),
         FileFormat::Webp => {
-            check_webp(file, source, length)?;
+            let read_profile = check_webp(file, source, length)?;
             source.seek(SeekFrom::Start(0))?;
             read(
                 file,
                 image::codecs::webp::WebPDecoder::new(source)?,
                 length,
                 expected,
+                read_profile,
             )
         }
         _ => anyhow::bail!("invalid image codec"),
@@ -42,6 +46,7 @@ fn read_at<const N: usize>(source: &mut Reader<'_>, offset: u64) -> Result<[u8; 
 
 struct WebpChunk {
     name: [u8; 4],
+    size: u64,
     payload: u64,
     next: u64,
 }
@@ -59,6 +64,7 @@ impl WebpChunk {
             .context("WebP chunk end overflow")?;
         Ok(Self {
             name: [a, b, c, d],
+            size,
             payload,
             next,
         })
@@ -103,7 +109,7 @@ fn webp_u24(bytes: [u8; 3]) -> u64 {
 
 // The VP8 decoder allocates from its own frame header before comparing it
 // with VP8X. Check that header first, including a first animation subframe.
-fn check_webp(file: &FileEntry, source: &mut Reader<'_>, length: u64) -> Result<()> {
+fn check_webp(file: &FileEntry, source: &mut Reader<'_>, length: u64) -> Result<bool> {
     let [r, i, f0, f1, _, _, _, _, w, e, b, p] = read_at(source, 0)?;
     ensure!(
         [r, i, f0, f1] == *b"RIFF" && [w, e, b, p] == *b"WEBP",
@@ -112,7 +118,10 @@ fn check_webp(file: &FileEntry, source: &mut Reader<'_>, length: u64) -> Result<
     let expected = (u64::from(file.columns), u64::from(file.rows));
     let first = WebpChunk::read(source, 12)?;
     match &first.name {
-        b"VP8 " | b"VP8L" => return first.check_size(source, expected),
+        b"VP8 " | b"VP8L" => {
+            first.check_size(source, expected)?;
+            return Ok(false);
+        }
         b"VP8X" => {}
         _ => anyhow::bail!("invalid WebP first chunk"),
     }
@@ -122,13 +131,15 @@ fn check_webp(file: &FileEntry, source: &mut Reader<'_>, length: u64) -> Result<
         "WebP canvas differs from catalog"
     );
     let animated = flags & 0x02 != 0;
+    let mut profile = None;
     let mut offset = first.next;
     while offset <= length && length - offset >= 8 {
         let chunk = WebpChunk::read(source, offset)?;
         match &chunk.name {
             b"VP8 " | b"VP8L" => {
                 ensure!(!animated, "WebP animation has an unframed image");
-                return chunk.check_size(source, expected);
+                chunk.check_size(source, expected)?;
+                return Ok(profile.unwrap_or(false));
             }
             b"ANMF" => {
                 ensure!(animated, "WebP still has an animation frame");
@@ -151,7 +162,17 @@ fn check_webp(file: &FileEntry, source: &mut Reader<'_>, length: u64) -> Result<
                     image = WebpChunk::read(source, image.next)?;
                     ensure!(&image.name == b"VP8 ", "WebP alpha has no VP8 image");
                 }
-                return image.check_size(source, (width, height));
+                image.check_size(source, (width, height))?;
+                return Ok(profile.unwrap_or(false));
+            }
+            b"ICCP" if profile.is_none() => {
+                // The codec retains the first ICCP chunk and allocates its
+                // declared size. Only let it read a bounded, present payload.
+                profile = Some(
+                    chunk.size <= RASTER_ICC_MAX_BYTES as u64
+                        && chunk.payload <= length
+                        && chunk.size <= length - chunk.payload,
+                );
             }
             _ => {}
         }
@@ -165,6 +186,7 @@ fn read(
     mut decoder: impl ImageDecoder,
     length: u64,
     expected: u64,
+    read_profile: bool,
 ) -> Result<RasterFrame> {
     let raster = file.raster.as_ref().context("missing raster metadata")?;
     let color = match file.samples_per_pixel {
@@ -186,7 +208,11 @@ fn read(
     limits.max_image_height = Some(file.rows);
     limits.max_alloc = raster_decode_heap_limit(file, length);
     decoder.set_limits(limits)?;
-    let profile = decoder.icc_profile()?;
+    let profile = if read_profile {
+        decoder.icc_profile()?
+    } else {
+        None
+    };
     let icc_profile = checked_profile(file, profile.as_deref());
     drop(profile);
     let mut bytes = vec![0; usize::try_from(expected)?];
