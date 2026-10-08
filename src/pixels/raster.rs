@@ -66,6 +66,13 @@ pub const RASTER_TIFF_TILE_MARGIN: u32 = 4096;
 /// The most scans a progressive JPEG may have and be decoded. Every scan is a
 /// pass over the whole image, and a scan can be a few bytes long, so without
 /// a limit a small file buys unbounded work. Encoders write about ten.
+///
+/// This constant is not passed to a decoder. The limit is the default of
+/// the JPEG decoder `image` links (`zune-jpeg`), and `image` gives a caller
+/// no way to set it. The constant states that default, and
+/// `tests/raster_cost/bounds.rs` holds the decoder to it: a file with this
+/// many scans decodes and one with a scan more does not, so a release of
+/// the crate with another default fails there.
 pub const RASTER_JPEG_MAX_SCANS: usize = 100;
 
 /// The part of [`raster_decode_heap_limit`] that does not depend on the
