@@ -52,11 +52,22 @@ diagnostic viewer.
   not a key frame, and a TIFF page that repeats a tag or whose tiles are
   4,096 pixels or more larger than the image, fail to decode; a TIFF whose
   first page repeats a tag is not listed. Refused images report
-  `raster.unsupported_color`,
-  `raster.unsupported_sample_format`, `raster.unsupported_compression`,
+  `raster.unsupported_color`, `raster.unsupported_sample_format`,
+  `raster.unsupported_compression`,
   `raster.jpeg_unsupported_process`, or `raster.too_large`. JPEG-compressed
   and 1-, 2- and 4-bit TIFF are not decoded, and gray profiles are not
   carried.
+- The Explorer's Study view lists PNG, JPEG, TIFF and WebP files in an
+  "Images" group after the patients, in their folder tree, with their own
+  icon and a format chip; DICOM files stay in the patient tree even without
+  identifiers. The Explorer filter's `format:png` (or `jpg`, `tif`,
+  `webp`, `dicom`) selects by format; a plain term also matches an image
+  file's format name and the path the current view shows for a file, never
+  a folder that every listed file shares. Opening an image file the viewer
+  does not decode says that it cannot be displayed instead of failing a
+  frame request, and an image file's tag panel is titled "Metadata". In a
+  `--mask` session the Study view lists image files as `File N` without
+  folders and its filter does not match paths.
 - `--formats dicom,png,jpeg,tiff,webp` narrows directory discovery, and
   `--filter format=<name>` and `--filter path=<text>` select by exact format
   or a substring of the reported path, ignoring case.

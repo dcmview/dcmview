@@ -21,6 +21,7 @@ repository may depend on without the viewer:
 |---|---|---|---|
 | `dcmview` | `.` | The viewer binary and library. | Everything, including the members. |
 | `dcmview-protocol` | `crates/dcmview-protocol` | The launch and startup contract: `StartupEvent`, `launch_url`, `STARTUP_PROTOCOL`, `TOKEN_FRAGMENT_PARAM`, `TOKEN_ENV_VAR`, and the test that pins the startup line. | `serde` only. No axum, tokio or DICOM crates. |
+| `dcmview-annotation` | `crates/dcmview-annotation` | The neutral annotation model: file keys, file references, geometry, frame scopes, the label schema, labels, layers, annotations, the document, operations, and the validation of all of them. See [Annotation Model](#annotation-model). | `serde`, `serde_json`, `thiserror`, `uuid`, `ts-rs`, `schemars`. No axum, tokio, DICOM or pixel-pipeline crates; no filesystem or network access. |
 
 Rules for the workspace:
 
@@ -29,8 +30,8 @@ Rules for the workspace:
   project URLs; every package inherits them.
 - Every member has the viewer's version. Other repositories pin a member by
   dcmview release tag, so the tag is the only version a consumer selects, and
-  wire compatibility is carried by `STARTUP_PROTOCOL` rather than by the crate
-  version. The root `[package].version` stays a literal because release
+  wire compatibility is carried by `STARTUP_PROTOCOL`, by the annotation
+  document's `version` and by `KEY_RULES` rather than by the crate version. The root `[package].version` stays a literal because release
   tooling reads it; `scripts/check_versions.py` compares each
   `crates/*/Cargo.toml` with it.
 - Plain `cargo build`, `cargo run` and `cargo test` at the root act on the
@@ -50,6 +51,7 @@ application module:
 | Local startup | `src/startup/` | `LocalViewerOptions`, `LocalViewerOutcome`, and `DiscoveryHandle`. |
 | HTTP wire model | `src/api/contracts.rs` | Plain `endpoints` table, media types, header names, wire structs (query names are `FrameQuery`/`TagQuery` fields), and error envelope. |
 | Launch and startup contract | `crates/dcmview-protocol` | `StartupEvent` (the `--startup-json` line), `launch_url`, `STARTUP_PROTOCOL`, the token fragment parameter and the token environment variable. Re-exported by `src/api/contracts.rs`. Fields are only added. |
+| Annotation model | `crates/dcmview-annotation` | The model's types and wire format, `validate` on each of them, `FileKey` and `KEY_RULES`, `Op` and `OpEnvelope`, the size bounds in `limits`, and the generated TypeScript and JSON Schema. The root package does not depend on it: `src/annotations.rs` is the EMBED store behind the annotation endpoints. |
 | HTTP runtime | `src/server/` | Listener/runtime, route registration, handlers, state, registry, activity tracking, tags, and embedded assets. |
 | Pixel service | `src/pixels/` | Typed display, raw and thumbnail requests, cache behavior, transfer-syntax classification, decoding, the render seam (`render.rs` `DisplayBuffer`), decode classes (`schedule.rs`), and `PixelError`. `raster.rs` decodes PNG, JPEG, TIFF and WebP frames within fixed read and memory limits and renders them. |
 | Patient geometry | `src/geometry.rs` | Normalized per-frame position, orientation, pixel spacing, coplanarity checks, and target-to-source pixel transforms. |
@@ -66,6 +68,7 @@ application module:
 | Frontend client | `frontend/src/api.ts` | Typed fetch wrappers over the generated endpoint paths and wire types. |
 | VS Code extension | `vscode/src/` | `extension.ts` wires activation only. `viewerSessions.ts` owns viewer processes and their webview panels; `customEditor.ts` and `commands.ts` open files through it; `bridgeServer.ts` serves the loopback launch/stop/wait bridge; `bridgeRegistry.ts` publishes and refreshes the registry file; `terminalInterception.ts` sets the terminal environment and PATH shims. |
 | Cross-language generation | `examples/generate_api_types.rs` | Checked-in `frontend/src/generated/api-types.ts` rendered with `ts-rs` from the Rust HTTP contract. |
+| Annotation model generation | `crates/dcmview-annotation/examples/generate_annotation_model.rs` | Checked-in `frontend/src/generated/annotation-types.ts` (`ts-rs`) and `crates/dcmview-annotation/schema/dcmview.annotations.schema.json` (`schemars`), rendered from the model's serde attributes. |
 
 Axum integration tests execute the router without a process; discovery and
 lifecycle tests drive the real loader; end-to-end profiles exercise a real
@@ -313,6 +316,24 @@ publishes the corresponding flattened file order to `App.svelte`. Global
 Up/Down shortcuts use that order (including the active filter), so file
 selection follows the explorer presentation rather than registry insertion
 order.
+
+Raster image files (`file_format` other than `dicom`, never inferred from
+empty UIDs) stay out of the clinical tree. The Study view lists them in one
+"Images" group after the patients, shaped by `buildImageGroup` in
+`lib/fileTree.ts` as the directory tree of those files
+(`docs/design/image-formats.md` section 7); a masked session lists them flat
+under their display names, since only the Directory view shows real paths.
+The explorer filter's `format:` scope matches any format (`jpg` and `tif` are
+aliases); an unscoped term matches a raster's format name but never `dicom`.
+Unscoped terms also match the path the current view shows for a file, never
+a folder every listed file shares: in the Directory view the path below the
+folders all files share, in the Study view a raster's path below the folders
+all rasters share and a DICOM file's name, and nothing in a masked Study
+view. `lib/rasterSupport.ts` decides from the catalog entry
+that a raster cannot be drawn; `ImageViewport` then views it as a file
+without pixels, shows why, and requests no frame, value mapping or layer.
+The tag panel's heading and the accessible names of its shell come from
+`tagPanelNames`: "Metadata" for a raster.
 
 `App.svelte` gives `ImageViewport` one ordered logical-frame sequence for the
 active tab. A sequence may describe frames from one multiframe object, many
@@ -927,6 +948,110 @@ the file, for a raster that has one.
   crate does not unpack it), palette, CMYK and gray-with-alpha TIFF, and
   planar colour. Animated PNG and WebP show their first frame only.
 
+## Annotation Model
+
+`crates/dcmview-annotation` is the one definition of what an annotation is.
+It is a pure model: types, their JSON form, and the rules a value must meet.
+It holds no state and applies no operation; a store does that. It does not
+touch the filesystem, the network or the environment, and every function
+gives the same result for the same arguments except `new_id`, which reads
+the system clock and the operating system's random number generator. The
+root package does not depend on this crate. The design it implements is
+`docs/design/annotation-model.md`.
+
+| Module | Holds |
+|---|---|
+| `key` | `FileKey` (`sop:<uid>` or `b3:<64 lowercase hex>`), `KEY_RULES`, and the other strings with one fixed syntax: `LayerId`, `Author`, `Timestamp`. |
+| `file` | `FileRef`: every identifier known for a file, its dimensions and frame count. |
+| `geometry` | `Geometry` (point, line, polyline, polygon, rect, ellipse, mask), `quantize`, `Geometry::validate`, `Geometry::clamped`. |
+| `frames` | `FrameScope`: `"all"`, or a set of frames with the list as it was written. |
+| `schema` | `LabelSchema`: classes, fields and options; `LabelSchema::implicit` for a session without one. |
+| `label`, `layer`, `record` | `LabelTarget` and its canonical id, `LabelValue`, `Label`; `Layer`, `LayerPatch`; `Annotation`, `RecordMeta`, `new_id`. |
+| `document` | `Document`, `FORMAT` (`dcmview.annotations`) and `VERSION`. |
+| `op` | `Op` (ten operations, `Batch` included), `OpEnvelope`, `Patch`, `QueueKey`, `ApplyResult`. |
+| `validate` | `Violation`, the closed `ViolationCode` list, `Invalid`, and the `Context` (files and schema) a validation is given. |
+| `limits` | Every size bound, as a constant. |
+| `generate` | `typescript()` and `json_schema()`. |
+
+Rules the crate keeps:
+
+- **Reading checks shape, validating checks invariants.** Deserialization
+  accepts any value of the right shape whose file keys, layer ids, authors
+  and timestamps have their fixed syntax. The `validate` functions are the
+  strict check, and every write goes through them. A record the lenient EMBED
+  CSV import read (a rectangle past the edge, with no area, or with its
+  corners out of order) is held and written back unchanged until it is
+  edited. `Geometry::clamped` rounds a geometry and then moves every
+  position outside its image onto the nearest edge, and reports which of
+  the two it did; it is how an edit brings such a record inside its image.
+- **Coordinates** are corner-origin and continuous in the stored pixel grid,
+  `x` the column and `y` the row, valid over `[0, columns]` by `[0, rows]`,
+  quantized to 1/1000 px. Every comparison a validation makes is on quantized
+  values.
+- **Numbers are written one way.** A whole number has no fraction (`340`,
+  never `340.0` or `-0.0`), and a geometry number is written quantized, so a
+  Rust writer and a JavaScript writer produce the same text.
+- **Frame lists are kept as written.** A frame set holds the frames sorted
+  and distinct in `set`, and beside it the list an import read when that
+  differs (`as_written`), so an unedited EMBED row writes back the list it
+  was read from. An explicit list that names every frame is not `"all"`.
+- **Unknown members survive where a type keeps them.** The document, the
+  schema and its classes, fields and options, a file and its `space`, a
+  layer and its `source`, an annotation and a label keep members this
+  version does not know and write them back. A geometry, a frame set, a
+  code, a spacing entry, an operation, its envelope and its patches do not:
+  an unknown member there is ignored when read. A label target with one is
+  refused. Within a document major version members are only added; a new
+  geometry type, operation or enum value is a new major version.
+- **Each member is written once.** A field writes its own members and its
+  type's members from the field, and leaves out an unknown member with one
+  of those names, so a field whose type was changed in code still names
+  nothing twice. A member the model names is refused when the text read
+  holds it twice. A repeated key inside a map whose keys are data
+  (`attributes`, `extensions`, a mask's frames and tiles, the unknown
+  members) is not: the last one is kept.
+- **Absent is left out.** An optional member is not written when it is
+  absent, and `null` is read as absent: a record read with `"score": null`
+  or `"derived_from": null` is written back without the member. The members
+  written as `null` are a file's identifiers, digests and `frame_source`, a
+  layer's `color`, a document's `schema`, and an operation's `base_rev`,
+  `before` and `after`.
+- **Ids.** Record and operation ids are UUIDv7. Layer ids and schema ids are
+  1 to 64 characters of `A-Z a-z 0-9 . - _`.
+- **Queue keys.** `Op::queue_keys` gives what a client orders an operation
+  by: the file key for annotation operations and for labels on a file or
+  frame, the label target's canonical id (`patient:`, `study:`, `series:`,
+  `folder:<root>/<path>`) otherwise, and the layer id for layer operations.
+- **Bounded input.** Every parser and validator returns an error and never
+  panics. Reading refuses text longer than its bound (256 MiB for a
+  document, 16 MiB for an operation envelope) before parsing it, and within
+  that bound builds every list the text holds. A validation compares each
+  list and string with its constant in `limits` before visiting its items
+  and reports at most 32 violations. Its work is linear in the size of the
+  value plus what it indexes of the schema: the first lookup of a field or
+  of a class in a call builds the map from id to item for the whole field
+  list or class list, and the first check against one field's options or
+  target kinds, or one class's attributes or geometry types, builds a set
+  for that field or class alone. Each is built at most once per call.
+- **An operation is at most 16 MiB of text.** Create, delete and restore
+  carry the whole annotation, mask included, so a mask of more tiles than
+  fit in one envelope cannot travel as one of them: about 2,000 tiles at the
+  longest payload, an area near 2,900 by 2,900 pixels, where a mask may hold
+  262,144. A full-frame mask at depth 8 on a large image is past it.
+- **Redaction boxes are not part of the model.** They stay in
+  `src/redactions.rs`, outside the model, its operations and every export.
+
+The fixtures under `crates/dcmview-annotation/tests/fixtures/` pin the wire
+format: `document.json` uses every member, and `operations.json` holds one
+envelope per operation with its queue keys. They are written by hand; a new
+member is added to them in the change that adds it.
+
+`cargo run -p dcmview-annotation --example generate_annotation_model`
+rewrites the generated TypeScript and JSON Schema, and `--check` fails when
+either is stale. The crate's tests make the same comparison, so the `core`
+profile catches drift; the frontend type check compiles the generated
+TypeScript.
+
 ## Lifecycle And Discovery Ownership
 
 Local startup follows a strict order:
@@ -1029,6 +1154,11 @@ installation and VS Code Electron integration can also use network/cache state;
 
 ### What Each Layer Covers
 
+- The annotation model's tests (`crates/dcmview-annotation/tests/`) go
+  through its public API only: the two hand-written fixtures round-trip
+  unchanged, table rows break one rule each and name the violation code
+  expected, hostile and oversized input must come back as an error, and the
+  committed TypeScript and JSON Schema must equal what the model renders.
 - Discovery lifecycle tests drive the real loader over copies of committed
   fixtures for completion, cancellation, annotation failure, no-files, and
   all-filtered cases.
@@ -1164,6 +1294,10 @@ Not current correctness blockers:
    register its route, regenerate the checked-in TypeScript, and add a wrapper
    in `frontend/src/api.ts`; the runtime contract test covers it through
    `endpoints::ALL`.
+5. When adding a member to an annotation model type, make it optional on
+   read, add it to `tests/fixtures/document.json` or `operations.json`, and
+   regenerate the TypeScript and JSON Schema in the same change. A new
+   violation code is added at the end of `ViolationCode`.
 
 ## Maintainer Invariants
 
@@ -1183,6 +1317,11 @@ Not current correctness blockers:
 - Treat `src/api/contracts.rs` plus its generated TypeScript as one contract.
 - Keep `crates/dcmview-protocol` free of viewer, server and DICOM
   dependencies, and only add fields to its types.
+- Keep `crates/dcmview-annotation` a pure model: no viewer, server, DICOM or
+  pixel-pipeline dependency, no filesystem or network access, no state. Raise
+  `KEY_RULES` with any change to file-key syntax or derivation. Do not lower
+  a bound in `limits`.
+- Keep redaction boxes out of the annotation model.
 - Add endpoint fetches through `frontend/src/api.ts`.
 - Use generated synthetic fixtures for integration coverage; never commit PHI.
 - Run the narrow profile while iterating, then the profile required by the

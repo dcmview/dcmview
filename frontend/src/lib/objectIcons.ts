@@ -11,9 +11,11 @@ const REPORT_KINDS = new Set([
 	"waveform",
 ]);
 
-/** The line icon that names a file's DICOM object kind in the explorer. */
+/** The line icon that names a file's object kind in the explorer. */
 export function fileIcon(file: Pick<FileSummary, "object_kind" | "modality">): IconName {
 	switch (file.object_kind) {
+		case "image":
+			return "image";
 		case "whole_slide_microscopy":
 			return "wsi";
 		case "segmentation":

@@ -32,6 +32,7 @@
 		selectWindowingPipeline,
 		validateRenderableRawFrame,
 	} from "./rawWindowing";
+	import { unsupportedImageReason } from "./rasterSupport";
 	import { trackForegroundRequest } from "./requestIndicator";
 	import type { NavigationFrameRef } from "./seriesNavigation";
 	import type { ActiveTool } from "./viewerTools";
@@ -104,7 +105,7 @@
 	type PipelineMode = "cine" | "diagnostic_wl" | "server_wl" | "overlay";
 
 	let {
-		activeFile,
+		activeFile: openFile,
 		currentFrame,
 		windowCenter,
 		windowWidth,
@@ -157,6 +158,12 @@
 		/** A presentation state's annotations drawn over the displayed frame; ignored under a SEG overlay. */
 		graphicAnnotation?: GraphicAnnotationSelection | null;
 	} = $props();
+
+	// The guard for a raster image file the server cannot decode: it is
+	// viewed as a file without pixels, so no frame, value mapping, probe or
+	// layer of it is requested and no tool acts on it.
+	const unsupportedImage = $derived(unsupportedImageReason(openFile));
+	const activeFile = $derived(unsupportedImage ? { ...openFile, has_pixels: false } : openFile);
 
 	let loading = $state(false);
 	let loadError = $state<string | null>(null);
@@ -920,7 +927,7 @@
 	// Display PNGs contain no raw headers. Read just the polarity tag when a
 	// mapped legend needs it, rather than downloading a frame's samples.
 	$effect(() => {
-		if (!resolvedWindow.unit || pipelineMode === "diagnostic_wl") return;
+		if (!activeFile.has_pixels || !resolvedWindow.unit || pipelineMode === "diagnostic_wl") return;
 		const fileIndex = activeFile.index;
 		if (untrack(() => displayPhotometric?.fileIndex) === fileIndex) return;
 		const controller = new AbortController();
@@ -1366,6 +1373,11 @@
 >
 	{#if !activeFile}
 		<div class="placeholder">No file selected</div>
+	{:else if unsupportedImage}
+		<div class="placeholder unsupported-image" role="status">
+			<strong>This image cannot be displayed yet</strong>
+			<span>{unsupportedImage}</span>
+		</div>
 	{:else if !activeFile.has_pixels}
 		<div class="placeholder">No pixel data</div>
 	{:else if loadError}
@@ -1560,6 +1572,20 @@
 	.placeholder {
 		color: var(--ink-muted);
 		font: var(--t-ui);
+	}
+
+	.unsupported-image {
+		display: grid;
+		justify-items: center;
+		gap: 4px;
+		max-width: 36ch;
+		padding: 0 16px;
+		text-align: center;
+	}
+
+	.unsupported-image strong {
+		color: var(--text);
+		font: var(--t-title);
 	}
 
 	.frame-request-indicator {

@@ -1,0 +1,602 @@
+[
+  {
+    "name": "create_annotation",
+    "envelope": {
+      "op_id": "0199c0de-0000-7000-8000-0000000003e8",
+      "actor": "user:alice",
+      "ts": "2026-09-29T21:06:02.004Z",
+      "op": {
+        "type": "create_annotation",
+        "annotation": {
+          "id": "0199c0de-0000-7000-8000-000000000032",
+          "file": "sop:1.2.826.0.1.3680043.8.498.1",
+          "frames": "all",
+          "layer": "L-01",
+          "class": "clip",
+          "geometry": {
+            "type": "rect",
+            "x0": 0,
+            "y0": 0,
+            "x1": 240,
+            "y1": 160
+          },
+          "attributes": {
+            "clip_shape": "coil"
+          },
+          "extensions": {},
+          "rev": 1,
+          "created_by": "user:alice",
+          "created_at": "2026-09-29T21:04:11.120Z",
+          "modified_by": "user:alice",
+          "modified_at": "2026-09-29T21:04:11.120Z"
+        }
+      }
+    },
+    "queue_keys": [
+      "sop:1.2.826.0.1.3680043.8.498.1"
+    ]
+  },
+  {
+    "name": "update_annotation",
+    "envelope": {
+      "op_id": "0199c0de-0000-7000-8000-0000000003e9",
+      "actor": "user:alice",
+      "ts": "2026-09-29T21:06:02.004Z",
+      "op": {
+        "type": "update_annotation",
+        "id": "0199c0de-0000-7000-8000-000000000001",
+        "file": "sop:1.2.826.0.1.3680043.8.498.1",
+        "base_rev": 4,
+        "before": {
+          "geometry": {
+            "type": "rect",
+            "x0": 30,
+            "y0": 20,
+            "x1": 90,
+            "y1": 60
+          }
+        },
+        "after": {
+          "geometry": {
+            "type": "rect",
+            "x0": 31.5,
+            "y0": 20,
+            "x1": 91.5,
+            "y1": 60
+          }
+        }
+      }
+    },
+    "queue_keys": [
+      "sop:1.2.826.0.1.3680043.8.498.1"
+    ]
+  },
+  {
+    "name": "update_annotation_every_member",
+    "envelope": {
+      "op_id": "0199c0de-0000-7000-8000-0000000003ea",
+      "actor": "user:alice",
+      "ts": "2026-09-29T21:06:02.004Z",
+      "op": {
+        "type": "update_annotation",
+        "id": "0199c0de-0000-7000-8000-000000000002",
+        "file": "sop:1.2.826.0.1.3680043.8.498.2",
+        "base_rev": 1,
+        "before": {
+          "geometry": {
+            "type": "rect",
+            "x0": 20,
+            "y0": 10,
+            "x1": 80,
+            "y1": 50
+          },
+          "class": "roi",
+          "attributes": {},
+          "frames": {
+            "set": [
+              0,
+              2
+            ],
+            "as_written": [
+              2,
+              0,
+              0
+            ]
+          },
+          "layer": "L-import"
+        },
+        "after": {
+          "geometry": {
+            "type": "ellipse",
+            "cx": 50,
+            "cy": 30,
+            "rx": 30,
+            "ry": 20,
+            "angle": 0
+          },
+          "class": "mass",
+          "attributes": {},
+          "frames": {
+            "set": [
+              1
+            ]
+          },
+          "layer": "L-01"
+        }
+      }
+    },
+    "queue_keys": [
+      "sop:1.2.826.0.1.3680043.8.498.2"
+    ]
+  },
+  {
+    "name": "delete_annotation",
+    "envelope": {
+      "op_id": "0199c0de-0000-7000-8000-0000000003eb",
+      "actor": "user:alice",
+      "ts": "2026-09-29T21:06:02.004Z",
+      "op": {
+        "type": "delete_annotation",
+        "id": "0199c0de-0000-7000-8000-000000000003",
+        "base_rev": 1,
+        "snapshot": {
+          "id": "0199c0de-0000-7000-8000-000000000003",
+          "file": "sop:1.2.826.0.1.3680043.8.498.1",
+          "frames": "all",
+          "layer": "L-01",
+          "class": "clip",
+          "geometry": {
+            "type": "point",
+            "x": 120.5,
+            "y": 80.5
+          },
+          "attributes": {},
+          "extensions": {},
+          "rev": 1,
+          "created_by": "user:alice",
+          "created_at": "2026-09-29T21:04:11.120Z",
+          "modified_by": "user:alice",
+          "modified_at": "2026-09-29T21:04:11.120Z"
+        }
+      }
+    },
+    "queue_keys": [
+      "sop:1.2.826.0.1.3680043.8.498.1"
+    ]
+  },
+  {
+    "name": "restore_annotation",
+    "envelope": {
+      "op_id": "0199c0de-0000-7000-8000-0000000003ec",
+      "actor": "user:alice",
+      "ts": "2026-09-29T21:06:02.004Z",
+      "op": {
+        "type": "restore_annotation",
+        "id": "0199c0de-0000-7000-8000-000000000003",
+        "base_rev": 2,
+        "snapshot": {
+          "id": "0199c0de-0000-7000-8000-000000000003",
+          "file": "sop:1.2.826.0.1.3680043.8.498.1",
+          "frames": "all",
+          "layer": "L-01",
+          "class": "clip",
+          "geometry": {
+            "type": "point",
+            "x": 120.5,
+            "y": 80.5
+          },
+          "attributes": {},
+          "extensions": {},
+          "rev": 1,
+          "created_by": "user:alice",
+          "created_at": "2026-09-29T21:04:11.120Z",
+          "modified_by": "user:alice",
+          "modified_at": "2026-09-29T21:04:11.120Z"
+        }
+      }
+    },
+    "queue_keys": [
+      "sop:1.2.826.0.1.3680043.8.498.1"
+    ]
+  },
+  {
+    "name": "mask_tiles",
+    "envelope": {
+      "op_id": "0199c0de-0000-7000-8000-0000000003ed",
+      "actor": "user:alice",
+      "ts": "2026-09-29T21:06:02.004Z",
+      "op": {
+        "type": "mask_tiles",
+        "id": "0199c0de-0000-7000-8000-000000000008",
+        "file": "sop:1.2.826.0.1.3680043.8.498.2",
+        "base_rev": 1,
+        "frame": 0,
+        "tiles": [
+          {
+            "tx": 1,
+            "ty": 0,
+            "before": null,
+            "after": "AAAA"
+          },
+          {
+            "tx": 3,
+            "ty": 2,
+            "before": "AAAA",
+            "after": null
+          }
+        ]
+      }
+    },
+    "queue_keys": [
+      "sop:1.2.826.0.1.3680043.8.498.2"
+    ]
+  },
+  {
+    "name": "set_label_create",
+    "envelope": {
+      "op_id": "0199c0de-0000-7000-8000-0000000003ee",
+      "actor": "user:alice",
+      "ts": "2026-09-29T21:06:02.004Z",
+      "op": {
+        "type": "set_label",
+        "id": "0199c0de-0000-7000-8000-000000000078",
+        "base_rev": null,
+        "target": {
+          "series": "1.2.826.0.1.3680043.8.498.12"
+        },
+        "field": "image_quality",
+        "layer": "L-01",
+        "before": null,
+        "after": "poor"
+      }
+    },
+    "queue_keys": [
+      "series:1.2.826.0.1.3680043.8.498.12"
+    ]
+  },
+  {
+    "name": "set_label_clear",
+    "envelope": {
+      "op_id": "0199c0de-0000-7000-8000-0000000003ef",
+      "actor": "user:alice",
+      "ts": "2026-09-29T21:06:02.004Z",
+      "op": {
+        "type": "set_label",
+        "id": "0199c0de-0000-7000-8000-000000000068",
+        "base_rev": 1,
+        "target": {
+          "file": "sop:1.2.826.0.1.3680043.8.498.1"
+        },
+        "field": "note",
+        "layer": "L-01",
+        "before": "Dense tissue; compare with prior.",
+        "after": null
+      }
+    },
+    "queue_keys": [
+      "sop:1.2.826.0.1.3680043.8.498.1"
+    ]
+  },
+  {
+    "name": "set_label_frame",
+    "envelope": {
+      "op_id": "0199c0de-0000-7000-8000-0000000003f0",
+      "actor": "user:alice",
+      "ts": "2026-09-29T21:06:02.004Z",
+      "op": {
+        "type": "set_label",
+        "id": "0199c0de-0000-7000-8000-000000000069",
+        "base_rev": 1,
+        "target": {
+          "frame": "sop:1.2.826.0.1.3680043.8.498.2",
+          "index": 2
+        },
+        "field": "flagged",
+        "layer": "L-01",
+        "before": false,
+        "after": true
+      }
+    },
+    "queue_keys": [
+      "sop:1.2.826.0.1.3680043.8.498.2"
+    ]
+  },
+  {
+    "name": "set_label_patient",
+    "envelope": {
+      "op_id": "0199c0de-0000-7000-8000-0000000003f1",
+      "actor": "user:alice",
+      "ts": "2026-09-29T21:06:02.004Z",
+      "op": {
+        "type": "set_label",
+        "id": "0199c0de-0000-7000-8000-000000000065",
+        "base_rev": 1,
+        "target": {
+          "patient": "P1"
+        },
+        "field": "flagged",
+        "layer": "L-01",
+        "before": true,
+        "after": false
+      }
+    },
+    "queue_keys": [
+      "patient:P1"
+    ]
+  },
+  {
+    "name": "set_label_study",
+    "envelope": {
+      "op_id": "0199c0de-0000-7000-8000-0000000003f2",
+      "actor": "user:alice",
+      "ts": "2026-09-29T21:06:02.004Z",
+      "op": {
+        "type": "set_label",
+        "id": "0199c0de-0000-7000-8000-000000000066",
+        "base_rev": 1,
+        "target": {
+          "study": "1.2.826.0.1.3680043.8.498.10"
+        },
+        "field": "density",
+        "layer": "L-01",
+        "before": 30,
+        "after": 45
+      }
+    },
+    "queue_keys": [
+      "study:1.2.826.0.1.3680043.8.498.10"
+    ]
+  },
+  {
+    "name": "set_label_folder",
+    "envelope": {
+      "op_id": "0199c0de-0000-7000-8000-0000000003f3",
+      "actor": "user:alice",
+      "ts": "2026-09-29T21:06:02.004Z",
+      "op": {
+        "type": "set_label",
+        "id": "0199c0de-0000-7000-8000-00000000006a",
+        "base_rev": 1,
+        "target": {
+          "folder": "cohort_a/patient_0001",
+          "root": "0"
+        },
+        "field": "flagged",
+        "layer": "L-01",
+        "before": true,
+        "after": false
+      }
+    },
+    "queue_keys": [
+      "folder:0/cohort_a/patient_0001"
+    ]
+  },
+  {
+    "name": "set_label_multi",
+    "envelope": {
+      "op_id": "0199c0de-0000-7000-8000-0000000003f4",
+      "actor": "user:alice",
+      "ts": "2026-09-29T21:06:02.004Z",
+      "op": {
+        "type": "set_label",
+        "id": "0199c0de-0000-7000-8000-00000000006b",
+        "base_rev": 1,
+        "target": {
+          "file": "b3:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        },
+        "field": "findings",
+        "layer": "L-model",
+        "before": [
+          "calc",
+          "mass"
+        ],
+        "after": []
+      }
+    },
+    "queue_keys": [
+      "b3:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    ]
+  },
+  {
+    "name": "create_layer",
+    "envelope": {
+      "op_id": "0199c0de-0000-7000-8000-0000000003f5",
+      "actor": "user:alice",
+      "ts": "2026-09-29T21:06:02.004Z",
+      "op": {
+        "type": "create_layer",
+        "layer": {
+          "id": "L-02",
+          "name": "Second pass",
+          "kind": "user",
+          "exclusive_masks": false,
+          "color": "#00AA88",
+          "readonly": false,
+          "source": {
+            "author": "user:alice"
+          },
+          "rev": 1
+        }
+      }
+    },
+    "queue_keys": [
+      "L-02"
+    ]
+  },
+  {
+    "name": "update_layer",
+    "envelope": {
+      "op_id": "0199c0de-0000-7000-8000-0000000003f6",
+      "actor": "user:alice",
+      "ts": "2026-09-29T21:06:02.004Z",
+      "op": {
+        "type": "update_layer",
+        "id": "L-import",
+        "base_rev": 1,
+        "before": {
+          "name": "EMBED import",
+          "color": "#3366CC",
+          "exclusive_masks": false,
+          "readonly": false
+        },
+        "after": {
+          "name": "Imported",
+          "color": null,
+          "exclusive_masks": true,
+          "readonly": true
+        }
+      }
+    },
+    "queue_keys": [
+      "L-import"
+    ]
+  },
+  {
+    "name": "delete_layer",
+    "envelope": {
+      "op_id": "0199c0de-0000-7000-8000-0000000003f7",
+      "actor": "user:alice",
+      "ts": "2026-09-29T21:06:02.004Z",
+      "op": {
+        "type": "delete_layer",
+        "id": "L-review",
+        "base_rev": 1,
+        "snapshot": {
+          "id": "L-review",
+          "name": "Bob (review)",
+          "kind": "review",
+          "exclusive_masks": false,
+          "color": null,
+          "readonly": true,
+          "source": {},
+          "rev": 1
+        }
+      }
+    },
+    "queue_keys": [
+      "L-review"
+    ]
+  },
+  {
+    "name": "batch",
+    "envelope": {
+      "op_id": "0199c0de-0000-7000-8000-0000000003f8",
+      "actor": "user:alice",
+      "ts": "2026-09-29T21:06:02.004Z",
+      "op": {
+        "type": "batch",
+        "ops": [
+          {
+            "type": "set_label",
+            "id": "0199c0de-0000-7000-8000-000000000066",
+            "base_rev": 1,
+            "target": {
+              "study": "1.2.826.0.1.3680043.8.498.10"
+            },
+            "field": "density",
+            "layer": "L-01",
+            "before": 30,
+            "after": 45
+          },
+          {
+            "type": "update_annotation",
+            "id": "0199c0de-0000-7000-8000-000000000001",
+            "file": "sop:1.2.826.0.1.3680043.8.498.1",
+            "base_rev": 4,
+            "before": {
+              "geometry": {
+                "type": "rect",
+                "x0": 30,
+                "y0": 20,
+                "x1": 90,
+                "y1": 60
+              }
+            },
+            "after": {
+              "geometry": {
+                "type": "rect",
+                "x0": 31.5,
+                "y0": 20,
+                "x1": 91.5,
+                "y1": 60
+              }
+            }
+          },
+          {
+            "type": "create_annotation",
+            "annotation": {
+              "id": "0199c0de-0000-7000-8000-000000000033",
+              "file": "sop:1.2.826.0.1.3680043.8.498.2",
+              "frames": {
+                "set": [
+                  1
+                ]
+              },
+              "layer": "L-01",
+              "class": "mass",
+              "geometry": {
+                "type": "point",
+                "x": 1,
+                "y": 1
+              },
+              "attributes": {},
+              "extensions": {},
+              "rev": 1,
+              "created_by": "user:alice",
+              "created_at": "2026-09-29T21:04:11.120Z",
+              "modified_by": "user:alice",
+              "modified_at": "2026-09-29T21:04:11.120Z"
+            }
+          },
+          {
+            "type": "set_label",
+            "id": "0199c0de-0000-7000-8000-000000000068",
+            "base_rev": 1,
+            "target": {
+              "file": "sop:1.2.826.0.1.3680043.8.498.1"
+            },
+            "field": "note",
+            "layer": "L-01",
+            "before": "Dense tissue; compare with prior.",
+            "after": "Checked."
+          },
+          {
+            "type": "update_layer",
+            "id": "L-import",
+            "base_rev": 1,
+            "before": {
+              "name": "EMBED import",
+              "color": "#3366CC",
+              "exclusive_masks": false,
+              "readonly": false
+            },
+            "after": {
+              "name": "Imported",
+              "color": null,
+              "exclusive_masks": true,
+              "readonly": true
+            }
+          },
+          {
+            "type": "set_label",
+            "id": "0199c0de-0000-7000-8000-000000000066",
+            "base_rev": 2,
+            "target": {
+              "study": "1.2.826.0.1.3680043.8.498.10"
+            },
+            "field": "density",
+            "layer": "L-01",
+            "before": 45,
+            "after": 50
+          }
+        ]
+      }
+    },
+    "queue_keys": [
+      "study:1.2.826.0.1.3680043.8.498.10",
+      "sop:1.2.826.0.1.3680043.8.498.1",
+      "sop:1.2.826.0.1.3680043.8.498.2",
+      "L-import"
+    ]
+  }
+]

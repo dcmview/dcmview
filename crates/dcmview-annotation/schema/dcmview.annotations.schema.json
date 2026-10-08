@@ -1,0 +1,1262 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Document",
+  "description": "One self-contained set of model data.\n\n```json\n{ \"format\": \"dcmview.annotations\", \"version\": \"1.0\",\n  \"schema\": { ... }, \"files\": [ ... ], \"layers\": [ ... ],\n  \"annotations\": [ ... ], \"labels\": [ ... ] }\n```\n\n`schema` is `null` for a session without one, which means\n[`LabelSchema::implicit`]. A deleted record is not in a document.\n\nMembers this version does not know are kept and written back unchanged\non the document, on the schema and each of its classes, fields and\noptions, and on every file (and its `space`), layer (and its `source`),\nannotation and label. Inside a geometry, a frame set, a code or a spacing\nentry they are ignored when read, and a label target with one is refused.",
+  "type": "object",
+  "properties": {
+    "annotations": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Annotation"
+      }
+    },
+    "extensions": {
+      "description": "Adapter-specific data, keyed by adapter id.",
+      "type": "object",
+      "additionalProperties": true,
+      "default": {}
+    },
+    "files": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/FileRef"
+      }
+    },
+    "format": {
+      "type": "string"
+    },
+    "labels": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Label"
+      }
+    },
+    "layers": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Layer"
+      }
+    },
+    "schema": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LabelSchema"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "version": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": true,
+  "required": [
+    "format",
+    "version"
+  ],
+  "$defs": {
+    "AllFrames": {
+      "type": "string",
+      "enum": [
+        "all"
+      ]
+    },
+    "Annotation": {
+      "description": "One annotation: a geometry of one class, on some frames of one file, in\none layer (`docs/design/annotation-model.md` 6.4).\n\n```json\n{ \"id\": \"0199...\", \"file\": \"sop:1.2.840.1\", \"frames\": \"all\",\n  \"layer\": \"L-01\", \"class\": \"clip\",\n  \"geometry\": { \"type\": \"rect\", \"x0\": 340, \"y0\": 120, \"x1\": 430, \"y1\": 220 },\n  \"attributes\": { \"clip_shape\": \"ribbon\" },\n  \"rev\": 1, \"created_by\": \"user:alice\", \"created_at\": \"2026-09-29T21:04:11.120Z\",\n  \"modified_by\": \"user:alice\", \"modified_at\": \"2026-09-29T21:04:11.120Z\" }\n```\n\nAttribute values live on the annotation because they share its lifecycle:\ndeleting the shape deletes them, in one undo step.",
+      "type": "object",
+      "properties": {
+        "attributes": {
+          "description": "Values of the class's attribute fields, keyed by field id.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/LabelValue"
+          },
+          "default": {}
+        },
+        "class": {
+          "description": "The id of a class of the schema.",
+          "type": "string"
+        },
+        "created_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "created_by": {
+          "$ref": "#/$defs/Author"
+        },
+        "derived_from": {
+          "description": "Left out when absent; `null` is read as absent.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "extensions": {
+          "description": "Adapter-specific data, keyed by adapter id.",
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "file": {
+          "$ref": "#/$defs/FileKey"
+        },
+        "frames": {
+          "$ref": "#/$defs/FrameScope"
+        },
+        "geometry": {
+          "$ref": "#/$defs/Geometry"
+        },
+        "id": {
+          "description": "UUIDv7, created by the client that creates the record.",
+          "type": "string",
+          "format": "uuid"
+        },
+        "layer": {
+          "$ref": "#/$defs/LayerId"
+        },
+        "modified_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "modified_by": {
+          "$ref": "#/$defs/Author"
+        },
+        "rev": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "score": {
+          "description": "Left out when absent; `null` is read as absent.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "id",
+        "file",
+        "frames",
+        "layer",
+        "class",
+        "geometry",
+        "rev",
+        "created_by",
+        "created_at",
+        "modified_by",
+        "modified_at"
+      ]
+    },
+    "Author": {
+      "type": "string",
+      "pattern": "^(user:[^\\s]+|model:[^\\s]+@[^\\s@]+|import:[^\\s]+)$"
+    },
+    "ClassDef": {
+      "description": "What a shape can be.",
+      "type": "object",
+      "properties": {
+        "attributes": {
+          "description": "Ids of the fields an annotation of this class may carry as\nattributes.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "code": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Code"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "color": {
+          "description": "`#RRGGBB`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "deprecated": {
+          "description": "A removed class stays in the schema, marked deprecated, so records\nthat use it still render and still validate.",
+          "type": "boolean",
+          "default": false
+        },
+        "geometry": {
+          "description": "The geometry types an annotation of this class may have.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GeometryType"
+          }
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "id",
+        "name",
+        "geometry"
+      ]
+    },
+    "Code": {
+      "description": "A coded concept (coding scheme, value, meaning), which DICOM SEG and SR\nexports read. Unused otherwise.",
+      "type": "object",
+      "properties": {
+        "meaning": {
+          "type": "string"
+        },
+        "scheme": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "scheme",
+        "value",
+        "meaning"
+      ]
+    },
+    "FieldDef": {
+      "description": "One field: an attribute of a class, a label on the targets in\n`applies_to`, or both.\n\nOn the wire the field is one object: `id`, `name`, `applies_to` and\n`required`, the `type` member and the members of that field type, and any\nmember this version does not know. Each member is written once. A member\nthat belongs to another field type (`options` on a `boolean` field) is\nnot a member of this field, so it is kept and written back like any\nother unknown one.",
+      "type": "object",
+      "properties": {
+        "applies_to": {
+          "description": "The target kinds this field can label. Empty for a field that is only\nan attribute of classes.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/TargetKind"
+          }
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "required": {
+          "description": "Advisory: drives \"incomplete\" markers and a campaign's \"done\" check.\nA missing required value never makes a record invalid.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "oneOf": [
+        {
+          "description": "One option id.",
+          "type": "object",
+          "properties": {
+            "options": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/OptionDef"
+              }
+            },
+            "ordered": {
+              "description": "The option order is a scale (`docs/design/seams.md` 7).",
+              "type": "boolean",
+              "default": false
+            },
+            "type": {
+              "type": "string",
+              "const": "category"
+            }
+          },
+          "required": [
+            "type",
+            "options"
+          ]
+        },
+        {
+          "description": "A list of distinct option ids.",
+          "type": "object",
+          "properties": {
+            "options": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/OptionDef"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "multi_category"
+            }
+          },
+          "required": [
+            "type",
+            "options"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "boolean"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "integer": {
+              "description": "Only whole numbers are valid values.",
+              "type": "boolean",
+              "default": false
+            },
+            "max": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "min": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "step": {
+              "description": "A hint for the input control. Values are not checked against it.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "type": {
+              "type": "string",
+              "const": "number"
+            },
+            "unit": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "max_length": {
+              "description": "Longest value in bytes. Absent means\n[`crate::limits::MAX_TEXT_BYTES`], which also caps any larger\nnumber given here.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0
+            },
+            "type": {
+              "type": "string",
+              "const": "text"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        }
+      ],
+      "required": [
+        "id",
+        "name"
+      ],
+      "unevaluatedProperties": true
+    },
+    "FileKey": {
+      "type": "string",
+      "pattern": "^(sop:[A-Za-z0-9._-]{1,128}|b3:[0-9a-f]{64})$"
+    },
+    "FileKind": {
+      "description": "Whether a file is a DICOM instance or a raster image.",
+      "type": "string",
+      "enum": [
+        "dicom",
+        "raster"
+      ]
+    },
+    "FileRef": {
+      "description": "Everything known about one file, so that matching a stored record to a\nfile does not depend on which key won.\n\n```json\n{ \"key\": \"sop:1.2.840.113681.2863050711.1286.3688.28\", \"kind\": \"dicom\",\n  \"sop_instance_uid\": \"1.2.840.113681.2863050711.1286.3688.28\",\n  \"sop_class_uid\": \"1.2.840.10008.5.1.4.1.1.1.2\",\n  \"study_instance_uid\": \"1.2.3\", \"series_instance_uid\": \"1.2.3.4\", \"patient_id\": \"P1\",\n  \"path\": \"cohort_a/patient_0001/mg/lcc.dcm\", \"size_bytes\": 34819072, \"digest\": null,\n  \"rows\": 4096, \"columns\": 3328, \"frames\": 1, \"space\": { \"orientation\": \"stored\" },\n  \"format\": \"dicom\", \"pixel_digest\": [null], \"frame_source\": null, \"external_id\": null }\n```\n\n- `path` is relative to a root when one is known (written with `/`), and\n  absolute otherwise. An absolute path is the resolved one: owner\n  decision, EMBED parity amendment of 2026-10-05, \"Paths through a\n  symlink are resolved on export.\" This crate never touches the\n  filesystem; whoever fills `path` resolves it.\n- `digest` is the whole-file digest when known: `b3:<64 lowercase hex>`\n  (BLAKE3) or `sha256:<64 lowercase hex>`, over the file's bytes exactly\n  as stored.\n- `rows`, `columns` and `frames` are a guard: a match that disagrees on\n  them is refused. They are 0 for a file without pixels.\n- `pixel_digest` has one entry per frame, `px:<64 lowercase hex>` or\n  `null` for a frame not decoded yet; it may be empty when none is known.\n- `frame_source` is the IFD index of each frame of a multi-page TIFF.\n- `spacing` has one entry per frame, `null` where a frame has none.\n\nInvariants, checked by [`FileRef::validate`] (`bad_file_ref` unless\nanother code is named): `rows` and `columns` are at most 1,048,576\n([`crate::limits::MAX_IMAGE_DIMENSION`]); `digest` and every pixel digest\nhave the forms above (`bad_digest`); `pixel_digest`, `frame_source` and\n`spacing`, when not empty or absent, have exactly `frames` entries;\n`exif_orientation`, when present, is 1 to 8; `path` is 1 to 4,096 bytes\n([`crate::limits::MAX_PATH_BYTES`]) and the UIDs, patient id, format and\nexternal id at most 256 bytes ([`crate::limits::MAX_NAME_BYTES`])\n(`too_long`); a `sop:` key names this file's `sop_instance_uid`; a spacing\nis finite and positive.",
+      "type": "object",
+      "properties": {
+        "columns": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "digest": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "external_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "format": {
+          "description": "The detected format, by content: `dicom`, `png`, `jpeg`, `tiff`, ...",
+          "type": "string"
+        },
+        "frame_source": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "default": null,
+          "items": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          }
+        },
+        "frames": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "key": {
+          "$ref": "#/$defs/FileKey"
+        },
+        "kind": {
+          "$ref": "#/$defs/FileKind"
+        },
+        "path": {
+          "type": "string"
+        },
+        "patient_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "pixel_digest": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "rows": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "series_instance_uid": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "size_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "sop_class_uid": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "sop_instance_uid": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "space": {
+          "$ref": "#/$defs/Space",
+          "default": {
+            "orientation": "stored"
+          }
+        },
+        "spacing": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/FrameSpacing"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "study_instance_uid": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "key",
+        "kind",
+        "path",
+        "size_bytes",
+        "rows",
+        "columns",
+        "frames",
+        "format"
+      ]
+    },
+    "FrameScope": {
+      "description": "The string `\"all\"` for every frame of the file, or an explicit set.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AllFrames"
+        },
+        {
+          "$ref": "#/$defs/FrameSet"
+        }
+      ]
+    },
+    "FrameSet": {
+      "description": "An explicit set of frames.\n\nInvariants, checked by [`FrameScope::validate`] and not by\ndeserialization:\n\n- `set` is not empty, strictly ascending (so sorted and without repeats),\n  holds at most 65,536 indices ([`crate::limits::MAX_FRAMES_IN_SET`]), and\n  every index is below the file's frame count.\n- `as_written`, when present, holds at most 65,536 indices and names\n  exactly the frames in `set`: sorted and with repeats removed it equals\n  `set`.\n\n# The list as written\n\nOwner decision, EMBED parity amendment of 2026-10-05: \"Frame lists are\nkept as written. A per-ROI frame list that is unsorted or repeats a frame\nround-trips through EMBED import and export unchanged.\" `as_written` is\nthat list. It is present only when the list an import read differs from\n`set` (`[2, 0, 0]` beside `[0, 2]`), so a consumer that reads `set` alone\nis always right about which frames are meant. An edit of the annotation's\nframes replaces the whole scope and so drops it.",
+      "type": "object",
+      "properties": {
+        "as_written": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          }
+        },
+        "set": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          }
+        }
+      },
+      "required": [
+        "set"
+      ]
+    },
+    "FrameSpacing": {
+      "description": "One frame's pixel spacing in millimetres, with the name of the DICOM\nattribute it was read from (`docs/design/seams.md` 11).",
+      "type": "object",
+      "properties": {
+        "col_mm": {
+          "type": "number",
+          "format": "double"
+        },
+        "row_mm": {
+          "type": "number",
+          "format": "double"
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "row_mm",
+        "col_mm",
+        "source"
+      ]
+    },
+    "Geometry": {
+      "description": "The shape of one annotation (`docs/design/annotation-model.md` 3.1).\n\nSerialized as an object whose `type` member names the variant, for example\n`{ \"type\": \"rect\", \"x0\": 340, \"y0\": 120, \"x1\": 430, \"y1\": 220 }`.\n\nInvariants, checked by [`Geometry::validate`] and not by deserialization:\n\n| Type | Invariant |\n|---|---|\n| all vector types | every number is finite; every position lies in `[0, columns]` by `[0, rows]` |\n| `polyline` | 2 to 100,000 points |\n| `polygon` | 3 to 100,000 points; implicitly closed; self-intersection is not checked |\n| `rect` | `x0 < x1` and `y0 < y1` |\n| `ellipse` | `rx > 0`, `ry > 0`, `0 <= angle < 180`, and its axis-aligned bounding box lies in the image |\n| `mask` | see [`Mask`] |\n\nThe model is x first. EMBED's `[ymin, xmin, ymax, xmax]` and COCO's\n`[x, y, w, h]` are reordered by their adapters.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "point"
+            },
+            "x": {
+              "type": "number",
+              "format": "double"
+            },
+            "y": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          "required": [
+            "type",
+            "x",
+            "y"
+          ]
+        },
+        {
+          "description": "A segment from `points[0]` to `points[1]`.",
+          "type": "object",
+          "properties": {
+            "points": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Point"
+              },
+              "maxItems": 2,
+              "minItems": 2
+            },
+            "type": {
+              "type": "string",
+              "const": "line"
+            }
+          },
+          "required": [
+            "type",
+            "points"
+          ]
+        },
+        {
+          "description": "An open chain of segments.",
+          "type": "object",
+          "properties": {
+            "points": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Point"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "polyline"
+            }
+          },
+          "required": [
+            "type",
+            "points"
+          ]
+        },
+        {
+          "description": "A closed outline; the last point joins the first.",
+          "type": "object",
+          "properties": {
+            "points": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Point"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "polygon"
+            }
+          },
+          "required": [
+            "type",
+            "points"
+          ]
+        },
+        {
+          "description": "An axis-aligned rectangle from the corner `(x0, y0)` to `(x1, y1)`.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "rect"
+            },
+            "x0": {
+              "type": "number",
+              "format": "double"
+            },
+            "x1": {
+              "type": "number",
+              "format": "double"
+            },
+            "y0": {
+              "type": "number",
+              "format": "double"
+            },
+            "y1": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          "required": [
+            "type",
+            "x0",
+            "y0",
+            "x1",
+            "y1"
+          ]
+        },
+        {
+          "description": "An ellipse centred on `(cx, cy)` with radius `rx` along its first axis\nand `ry` along its second. `angle` is the rotation of the first axis\nfrom the x axis towards the y axis, in degrees; the tools of the first\nrelease always write 0. A circle is an ellipse with `rx == ry`.",
+          "type": "object",
+          "properties": {
+            "angle": {
+              "type": "number",
+              "format": "double"
+            },
+            "cx": {
+              "type": "number",
+              "format": "double"
+            },
+            "cy": {
+              "type": "number",
+              "format": "double"
+            },
+            "rx": {
+              "type": "number",
+              "format": "double"
+            },
+            "ry": {
+              "type": "number",
+              "format": "double"
+            },
+            "type": {
+              "type": "string",
+              "const": "ellipse"
+            }
+          },
+          "required": [
+            "type",
+            "cx",
+            "cy",
+            "rx",
+            "ry",
+            "angle"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "mask"
+            }
+          },
+          "$ref": "#/$defs/Mask",
+          "required": [
+            "type"
+          ]
+        }
+      ]
+    },
+    "GeometryType": {
+      "description": "The name of a geometry type, as a class lists the types it allows and as\nthe `type` member of a serialized [`Geometry`].",
+      "type": "string",
+      "enum": [
+        "point",
+        "line",
+        "polyline",
+        "polygon",
+        "rect",
+        "ellipse",
+        "mask"
+      ]
+    },
+    "Label": {
+      "description": "One label: the value of one field on one target, in one layer.\n\nThere is one label per target, field, layer and `created_by`; a frame\ntarget's index is part of the target.\n\n```json\n{ \"id\": \"0199...\", \"target\": { \"series\": \"1.2.3\" }, \"field\": \"image_quality\",\n  \"value\": \"good\", \"layer\": \"L-01\", \"rev\": 1,\n  \"created_by\": \"user:alice\", \"created_at\": \"2026-09-29T21:04:11.120Z\",\n  \"modified_by\": \"user:alice\", \"modified_at\": \"2026-09-29T21:04:11.120Z\" }\n```",
+      "type": "object",
+      "properties": {
+        "created_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "created_by": {
+          "$ref": "#/$defs/Author"
+        },
+        "derived_from": {
+          "description": "Left out when absent; `null` is read as absent.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "extensions": {
+          "description": "Adapter-specific data, keyed by adapter id.",
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "field": {
+          "description": "The id of a field of the schema.",
+          "type": "string"
+        },
+        "id": {
+          "description": "UUIDv7, created by the client on the first set.",
+          "type": "string",
+          "format": "uuid"
+        },
+        "layer": {
+          "$ref": "#/$defs/LayerId"
+        },
+        "modified_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "modified_by": {
+          "$ref": "#/$defs/Author"
+        },
+        "rev": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "score": {
+          "description": "Left out when absent; `null` is read as absent.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "target": {
+          "$ref": "#/$defs/LabelTarget"
+        },
+        "value": {
+          "$ref": "#/$defs/LabelValue"
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "id",
+        "target",
+        "field",
+        "value",
+        "layer",
+        "rev",
+        "created_by",
+        "created_at",
+        "modified_by",
+        "modified_at"
+      ]
+    },
+    "LabelSchema": {
+      "description": "A label schema. It has its own id and version, independent of the model\nversion.\n\nInvariants, checked by [`LabelSchema::validate`]:\n\n- `schema_id` and every class, field and option id is 1 to 64 characters\n  ([`crate::limits::MAX_ID_BYTES`]), each an ASCII letter, digit, `.`,\n  `-` or `_` (`bad_id`).\n- Class ids are distinct, field ids are distinct, and option ids are\n  distinct within a field (`duplicate_id`).\n- Every attribute a class lists is a field of the schema\n  (`unknown_field`).\n- A class allows at least one geometry type, and a category or\n  multi-category field has at least one option (`bad_schema`).\n- A number field's `min` is not above its `max`, and both are finite\n  (`bad_schema`).\n- A color is `#` and six hex digits (`bad_color`).\n- Names, units and code members are at most 256 bytes\n  ([`crate::limits::MAX_NAME_BYTES`], `too_long`); at most 4,096 classes,\n  fields, and options per field ([`crate::limits::MAX_SCHEMA_ITEMS`],\n  `too_many_items`).",
+      "type": "object",
+      "properties": {
+        "classes": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ClassDef"
+          }
+        },
+        "fields": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/FieldDef"
+          }
+        },
+        "schema_id": {
+          "type": "string"
+        },
+        "schema_version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "schema_id",
+        "schema_version"
+      ]
+    },
+    "LabelTarget": {
+      "description": "What a label is set on.\n\nOn the wire, an object whose first member names the kind:\n\n```json\n{ \"patient\": \"<PatientID>\" }\n{ \"study\": \"<StudyInstanceUID>\" }\n{ \"series\": \"<SeriesInstanceUID>\" }\n{ \"file\": \"<file key>\" }\n{ \"frame\": \"<file key>\", \"index\": 12 }\n{ \"folder\": \"<relative path>\", \"root\": \"<root id>\" }\n```\n\nAn object with any other member, or with the members of two kinds, is\nrefused when it is read.\n\nInvariants, checked by [`LabelTarget::validate`]:\n\n- A patient, study or series id is 1 to 256 bytes\n  ([`crate::limits::MAX_NAME_BYTES`]) and holds no control character.\n- A folder's `root` is 1 to 64 characters\n  ([`crate::limits::MAX_ID_BYTES`]), each an ASCII letter, digit, `.`,\n  `-` or `_`. Its path is relative to that root, at most 4,096 bytes\n  ([`crate::limits::MAX_PATH_BYTES`]), written with `/` between segments,\n  with no empty, `.` or `..` segment, no leading or trailing `/`, no `\\`\n  and no control character. The empty path is the root itself.",
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "patient": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "patient"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "study": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "study"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "series": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "series"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "file": {
+              "$ref": "#/$defs/FileKey"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "file"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "frame": {
+              "$ref": "#/$defs/FileKey"
+            },
+            "index": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "frame",
+            "index"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "folder": {
+              "type": "string"
+            },
+            "root": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "folder",
+            "root"
+          ]
+        }
+      ]
+    },
+    "LabelValue": {
+      "description": "The value of a label or of an attribute. Which variants a field accepts\nfollows its type: `category` takes `Text` holding an option id,\n`multi_category` takes `Many` holding distinct option ids, `boolean` takes\n`Bool`, `number` takes `Number`, and `text` takes `Text`.\n\nOn the wire the value is the bare JSON boolean, number, string or array of\nstrings. A whole number is written without a fraction (`30`, not `30.0`).",
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "number",
+          "format": "double"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "Layer": {
+      "description": "One layer. Every annotation and label belongs to exactly one, and layers\nare session-wide, not per image.\n\n```json\n{ \"id\": \"L-01\", \"name\": \"Alice\", \"kind\": \"user\", \"exclusive_masks\": false,\n  \"color\": null, \"readonly\": false, \"source\": { \"author\": \"user:alice\" }, \"rev\": 1 }\n```\n\nWhether a layer is visible, locked, or above another is view state: per\nuser and per session, never part of this record.\n\nInvariants, checked by [`Layer::validate`]: `name` is 1 to 256 bytes\n([`crate::limits::MAX_NAME_BYTES`], `too_long` or `bad_layer` when\nempty); `color`, when present, is `#` and six hex digits (`bad_color`); a\n`review` layer is read-only (`bad_layer`).",
+      "type": "object",
+      "properties": {
+        "color": {
+          "description": "`#RRGGBB`, or `null` to use each class's color.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "exclusive_masks": {
+          "description": "Painting a segment clears those pixels from every other segment of\nthe layer, which gives label-map behaviour.",
+          "type": "boolean",
+          "default": false
+        },
+        "id": {
+          "$ref": "#/$defs/LayerId"
+        },
+        "kind": {
+          "$ref": "#/$defs/LayerKind"
+        },
+        "name": {
+          "type": "string"
+        },
+        "readonly": {
+          "type": "boolean",
+          "default": false
+        },
+        "rev": {
+          "description": "Counts the layer's changes, like a record's `rev`; a layer operation's\n`base_rev` is compared with it. Assigned by the store.",
+          "type": "integer",
+          "format": "uint64",
+          "default": 0,
+          "minimum": 0
+        },
+        "source": {
+          "$ref": "#/$defs/LayerSource",
+          "default": {}
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "id",
+        "name",
+        "kind"
+      ]
+    },
+    "LayerId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._-]{1,64}$"
+    },
+    "LayerKind": {
+      "description": "What a layer holds.",
+      "oneOf": [
+        {
+          "description": "Someone's working layer.",
+          "type": "string",
+          "const": "user"
+        },
+        {
+          "description": "Records loaded from a file.",
+          "type": "string",
+          "const": "import"
+        },
+        {
+          "description": "Pre-labels or inference output.",
+          "type": "string",
+          "const": "model"
+        },
+        {
+          "description": "Another annotator's work shown to an admin. Always read-only.",
+          "type": "string",
+          "const": "review"
+        }
+      ]
+    },
+    "LayerSource": {
+      "description": "Where a layer's content comes from.",
+      "type": "object",
+      "properties": {
+        "author": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Author"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "Mask": {
+      "description": "One segment painted as sparse tiles (`docs/design/annotation-model.md`\n3.2), for example\n`{ \"type\": \"mask\", \"encoding\": \"tiles-v1\", \"tile\": 64, \"depth\": 1,\n\"frames\": { \"0\": { \"5,3\": \"<base64>\" } } }`.\n\n`frames` maps a frame index to that frame's stored tiles. The frames with\ntiles are the mask's frame set, so the `frames` member of the annotation\nthat holds a mask must be exactly that set.\n\nInvariants, checked by [`Geometry::validate`]:\n\n- `tile` is 64 and `depth` is 1 or 8 (`mask_layout`). Depth 8 is reserved\n  for model outputs; the tools write 1.\n- There is at least one frame, and no frame has an empty tile map\n  (`mask_empty`).\n- Every frame index is below the file's frame count\n  (`frame_out_of_range`).\n- Every tile starts inside the image: `tx * tile < columns` and\n  `ty * tile < rows` (`mask_tile_out_of_bounds`).\n- At most 262,144 tiles in total ([`crate::limits::MAX_MASK_TILES`],\n  `too_many_tiles`).\n- Every payload is 1 to 8,192 characters\n  ([`crate::limits::MAX_TILE_PAYLOAD_CHARS`]) of padded standard base64:\n  a multiple of four characters from `A`-`Z`, `a`-`z`, `0`-`9`, `+` and\n  `/`, the last one or two of which may be `=` (`mask_payload`). The\n  payload is not decoded.",
+      "type": "object",
+      "properties": {
+        "depth": {
+          "description": "Bits per pixel.",
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0
+        },
+        "encoding": {
+          "$ref": "#/$defs/MaskEncoding"
+        },
+        "frames": {
+          "type": "object",
+          "additionalProperties": false,
+          "patternProperties": {
+            "^(0|[1-9][0-9]*)$": {
+              "type": "object",
+              "additionalProperties": false,
+              "patternProperties": {
+                "^(0|[1-9][0-9]*),(0|[1-9][0-9]*)$": {
+                  "$ref": "#/$defs/TilePayload"
+                }
+              }
+            }
+          }
+        },
+        "tile": {
+          "description": "Tile edge in pixels.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "encoding",
+        "tile",
+        "depth",
+        "frames"
+      ]
+    },
+    "MaskEncoding": {
+      "description": "The encoding of a mask's tiles.",
+      "oneOf": [
+        {
+          "description": "Sparse square tiles; each stored tile is the base64 text of the\ntile's deflated pixels (`docs/design/annotation-model.md` 3.2).",
+          "type": "string",
+          "const": "tiles-v1"
+        }
+      ]
+    },
+    "OptionDef": {
+      "description": "One choice of a `category` or `multi_category` field.",
+      "type": "object",
+      "properties": {
+        "code": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Code"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "deprecated": {
+          "description": "A removed option stays in the schema, marked deprecated, so values\nthat use it still render and still validate.",
+          "type": "boolean",
+          "default": false
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "id",
+        "name"
+      ]
+    },
+    "Orientation": {
+      "description": "The pixel grid coordinates are expressed in.",
+      "oneOf": [
+        {
+          "description": "The stored pixel matrix, before any EXIF, TIFF or view orientation.\nThe only value in this version.",
+          "type": "string",
+          "const": "stored"
+        }
+      ]
+    },
+    "Point": {
+      "description": "One position: `x` is the column, `y` the row.",
+      "type": "object",
+      "properties": {
+        "x": {
+          "type": "number",
+          "format": "double"
+        },
+        "y": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "required": [
+        "x",
+        "y"
+      ]
+    },
+    "Space": {
+      "description": "The coordinate space of a file's annotations. Always the stored grid; a\nraster's EXIF or TIFF orientation is recorded so an adapter can derive\n\"as displayed\" coordinates, and is never baked into geometry.",
+      "type": "object",
+      "properties": {
+        "exif_orientation": {
+          "description": "The EXIF or TIFF orientation value, 1 to 8.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0
+        },
+        "orientation": {
+          "$ref": "#/$defs/Orientation",
+          "default": "stored"
+        }
+      },
+      "additionalProperties": true
+    },
+    "TargetKind": {
+      "description": "The kind of thing a label is set on, as a field's `applies_to` lists it.",
+      "type": "string",
+      "enum": [
+        "patient",
+        "study",
+        "series",
+        "file",
+        "frame",
+        "folder"
+      ]
+    },
+    "TilePayload": {
+      "description": "One tile's pixels as base64 text. This crate treats the text as opaque:\nit bounds its length and checks its alphabet, and leaves decoding to the\nmask tools.",
+      "type": "string"
+    },
+    "Timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    }
+  }
+}

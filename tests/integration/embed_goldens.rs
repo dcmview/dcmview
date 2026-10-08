@@ -125,7 +125,9 @@ const EXPORT_CASES: &[ExportCase] = &[
     // Saving the loaded out-of-range row back through the API is refused
     // and leaves it in place.
     // EXPECTED CHANGE (12.12): these rows will also be listed in an import
-    // report, and the first edit of such a file will clamp it.
+    // report, and the first edit of such a file will clamp it. The bytes
+    // stay: the owner confirmed on 2026-10-08 that a coordinate past the
+    // image edge is kept as loaded and exported as written.
     ExportCase {
         name: "unchecked-geometry",
         launch: Launch::Root,
@@ -212,8 +214,9 @@ const REJECTED_IMPORTS: &[&str] = &[
     "rejected-duplicate-path",
     // A negative coordinate, unlike one past the far edge, is not an
     // unsigned integer and fails the row.
-    // EXPECTED CHANGE (EMBED parity amendment, 2026-10-05): the lenient
-    // import will clamp it to the image and report the row instead.
+    // EXPECTED CHANGE (EMBED parity amendment, 2026-10-05, as amended
+    // 2026-10-08): the lenient import will make it 0 and report the row
+    // instead. Only a negative or non-integer value is changed on load.
     "rejected-negative-coordinate",
     // `num_ROI` is not the number of boxes.
     "rejected-num-roi-mismatch",
