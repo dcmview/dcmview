@@ -165,5 +165,18 @@ class CheckProfileCompositionTests(unittest.TestCase):
 				self.assertEqual(runner.calls, [])
 
 
+	def test_remote_ssh_tests_the_named_wheel_without_rebuilding(self) -> None:
+		runner = RecordingRunner()
+		with (
+			mock.patch.dict(os.environ, {"DCMVIEW_REMOTE_WHEEL": "/tmp/dcmview.whl"}),
+			mock.patch.object(check, "run") as run,
+		):
+			runner.remote_ssh()
+
+		run.assert_called_once()
+		_label, command = run.call_args.args
+		self.assertEqual(command[-1], "python.tests.remote_ssh_integration")
+		self.assertEqual(run.call_args.kwargs["env"]["DCMVIEW_REMOTE_WHEEL"], "/tmp/dcmview.whl")
+
 if __name__ == "__main__":
 	unittest.main()
