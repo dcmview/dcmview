@@ -28,9 +28,9 @@ use std::io::{Read, Seek};
 use std::sync::Arc;
 use tokio::task;
 
-/// The buffer a raster file is read through. Every read issued to the file
-/// asks for this many bytes, or for what is left of the file or of the read
-/// budget when that is less.
+/// The buffer a raster file is read through. A read issued to the file asks
+/// for this many bytes, or for less when less is left of the file, of the
+/// read budget, or of the run of TIFF strips or tiles it begins in.
 pub const RASTER_READ_BUFFER_BYTES: usize = 64 * 1024;
 
 /// The part of [`raster_read_budget`] that does not depend on the image: room
@@ -79,11 +79,12 @@ pub fn raster_frame_bytes(file: &FileEntry) -> Option<u64> {
     Some(pixels * u64::from(file.samples_per_pixel) * u64::from(file.bits_allocated / 8))
 }
 
-/// The most bytes decoding one frame of `file` may obtain from the file:
+/// The most bytes decoding one frame of `file` may be handed from the file:
 /// [`RASTER_READ_BUDGET_BASE_BYTES`] plus
 /// [`RASTER_READ_BUDGET_PER_DECODED_BYTE`] times [`raster_frame_bytes`]. It
 /// is fixed by the catalog entry, whatever the file's length and whatever its
-/// chunks, segments and tags declare. `None` exactly when
+/// chunks, segments and tags declare. What is charged to it is stated under
+/// "Bytes read" in [`decode_raster_frame`]. `None` exactly when
 /// [`raster_frame_bytes`] is.
 pub fn raster_read_budget(file: &FileEntry) -> Option<u64> {
     Some(
@@ -183,22 +184,37 @@ impl<T: Read + Seek> RasterSource for T {}
 ///
 /// - **Pixels.** A frame of more than [`RASTER_MAX_FRAME_PIXELS`] is refused
 ///   (`raster.too_large`) before anything is read.
-/// - **Bytes read.** Everything read from `source` goes through one reader
-///   that counts the bytes `source.read` returns, read-ahead included, and
-///   issues no read that would take the count past [`raster_read_budget`].
-///   Reaching the budget is a decode error. A PNG, JPEG or WebP file longer
-///   than the budget is refused before the first read: these are decoded
-///   from front to back, and the JPEG and WebP decoders hold the encoded
-///   image in memory. Bytes after the image (a video appended to a photo)
-///   are not an error when the file fits the budget.
+/// - **Bytes read.** Everything read from `source` goes through one reader,
+///   which charges [`raster_read_budget`] for every byte a decoder is
+///   handed: each byte `source.read` returns, read-ahead included, and each
+///   buffered byte handed out again after a seek back. No read is issued
+///   and no byte handed out that would take the charge past the budget, and
+///   reaching it is a decode error. So the budget bounds the reading of the
+///   file and the work of a decoder sent over the same bytes again and
+///   again alike: strips or tiles that share bytes are charged for each
+///   use, whether or not the file had to be read for it. A PNG, JPEG or
+///   WebP file longer than the budget is refused before the first read:
+///   these are decoded from front to back, and the JPEG and WebP decoders
+///   hold the encoded image in memory. Bytes after the image (a video
+///   appended to a photo) are not an error when the file fits the budget.
 /// - **Reads.** The reader buffers [`RASTER_READ_BUFFER_BYTES`]: a read issued
 ///   to `source` asks for a whole buffer (less at the end of the file or of
 ///   the budget), and a seek that lands inside the buffered bytes issues no
 ///   read. So a PNG or JPEG costs at most `length / buffer + 2` reads and no
-///   byte twice; a WebP two reads more, for the image chunk its decoder goes
-///   back to; and a TIFF frame at most four reads to reach its page, one for
-///   each strip, tile or out-of-line tag value that does not follow the last
-///   one read, and one for each further buffer of a strip or tile.
+///   byte twice, and a WebP one read more for each chunk before its image
+///   that is stepped over, by the check above and again by its decoder.
+/// - **TIFF strips and tiles in any order.** A TIFF frame costs at most four
+///   reads to reach its page, and the page's out-of-line tag values twice,
+///   once for the checks here and once by the decoder. Its strips or tiles
+///   are then read in index order, wherever they lie. Those that lie end to
+///   start in that order form a run, and a read that begins in a run asks
+///   for the rest of the run or a buffer, whichever is less, never for what
+///   lies beyond it. So reading every strip or tile once costs its own
+///   bytes, in one read for each run and one for each further buffer of it,
+///   whether the file stores them first to last, last to first or
+///   scattered: an honest file is never charged more than its length and
+///   the page's tags a second time, and cannot exhaust the budget by the
+///   order it was written in.
 /// - **TIFF pages.** Frame `k` is read from the IFD at
 ///   `raster.frame_offsets[k]` and nothing before it: no walk along the page
 ///   chain, so the last frame of a file costs what the first does. Only that

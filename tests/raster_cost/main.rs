@@ -11,9 +11,13 @@
 //! global allocator, and the allocator shim of a debug build checks every
 //! layout it is handed: the JPEG 2000 decoder the main integration binary
 //! exercises frees with layouts that fail that check.
+//!
+//! `RASTER_COST_REPORT=1 cargo test --test raster_cost -- --nocapture` prints
+//! what each hostile case and each scaled file cost.
 
 mod bounds;
 mod heap;
+mod layout;
 #[path = "../integration/raster_cases.rs"]
 mod raster_cases;
 #[path = "../integration/raster_files.rs"]

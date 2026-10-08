@@ -1,6 +1,13 @@
-//! A single read-ahead window and an acquisition budget, shared by every codec.
+//! A single read-ahead window and a read budget, shared by every codec.
+//!
+//! The budget is charged for every byte a decoder is handed: each byte a
+//! read obtains from the file, read-ahead included, and each buffered byte
+//! handed out a second time after a seek back. So neither reading the file
+//! nor running a decoder over bytes it already saw is free, and both end at
+//! the same limit.
 use super::{RasterSource, RASTER_READ_BUFFER_BYTES};
 use std::io::{self, BufRead, Read, Seek, SeekFrom};
+use std::ops::Range;
 
 pub(super) struct Reader<'a> {
     source: &'a mut dyn RasterSource,
@@ -10,6 +17,12 @@ pub(super) struct Reader<'a> {
     position: u64,
     length: u64,
     remaining: u64,
+    /// The buffered bytes before this position have been handed out once;
+    /// handing them out again is charged again.
+    served: u64,
+    /// Ranges of the file that are read whole and once, sorted by start
+    /// ([`Reader::read_spans`]).
+    spans: Vec<Range<u64>>,
 }
 
 impl<'a> Reader<'a> {
@@ -22,7 +35,35 @@ impl<'a> Reader<'a> {
             position: 0,
             length,
             remaining: budget,
+            served: 0,
+            spans: Vec::new(),
         }
+    }
+
+    /// Names the ranges of the file a decoder is about to read from start to
+    /// end, one after another in any order: the runs of a TIFF page's strips
+    /// or tiles. A read that begins inside one never reads ahead past its
+    /// end, so reading every range once costs the bytes of the ranges,
+    /// wherever they lie in the file. Reads outside every range ask for a
+    /// whole buffer, as before.
+    pub(super) fn read_spans(&mut self, mut spans: Vec<Range<u64>>) {
+        spans.retain(|span| span.start < span.end);
+        spans.sort_unstable_by_key(|span| span.start);
+        self.spans = spans;
+    }
+
+    /// The most a read at `position` may ask for: to the end of the span
+    /// that holds it, or a whole buffer.
+    fn read_ahead(&self, position: u64) -> u64 {
+        let after = self.spans.partition_point(|span| span.start <= position);
+        match after.checked_sub(1).map(|index| &self.spans[index]) {
+            Some(span) if position < span.end => span.end - position,
+            _ => RASTER_READ_BUFFER_BYTES as u64,
+        }
+    }
+
+    fn exhausted() -> io::Error {
+        io::Error::other("raster read budget exhausted")
     }
 }
 
@@ -31,25 +72,44 @@ impl BufRead for Reader<'_> {
         if self.position >= self.length {
             return Ok(&[]);
         }
-        if self.position < self.start || self.position >= self.start + self.buffered as u64 {
+        let end = self.start + self.buffered as u64;
+        if self.position < self.start || self.position >= end {
             let count = (RASTER_READ_BUFFER_BYTES as u64)
                 .min(self.length - self.position)
+                .min(self.read_ahead(self.position))
                 .min(self.remaining) as usize;
             if count == 0 {
-                return Err(io::Error::other("raster read budget exhausted"));
+                return Err(Self::exhausted());
             }
             self.source.seek(SeekFrom::Start(self.position))?;
             self.buffered = self.source.read(&mut self.buffer[..count])?;
             self.remaining -= self.buffered as u64;
             self.start = self.position;
+            self.served = self.position;
+            return Ok(&self.buffer[..self.buffered]);
         }
-        Ok(&self.buffer[(self.position - self.start) as usize..self.buffered])
+        let from = (self.position - self.start) as usize;
+        if self.position < self.served {
+            // Bytes handed out before: only as many as the budget still
+            // covers, and `consume` charges them.
+            if self.remaining == 0 {
+                return Err(Self::exhausted());
+            }
+            let again = (self.served - self.position).min(self.remaining) as usize;
+            return Ok(&self.buffer[from..from + again]);
+        }
+        Ok(&self.buffer[from..self.buffered])
     }
 
     fn consume(&mut self, amount: usize) {
-        self.position += amount
-            .min((self.start + self.buffered as u64).saturating_sub(self.position) as usize)
-            as u64;
+        let end = self.start + self.buffered as u64;
+        let amount = (amount as u64).min(end.saturating_sub(self.position));
+        let again = self.served.saturating_sub(self.position).min(amount);
+        self.remaining = self.remaining.saturating_sub(again);
+        if amount > 0 {
+            self.position += amount;
+            self.served = self.served.max(self.position);
+        }
     }
 }
 

@@ -6,7 +6,9 @@ use super::{
 use crate::api::contracts::RasterSampleFormat;
 use crate::types::FileEntry;
 use anyhow::{bail, ensure, Context, Result};
+use std::collections::HashMap;
 use std::io::{self, Read, Seek, SeekFrom};
+use std::ops::Range;
 use tiff::decoder::{Decoder, DecodingResult, Limits};
 
 #[derive(Clone, Copy)]
@@ -197,10 +199,22 @@ struct Patch {
 struct PageView<'a, 'b> {
     reader: &'a mut Reader<'b>,
     patches: Vec<Patch>,
+    /// Where each strip or tile begins, and where the bytes its byte count
+    /// gives it end.
+    chunks: HashMap<u64, u64>,
+    /// The end of the strip or tile being read: set by a seek to its first
+    /// byte, and the end of what that read may be given. The crate's Deflate
+    /// reader takes no length, and would read on into whatever follows.
+    chunk_end: Option<u64>,
 }
 impl Read for PageView<'_, '_> {
     fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
         let start = self.reader.stream_position()?;
+        let most = match self.chunk_end {
+            Some(end) => (end.saturating_sub(start)).min(output.len() as u64) as usize,
+            None => output.len(),
+        };
+        let output = &mut output[..most];
         let count = self.reader.read(output)?;
         for patch in &self.patches {
             let low = start.max(patch.offset);
@@ -216,7 +230,9 @@ impl Read for PageView<'_, '_> {
 }
 impl Seek for PageView<'_, '_> {
     fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
-        self.reader.seek(position)
+        let position = self.reader.seek(position)?;
+        self.chunk_end = self.chunks.get(&position).copied();
+        Ok(position)
     }
 }
 
@@ -340,17 +356,23 @@ fn decode_page(
                 .is_some_and(|entry| entry.count == chunks),
         "TIFF chunks do not cover the frame"
     );
-    // The crate's Deflate reader ignores byte counts, but other codecs may
-    // buffer them. Reject oversized claims before handing the page to it.
-    for tag in [279, 325] {
-        if page.entry(tag).is_some() {
-            ensure!(
-                page.values(reader, tag, 0, length)?
-                    .iter()
-                    .all(|&n| n <= budget),
-                "TIFF chunk exceeds read budget"
-            );
-        }
+    // From here on the file is read chunk by chunk, in index order. Tell the
+    // reader where the chunks lie, so one stored out of that order is read
+    // for its own bytes and not for a buffer of its neighbours'.
+    let offsets = page.values(reader, offset_tag, 0, length)?;
+    let counts = page.values(reader, count_tag, 0, length)?;
+    // No chunk is read past its byte count (`PageView`), and none may claim
+    // more than the whole decode may read.
+    ensure!(
+        counts.iter().all(|&count| count <= budget),
+        "TIFF chunk exceeds read budget"
+    );
+    reader.read_spans(chunk_runs(&offsets, &counts));
+    // Chunks that share a first byte are read to the longest of them.
+    let mut chunk_ends = HashMap::with_capacity(offsets.len());
+    for (&start, &count) in offsets.iter().zip(&counts) {
+        let end = chunk_ends.entry(start).or_insert(start);
+        *end = (*end).max(start.saturating_add(count));
     }
     let profile = page.profile(reader, length)?;
     let icc_profile = checked_profile(file, profile.as_deref());
@@ -371,7 +393,12 @@ fn decode_page(
         });
     }
     reader.seek(SeekFrom::Start(0))?;
-    let view = PageView { reader, patches };
+    let view = PageView {
+        reader,
+        patches,
+        chunks: chunk_ends,
+        chunk_end: None,
+    };
     let mut limits = Limits::default();
     limits.decoding_buffer_size = usize::try_from(expected)?;
     limits.intermediate_buffer_size = usize::try_from(budget)?;
@@ -420,6 +447,22 @@ fn decode_page(
         unassociate(&mut bytes, depth as usize);
     }
     Ok(RasterFrame { bytes, icc_profile })
+}
+
+/// The ranges of the file that hold a page's strips or tiles, a chunk that
+/// begins where the one before it in index order ends joined to it: each
+/// range is then read from start to end, once, in the order the chunks are
+/// decoded.
+fn chunk_runs(offsets: &[u64], counts: &[u64]) -> Vec<Range<u64>> {
+    let mut runs: Vec<Range<u64>> = Vec::new();
+    for (&start, &count) in offsets.iter().zip(counts) {
+        let end = start.saturating_add(count);
+        match runs.last_mut() {
+            Some(run) if run.end == start => run.end = end,
+            _ => runs.push(start..end),
+        }
+    }
+    runs
 }
 
 fn unassociate(bytes: &mut [u8], depth: usize) {

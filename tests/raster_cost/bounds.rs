@@ -15,19 +15,19 @@ use std::fs;
 use tempfile::tempdir;
 use tokio::sync::mpsc;
 
-const BUFFER: u64 = RASTER_READ_BUFFER_BYTES as u64;
-const MIB: u64 = 1024 * 1024;
+pub(super) const BUFFER: u64 = RASTER_READ_BUFFER_BYTES as u64;
+pub(super) const MIB: u64 = 1024 * 1024;
 
 /// What one decode cost.
-struct Cost {
-    result: PixelResult<RasterFrame>,
-    reads: u64,
-    bytes: u64,
+pub(super) struct Cost {
+    pub result: PixelResult<RasterFrame>,
+    pub reads: u64,
+    pub bytes: u64,
     /// The most the decoding thread held at once, over what it held before.
-    heap: u64,
+    pub heap: u64,
 }
 
-fn decode(entry: &FileEntry, frame: u32, mut source: CountedFile) -> Cost {
+pub(super) fn decode(entry: &FileEntry, frame: u32, mut source: CountedFile) -> Cost {
     let length = source.length();
     let (result, heap) =
         heap::peak_during(|| pixels::decode_raster_frame(entry, frame, &mut source, length));
@@ -41,7 +41,7 @@ fn decode(entry: &FileEntry, frame: u32, mut source: CountedFile) -> Cost {
 
 /// The limits every decode keeps, whatever its outcome: the read budget and
 /// the heap limit of the entry, and a read buffer that is actually used.
-fn assert_within_limits(context: &str, entry: &FileEntry, length: u64, cost: &Cost) {
+pub(super) fn assert_within_limits(context: &str, entry: &FileEntry, length: u64, cost: &Cost) {
     let budget = pixels::raster_read_budget(entry).expect("entry within the pixel limit");
     let heap_limit =
         pixels::raster_decode_heap_limit(entry, length).expect("entry within the pixel limit");
@@ -65,14 +65,14 @@ fn assert_within_limits(context: &str, entry: &FileEntry, length: u64, cost: &Co
 }
 
 /// The catalog entries the production loader makes for a set of files.
-struct Listed {
+pub(super) struct Listed {
     entries: Vec<FileEntry>,
     // The entries name files in this directory.
     _dir: tempfile::TempDir,
 }
 
 impl Listed {
-    fn entry(&self, name: &str) -> &FileEntry {
+    pub(super) fn entry(&self, name: &str) -> &FileEntry {
         self.entries
             .iter()
             .find(|entry| entry.path.file_name().and_then(|name| name.to_str()) == Some(name))
@@ -81,7 +81,7 @@ impl Listed {
 }
 
 /// Writes `files` into a directory and runs the production loader over it.
-async fn list(files: &[(&str, &[u8])]) -> Listed {
+pub(super) async fn list(files: &[(&str, &[u8])]) -> Listed {
     let dir = tempdir().expect("temp dir");
     for (name, bytes) in files {
         fs::write(dir.path().join(name), bytes).expect("write raster");
@@ -117,7 +117,7 @@ async fn list(files: &[(&str, &[u8])]) -> Listed {
 // Honest files
 
 /// A deterministic stream of bytes that does not compress.
-fn noise(count: usize) -> Vec<u8> {
+pub(super) fn noise(count: usize) -> Vec<u8> {
     let mut state = 0x2545_f491_4f6c_dd1d_u64;
     (0..count)
         .map(|_| {
@@ -252,7 +252,7 @@ async fn a_decode_reads_its_file_once_through_a_buffer_and_a_tiff_frame_only_its
 // ---------------------------------------------------------------------------
 // Hostile files
 
-enum Outcome {
+pub(super) enum Outcome {
     /// Refused before anything is read, with this `raster.*` reason.
     Refused(&'static str),
     /// A decode error.
@@ -261,7 +261,7 @@ enum Outcome {
     Decodes,
 }
 
-struct Hostile {
+pub(super) struct Hostile {
     name: &'static str,
     /// What discovery saw: the file the catalog entry describes.
     listed: Vec<u8>,
@@ -276,7 +276,7 @@ struct Hostile {
 }
 
 impl Hostile {
-    fn new(name: &'static str, listed: Vec<u8>, outcome: Outcome) -> Self {
+    pub(super) fn new(name: &'static str, listed: Vec<u8>, outcome: Outcome) -> Self {
         Self {
             name,
             listed,
@@ -287,12 +287,12 @@ impl Hostile {
         }
     }
 
-    fn replaced_by(mut self, bytes: Vec<u8>) -> Self {
+    pub(super) fn replaced_by(mut self, bytes: Vec<u8>) -> Self {
         self.replaced = Some(CountedFile::new(bytes));
         self
     }
 
-    fn reading_at_most(mut self, bytes: u64) -> Self {
+    pub(super) fn reading_at_most(mut self, bytes: u64) -> Self {
         self.most_bytes = Some(bytes);
         self
     }
@@ -644,7 +644,13 @@ fn hostile_files() -> Vec<Hostile> {
 /// size, length or count is never what an allocation is sized by.
 #[tokio::test]
 async fn a_hostile_file_costs_no_more_than_its_entry_allows() {
-    let cases = hostile_files();
+    assert_hostile(hostile_files()).await;
+}
+
+/// Lists what discovery saw of each case, decodes what the case presents,
+/// and checks the outcome and the limits. A case is named by its format
+/// first ("tiff strip past the end").
+pub(super) async fn assert_hostile(cases: Vec<Hostile>) {
     let names: Vec<String> = (0..cases.len())
         .map(|index| {
             let format = cases[index].name.split(' ').next().expect("format");
@@ -667,6 +673,18 @@ async fn a_hostile_file_costs_no_more_than_its_entry_allows() {
         let length = source.length();
         let cost = decode(entry, case.frame, source);
 
+        if std::env::var_os("RASTER_COST_REPORT").is_some() {
+            eprintln!(
+                "{name}: {} reads, {} bytes, heap {}, {}",
+                cost.reads,
+                cost.bytes,
+                cost.heap,
+                match &cost.result {
+                    Ok(_) => "decoded".to_string(),
+                    Err(error) => format!("{error:#}"),
+                }
+            );
+        }
         match (&cost.result, &case.outcome) {
             (Err(PixelError::UnsupportedLayout(reason)), Outcome::Refused(expected)) => {
                 assert_eq!(reason, expected, "{name}")
@@ -740,34 +758,41 @@ async fn an_unusable_profile_is_dropped_and_the_frame_kept() {
     }
 }
 
-/// A TIFF strip whose deflate stream never ends is read to the budget and
+/// A TIFF strip whose deflate stream never ends is read to the end of the
+/// bytes its byte count gives it, or to the budget when it claims more, and
 /// no further, however long the file is.
 #[tokio::test]
-async fn an_endless_compressed_strip_is_read_to_the_budget_and_no_further() {
-    // A zlib header, then stored blocks of no bytes for as long as the file
-    // goes on: input that never yields a sample.
-    let page = TiffPage::strip((8, 8), &[8], 1, vec![0x78, 0x01])
-        .with(259, TiffValue::Short(vec![8]))
-        .with(273, TiffValue::Long(vec![0x1000]))
-        .with(279, TiffValue::Long(vec![1024]));
-    let mut bytes = files::tiff_file(false, &[page]).0;
-    bytes.resize(0x1000, 0);
-    bytes.extend_from_slice(&[0x78, 0x01]);
-    let scan = list(&[("endless.tif", &bytes)]).await;
-    let entry = scan.entry("endless.tif");
-    let budget = pixels::raster_read_budget(entry).expect("read budget");
+async fn an_endless_compressed_strip_is_read_to_its_end_or_the_budget_and_no_further() {
+    // The budget of an 8 x 8 page of one byte a sample.
+    let budget = 64 * MIB + 4 * 64;
+    // (the strip's byte count, the most bytes the decode may read)
+    for (claimed, most) in [(1024, 4 * BUFFER), (budget, budget)] {
+        // A zlib header, then stored blocks of no bytes for as long as the
+        // file goes on: input that never yields a sample.
+        let page = TiffPage::strip((8, 8), &[8], 1, vec![0x78, 0x01])
+            .with(259, TiffValue::Short(vec![8]))
+            .with(273, TiffValue::Long(vec![0x1000]))
+            .with(279, TiffValue::Long(vec![claimed as u32]));
+        let mut bytes = files::tiff_file(false, &[page]).0;
+        bytes.resize(0x1000, 0);
+        bytes.extend_from_slice(&[0x78, 0x01]);
+        let scan = list(&[("endless.tif", &bytes)]).await;
+        let entry = scan.entry("endless.tif");
+        assert_eq!(pixels::raster_read_budget(entry), Some(budget));
 
-    let length = 4 * budget;
-    let source = CountedFile::with_tail(bytes, &[0x00, 0x00, 0x00, 0xff, 0xff], length);
-    let cost = decode(entry, 0, source);
+        let length = 4 * budget;
+        let source = CountedFile::with_tail(bytes, &[0x00, 0x00, 0x00, 0xff, 0xff], length);
+        let cost = decode(entry, 0, source);
 
-    assert!(matches!(cost.result, Err(PixelError::Decode { .. })));
-    assert_within_limits("endless.tif", entry, length, &cost);
-    assert!(
-        cost.reads <= budget / BUFFER + 4,
-        "{} reads for a budget of {budget}",
-        cost.reads
-    );
+        assert!(matches!(cost.result, Err(PixelError::Decode { .. })));
+        assert_within_limits("endless.tif", entry, length, &cost);
+        assert!(
+            cost.bytes <= most && cost.reads <= most / BUFFER + 4,
+            "a strip of {claimed} bytes: {} reads, {} bytes",
+            cost.reads,
+            cost.bytes
+        );
+    }
 }
 
 /// Every valid file of the decode tests, cut short and with single bytes
