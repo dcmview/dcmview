@@ -52,7 +52,6 @@
 //! - The wire shapes are pinned by the fixtures under `tests/fixtures/`.
 //!   Extend them when a member is added.
 
-mod checking;
 pub mod document;
 pub mod file;
 pub mod frames;
@@ -62,6 +61,7 @@ pub mod key;
 pub mod label;
 pub mod layer;
 pub mod limits;
+mod model_checks;
 mod number;
 pub mod op;
 pub mod record;
