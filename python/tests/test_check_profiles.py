@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 import os
+from pathlib import Path
 from unittest import mock
 
 from scripts import check
@@ -176,7 +177,11 @@ class CheckProfileCompositionTests(unittest.TestCase):
 		run.assert_called_once()
 		_label, command = run.call_args.args
 		self.assertEqual(command[-1], "python.tests.remote_ssh_integration")
-		self.assertEqual(run.call_args.kwargs["env"]["DCMVIEW_REMOTE_WHEEL"], "/tmp/dcmview.whl")
+		# The profile resolves the path, and /tmp is a symlink on macOS.
+		self.assertEqual(
+			run.call_args.kwargs["env"]["DCMVIEW_REMOTE_WHEEL"],
+			str(Path("/tmp/dcmview.whl").resolve()),
+		)
 
 	def test_vscode_remote_ssh_tests_the_named_artifacts_without_packaging(self) -> None:
 		runner = RecordingRunner()
@@ -193,7 +198,10 @@ class CheckProfileCompositionTests(unittest.TestCase):
 		package.assert_not_called()
 		_label, command = run.call_args.args
 		self.assertEqual(command[-1], "python.tests.vscode_remote_ssh_integration")
-		self.assertEqual(run.call_args.kwargs["env"]["DCMVIEW_REMOTE_VSIX"], "/tmp/dcmview.vsix")
+		self.assertEqual(
+			run.call_args.kwargs["env"]["DCMVIEW_REMOTE_VSIX"],
+			str(Path("/tmp/dcmview.vsix").resolve()),
+		)
 
 if __name__ == "__main__":
 	unittest.main()
