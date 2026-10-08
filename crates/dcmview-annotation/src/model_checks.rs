@@ -331,18 +331,121 @@ impl Checks {
 }
 
 use crate::{
-    Annotation, Code, Context, FieldDef, FieldType, FileRef, KeyScheme, Label, LabelSchema,
-    LabelTarget, LabelValue, Layer, LayerKind, RecordMeta,
+    Annotation, ClassDef, Code, Context, FieldDef, FieldType, FileRef, FileSizes, GeometryType,
+    KeyScheme, Label, LabelSchema, LabelTarget, LabelValue, Layer, LayerKind, OptionDef,
+    RecordMeta, TargetKind,
 };
-use std::collections::HashSet;
+use std::cell::{OnceCell, RefCell};
+use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
+
+// One call owns these indexes. Callers check each list's bound before asking
+// for its index; constructing the context alone visits no schema items.
+struct IndexedContext<'a> {
+    files: &'a dyn FileSizes,
+    schema: &'a LabelSchema,
+    fields: OnceCell<HashMap<&'a str, (usize, &'a FieldDef)>>,
+    classes: OnceCell<HashMap<&'a str, (usize, &'a ClassDef)>>,
+    options: RefCell<HashMap<usize, HashSet<&'a str>>>,
+    targets: RefCell<HashMap<usize, HashSet<TargetKind>>>,
+    attributes: RefCell<HashMap<usize, HashSet<&'a str>>>,
+    geometries: RefCell<HashMap<usize, HashSet<GeometryType>>>,
+}
+
+impl<'a> IndexedContext<'a> {
+    fn new(context: &Context<'a>) -> Self {
+        Self {
+            files: context.files,
+            schema: context.schema,
+            fields: OnceCell::new(),
+            classes: OnceCell::new(),
+            options: RefCell::new(HashMap::new()),
+            targets: RefCell::new(HashMap::new()),
+            attributes: RefCell::new(HashMap::new()),
+            geometries: RefCell::new(HashMap::new()),
+        }
+    }
+
+    fn field(&self, id: &str) -> Option<(usize, &'a FieldDef)> {
+        self.fields
+            .get_or_init(|| {
+                let mut fields = HashMap::new();
+                for (position, field) in self.schema.fields.iter().enumerate() {
+                    fields.entry(field.id.as_str()).or_insert((position, field));
+                }
+                fields
+            })
+            .get(id)
+            .copied()
+    }
+
+    fn class(&self, id: &str) -> Option<(usize, &'a ClassDef)> {
+        self.classes
+            .get_or_init(|| {
+                let mut classes = HashMap::new();
+                for (position, class) in self.schema.classes.iter().enumerate() {
+                    classes
+                        .entry(class.id.as_str())
+                        .or_insert((position, class));
+                }
+                classes
+            })
+            .get(id)
+            .copied()
+    }
+
+    fn has_option(&self, position: usize, options: &'a [OptionDef], id: &str) -> bool {
+        self.options
+            .borrow_mut()
+            .entry(position)
+            .or_insert_with(|| options.iter().map(|option| option.id.as_str()).collect())
+            .contains(id)
+    }
+
+    fn has_target(&self, position: usize, field: &FieldDef, kind: TargetKind) -> bool {
+        self.targets
+            .borrow_mut()
+            .entry(position)
+            .or_insert_with(|| field.applies_to.iter().copied().collect())
+            .contains(&kind)
+    }
+
+    fn has_attribute(&self, position: usize, class: &'a ClassDef, id: &str) -> bool {
+        self.attributes
+            .borrow_mut()
+            .entry(position)
+            .or_insert_with(|| class.attributes.iter().map(String::as_str).collect())
+            .contains(id)
+    }
+
+    fn has_geometry(&self, position: usize, class: &ClassDef, kind: GeometryType) -> bool {
+        self.geometries
+            .borrow_mut()
+            .entry(position)
+            .or_insert_with(|| class.geometry.iter().copied().collect())
+            .contains(&kind)
+    }
+}
+
+macro_rules! checked_with_schema {
+    ($ty:ty, $method:ident) => {
+        impl crate::Check<&Context<'_>> for $ty {
+            fn check(&self, context: &Context<'_>) -> Result<(), Invalid> {
+                let context = IndexedContext::new(context);
+                let mut checks = Checks::default();
+                let _ = checks.$method(self, "", &context);
+                checks.finish()
+            }
+        }
+    };
+}
 
 checked!(LabelSchema, (), schema);
 checked!(FileRef, (), file);
 checked!(Layer, (), layer);
 checked!(LabelTarget, (), target);
-checked!(Annotation, &Context<'_>, annotation);
-checked!(Label, &Context<'_>, label);
+checked_with_schema!(Annotation, annotation);
+checked_with_schema!(Label, label);
 
 fn id_syntax(text: &str) -> bool {
     !text.is_empty()
@@ -742,14 +845,19 @@ impl Checks {
     fn field<'a>(
         &mut self,
         id: &str,
-        schema: &'a LabelSchema,
+        context: &IndexedContext<'a>,
         path: &str,
-    ) -> Result<Option<&'a FieldDef>, ()> {
-        if !self.bound(schema.fields.len(), MAX_SCHEMA_ITEMS, TooManyItems, path)? {
+    ) -> Result<Option<(usize, &'a FieldDef)>, ()> {
+        if !self.bound(
+            context.schema.fields.len(),
+            MAX_SCHEMA_ITEMS,
+            TooManyItems,
+            path,
+        )? {
             return Ok(None);
         }
         let field = if id.len() <= MAX_ID_BYTES {
-            schema.fields.iter().find(|field| field.id == id)
+            context.field(id)
         } else {
             None
         };
@@ -762,7 +870,13 @@ impl Checks {
         Ok(field)
     }
 
-    fn value(&mut self, value: &LabelValue, field: &FieldDef, path: &str) -> Checked {
+    fn value<'a>(
+        &mut self,
+        value: &LabelValue,
+        (position, field): (usize, &'a FieldDef),
+        path: &str,
+        context: &IndexedContext<'a>,
+    ) -> Checked {
         match (&field.field_type, value) {
             (FieldType::Boolean, LabelValue::Bool(_)) => {}
             (
@@ -794,7 +908,7 @@ impl Checks {
             (FieldType::Category { options, .. }, LabelValue::Text(id)) => {
                 if self.bound(options.len(), MAX_SCHEMA_ITEMS, TooManyItems, path)? {
                     self.require(
-                        id.len() <= MAX_ID_BYTES && options.iter().any(|option| option.id == *id),
+                        id.len() <= MAX_ID_BYTES && context.has_option(position, options, id),
                         UnknownOption,
                         path,
                         "The option must exist in the field.",
@@ -812,7 +926,7 @@ impl Checks {
                 for (i, id) in ids.iter().enumerate() {
                     let path = format!("{path}/{i}");
                     self.require(
-                        id.len() <= MAX_ID_BYTES && options.iter().any(|option| option.id == *id),
+                        id.len() <= MAX_ID_BYTES && context.has_option(position, options, id),
                         UnknownOption,
                         &path,
                         "The option must exist in the field.",
@@ -841,7 +955,7 @@ impl Checks {
         &mut self,
         annotation: &Annotation,
         path: &str,
-        context: &Context<'_>,
+        context: &IndexedContext<'_>,
     ) -> Checked {
         self.uuid(annotation.id, &format!("{path}/id"))?;
         if let Some(size) = context.files.size_of(&annotation.file) {
@@ -885,11 +999,7 @@ impl Checks {
             &format!("{path}/class"),
         )? {
             let class = if annotation.class.len() <= MAX_ID_BYTES {
-                context
-                    .schema
-                    .classes
-                    .iter()
-                    .find(|class| class.id == annotation.class)
+                context.class(&annotation.class)
             } else {
                 None
             };
@@ -899,7 +1009,7 @@ impl Checks {
                 &format!("{path}/class"),
                 "The annotation class must exist in the schema.",
             )?;
-            if let Some(class) = class {
+            if let Some((position, class)) = class {
                 if self.bound(
                     class.geometry.len(),
                     MAX_SCHEMA_ITEMS,
@@ -907,9 +1017,7 @@ impl Checks {
                     &format!("{path}/class"),
                 )? {
                     self.require(
-                        class
-                            .geometry
-                            .contains(&annotation.geometry.geometry_type()),
+                        context.has_geometry(position, class, annotation.geometry.geometry_type()),
                         GeometryNotAllowed,
                         &format!("{path}/geometry"),
                         "The class must allow this geometry type.",
@@ -938,13 +1046,13 @@ impl Checks {
                         }
                         let value_path = format!("{path}/attributes/{}", pointer_member(id));
                         self.require(
-                            class.attributes.contains(id),
+                            context.has_attribute(position, class, id),
                             AttributeNotAllowed,
                             &value_path,
                             "The attribute is not allowed by the class.",
                         )?;
-                        if let Some(field) = self.field(id, context.schema, &value_path)? {
-                            self.value(value, field, &value_path)?;
+                        if let Some(field) = self.field(id, context, &value_path)? {
+                            self.value(value, field, &value_path, context)?;
                         }
                     }
                 }
@@ -967,7 +1075,7 @@ impl Checks {
         value: Option<&LabelValue>,
         value_member: &str,
         path: &str,
-        context: &Context<'_>,
+        context: &IndexedContext<'_>,
     ) -> Checked {
         self.target(target, &format!("{path}/target"), ())?;
         let file = match target {
@@ -994,7 +1102,7 @@ impl Checks {
                 )?;
             }
         }
-        if let Some(field) = self.field(field, context.schema, &format!("{path}/field"))? {
+        if let Some((position, field)) = self.field(field, context, &format!("{path}/field"))? {
             if self.bound(
                 field.applies_to.len(),
                 MAX_SCHEMA_ITEMS,
@@ -1002,20 +1110,25 @@ impl Checks {
                 &format!("{path}/field"),
             )? {
                 self.require(
-                    field.applies_to.contains(&target.kind()),
+                    context.has_target(position, field, target.kind()),
                     TargetNotAllowed,
                     &format!("{path}/target"),
                     "The field must apply to this target kind.",
                 )?;
             }
             if let Some(value) = value {
-                self.value(value, field, &format!("{path}/{value_member}"))?;
+                self.value(
+                    value,
+                    (position, field),
+                    &format!("{path}/{value_member}"),
+                    context,
+                )?;
             }
         }
         Ok(())
     }
 
-    fn label(&mut self, label: &Label, path: &str, context: &Context<'_>) -> Checked {
+    fn label(&mut self, label: &Label, path: &str, context: &IndexedContext<'_>) -> Checked {
         self.uuid(label.id, &format!("{path}/id"))?;
         self.label_content(
             &label.target,
@@ -1072,10 +1185,10 @@ impl Checks {
             }
         }
         let lookup = |key: &crate::FileKey| files.get(key).copied();
-        let context = Context {
+        let context = IndexedContext::new(&Context {
             files: &lookup,
             schema,
-        };
+        });
         let mut annotation_ids = HashSet::new();
         for (i, annotation) in document.annotations.iter().enumerate() {
             let path = format!("{path}/annotations/{i}");
@@ -1144,8 +1257,8 @@ impl Checks {
 }
 
 use crate::{LayerPatch, Op, OpEnvelope, Patch};
-checked!(Op, &Context<'_>, op);
-checked!(OpEnvelope, &Context<'_>, envelope);
+checked_with_schema!(Op, op);
+checked_with_schema!(OpEnvelope, envelope);
 
 fn patch_members(patch: &Patch) -> [bool; 5] {
     [
@@ -1167,7 +1280,12 @@ fn layer_patch_members(patch: &LayerPatch) -> [bool; 4] {
 }
 
 impl Checks {
-    fn envelope(&mut self, envelope: &OpEnvelope, path: &str, context: &Context<'_>) -> Checked {
+    fn envelope(
+        &mut self,
+        envelope: &OpEnvelope,
+        path: &str,
+        context: &IndexedContext<'_>,
+    ) -> Checked {
         self.uuid(envelope.op_id, &format!("{path}/op_id"))?;
         self.op(&envelope.op, &format!("{path}/op"), context)
     }
@@ -1187,7 +1305,7 @@ impl Checks {
         )
     }
 
-    fn op(&mut self, op: &Op, path: &str, context: &Context<'_>) -> Checked {
+    fn op(&mut self, op: &Op, path: &str, context: &IndexedContext<'_>) -> Checked {
         match op {
             Op::CreateAnnotation { annotation } => {
                 self.annotation(annotation, &format!("{path}/annotation"), context)?
