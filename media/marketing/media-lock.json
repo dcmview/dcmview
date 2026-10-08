@@ -6,7 +6,7 @@
       "path": "mr-seg-cine.gif",
       "scene_id": "mr-seg-cine",
       "series_instance_uid": "1.3.6.1.4.1.14519.5.2.1.7695.4164.197935705864255073412256526155",
-      "sha256": "5782309950bb7516b6c15e737497b9f9ad44341aa39330eb8d7b286b111f98e1",
+      "sha256": "5a37387cf9ad4b9980860597fb8d0d487839da7faa933a7d4decfd1731f4b5d2",
       "source_group": "01-mr-seg",
       "width": 1440
     },
@@ -61,22 +61,22 @@
       "width": 1440
     },
     {
-      "bytes": 284576,
+      "bytes": 284773,
       "height": 900,
       "path": "rt-dose-context.png",
       "scene_id": "rt-dose-context",
       "series_instance_uid": "1.3.6.1.4.1.14519.5.2.1.118532755654767959890619646384959953910",
-      "sha256": "2990717188aa02aafedbba8303bc8b89d18568e977413e00d680f6fda853d5ac",
+      "sha256": "4a9b602e5675ec7caf5a6f6bee68fa4564f5142fd89006f5ce5f21b3dfe66114",
       "source_group": "07-rt-dose",
       "width": 1440
     },
     {
-      "bytes": 413447,
+      "bytes": 413477,
       "height": 900,
       "path": "wsi-context.png",
       "scene_id": "wsi-context",
       "series_instance_uid": "1.3.6.1.4.1.5962.99.1.2218940421.790215425.1720205891589.4.0",
-      "sha256": "c79d00064d6564376cc8e8eb08683f4f35bebecd402dd6f1f46a929c6a8c7ab8",
+      "sha256": "871043081f82d26ec2fce050ceac30ee79848eefb45164d4dd9910445f9d1c9d",
       "source_group": "08-wsi",
       "width": 1440
     },
@@ -86,7 +86,7 @@
       "path": "vscode-workflow.gif",
       "scene_id": "vscode-workflow",
       "series_instance_uid": "1.3.6.1.4.1.14519.5.2.1.9999.103.1892998694410640266017914996862",
-      "sha256": "2c4a9147869988ebc6489ceb64ed0ed2d440552222b41313c892be40bcaeb6cf",
+      "sha256": "e8362b2fa2a2184dc28b835db9c4a21f92ca0b84cfd7aef44a9b1553554ffd68",
       "source_group": "02-chest-ct",
       "width": 1440
     }
@@ -97,6 +97,7 @@
     "frontend/src/api.test.ts",
     "frontend/src/api.ts",
     "frontend/src/generated/api-types.ts",
+    "frontend/src/lib/AccessRequired.svelte",
     "frontend/src/lib/FileNavigator.svelte",
     "frontend/src/lib/FrameSlider.svelte",
     "frontend/src/lib/FrameSlider.test.ts",
@@ -118,6 +119,15 @@
     "frontend/src/lib/ViewerToolbar.svelte",
     "frontend/src/lib/WsiTileContext.svelte",
     "frontend/src/lib/WsiTileContext.test.ts",
+    "frontend/src/lib/accessToken.test.ts",
+    "frontend/src/lib/accessToken.ts",
+    "frontend/src/lib/annotation/tools/panTool.ts",
+    "frontend/src/lib/annotation/tools/rectangleTool.ts",
+    "frontend/src/lib/annotation/tools/scrollTool.ts",
+    "frontend/src/lib/annotation/tools/tool.ts",
+    "frontend/src/lib/annotation/tools/tools.test.ts",
+    "frontend/src/lib/annotation/tools/windowLevelTool.ts",
+    "frontend/src/lib/annotation/tools/zoomTool.ts",
     "frontend/src/lib/annotationGeometry.test.ts",
     "frontend/src/lib/annotationGeometry.ts",
     "frontend/src/lib/app/catalog.svelte.ts",
@@ -182,6 +192,7 @@
     "frontend/src/lib/viewport/RoiLabels.svelte",
     "frontend/src/lib/viewport/RoiList.svelte",
     "frontend/src/lib/viewport/RoiOverlay.svelte",
+    "frontend/src/lib/viewport/ToolHost.svelte.ts",
     "frontend/src/lib/viewport/ValueLegend.svelte",
     "frontend/src/lib/viewport/ZoomControls.svelte",
     "frontend/src/lib/viewport/annotationStore.svelte.ts",
@@ -254,17 +265,17 @@
     "vscode/src/test/suite/viewer.test.ts",
     "vscode/src/viewerSessions.ts"
   ],
-  "capture_inputs_sha256": "f3ce51141aeeee3eb432c5b8caeb40c29b969e480bab3e640f583f7b2f7cdc6c",
-  "captured_at_utc": "2026-10-02T12:00:04+00:00",
+  "capture_inputs_sha256": "c480562ca9ea766d87ce697cb79e0218f5de1fe77e32716fb170a5a517cb3f0b",
+  "captured_at_utc": "2026-10-08T05:15:23+00:00",
   "captures_manifest_sha256": "afdf2b4ec006289d5f336d232ab67977318fc187771e046b24fa8c76d32bcdec",
-  "dcmview_version": "0.3.2",
-  "git_commit": "e63b830263ea2b8891b218ba8528e75eec9356cc",
+  "dcmview_version": "0.4.0",
+  "git_commit": "e1057e3b3aa0f12ed721d0ca8380fcd95446eb3f",
   "git_dirty": false,
   "reports": [
     {
       "browser_version": "151.0.7922.34",
       "ffmpeg_version": "ffmpeg version 6.0 Copyright (c) 2000-2023 the FFmpeg developers",
-      "file_index": 119,
+      "file_index": 120,
       "node_version": "v26.8.2",
       "patient_ids": [
         "ACRIN-6698-234723"
@@ -277,12 +288,12 @@
         "height": 900,
         "width": 1440
       },
-      "visible_text_sha256": "1047c20268ee6ec4ee4e7f2979c22b542d0f26b8d646c27a8f7509448a411b28"
+      "visible_text_sha256": "18eb5dc578d07c1ecefd6640500ef8f7a85d54b1f8948879bdee89695a0d6552"
     },
     {
       "browser_version": "151.0.7922.34",
       "ffmpeg_version": "ffmpeg version 6.0 Copyright (c) 2000-2023 the FFmpeg developers",
-      "file_index": 4,
+      "file_index": 5,
       "node_version": "v26.8.2",
       "patient_ids": [
         "COVID-19-AR-16406502"
@@ -318,7 +329,7 @@
     {
       "browser_version": "151.0.7922.34",
       "ffmpeg_version": "ffmpeg version 6.0 Copyright (c) 2000-2023 the FFmpeg developers",
-      "file_index": 0,
+      "file_index": 1,
       "node_version": "v26.8.2",
       "patient_ids": [
         "D1-0021"
@@ -336,7 +347,7 @@
     {
       "browser_version": "151.0.7922.34",
       "ffmpeg_version": "ffmpeg version 6.0 Copyright (c) 2000-2023 the FFmpeg developers",
-      "file_index": 80,
+      "file_index": 136,
       "node_version": "v26.8.2",
       "patient_ids": [
         "PSMA_f77011649a56cf08"
@@ -354,7 +365,7 @@
     {
       "browser_version": "151.0.7922.34",
       "ffmpeg_version": "ffmpeg version 6.0 Copyright (c) 2000-2023 the FFmpeg developers",
-      "file_index": 7,
+      "file_index": 2,
       "node_version": "v26.8.2",
       "patient_ids": [
         "MSB-07848"
@@ -385,12 +396,12 @@
         "height": 900,
         "width": 1440
       },
-      "visible_text_sha256": "1cf9a276fce6b489a760a8dca939e0c56a58ca2a7ee9bfdd487bf376b017c441"
+      "visible_text_sha256": "422ff2da0b3b657f3e1927e14f52f8df296b1f0d92b3b0e07ca6a0fe01ccedf5"
     },
     {
       "browser_version": "151.0.7922.34",
       "ffmpeg_version": null,
-      "file_index": 1,
+      "file_index": 2,
       "node_version": "v26.8.2",
       "patient_ids": [
         "GTEX-17HHY"
@@ -403,12 +414,12 @@
         "height": 900,
         "width": 1440
       },
-      "visible_text_sha256": "2bfd30850027ead9894da9422861c6ec065c1864aa864c5bc2324413d8107ce0"
+      "visible_text_sha256": "a5d4313b6ebcc3b2bc61641f70959c700a6aa4dc24a91496adf95c33c13c63fd"
     },
     {
       "captured_frames": 48,
       "ffmpeg_version": "ffmpeg version 6.0 Copyright (c) 2000-2023 the FFmpeg developers",
-      "file_index": 42,
+      "file_index": 2,
       "node_version": "v26.8.2",
       "patient_ids": [
         "COVID-19-AR-16406502"
