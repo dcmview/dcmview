@@ -2,10 +2,27 @@
 
 ## Unreleased
 
+## 0.4.0 - 2026-10-08
+
+- The bundled viewer now requires an access token on every API request. The
+  extension passes it to the viewer panel, so opening files and folders works
+  as before. Scripts that call the viewer's HTTP API directly must send
+  `Authorization: Bearer <token>`; see the main changelog.
 - Preserve the access token across VS Code port forwarding by forwarding
-  `base_url` and attaching `token` afterwards. Older binaries still use `url`.
-  Bridge clients receive the token-bearing launch URL, startup credentials are
-  omitted from extension output, and socket-only startup events fail clearly.
+  `base_url` and attaching `token` afterwards, so Remote-SSH sessions keep
+  working. Older binaries still use `url`. Bridge clients receive the
+  token-bearing launch URL, startup credentials are omitted from extension
+  output, and socket-only startup events fail clearly.
+- Viewer shortcuts no longer fire while Ctrl, Cmd or Alt is held, so Ctrl+Z
+  and Ctrl+R reach VS Code instead of selecting the Zoom or ROI tool.
+- Export ROIs reports a failed export in the viewer.
+- A redaction box change can no longer leave a frame cached without the new
+  box.
+- `--unix-socket` is not supported in `dcmview.extraArgs`: the extension
+  needs an HTTP viewer URL.
+- `DCMVIEW_TOKEN` set only in a terminal or notebook is not passed through
+  the bridge. A viewer the extension manages inherits the extension host's
+  environment and otherwise generates its own token.
 
 ## 0.3.2 - 2026-10-02
 

@@ -25,25 +25,25 @@ loopback binding and SSH forwarding for remote workflows.
 
 ### Cine playback and semantic context
 
-![Chest CT cine playback in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.3.2/media/marketing/chest-ct-cine.gif)
+![Chest CT cine playback in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.4.0/media/marketing/chest-ct-cine.gif)
 
-![DICOM SEG semantic overlay in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.3.2/media/marketing/mr-seg-cine.gif)
+![DICOM SEG semantic overlay in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.4.0/media/marketing/mr-seg-cine.gif)
 
 ### Modality coverage
 
-![Chest radiograph in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.3.2/media/marketing/radiograph.png)
+![Chest radiograph in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.4.0/media/marketing/radiograph.png)
 
-![Mammography study in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.3.2/media/marketing/mammography.gif)
+![Mammography study in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.4.0/media/marketing/mammography.gif)
 
-![PET cine playback in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.3.2/media/marketing/pet-cine.gif)
+![PET cine playback in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.4.0/media/marketing/pet-cine.gif)
 
-![Ultrasound cine playback in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.3.2/media/marketing/ultrasound-cine.gif)
+![Ultrasound cine playback in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.4.0/media/marketing/ultrasound-cine.gif)
 
-![RT Dose semantic context in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.3.2/media/marketing/rt-dose-context.png)
+![RT Dose semantic context in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.4.0/media/marketing/rt-dose-context.png)
 
-![DICOM whole-slide microscopy context in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.3.2/media/marketing/wsi-context.png)
+![DICOM whole-slide microscopy context in dcmview](https://raw.githubusercontent.com/dcmview/dcmview/v0.4.0/media/marketing/wsi-context.png)
 
-[Source imagery attribution](https://raw.githubusercontent.com/dcmview/dcmview/v0.3.2/media/marketing/ATTRIBUTION.md)
+[Source imagery attribution](https://raw.githubusercontent.com/dcmview/dcmview/v0.4.0/media/marketing/ATTRIBUTION.md)
 <!-- dcmview-marketing:end -->
 
 ## Why use it?
@@ -136,10 +136,11 @@ Run without opening a browser, useful on a remote server:
 dcmview --no-browser ./study_dir
 ```
 
-When ready, `dcmview` prints a URL:
+When ready, `dcmview` prints the launch URL. Its `#token=...` fragment is the
+session's access token, so open the complete link:
 
 ```text
-dcmview: server running at http://127.0.0.1:<port>
+dcmview: server running at http://127.0.0.1:<port>/#token=<session-token>
 ```
 
 Press Ctrl+C to stop the server.

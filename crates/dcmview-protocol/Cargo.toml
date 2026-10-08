@@ -2,7 +2,7 @@
 name = "dcmview-protocol"
 # Always the viewer's version: other repositories pin this crate by dcmview
 # release tag, and `scripts/check_versions.py` rejects drift.
-version = "0.3.3"
+version = "0.4.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
