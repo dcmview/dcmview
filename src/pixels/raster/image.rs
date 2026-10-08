@@ -73,7 +73,11 @@ impl WebpChunk {
     fn check_size(&self, source: &mut Reader<'_>, expected: (u64, u64)) -> Result<()> {
         let size = match &self.name {
             b"VP8 " => {
-                let [_, _, _, s0, s1, s2, w0, w1, h0, h1] = read_at(source, self.payload)?;
+                let [tag, _, _, s0, s1, s2, w0, w1, h0, h1] = read_at(source, self.payload)?;
+                // Only a key frame has the start code and size read here; in
+                // any other frame these bytes are the start of a partition,
+                // and the decoder would be sized by none of them.
+                ensure!(tag & 1 == 0, "WebP VP8 frame is not a key frame");
                 ensure!(
                     [s0, s1, s2] == [0x9d, 0x01, 0x2a],
                     "invalid WebP VP8 start code"

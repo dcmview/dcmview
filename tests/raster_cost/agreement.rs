@@ -140,6 +140,77 @@ async fn a_webp_bitstream_larger_than_its_canvas_is_refused_before_it_is_decoded
     .await;
 }
 
+/// `bitstream`, a lossy key frame, declaring that its coefficients are in two
+/// partitions and that the first is as long as a partition can be declared:
+/// 16 MiB less a byte, none of which the file holds.
+fn vp8_with_an_unbacked_partition(mut bitstream: Vec<u8>) -> Vec<u8> {
+    let tag = u32::from_le_bytes([bitstream[0], bitstream[1], bitstream[2], 0]);
+    let header = 10..10 + (tag >> 5) as usize;
+    // The first partition begins with sixteen bits of flags and small
+    // numbers, stored bit for bit when the first is zero. Neither flag that
+    // would put more fields among them is set in this file (segments, the
+    // third bit, and filter adjustments, the fourteenth), so the last two
+    // are the number of partitions: 1 for two.
+    assert_eq!(bitstream[header.start], 0);
+    assert_eq!(bitstream[header.start + 1] & 0x07, 0);
+    bitstream[header.start + 1] |= 0x01;
+    bitstream.splice(header.end..header.end, [0xff; 3]);
+    bitstream
+}
+
+/// The decoder of a lossy bitstream allocates each partition of
+/// coefficients at the length the bitstream declares for it, up to 16 MiB,
+/// before reading it, and stops at the first the file does not hold. The
+/// heap limit has room for that one partition. A frame that is not a key
+/// frame has no size to compare with the entry (the bytes where a key frame
+/// states one are the start of its first partition), so it is refused before
+/// the decoder is given the file.
+#[tokio::test]
+async fn a_webp_partition_the_file_does_not_hold_stays_within_the_heap_limit() {
+    use Outcome::Fails;
+    let lossy = chunk_of(&files::lossy_webp(), b"VP8 ");
+    let unbacked = files::riff_chunk(b"VP8 ", &vp8_with_an_unbacked_partition(lossy.clone()));
+    // The same frame with the key-frame bit of its tag set, which says it is
+    // not one: its header is then read from the start code and size, and
+    // the partition length from the three bytes after it.
+    let mut inter = lossy.clone();
+    inter[0] |= 0x01;
+    let first = 3 + (u32::from_le_bytes([inter[0], inter[1], inter[2], 0]) >> 5) as usize;
+    inter[first..first + 3].fill(0xff);
+    let inter = files::riff_chunk(b"VP8 ", &inter);
+    let anim = files::riff_chunk(b"ANIM", &[0; 6]);
+
+    assert_hostile(vec![
+        Hostile::new(
+            "webp key frame with a partition of 16 MiB it does not hold",
+            files::webp_from_chunks(&unbacked),
+            Fails,
+        ),
+        Hostile::new(
+            "webp extended key frame with a partition of 16 MiB it does not hold",
+            extended(0, (16, 16), &[&unbacked]),
+            Fails,
+        ),
+        Hostile::new(
+            "webp lossy image that is not a key frame",
+            extended(0, (16, 16), &[&inter]),
+            Fails,
+        )
+        .holding_at_most(MIB),
+        Hostile::new(
+            "webp animation whose first frame is not a key frame",
+            extended(
+                ANIMATION,
+                (16, 16),
+                &[&anim, &anmf((0, 0), (16, 16), &inter)],
+            ),
+            Fails,
+        )
+        .holding_at_most(MIB),
+    ])
+    .await;
+}
+
 /// A profile chunk's declared length is not a size to allocate: one that
 /// reaches past the end of the file, or is more than a frame carries, is
 /// left out and the frame is decoded.
@@ -153,9 +224,9 @@ async fn a_webp_profile_chunk_is_never_allocated_at_a_length_it_only_declares() 
         ),
     );
     // The heap limit of an 8 x 8 RGB frame from a file this small is a
-    // little over 16 MiB. The chunk claims that much.
+    // little over 32 MiB. The chunk claims 48.
     let mut claim = b"ICCP".to_vec();
-    claim.extend_from_slice(&(16 * MIB as u32).to_le_bytes());
+    claim.extend_from_slice(&(48 * MIB as u32).to_le_bytes());
     claim.extend_from_slice(&[0x33; 64]);
     let too_large = files::icc_profile(b"RGB ", pixels::RASTER_ICC_MAX_BYTES + 2, 0x33);
     let largest = files::icc_profile(b"RGB ", pixels::RASTER_ICC_MAX_BYTES, 0x33);

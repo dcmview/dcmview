@@ -273,6 +273,9 @@ pub(super) struct Hostile {
     /// The most bytes the decode may read, when the case pins less than the
     /// read budget.
     most_bytes: Option<u64>,
+    /// The most heap the decode may hold, when the case pins less than the
+    /// heap limit.
+    most_heap: Option<u64>,
 }
 
 impl Hostile {
@@ -284,6 +287,7 @@ impl Hostile {
             frame: 0,
             outcome,
             most_bytes: None,
+            most_heap: None,
         }
     }
 
@@ -294,6 +298,11 @@ impl Hostile {
 
     pub(super) fn reading_at_most(mut self, bytes: u64) -> Self {
         self.most_bytes = Some(bytes);
+        self
+    }
+
+    pub(super) fn holding_at_most(mut self, bytes: u64) -> Self {
+        self.most_heap = Some(bytes);
         self
     }
 }
@@ -710,6 +719,13 @@ pub(super) async fn assert_hostile(cases: Vec<Hostile>) {
                 cost.bytes <= most,
                 "{name}: {} bytes read, at most {most} expected",
                 cost.bytes
+            );
+        }
+        if let Some(most) = case.most_heap {
+            assert!(
+                cost.heap <= most,
+                "{name}: {} bytes of heap held, at most {most} expected",
+                cost.heap
             );
         }
     }

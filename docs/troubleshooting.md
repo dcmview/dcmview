@@ -167,7 +167,8 @@ Keep the source if its precision or metadata matters to your work.
 An image that is listed but answers `500` with a decode error is damaged or
 is built in a way the viewer refuses to follow:
 
-- a WebP whose image data states another size than the file's header;
+- a WebP whose image data states another size than the file's header, or
+  whose lossy image is not a key frame;
 - a TIFF page that lists a tag twice (the file changed after it was listed);
 - a TIFF whose tiles are 4,096 pixels or more wider or longer than the
   image, which would have the decoder read far more than the image holds;

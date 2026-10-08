@@ -69,8 +69,16 @@ pub const RASTER_TIFF_TILE_MARGIN: u32 = 4096;
 pub const RASTER_JPEG_MAX_SCANS: usize = 100;
 
 /// The part of [`raster_decode_heap_limit`] that does not depend on the
-/// image.
-pub const RASTER_DECODE_HEAP_BASE_BYTES: u64 = 16 * 1024 * 1024;
+/// image: 16 MiB for decoder state and the copies made of a profile, and
+/// room for the one allocation a decoder crate sizes from the file that
+/// cannot be checked first. A lossy WebP's decoder allocates each partition
+/// of coefficients at the length its bitstream declares, up to 2^24 - 1
+/// bytes held in four-byte words, before reading it, and gives up at the
+/// first one the file does not hold. So one partition of 16 MiB can be held
+/// with no bytes behind it, beside the read buffer it was to be filled
+/// through.
+pub const RASTER_DECODE_HEAP_BASE_BYTES: u64 =
+    16 * 1024 * 1024 + (1 << 24) + RASTER_READ_BUFFER_BYTES as u64;
 
 /// The bytes one decoded frame of `file` holds: `rows * columns *
 /// samples_per_pixel * bits_allocated / 8`, from the catalog entry. `None`
@@ -110,14 +118,16 @@ pub fn raster_read_budget(file: &FileEntry) -> Option<u64> {
 ///   + 4 * min(length, raster_read_budget(file))
 /// ```
 ///
-/// The first term covers decoder state, the read buffer and the copies made
-/// of a profile of [`RASTER_ICC_MAX_BYTES`]; the second the frame, the
-/// decoder's own copy of it and its working rows, planes or coefficients;
-/// the third an encoded image held in memory while it is decoded (JPEG and
-/// WebP) and what is assembled from its segments. Nothing in it is a number
-/// the file declares: the frame size is the catalog's, checked against the
-/// file before anything is allocated for it, and `length` is bytes that
-/// exist. `None` exactly when [`raster_frame_bytes`] is.
+/// The first term covers decoder state, the read buffer, the copies made
+/// of a profile of [`RASTER_ICC_MAX_BYTES`] and one partition of a lossy
+/// WebP at the largest length a bitstream can declare for it; the second
+/// the frame, the decoder's own copy of it and its working rows, planes or
+/// coefficients; the third an encoded image held in memory while it is
+/// decoded (JPEG and WebP) and what is assembled from its segments. Nothing
+/// in it is a number the file declares: the frame size is the catalog's,
+/// checked against the file before anything is allocated for it, and
+/// `length` is bytes that exist. `None` exactly when [`raster_frame_bytes`]
+/// is.
 pub fn raster_decode_heap_limit(file: &FileEntry, length: u64) -> Option<u64> {
     let budget = raster_read_budget(file)?;
     Some(RASTER_DECODE_HEAP_BASE_BYTES + 6 * raster_frame_bytes(file)? + 4 * length.min(budget))
@@ -208,6 +218,11 @@ impl<T: Read + Seek> RasterSource for T {}
 ///   is the two 14-bit numbers after its start code `9D 01 2A`; a `VP8L`
 ///   bitstream's is the two 14-bit numbers, each one less than the size,
 ///   after its signature byte `2F`.
+/// - **WebP key frames.** A `VP8 ` bitstream must be a key frame (the lowest
+///   bit of its first byte is 0), as a still image and the first frame of
+///   an animation are. Only a key frame has a start code and a size; one
+///   that says it is not is a decode error before the decoder is given the
+///   file.
 /// - **WebP profile.** An `ICCP` chunk is read only when it comes before the
 ///   first image chunk, as the format requires, declares at most
 ///   [`RASTER_ICC_MAX_BYTES`] and ends inside the file. Any other is left
@@ -282,7 +297,11 @@ impl<T: Read + Seek> RasterSource for T {}
 ///   chunk that inflates past [`RASTER_ICC_MAX_BYTES`] or names a length
 ///   beyond the file is never allocated at its declared size, and a
 ///   compressed strip, tile or chunk is never buffered at a declared length
-///   larger than the read budget.
+///   larger than the read budget. One allocation is sized by the file
+///   unchecked, and the limit has room for it: a partition of a lossy
+///   WebP's coefficients, at the length its bitstream declares, which is
+///   less than 16 MiB. The decoder stops at the first partition the file
+///   does not hold, so at most one is held without bytes behind it.
 /// - **Time.** There are no wall-clock limits and no cancellation inside one
 ///   frame: like every decode it holds a permit of the decode scheduler and
 ///   runs to completion, and the limits above are what bound it.

@@ -851,7 +851,8 @@ the file, for a raster that has one.
     sees the file: the bitstream there (`VP8 `, `VP8L`, or the one inside
     the first `ANMF` frame) must state the size of the canvas, or of its
     frame inside the canvas, because a lossy bitstream's decoder allocates
-    by the size the bitstream states;
+    by the size the bitstream states. A lossy bitstream must be a key
+    frame: no other frame states a size;
   - a WebP profile chunk is read only when it precedes the image, declares
     at most 4 MiB and ends inside the file;
   - a TIFF page that holds any tag twice is refused, by discovery and again
@@ -882,15 +883,19 @@ the file, for a raster that has one.
     at most 65,536 strips or tiles and 4,096 tags on a page;
   - at most 100 scans in a progressive JPEG;
   - at most `raster_decode_heap_limit` bytes of heap on the decoding thread
-    (16 MiB, six times the frame, four times the bytes read), so a profile,
-    text chunk, strip or tile is never allocated at a size it merely
-    declares.
+    (a fixed 32 MiB and one read buffer, six times the frame, four times the
+    bytes read), so a profile, text chunk, strip or tile is never allocated
+    at a size it merely declares. Half of the fixed part is for the one
+    allocation a file sizes unchecked: the decoder of a lossy WebP
+    allocates a partition of coefficients at its declared length, under
+    16 MiB, before reading it, and stops at the first the file does not
+    hold.
   A decode holds a scheduler permit and runs to completion; these limits,
   not cancellation, bound it.
 - **Memory across decodes.** The limits above are per decode. A frame at
   the pixel limit is 256 MiB of 8-bit gray samples and 2 GiB at four 16-bit
   samples or one 64-bit sample a pixel, and `raster_decode_heap_limit` for
-  it is 16 MiB, six times that frame and four times the file read (itself
+  it is 32 MiB, six times that frame and four times the file read (itself
   at most the read budget, 64 MiB plus four times the frame). The decoder
   paths hold about half of the frame term on the files
   `tests/raster_cost/scale.rs` measures: at most three frames. Nothing admits
