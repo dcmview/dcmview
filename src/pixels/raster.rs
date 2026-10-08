@@ -11,6 +11,7 @@
 //! `service.rs`, so a raster frame takes the same caches, decode permits,
 //! redaction and thumbnail paths as a DICOM frame.
 
+mod display;
 mod image;
 mod png;
 mod reader;
@@ -331,7 +332,14 @@ pub(super) fn render_raster_frame(
     _requested_ww: Option<f64>,
     _window_mode: WindowMode,
 ) -> anyhow::Result<DisplayBuffer> {
-    todo!("FMT2: render a decoded raster frame for display")
+    display::render(
+        _file,
+        _frame,
+        _decoded,
+        _requested_wc,
+        _requested_ww,
+        _window_mode,
+    )
 }
 
 /// Opens `file.path` and decodes `frame` from it.
