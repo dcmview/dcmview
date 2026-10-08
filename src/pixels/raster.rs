@@ -385,7 +385,8 @@ pub fn decode_raster_frame(
     let listed = file.raster.as_ref().map_or(0, |raster| raster.file_length);
     if length > listed {
         return Err(PixelError::frame_decode(anyhow::anyhow!(
-            "raster file has grown since it was listed"
+            "the file has changed since it was listed (it is longer now); \
+             reopen the folder to view it"
         )));
     }
     if file.format != crate::api::contracts::FileFormat::Tiff && length > budget {

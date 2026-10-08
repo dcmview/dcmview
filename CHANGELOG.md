@@ -98,8 +98,8 @@ diagnostic viewer.
   whether the catalog lists a file as renderable.
 - A PNG, JPEG or WebP longer than its read budget is listed as unsupported
   instead of failing with 500 on every frame request.
-- A raster file that has grown since it was listed is not decoded; restart
-  the viewer to inspect it again at its new length.
+- A raster file that has grown since it was listed is not decoded, and the
+  error says so; reopen the folder to inspect it at its new length.
 - A dropped window/level preview no longer frees its decode permit while
   its decode is still running.
 - A display or raw frame request that is abandoned while it waits for

@@ -178,8 +178,9 @@ is built in a way the viewer refuses to follow:
 - a TIFF strip or tile whose compressed data runs past its declared length;
 - a TIFF frame whose data takes more than 64 MiB plus four times its
   decoded frame to read;
-- a raster file that has grown since discovery listed it. Restart the viewer
-  to inspect the file again at its new length.
+- a raster file that has grown since discovery listed it. The message says
+  the file changed; reopen the folder (start dcmview on it again) to
+  inspect the file at its new length.
 
 Re-encode a copy with an ordinary tool (`tiffcp`, ImageMagick, `cwebp`); a
 file such tools cannot read is damaged.

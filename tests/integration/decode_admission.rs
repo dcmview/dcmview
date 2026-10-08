@@ -1542,7 +1542,14 @@ async fn a_raster_that_has_grown_since_it_was_listed_is_not_decoded() {
         for suffix in ["", "/raw"] {
             let response = server.get(&format!("/api/file/0/frame/0{suffix}")).await;
             assert_eq!(response.status_code(), 500, "{suffix}: {}", response.text());
-            assert_eq!(response.json::<Value>()["code"], "pixel_decode_failed");
+            let body: Value = response.json();
+            assert_eq!(body["code"], "pixel_decode_failed");
+            // The viewer shows this text: it says what to do.
+            let text = body["error"].as_str().expect("error text");
+            assert!(
+                text.contains("changed") && text.contains("reopen"),
+                "{text}"
+            );
         }
         // The same file back at its listed length decodes again.
         std::fs::write(&entry.path, &bytes).expect("restore the file");
