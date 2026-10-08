@@ -112,8 +112,40 @@ impl Document {
     /// version reads. Records are read for shape only; call
     /// [`Document::validate`] for the strict check.
     pub fn from_json_str(text: &str) -> Result<Document, DocumentError> {
-        let _ = text;
-        todo!("FND3: read a document")
+        let limit = crate::limits::MAX_DOCUMENT_BYTES;
+        if text.len() > limit {
+            return Err(DocumentError::TooLarge {
+                bytes: text.len(),
+                limit,
+            });
+        }
+        let document: Document = serde_json::from_str(text)
+            .map_err(|error| DocumentError::Malformed(error.to_string()))?;
+        if document.format != FORMAT {
+            return Err(DocumentError::WrongFormat {
+                found: document.format,
+            });
+        }
+        let valid = document.version.len() <= 19
+            && document
+                .version
+                .split_once('.')
+                .is_some_and(|(major, minor)| {
+                    let digits = |part: &str| {
+                        !part.is_empty()
+                            && part.len() <= 9
+                            && part.bytes().all(|b| b.is_ascii_digit())
+                    };
+                    digits(major)
+                        && digits(minor)
+                        && major.parse::<u32>().ok() == Some(VERSION_MAJOR)
+                });
+        if !valid {
+            return Err(DocumentError::UnsupportedVersion {
+                found: document.version,
+            });
+        }
+        Ok(document)
     }
 
     /// The strict check of a whole document: what the native format's
@@ -137,7 +169,7 @@ impl Document {
     /// Work is linear in the size of the document, and stops after 32
     /// violations ([`crate::limits::MAX_VIOLATIONS`]).
     pub fn validate(&self) -> Result<(), Invalid> {
-        todo!("FND3: validate a document")
+        crate::Check::check(self, ())
     }
 }
 

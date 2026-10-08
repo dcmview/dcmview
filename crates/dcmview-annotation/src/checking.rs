@@ -1028,3 +1028,117 @@ impl Checks {
         self.meta(&label.meta, path)
     }
 }
+
+checked!(crate::Document, (), document);
+
+impl Checks {
+    fn document(&mut self, document: &crate::Document, path: &str, _: ()) -> Checked {
+        let implicit;
+        let schema = if let Some(schema) = &document.schema {
+            self.schema(schema, &format!("{path}/schema"), ())?;
+            schema
+        } else {
+            implicit = LabelSchema::implicit();
+            &implicit
+        };
+        let mut files = std::collections::HashMap::new();
+        for (i, file) in document.files.iter().enumerate() {
+            let path = format!("{path}/files/{i}");
+            self.file(file, &path, ())?;
+            self.require(
+                files.insert(&file.key, file.size()).is_none(),
+                DuplicateFileKey,
+                &format!("{path}/key"),
+                "File keys must be distinct.",
+            )?;
+        }
+        let mut layers = HashSet::new();
+        let layers_bounded = self.bound(
+            document.layers.len(),
+            MAX_SCHEMA_ITEMS,
+            TooManyItems,
+            &format!("{path}/layers"),
+        )?;
+        if layers_bounded {
+            for (i, layer) in document.layers.iter().enumerate() {
+                let path = format!("{path}/layers/{i}");
+                self.layer(layer, &path, ())?;
+                self.require(
+                    layers.insert(&layer.id),
+                    DuplicateId,
+                    &format!("{path}/id"),
+                    "Layer identifiers must be distinct.",
+                )?;
+            }
+        }
+        let lookup = |key: &crate::FileKey| files.get(key).copied();
+        let context = Context {
+            files: &lookup,
+            schema,
+        };
+        let mut annotation_ids = HashSet::new();
+        for (i, annotation) in document.annotations.iter().enumerate() {
+            let path = format!("{path}/annotations/{i}");
+            self.annotation(annotation, &path, &context)?;
+            if layers_bounded {
+                self.require(
+                    layers.contains(&annotation.layer),
+                    UnknownLayer,
+                    &format!("{path}/layer"),
+                    "The annotation must name a layer in the document.",
+                )?;
+            }
+            self.require(
+                annotation_ids.insert(annotation.id),
+                DuplicateId,
+                &format!("{path}/id"),
+                "Annotation identifiers must be distinct.",
+            )?;
+        }
+        let mut label_ids = HashSet::new();
+        let mut label_keys = HashSet::new();
+        for (i, label) in document.labels.iter().enumerate() {
+            let path = format!("{path}/labels/{i}");
+            self.label(label, &path, &context)?;
+            if layers_bounded {
+                self.require(
+                    layers.contains(&label.layer),
+                    UnknownLayer,
+                    &format!("{path}/layer"),
+                    "The label must name a layer in the document.",
+                )?;
+            }
+            self.require(
+                label_ids.insert(label.id),
+                DuplicateId,
+                &format!("{path}/id"),
+                "Label identifiers must be distinct.",
+            )?;
+            // Do not allocate canonical ids from targets rejected for size.
+            let target_bounded = match &label.target {
+                LabelTarget::Patient { patient: id }
+                | LabelTarget::Study { study: id }
+                | LabelTarget::Series { series: id } => id.len() <= MAX_NAME_BYTES,
+                LabelTarget::Folder { folder, root } => {
+                    folder.len() <= MAX_PATH_BYTES && root.len() <= MAX_ID_BYTES
+                }
+                _ => true,
+            };
+            if target_bounded && label.field.len() <= MAX_ID_BYTES {
+                let key = (
+                    label.target.canonical_id(),
+                    &label.field,
+                    &label.layer,
+                    &label.meta.created_by,
+                );
+                self.require(
+                    label_keys.insert(key),
+                    DuplicateLabel,
+                    &path,
+                    "Labels must differ by target, field, layer or creator.",
+                )?;
+            }
+        }
+        Ok(())
+    }
+}
