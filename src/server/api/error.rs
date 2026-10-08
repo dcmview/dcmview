@@ -244,3 +244,24 @@ impl IntoResponse for ApiError {
         response
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The request log reports the responses that carry a
+    /// `ServerErrorMessage`. A busy answer is the decode memory budget at
+    /// work, not a fault, and carries none; a decode that failed does.
+    #[test]
+    fn a_busy_answer_is_not_reported_as_a_server_error() {
+        let reported = |error: PixelError| {
+            let response = pixel_error(error).into_response();
+            assert!(response.status().is_server_error());
+            response.extensions().get::<ServerErrorMessage>().is_some()
+        };
+        assert!(!reported(PixelError::DecodeBusy));
+        assert!(reported(PixelError::frame_decode(anyhow::anyhow!(
+            "corrupt"
+        ))));
+    }
+}
