@@ -1034,21 +1034,25 @@ the file, for a raster that has one.
 - **Memory across decodes.** The limits above are per decode. A frame at
   the pixel limit is 256 MiB of 8-bit gray samples and 2 GiB at four 16-bit
   samples or one 64-bit sample a pixel, and `raster_decode_heap_limit` for
-  it is 32 MiB, six times that frame and four times the file read (itself
-  at most the read budget, 64 MiB plus four times the frame). The decoder
+  it is 32 MiB and one read buffer, six times that frame and four times
+  the file read (itself at most the read budget, 64 MiB plus four times the
+  frame). The decoder
   paths hold about half of the frame term on the files
   `tests/raster_cost/scale.rs` measures: at most three frames. That limit
   is what a raster decode reserves of the decode memory budget before it
   starts ("Decode Admission"), so the decodes running at once never have
-  more reserved than the budget. With the default 4 GiB, a display frame
-  of 8-bit gray at the pixel limit reserves about 2.3 GiB and one of 16-bit
-  gray about 3.8 GiB, so such frames are decoded one at a time. A display
-  frame of 8-bit colour fits the budget up to about 150 megapixels, and one
-  of 16-bit colour or of 32- or 64-bit samples up to about 50 to 80; a
-  larger one
-  is refused with `422 decode_memory_exceeded` until the viewer is started
-  with a larger `--decode-memory` (about 7 GiB for 8-bit colour at the
-  pixel limit, 17 GiB for 16-bit colour with alpha).
+  more reserved than the budget. The file term is part of every raster
+  reservation, so what fits depends on the file's length as well as on its
+  pixels: a display frame at the pixel limit reserves 2.3 GiB and four
+  times its file's length for 8-bit gray, 3.8 GiB and four times its file's
+  length for 16-bit gray, 6.8 GiB and the same for 8-bit RGB, and 16.6 GiB
+  and the same for 16-bit RGBA. With the default 4 GiB the first fits when
+  its file is no longer than 439 MiB and the second when its file is no
+  longer than 55 MiB; the colour layouts do not fit at that size. A frame
+  that does not fit is refused with `422 decode_memory_exceeded`, which
+  states the bytes it needs, until the viewer is started with a
+  `--decode-memory` of at least that. `docs/configuration.md`, "Decode
+  memory", has the table of examples.
 - **Raw frames hold stored sample semantics**, whatever a decoder returns
   (design section 5.2): low-bit PNG samples keep their stored values (a
   one-bit image is 0 and 1) in one byte each; 16-bit and wider samples are

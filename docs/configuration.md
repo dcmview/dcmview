@@ -98,30 +98,68 @@ total reserved by the decodes running at once within `--decode-memory`
 (default 4 GiB). Values are written as for `--cache-budget`; totals below
 `256MiB` are rejected.
 
+Showing one frame of an image file (PNG, JPEG, TIFF or WebP) reserves
+
+```text
+33.1 MiB + 6 x frame + 3 x display + 4 x min(file length, 64 MiB + 4 x frame)
+```
+
+where `frame` is the decoded frame (pixels x samples per pixel x bytes per
+sample), `display` is one byte per pixel for gray, three for 8-bit colour
+and six for deeper colour, and the file length is the one the file had when
+it was listed. Samples of 32 or 64 bits add 32 bytes per sample. A
+thumbnail reserves the same with one `display` instead of three and 7 MiB
+more. A DICOM frame reserves by its transfer syntax and not by the length of
+its file; [Decode Admission](architecture.md#decode-admission) lists every
+case.
+
+For a frame of 16,384 x 16,384 pixels, the largest an image file may have,
+that is:
+
+| Stored samples | Without the file term | Uncompressed file | File term at its most |
+|---|---|---|---|
+| 8-bit gray | 2.3 GiB | 3.3 GiB | 6.6 GiB |
+| 16-bit gray | 3.8 GiB | 5.8 GiB | 12.1 GiB |
+| 8-bit RGB | 6.8 GiB | 9.8 GiB | 19.1 GiB |
+| 8-bit RGBA | 8.3 GiB | 12.3 GiB | 24.6 GiB |
+| 16-bit RGBA | 16.6 GiB | 24.6 GiB | 48.8 GiB |
+
+The first column is what the frame reserves before four times its file's
+length is added; the second is a file as long as its decoded frame; the last
+is a file of 64 MiB plus four frames or longer.
+
 - Frames of ordinary size are unaffected: a 4096 x 5120 16-bit mammogram
-  reserves well under 1 GiB, so several decode at once.
-- Large frames take turns. With the default, 16,384 x 16,384 gray images,
-  8-bit or 16-bit, are decoded one at a time.
+  reserves between 197 and 477 MiB, depending on its transfer syntax, so
+  several decode at once.
+- Large frames take turns: a frame whose reservation does not fit beside
+  the decodes that are running waits for them to finish.
 - A frame that would need more than the whole budget is not decoded. The
-  viewer says how much memory it needs and names this option; the file is
-  still listed, and starting dcmview with a larger value decodes it. At the
-  default that is 8-bit colour above about 150 megapixels (12,000 x 12,000)
-  and 16-bit colour or 32- or 64-bit samples above about 50 to 80
-  megapixels.
-  `--decode-memory 8GiB` shows 8-bit colour up to the 16,384 x 16,384
-  limit; 16-bit colour with alpha at that size needs `17GiB`.
-- Thumbnails may use half of the budget between them, so they never hold up
-  the image you open. A frame too large for that half has no thumbnail and
-  still opens in the viewer.
-- If more than 1,024 frame requests are already waiting for memory, the
-  next is answered `503` with `Retry-After: 1` instead of waiting; the same
-  request succeeds once decodes finish. Thumbnails have a queue of their
-  own, of the same length.
+  viewer says how many bytes it needs and names this option; the file is
+  still listed, and starting dcmview with at least that value decodes it.
+- With the default, an 8-bit gray frame at the 16,384 x 16,384 limit is
+  shown when its file is no longer than 439 MiB, and a 16-bit gray one only
+  when its file is no longer than 55 MiB: an uncompressed 16-bit TIFF of
+  that size is 512 MiB and needs `--decode-memory 6GiB`. Colour at that
+  size needs more than the default whatever the file's length.
+- Whatever the file's length, the default shows square frames of 8-bit gray
+  up to 12,636 x 12,636, of 16-bit gray up to 9,215 x 9,215, of 8-bit RGB
+  up to 7,295 x 7,295 and of 16-bit RGBA up to 4,536 x 4,536. A larger
+  frame is shown only when its file is short enough for the sum above.
+- Thumbnails may reserve half of the budget between them, and no thumbnail
+  starts decoding while a frame the viewer asked for is waiting; one that
+  has already started finishes first. A frame too large for that half has
+  no thumbnail and still opens in the viewer: at the default, an 8-bit gray
+  frame at the pixel limit has a thumbnail only when its file is no longer
+  than 53 MiB.
+- When 1,024 frame requests are already waiting for memory, the next one
+  that would have to wait is answered `503` with `Retry-After: 1` instead;
+  the same request succeeds once decodes finish. Thumbnails have a queue of
+  their own, of the same length.
 
 This limits the memory of decodes in progress, not total process memory. The
 frame caches (`--cache-budget`), responses being sent, and browser memory are
-separate. The estimate is deliberately high (about six times the decoded
-frame for image files), so real use is usually well below the limit.
+separate. The estimate is deliberately high, so real use is usually well
+below the limit.
 
 ### Private Unix socket and SSH forwarding
 

@@ -259,23 +259,31 @@ Restart with a larger budget, for example:
 dcmview --decode-memory 8GiB ./study_dir
 ```
 
-The default is 4 GiB. See [Decode memory](configuration.md#decode-memory) for
-examples: 8 GiB serves 8-bit color up to 16,384 x 16,384 pixels, while 16-bit
-color with alpha at that size needs 17 GiB. Thumbnails share only half the
-budget, so a frame may open in the viewer but need a larger budget to have a
-thumbnail. The budget covers decodes in progress separately from the caches.
+The default is 4 GiB. The message gives the bytes this frame needs: a budget
+of at least that many decodes it. Thumbnails share only half the budget, so a
+frame may open in the viewer and still have no thumbnail until the budget is
+twice what the thumbnail's message says it needs. See
+[Decode memory](configuration.md#decode-memory) for what is reserved and
+for examples: an image file's reservation includes four times the length of
+its file, so of two images with the same pixels the longer file may be the
+one refused. The budget covers decodes in progress separately from the
+caches.
 
 ### The API answers 503 decode_busy
 
 The request would have to wait for decode capacity, and its class's waiting
-queue is full. Wait the number of seconds in `Retry-After` (currently 1), then
-repeat the request. This answer is not cached and does not change the file's
-support state. Cached frames remain available.
+queue is full. Wait the number of seconds in `Retry-After`, then repeat the
+request. This answer is not cached and does not change the file's support
+state. Cached frames remain available.
 
-For ordinary viewer use this requires large frames decoding while over a
-thousand interactive requests accumulate: the queue holds 1,024 waiting
-requests. Thumbnails have a separate queue of the same length. Reduce the
-number of requests in flight if an API client repeatedly reaches the limit.
+A queue holds 1,024 waiting requests, and the next request that would have
+to wait is refused. For ordinary viewer use that takes large frames decoding
+while more than a thousand requests for other frames accumulate. Thumbnails
+have a separate queue of the same length. Reduce the number of requests in
+flight if an API client repeatedly reaches the limit.
+
+A viewer that is stopping gives the same answer to every request still
+waiting for decode capacity.
 
 ### Image frame returns unsupported transfer syntax
 
