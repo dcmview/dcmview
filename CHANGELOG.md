@@ -10,6 +10,21 @@ diagnostic viewer.
 
 ## Unreleased
 
+### Added
+
+- `GET /api/file/{index}/frame/{frame}/thumbnail` returns JPEG previews at
+  bucketed sizes in physical aspect, with the default or full-dynamic window.
+  Thumbnails honour redaction boxes and display masking, omit shutters and
+  overlay planes, and use their own cache without evicting viewer frames.
+- Background thumbnail decodes yield to viewer decodes, with a capped share
+  of cores and a one-second interactive idle window on one-core hosts.
+
+### Changed
+
+- `--cache-budget BYTES` now also covers the thumbnail cache, and its default
+  total is 768 MiB instead of 704 MiB: 256, 384, 64 and 64 MiB for the
+  display, raw, overlay and thumbnail caches respectively.
+
 ## 0.4.0 - 2026-10-08
 
 ### Breaking changes

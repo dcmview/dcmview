@@ -9,7 +9,7 @@ use tokio::task;
 
 use super::error::{PixelError, PixelResult};
 use super::render::{
-    encode_windowed_luminance_png, DisplayPng, LuminanceRenderOptions, StoredSamples,
+    render_windowed_luminance, DisplayBuffer, DisplayPng, LuminanceRenderOptions, StoredSamples,
 };
 
 pub(crate) const DEFLATED_IMAGE_FRAME_UID: &str = "1.2.840.10008.1.2.8.1";
@@ -30,30 +30,66 @@ pub(crate) async fn decode_deflated_binary_frame_to_png(
     validate_binary_layout(&file)
         .map_err(|error| PixelError::UnsupportedLayout(error.to_string()))?;
     task::spawn_blocking(move || {
-        let decoded = decode_binary_frame(&file, frame).map_err(PixelError::frame_decode)?;
-        // One byte per binary sample, 0 or 1.
-        encode_windowed_luminance_png(
+        render_deflated_binary_frame_blocking(
             &file,
-            StoredSamples::Integer {
-                bytes: &decoded.samples,
-                bits_allocated: 8,
-                signed: false,
-            },
-            LuminanceRenderOptions {
-                frame,
-                rows: decoded.rows,
-                columns: decoded.columns,
-                requested_wc,
-                requested_ww,
-                window_mode,
-            },
-        )
+            frame,
+            requested_wc,
+            requested_ww,
+            window_mode,
+        )?
+        .into_display_png(&file, frame)
         .map_err(PixelError::frame_decode)
     })
     .await
     .map_err(|error| {
         PixelError::frame_decode(anyhow!("Deflated Image Frame decode task failed: {error}"))
     })?
+}
+
+pub(crate) async fn render_deflated_binary_frame(
+    file: Arc<FileEntry>,
+    frame: u32,
+    requested_wc: Option<f64>,
+    requested_ww: Option<f64>,
+    window_mode: WindowMode,
+) -> PixelResult<DisplayBuffer> {
+    validate_binary_layout(&file)
+        .map_err(|error| PixelError::UnsupportedLayout(error.to_string()))?;
+    task::spawn_blocking(move || {
+        render_deflated_binary_frame_blocking(&file, frame, requested_wc, requested_ww, window_mode)
+    })
+    .await
+    .map_err(|error| {
+        PixelError::frame_decode(anyhow!("Deflated Image Frame decode task failed: {error}"))
+    })?
+}
+
+fn render_deflated_binary_frame_blocking(
+    file: &FileEntry,
+    frame: u32,
+    requested_wc: Option<f64>,
+    requested_ww: Option<f64>,
+    window_mode: WindowMode,
+) -> PixelResult<DisplayBuffer> {
+    let decoded = decode_binary_frame(file, frame).map_err(PixelError::frame_decode)?;
+    // One byte per binary sample, 0 or 1.
+    render_windowed_luminance(
+        file,
+        StoredSamples::Integer {
+            bytes: &decoded.samples,
+            bits_allocated: 8,
+            signed: false,
+        },
+        LuminanceRenderOptions {
+            frame,
+            rows: decoded.rows,
+            columns: decoded.columns,
+            requested_wc,
+            requested_ww,
+            window_mode,
+        },
+    )
+    .map_err(PixelError::frame_decode)
 }
 
 pub(crate) async fn decode_raw_deflated_binary_frame(

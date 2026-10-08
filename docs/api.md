@@ -97,6 +97,7 @@ and redirects the bare prefix to its trailing-slash form.
 | GET | `/file/{index}/references` | `ReferenceCatalogResponse`: declared DICOM relationships and their local matches. |
 | GET | `/file/{index}/semantic-context` | `SemanticContextResponse`: SEG, Parametric Map, RT Dose, or softcopy presentation state context, or `not_applicable`. |
 | GET | `/file/{index}/frame/{frame}` | Display frame as `image/png`, with `X-Cache` and, for linearly windowed frames, `X-Frame-Window-Center`/`X-Frame-Window-Width`. Query: `wc`, `ww`, `mode`, `unit`, `preview`. |
+| GET | `/file/{index}/frame/{frame}/thumbnail` | Small `image/jpeg` preview, with `X-Cache`, `X-Thumbnail-Source` and `Cache-Control: no-store`. Query: `size`, `window_mode`. |
 | GET | `/file/{index}/frame/{frame}/raw` | Decoded samples as `application/octet-stream`, with `X-Cache` and `X-Frame-*` metadata headers. |
 | GET | `/file/{index}/frame/{frame}/raw/pixel?row=&column=` | One pixel of the raw frame as a 1x1 raw frame: its stored samples in color-by-pixel order (planar and subsampled YBR_FULL_422 resolved), with the same headers. `400` outside the frame. |
 | GET | `/file/{index}/frame/{frame}/presentation-layer` | The display shutter fill and overlay graphics of a grayscale display frame as an RGBA `image/png` of the frame's size, opaque gray where drawn and transparent elsewhere (fully transparent without a shutter or overlay), with `X-Cache`. |
@@ -144,6 +145,55 @@ now let a client reproduce every one, so it is always `true` and
 grayscale display frames carry a display shutter or overlay graphics; neither
 depends on the window, so `presentation-layer` drawn over a frame windowed in
 the browser gives exactly the display frame for that window.
+
+## Thumbnails
+
+`GET /api/file/{index}/frame/{frame}/thumbnail` returns a JPEG of the whole
+frame. `size` requests a longest edge in device pixels, snapped up to
+128, 256, 512 or 1024; omitted means 256. Zero, values above 1024 and malformed
+sizes return `400 invalid_query`. `window_mode` is `default` (also when
+omitted) or `full_dynamic`; other values return `400 invalid_query`.
+
+Every successful response carries these three thumbnail/cache headers:
+
+| Header | Values |
+|---|---|
+| `X-Cache` | `MISS` for a new render; `HIT` for a cached thumbnail or a shared render already underway. |
+| `X-Thumbnail-Source` | `full_decode` on a miss, `thumbnail_cache` on a hit or shared render. `display_cache`, `raw_cache` and `reduced_decode` are reserved and are not sent today. |
+| `Cache-Control` | `no-store`: file indexes belong to one process, so the same URL after a restart could refer to a different file. |
+
+The thumbnail uses the default window (DICOM window, else VOI LUT, else the
+automatic window), or the full dynamic range when requested. Modality
+transforms, MONOCHROME1 inversion, padding and palette/colour conversion
+match the display path. It omits the shutter and overlay planes, blanks
+redaction boxes **before** resampling, then shrinks in display space with an
+area filter and encodes at JPEG quality 85, without an ICC profile. Masked
+sessions withhold slide label and overview images just as for display frames.
+
+Geometry stays in the stored pixel grid, without cropping, rotation, flipping
+or enlargement. With `ratio = pixel_aspect_ratio` (pixel height over width;
+absent, non-finite or non-positive means 1), the dimensions are:
+
+```text
+width  = columns * min(1, 1 / ratio)
+height = rows    * min(1, ratio)
+scale  = min(1, bucket / max(width, height))
+thumbnail = (max(1, round(width * scale)), max(1, round(height * scale)))
+```
+
+A stored `(row, column)` maps to `(row * thumbnail_height / rows,
+column * thumbnail_width / columns)`, with no offset.
+
+Thumbnails share concurrent renders and fill only their own cache. The key
+includes file, frame, bucket, window mode and redaction revision, so edits to
+redaction boxes invalidate earlier previews. Background decode permits are
+awaited inside the request: aborting a queued request starts no work; once a
+render starts it finishes and caches its result even after disconnection.
+
+Errors use the shared JSON envelope: `404 not_found`, `404 frame_out_of_range`,
+`404 no_pixel_data`, `400 invalid_query`, `403 masked`,
+`422 unsupported_transfer_syntax`, `422 unsupported_pixel_layout`, or
+`500 pixel_decode_failed`. The common authentication requirement also applies.
 
 ## Display And Raw Frames
 
@@ -402,10 +452,12 @@ ends, and `roi_frames` is empty (every box covers every frame) or lists each
 box's zero-based frames. They live in memory for the session and are not part
 of the annotation CSV export.
 
-Both frame endpoints apply the boxes of the requested frame:
+Display, raw and thumbnail endpoints apply the boxes of the requested frame:
 
 - Display frames paint them black. The boxes' revision is part of the display
   cache key, so `X-Cache` is `MISS` for the first request after a change.
+- Thumbnails paint them black before resampling. The boxes' revision is part
+  of the thumbnail cache key too.
 - Raw frames, and `raw/pixel`, fill them with one stored value: the frame's
   darkest (its largest for MONOCHROME1), or black for color. Automatic windows
   computed from the samples are therefore unchanged.

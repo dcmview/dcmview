@@ -216,7 +216,7 @@ These exist so that a parent (a hub, or the Python wrapper) can run dcmview as
 a well-behaved child. The public ones are useful standalone too.
 
 - **`--cache-budget BYTES`** (public). Scales the display, raw and overlay
-  caches proportionally (default total about 700 MiB per process). A thumbnail
+  caches proportionally (default total 768 MiB per process, of which 64 MiB is the thumbnail cache). A thumbnail
   cache takes its share from the same budget.
 - **`--exit-with-parent`** (hidden). dcmview treats EOF on stdin as a stop
   signal. It only works if the parent passes a **pipe it keeps open** for the
