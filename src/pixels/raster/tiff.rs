@@ -1,7 +1,7 @@
 //! Read one recorded IFD, then present that page as the decoder's first page.
 use super::{
     checked_profile, reader::Reader, PixelError, PixelResult, RasterFrame, RASTER_ICC_MAX_BYTES,
-    RASTER_TIFF_MAX_CHUNKS, RASTER_TIFF_MAX_TAGS,
+    RASTER_TIFF_MAX_CHUNKS, RASTER_TIFF_MAX_TAGS, RASTER_TIFF_TILE_MARGIN,
 };
 use crate::api::contracts::RasterSampleFormat;
 use crate::types::FileEntry;
@@ -330,19 +330,11 @@ fn decode_page(
         let width = page.scalar(reader, 322, 0, length)?;
         let height = page.scalar(reader, 323, 0, length)?;
         ensure!(width > 0 && height > 0, "invalid TIFF tile dimensions");
-        if page.scalar(reader, 317, 1, length)? == 3 {
-            // tiff 0.9 allocates this padded predictor row without consulting
-            // Limits. Leave room in the fixed heap allowance for codec state
-            // and the retained profile, independently of declared tile width.
-            let row = width
-                .checked_mul(samples)
-                .and_then(|n| n.checked_mul(depth / 8))
-                .context("TIFF predictor row size overflow")?;
-            ensure!(
-                row <= expected + RASTER_ICC_MAX_BYTES as u64,
-                "TIFF predictor row exceeds heap allowance"
-            );
-        }
+        ensure!(
+            width < u64::from(file.columns) + u64::from(RASTER_TIFF_TILE_MARGIN)
+                && height < u64::from(file.rows) + u64::from(RASTER_TIFF_TILE_MARGIN),
+            "TIFF tile dimensions exceed image margin"
+        );
         (
             324,
             325,
