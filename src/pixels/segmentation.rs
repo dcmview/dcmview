@@ -75,7 +75,7 @@ pub(crate) fn segmentation_has_only_binary_samples(
                 .samples
                 .into(),
             Codec::JpegBaseline | Codec::JpegLossless | Codec::JpegLs | Codec::JpegXl => {
-                let decoded = super::pixeldata_frame::decode_object(&object, 0, "SEG")?;
+                let decoded = super::pixeldata_frame::decode_object(file, &object, 0, "SEG")?;
                 ensure!(
                     decoded.rows == file.rows
                         && decoded.columns == file.columns

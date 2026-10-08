@@ -648,6 +648,7 @@ dependencies = [
  "getrandom 0.3.4",
  "image",
  "jpeg2k",
+ "jxl-oxide",
  "libc",
  "lru",
  "open",

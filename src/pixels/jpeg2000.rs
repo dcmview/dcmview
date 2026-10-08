@@ -7,6 +7,7 @@ use std::io::Cursor;
 use std::sync::Arc;
 use tokio::task;
 
+use super::codestream::{self, CodestreamKind, Structure};
 use super::encapsulated::read_encapsulated_fragment_blocking;
 use super::error::{PixelError, PixelResult};
 use super::header::open_header;
@@ -40,9 +41,7 @@ fn decode_jp2_fragment_to_png_blocking(
 ) -> Result<DisplayPng> {
     let fragment = read_encapsulated_fragment_blocking(&file.path, frame)?;
 
-    let jp2_image = jpeg2k::Image::from_bytes(&fragment)
-        .map_err(anyhow::Error::from)
-        .context("failed to decode JP2 fragment")?;
+    let jp2_image = decode_checked(file, &fragment)?;
 
     let comps = jp2_image.components();
     if comps.is_empty() {
@@ -132,6 +131,23 @@ fn decode_jp2_fragment_to_png_blocking(
     Ok(DisplayPng::color(Bytes::from(buffer.into_inner())))
 }
 
+/// Decodes one frame's codestream once it is known to declare the entry's
+/// image. The decoder sizes everything from the codestream, so this is the
+/// only place a JPEG 2000 frame may be handed to it; a JP2 file is reduced
+/// to its codestream first, so none of its other boxes takes part.
+fn decode_checked(file: &FileEntry, fragment: &[u8]) -> Result<jpeg2k::Image> {
+    let declared = codestream::checked(file, CodestreamKind::Jpeg2000, fragment)?;
+    let Structure::Jpeg2000 { codestream, .. } = declared.structure else {
+        return Err(anyhow!("JP2 fragment was not read as JPEG 2000"));
+    };
+    let codestream = fragment
+        .get(codestream)
+        .context("JP2 codestream lies outside its fragment")?;
+    jpeg2k::Image::from_bytes(codestream)
+        .map_err(anyhow::Error::from)
+        .context("failed to decode JP2 fragment")
+}
+
 pub(crate) async fn decode_raw_jp2_samples(
     file: Arc<FileEntry>,
     frame: u32,
@@ -155,10 +171,7 @@ pub(super) fn decode_raw_fragment(
     file: &FileEntry,
     fragment: &[u8],
 ) -> PixelResult<(Bytes, RawFrameMetadata)> {
-    let jp2_image = jpeg2k::Image::from_bytes(fragment)
-        .map_err(anyhow::Error::from)
-        .context("failed to decode JP2 fragment for raw samples")
-        .map_err(PixelError::raw_decode)?;
+    let jp2_image = decode_checked(file, fragment).map_err(PixelError::raw_decode)?;
 
     let comps = jp2_image.components();
     if comps.is_empty() {

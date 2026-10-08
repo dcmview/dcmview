@@ -76,6 +76,10 @@ csv = "1"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 flate2 = "1.1"
 jpeg2k = { version = "0.10", default-features = false, features = ["openjp2"] }
+# The JPEG XL decoder dicom-pixeldata already links, named so that frames are
+# decoded under its allocation limit (docs/architecture.md, "Compressed
+# Frames Are Held To The Header").
+jxl-oxide = { version = "0.12.6", default-features = false }
 
 # CLI
 clap = { version = "4", features = ["derive"] }
