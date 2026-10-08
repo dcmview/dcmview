@@ -11,6 +11,7 @@
 //! `service.rs`, so a raster frame takes the same caches, decode permits,
 //! redaction and thumbnail paths as a DICOM frame.
 
+mod png;
 mod reader;
 
 use super::error::{PixelError, PixelResult};
@@ -426,7 +427,37 @@ fn decode_format(
     _expected: u64,
     _budget: u64,
 ) -> PixelResult<RasterFrame> {
-    Err(PixelError::frame_decode(anyhow::anyhow!(
-        "raster codec not implemented"
-    )))
+    match _file.format {
+        crate::api::contracts::FileFormat::Png => {
+            png::decode(_file, _reader, _length).map_err(PixelError::frame_decode)
+        }
+        _ => Err(PixelError::frame_decode(anyhow::anyhow!(
+            "raster codec not implemented"
+        ))),
+    }
+}
+
+/// Profiles describe the output channels, not merely the file's source color.
+fn checked_profile(file: &FileEntry, profile: Option<&[u8]>) -> Option<Vec<u8>> {
+    use crate::api::contracts::{FileFormat, RasterColorType};
+    let profile = profile?;
+    let cmyk = file.format == FileFormat::Jpeg
+        && file
+            .raster
+            .as_ref()
+            .is_some_and(|raster| raster.color_type == RasterColorType::Cmyk);
+    if !(3..=4).contains(&file.samples_per_pixel)
+        || cmyk
+        || profile.len() < 128
+        || profile.len() > RASTER_ICC_MAX_BYTES
+        || u32::from_be_bytes(profile[..4].try_into().expect("profile header")) as usize
+            != profile.len()
+        || &profile[36..40] != b"acsp"
+        || &profile[16..20] != b"RGB "
+    {
+        tracing::debug!("dropping raster profile that does not describe RGB output");
+        None
+    } else {
+        Some(profile.to_vec())
+    }
 }
