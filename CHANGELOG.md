@@ -10,8 +10,6 @@ diagnostic viewer.
 
 ## Unreleased
 
-## 0.4.0 - 2026-10-08
-
 ### Breaking changes
 
 - Image files now appear in mixed folders by default. Use `--formats dicom`
@@ -20,26 +18,6 @@ diagnostic viewer.
 - Discovery reason `missing_part10_preamble` is renamed `unrecognized_format`.
   Clients that grouped unknown files under the old code must map the new code
   to that same category; there is no flag that restores the old wire spelling.
-
-- Every `/api` request now requires `Authorization: Bearer <token>` by default,
-  including health and downloads, over TCP and Unix sockets. HTTP scripts must
-  read `token` and `base_url` from `--startup-json` (or extract the token from
-  the launch URL fragment and remove the fragment before adding API paths).
-  Missing or invalid credentials return `401 unauthorized` with
-  `WWW-Authenticate: Bearer`, for unknown API routes too. Startup `url` now
-  carries `#token=...`; JSON adds `base_url`, `token`, and `protocol`.
-  `DCMVIEW_TOKEN` fixes the session token; `--no-token` explicitly disables
-  authentication with a warning for use behind an authenticating proxy.
-  Public binds still warn about unencrypted HTTP.
-- The token is accepted in the `Authorization` header only: a query parameter
-  or cookie does not authenticate. The viewer page and its hashed assets stay
-  public and hold no file data. `DCMVIEW_TOKEN` must be non-empty and use only
-  `A-Z a-z 0-9 - . _ ~`; an invalid value, or the variable set together with
-  `--no-token`, stops startup. The token is never read from the command line.
-- Opening the viewer from the terminal, Python `view()` and the VS Code
-  extension need no change: each uses the launch URL, which carries the
-  token. A bookmarked or hand-typed `http://127.0.0.1:PORT/` without the
-  fragment now shows a page asking for the access link.
 
 ### Added
 
@@ -62,6 +40,32 @@ diagnostic viewer.
   and empty DICOM identity fields. Notes about a listed file, such as a TIFF
   page chain that could not be read to its end, are printed to stderr during
   discovery: at most 16 per file, the last counting any that are not shown.
+
+## 0.4.0 - 2026-10-08
+
+### Breaking changes
+
+- Every `/api` request now requires `Authorization: Bearer <token>` by default,
+  including health and downloads, over TCP and Unix sockets. HTTP scripts must
+  read `token` and `base_url` from `--startup-json` (or extract the token from
+  the launch URL fragment and remove the fragment before adding API paths).
+  Missing or invalid credentials return `401 unauthorized` with
+  `WWW-Authenticate: Bearer`, for unknown API routes too. Startup `url` now
+  carries `#token=...`; JSON adds `base_url`, `token`, and `protocol`.
+  `DCMVIEW_TOKEN` fixes the session token; `--no-token` explicitly disables
+  authentication with a warning for use behind an authenticating proxy.
+  Public binds still warn about unencrypted HTTP.
+- The token is accepted in the `Authorization` header only: a query parameter
+  or cookie does not authenticate. The viewer page and its hashed assets stay
+  public and hold no file data. `DCMVIEW_TOKEN` must be non-empty and use only
+  `A-Z a-z 0-9 - . _ ~`; an invalid value, or the variable set together with
+  `--no-token`, stops startup. The token is never read from the command line.
+- Opening the viewer from the terminal, Python `view()` and the VS Code
+  extension need no change: each uses the launch URL, which carries the
+  token. A bookmarked or hand-typed `http://127.0.0.1:PORT/` without the
+  fragment now shows a page asking for the access link.
+
+### Added
 
 - `--cache-budget BYTES` sets the combined display, raw and overlay frame cache
   budget, with proportional shares, binary suffixes such as `256MiB`, and a
