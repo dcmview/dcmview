@@ -1424,6 +1424,7 @@ async fn hashing_takes_background_permits_one_slice_at_a_time() {
             files_hashed: 1,
             bytes_hashed: len,
             slices: 3,
+            queue_passes: 0,
         }
     );
     assert_eq!(registry.files_page(None, None).keys_hashing, 0);
@@ -1555,6 +1556,73 @@ async fn a_file_whose_digest_is_known_is_not_hashed_again() {
     for index in 0..2 {
         assert_eq!(key_text(&registry, index), Some(b3(&path)), "entry {index}");
     }
+}
+
+/// Moving a file up the queue costs a pass over the queue, under the lock
+/// the catalog listing counts `keys_hashing` with. A request for a file
+/// that is not queued makes no pass, however long the queue is; one for a
+/// file that is queued makes one, and the file is still hashed once.
+#[tokio::test]
+async fn a_key_request_passes_over_the_queue_only_for_a_file_already_in_it() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut paths = Vec::new();
+    for number in 0..5_u16 {
+        let path = dir.path().join(format!("{number}.dcm"));
+        write_dicom(&path, None, number, 8);
+        paths.push(path);
+    }
+    let (registry, _scheduler, viewer) = held(2).await;
+    let (server, registry) = serve_with(registry, &paths).await;
+    for index in 0..3 {
+        assert_eq!(frame_key(&server, index).await, None);
+    }
+    hashing_queued(&registry, 3).await;
+    let ask = |index: usize| {
+        let registry = registry.clone();
+        tokio::spawn(async move { registry.ensure_key(index).await })
+    };
+
+    // Not queued: put at the front without a pass.
+    let unqueued = [ask(3), ask(4)];
+    hashing_queued(&registry, 5).await;
+    assert_eq!(registry.key_stats().queue_passes, 0);
+
+    // Queued by viewing, behind the others: one pass moves it up.
+    let queued = ask(2);
+    let moved = async {
+        while registry.key_stats().queue_passes == 0 {
+            tokio::task::yield_now().await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(30), moved)
+        .await
+        .expect("the queued file is never moved up");
+    assert_eq!(registry.key_stats().queue_passes, 1);
+    let since = registry.files_page(None, None).revision;
+
+    drop(viewer);
+    for asked in unqueued {
+        asked.await.expect("task").expect("key");
+    }
+    queued.await.expect("task").expect("key");
+    hashing_done(&registry).await;
+    let stats = registry.key_stats();
+    assert_eq!(
+        (stats.files_hashed, stats.queue_passes),
+        (5, 1),
+        "a file that was moved up is hashed once"
+    );
+    let order = registry
+        .files_page(Some(since), None)
+        .files
+        .iter()
+        .map(|entry| entry.index)
+        .collect::<Vec<_>>();
+    let position = |index: usize| order.iter().position(|listed| *listed == index);
+    assert!(
+        position(2) < position(1),
+        "the file asked for goes ahead of one that was only viewed: {order:?}"
+    );
 }
 
 /// A key somebody waits for is hashed before the keys viewing queued. The

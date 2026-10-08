@@ -57,6 +57,10 @@ pub struct KeyStats {
     /// Calls to `FileHasher::next_slice`, each made under its own background
     /// decode permit.
     pub slices: u64,
+    /// Passes over the whole hashing queue, made to take files that were
+    /// already queued out of their place so they can go to its front. A
+    /// key request for files that are not queued makes none.
+    pub queue_passes: u64,
 }
 
 /// Why [`FileRegistry::ensure_key`] has no key to give.
@@ -308,8 +312,12 @@ impl FileRegistry {
     /// returns when nothing new is.
     ///
     /// A call costs one visit to each file of the group per round of
-    /// attempts, not one per digest that arrives, and queueing `n` files
-    /// costs `O(n)` plus one pass over the queue.
+    /// attempts, not one per digest that arrives. Queueing `n` files costs
+    /// `O(n)`, plus one pass over the queue when one of them is already
+    /// queued behind others and has to be moved up. The pass is made under
+    /// the lock `files_page` counts `keys_hashing` with, so a request for
+    /// files nobody queued never holds a catalog poll up for the length of
+    /// the queue.
     ///
     /// Errors: [`KeyError::NotFound`]; [`KeyError::Unavailable`] when the
     /// file's own digest could not be computed, with that failure, and for
@@ -507,9 +515,17 @@ impl FileRegistry {
                 return;
             }
             if front {
-                // Promote the whole batch with one pass over the queue.
-                let promoted: HashSet<_> = indexes.iter().copied().collect();
-                work.queue.retain(|queued| !promoted.contains(queued));
+                // A file that is already queued is taken out of its place,
+                // the whole batch in one pass over the queue. A batch with
+                // no such file needs no pass.
+                let queued = indexes
+                    .iter()
+                    .any(|index| work.pending.contains(index) && work.active != Some(*index));
+                if queued {
+                    let promoted: HashSet<_> = indexes.iter().copied().collect();
+                    work.queue.retain(|queued| !promoted.contains(queued));
+                    work.stats.queue_passes += 1;
+                }
                 for index in indexes.into_iter().rev() {
                     if work.active != Some(index) {
                         work.pending.insert(index);
