@@ -1118,12 +1118,17 @@ describe("ImageViewport shared gestures", () => {
 		vi.unstubAllGlobals();
 	});
 
-	type Wheel = { deltaX?: number; deltaY?: number; deltaMode?: number; ctrlKey?: boolean; metaKey?: boolean };
-	/** A wheel event at client (20, 30). happy-dom's WheelEvent lacks the MouseEvent fields browsers give it. */
-	function wheelAt(viewport: HTMLElement, { ctrlKey = false, metaKey = false, ...deltas }: Wheel) {
+	type Wheel = { deltaX?: number; deltaY?: number; deltaMode?: number; ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean; at?: number };
+	/**
+	 * A wheel event at client (20, 30), `at` milliseconds into the test when given.
+	 * happy-dom's WheelEvent lacks the MouseEvent fields browsers give it.
+	 */
+	function wheelAt(viewport: HTMLElement, { ctrlKey = false, metaKey = false, altKey = false, at, ...deltas }: Wheel) {
 		const event = createEvent.wheel(viewport, deltas);
 		Object.defineProperties(event, {
 			clientX: { value: 20 }, clientY: { value: 30 }, ctrlKey: { value: ctrlKey }, metaKey: { value: metaKey },
+			altKey: { value: altKey },
+			...(at === undefined ? {} : { timeStamp: { value: 10_000 + at } }),
 		});
 		return fireEvent(viewport, event);
 	}
@@ -1169,7 +1174,6 @@ describe("ImageViewport shared gestures", () => {
 
 	it.each([
 		...TOOL_ORDER.map((tool) => [tool, "middle", 1, true] as const),
-		...TOOL_ORDER.map((tool) => [tool, "right", 2, false] as const),
 		["pan", "left", 0, true] as const,
 	])("%s tool: a %s-button drag pans or does nothing, and never starts another tool's gesture", async (tool, _name, button, pans) => {
 		const { viewport, onnavigationchange, onmanualwindowlevel } = await renderReady(tool);
@@ -1186,6 +1190,33 @@ describe("ImageViewport shared gestures", () => {
 		await fireEvent.pointerMove(viewport, { clientX: 60, clientY: 60, pointerId: 1 });
 
 		expectTransform(moved);
+		expect(onnavigationchange).not.toHaveBeenCalled();
+		expect(onmanualwindowlevel).not.toHaveBeenCalled();
+		expect(api.updateAnnotations).not.toHaveBeenCalled();
+		expect(api.updateRedactions).not.toHaveBeenCalled();
+		if (tool === "window_level") expect(windowHud()).toBe("W: 1 · C: 0.5");
+	});
+
+	it.each(TOOL_ORDER)("%s tool: a right-button drag zooms about where it began, and a right click changes nothing", async (tool) => {
+		const { viewport, onnavigationchange, onmanualwindowlevel } = await renderReady(tool);
+
+		await fireEvent.pointerDown(viewport, { button: 2, clientX: 10, clientY: 10, pointerId: 1 });
+		await fireEvent.pointerUp(viewport, { button: 2, clientX: 10, clientY: 10, pointerId: 1 });
+		expectTransform({ tx: 0, ty: 0, scale: 1 });
+
+		// Six pixels up from (10, 10), at 0.5% a pixel.
+		const scale = Math.exp(0.03);
+		const zoomed = { scale, tx: 10 - 10 * scale, ty: 10 - 10 * scale };
+		await fireEvent.pointerDown(viewport, { button: 2, clientX: 10, clientY: 10, pointerId: 1 });
+		expect(viewport.hasPointerCapture(1)).toBe(true);
+		await fireEvent.pointerMove(viewport, { clientX: 25, clientY: 4, pointerId: 1 });
+		expectTransform(zoomed);
+		expect(draft()).toBeNull();
+		await fireEvent.pointerUp(viewport, { button: 2, clientX: 25, clientY: 4, pointerId: 1 });
+		expect(viewport.hasPointerCapture(1)).toBe(false);
+		await fireEvent.pointerMove(viewport, { clientX: 60, clientY: 60, pointerId: 1 });
+
+		expectTransform(zoomed);
 		expect(onnavigationchange).not.toHaveBeenCalled();
 		expect(onmanualwindowlevel).not.toHaveBeenCalled();
 		expect(api.updateAnnotations).not.toHaveBeenCalled();
@@ -1211,6 +1242,91 @@ describe("ImageViewport shared gestures", () => {
 		expectTransform(expected);
 		if (steppedTo === null) expect(onnavigationchange).not.toHaveBeenCalled();
 		else expect(onnavigationchange.mock.calls).toEqual([[steppedTo]]);
+	});
+
+	it.each([
+		["Ctrl", { deltaY: -10, ctrlKey: true }],
+		["Meta", { deltaY: -10, metaKey: true }],
+	] as const)("wheel: a pinch (%s plus wheel) zooms in the Scroll tool and steps no frame", async (_name, wheel) => {
+		const { viewport, onnavigationchange } = await renderReady("scroll");
+
+		await wheelAt(viewport, wheel);
+
+		expectTransform(zoomedAbout(Math.exp(0.1)));
+		expect(onnavigationchange).not.toHaveBeenCalled();
+	});
+
+	it.each(TOOL_ORDER)("wheel: Alt plus wheel steps a frame in the %s tool and leaves the view alone", async (tool) => {
+		const { viewport, onnavigationchange } = await renderReady(tool);
+
+		await wheelAt(viewport, { deltaY: 100, altKey: true });
+
+		expectTransform({ scale: 1, tx: 0, ty: 0 });
+		expect(onnavigationchange.mock.calls).toEqual([[1]]);
+	});
+
+	// Constructed traces (no trackpad was available): fingers speeding up over 115 px,
+	// then the momentum the system adds once they lift, falling smoothly to nothing.
+	const fingers = [2, 5, 9, 14, 20, 22, 18, 25];
+	const momentum = [20, 16, 13, 10, 8, 6, 5, 4, 3, 2, 2, 1, 1, 1];
+	/** A tail from the fingers' last 25 px step that keeps `decay` of each step, in whole pixels, until nothing is left. */
+	function slowTail(decay: number): number[] {
+		const tail: number[] = [];
+		for (let step = 25 * decay; Math.round(step) >= 1; step *= decay) tail.push(Math.round(step));
+		return tail;
+	}
+	it.each([
+		["a mouse wheel steps one frame per notch", [100, 100, 100], 60, 3],
+		["a slow two-finger scroll steps one frame per 30 px", Array.from({ length: 12 }, () => 5), 16, 2],
+		["a two-finger swipe steps by its travel, and its momentum stops stepping", [...fingers, ...momentum], 16, 5],
+		["stepping starts again when the fingers move after the momentum", [...fingers, ...momentum, 6, 12, 12], 16, 6],
+		["a swipe back steps back", [...fingers, ...fingers.map((dy) => -dy)], 16, 0],
+		// The fingers' 115 px are three frames. The tail above keeps 80% of each step, and
+		// two more frames get through before it is recognised. Real momentum is believed
+		// to fall far more slowly, about 3 to 5% an event, and there the same rule lets
+		// more through: these two rows state the overrun the thresholds give today (5 and
+		// 8 frames past the fingers' three; unstopped, the tails would run 16 and 27).
+		// They are constructed, like every trace here, and pin current behaviour, not
+		// the wanted one: the thresholds await a recorded trace and must not be retuned
+		// against these.
+		["momentum that falls by 5% an event overruns by five frames", [...fingers, ...slowTail(0.95)], 16, 8],
+		["momentum that falls by 3% an event overruns by eight frames", [...fingers, ...slowTail(0.97)], 16, 11],
+	] as const)("Scroll tool wheel: %s", async (_name, steps, everyMs, endsOn) => {
+		const file = fileSummary(5, { frame_count: 60 });
+		let position = 0;
+		const view = renderViewport({
+			activeTool: "scroll",
+			file,
+			onnavigationchange: (next) => { position = Math.max(0, Math.min(59, next)); },
+		});
+		const viewport = await screen.findByRole("application");
+		await shown(5, 0);
+
+		for (const [index, deltaY] of steps.entries()) {
+			await wheelAt(viewport, { deltaY, at: index * everyMs });
+			await view.rerender({ currentFrame: position, navigationPosition: position });
+		}
+
+		expect(position).toBe(endsOn);
+		expectTransform({ scale: 1, tx: 0, ty: 0 });
+	});
+
+	// Wheel events under 150 ms apart are one gesture, which keeps the device it began as;
+	// the session then follows what its gestures showed (annotation-tools-ux.md 3.5).
+	it.each([
+		["after a wheel notch, a small pixel step zooms too",
+			[{ deltaY: -100, at: 0 }, { deltaY: -20, at: 400 }], zoomedAbout(Math.exp(0.3))],
+		["a swipe keeps panning through a notch-sized step",
+			[{ deltaY: 20, at: 0 }, { deltaY: 30, at: 16 }, { deltaY: 100, at: 32 }], { scale: 1, tx: 0, ty: -150 }],
+		["a wheel that only moves sideways pans",
+			[{ deltaY: -100, at: 0 }, { deltaX: 100, at: 400 }], { ...zoomedAbout(Math.exp(0.25)), tx: zoomedAbout(Math.exp(0.25)).tx - 100 }],
+	] as const)("wheel sequence: %s", async (_name, wheels, expected) => {
+		const { viewport, onnavigationchange } = await renderReady("pan");
+
+		for (const wheel of wheels) await wheelAt(viewport, wheel);
+
+		expectTransform(expected);
+		expect(onnavigationchange).not.toHaveBeenCalled();
 	});
 
 	it.each([
@@ -1263,6 +1379,151 @@ describe("ImageViewport shared gestures", () => {
 		expect(draft()).toBeNull();
 		expect(coords()).toEqual([]);
 		expect(api.updateAnnotations).not.toHaveBeenCalled();
+	});
+
+	/** A press and release in one place. */
+	async function click(viewport: HTMLElement, clientX: number, clientY: number) {
+		await fireEvent.pointerDown(viewport, { button: 0, clientX, clientY, pointerId: 1 });
+		await fireEvent.pointerUp(viewport, { button: 0, clientX, clientY, pointerId: 1 });
+	}
+	const savedBoxes = (save: typeof api.updateAnnotations) => vi.mocked(save).mock.calls
+		.map(([file, saved]) => [file, saved.roi_coords, saved.roi_frames]);
+
+	// The rectangle from (20, 20) to (45, 50), as [ymin, xmin, ymax, xmax]: a ROI on the
+	// frame it is drawn on, a redaction box on every frame of the file.
+	it.each([
+		["annotate_rect", "two clicks", [[0]]],
+		["annotate_rect", "a drag", [[0]]],
+		["redact", "two clicks", [[0, 1, 2]]],
+		["redact", "a drag", [[0, 1, 2]]],
+	] as const)("%s tool: %s place a rectangle", async (tool, gesture, frames) => {
+		vi.mocked(api.updateRedactions).mockReset().mockImplementation(async (_file, boxes) => boxes);
+		const { viewport } = await renderReady(tool);
+		const save = tool === "redact" ? api.updateRedactions : api.updateAnnotations;
+
+		if (gesture === "two clicks") {
+			await click(viewport, 20, 20);
+			// No button is held between the clicks, and the rectangle follows the pointer.
+			expect(viewport.hasPointerCapture(1)).toBe(false);
+			await fireEvent.pointerMove(viewport, { clientX: 30, clientY: 40, pointerId: 1 });
+			expect(draft()).not.toBeNull();
+			expect(save).not.toHaveBeenCalled();
+			await fireEvent.pointerMove(viewport, { clientX: 45, clientY: 50, pointerId: 1 });
+			await click(viewport, 45, 50);
+		} else {
+			await fireEvent.pointerDown(viewport, { button: 0, clientX: 20, clientY: 20, pointerId: 1 });
+			await fireEvent.pointerMove(viewport, { clientX: 45, clientY: 50, pointerId: 1 });
+			expect(draft()).not.toBeNull();
+			await fireEvent.pointerUp(viewport, { button: 0, clientX: 45, clientY: 50, pointerId: 1 });
+		}
+
+		await waitFor(() => expect(savedBoxes(save)).toEqual([[5, [[20, 20, 50, 45]], frames]]));
+		expect(coords()).toEqual(["[20, 20, 50, 45]"]);
+		// The placement is over: the pointer draws nothing more.
+		await fireEvent.pointerMove(viewport, { clientX: 60, clientY: 60, pointerId: 1 });
+		expect(draft()).toBeNull();
+		expect(save).toHaveBeenCalledTimes(1);
+		// The file's beforeEach does not clear this mock, and other tests assert it was never called.
+		vi.mocked(api.updateRedactions).mockReset();
+	});
+
+	it.each([
+		["the Redact tool is chosen", [{ activeTool: "redact" }]],
+		["the Redact tool is chosen and the ROI tool again", [{ activeTool: "redact" }, { activeTool: "annotate_rect" }]],
+		["another frame is shown", [{ currentFrame: 1, navigationPosition: 1 }]],
+		["another file is shown", [{ activeFile: fileSummary(6, { frame_count: 3 }) }]],
+	] as const)("a rectangle between its two clicks ends when %s, and the next click starts a new one", async (_name, changes) => {
+		vi.mocked(api.updateRedactions).mockReset().mockImplementation(async (_file, boxes) => boxes);
+		const { viewport, rerender } = await renderReady("annotate_rect");
+		await click(viewport, 20, 20);
+		await fireEvent.pointerMove(viewport, { clientX: 45, clientY: 50, pointerId: 1 });
+		expect(draft()).not.toBeNull();
+
+		for (const change of changes) {
+			await rerender(change);
+			expect(draft()).toBeNull();
+		}
+		const last = changes[changes.length - 1];
+		await ("activeFile" in last ? shown(6, 0) : shown(5, "currentFrame" in last ? 1 : 0));
+		await screen.findByText("activeTool" in last && last.activeTool === "redact" ? "Redactions 0 / 0" : /^ROIs /);
+		// No pointer event has reached the viewport yet: the rectangle is gone, not hidden.
+		expect(draft()).toBeNull();
+
+		// Had the placement survived, this click would place its second corner and save.
+		await click(viewport, 5, 5);
+		expect(draft()).toBeNull();
+		await fireEvent.pointerMove(viewport, { clientX: 14, clientY: 16, pointerId: 1 });
+		expect(draft()).not.toBeNull();
+		expect(api.updateAnnotations).not.toHaveBeenCalled();
+		expect(api.updateRedactions).not.toHaveBeenCalled();
+		vi.mocked(api.updateRedactions).mockReset();
+	});
+
+	it("Escape cancels a rectangle between its two clicks", async () => {
+		const { viewport, component } = await renderReady("annotate_rect");
+
+		// Nothing to cancel leaves Escape to its other meanings.
+		expect(component.cancelPlacement()).toBe(false);
+		await click(viewport, 20, 20);
+		await fireEvent.pointerMove(viewport, { clientX: 45, clientY: 50, pointerId: 1 });
+		expect(draft()).not.toBeNull();
+
+		expect(await act(() => component.cancelPlacement())).toBe(true);
+
+		expect(draft()).toBeNull();
+		await fireEvent.pointerMove(viewport, { clientX: 50, clientY: 55, pointerId: 1 });
+		expect(draft()).toBeNull();
+		expect(coords()).toEqual([]);
+		expect(api.updateAnnotations).not.toHaveBeenCalled();
+	});
+
+	it("saves a ROI move that a second pointer's middle-button press interrupted", async () => {
+		const { viewport } = await renderReady("annotate_rect", oneRoi);
+
+		await fireEvent.pointerDown(viewport, { button: 0, clientX: 20, clientY: 20, pointerId: 1 });
+		await fireEvent.pointerMove(viewport, { clientX: 25, clientY: 25, pointerId: 1 });
+		expect(coords()).toEqual(["[15, 15, 35, 35]"]);
+		await fireEvent.pointerDown(viewport, { button: 1, clientX: 40, clientY: 40, pointerId: 2 });
+		await fireEvent.pointerMove(viewport, { clientX: 50, clientY: 45, pointerId: 2 });
+		await fireEvent.pointerUp(viewport, { button: 0, clientX: 25, clientY: 25, pointerId: 1 });
+		await fireEvent.pointerUp(viewport, { button: 1, clientX: 50, clientY: 45, pointerId: 2 });
+
+		// What is drawn is what was saved, and the second pointer moved nothing.
+		expect(coords()).toEqual(["[15, 15, 35, 35]"]);
+		await waitFor(() => expect(vi.mocked(api.updateAnnotations).mock.calls.map(([file, saved]) => [file, saved.roi_coords]))
+			.toEqual([[5, [[15, 15, 35, 35]]]]));
+		expectTransform({ tx: 0, ty: 0, scale: 1 });
+	});
+
+	// A release can be lost (the browser takes the capture away, or the button comes
+	// up outside the window); the host must not stay locked on that gesture.
+	it.each([
+		["the capture is lost", "lost capture"],
+		["the same pointer presses again", "second press"],
+	] as const)("a ROI move whose release never comes is undone when %s, and the next drag works", async (_name, how) => {
+		const { viewport } = await renderReady("annotate_rect", oneRoi);
+
+		await fireEvent.pointerDown(viewport, { button: 0, clientX: 20, clientY: 20, pointerId: 1 });
+		await fireEvent.pointerMove(viewport, { clientX: 25, clientY: 25, pointerId: 1 });
+		expect(coords()).toEqual(["[15, 15, 35, 35]"]);
+
+		if (how === "lost capture") {
+			await fireEvent.lostPointerCapture(viewport, { pointerId: 1 });
+			expect(coords()).toEqual(["[10, 10, 30, 30]"]);
+			await fireEvent.pointerMove(viewport, { clientX: 28, clientY: 28, pointerId: 1 });
+			expect(coords()).toEqual(["[10, 10, 30, 30]"]);
+		}
+		expect(api.updateAnnotations).not.toHaveBeenCalled();
+
+		// A drag on bare image from (40, 40) to (55, 60) draws a second rectangle.
+		await fireEvent.pointerDown(viewport, { button: 0, clientX: 40, clientY: 40, pointerId: 1 });
+		expect(coords()).toEqual(["[10, 10, 30, 30]"]);
+		await fireEvent.pointerMove(viewport, { clientX: 55, clientY: 60, pointerId: 1 });
+		expect(draft()).not.toBeNull();
+		await fireEvent.pointerUp(viewport, { button: 0, clientX: 55, clientY: 60, pointerId: 1 });
+
+		await waitFor(() => expect(savedBoxes(api.updateAnnotations).map(([, boxes]) => boxes))
+			.toEqual([[[10, 10, 30, 30], [40, 40, 60, 55]]]));
 	});
 
 	it.each([

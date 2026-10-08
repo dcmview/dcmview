@@ -60,10 +60,10 @@ export function roiHandles(roi: VisibleRoi): RoiHandlePoint[] {
 
 /**
  * The topmost ROI under `point` and the handle it grabbed, if any. The handle
- * tolerance is about eight screen pixels at the current zoom `scale`.
+ * tolerance is about `tolerancePx` screen pixels at the current zoom `scale`.
  */
-export function hitTestRoi(rois: readonly VisibleRoi[], point: ImagePoint, scale: number): RoiHit | null {
-	const tolerance = Math.max(3, 8 / Math.max(scale, 0.2));
+export function hitTestRoi(rois: readonly VisibleRoi[], point: ImagePoint, scale: number, tolerancePx = 8): RoiHit | null {
+	const tolerance = Math.max(3, tolerancePx / Math.max(scale, 0.2));
 	for (let idx = rois.length - 1; idx >= 0; idx -= 1) {
 		const roi = rois[idx];
 		const handle = roiHandles(roi).find((candidate) => (

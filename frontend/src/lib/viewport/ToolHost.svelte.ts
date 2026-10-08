@@ -1,16 +1,16 @@
 import { PanTool } from "../annotation/tools/panTool";
 import { RectangleTool } from "../annotation/tools/rectangleTool";
 import { ScrollTool } from "../annotation/tools/scrollTool";
-import type { DraftRect, Tool, ToolContext, ToolId, ToolPointer } from "../annotation/tools/tool";
+import type { DraftRect, Tool, ToolContext, ToolId, ToolPointer, ToolWheel } from "../annotation/tools/tool";
 import { WindowLevelTool } from "../annotation/tools/windowLevelTool";
 import { ZoomTool } from "../annotation/tools/zoomTool";
+import { InputProfile, type InputDevice, type InputProfileSetting, type WheelVerdict } from "./inputProfile";
 
-const TRACKPAD_WHEEL_DELTA_THRESHOLD = 50;
 const MOUSE_WHEEL_ZOOM_SENSITIVITY = 0.0025;
 const PINCH_ZOOM_SENSITIVITY = 0.01;
 
 /** What the host needs of the viewport beyond what it hands to tools. */
-export interface ToolHostView extends ToolContext {
+export interface ToolHostView extends Omit<ToolContext, "inputProfile"> {
 	readonly activeTool: ToolId;
 	/** The frame on screen is the requested frame of the active file. */
 	readonly displayedFrameIsCurrent: boolean;
@@ -23,23 +23,9 @@ export interface ToolHostView extends ToolContext {
 	gestureEnded(): void;
 }
 
-/** What a wheel event means when the active tool does not use it. */
-type WheelGesture = "pinch" | "pan" | "zoom";
-
 /** Controls drawn over the image keep their own pointer and wheel events. */
 export function isViewportChromeTarget(target: EventTarget | null): boolean {
 	return target instanceof Element && !!target.closest(".zoom-controls, .roi-list");
-}
-
-function isLikelyTouchpadWheel(event: WheelEvent, dx: number, dy: number): boolean {
-	if (event.deltaMode !== WheelEvent.DOM_DELTA_PIXEL) return false;
-	return Math.abs(dx) > 0 || Math.abs(dy) < TRACKPAD_WHEEL_DELTA_THRESHOLD;
-}
-
-/** The one place a wheel event is told apart: Ctrl or Meta is how browsers report a pinch. */
-function classifyWheel(event: WheelEvent, dx: number, dy: number): WheelGesture {
-	if (event.ctrlKey || event.metaKey) return "pinch";
-	return isLikelyTouchpadWheel(event, dx, dy) ? "pan" : "zoom";
 }
 
 function toolPointer(event: PointerEvent): ToolPointer {
@@ -48,23 +34,39 @@ function toolPointer(event: PointerEvent): ToolPointer {
 
 /**
  * Routes the viewport's pointer and wheel events: it owns pointer capture,
- * the gestures every tool shares (middle-button pan, wheel pan and zoom,
- * pinch), the cancel of a gesture whose file or frame was replaced, and the
- * tool that holds the pointer. The tools are state machines behind `Tool`.
+ * the gestures every tool shares (middle-button pan, right-button zoom,
+ * wheel pan and zoom, pinch), the input profile that tells a mouse wheel from a trackpad, the
+ * cancel of a gesture whose file or frame was replaced, and the tool that
+ * holds the pointer or is armed between the two clicks of a placement. The
+ * tools are state machines behind `Tool`.
  */
 export class ToolHost {
 	readonly #view: ToolHostView;
+	readonly #ctx: ToolContext;
 	readonly #tools: Record<ToolId, Tool>;
+	readonly #scroll = new ScrollTool();
 	#captured = $state.raw<Tool | null>(null);
+	// The pointer whose press began the gesture; other pointers are ignored until it ends.
+	#pointerId = 0;
+	// The tool whose gesture goes on between presses (click-click placement).
+	#armed = $state.raw<Tool | null>(null);
+	// The element holding the pointer capture.
+	#surface: HTMLElement | null = null;
 	#draft = $state.raw<DraftRect | null>(null);
 	// The frame-bound gesture begun since the last one ended, and where it began.
-	#frameGesture: { tool: Tool; fileIndex: number; frameIndex: number } | null = null;
+	#frameGesture: { fileIndex: number; frameIndex: number } | null = null;
+	// Wheel events are told apart here and nowhere else (inputProfile.ts).
+	readonly #profile = new InputProfile();
+	#inputProfile = $state.raw<InputDevice>("mouse");
+	#inputProfileSetting = $state.raw<InputProfileSetting>("auto");
 
 	constructor(view: ToolHostView) {
 		this.#view = view;
+		// What tools see: the viewport, read live, plus the profile only the host knows.
+		this.#ctx = Object.create(view, { inputProfile: { get: () => this.#inputProfile } }) as ToolContext;
 		this.#tools = {
 			pan: new PanTool(),
-			scroll: new ScrollTool(),
+			scroll: this.#scroll,
 			zoom: new ZoomTool(),
 			window_level: new WindowLevelTool(),
 			annotate_rect: new RectangleTool("annotate_rect"),
@@ -82,9 +84,28 @@ export class ToolHost {
 		return this.#captured?.id ?? null;
 	}
 
-	/** The rectangle the tool holding the pointer is drawing. */
+	/** The rectangle being drawn, by the tool holding the pointer or by an armed tool between its clicks. */
 	get draft(): DraftRect | null {
+		// An armed tool's rectangle belongs to the tool and frame it began on:
+		// it is not drawn over another, even before `shownChanged` drops it.
+		if (this.#armed && (this.#armed.id !== this.#view.activeTool || this.#frameGestureReplaced())) return null;
 		return this.#draft;
+	}
+
+	/** The device the session is taken to use: what the wheel has shown, or the override. */
+	get inputProfile(): InputDevice {
+		return this.#inputProfile;
+	}
+
+	/** Auto follows the wheel; Mouse or Trackpad overrides it. Kept for the page, like other view state. */
+	get inputProfileSetting(): InputProfileSetting {
+		return this.#inputProfileSetting;
+	}
+
+	set inputProfileSetting(setting: InputProfileSetting) {
+		this.#profile.setting = setting;
+		this.#inputProfileSetting = setting;
+		this.#inputProfile = this.#profile.device;
 	}
 
 	wheel(event: WheelEvent): void {
@@ -94,28 +115,50 @@ export class ToolHost {
 		event.preventDefault();
 
 		const { dx, dy } = this.#wheelDeltaPixels(event);
-		if (this.#tools[view.activeTool].wheel?.({ dx, dy }, view)) return;
-		switch (classifyWheel(event, dx, dy)) {
-			case "pinch":
-				this.#zoomByWheelDelta(dy, event.clientX, event.clientY, PINCH_ZOOM_SENSITIVITY);
-				return;
-			case "pan":
-				view.setTransform({
-					...view.transform,
-					tx: view.transform.tx - dx,
-					ty: view.transform.ty - dy,
-				});
-				return;
-			case "zoom":
-				this.#zoomByWheelDelta(dy, event.clientX, event.clientY, MOUSE_WHEEL_ZOOM_SENSITIVITY);
-				view.scheduleProbe(event.clientX, event.clientY);
+		const { device, gestureStart } = this.#classifyWheel(event);
+		const wheel: ToolWheel = { dx, dy, device, gestureStart };
+		// Ctrl or Meta is how browsers report a pinch, which zooms in every tool.
+		if (event.ctrlKey || event.metaKey) {
+			this.#zoomByWheelDelta(dy, event.clientX, event.clientY, PINCH_ZOOM_SENSITIVITY);
+			return;
 		}
+		// Alt+wheel steps frames in every tool, and does nothing else on a single image.
+		if (event.altKey) {
+			this.#scroll.wheel(wheel, this.#ctx);
+			return;
+		}
+		if (this.#tools[view.activeTool].wheel?.(wheel, this.#ctx)) return;
+		// Two fingers pan; so does a wheel that only moves sideways (a tilt wheel, Shift+wheel).
+		if (device === "trackpad" || dy === 0) {
+			view.setTransform({
+				...view.transform,
+				tx: view.transform.tx - dx,
+				ty: view.transform.ty - dy,
+			});
+			return;
+		}
+		this.#zoomByWheelDelta(dy, event.clientX, event.clientY, MOUSE_WHEEL_ZOOM_SENSITIVITY);
+		view.scheduleProbe(event.clientX, event.clientY);
 	}
 
 	pointerDown(event: PointerEvent): void {
 		const view = this.#view;
 		if (!view.file.has_pixels) return;
 		if (isViewportChromeTarget(event.target)) return;
+		// One gesture at a time: a press by another pointer must not take over
+		// the tools, or the gesture in progress would end neither saved nor undone.
+		if (this.#captured) {
+			if (event.pointerId !== this.#pointerId) {
+				if (event.button !== 0) event.preventDefault();
+				return;
+			}
+			// The pointer that holds the gesture cannot press again without having
+			// released: that release never arrived, so the gesture is cancelled and
+			// this press starts the next one.
+			this.pointerCancel();
+		}
+		// A placement left behind by a tool, file or frame change does not take this press.
+		if (this.#liveArmed()) this.#cancelReplacedFrameGesture();
 
 		if (event.button === 1) {
 			event.preventDefault();
@@ -123,8 +166,10 @@ export class ToolHost {
 			return;
 		}
 
+		// A right-drag zooms in every tool; a right click that does not move changes nothing.
 		if (event.button === 2) {
 			event.preventDefault();
+			this.#begin(this.#tools.zoom, event);
 			return;
 		}
 
@@ -134,27 +179,77 @@ export class ToolHost {
 	}
 
 	pointerMove(event: PointerEvent): void {
-		if (!this.#captured) return;
+		if (this.#captured && event.pointerId !== this.#pointerId) return;
+		// With no button held, the moves go to a tool armed between its clicks.
+		const armed = this.#liveArmed();
+		const tool = this.#captured ?? armed;
+		if (!tool) return;
 		if (this.#cancelReplacedFrameGesture()) return;
-		this.#captured.pointerMove(toolPointer(event), this.#view);
-		this.#draft = this.#captured.draft ?? null;
+		tool.pointerMove(toolPointer(event), this.#ctx);
+		this.#draft = (armed ?? tool).draft ?? null;
 	}
 
 	pointerUp(event: PointerEvent): void {
+		if (this.#captured && event.pointerId !== this.#pointerId) return;
 		const target = event.currentTarget as HTMLElement;
 		if (target.hasPointerCapture(event.pointerId)) {
 			target.releasePointerCapture(event.pointerId);
 		}
 		if (this.#cancelReplacedFrameGesture()) return;
-		this.#captured?.pointerUp(this.#view);
+		const tool = this.#captured;
+		if (!tool) {
+			if (!this.#armed) this.endGesture();
+			return;
+		}
+		tool.pointerUp(this.#ctx);
+		this.#captured = null;
+		// The release left the tool armed: its gesture goes on with no button held.
+		if (tool.armed) {
+			this.#armed = tool;
+			this.#draft = tool.draft ?? null;
+			return;
+		}
+		// A middle- or right-button drag over an armed tool ends alone.
+		if (this.#armed && this.#armed !== tool) {
+			tool.reset();
+			return;
+		}
 		this.endGesture();
 	}
 
-	pointerCancel(): void {
-		const frameTool = this.#frameGesture?.tool;
-		if (frameTool && frameTool !== this.#captured) frameTool.cancel(this.#view);
-		this.#captured?.cancel(this.#view);
+	/** The browser took the pointer away; without an event, cancels whatever is in progress. */
+	pointerCancel(event?: PointerEvent): void {
+		if (event && (this.#captured ? event.pointerId !== this.#pointerId : this.#armed !== null)) return;
+		this.#captured?.cancel(this.#ctx);
 		this.endGesture();
+	}
+
+	/**
+	 * The element lost the pointer capture. After a release the gesture has
+	 * already ended and this does nothing; while one is still in progress its
+	 * release will never come, so it is cancelled instead of holding the host.
+	 */
+	lostCapture(event: PointerEvent): void {
+		if (this.#captured && event.pointerId === this.#pointerId) this.pointerCancel();
+	}
+
+	/** The viewport shows another tool, file or frame: a placement begun on the last one ends. */
+	shownChanged(): void {
+		if (this.#captured || !this.#liveArmed()) return;
+		if (this.#frameGestureReplaced()) this.pointerCancel();
+	}
+
+	/**
+	 * Escape: cancels a click-click placement between or during its clicks.
+	 * False when there is none, so the key keeps its other meanings.
+	 */
+	cancelPlacement(): boolean {
+		if (!this.#liveArmed()) return false;
+		if (this.#captured && this.#surface?.hasPointerCapture(this.#pointerId)) {
+			this.#surface.releasePointerCapture(this.#pointerId);
+		}
+		this.pointerCancel();
+		return true;
 	}
 
 	/** Drops the gesture in progress without committing or undoing it. */
@@ -162,27 +257,56 @@ export class ToolHost {
 		this.#view.gestureEnded();
 		for (const tool of Object.values(this.#tools)) tool.reset();
 		this.#captured = null;
+		this.#armed = null;
 		this.#draft = null;
 		this.#frameGesture = null;
 	}
 
 	#begin(tool: Tool, event: PointerEvent): void {
 		const view = this.#view;
-		if (tool.pointerDown(toolPointer(event), view) !== "capture") return;
+		if (tool.pointerDown(toolPointer(event), this.#ctx) !== "capture") return;
 		event.preventDefault();
 		(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
 		this.#captured = tool;
-		this.#draft = tool.draft ?? null;
-		if (tool.frameBound) this.#frameGesture = { tool, fileIndex: view.file.index, frameIndex: view.frame };
+		this.#pointerId = event.pointerId;
+		this.#surface = event.currentTarget as HTMLElement;
+		this.#draft = (this.#armed ?? tool).draft ?? null;
+		if (tool.frameBound) this.#frameGesture = { fileIndex: view.file.index, frameIndex: view.frame };
 	}
 
 	#cancelReplacedFrameGesture(): boolean {
-		const began = this.#frameGesture;
-		const view = this.#view;
-		if (!began || (view.displayedFrameIsCurrent && began.fileIndex === view.file.index
-			&& began.frameIndex === view.frame)) return false;
+		if (!this.#frameGesture || (this.#view.displayedFrameIsCurrent && !this.#frameGestureReplaced())) return false;
 		this.pointerCancel();
 		return true;
+	}
+
+	/** Another file or frame is requested than the one the frame-bound gesture began on. */
+	#frameGestureReplaced(): boolean {
+		const began = this.#frameGesture;
+		return began !== null && (began.fileIndex !== this.#view.file.index || began.frameIndex !== this.#view.frame);
+	}
+
+	/** The armed tool, unless another tool was chosen since: then its gesture is dropped. */
+	#liveArmed(): Tool | null {
+		const armed = this.#armed;
+		if (!armed || this.#captured || this.#tools[this.#view.activeTool] === armed) return armed;
+		armed.cancel(this.#ctx);
+		this.endGesture();
+		return null;
+	}
+
+	/** The one place a wheel event is told apart: the device its gesture acts as. */
+	#classifyWheel(event: WheelEvent): WheelVerdict {
+		const { wheelDeltaY } = event as WheelEvent & { wheelDeltaY?: unknown };
+		const verdict = this.#profile.wheel({
+			deltaX: event.deltaX,
+			deltaY: event.deltaY,
+			deltaMode: event.deltaMode,
+			wheelDeltaY: typeof wheelDeltaY === "number" ? wheelDeltaY : undefined,
+			timeStamp: event.timeStamp,
+		});
+		this.#inputProfile = this.#profile.device;
+		return verdict;
 	}
 
 	#wheelDeltaPixels(event: WheelEvent): { dx: number; dy: number } {

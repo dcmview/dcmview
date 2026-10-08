@@ -1,6 +1,7 @@
 import type { EmbedRoiAnnotations, FileSummary } from "../../../api";
 import type { ImagePoint } from "../../annotationGeometry";
 import type { ActiveTool } from "../../viewerTools";
+import type { InputDevice } from "../../viewport/inputProfile";
 import type { VisibleRoi } from "../../viewport/roiEditing";
 import type { ViewTransform, ZoomAnchor } from "../../viewport/viewTransform";
 
@@ -9,8 +10,18 @@ export type ToolId = ActiveTool;
 /** A pointer position in client (CSS pixel) coordinates. */
 export type ToolPointer = { clientX: number; clientY: number };
 
-/** A wheel step in CSS pixels, whatever unit the device reported. */
-export type ToolWheel = { dx: number; dy: number };
+/**
+ * A wheel step in CSS pixels, whatever unit the device reported, with what
+ * the host made of it: tools never inspect wheel events themselves.
+ */
+export type ToolWheel = {
+	dx: number;
+	dy: number;
+	/** The device this step's gesture acts as. */
+	device: InputDevice;
+	/** This step begins a gesture: the first after a pause. */
+	gestureStart: boolean;
+};
 
 /** The frames the viewport steps through: a file's frames or a stack's images. */
 export interface FrameNavigation {
@@ -72,6 +83,8 @@ export interface ToolContext {
 	zoomAnchor(clientX: number, clientY: number): ZoomAnchor | null;
 	/** The transform at `scale` that keeps `anchor` under its client point; null before layout. */
 	zoomTransform(scale: number, anchor: ZoomAnchor): Omit<ViewTransform, "fit"> | null;
+	/** The device the session is taken to use; the host decides it (section 3.5 of the tools design). */
+	readonly inputProfile: InputDevice;
 	readonly navigation: FrameNavigation;
 	readonly window: WindowLevelSession;
 	readonly rects: RectangleEdits;
@@ -80,7 +93,8 @@ export interface ToolContext {
 /**
  * One tool's gestures as a state machine. The host owns pointer capture and
  * the universal gestures, and calls `pointerMove`, `pointerUp` and `cancel`
- * only for the tool whose `pointerDown` captured the pointer.
+ * only for the tool whose `pointerDown` captured the pointer, or which is
+ * `armed`.
  */
 export interface Tool {
 	readonly id: ToolId;
@@ -89,11 +103,20 @@ export interface Tool {
 	 * host cancels it when another one is shown.
 	 */
 	readonly frameBound: boolean;
-	/** What the gesture in progress is drawing; the host shows it while this tool holds the pointer. */
+	/** What the gesture in progress is drawing; the host shows it while the gesture lasts. */
 	readonly draft?: DraftRect | null;
+	/**
+	 * The gesture goes on with no button held (click-click placement). While
+	 * true after `pointerUp`, the host keeps the tool's state instead of
+	 * resetting it, sends it the pointer's moves while it is the active tool,
+	 * and gives its next press to `pointerDown`. The host cancels it on Escape
+	 * and when the tool, file or frame changes.
+	 */
+	readonly armed?: boolean;
 	pointerDown(pointer: ToolPointer, ctx: ToolContext): "capture" | "ignore";
+	/** The pointer moved: with the button held, or with none held while the tool is armed. */
 	pointerMove(pointer: ToolPointer, ctx: ToolContext): void;
-	/** Commits the gesture in progress. */
+	/** The button was released: commits the gesture, or leaves the tool armed. */
 	pointerUp(ctx: ToolContext): void;
 	/** A wheel step while this tool is active; true when the tool used it. */
 	wheel?(wheel: ToolWheel, ctx: ToolContext): boolean;

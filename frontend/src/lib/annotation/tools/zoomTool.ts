@@ -5,7 +5,10 @@ type ZoomState =
 	| { phase: "idle" }
 	| { phase: "zooming"; startY: number; baseScale: number; anchor: ZoomAnchor };
 
-/** Drags up to zoom in and down to zoom out, about the point the drag began on. */
+/**
+ * Drags up to zoom in and down to zoom out, about the point the drag began
+ * on. The host also starts it for a right-button drag.
+ */
 export class ZoomTool implements Tool {
 	readonly id = "zoom";
 	readonly frameBound = false;
