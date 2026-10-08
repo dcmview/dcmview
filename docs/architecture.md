@@ -867,8 +867,9 @@ Rules the crate keeps:
   strict check, and every write goes through them. A record the lenient EMBED
   CSV import read (a rectangle past the edge, with no area, or with its
   corners out of order) is held and written back unchanged until it is
-  edited, and `Geometry::clamped` is how an import or an edit brings one
-  inside its image: rounded first, then moved onto the nearest edge.
+  edited. `Geometry::clamped` rounds a geometry and then moves every
+  position outside its image onto the nearest edge, and reports which of
+  the two it did; it is how an edit brings such a record inside its image.
 - **Coordinates** are corner-origin and continuous in the stored pixel grid,
   `x` the column and `y` the row, valid over `[0, columns]` by `[0, rows]`,
   quantized to 1/1000 px. Every comparison a validation makes is on quantized
