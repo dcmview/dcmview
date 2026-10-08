@@ -406,7 +406,9 @@ async fn a_tiff_tile_far_larger_than_its_image_is_refused_before_it_is_read() {
         &[(259, TiffValue::Short(vec![8]))],
         zeros,
     ));
-    assert!(padded.len() as u64 > 5 * BUFFER);
+    // The file is more than four buffers long; reading it for the tile is not
+    // mistaken for reading its tags.
+    assert!(padded.len() as u64 > 4 * BUFFER);
     let wide = (8 + MARGIN, 8);
     let long = (8, 8 + MARGIN);
     let floats = |tile: (u32, u32)| {
