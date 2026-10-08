@@ -17,4 +17,7 @@ mod table;
 
 pub use dcmview_annotation::{FileKey, KeyScheme, KEY_RULES};
 pub use hash::{FileHasher, HashProgress, KEY_HASH_SLICE_BYTES};
-pub use table::{FileIdentity, FileKeyStatus, KeyChanges, KeyFailure, KeyTable, KeyView, Rekey};
+pub use table::{
+    FileIdentity, FileKeyStatus, KeyChanges, KeyFailure, KeyRef, KeyTable, KeyView, KeyedFile,
+    Rekey, Reliance,
+};

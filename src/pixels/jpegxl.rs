@@ -266,6 +266,7 @@ mod tests {
             format: Default::default(),
             raster: None,
             size_bytes: 0,
+            modified: None,
             index: 0,
             path: path.to_path_buf(),
             label: "fixture".to_string(),

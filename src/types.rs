@@ -215,6 +215,12 @@ pub struct FileEntry {
     /// one SOP Instance UID and different lengths cannot be the same bytes,
     /// and a whole-file digest is refused when the length has changed.
     pub size_bytes: u64,
+    /// The file's modification time from the same `stat` as `size_bytes`.
+    /// A whole-file digest is refused when it has changed, which is how a
+    /// file rewritten with other bytes of the same length is told from the
+    /// one discovery saw. `None` when the platform reports none, and for an
+    /// entry that was not read from a file.
+    pub modified: Option<std::time::SystemTime>,
     /// The container format, from the file's content. For a raster the DICOM
     /// identity strings, `sop_class_uid` and `transfer_syntax_uid` are empty.
     pub format: FileFormat,

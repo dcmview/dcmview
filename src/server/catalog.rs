@@ -2,7 +2,7 @@ use crate::api::contracts::{
     FileSummary, FrameRefSummary, SeriesCatalogResponse, SeriesStackSummary, SeriesSummary,
     SeriesWarningSummary,
 };
-use crate::keys::{FileIdentity, FileKey, KeyChanges, KeyTable};
+use crate::keys::{KeyChanges, KeyRef, KeyTable};
 use crate::loader::{DiscoveryDisposition, DiscoveryRecord};
 use crate::masking::Masker;
 use crate::series::{
@@ -54,12 +54,14 @@ struct FileRegistryInner {
     skipped: usize,
     filtered: usize,
     scan_complete: bool,
-    keys: KeyTable,
+    keys: KeyTable<keys::Keyed>,
     revision: u64,
     entry_revisions: Vec<u64>,
     by_revision: BTreeMap<u64, usize>,
     rekeys: BTreeMap<u64, crate::api::contracts::FileRekey>,
-    shown_keys: HashMap<String, FileKey>,
+    /// In a masked session: each masked SOP Instance UID a `sop:` key was
+    /// built from, with the first file that carries the UID behind it.
+    shown_uids: HashMap<String, usize>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -142,7 +144,11 @@ impl FileRegistry {
     }
 
     /// Registers `file`, whose key identity is its SOP Instance UID, its
-    /// `size_bytes` and `resolved` (`crate::keys::FileIdentity`).
+    /// `size_bytes` and `resolved` (`crate::keys::KeyedFile`).
+    ///
+    /// The key table is given the entry itself (`keys::Keyed`), so it holds
+    /// no copy of the UID or of the path; `resolved` is kept only when it
+    /// differs from the entry's own path.
     fn insert_identified(&self, mut file: FileEntry, resolved: PathBuf) -> usize {
         let mut inner = self.write();
         let index = inner.files.len();
@@ -151,19 +157,19 @@ impl FileRegistry {
             Some(masker) => masker.summary(&file),
             None => FileSummary::from(&file),
         };
+        let file = Arc::new(file);
         if let Some(masker) = self.masker.as_deref() {
-            if let Ok(key) = FileKey::sop(&file.sop_instance_uid) {
+            if crate::keys::FileKey::is_sop_uid(&file.sop_instance_uid) {
                 inner
-                    .shown_keys
-                    .insert(keys::shown_key(&key, Some(masker)), key);
+                    .shown_uids
+                    .entry(masker.uid(&file.sop_instance_uid))
+                    .or_insert(index);
             }
         }
-        let changes = inner.keys.register(FileIdentity {
-            sop_instance_uid: file.sop_instance_uid.clone(),
-            size_bytes: file.size_bytes,
-            path: resolved,
-        });
-        inner.files.push(Arc::new(file));
+        let changes = inner
+            .keys
+            .register(keys::Keyed::new(file.clone(), resolved));
+        inner.files.push(file);
         inner.summaries.push(summary);
         inner.entry_revisions.push(0);
         self.apply_key_changes(&mut inner, &changes);
@@ -318,8 +324,8 @@ impl FileRegistry {
                 crate::api::contracts::FileRekey {
                     revision,
                     index: rekey.index,
-                    old_key: keys::shown_key(&rekey.old_key, self.masker.as_deref()),
-                    new_key: keys::shown_key(&rekey.new_key, self.masker.as_deref()),
+                    old_key: keys::shown_key(KeyRef::from(&rekey.old_key), self.masker.as_deref()),
+                    new_key: keys::shown_key(KeyRef::from(&rekey.new_key), self.masker.as_deref()),
                 },
             );
         }

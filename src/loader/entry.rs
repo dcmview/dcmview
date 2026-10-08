@@ -54,6 +54,7 @@ pub(super) fn build_entry_selected(
     let DiscoveryHeader {
         object: obj,
         file_length,
+        file_modified,
         odd_item_length,
         pixels: pixel_header,
     } = match read_discovery_header(path, formats)? {
@@ -208,6 +209,7 @@ pub(super) fn build_entry_selected(
         index: 0,
         path: path.to_path_buf(),
         size_bytes: file_length,
+        modified: file_modified,
         format: FileFormat::Dicom,
         raster: None,
         label,
@@ -326,6 +328,8 @@ struct DiscoveryHeader {
     object: dicom_object::DefaultDicomObject,
     /// The file's length from the `stat` taken when it was opened.
     file_length: u64,
+    /// Its modification time from the same `stat`.
+    file_modified: Option<std::time::SystemTime>,
     /// A sequence item before the pixel data declares an odd length, which a
     /// conformant data set never does.
     odd_item_length: bool,
@@ -354,10 +358,11 @@ enum HeaderRead {
 /// carries on from the stop token to the top-level pixel element's header.
 fn read_discovery_header(path: &Path, formats: FormatSelection) -> Result<HeaderRead> {
     let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
-    let file_length = file
+    let metadata = file
         .metadata()
-        .with_context(|| format!("failed to stat {}", path.display()))?
-        .len();
+        .with_context(|| format!("failed to stat {}", path.display()))?;
+    let file_length = metadata.len();
+    let file_modified = metadata.modified().ok();
     let mut reader = BufReader::new(file);
     // A file shorter than the preamble is not Part 10 but may be a raster (a
     // valid PNG can be about 70 bytes), so a short read keeps what it got.
@@ -391,7 +396,7 @@ fn read_discovery_header(path: &Path, formats: FormatSelection) -> Result<Header
     };
     // Deflated data sets are parsed through the syntax's own adapter, as
     // dicom-object does.
-    Ok(match transfer_syntax.codec() {
+    let mut read = match transfer_syntax.codec() {
         Codec::Dataset(Some(adapter)) => parse_data_set(
             adapter.adapt_reader(Box::new(reader)),
             transfer_syntax,
@@ -400,7 +405,11 @@ fn read_discovery_header(path: &Path, formats: FormatSelection) -> Result<Header
         ),
         Codec::Dataset(None) => HeaderRead::ParseFailed,
         _ => parse_data_set(reader, transfer_syntax, meta, file_length),
-    })
+    };
+    if let HeaderRead::Read(header) = &mut read {
+        header.file_modified = file_modified;
+    }
+    Ok(read)
 }
 
 /// Builds the discovery header from the data set after the file meta.
@@ -424,6 +433,7 @@ fn parse_data_set(
     HeaderRead::Read(Box::new(DiscoveryHeader {
         object: InMemDicomObject::from_element_iter(elements).with_exact_meta(meta),
         file_length,
+        file_modified: None,
         odd_item_length,
         pixels: pixels.map(|element| {
             element.map(|(kind, native_length)| PixelDataHeader {

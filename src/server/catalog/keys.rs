@@ -9,12 +9,15 @@
 use super::{FileRegistry, RegistryStatus};
 use crate::api::contracts::{FileKeyError, FileRekey, FileSummary};
 use crate::keys::{
-    FileHasher, FileKey, FileKeyStatus, HashProgress, KeyFailure, KeyScheme, KeyView,
+    FileHasher, FileKey, FileKeyStatus, HashProgress, KeyFailure, KeyRef, KeyScheme, KeyView,
+    KeyedFile,
 };
 use crate::loader::DiscoveryRecord;
 use crate::masking::Masker;
 use crate::pixels::{self, DecodeClass, DecodeScheduler};
+use crate::types::FileEntry;
 use std::collections::{HashSet, VecDeque};
+use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex, MutexGuard,
@@ -76,15 +79,52 @@ impl From<KeyFailure> for FileKeyError {
     }
 }
 
+/// What the key table holds of a registered file: the entry itself, shared
+/// with the registry's file list, so the table stores no UID and no path of
+/// its own (`KeyTable`, "Cost").
+#[derive(Clone)]
+pub(super) struct Keyed {
+    file: Arc<FileEntry>,
+    /// The path discovery resolved, kept only when it is not the entry's
+    /// own path: a file reached through a symbolic link, or under a
+    /// directory that is one.
+    resolved: Option<Arc<PathBuf>>,
+}
+
+impl Keyed {
+    pub(super) fn new(file: Arc<FileEntry>, resolved: PathBuf) -> Self {
+        let resolved = (resolved != file.path).then(|| Arc::new(resolved));
+        Self { file, resolved }
+    }
+}
+
+impl KeyedFile for Keyed {
+    fn sop_instance_uid(&self) -> &str {
+        &self.file.sop_instance_uid
+    }
+
+    fn size_bytes(&self) -> u64 {
+        self.file.size_bytes
+    }
+
+    fn path(&self) -> &Path {
+        match &self.resolved {
+            Some(resolved) => resolved,
+            None => &self.file.path,
+        }
+    }
+}
+
 /// A key as this session sends it. A masked session never sends a real
-/// instance UID: a `sop:` key is rebuilt from the masked UID, which is what
+/// instance UID: a `sop:` key is built from the masked UID, which is what
 /// the entry's `sop_instance_uid` shows, so the two still agree. A `b3:` key
 /// is a digest of the file's bytes and carries no header value; it is sent
 /// as it is, like the file's path.
-pub(super) fn shown_key(key: &FileKey, masker: Option<&Masker>) -> String {
-    match (masker, key.scheme()) {
-        (Some(masker), KeyScheme::Sop) => format!("sop:{}", masker.uid(key.body())),
-        _ => key.as_str().to_string(),
+pub(super) fn shown_key(key: KeyRef<'_>, masker: Option<&Masker>) -> String {
+    match (key, masker) {
+        (KeyRef::Sop(uid), Some(masker)) => format!("sop:{}", masker.uid(uid)),
+        (KeyRef::Sop(uid), None) => format!("sop:{uid}"),
+        (KeyRef::Content(key), _) => key.as_str().to_string(),
     }
 }
 
@@ -101,15 +141,13 @@ pub(super) fn show_key_state(
     state: KeyView<'_>,
     masker: Option<&Masker>,
 ) {
-    let implied = state.key.is_some_and(|key| {
-        key.scheme() == KeyScheme::Sop
-            && match masker {
-                // The entry shows the masked UID, and the key is sent built
-                // from that same masked UID.
-                Some(masker) => masker.uid(key.body()) == summary.sop_instance_uid,
-                None => key.body() == summary.sop_instance_uid,
-            }
-    });
+    let implied = match (state.key, masker) {
+        // The entry shows the masked UID, and the key is sent built from
+        // that same masked UID.
+        (Some(KeyRef::Sop(uid)), Some(masker)) => masker.uid(uid) == summary.sop_instance_uid,
+        (Some(KeyRef::Sop(uid)), None) => uid == summary.sop_instance_uid,
+        _ => false,
+    };
     summary.file_key = if implied {
         None
     } else {
@@ -154,12 +192,13 @@ impl FileRegistry {
     pub fn file_for_shown_key(&self, key: &str) -> Option<usize> {
         let key = FileKey::parse(key).ok()?;
         let inner = self.read();
-        let real = if self.masker.is_some() && key.scheme() == KeyScheme::Sop {
-            inner.shown_keys.get(key.as_str())?
+        if self.masker.is_some() && key.scheme() == KeyScheme::Sop {
+            let carrier = inner.files.get(*inner.shown_uids.get(key.body())?)?;
+            let real = FileKey::sop(&carrier.sop_instance_uid).ok()?;
+            inner.keys.file_for_key(&real)
         } else {
-            &key
-        };
-        inner.keys.file_for_key(real)
+            inner.keys.file_for_key(&key)
+        }
     }
 
     /// Notes that a frame of the file was served, which is when a file
@@ -179,21 +218,48 @@ impl FileRegistry {
         self.queue_keys(wanted, false);
     }
 
-    /// The file's key once it can be relied on for a write or an export,
-    /// hashing what `KeyTable::required_for` names first: nothing for an
-    /// ordinary DICOM file, the file for one without a key, the file and the
-    /// file it is an alias of for an unchecked alias.
+    /// The file's key once it is settled, which is what a record or an
+    /// export may hold: the key this returns is the file's key for the rest
+    /// of the session. No file registered or hashed afterwards replaces it,
+    /// two files it returns the same key for hold the same bytes (or are one
+    /// file), and `file_for_shown_key` of it keeps naming the same file,
+    /// which is this one or one with the same bytes.
     ///
-    /// Repeats until `required_for` is empty, since comparing two aliases
-    /// can split their group. The files it needs go to the front of the
-    /// hashing queue, ahead of digests wanted in the background, and each is
-    /// still hashed in slices under background decode permits. A file whose
-    /// last attempt failed is tried again, once per call.
+    /// `docs/design/annotation-model.md` 1.7 has a key shared by UID and
+    /// size verified "before the first annotation write on either file".
+    /// This is that verification. It hashes what `KeyTable::required_for`
+    /// names and then asks `KeyTable::rely_on`:
     ///
-    /// Errors: [`KeyError::NotFound`]; [`KeyError::Unavailable`] when a
-    /// digest it needs fails, with that failure; [`KeyError::Stopped`].
-    /// Cancel safe: dropping the future leaves the queued work to finish in
-    /// the background.
+    /// - nothing for a DICOM file whose UID no other loaded file has: the
+    ///   key is returned at once and no byte is read;
+    /// - the file for one without a key;
+    /// - every file that has the UID for a file whose UID another file of
+    ///   the same size also has, whichever of them is asked about. The cost
+    ///   is the bytes of those files, each read once, however many of their
+    ///   keys are asked for afterwards;
+    /// - the file and the first file that has the UID for a file found
+    ///   after a key of its UID was returned.
+    ///
+    /// The files it needs go to the front of the hashing queue, ahead of
+    /// digests wanted in the background, in ascending order, and each is
+    /// still hashed in slices under background decode permits. A file
+    /// without a digest is tried once per call, also when its last attempt
+    /// failed. Callers that wait on the same file share one attempt. When
+    /// the attempts it asked for have an outcome it asks again what is
+    /// required, since a file may have been registered meanwhile, and
+    /// returns when nothing new is.
+    ///
+    /// A call costs one visit to each file of the group per round of
+    /// attempts, not one per digest that arrives, and queueing `n` files
+    /// costs `O(n)` plus one pass over the queue.
+    ///
+    /// Errors: [`KeyError::NotFound`]; [`KeyError::Unavailable`] when the
+    /// file's own digest or its group's first file's digest could not be
+    /// computed, with that failure (another file of the group that cannot
+    /// be read does not fail the call: that file loses the shared key
+    /// instead, `KeyTable` rule 4); [`KeyError::Stopped`]. Cancel safe:
+    /// dropping the future leaves the queued work to finish in the
+    /// background.
     pub async fn ensure_key(&self, index: usize) -> Result<FileKey, KeyError> {
         let mut asked = HashSet::new();
         loop {
@@ -219,9 +285,13 @@ impl FileRegistry {
                 let state = inner.keys.view(index).ok_or(KeyError::NotFound(index))?;
                 let required = inner.keys.required_for(index);
                 if required.is_empty() {
-                    return state.key.cloned().ok_or(KeyError::Unavailable(
-                        state.failure.unwrap_or(KeyFailure::Unreadable),
-                    ));
+                    return inner
+                        .keys
+                        .status(index)
+                        .and_then(|status| status.key)
+                        .ok_or(KeyError::Unavailable(
+                            state.failure.unwrap_or(KeyFailure::Unreadable),
+                        ));
                 }
                 let mut needed = Vec::new();
                 for file in required {
@@ -274,6 +344,10 @@ pub(super) struct Hashing {
     stopped: AtomicBool,
     pub(super) changed: Notify,
     stop: Notify,
+    /// A file whose turn in the worker panics, once. The seam a test uses
+    /// to kill the worker where a bug would.
+    #[cfg(test)]
+    fault: Mutex<Option<usize>>,
 }
 
 #[derive(Default)]
@@ -289,6 +363,23 @@ struct HashWork {
 impl Hashing {
     fn work(&self) -> MutexGuard<'_, HashWork> {
         self.work.lock().expect("key hashing lock poisoned")
+    }
+
+    /// Makes the worker panic when it takes `index` from the queue, once.
+    #[cfg(test)]
+    fn fail_at(&self, index: usize) {
+        *self.fault.lock().expect("fault lock") = Some(index);
+    }
+
+    #[cfg(test)]
+    fn fault(&self, index: usize) {
+        let armed = {
+            let mut fault = self.fault.lock().expect("fault lock");
+            (*fault == Some(index)).then(|| fault.take()).is_some()
+        };
+        if armed {
+            panic!("injected fault: the hashing worker dies holding file {index}");
+        }
     }
 }
 
@@ -359,6 +450,8 @@ impl FileRegistry {
             let Some((index, scheduler)) = next else {
                 return;
             };
+            #[cfg(test)]
+            self.hashing.fault(index);
             let known = self
                 .read()
                 .keys
@@ -403,9 +496,10 @@ impl FileRegistry {
             return None;
         }
         let file = self.get(index)?;
-        let opened =
-            tokio::task::spawn_blocking(move || FileHasher::open(&file.path, file.size_bytes))
-                .await;
+        let opened = tokio::task::spawn_blocking(move || {
+            FileHasher::open(&file.path, file.size_bytes, file.modified)
+        })
+        .await;
         let mut hasher = match opened {
             Ok(Ok(hasher)) => hasher,
             Ok(Err(failure)) => return Some(Err(failure)),
@@ -455,5 +549,80 @@ impl FileRegistry {
                 Err(_) => return Some(Err(KeyFailure::Unreadable)),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::KeyError;
+    use crate::keys::{FileKey, KeyFailure};
+    use crate::server::FileRegistry;
+    use std::path::Path;
+    use std::time::Duration;
+
+    /// A fixture registered as a file without a UID, so that its key needs
+    /// its bytes.
+    fn pending(name: &str) -> (crate::types::FileEntry, String) {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(name);
+        let mut file = crate::loader::test_entry(&path);
+        file.sop_instance_uid = String::new();
+        let bytes = std::fs::read(&path).expect("read fixture");
+        let key = FileKey::blake3(blake3::hash(&bytes).as_bytes());
+        (file, key.as_str().to_string())
+    }
+
+    /// A worker that panics must not take hashing down with it. Without
+    /// that, the queue stays marked as running: nothing is hashed again
+    /// and every `ensure_key` waits until shutdown, with no sign of it.
+    ///
+    /// The bound on each wait is not a measurement. A key that is never
+    /// decided would hang the test, and the bound turns that into a
+    /// failure.
+    #[tokio::test]
+    async fn a_worker_that_dies_fails_the_file_it_held_and_hashing_goes_on() {
+        let (first, first_key) = pending("golden-uncompressed-u16-multiframe.dcm");
+        let (second, second_key) = pending("golden-image-no-pixels.dcm");
+        let registry = FileRegistry::new();
+        registry.insert(first);
+        registry.insert(second);
+        registry.hashing.fail_at(0);
+        // Both files are viewed, so both are queued when the worker dies
+        // on the first.
+        registry.frame_sent(0);
+        registry.frame_sent(1);
+        let decided = |index: usize| {
+            let registry = registry.clone();
+            async move {
+                tokio::time::timeout(Duration::from_secs(30), registry.ensure_key(index))
+                    .await
+                    .unwrap_or_else(|_| panic!("the key of file {index} is never decided"))
+            }
+        };
+
+        assert_eq!(
+            decided(0).await,
+            Err(KeyError::Unavailable(KeyFailure::Unreadable)),
+            "the file the worker held fails like one that cannot be read"
+        );
+        let status = registry.key_status(0).expect("registered");
+        assert_eq!(
+            (status.key, status.failure),
+            (None, Some(KeyFailure::Unreadable))
+        );
+        // The file queued behind it is hashed.
+        assert_eq!(
+            decided(1).await.as_ref().map(FileKey::as_str),
+            Ok(second_key.as_str())
+        );
+        // The fault was the worker's, not the file's: asked again, it has
+        // its key.
+        assert_eq!(
+            decided(0).await.as_ref().map(FileKey::as_str),
+            Ok(first_key.as_str())
+        );
+        assert_eq!(registry.files_page(None, None).keys_hashing, 0);
+        assert_eq!(registry.key_stats().files_hashed, 3);
     }
 }

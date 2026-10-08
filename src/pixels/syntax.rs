@@ -304,6 +304,7 @@ mod tests {
             format: Default::default(),
             raster: None,
             size_bytes: 0,
+            modified: None,
             index: 0,
             path: PathBuf::from("fixture.dcm"),
             label: String::new(),

@@ -22,13 +22,21 @@ pub enum HashProgress {
     Done([u8; 32]),
 }
 
-/// Hashes one file whose length discovery already knows.
+/// Hashes one file as discovery saw it.
 ///
-/// The digest is only ever of the file discovery saw. A file whose length
-/// differs from `expected_len`, that ends early, that has grown, or whose
-/// length or modification time changes between [`FileHasher::open`] and the
-/// last slice is [`KeyFailure::Changed`]; no digest of mixed or partial
-/// bytes is returned.
+/// Discovery's `stat` gives a length and a modification time, and those two
+/// are all that says a file is still the one discovery saw: its bytes were
+/// not read then. A file whose length differs from `expected_len`, whose
+/// modification time differs from `expected_modified`, that ends early,
+/// that has grown, or whose length or modification time changes between
+/// [`FileHasher::open`] and the last slice is [`KeyFailure::Changed`]; no
+/// digest of mixed or partial bytes is returned.
+///
+/// What this cannot see: a file rewritten with other bytes of the same
+/// length whose modification time was then set back to what discovery saw
+/// (or rewritten within one tick of the filesystem's clock) hashes as those
+/// other bytes, with no failure. The digest is then of what the path holds
+/// now, which is also what a frame decoded now shows.
 ///
 /// The work is bounded by what discovery saw, not by what the file has
 /// become: across all calls at most `expected_len + 1` bytes are read (the
@@ -48,12 +56,42 @@ pub struct FileHasher {
 impl FileHasher {
     /// Opens `path` for hashing and reads nothing.
     ///
-    /// The path is checked with `std::fs::metadata` first, and anything that
-    /// is not a regular file is [`KeyFailure::Unreadable`] without being
-    /// opened, so a FIFO put in a file's place never blocks the caller. A
-    /// path that cannot be inspected or opened is `Unreadable`. A regular
-    /// file whose length is not `expected_len` is [`KeyFailure::Changed`].
-    pub fn open(path: &Path, expected_len: u64) -> Result<Self, KeyFailure> {
+    /// The path is named once, to open it, and everything is checked on the
+    /// file that call opened, so what is checked is what is read:
+    ///
+    /// - On Unix the file is opened with `O_NONBLOCK`, so opening never
+    ///   waits: a FIFO put in a file's place, at any moment, neither blocks
+    ///   the caller nor is read. On other platforms it is opened as usual.
+    /// - Anything that is not a regular file is [`KeyFailure::Unreadable`],
+    ///   as is a path that cannot be opened or inspected.
+    /// - A regular file whose length is not `expected_len` is
+    ///   [`KeyFailure::Changed`]. So is one whose modification time is not
+    ///   `expected_modified`, when both are known. With `None`, or on a
+    ///   platform without modification times, only lengths are compared.
+    ///
+    /// `expected_len` and `expected_modified` are the two values of one
+    /// `stat`, the one discovery took (`FileEntry::size_bytes` and
+    /// `FileEntry::modified`).
+    pub fn open(
+        path: &Path,
+        expected_len: u64,
+        expected_modified: Option<SystemTime>,
+    ) -> Result<Self, KeyFailure> {
+        Self::open_probed(path, expected_len, expected_modified, || {})
+    }
+
+    /// [`FileHasher::open`], calling `before_open` once, after everything
+    /// this function does with the path by name other than opening it and
+    /// immediately before the call that opens it. The seam a test uses to
+    /// change what the path names at the last moment; `open` passes a
+    /// closure that does nothing.
+    pub(super) fn open_probed(
+        path: &Path,
+        expected_len: u64,
+        expected_modified: Option<SystemTime>,
+        before_open: impl FnOnce(),
+    ) -> Result<Self, KeyFailure> {
+        let _ = expected_modified;
         let metadata = std::fs::metadata(path).map_err(|_| KeyFailure::Unreadable)?;
         if !metadata.is_file() {
             return Err(KeyFailure::Unreadable);
@@ -61,6 +99,7 @@ impl FileHasher {
         if metadata.len() != expected_len {
             return Err(KeyFailure::Changed);
         }
+        before_open();
         let file = File::open(path).map_err(|_| KeyFailure::Unreadable)?;
         let opened = file.metadata().map_err(|_| KeyFailure::Unreadable)?;
         if !opened.is_file() {
@@ -69,10 +108,11 @@ impl FileHasher {
         if opened.len() != expected_len || opened.modified().ok() != metadata.modified().ok() {
             return Err(KeyFailure::Changed);
         }
+        let modified = opened.modified().ok();
         Ok(Self {
             file,
             expected_len,
-            modified: opened.modified().ok(),
+            modified,
             hasher: blake3::Hasher::new(),
             buffer: vec![0; 1024 * 1024].into_boxed_slice(),
             bytes_read: 0,
@@ -143,6 +183,7 @@ mod tests {
     use std::fs;
     use std::io::Write;
     use std::path::Path;
+    use std::time::{Duration, SystemTime};
 
     /// Bytes that differ along the file, so a digest of the wrong range or
     /// of slices in the wrong order is a different digest.
@@ -192,7 +233,7 @@ mod tests {
             let path = dir.path().join(format!("file-{len}.bin"));
             let bytes = patterned(len);
             write(&path, &bytes);
-            let hasher = FileHasher::open(&path, len as u64).expect("open");
+            let hasher = FileHasher::open(&path, len as u64, None).expect("open");
             assert_eq!(hasher.bytes_read(), 0, "opening reads nothing");
             let (digest, slices, read) = finish(hasher);
             assert_eq!(
@@ -215,7 +256,7 @@ mod tests {
             let path = dir.path().join(name);
             write(&path, &original);
             assert_eq!(
-                FileHasher::open(&path, expected_len).err(),
+                FileHasher::open(&path, expected_len, None).err(),
                 Some(KeyFailure::Changed),
                 "{name}"
             );
@@ -225,7 +266,7 @@ mod tests {
         // length is read, however much was appended.
         let grown = dir.path().join("grown");
         write(&grown, &original);
-        let hasher = FileHasher::open(&grown, 200_000).expect("open");
+        let hasher = FileHasher::open(&grown, 200_000, None).expect("open");
         fs::OpenOptions::new()
             .append(true)
             .open(&grown)
@@ -239,7 +280,7 @@ mod tests {
         // Cut short after it was opened.
         let cut = dir.path().join("cut");
         write(&cut, &original);
-        let hasher = FileHasher::open(&cut, 200_000).expect("open");
+        let hasher = FileHasher::open(&cut, 200_000, None).expect("open");
         fs::OpenOptions::new()
             .write(true)
             .open(&cut)
@@ -252,28 +293,154 @@ mod tests {
 
         // Gone, or not a file at all.
         assert_eq!(
-            FileHasher::open(&dir.path().join("missing"), 10).err(),
+            FileHasher::open(&dir.path().join("missing"), 10, None).err(),
             Some(KeyFailure::Unreadable)
         );
         assert_eq!(
-            FileHasher::open(dir.path(), 10).err(),
+            FileHasher::open(dir.path(), 10, None).err(),
             Some(KeyFailure::Unreadable)
         );
     }
 
-    /// A FIFO where a file was: opening one for reading blocks until a
-    /// writer appears, so it must be refused from its metadata.
-    #[cfg(unix)]
+    fn modified(path: &Path) -> SystemTime {
+        fs::metadata(path)
+            .expect("file metadata")
+            .modified()
+            .expect("modification time")
+    }
+
+    fn set_modified(path: &Path, time: SystemTime) {
+        fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .expect("reopen")
+            .set_modified(time)
+            .expect("set modification time");
+    }
+
+    /// Discovery reads a file's header and its `stat`, not its bytes, so a
+    /// file replaced by other bytes of the same length is told from the one
+    /// discovery saw by its modification time alone.
     #[test]
-    fn a_fifo_in_place_of_a_file_is_refused_without_being_opened() {
+    fn a_file_rewritten_at_the_same_length_is_told_by_its_modification_time() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("fifo");
+        let path = dir.path().join("file");
+        let original = patterned(70_000);
+        let other = original.iter().map(|byte| byte ^ 0x5a).collect::<Vec<_>>();
+        write(&path, &original);
+        let seen = modified(&path);
+        let digest_with = |expected_modified| {
+            FileHasher::open(&path, 70_000, expected_modified).map(|hasher| finish(hasher).0)
+        };
+
+        assert_eq!(
+            digest_with(Some(seen)).expect("open"),
+            Ok(*blake3::hash(&original).as_bytes()),
+            "the file discovery saw"
+        );
+
+        // Rewritten, and the clock moved either way. The time is set
+        // outright so the test does not depend on the filesystem's tick.
+        write(&path, &other);
+        for (name, time) in [
+            ("later", seen + Duration::from_secs(10)),
+            ("earlier", seen - Duration::from_secs(10)),
+        ] {
+            set_modified(&path, time);
+            assert_eq!(
+                digest_with(Some(seen)).err(),
+                Some(KeyFailure::Changed),
+                "rewritten, modified {name}: refused before any read"
+            );
+        }
+
+        // Without a time from discovery only the length is compared.
+        assert_eq!(
+            digest_with(None).expect("open"),
+            Ok(*blake3::hash(&other).as_bytes())
+        );
+
+        // The stated limit: other bytes of the same length under the
+        // modification time discovery saw are hashed as the file.
+        set_modified(&path, seen);
+        assert_eq!(
+            digest_with(Some(seen)).expect("open"),
+            Ok(*blake3::hash(&other).as_bytes())
+        );
+    }
+
+    /// A file whose modification time moves while it is hashed was written
+    /// to, whatever its length says, and gets no digest.
+    #[test]
+    fn a_file_modified_while_it_is_hashed_has_no_digest() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let slice = KEY_HASH_SLICE_BYTES as usize;
+        // One slice, touched before it is read; two slices, touched between.
+        for (len, slices_before) in [(70_000, 0), (slice + 70_000, 1)] {
+            let path = dir.path().join(format!("touched-{len}"));
+            write(&path, &patterned(len));
+            let seen = modified(&path);
+            let mut hasher = FileHasher::open(&path, len as u64, Some(seen)).expect("open");
+            for _ in 0..slices_before {
+                assert_eq!(hasher.next_slice(), Ok(HashProgress::More));
+            }
+            set_modified(&path, seen + Duration::from_secs(10));
+            let (outcome, _, read) = finish(hasher);
+            assert_eq!(outcome, Err(KeyFailure::Changed), "{len} bytes");
+            assert!(read <= len as u64, "{len} bytes: read {read}");
+        }
+    }
+
+    #[cfg(unix)]
+    fn make_fifo(path: &Path) {
         let name = std::ffi::CString::new(path.to_str().expect("utf-8 path")).expect("c string");
         // SAFETY: `name` is a valid NUL-terminated path for the whole call.
         assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0, "mkfifo");
-        assert_eq!(
-            FileHasher::open(&path, 0).err(),
-            Some(KeyFailure::Unreadable)
-        );
+    }
+
+    /// Opening a FIFO for reading waits until a writer appears, and nothing
+    /// here ever writes: a hasher that waited would hold a thread of the
+    /// blocking pool, and the one hashing worker with it, for good. The
+    /// FIFO is there from the start, or takes the file's place at the last
+    /// moment before the path is opened, after anything that looked at the
+    /// path by name saw a regular file.
+    ///
+    /// The open runs on its own thread so that a hasher that waits fails
+    /// this test instead of hanging it. The bound is not a measurement: a
+    /// correct open returns at once, and a waiting one never does.
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_in_place_of_a_file_never_blocks_whenever_it_appears() {
+        for swapped_in_late in [false, true] {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let path = dir.path().join("file");
+            if swapped_in_late {
+                write(&path, &patterned(1_000));
+            } else {
+                make_fifo(&path);
+            }
+            let (sender, receiver) = std::sync::mpsc::channel();
+            std::thread::spawn({
+                let path = path.clone();
+                move || {
+                    let opened = FileHasher::open_probed(&path, 1_000, None, || {
+                        if swapped_in_late {
+                            fs::remove_file(&path).expect("remove the file");
+                            make_fifo(&path);
+                        }
+                    });
+                    // The receiver may have given up.
+                    let _ = sender.send(opened.err());
+                }
+            });
+            match receiver.recv_timeout(Duration::from_secs(20)) {
+                Ok(outcome) => assert_eq!(
+                    outcome,
+                    Some(KeyFailure::Unreadable),
+                    "swapped in late: {swapped_in_late}"
+                ),
+                Err(_) => panic!("opening waited on the FIFO (swapped in late: {swapped_in_late})"),
+            }
+        }
     }
 }

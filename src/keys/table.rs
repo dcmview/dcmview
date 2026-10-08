@@ -2,23 +2,66 @@
 
 use super::FileKey;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// What discovery knows about a file that decides its key. None of it needs
-/// a read beyond the header discovery already parsed.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FileIdentity {
-    /// The SOP Instance UID exactly as discovery read it; empty for a raster
-    /// and for a DICOM file without one.
-    pub sop_instance_uid: String,
+/// What decides a file's key, read from the value that already holds it.
+/// None of it needs a read beyond the header discovery already parsed.
+///
+/// The table keeps a few clones of every file registered with it and copies
+/// nothing out of them: the UID and the path stay where the caller stored
+/// them. A clone must therefore be cheap and allocate nothing, which an
+/// `Arc` of anything that implements the trait is.
+pub trait KeyedFile {
+    /// The SOP Instance UID exactly as discovery read it (`docs/api.md`,
+    /// "File keys", says how discovery reads it); empty for a raster and for
+    /// a DICOM file without one.
+    fn sop_instance_uid(&self) -> &str;
     /// The file's length in bytes at discovery.
-    pub size_bytes: u64,
+    fn size_bytes(&self) -> u64;
     /// The path that names the file itself, as discovery resolved it (the
     /// canonical path). Two entries with equal paths are one file reached
     /// twice. The table compares this value and never touches the
     /// filesystem.
+    fn path(&self) -> &Path;
+}
+
+impl<T: KeyedFile + ?Sized> KeyedFile for Arc<T> {
+    fn sop_instance_uid(&self) -> &str {
+        (**self).sop_instance_uid()
+    }
+
+    fn size_bytes(&self) -> u64 {
+        (**self).size_bytes()
+    }
+
+    fn path(&self) -> &Path {
+        (**self).path()
+    }
+}
+
+/// A file's key facts as owned values, for callers that have no entry of
+/// their own to share. Cloning it copies its strings, so a table of many
+/// files registers `Arc<FileIdentity>`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileIdentity {
+    pub sop_instance_uid: String,
+    pub size_bytes: u64,
     pub path: PathBuf,
+}
+
+impl KeyedFile for FileIdentity {
+    fn sop_instance_uid(&self) -> &str {
+        &self.sop_instance_uid
+    }
+
+    fn size_bytes(&self) -> u64 {
+        self.size_bytes
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
 }
 
 /// Why a file's digest could not be computed.
@@ -50,16 +93,36 @@ pub struct KeyChanges {
     /// key, is not listed.
     pub rekeys: Vec<Rekey>,
     /// The files whose digest should now be computed in the background, in
-    /// ascending index order. A file is listed in `wanted` at most once in
+    /// ascending index order. An index is listed in `wanted` at most once in
     /// the table's life.
     pub wanted: Vec<usize>,
+}
+
+/// A file's key without the string: the table holds no `sop:` key as text,
+/// because that text is `sop:` plus a UID the registered file already holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyRef<'a> {
+    /// The key `sop:<uid>`; the value is the UID, as the file was registered
+    /// with it.
+    Sop(&'a str),
+    /// A `b3:` key.
+    Content(&'a FileKey),
+}
+
+impl<'a> From<&'a FileKey> for KeyRef<'a> {
+    fn from(key: &'a FileKey) -> Self {
+        match key.scheme() {
+            super::KeyScheme::Sop => Self::Sop(key.body()),
+            super::KeyScheme::Blake3 => Self::Content(key),
+        }
+    }
 }
 
 /// The part of a file's key state its catalog entry shows, borrowed from
 /// the table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeyView<'a> {
-    pub key: Option<&'a FileKey>,
+    pub key: Option<KeyRef<'a>>,
     pub alias_of: Option<usize>,
     pub failure: Option<KeyFailure>,
 }
@@ -73,10 +136,22 @@ pub struct FileKeyStatus {
     pub failure: Option<KeyFailure>,
     /// The file's digest, when it has been computed.
     pub digest: Option<[u8; 32]>,
-    /// Whether [`KeyTable::required_for`] is empty for the file and it has a
-    /// key: nothing more can be learned about this key without hashing a
-    /// file nobody asked about.
+    /// [`KeyTable::settled`] for the file.
     pub settled: bool,
+}
+
+/// The answer to "may this file's key be written down?"
+/// ([`KeyTable::rely_on`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reliance {
+    /// The key, which is now settled: it is this file's key for as long as
+    /// the table lives.
+    Final(FileKey),
+    /// A digest [`KeyTable::required_for`] names has no outcome yet.
+    Wanted,
+    /// A digest the key depends on could not be computed: the file's own,
+    /// or the one of its group's first file.
+    Failed(KeyFailure),
 }
 
 /// The keys of the registered files (`docs/design/annotation-model.md` 1.3,
@@ -85,35 +160,68 @@ pub struct FileKeyStatus {
 ///
 /// # Terms
 ///
-/// - A UID is *usable* when `FileKey::sop` accepts it: 1 to 128 characters,
-///   each an ASCII letter, a digit, `.`, `-` or `_`, taken as written.
+/// - A UID is *usable* when `FileKey::is_sop_uid` accepts it: 1 to 128
+///   characters, each an ASCII letter, a digit, `.`, `-` or `_`, taken as
+///   written.
 /// - A file's *group* is the set of registered files with its usable UID.
-/// - Two entries are the *same file* when their [`FileIdentity::path`]s are
+///   The group's *first file* is the one registered first.
+/// - Two entries are the *same file* when their [`KeyedFile::path`]s are
 ///   equal. A digest or a failure recorded for one is recorded for every
-///   entry of that file, including entries registered later.
-/// - A group is *split* once two of its files are known to hold different
-///   bytes: their sizes differ, or their digests are both known and differ.
-///   A split group stays split.
+///   entry of that file, including entries registered later. A group whose
+///   entries are all the same file is a group of one file.
+/// - A group is *relied on* once [`KeyTable::rely_on`] has returned
+///   `sop:<uid>` for one of its files. That key then names the bytes of the
+///   group's first file for as long as the table lives.
+/// - A group that is not relied on is *split* once two of its files are
+///   known to hold different bytes: their sizes differ, or their digests
+///   are both known and differ. A split group stays split and is never
+///   relied on; a group that is relied on never splits.
 ///
 /// # The key a file has
 ///
 /// 1. No usable UID (a raster, an empty UID, a UID with another character or
 ///    more than 128 of them): `b3:<digest>` once its digest is known, and no
 ///    key before that.
-/// 2. A usable UID whose group is not split: `sop:<uid>`. Every file of the
-///    group has this key; whether their bytes are equal has not been
-///    checked unless both digests happen to be known.
+/// 2. A usable UID whose group is neither split nor relied on: `sop:<uid>`.
+///    Every file of the group has this key; whether their bytes are equal
+///    has not been checked. The key is *provisional*: it is what the file's
+///    catalog entry and frames show, and it is not written down
+///    ([`KeyTable::rely_on`]).
 /// 3. A usable UID whose group is split: `b3:<digest>` once its digest is
 ///    known. Before that, a file that had `sop:<uid>` when the group split
 ///    keeps it, so that its key is replaced once, old by new, and never
 ///    goes missing in between; a file registered into a group that is
 ///    already split has no key. A file of a split group whose digest attempt
 ///    failed has no key.
+/// 4. A usable UID whose group is relied on:
+///    - the first file, and every file whose digest and the first file's
+///      are both known and equal: `sop:<uid>`;
+///    - a file known to differ from the first file (its size differs, or
+///      both digests are known and differ): `b3:<digest>` once its digest
+///      is known, and no key before that;
+///    - any other file, which is one that has not been compared with the
+///      first file yet: no key. A file that had the provisional `sop:<uid>`
+///      and no digest when the group became relied on loses it at that
+///      moment.
 ///
-/// The rule does not depend on registration order: a group has `sop:` keys
-/// exactly while nothing shows its files to differ, and once something does,
-/// every file of it is keyed by content, so byte-identical copies share one
-/// `b3:` key and a differing copy gets its own.
+/// Under rules 1 to 3 the keys do not depend on registration order: a group
+/// has `sop:` keys exactly while nothing shows its files to differ, and once
+/// something does, every file of it is keyed by content, so byte-identical
+/// copies share one `b3:` key and a differing copy gets its own. Rule 4 is
+/// what makes a key that was written down final. It does depend on what was
+/// registered when the key was relied on: a file that turns up afterwards
+/// can no longer change that key, so it is the late file that waits for a
+/// comparison and takes a content key if it differs.
+///
+/// A key is replaced by another only under rule 3. Under rule 4 no file
+/// goes from `sop:<uid>` to a `b3:` key, so no [`Rekey`] ever names a file
+/// of a group that is relied on.
+///
+/// # Settled keys
+///
+/// A key is *settled* when it can no longer change: every `b3:` key, and
+/// `sop:<uid>` in a group that is relied on. Two files with the same settled
+/// key hold the same bytes, or are the same file.
 ///
 /// # Aliases
 ///
@@ -127,19 +235,36 @@ pub struct FileKeyStatus {
 ///
 /// A file is *served* once [`KeyTable::frame_sent`] has been called for it.
 /// Its digest becomes wanted when it is served, its digest is unknown, no
-/// failure is recorded for it, and its key falls under rule 1 or rule 3.
-/// A file under rule 2 is never wanted: aliases that share a UID and a size
-/// are compared only when someone asks ([`KeyTable::required_for`]), so a
-/// dataset with a copy of every file is never read twice just for being
-/// opened.
+/// failure is recorded for it, and it has or awaits a content key (rule 1,
+/// rule 3, or a file of rule 4 that differs from the first file) or awaits
+/// its comparison under rule 4. A served file that awaits its comparison
+/// and has no recorded failure also makes the first file's digest wanted,
+/// when that is unknown and no failure is recorded for it, since the
+/// comparison needs both. A file under rule 2 is never
+/// wanted: files that share a UID and a size are compared only when someone
+/// relies on a key of theirs, so a dataset with a copy of every file is
+/// never read twice just for being opened.
 ///
 /// # Cost
 ///
 /// Every call is a constant number of hash-map operations, plus one visit to
-/// each entry of the same file, except the one call that splits a group,
-/// which visits each file of the group once. A table of `n` files therefore
-/// costs `O(n)` over its whole life however the files are grouped.
-pub struct KeyTable {
+/// each entry of the same file, with these exceptions, each of which visits
+/// every file of one group once: the call that splits the group; the call
+/// that makes it relied on; the call that records the first file's digest
+/// once it is relied on; and [`KeyTable::required_for`] and
+/// [`KeyTable::rely_on`] for a file under rule 2 whose group has more than
+/// one entry.
+///
+/// The table holds no string of its own for a file whose UID and path no
+/// other registered file shares: such a file costs a fixed number of bytes
+/// in the table whatever the length of its UID and path (a few machine
+/// words and clones of `F` in vectors and hash maps) and no allocation of
+/// its own; the table allocates only to grow those vectors and maps.
+/// Nothing is built per file that a later call could build on demand: a
+/// `sop:` key is text only in [`KeyTable::status`], [`Reliance::Final`] and
+/// [`Rekey`]. `tests/key_table_memory.rs` holds the bound.
+pub struct KeyTable<F> {
+    registered: Vec<F>,
     entries: Vec<Entry>,
     paths: HashMap<PathBuf, usize>,
     files: Vec<PhysicalFile>,
@@ -173,10 +298,11 @@ struct Group {
     members: Vec<usize>,
 }
 
-impl KeyTable {
+impl<F: KeyedFile + Clone> KeyTable<F> {
     /// An empty table.
     pub fn new() -> Self {
         Self {
+            registered: Vec::new(),
             entries: Vec::new(),
             paths: HashMap::new(),
             files: Vec::new(),
@@ -188,7 +314,7 @@ impl KeyTable {
 
     /// The number of registered files.
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.registered.len()
     }
 
     /// Whether no file is registered.
@@ -199,13 +325,28 @@ impl KeyTable {
     /// Registers the next file, whose index is [`KeyTable::len`] before the
     /// call, and gives it the key the rules on [`KeyTable`] say.
     ///
-    /// Registering a file whose size differs from its group's splits the
-    /// group; so does registering another entry of a file whose known digest
-    /// differs from the group's. The files the split changes are in
-    /// `updated`, those of them whose digest is already known are rekeyed in
-    /// this call, and those that are served and still without a digest are
-    /// in `wanted`.
-    pub fn register(&mut self, identity: FileIdentity) -> KeyChanges {
+    /// While the file's group is neither split nor relied on, registering a
+    /// file whose size differs from the group's splits the group; so does
+    /// registering another entry of a file whose known digest differs from
+    /// the group's. The files the split changes are in `updated`, those of
+    /// them whose digest is already known are rekeyed in this call, and
+    /// those that are served and still without a digest are in `wanted`.
+    ///
+    /// A file registered into a group that is relied on changes no other
+    /// file: it has `sop:<uid>` at once when it is another entry of the
+    /// first file or its known digest equals the first file's known digest,
+    /// and otherwise the key rule 4 gives it.
+    ///
+    /// For a file whose UID and path no registered file has, this is two
+    /// hash-map insertions and no allocation beyond the result and the
+    /// growth of the table.
+    pub fn register(&mut self, file: F) -> KeyChanges {
+        let identity = FileIdentity {
+            sop_instance_uid: file.sop_instance_uid().to_string(),
+            size_bytes: file.size_bytes(),
+            path: file.path().to_path_buf(),
+        };
+        self.registered.push(file);
         let index = self.entries.len();
         let file = *self.paths.entry(identity.path).or_insert_with(|| {
             let file = self.files.len();
@@ -275,21 +416,26 @@ impl KeyTable {
         self.entries.get(index).is_some_and(|entry| entry.served)
     }
 
-    /// The files whose digests must be computed before the key of `index`
-    /// can be relied on for a write or an export: at most two, in ascending
-    /// index order, never two entries of the same file.
+    /// The files whose digests are unknown and must be computed before
+    /// [`KeyTable::rely_on`] can settle the key of `index`, in ascending
+    /// index order, never two entries of the same file. The file itself is
+    /// named by `index`; any other file by its first entry.
     ///
-    /// - The file itself, when its digest is unknown and it has no key, or
-    ///   keeps the `sop:` key of a split group, or has an `alias_of` that is
-    ///   another file.
-    /// - Its `alias_of` file, when that is another file whose digest is
-    ///   unknown.
+    /// - Rule 1, rule 3, and a file of rule 4 that differs from the first
+    ///   file: the file itself.
+    /// - Rule 2, in a group of one file: nothing. Its `sop:` key is its own.
+    /// - Rule 2, in a group of more than one file: every file of the group,
+    ///   the file itself included. Each of them could share the key or
+    ///   contest it, and a key that is written down has to be final, so
+    ///   none is left unread. The work this asks for is the bytes of the
+    ///   group's files, each read once.
+    /// - Rule 4, the first file or a file compared equal to it: nothing.
+    /// - Rule 4, a file not compared with the first file yet: the file
+    ///   itself and the first file.
     ///
     /// A recorded failure does not exempt a file: asking again is how a
     /// failed digest is retried. Empty when nothing is needed, and for an
-    /// index that is not registered. The first file of a group that is not
-    /// split needs nothing: its `sop:` key is its own until a copy is shown
-    /// to differ.
+    /// index that is not registered.
     pub fn required_for(&self, index: usize) -> Vec<usize> {
         let Some(entry) = self.entries.get(index) else {
             return Vec::new();
@@ -312,16 +458,65 @@ impl KeyTable {
         required
     }
 
+    /// Settles the key of `index` if it can be settled now, and returns it.
+    /// This is the one way a key becomes fit to be written into a record or
+    /// an export: [`Reliance::Final`] is never followed by another key for
+    /// that file, whatever is registered or hashed afterwards.
+    ///
+    /// - A file with a `b3:` key: `Final` with it.
+    /// - A file that has or awaits a content key and has no digest:
+    ///   `Failed` with its recorded failure, else `Wanted`.
+    /// - Rule 2, in a group of one file: the group becomes relied on;
+    ///   `Final(sop:<uid>)`. Nothing was read and nothing changes.
+    /// - Rule 2, in a group of more than one file: `Failed` when the file's
+    ///   own digest is unknown and a failure is recorded for it, else when
+    ///   the first file's is; `Wanted` when any file of the group has
+    ///   neither a digest nor a recorded failure. Otherwise the known
+    ///   digests are equal (a difference would have split the group), the
+    ///   group becomes relied on and the answer is `Final(sop:<uid>)`. The
+    ///   files of the group without a digest lose their key then (rule 4)
+    ///   and are in `updated`.
+    /// - Rule 4, the first file or a file compared equal to it:
+    ///   `Final(sop:<uid>)`.
+    /// - Rule 4, a file not compared with the first file yet: `Failed` with
+    ///   its own recorded failure when its digest is unknown, else with the
+    ///   first file's; `Wanted` when the digest that is missing has no
+    ///   failure recorded.
+    ///
+    /// The first file's digest is asked of every file that shares its key
+    /// because `sop:<uid>` names the first file's bytes
+    /// ([`KeyTable::file_for_key`]): a file that cannot be compared with
+    /// them cannot be said to be that image.
+    ///
+    /// `None` for an index that is not registered. Only `updated` of the
+    /// changes can be non-empty.
+    pub fn rely_on(&mut self, index: usize) -> (Option<Reliance>, KeyChanges) {
+        let _ = index;
+        todo!("settle the key of a file (KeyTable, rule 4)")
+    }
+
+    /// Whether the file's key is settled: it has a `b3:` key, or it has
+    /// `sop:<uid>` and its group is relied on. False for an index that is
+    /// not registered.
+    pub fn settled(&self, index: usize) -> bool {
+        self.entries
+            .get(index)
+            .is_some_and(|entry| entry.key.is_some() && self.required_for(index).is_empty())
+    }
+
     /// Records the outcome of hashing the file, for every entry of it.
     ///
     /// A digest clears a recorded failure. Under rule 1 the file gains its
     /// `b3:` key. Under rule 2 the digest is compared with the group's other
     /// known digests: a difference splits the group, and otherwise the key
     /// stays `sop:<uid>`. Under rule 3 the file gains its `b3:` key, which
-    /// is a rekey when it still had `sop:<uid>`.
+    /// is a rekey when it still had `sop:<uid>`. Under rule 4 a file that is
+    /// not the first file gains `sop:<uid>` or its `b3:` key once both its
+    /// digest and the first file's are known, and the first file's digest
+    /// does that for every file of the group that was waiting for it.
     ///
     /// A failure is recorded and, under rule 3, removes the `sop:` key the
-    /// file kept; under rules 1 and 2 the key, or its absence, stays.
+    /// file kept; under the other rules the key, or its absence, stays.
     ///
     /// An outcome for an index that is not registered changes nothing. A
     /// digest for a file that already has one replaces nothing: the first
@@ -358,7 +553,7 @@ impl KeyTable {
     /// file it registers and every frame it serves, so it allocates nothing.
     pub fn view(&self, index: usize) -> Option<KeyView<'_>> {
         self.entries.get(index).map(|entry| KeyView {
-            key: entry.key.as_deref(),
+            key: entry.key.as_deref().map(KeyRef::from),
             alias_of: entry.alias_of,
             failure: entry.failure,
         })
@@ -371,7 +566,7 @@ impl KeyTable {
             alias_of: entry.alias_of,
             failure: entry.failure,
             digest: self.files[entry.file].digest,
-            settled: entry.key.is_some() && self.required_for(index).is_empty(),
+            settled: self.settled(index),
         })
     }
 
@@ -381,12 +576,15 @@ impl KeyTable {
     /// old-to-new map"), so an operation sent under the old key still finds
     /// its file. A `b3:` key names the first file that came to hold it.
     /// `None` for a key no file has held.
+    ///
+    /// For a settled key the answer never changes, and it is the file the
+    /// key was settled for or one that holds the same bytes.
     pub fn file_for_key(&self, key: &FileKey) -> Option<usize> {
         self.holders.get(key).copied()
     }
 }
 
-impl KeyTable {
+impl<F: KeyedFile + Clone> KeyTable<F> {
     fn content_key(&self, entry: &Entry) -> bool {
         entry.group.is_none_or(|group| self.groups[group].split)
     }
@@ -468,7 +666,7 @@ impl KeyTable {
     }
 }
 
-impl Default for KeyTable {
+impl<F: KeyedFile + Clone> Default for KeyTable<F> {
     fn default() -> Self {
         Self::new()
     }
@@ -476,11 +674,13 @@ impl Default for KeyTable {
 
 #[cfg(test)]
 mod tests {
-    use super::{FileIdentity, KeyFailure, KeyTable};
+    use super::{FileIdentity, KeyChanges, KeyFailure, KeyRef, KeyTable, Reliance};
     use crate::keys::FileKey;
     use std::path::PathBuf;
 
     const UID: &str = "1.2.826.0.1.3680043.10.511.7";
+
+    type Table = KeyTable<FileIdentity>;
 
     fn file(uid: &str, size: u64, path: &str) -> FileIdentity {
         FileIdentity {
@@ -503,7 +703,7 @@ mod tests {
     }
 
     /// `(key, alias_of)` of every file, for comparing a whole table at once.
-    fn keys(table: &KeyTable) -> Vec<(Option<String>, Option<usize>)> {
+    fn keys(table: &Table) -> Vec<(Option<String>, Option<usize>)> {
         (0..table.len())
             .map(|index| {
                 let status = table.status(index).expect("registered file");
@@ -519,13 +719,96 @@ mod tests {
         Some(text.to_string())
     }
 
-    /// The  each file of a case is expected to have.
+    fn key_of(table: &Table, index: usize) -> Option<String> {
+        table
+            .status(index)
+            .expect("registered file")
+            .key
+            .map(|key| key.as_str().to_string())
+    }
+
+    /// The key and alias each file of a case is expected to have.
     type Expected = Vec<(Option<String>, Option<usize>)>;
+
+    /// A file found late: its name, the file, its key before it is read,
+    /// how many files relying on it reads besides a first file that was
+    /// never read, its key once read, and its alias then.
+    type LateCase = (
+        &'static str,
+        Member,
+        Option<String>,
+        usize,
+        String,
+        Option<usize>,
+    );
+
+    /// One file of a group case: a path, a size and the byte its digest is
+    /// made of, so equal bytes stand for equal content.
+    #[derive(Debug, Clone, Copy)]
+    struct Member {
+        path: &'static str,
+        size: u64,
+        content: u8,
+    }
+
+    const fn member(path: &'static str, size: u64, content: u8) -> Member {
+        Member {
+            path,
+            size,
+            content,
+        }
+    }
+
+    /// Every order of `0..count`.
+    fn orders(count: usize) -> Vec<Vec<usize>> {
+        if count == 0 {
+            return vec![Vec::new()];
+        }
+        let mut all = Vec::new();
+        for shorter in orders(count - 1) {
+            for position in 0..=shorter.len() {
+                let mut order = shorter.clone();
+                order.insert(position, count - 1);
+                all.push(order);
+            }
+        }
+        all
+    }
+
+    /// Does what a caller that needs a key does: hashes what
+    /// `required_for` names, each file once, asks again in case that made
+    /// more required, and then takes the answer of `rely_on`. Returns the
+    /// answer, every index it hashed in order, and every change the table
+    /// reported on the way.
+    fn rely(
+        table: &mut Table,
+        index: usize,
+        outcome: &dyn Fn(usize) -> Result<[u8; 32], KeyFailure>,
+    ) -> (Reliance, Vec<usize>, Vec<KeyChanges>) {
+        let mut hashed = Vec::new();
+        let mut changes = Vec::new();
+        loop {
+            let required = table
+                .required_for(index)
+                .into_iter()
+                .filter(|file| !hashed.contains(file))
+                .collect::<Vec<_>>();
+            if required.is_empty() {
+                let (reliance, changed) = table.rely_on(index);
+                changes.push(changed);
+                return (reliance.expect("registered file"), hashed, changes);
+            }
+            for file in required {
+                hashed.push(file);
+                changes.push(table.resolve(file, outcome(file)));
+            }
+        }
+    }
 
     #[test]
     fn a_file_gets_the_key_its_uid_and_the_other_files_allow() {
         // One table per case: the files registered in order, then the key
-        // and alias of each before any file is hashed.
+        // and alias of each before any file is hashed or relied on.
         let cases: Vec<(&str, Vec<FileIdentity>, Expected)> = vec![
             (
                 "unique UIDs",
@@ -597,13 +880,34 @@ mod tests {
         ];
 
         for (name, files, expected) in cases {
-            let mut table = KeyTable::new();
-            for (index, identity) in files.into_iter().enumerate() {
+            let mut table = Table::new();
+            for (index, identity) in files.iter().cloned().enumerate() {
                 let changes = table.register(identity);
                 assert!(changes.updated.contains(&index), "{name}: file {index}");
                 assert!(changes.wanted.is_empty(), "{name}: nothing is served yet");
             }
             assert_eq!(keys(&table), expected, "{name}");
+            // The borrowed view says the same without building a key: a
+            // `sop:` key is the file's own UID, as it was registered.
+            for (index, identity) in files.iter().enumerate() {
+                let view = table.view(index).expect("registered");
+                let shown = view.key.map(|key| match key {
+                    KeyRef::Sop(uid) => {
+                        assert_eq!(uid, identity.sop_instance_uid, "{name}: file {index}");
+                        sop(uid)
+                    }
+                    KeyRef::Content(key) => key.as_str().to_string(),
+                });
+                assert_eq!(
+                    (shown, view.alias_of),
+                    expected[index],
+                    "{name}: file {index}"
+                );
+                assert!(
+                    !table.settled(index),
+                    "{name}: nothing was hashed or relied on"
+                );
+            }
         }
     }
 
@@ -625,7 +929,7 @@ mod tests {
             [2, 0, 1],
             [2, 1, 0],
         ] {
-            let mut table = KeyTable::new();
+            let mut table = Table::new();
             for position in order {
                 table.register(files[position].0.clone());
             }
@@ -660,7 +964,7 @@ mod tests {
 
     #[test]
     fn a_pending_key_resolves_once_and_identical_bytes_share_it() {
-        let mut table = KeyTable::new();
+        let mut table = Table::new();
         table.register(file("", 10, "/one.png"));
         table.register(file("", 10, "/two.png"));
         table.register(file("", 99, "/three.png"));
@@ -705,7 +1009,7 @@ mod tests {
 
     #[test]
     fn a_collision_found_late_replaces_each_key_once() {
-        let mut table = KeyTable::new();
+        let mut table = Table::new();
         table.register(file(UID, 10, "/a"));
         table.register(file(UID, 10, "/copy"));
         table.frame_sent(0);
@@ -713,11 +1017,12 @@ mod tests {
             table.frame_sent(1).wanted.is_empty(),
             "aliases are not hashed for being viewed"
         );
-        assert!(table.status(0).expect("registered").settled);
-        assert!(
-            !table.status(1).expect("registered").settled,
-            "an alias by UID and size is unchecked"
-        );
+        for index in 0..2 {
+            assert!(
+                !table.status(index).expect("registered").settled,
+                "file {index}: a key shared by UID and size is unchecked"
+            );
+        }
 
         // A third file with the UID and another size: the group splits. Both
         // earlier files were served, so both digests are wanted now.
@@ -730,6 +1035,8 @@ mod tests {
             vec![(key(&sop(UID)), None), (key(&sop(UID)), None), (None, None)]
         );
         assert!(!table.status(0).expect("registered").settled);
+        // Each file of a split group needs its own digest and no other.
+        assert_eq!(table.required_for(1), vec![1]);
 
         let changes = table.resolve(0, Ok(digest(1)));
         assert_eq!(changes.updated, vec![0]);
@@ -742,6 +1049,7 @@ mod tests {
             ),
             (0, sop(UID).as_str(), b3(1).as_str())
         );
+        assert!(table.status(0).expect("registered").settled);
 
         // The copy has the same bytes: it follows to the same key.
         let changes = table.resolve(1, Ok(digest(1)));
@@ -771,65 +1079,419 @@ mod tests {
         );
     }
 
+    /// `docs/design/annotation-model.md` 1.7: a provisional alias is
+    /// verified "before the first annotation write on either file". A key
+    /// is relied on only after every file that could share or contest it
+    /// was read, whichever file of the group is asked about and whatever
+    /// order the files were found in, and from then on it does not change.
     #[test]
-    fn aliases_are_compared_only_when_asked_and_two_files_at_a_time() {
-        let mut table = KeyTable::new();
-        for path in ["/all/a", "/train/a", "/test/a", "/val/a"] {
-            table.register(file(UID, 10, path));
-        }
-        // The first file's key is its own; an alias needs itself and the
-        // file it is an alias of, and no other member of the group.
-        assert_eq!(table.required_for(0), Vec::<usize>::new());
-        assert_eq!(table.required_for(2), vec![0, 2]);
-        assert_eq!(table.required_for(9), Vec::<usize>::new());
-
-        // Equal bytes: still one `sop:` key, now checked for this pair.
-        assert_eq!(table.resolve(0, Ok(digest(1))), Default::default());
-        assert_eq!(table.required_for(2), vec![2]);
-        assert_eq!(table.resolve(2, Ok(digest(1))), Default::default());
-        assert_eq!(table.required_for(2), Vec::<usize>::new());
-        assert!(table.status(2).expect("registered").settled);
-        assert_eq!(
-            table.status(2).expect("registered").key,
-            FileKey::sop(UID).ok()
-        );
-
-        // Another alias turns out to differ: the group splits, the two files
-        // with known digests are rekeyed at once, and the last one keeps
-        // `sop:` until it is hashed.
-        let changes = table.resolve(1, Ok(digest(9)));
-        assert_eq!(changes.updated, vec![0, 1, 2, 3]);
-        assert_eq!(
-            changes
-                .rekeys
+    fn a_shared_uid_key_is_relied_on_only_after_every_file_of_the_group_was_read() {
+        let cases: Vec<(&str, Vec<Member>)> = vec![
+            (
+                "two copies",
+                vec![member("/all/a", 10, 1), member("/train/a", 10, 1)],
+            ),
+            (
+                "two files of one size that differ",
+                vec![member("/a", 10, 1), member("/b", 10, 2)],
+            ),
+            (
+                "two copies and a file of the same size that differs",
+                vec![
+                    member("/a", 10, 1),
+                    member("/b", 10, 2),
+                    member("/copy", 10, 1),
+                ],
+            ),
+            (
+                "three copies",
+                vec![
+                    member("/all/a", 10, 1),
+                    member("/train/a", 10, 1),
+                    member("/test/a", 10, 1),
+                ],
+            ),
+            (
+                "three files of one size that all differ",
+                vec![
+                    member("/a", 10, 1),
+                    member("/b", 10, 2),
+                    member("/c", 10, 3),
+                ],
+            ),
+            (
+                "one file reached twice and a copy of it",
+                vec![
+                    member("/a", 10, 1),
+                    member("/a", 10, 1),
+                    member("/copy", 10, 1),
+                ],
+            ),
+        ];
+        for (name, members) in cases {
+            let identical = members
                 .iter()
-                .map(|rekey| (rekey.index, rekey.new_key.as_str().to_string()))
-                .collect::<Vec<_>>(),
-            vec![(0, b3(1)), (1, b3(9)), (2, b3(1))]
+                .all(|member| member.content == members[0].content);
+            let mut paths = members.iter().map(|member| member.path).collect::<Vec<_>>();
+            paths.sort_unstable();
+            paths.dedup();
+            for order in orders(members.len()) {
+                for asked in 0..members.len() {
+                    let context = format!("{name}, order {order:?}, asked {asked}");
+                    let mut table = Table::new();
+                    for &position in &order {
+                        let member = members[position];
+                        table.register(file(UID, member.size, member.path));
+                    }
+                    let content = |index: usize| members[order[index]].content;
+                    let before = keys(&table);
+
+                    // Nothing was read: the key cannot be relied on, and
+                    // being asked changes nothing.
+                    let (reliance, changes) = table.rely_on(asked);
+                    assert_eq!(reliance, Some(Reliance::Wanted), "{context}");
+                    assert_eq!(changes, KeyChanges::default(), "{context}");
+                    assert_eq!(keys(&table), before, "{context}");
+
+                    let (reliance, hashed, _) =
+                        rely(&mut table, asked, &|index| Ok(digest(content(index))));
+                    // Every file of the group was read, each once.
+                    let mut read = hashed
+                        .iter()
+                        .map(|&index| members[order[index]].path)
+                        .collect::<Vec<_>>();
+                    read.sort_unstable();
+                    assert_eq!(read, paths, "{context}: files read");
+
+                    let expected = if identical {
+                        sop(UID)
+                    } else {
+                        b3(content(asked))
+                    };
+                    assert_eq!(
+                        reliance,
+                        Reliance::Final(FileKey::parse(&expected).expect("key")),
+                        "{context}"
+                    );
+                    assert!(table.settled(asked), "{context}");
+
+                    // The other files' keys are settled by the same reads,
+                    // and no later answer or file changes the first one.
+                    let settled = keys(&table);
+                    for index in 0..members.len() {
+                        let (reliance, hashed, changes) =
+                            rely(&mut table, index, &|index| Ok(digest(content(index))));
+                        assert!(hashed.is_empty(), "{context}: file {index} read again");
+                        assert!(
+                            changes
+                                .iter()
+                                .all(|changes| *changes == KeyChanges::default()),
+                            "{context}: file {index}"
+                        );
+                        let expected = if identical {
+                            sop(UID)
+                        } else {
+                            b3(content(index))
+                        };
+                        assert_eq!(
+                            reliance,
+                            Reliance::Final(FileKey::parse(&expected).expect("key")),
+                            "{context}: file {index}"
+                        );
+                    }
+                    let late = table.register(file(UID, 11, "/late/other-size"));
+                    assert_eq!(late.updated, vec![members.len()], "{context}");
+                    assert!(late.rekeys.is_empty(), "{context}");
+                    table.register(file(UID, 10, "/late/same-size"));
+                    table.resolve(members.len(), Ok(digest(8)));
+                    table.resolve(members.len() + 1, Ok(digest(9)));
+                    assert_eq!(
+                        keys(&table)[..members.len()],
+                        settled[..],
+                        "{context}: keys after two late files"
+                    );
+                    // A settled key names a file with the same bytes as the
+                    // one it was given for, and always the same one.
+                    let named = table
+                        .file_for_key(&FileKey::parse(&expected).expect("key"))
+                        .expect("a settled key names a file");
+                    assert_eq!(content(named), content(asked), "{context}");
+                }
+            }
+        }
+    }
+
+    /// The decision this pins is the owner's to confirm: once a key was
+    /// relied on, a file found later with the same UID cannot change it, so
+    /// it is the late file that waits and, if it differs, takes a content
+    /// key. `docs/design/annotation-model.md` 1.7 has the earlier file
+    /// rekeyed instead ("or even annotated").
+    #[test]
+    fn a_file_found_after_a_key_was_relied_on_never_changes_that_key() {
+        // The group before the late file: one file relied on without a
+        // read, or two copies relied on after both were read.
+        for copies in [1_usize, 2] {
+            // (name, late file, its content, key before it is read, what
+            // relying on it reads, key once read, alias)
+            let cases: Vec<LateCase> = vec![
+                (
+                    "the same file again",
+                    member("/a", 10, 1),
+                    key(&sop(UID)),
+                    0,
+                    sop(UID),
+                    Some(0),
+                ),
+                ("a copy", member("/late", 10, 1), None, 1, sop(UID), Some(0)),
+                (
+                    "the same size, other bytes",
+                    member("/late", 10, 2),
+                    None,
+                    1,
+                    b3(2),
+                    None,
+                ),
+                ("another size", member("/late", 11, 2), None, 1, b3(2), None),
+            ];
+            for (name, late, pending, reads, read_key, alias) in cases {
+                let context = format!("{copies} file(s) relied on, then {name}");
+                let mut table = Table::new();
+                table.register(file(UID, 10, "/a"));
+                if copies == 2 {
+                    table.register(file(UID, 10, "/copy"));
+                }
+                let content = |index: usize| if index < copies { 1 } else { late.content };
+                let (reliance, hashed, _) =
+                    rely(&mut table, 0, &|index| Ok(digest(content(index))));
+                assert_eq!(
+                    reliance,
+                    Reliance::Final(FileKey::sop(UID).expect("key")),
+                    "{context}"
+                );
+                assert_eq!(
+                    hashed.len(),
+                    if copies == 1 { 0 } else { 2 },
+                    "{context}: one file with a UID of its own is never read for its key"
+                );
+                let relied = keys(&table);
+
+                let index = copies;
+                let changes = table.register(file(UID, late.size, late.path));
+                assert_eq!(changes.updated, vec![index], "{context}");
+                assert!(changes.rekeys.is_empty(), "{context}");
+                assert_eq!(key_of(&table, index), pending, "{context}: before a read");
+                assert_eq!(keys(&table)[..copies], relied[..], "{context}");
+
+                // Viewing the late file asks for what its comparison needs:
+                // itself, and the first file when that was never read.
+                let wanted = table.frame_sent(index).wanted;
+                let mut expected_wanted = Vec::new();
+                if pending.is_none() {
+                    if copies == 1 && late.size == 10 {
+                        expected_wanted.push(0);
+                    }
+                    expected_wanted.push(index);
+                }
+                assert_eq!(wanted, expected_wanted, "{context}: wanted when served");
+
+                let (reliance, hashed, changes) =
+                    rely(&mut table, index, &|index| Ok(digest(content(index))));
+                assert_eq!(
+                    reliance,
+                    Reliance::Final(FileKey::parse(&read_key).expect("key")),
+                    "{context}"
+                );
+                let first_unread = copies == 1 && late.size == 10 && late.path != "/a";
+                assert_eq!(
+                    hashed.len(),
+                    reads + usize::from(first_unread),
+                    "{context}: files read for the late file"
+                );
+                assert!(
+                    changes.iter().all(|changes| changes.rekeys.is_empty()),
+                    "{context}: no key of a group that is relied on is replaced"
+                );
+                assert_eq!(
+                    (
+                        key_of(&table, index),
+                        table.status(index).expect("registered").alias_of
+                    ),
+                    (key(&read_key), alias),
+                    "{context}"
+                );
+                assert_eq!(keys(&table)[..copies], relied[..], "{context}");
+                for earlier in 0..copies {
+                    assert!(table.settled(earlier), "{context}: file {earlier}");
+                }
+                assert_eq!(
+                    table.file_for_key(&FileKey::sop(UID).expect("key")),
+                    Some(0),
+                    "{context}: the UID key names the file it was relied on for"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_holds_up_only_the_keys_that_depend_on_it() {
+        let unreadable = Err(KeyFailure::Unreadable);
+
+        // A copy that cannot be read does not stop the first file's key
+        // from being relied on. It loses the key it showed, because nothing
+        // says it is the same image, and gets its own answer when read.
+        for (later, expected) in [(1_u8, sop(UID)), (2, b3(2))] {
+            let mut table = Table::new();
+            table.register(file(UID, 10, "/a"));
+            table.register(file(UID, 10, "/copy"));
+            table.register(file(UID, 10, "/gone"));
+            let (reliance, hashed, changes) = rely(&mut table, 0, &|index| {
+                if index == 2 {
+                    unreadable
+                } else {
+                    Ok(digest(1))
+                }
+            });
+            assert_eq!(reliance, Reliance::Final(FileKey::sop(UID).expect("key")));
+            assert_eq!(hashed, vec![0, 1, 2]);
+            assert_eq!(
+                changes.last().expect("the answer").updated,
+                vec![2],
+                "the unread file changes when the key is relied on"
+            );
+            assert_eq!(
+                keys(&table),
+                vec![
+                    (key(&sop(UID)), None),
+                    (key(&sop(UID)), Some(0)),
+                    (None, None)
+                ]
+            );
+            let status = table.status(2).expect("registered");
+            assert_eq!(
+                (status.failure, status.settled),
+                (Some(KeyFailure::Unreadable), false)
+            );
+            assert_eq!(
+                table.rely_on(2).0,
+                Some(Reliance::Failed(KeyFailure::Unreadable))
+            );
+            assert_eq!(table.required_for(2), vec![2], "asking retries it");
+
+            // Readable again: its first key, which replaces no other.
+            let changes = table.resolve(2, Ok(digest(later)));
+            assert_eq!(changes.updated, vec![2]);
+            assert!(changes.rekeys.is_empty());
+            let status = table.status(2).expect("registered");
+            assert_eq!(
+                (
+                    status.key.map(|key| key.as_str().to_string()),
+                    status.failure,
+                    status.settled
+                ),
+                (key(&expected), None, true)
+            );
+            assert_eq!(
+                keys(&table)[..2],
+                [(key(&sop(UID)), None), (key(&sop(UID)), Some(0))]
+            );
+        }
+
+        // The file asked about, or the group's first file, cannot be read:
+        // no key of the group that depends on it can be relied on, and
+        // nothing changes but the failure shown.
+        for (gone, asked, failed) in [(1_usize, 1_usize, true), (0, 1, true), (0, 0, true)] {
+            let context = format!("file {gone} unreadable, file {asked} asked");
+            let mut table = Table::new();
+            table.register(file(UID, 10, "/a"));
+            table.register(file(UID, 10, "/copy"));
+            let (reliance, hashed, _) = rely(&mut table, asked, &|index| {
+                if index == gone {
+                    Err(KeyFailure::Changed)
+                } else {
+                    Ok(digest(1))
+                }
+            });
+            assert_eq!(
+                reliance == Reliance::Failed(KeyFailure::Changed),
+                failed,
+                "{context}: {reliance:?}"
+            );
+            assert_eq!(hashed, vec![0, 1], "{context}");
+            assert_eq!(
+                keys(&table),
+                vec![(key(&sop(UID)), None), (key(&sop(UID)), Some(0))],
+                "{context}: the keys shown stay"
+            );
+            assert!(!table.settled(0) && !table.settled(1), "{context}");
+            assert_eq!(
+                table.status(gone).expect("registered").failure,
+                Some(KeyFailure::Changed),
+                "{context}"
+            );
+            // Asked again once it can be read, the key settles.
+            let (reliance, hashed, _) = rely(&mut table, asked, &|_| Ok(digest(1)));
+            assert_eq!(
+                reliance,
+                Reliance::Final(FileKey::sop(UID).expect("key")),
+                "{context}"
+            );
+            assert_eq!(
+                hashed,
+                vec![gone],
+                "{context}: only the failed file is read again"
+            );
+        }
+
+        // The first file of a group that is relied on, read only later for
+        // a late file's comparison, cannot be read: the late file has no
+        // key and the first file keeps the one it was given.
+        let mut table = Table::new();
+        table.register(file(UID, 10, "/a"));
+        let (reliance, _, _) = rely(&mut table, 0, &|_| unreadable);
+        assert_eq!(reliance, Reliance::Final(FileKey::sop(UID).expect("key")));
+        table.register(file(UID, 10, "/late"));
+        let (reliance, hashed, _) = rely(&mut table, 1, &|index| {
+            if index == 0 {
+                unreadable
+            } else {
+                Ok(digest(1))
+            }
+        });
+        assert_eq!(reliance, Reliance::Failed(KeyFailure::Unreadable));
+        assert_eq!(hashed, vec![0, 1]);
+        assert_eq!(keys(&table), vec![(key(&sop(UID)), None), (None, None)]);
+        assert!(table.settled(0));
+        assert_eq!(table.required_for(1), vec![0]);
+        // The first file is read after all: the late file is compared.
+        let changes = table.resolve(0, Ok(digest(1)));
+        assert_eq!(
+            changes.updated,
+            vec![0, 1],
+            "the failure clears, the late file gains its key"
         );
         assert_eq!(
             keys(&table),
-            vec![
-                (key(&b3(1)), None),
-                (key(&b3(9)), None),
-                (key(&b3(1)), Some(0)),
-                (key(&sop(UID)), None)
-            ]
+            vec![(key(&sop(UID)), None), (key(&sop(UID)), Some(0))]
         );
-        assert_eq!(table.required_for(3), vec![3]);
     }
 
     #[test]
     fn one_file_under_two_paths_is_hashed_once() {
-        let mut table = KeyTable::new();
+        let mut table = Table::new();
         table.register(file("", 10, "/data/image.png"));
         table.register(file("", 10, "/data/image.png"));
         table.register(file(UID, 10, "/data/a.dcm"));
         table.register(file(UID, 10, "/data/a.dcm"));
 
-        // The DICOM pair is one file: nothing to compare.
+        // The DICOM pair is one file: nothing to compare, and its key is
+        // relied on without a read.
         assert_eq!(table.required_for(3), Vec::<usize>::new());
+        assert_eq!(
+            table.rely_on(3).0,
+            Some(Reliance::Final(FileKey::sop(UID).expect("key")))
+        );
         assert!(table.status(3).expect("registered").settled);
+        assert!(table.status(2).expect("registered").settled);
 
         // Hashing either entry of the raster keys both.
         assert_eq!(table.required_for(1), vec![1]);
@@ -849,7 +1511,7 @@ mod tests {
 
     #[test]
     fn a_failed_digest_leaves_no_wrong_key_and_can_be_retried() {
-        let mut table = KeyTable::new();
+        let mut table = Table::new();
         table.register(file("", 10, "/image.png"));
         table.register(file(UID, 10, "/a"));
         table.register(file(UID, 11, "/b"));
@@ -863,6 +1525,10 @@ mod tests {
         assert_eq!(
             (status.key, status.failure),
             (None, Some(KeyFailure::Unreadable))
+        );
+        assert_eq!(
+            table.rely_on(0).0,
+            Some(Reliance::Failed(KeyFailure::Unreadable))
         );
         // A failed file is not queued again by being viewed, but asking for
         // its key names it, and a digest then clears the failure.
@@ -889,8 +1555,9 @@ mod tests {
             (None, Some(KeyFailure::Changed), false)
         );
 
-        // An alias that cannot be read keeps the key its UID gives it, with
-        // the failure recorded, and is not settled.
+        // An alias that cannot be read keeps the key its UID gives it while
+        // nobody relies on it, with the failure recorded, and is not
+        // settled.
         let changes = table.resolve(4, Err(KeyFailure::Unreadable));
         assert_eq!(changes.updated, vec![4]);
         let status = table.status(4).expect("registered");
@@ -912,7 +1579,7 @@ mod tests {
     #[test]
     fn a_group_of_any_size_costs_one_visit_per_file_to_split() {
         const FILES: usize = 20_000;
-        let mut table = KeyTable::new();
+        let mut table = Table::new();
         let mut reported = 0;
         for index in 0..FILES {
             let changes = table.register(file(UID, 10, &format!("/copies/{index}")));
