@@ -255,6 +255,9 @@ async function scenarios(executable) {
       }
     }
 
+    // The last terminal has focus and keeps F1 for its shell; clicking an
+    // editor tab gives the workbench the keyboard back.
+    await page.locator('.tabs-container .tab').first().click();
     await runCommand(page, 'View: Close All Editors');
     report('closed-all-editors', true);
     // Let the extension stop its sessions before the window goes away; the
