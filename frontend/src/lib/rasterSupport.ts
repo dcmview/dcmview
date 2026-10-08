@@ -1,9 +1,11 @@
 import type { FileSummary } from "../api";
 
 const REASON_DETAIL: Record<string, string> = {
-	"raster.decode_not_available": "dcmview lists this file but does not decode its format yet.",
 	"raster.unsupported_color": "Its color layout is not one dcmview will decode.",
 	"raster.unsupported_sample_format": "Its sample format is not one dcmview will decode.",
+	"raster.unsupported_compression": "Its compression is not one dcmview will decode.",
+	"raster.jpeg_unsupported_process": "Its JPEG process is not one dcmview will decode.",
+	"raster.too_large": "It has more pixels in a frame than dcmview will decode.",
 };
 
 /** What the tag panel is called for a file: a raster has metadata, not DICOM tags. */

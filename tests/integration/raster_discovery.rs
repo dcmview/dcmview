@@ -7,13 +7,18 @@
 //! built here with the linked encoders: the expected values are the ones the
 //! files were written with, never values a decoder returned.
 //!
-//! Decoding raster pixels and listing raster metadata as tags are later work.
-//! Until then a raster is listed, described, and reported as not decodable,
-//! and no endpoint answers a server error for it.
+//! What the frames of these files hold is in `raster_decode.rs`, and what
+//! decoding one may cost in `raster_bounds.rs`. Listing raster metadata as
+//! tags is later work.
 
-use super::support;
+use super::{raster_files, support};
 use axum_test::TestServer;
-use dcmview::api::contracts::endpoints;
+use dcmview::api::contracts::{
+    endpoints, RAW_FRAME_HEADER_BITS_ALLOCATED, RAW_FRAME_HEADER_COLUMNS,
+    RAW_FRAME_HEADER_PHOTOMETRIC_INTERPRETATION, RAW_FRAME_HEADER_PIXEL_REPRESENTATION,
+    RAW_FRAME_HEADER_RESCALE_INTERCEPT, RAW_FRAME_HEADER_RESCALE_SLOPE, RAW_FRAME_HEADER_ROWS,
+    RAW_FRAME_HEADER_SAMPLES_PER_PIXEL,
+};
 use dcmview::loader::{self, DiscoverOptions, FormatSelection};
 use dcmview::masking::Masker;
 use dcmview::server::{self, FileRegistry};
@@ -30,12 +35,11 @@ use tiff::tags::Tag;
 use tokio::sync::mpsc;
 
 const EXPLICIT_LE: &str = "1.2.840.10008.1.2.1";
-const NOT_DECODABLE: &str = "raster.decode_not_available";
 
 // ---------------------------------------------------------------------------
 // Files
 
-fn png(color: ExtendedColorType, width: u32, height: u32) -> Vec<u8> {
+pub(super) fn png(color: ExtendedColorType, width: u32, height: u32) -> Vec<u8> {
     let bytes = usize::from(color.bits_per_pixel()).div_ceil(8) * (width * height) as usize;
     let mut out = Vec::new();
     image::codecs::png::PngEncoder::new(&mut out)
@@ -58,7 +62,7 @@ fn png_with_icc_profile() -> Vec<u8> {
 
 /// A PNG written chunk by chunk through the `png` crate, for what `image`'s
 /// encoder does not write: low bit depths, palettes and animation.
-fn png_with(
+pub(super) fn png_with(
     color: png::ColorType,
     depth: png::BitDepth,
     (width, height): (u32, u32),
@@ -81,34 +85,13 @@ fn png_with(
     out
 }
 
-fn jpeg(color: ExtendedColorType, width: u32, height: u32) -> Vec<u8> {
+pub(super) fn jpeg(color: ExtendedColorType, width: u32, height: u32) -> Vec<u8> {
     let bytes = usize::from(color.bits_per_pixel()) / 8 * (width * height) as usize;
     let mut out = Vec::new();
     image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 90)
         .encode(&vec![0x40; bytes], width, height, color)
         .expect("encode JPEG");
     out
-}
-
-/// `jpeg` with an EXIF `APP1` segment, holding only the orientation tag,
-/// inserted straight after the start-of-image marker.
-fn with_exif_orientation(mut jpeg: Vec<u8>, orientation: u16) -> Vec<u8> {
-    let mut exif = b"Exif\0\0".to_vec();
-    // Little-endian TIFF header, then IFD0 at offset 8 with one SHORT entry.
-    exif.extend_from_slice(b"II\x2a\0\x08\0\0\0");
-    exif.extend_from_slice(&1_u16.to_le_bytes());
-    exif.extend_from_slice(&0x0112_u16.to_le_bytes());
-    exif.extend_from_slice(&3_u16.to_le_bytes());
-    exif.extend_from_slice(&1_u32.to_le_bytes());
-    exif.extend_from_slice(&orientation.to_le_bytes());
-    exif.extend_from_slice(&[0, 0]);
-    exif.extend_from_slice(&0_u32.to_le_bytes());
-    let mut segment = vec![0xff, 0xe1];
-    segment.extend_from_slice(&(exif.len() as u16 + 2).to_be_bytes());
-    segment.extend_from_slice(&exif);
-    assert_eq!(&jpeg[..2], [0xff, 0xd8], "JPEG starts with SOI");
-    jpeg.splice(2..2, segment);
-    jpeg
 }
 
 /// Four pages: 4x3 16-bit, a 2x2 16-bit thumbnail, 4x3 16-bit again, and a
@@ -131,7 +114,7 @@ fn tiff_stack() -> Vec<u8> {
 }
 
 /// One page with extra tags written over the encoder's own.
-fn tiff_page<C>(big: bool, data: &[C::Inner], tags: &[(Tag, u16)]) -> Vec<u8>
+pub(super) fn tiff_page<C>(big: bool, data: &[C::Inner], tags: &[(Tag, u16)]) -> Vec<u8>
 where
     C: colortype::ColorType,
     [C::Inner]: tiff::encoder::TiffValue,
@@ -163,7 +146,7 @@ where
 /// A classic little-endian TIFF written tag by tag, one IFD per page and no
 /// pixel data, for layouts and page counts the encoder does not write. Every
 /// value is a SHORT; a page's tags are given in ascending order.
-fn tiff_of(pages: &[&[(u16, &[u16])]]) -> Vec<u8> {
+pub(super) fn tiff_of(pages: &[&[(u16, &[u16])]]) -> Vec<u8> {
     let mut out = b"II\x2a\0\x08\0\0\0".to_vec();
     for (index, tags) in pages.iter().enumerate() {
         let mut data_at = out.len() + 2 + tags.len() * 12 + 4;
@@ -199,7 +182,7 @@ fn tiff_of_pages(count: usize) -> Vec<u8> {
     tiff_of(&vec![page; count])
 }
 
-fn webp_rgba(width: u32, height: u32) -> Vec<u8> {
+pub(super) fn webp_rgba(width: u32, height: u32) -> Vec<u8> {
     let mut out = Vec::new();
     image::codecs::webp::WebPEncoder::new_lossless(&mut out)
         .encode(
@@ -212,7 +195,7 @@ fn webp_rgba(width: u32, height: u32) -> Vec<u8> {
     out
 }
 
-fn write_dicom(path: &Path) {
+pub(super) fn write_dicom(path: &Path) {
     support::write_uncompressed_u16_dicom(path, EXPLICIT_LE, 2, 2, vec![1, 2, 3, 4], None, None);
 }
 
@@ -220,17 +203,17 @@ fn write_dicom(path: &Path) {
 // Harness
 
 /// One completed discovery, served: the catalog as `/api/files` reports it.
-struct Scan {
-    server: TestServer,
-    report: loader::DiscoveryReport,
+pub(super) struct Scan {
+    pub(super) server: TestServer,
+    pub(super) report: loader::DiscoveryReport,
     /// The loader's own entries, for the sample layout a decoder will read.
-    entries: Vec<FileEntry>,
-    catalog: Value,
+    pub(super) entries: Vec<FileEntry>,
+    pub(super) catalog: Value,
 }
 
 impl Scan {
     /// The catalog entry of the file named `name`.
-    fn file(&self, name: &str) -> &Value {
+    pub(super) fn file(&self, name: &str) -> &Value {
         self.catalog["files"]
             .as_array()
             .expect("files array")
@@ -239,11 +222,11 @@ impl Scan {
             .unwrap_or_else(|| panic!("{name} is not in the catalog: {}", self.catalog["files"]))
     }
 
-    fn index(&self, name: &str) -> String {
+    pub(super) fn index(&self, name: &str) -> String {
         self.file(name)["index"].to_string()
     }
 
-    fn entry(&self, name: &str) -> &FileEntry {
+    pub(super) fn entry(&self, name: &str) -> &FileEntry {
         self.entries
             .iter()
             .find(|entry| entry.path.file_name().and_then(|name| name.to_str()) == Some(name))
@@ -251,7 +234,7 @@ impl Scan {
     }
 
     /// File names in the catalog, sorted.
-    fn loaded(&self) -> Vec<String> {
+    pub(super) fn loaded(&self) -> Vec<String> {
         let mut names = self.catalog["files"]
             .as_array()
             .expect("files array")
@@ -263,7 +246,7 @@ impl Scan {
     }
 
     /// `(file name, reason)` of every skipped or filtered path, sorted.
-    fn not_loaded(&self) -> Vec<(String, String)> {
+    pub(super) fn not_loaded(&self) -> Vec<(String, String)> {
         let mut records = self.catalog["discovery"]
             .as_array()
             .expect("discovery array")
@@ -280,11 +263,11 @@ impl Scan {
     }
 }
 
-fn file_name(path: &str) -> &str {
+pub(super) fn file_name(path: &str) -> &str {
     path.rsplit(['/', '\\']).next().unwrap_or(path)
 }
 
-fn options(formats: FormatSelection, filters: &[&str]) -> DiscoverOptions {
+pub(super) fn options(formats: FormatSelection, filters: &[&str]) -> DiscoverOptions {
     DiscoverOptions {
         recursive: true,
         filters: filters
@@ -297,7 +280,11 @@ fn options(formats: FormatSelection, filters: &[&str]) -> DiscoverOptions {
 
 /// Runs the production loader over `paths` into `registry` the way startup
 /// does, and serves the result.
-async fn scan_into(paths: &[PathBuf], options: DiscoverOptions, registry: FileRegistry) -> Scan {
+pub(super) async fn scan_into(
+    paths: &[PathBuf],
+    options: DiscoverOptions,
+    registry: FileRegistry,
+) -> Scan {
     let (events_tx, mut events_rx) = mpsc::channel(64);
     let discover = loader::discover_progressive(
         paths,
@@ -335,11 +322,11 @@ async fn scan_into(paths: &[PathBuf], options: DiscoverOptions, registry: FileRe
     }
 }
 
-async fn scan(paths: &[PathBuf], options: DiscoverOptions) -> Scan {
+pub(super) async fn scan(paths: &[PathBuf], options: DiscoverOptions) -> Scan {
     scan_into(paths, options, FileRegistry::new()).await
 }
 
-async fn scan_dir(dir: &Path) -> Scan {
+pub(super) async fn scan_dir(dir: &Path) -> Scan {
     scan(&[dir.to_path_buf()], options(FormatSelection::all(), &[])).await
 }
 
@@ -357,8 +344,11 @@ struct Expected {
     /// `raster` fields that differ from [`raster_defaults`].
     raster: Value,
     /// `(samples_per_pixel, bits_allocated, pixel_representation,
-    /// photometric_interpretation)` of the raw frames a decoder will serve.
+    /// photometric_interpretation)` of the raw frames the file is served as.
     layout: (u32, u32, u32, &'static str),
+    /// The default window, `(center, width)`: the whole stored range of
+    /// gray samples of 8 bits or fewer, none for wider samples and colour.
+    window: Option<(f64, f64)>,
 }
 
 /// The `raster` object of a single-page 8-bit gray file with nothing special.
@@ -391,6 +381,7 @@ fn raster_cases() -> Vec<Expected> {
             frames: 1,
             raster: json!({}),
             layout: gray,
+            window: Some((128.0, 256.0)),
         },
         Expected {
             name: "gray16.png",
@@ -400,6 +391,7 @@ fn raster_cases() -> Vec<Expected> {
             frames: 1,
             raster: json!({ "bit_depth": 16 }),
             layout: (1, 16, 0, "MONOCHROME2"),
+            window: None,
         },
         // One-bit samples are served one byte each.
         Expected {
@@ -417,6 +409,7 @@ fn raster_cases() -> Vec<Expected> {
             frames: 1,
             raster: json!({ "bit_depth": 1 }),
             layout: gray,
+            window: Some((1.0, 2.0)),
         },
         Expected {
             name: "rgba.png",
@@ -426,6 +419,7 @@ fn raster_cases() -> Vec<Expected> {
             frames: 1,
             raster: json!({ "color_type": "rgba", "has_alpha": true }),
             layout: (4, 8, 0, "RGBA"),
+            window: None,
         },
         // A palette is described as stored and served expanded.
         Expected {
@@ -446,6 +440,7 @@ fn raster_cases() -> Vec<Expected> {
             frames: 1,
             raster: json!({ "color_type": "palette", "bit_depth": 2, "has_alpha": true }),
             layout: (4, 8, 0, "RGBA"),
+            window: None,
         },
         Expected {
             name: "animated.png",
@@ -462,6 +457,7 @@ fn raster_cases() -> Vec<Expected> {
             frames: 1,
             raster: json!({ "animated": true }),
             layout: gray,
+            window: Some((128.0, 256.0)),
         },
         Expected {
             name: "profile.png",
@@ -471,6 +467,7 @@ fn raster_cases() -> Vec<Expected> {
             frames: 1,
             raster: json!({ "color_type": "rgb", "has_icc": true }),
             layout: (3, 8, 0, "RGB"),
+            window: None,
         },
         // The format comes from the content, whatever the name says.
         Expected {
@@ -481,6 +478,7 @@ fn raster_cases() -> Vec<Expected> {
             frames: 1,
             raster: json!({ "color_type": "rgb" }),
             layout: (3, 8, 0, "RGB"),
+            window: None,
         },
         Expected {
             name: "gray.jpg",
@@ -490,16 +488,18 @@ fn raster_cases() -> Vec<Expected> {
             frames: 1,
             raster: json!({}),
             layout: gray,
+            window: Some((128.0, 256.0)),
         },
         // Orientation is reported and never applied: 8 wide, 6 high as stored.
         Expected {
             name: "rotated.jpg",
-            bytes: with_exif_orientation(jpeg(ExtendedColorType::Rgb8, 8, 6), 6),
+            bytes: raster_files::with_exif_orientation(jpeg(ExtendedColorType::Rgb8, 8, 6), 6),
             format: "jpeg",
             size: (6, 8),
             frames: 1,
             raster: json!({ "color_type": "rgb", "orientation": 6 }),
             layout: (3, 8, 0, "RGB"),
+            window: None,
         },
         Expected {
             name: "stack.tif",
@@ -518,6 +518,7 @@ fn raster_cases() -> Vec<Expected> {
                 "excluded_pages_total": 2,
             }),
             layout: (1, 16, 0, "MONOCHROME2"),
+            window: None,
         },
         Expected {
             name: "float-big.tif",
@@ -527,6 +528,7 @@ fn raster_cases() -> Vec<Expected> {
             frames: 1,
             raster: json!({ "bit_depth": 32, "sample_format": "float" }),
             layout: (1, 32, 0, "MONOCHROME2"),
+            window: None,
         },
         Expected {
             name: "signed.tif",
@@ -536,6 +538,7 @@ fn raster_cases() -> Vec<Expected> {
             frames: 1,
             raster: json!({ "bit_depth": 16, "sample_format": "int" }),
             layout: (1, 16, 1, "MONOCHROME2"),
+            window: None,
         },
         // WhiteIsZero (photometric 0), rotated 180 degrees (orientation 3).
         Expected {
@@ -550,6 +553,7 @@ fn raster_cases() -> Vec<Expected> {
             frames: 1,
             raster: json!({ "orientation": 3 }),
             layout: (1, 8, 0, "MONOCHROME1"),
+            window: Some((128.0, 256.0)),
         },
         Expected {
             name: "lossless.webp",
@@ -559,6 +563,7 @@ fn raster_cases() -> Vec<Expected> {
             frames: 1,
             raster: json!({ "color_type": "rgba", "has_alpha": true }),
             layout: (4, 8, 0, "RGBA"),
+            window: None,
         },
     ]
 }
@@ -610,9 +615,17 @@ async fn rasters_are_listed_by_content_with_what_their_headers_declare() {
         }
         assert_eq!(file["label"], name, "{name}");
 
-        // Nothing decodes it yet, and the catalog says so.
-        assert_eq!(file["support_state"], "unsupported", "{name}");
-        assert_eq!(file["support_reason"], NOT_DECODABLE, "{name}");
+        // Every one of these decodes, and the catalog says so.
+        assert_eq!(file["support_state"], "renderable", "{name}");
+        assert!(file["support_reason"].is_null(), "{name}");
+        let window = case
+            .window
+            .map(|(center, width)| json!({ "center": center, "width": width }));
+        assert_eq!(
+            file["default_window"],
+            window.unwrap_or(Value::Null),
+            "{name}"
+        );
 
         let entry = scan.entry(name);
         assert_eq!(
@@ -735,6 +748,90 @@ async fn crafted_headers_are_skipped_and_the_tiff_page_limit_is_exact() {
     let most = scan.file("most-pages.tif");
     assert_eq!(most["frame_count"], PAGE_LIMIT);
     assert_eq!(most["raster"]["pages_total"], PAGE_LIMIT);
+}
+
+/// A TIFF page that holds any tag twice is not listed: readers disagree on
+/// which entry counts, so what the catalog said of it would not be what a
+/// decoder is given. As page 0 it makes the file unreadable; as a later
+/// page it ends the walk, like any page that cannot be read. Entries in
+/// descending order are no reason to refuse a file.
+#[tokio::test]
+async fn a_tiff_page_that_repeats_a_tag_is_not_listed() {
+    use raster_files::{tiff_file, TiffPage, TiffValue};
+    let page = || TiffPage::strip((8, 8), &[8], 1, vec![5; 64]);
+    // A second entry for `tag`, after the one the page has.
+    let twice = |mut page: TiffPage, tag: u16, value: TiffValue| {
+        page.tags.push((tag, value));
+        page
+    };
+    let skipped = [
+        // A tag discovery reads, one only a decoder reads, and two that
+        // nothing reads.
+        (
+            "photometric.tif",
+            twice(page(), 262, TiffValue::Short(vec![0])),
+        ),
+        (
+            "strip-rows.tif",
+            twice(page(), 278, TiffValue::Long(vec![1])),
+        ),
+        (
+            "description.tif",
+            twice(
+                page().with(270, TiffValue::Bytes(b"one\0".to_vec())),
+                270,
+                TiffValue::Bytes(b"two\0".to_vec()),
+            ),
+        ),
+        (
+            "private.tif",
+            twice(
+                page().with(40_000, TiffValue::Short(vec![1])),
+                40_000,
+                TiffValue::Short(vec![1]),
+            ),
+        ),
+    ];
+    let dir = tempdir().expect("temp dir");
+    for (name, page) in &skipped {
+        let bytes = tiff_file(false, std::slice::from_ref(page)).0;
+        fs::write(dir.path().join(name), bytes).expect("write TIFF");
+    }
+    let later = tiff_file(
+        false,
+        &[
+            page(),
+            twice(page(), 262, TiffValue::Short(vec![0])),
+            page(),
+        ],
+    )
+    .0;
+    fs::write(dir.path().join("later-page.tif"), later).expect("write TIFF");
+    let (mut descending, pages) = tiff_file(true, &[page()]);
+    let ifd = pages[0] as usize;
+    let count = usize::from(u16::from_be_bytes([descending[ifd], descending[ifd + 1]]));
+    let entries: Vec<u8> = descending[ifd + 2..ifd + 2 + 12 * count]
+        .chunks(12)
+        .rev()
+        .flatten()
+        .copied()
+        .collect();
+    descending[ifd + 2..ifd + 2 + 12 * count].copy_from_slice(&entries);
+    fs::write(dir.path().join("descending.tif"), descending).expect("write TIFF");
+
+    let scan = scan_dir(dir.path()).await;
+
+    let mut expected = skipped
+        .iter()
+        .map(|(name, _)| (name.to_string(), "raster_header_invalid".to_string()))
+        .collect::<Vec<_>>();
+    expected.sort();
+    assert_eq!(scan.not_loaded(), expected);
+    assert_eq!(scan.loaded(), ["descending.tif", "later-page.tif"]);
+    let later = scan.file("later-page.tif");
+    assert_eq!(later["frame_count"], 1);
+    assert_eq!(later["raster"]["pages_total"], 1);
+    assert_eq!(scan.file("descending.tif")["frame_count"], 1);
 }
 
 /// A TIFF whose layout no decoder will take is still listed, and says why,
@@ -1005,8 +1102,11 @@ async fn format_and_path_filters_select_files_and_dicom_filters_exclude_rasters(
     }
 }
 
+/// What every endpoint of the contract answers for a raster that decodes:
+/// its frames like any image's, the DICOM-only views with the answer they
+/// give a file of the wrong kind, and never a server error.
 #[tokio::test]
-async fn every_endpoint_answers_for_a_raster_without_a_server_error() {
+async fn every_endpoint_answers_for_a_decodable_raster() {
     let dir = tempdir().expect("temp dir");
     fs::write(
         dir.path().join("image.png"),
@@ -1027,12 +1127,67 @@ async fn every_endpoint_answers_for_a_raster_without_a_server_error() {
     let index = scan.index("image.png");
     let get = |endpoint| support::endpoint_request(&scan.server, endpoint, &index);
 
-    // Whatever an endpoint answers for a raster, it is never a server error.
-    for endpoint in endpoints::ALL {
+    // (endpoint, status, media type of a success)
+    let expected = [
+        (&endpoints::HEALTH, 200, "application/json"),
+        (&endpoints::FILES, 200, "application/json"),
+        (&endpoints::SERIES, 200, "application/json"),
+        (&endpoints::FILE_INFO, 200, "application/json"),
+        (&endpoints::FILE_REFERENCES, 200, "application/json"),
+        (&endpoints::FILE_SEMANTIC_CONTEXT, 200, "application/json"),
+        // The DICOM-only views name a source object of a kind no raster is.
+        (&endpoints::FILE_SEGMENTATION_OVERLAY, 400, ""),
+        (&endpoints::FILE_DOSE_OVERLAY, 400, ""),
+        (&endpoints::FILE_DOSE_OVERLAY_VALUES, 400, ""),
+        (&endpoints::FILE_PARAMETRIC_MAP_OVERLAY, 400, ""),
+        (&endpoints::FILE_PARAMETRIC_MAP_OVERLAY_VALUES, 400, ""),
+        (&endpoints::FILE_GRAPHIC_ANNOTATIONS, 400, ""),
+        (&endpoints::FILE_WSI_CONTEXT, 400, ""),
+        (&endpoints::FILE_VALUE_MAPPING, 200, "application/json"),
+        // The frame, in every form a DICOM frame is served in.
+        (&endpoints::FILE_FRAME, 200, "image/png"),
+        (&endpoints::FILE_RAW_FRAME, 200, "application/octet-stream"),
+        (&endpoints::FILE_RAW_PIXEL, 200, "application/octet-stream"),
+        (&endpoints::FILE_THUMBNAIL, 200, "image/jpeg"),
+        (&endpoints::FILE_PRESENTATION_LAYER, 200, "image/png"),
+        // No metadata tree yet: an empty one, and nothing to select from.
+        (&endpoints::FILE_TAGS, 200, "application/json"),
+        (&endpoints::FILE_TAG_SELECT, 400, ""),
+        (&endpoints::FILE_ANNOTATIONS_GET, 200, "application/json"),
+        (&endpoints::FILE_ANNOTATIONS_UPDATE, 200, "application/json"),
+        (&endpoints::FILE_REDACTIONS_GET, 200, "application/json"),
+        (&endpoints::FILE_REDACTIONS_UPDATE, 200, "application/json"),
+        (
+            &endpoints::FILE_REDACTIONS_APPLY_TO_SERIES,
+            200,
+            "application/json",
+        ),
+        (&endpoints::ANNOTATIONS_EXPORT, 200, "text/csv"),
+    ];
+    assert_eq!(
+        expected.len(),
+        endpoints::ALL.len(),
+        "every endpoint of the contract has a row"
+    );
+    for (endpoint, status, media_type) in expected {
         let response = get(endpoint).await;
-        let status = response.status_code().as_u16();
-        assert!(status < 500, "{} answered {status}", endpoint.id);
-        if status >= 400 {
+        assert_eq!(
+            response.status_code().as_u16(),
+            status,
+            "{}: {}",
+            endpoint.id,
+            response.text()
+        );
+        if status == 200 {
+            let content_type = response.header("content-type");
+            assert!(
+                content_type
+                    .to_str()
+                    .is_ok_and(|value| value.starts_with(media_type)),
+                "{}: {content_type:?}",
+                endpoint.id
+            );
+        } else {
             let body: Value = response.json();
             assert!(
                 body["code"].is_string() && body["error"].is_string(),
@@ -1042,58 +1197,52 @@ async fn every_endpoint_answers_for_a_raster_without_a_server_error() {
         }
     }
 
-    // No decoder yet: the endpoints that produce a frame-sized image say so
-    // with the catalog's reason.
-    for endpoint in [
-        &endpoints::FILE_FRAME,
-        &endpoints::FILE_THUMBNAIL,
-        &endpoints::FILE_RAW_FRAME,
-        &endpoints::FILE_RAW_PIXEL,
-        // Sized from the header's rows and columns, so it is refused too.
-        &endpoints::FILE_PRESENTATION_LAYER,
-    ] {
-        let response = get(endpoint).await;
-        assert_eq!(response.status_code().as_u16(), 422, "{}", endpoint.id);
-        let body: Value = response.json();
-        assert_eq!(body["code"], "unsupported_pixel_layout", "{}", endpoint.id);
-        assert!(
-            body["error"]
-                .as_str()
-                .is_some_and(|error| error.contains(NOT_DECODABLE)),
-            "{}: {body}",
-            endpoint.id
-        );
-    }
-
     let info: Value = get(&endpoints::FILE_INFO).await.json();
     assert_eq!(info["object_kind"], "image");
-    assert_eq!(info["support_state"], "unsupported");
-    assert_eq!(info["support_reason"], NOT_DECODABLE);
+    assert_eq!(info["support_state"], "renderable");
+    assert!(info["support_reason"].is_null());
     assert_eq!(
         (info["rows"].as_u64(), info["columns"].as_u64()),
         (Some(2), Some(3))
     );
 
-    // No metadata tree yet: an empty one, not an error.
+    // The frame endpoints carry what they carry for DICOM: the cache state,
+    // and for raw samples the layout the catalog declares.
+    for endpoint in [&endpoints::FILE_FRAME, &endpoints::FILE_RAW_FRAME] {
+        assert_eq!(
+            get(endpoint).await.header("x-cache"),
+            "HIT",
+            "{}",
+            endpoint.id
+        );
+    }
+    let raw = get(&endpoints::FILE_RAW_FRAME).await;
+    for (header, value) in [
+        (RAW_FRAME_HEADER_ROWS, "2"),
+        (RAW_FRAME_HEADER_COLUMNS, "3"),
+        (RAW_FRAME_HEADER_BITS_ALLOCATED, "16"),
+        (RAW_FRAME_HEADER_PIXEL_REPRESENTATION, "0"),
+        (RAW_FRAME_HEADER_SAMPLES_PER_PIXEL, "1"),
+        (RAW_FRAME_HEADER_PHOTOMETRIC_INTERPRETATION, "MONOCHROME2"),
+        (RAW_FRAME_HEADER_RESCALE_SLOPE, "1"),
+        (RAW_FRAME_HEADER_RESCALE_INTERCEPT, "0"),
+    ] {
+        assert_eq!(raw.header(header), value, "{header}");
+    }
+    assert_eq!(raw.as_bytes().len(), 2 * 3 * 2);
+    // `endpoint_request` asks for the pixel at row 1, column 0.
+    let pixel = get(&endpoints::FILE_RAW_PIXEL).await;
+    assert_eq!(pixel.as_bytes().as_ref(), [0x40, 0x40]);
+
     let tags = get(&endpoints::FILE_TAGS).await;
-    tags.assert_status_ok();
     assert_eq!(tags.json::<Value>(), json!([]));
-    assert_eq!(
-        get(&endpoints::FILE_TAG_SELECT)
-            .await
-            .status_code()
-            .as_u16(),
-        400
-    );
 
     // What a raster has for good: no references, no semantic context, and
     // stored values that are their own modality values.
     let references = get(&endpoints::FILE_REFERENCES).await;
-    references.assert_status_ok();
     assert_eq!(references.json::<Value>()["references"], json!([]));
 
     let context = get(&endpoints::FILE_SEMANTIC_CONTEXT).await;
-    context.assert_status_ok();
     assert_eq!(context.json::<Value>()["context"]["kind"], "not_applicable");
 
     for (name, stored_value_type) in [("image.png", "integer"), ("volume.tif", "float32")] {
@@ -1135,6 +1284,194 @@ async fn every_endpoint_answers_for_a_raster_without_a_server_error() {
         .await;
     copied.assert_status_ok();
     assert_eq!(copied.json::<Value>(), json!({ "file_indices": [] }));
+}
+
+/// A raster the viewer lists and does not decode says why in the catalog,
+/// and every endpoint that would produce its pixels answers with that
+/// reason instead of trying.
+#[tokio::test]
+async fn rasters_the_viewer_does_not_decode_say_why_and_their_frames_are_refused() {
+    const SIZE: [(u16, &[u16]); 2] = [(256, &[2]), (257, &[2])];
+    let gray8: [(u16, &[u16]); 2] = [(258, &[8]), (262, &[1])];
+    let rgb8: [(u16, &[u16]); 3] = [(258, &[8, 8, 8]), (262, &[2]), (277, &[3])];
+    let tiff = |tags: &[(u16, &[u16])]| {
+        let mut page = SIZE.to_vec();
+        page.extend_from_slice(tags);
+        page.sort_by_key(|(tag, _)| *tag);
+        tiff_of(&[&page])
+    };
+    // A baseline JPEG whose frame header is rewritten to another process.
+    let baseline = jpeg(ExtendedColorType::L8, 8, 8);
+    let marker = raster_files::jpeg_frame_marker(&baseline);
+    let jpeg_as = |process: u8, precision: u8| {
+        let mut bytes = baseline.clone();
+        bytes[marker] = process;
+        bytes[marker + 3] = precision;
+        bytes
+    };
+    // A header is all discovery reads, so a PNG of any declared size is a
+    // few bytes.
+    let png_declaring = |width: u32, height: u32| {
+        raster_files::png_from_chunks(
+            (width, height),
+            8,
+            0,
+            false,
+            &[raster_files::png_chunk(b"IDAT", &[])],
+        )
+    };
+    let mut wide_canvas = raster_files::vp8x(0, (20_000, 20_000));
+    wide_canvas.extend(raster_files::riff_chunk(b"VP8L", &[0x2f, 0x02, 0x40, 0, 0]));
+
+    // (name, bytes, support_reason)
+    let cases: Vec<(&str, Vec<u8>, &str)> = vec![
+        // TIFF compressions without a decoder here, JPEG among them.
+        (
+            "jpeg-compressed.tif",
+            tiff(&[gray8[0], gray8[1], (259, &[7])]),
+            "raster.unsupported_compression",
+        ),
+        (
+            "ycbcr-jpeg.tif",
+            tiff(&[(258, &[8, 8, 8]), (259, &[7]), (262, &[6]), (277, &[3])]),
+            "raster.unsupported_compression",
+        ),
+        (
+            "jpeg2000.tif",
+            tiff(&[rgb8[0], rgb8[1], rgb8[2], (259, &[33005])]),
+            "raster.unsupported_compression",
+        ),
+        // Colour layouts.
+        (
+            "palette.tif",
+            tiff(&[(258, &[8]), (262, &[3])]),
+            "raster.unsupported_color",
+        ),
+        (
+            "cmyk.tif",
+            tiff(&[(258, &[8, 8, 8, 8]), (262, &[5]), (277, &[4])]),
+            "raster.unsupported_color",
+        ),
+        (
+            "gray-alpha.tif",
+            tiff(&[(258, &[8, 8]), (262, &[1]), (277, &[2]), (338, &[2])]),
+            "raster.unsupported_color",
+        ),
+        (
+            "planar-rgb.tif",
+            tiff(&[rgb8[0], rgb8[1], rgb8[2], (284, &[2])]),
+            "raster.unsupported_color",
+        ),
+        (
+            "ycbcr.tif",
+            tiff(&[(258, &[8, 8, 8]), (262, &[6]), (277, &[3])]),
+            "raster.unsupported_color",
+        ),
+        // Sample formats and depths.
+        (
+            "bilevel.tif",
+            tiff(&[(258, &[1]), (262, &[1])]),
+            "raster.unsupported_sample_format",
+        ),
+        (
+            "rgb32.tif",
+            tiff(&[(258, &[32, 32, 32]), (262, &[2]), (277, &[3])]),
+            "raster.unsupported_sample_format",
+        ),
+        (
+            "int64.tif",
+            tiff(&[(258, &[64]), (262, &[1]), (339, &[2])]),
+            "raster.unsupported_sample_format",
+        ),
+        // The layout is named before the compression.
+        (
+            "bilevel-fax.tif",
+            tiff(&[(258, &[1]), (259, &[4]), (262, &[0])]),
+            "raster.unsupported_sample_format",
+        ),
+        // JPEG processes: lossless, arithmetic-coded, 12-bit.
+        (
+            "lossless.jpg",
+            jpeg_as(0xc3, 8),
+            "raster.jpeg_unsupported_process",
+        ),
+        (
+            "arithmetic.jpg",
+            jpeg_as(0xc9, 8),
+            "raster.jpeg_unsupported_process",
+        ),
+        (
+            "twelve-bit.jpg",
+            jpeg_as(0xc1, 12),
+            "raster.jpeg_unsupported_process",
+        ),
+        // More than 268,435,456 pixels in a frame.
+        (
+            "huge.png",
+            png_declaring(20_000, 20_000),
+            "raster.too_large",
+        ),
+        (
+            "one-row-too-many.png",
+            png_declaring(16_384, 16_385),
+            "raster.too_large",
+        ),
+        (
+            "huge.webp",
+            raster_files::webp_from_chunks(&wide_canvas),
+            "raster.too_large",
+        ),
+    ];
+    let dir = tempdir().expect("temp dir");
+    for (name, bytes, _) in &cases {
+        fs::write(dir.path().join(name), bytes).expect("write raster");
+    }
+    // Exactly at the limit a file is not too large.
+    fs::write(
+        dir.path().join("largest.png"),
+        png_declaring(16_384, 16_384),
+    )
+    .expect("write PNG");
+
+    let scan = scan_dir(dir.path()).await;
+
+    assert_eq!(scan.not_loaded(), []);
+    assert_eq!(scan.file("largest.png")["support_state"], "renderable");
+    for (name, _, reason) in &cases {
+        let file = scan.file(name);
+        assert_eq!(file["support_state"], "unsupported", "{name}");
+        assert_eq!(file["support_reason"], *reason, "{name}");
+        for endpoint in [
+            &endpoints::FILE_FRAME,
+            &endpoints::FILE_THUMBNAIL,
+            &endpoints::FILE_RAW_FRAME,
+            &endpoints::FILE_RAW_PIXEL,
+            // Sized from the header's rows and columns, so refused too.
+            &endpoints::FILE_PRESENTATION_LAYER,
+        ] {
+            let response =
+                support::endpoint_request(&scan.server, endpoint, &scan.index(name)).await;
+            assert_eq!(
+                response.status_code().as_u16(),
+                422,
+                "{name} {}",
+                endpoint.id
+            );
+            let body: Value = response.json();
+            assert_eq!(
+                body["code"], "unsupported_pixel_layout",
+                "{name} {}",
+                endpoint.id
+            );
+            assert!(
+                body["error"]
+                    .as_str()
+                    .is_some_and(|error| error.contains(reason)),
+                "{name} {}: {body}",
+                endpoint.id
+            );
+        }
+    }
 }
 
 #[tokio::test]

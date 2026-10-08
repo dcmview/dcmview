@@ -133,11 +133,52 @@ dcmview: warning — {path}: {note}
 
 Each file prints at most 16 notes; the last one counts any that are not shown.
 
+A TIFF whose first page lists the same tag twice is skipped as an unreadable
+image header, and a later page that does ends the page walk: TIFF readers
+disagree on which of the two entries counts. Rewrite the file with a tool
+that removes the duplicate, for example `tiffcp in.tif out.tif`.
+
 ### Image files now appear beside DICOM
 
-PNG, JPEG, TIFF, and WebP headers are listed by default, though their pixels
-are not decoded yet. Run `dcmview --formats dicom ./mixed_dir` to restore the
-DICOM-only directory list. An explicitly named image file still loads.
+PNG, JPEG, TIFF, and WebP images are displayed beside DICOM by default. Run
+`dcmview --formats dicom ./mixed_dir` to restore the DICOM-only directory list. An explicitly named image file still loads.
+
+### An image is listed as unsupported
+
+The file's support reason identifies what prevents decoding:
+
+- `raster.unsupported_color`: a TIFF color or plane layout the viewer does
+  not decode, such as palette, CMYK, gray with alpha, or separate color planes.
+- `raster.unsupported_sample_format`: a TIFF sample type outside supported
+  depths, such as bilevel, 16-bit float, or 64-bit integer.
+- `raster.unsupported_compression`: TIFF compression other than none, LZW,
+  Deflate, or PackBits; JPEG-compressed TIFF is included.
+- `raster.jpeg_unsupported_process`: JPEG other than 8-bit baseline,
+  extended sequential, or progressive Huffman.
+- `raster.too_large`: a frame exceeds 268,435,456 pixels.
+
+Convert a copy to a supported layout: for example, re-encode JPEG-compressed
+TIFF using LZW, expand bilevel TIFF to 8-bit gray, or convert separate color
+planes to interleaved RGB. Resize or split images above the pixel limit.
+Keep the source if its precision or metadata matters to your work.
+
+### A listed image fails to decode
+
+An image that is listed but answers `500` with a decode error is damaged or
+is built in a way the viewer refuses to follow:
+
+- a WebP whose image data states another size than the file's header, or
+  whose lossy image is not a key frame;
+- a TIFF page that lists a tag twice (the file changed after it was listed);
+- a TIFF whose tiles are 4,096 pixels or more wider or longer than the
+  image, which would have the decoder read far more than the image holds;
+- a TIFF strip or tile whose compressed data runs past its declared length;
+- a PNG, JPEG or WebP file larger than 64 MiB plus four times one decoded
+  frame, which a long WebP animation can be, or a TIFF frame whose data
+  takes more than that to read.
+
+Re-encode a copy with an ordinary tool (`tiffcp`, ImageMagick, `cwebp`); a
+file such tools cannot read is damaged.
 
 ### The viewer opens before every file appears
 

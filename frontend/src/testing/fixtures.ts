@@ -39,7 +39,7 @@ export function fileSummary(index: number, overrides: Partial<FileSummary> = {})
 	};
 }
 
-/** A catalog entry for an 8-bit RGB PNG the server lists but does not decode. */
+/** A catalog entry for an 8-bit RGB PNG the server lists but does not decode: one over the pixel limit. */
 export function rasterSummary(index: number, overrides: Partial<FileSummary> = {}): FileSummary {
 	const path = overrides.path ?? `fixtures/image-${index}.png`;
 	const name = path.split("/").pop() ?? path;
@@ -76,7 +76,7 @@ export function rasterSummary(index: number, overrides: Partial<FileSummary> = {
 			significant_bits: null,
 		},
 		support_state: "unsupported",
-		support_reason: "raster.decode_not_available",
+		support_reason: "raster.too_large",
 		transfer_syntax_uid: "",
 		default_window: null,
 		...overrides,

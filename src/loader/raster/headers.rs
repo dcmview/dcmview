@@ -1,5 +1,6 @@
 use super::{exif_orientation, Header, HeaderReader, EXIF_SCAN_MAX_BYTES};
 use crate::api::contracts::RasterColorType;
+use crate::types::RasterUnsupported;
 use anyhow::{ensure, Result};
 
 pub(super) fn png(input: &mut HeaderReader) -> Result<Header> {
@@ -128,6 +129,17 @@ pub(super) fn jpeg(input: &mut HeaderReader) -> Result<Header> {
             );
             header.metadata.orientation = orientation;
             header.metadata.has_icc = has_icc;
+            // Baseline, extended sequential and progressive Huffman at 8
+            // bits are the processes the decoder takes.
+            if !matches!(marker, 0xc0..=0xc2) || depth != 8 {
+                header.metadata.unsupported = Some(RasterUnsupported::JpegProcess);
+            }
+            if color == RasterColorType::Cmyk {
+                header.metadata.warnings.push(
+                    "CMYK converted approximately to sRGB; embedded CMYK profile not used"
+                        .to_string(),
+                );
+            }
             return Ok(header);
         }
         if marker == 0xe1 && payload >= 6 && input.read::<6>(start)? == *b"Exif\0\0" {

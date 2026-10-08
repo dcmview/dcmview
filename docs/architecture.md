@@ -53,7 +53,7 @@ application module:
 | Launch and startup contract | `crates/dcmview-protocol` | `StartupEvent` (the `--startup-json` line), `launch_url`, `STARTUP_PROTOCOL`, the token fragment parameter and the token environment variable. Re-exported by `src/api/contracts.rs`. Fields are only added. |
 | Annotation model | `crates/dcmview-annotation` | The model's types and wire format, `validate` on each of them, `FileKey` and `KEY_RULES`, `Op` and `OpEnvelope`, the size bounds in `limits`, and the generated TypeScript and JSON Schema. The root package does not depend on it: `src/annotations.rs` is the EMBED store behind the annotation endpoints. |
 | HTTP runtime | `src/server/` | Listener/runtime, route registration, handlers, state, registry, activity tracking, tags, and embedded assets. |
-| Pixel service | `src/pixels/` | Typed display, raw and thumbnail requests, cache behavior, transfer-syntax classification, decoding, the render seam (`render.rs` `DisplayBuffer`), decode classes (`schedule.rs`), and `PixelError`. |
+| Pixel service | `src/pixels/` | Typed display, raw and thumbnail requests, cache behavior, transfer-syntax classification, decoding, the render seam (`render.rs` `DisplayBuffer`), decode classes (`schedule.rs`), and `PixelError`. `raster.rs` decodes PNG, JPEG, TIFF and WebP frames within fixed read and memory limits and renders them. |
 | Patient geometry | `src/geometry.rs` | Normalized per-frame position, orientation, pixel spacing, coplanarity checks, and target-to-source pixel transforms. |
 | Plane stacks | `src/plane_stack.rs` | RT Dose grids and Parametric Map frames as parallel planes; coverage and bracketing-plane sampling of a displayed frame. |
 | Value mapping | `src/value_mapping.rs` | Per-frame Modality transform and Real World Value Mappings (or Dose Grid Scaling) that convert stored samples. |
@@ -688,8 +688,8 @@ on it, so one render serves either presentation:
   boxes on the buffer (`DisplayBuffer::redact`), resamples it and encodes a
   JPEG (`pixels/thumbnail.rs`).
 
-A new decoder (a raster format, for example) produces a `DisplayBuffer` and
-gets both presentations.
+A new decoder produces a `DisplayBuffer` and gets both presentations, as the
+raster decoder does (`pixels/raster.rs` `render_raster_frame`).
 
 **Thumbnails.** A thumbnail is the frame's whole field of view in the stored
 pixel grid, resampled to its physical aspect and fitted inside the size
@@ -800,11 +800,24 @@ Discovery lists PNG, JPEG, TIFF and still WebP files beside DICOM
   truncated, since a frame map that stops early would move the last frame.
   (This narrows the design's "walk the whole IFD chain".) The catalog lists
   the first 16 excluded pages and counts the rest in `excluded_pages_total`.
-- **A TIFF layout no decoder will take is listed, not skipped**:
-  `raster.unsupported_color` (with `color_type` `other`) for CIELab, more
-  than four bands or an extra sample that is not alpha, and
-  `raster.unsupported_sample_format` for 16-bit float. Only a header that
-  cannot be described at all is `raster_header_invalid`.
+- **A raster the viewer does not decode is listed, not skipped**, with the
+  reason discovery found in its header (`RasterMetadata.unsupported`,
+  reported as `support_reason`). When several apply, the first of these is
+  reported:
+  `raster.unsupported_color` for a TIFF that is CIELab, has more than four
+  bands or an extra sample that is not alpha (`color_type` `other`), or is
+  palette, CMYK, gray with alpha, YCbCr outside JPEG compression, or colour
+  stored as separate planes;
+  `raster.unsupported_sample_format` for a TIFF with 16-bit float, 1-, 2- or
+  4-bit or 64-bit integer samples, or colour that is not 8- or 16-bit
+  unsigned;
+  `raster.unsupported_compression` for a TIFF compressed with anything but
+  none, LZW, Deflate or PackBits (JPEG-compressed TIFF included);
+  `raster.jpeg_unsupported_process` for a JPEG that is not 8-bit baseline,
+  extended sequential or progressive Huffman;
+  `raster.too_large` for a frame of more than 268,435,456 pixels (16,384 x
+  16,384), whatever the host's memory or cache budget.
+  Only a header that cannot be described at all is `raster_header_invalid`.
 - **A raster `FileEntry`** has `format` set, `raster: Some(RasterMetadata)`,
   empty DICOM identity strings and an empty `transfer_syntax_uid`. Its
   `rows`, `columns` and sample layout describe the stored pixel grid and the
@@ -822,17 +835,118 @@ Discovery lists PNG, JPEG, TIFF and still WebP files beside DICOM
   `--filter path=<text>` matches a substring of the reported path, both
   ignoring case. The DICOM filter fields are empty for a raster, so any DICOM
   filter excludes rasters.
-- **Until the raster decoders exist** a raster is `unsupported` with
-  `support_reason` `raster.decode_not_available` (or one of the two layout
-  reasons above), and the display, raw,
-  raw-pixel and presentation-layer endpoints answer
-  `422 unsupported_pixel_layout` naming its reason, so nothing is allocated
-  from a raster header's dimensions. `/tags` answers an empty tree. `/value-mapping` answers the identity
-  mapping, `/references` an empty list and `/semantic-context`
+- **Without DICOM to parse**, `/tags` answers an empty tree, `/value-mapping`
+  the identity mapping, `/references` an empty list and `/semantic-context`
   `not_applicable`, none of which opens the file. No endpoint answers a
   server error for a raster.
 - **Masked sessions** give a raster no patient: its patient fields stay empty
-  and it takes no pseudonym. Its display name is the session's `File N`.
+  and it takes no pseudonym. Its display name is the session's `File N`. Its
+  pixels are served as they are: masking hides identifiers, and burned-in
+  text is what redaction boxes are for.
+
+**Decoding.** A raster frame enters the pixel service like any other:
+`pixels/syntax.rs` `codec_for_file` gives a raster `Codec::Raster` from its
+format, before any transfer-syntax lookup, and `service.rs` dispatches that
+codec to `pixels/raster.rs`. So a raster frame has the same raw and display
+caches, decode permits and classes, redaction boxes, presentation layer and
+thumbnails as a DICOM frame, and `classify_pixel_support` reports it
+`renderable` unless discovery recorded a reason above. The frame endpoints
+answer `422 unsupported_pixel_layout` naming that reason, without opening
+the file, for a raster that has one.
+
+- **One function reads the file**, `decode_raster_frame`, from a `Read +
+  Seek` source (the file, or a test's counted bytes), and its doc comment is
+  the contract. It decodes with the linked crates: `png` with no output
+  transformation, `image`'s JPEG and WebP decoders, and `tiff` on the frame's
+  own page.
+- **The entry is checked against the file.** Discovery read the header once
+  and trusts declarations it does not verify (a WebP canvas and its flags, a
+  TIFF page found by offset), and the file may have changed since. Before
+  any buffer is sized, the image in the file must have the entry's width,
+  height, colour type, depth and sample format; otherwise the decode fails.
+  A frame is never another size than the catalog says. The same holds for
+  every other size a decoder would take from the file on its own, each
+  compared with the entry or a constant before anything is allocated or
+  looped by it:
+  - a WebP's chunks are walked up to its first image before its decoder
+    sees the file: the bitstream there (`VP8 `, `VP8L`, or the one inside
+    the first `ANMF` frame) must state the size of the canvas, or of its
+    frame inside the canvas, because a lossy bitstream's decoder allocates
+    by the size the bitstream states. A lossy bitstream must be a key
+    frame: no other frame states a size;
+  - a WebP profile chunk is read only when it precedes the image, declares
+    at most 4 MiB and ends inside the file;
+  - a TIFF page that holds any tag twice is refused, by discovery and again
+    by the decoder, since readers disagree on which entry counts (the linked
+    crate takes the last) and the page checked would not be the page read;
+  - a TIFF tile must be less than 4,096 pixels wider and less than 4,096
+    longer than the image (`RASTER_TIFF_TILE_MARGIN`), because the decoder
+    reads and discards what a tile holds beside the image;
+  - a TIFF strip or tile is read to the end of its byte count and no
+    further.
+- **What a decode may cost is fixed by the catalog entry**, never by a
+  length, count or size the file declares, and none of it is a time limit:
+  - at most 268,435,456 pixels, so at most 2 GiB of samples;
+  - at most `raster_read_budget` bytes handed to a decoder (64 MiB plus
+    four times the frame's bytes), counted at one buffered reader: every
+    byte read from the file, read-ahead included, and every buffered byte
+    handed out again after a seek back, so strips or tiles that share bytes
+    are charged for each use; a PNG, JPEG or WebP longer than the budget is
+    refused unread;
+  - reads of 64 KiB, with seeks inside the buffer costing none;
+  - a TIFF page's strips or tiles read for their own bytes whatever order
+    the file stores them in: those that lie end to start in decode order
+    are a run, and a read that begins in a run never reads past its end. A
+    file written last row first, or with its tiles scattered, costs its
+    length and its page's tags a second time, like one written in order;
+  - a TIFF frame read from its own IFD (`RasterMetadata.frame_offsets`), not
+    by walking the page chain, so the last frame costs what the first does;
+    at most 65,536 strips or tiles and 4,096 tags on a page;
+  - at most 100 scans in a progressive JPEG;
+  - at most `raster_decode_heap_limit` bytes of heap on the decoding thread
+    (a fixed 32 MiB and one read buffer, six times the frame, four times the
+    bytes read), so a profile, text chunk, strip or tile is never allocated
+    at a size it merely declares. Half of the fixed part is for the one
+    allocation a file sizes unchecked: the decoder of a lossy WebP
+    allocates a partition of coefficients at its declared length, under
+    16 MiB, before reading it, and stops at the first the file does not
+    hold.
+  A decode holds a scheduler permit and runs to completion; these limits,
+  not cancellation, bound it.
+- **Memory across decodes.** The limits above are per decode. A frame at
+  the pixel limit is 256 MiB of 8-bit gray samples and 2 GiB at four 16-bit
+  samples or one 64-bit sample a pixel, and `raster_decode_heap_limit` for
+  it is 32 MiB, six times that frame and four times the file read (itself
+  at most the read budget, 64 MiB plus four times the frame). The decoder
+  paths hold about half of the frame term on the files
+  `tests/raster_cost/scale.rs` measures: at most three frames. Nothing admits
+  decodes by the memory they will take: the number running at once is
+  bounded only by the `DecodeScheduler`'s permits, one per core, of which
+  thumbnails may hold half. A host with `n` cores can therefore hold `n`
+  decodes of the largest frames at once.
+- **Raw frames hold stored sample semantics**, whatever a decoder returns
+  (design section 5.2): low-bit PNG samples keep their stored values (a
+  one-bit image is 0 and 1) in one byte each; 16-bit and wider samples are
+  little endian; a WhiteIsZero TIFF serves its stored values, floats bit for
+  bit, with `MONOCHROME1` so the shared windowing inverts once; palettes are
+  expanded to RGB, or RGBA with `tRNS`; TIFF associated alpha is
+  un-premultiplied, so alpha in the raw tier is always unassociated; a CMYK
+  or YCCK JPEG serves the decoder's approximate RGB. Samples are always
+  interleaved, with one to four per pixel (`MONOCHROME2` with two samples is
+  gray and alpha, `RGBA` is four). Orientation is never applied.
+- **Display.** Gray frames take the shared window: by default the whole
+  stored range for integer samples of 8 bits or fewer (an 8-bit image is
+  shown as stored), a TIFF's declared `MinSampleValue`/`MaxSampleValue`
+  range, and otherwise the frame's percentiles. PNG `sBIT` never narrows a
+  window. Alpha is flattened over black, 16-bit colour is reduced to 8 bits,
+  and colour is never windowed. A colour frame carries the file's ICC
+  profile to the browser only when the profile is valid, at most 4 MiB and
+  for RGB data; a CMYK JPEG's profile is never used.
+- **Not decoded in this version**, each reported with its reason:
+  JPEG-compressed TIFF (the linked `tiff` crate hands a tile to a JPEG
+  decoder with no limit on the size the tile declares), 1-bit TIFF (the
+  crate does not unpack it), palette, CMYK and gray-with-alpha TIFF, and
+  planar colour. Animated PNG and WebP show their first frame only.
 
 ## Annotation Model
 
@@ -1058,6 +1172,20 @@ installation and VS Code Electron integration can also use network/cache state;
   PNG, JPEG, TIFF and WebP files with the linked encoders, run the real
   loader over them and assert on `/api/files`; the expected values are the
   ones the files were written with.
+- Raster decode tests (`tests/integration/raster_decode.rs`) take a file per
+  supported layout, written from sample values chosen in the test
+  (`raster_cases.rs` and `raster_files.rs`: the linked encoders, hand-written
+  PNG chunks and TIFF directories, and a few embedded files encoded by other
+  tools from flat colours), and compare the raw and display frames with
+  those values, so no expected pixel is one a decoder returned.
+- Raster cost tests (`tests/raster_cost/`) call `decode_raster_frame` on
+  honest, hostile and damaged files and state what a decode may cost in
+  things that are counted, never timed: the reads and bytes of the source it
+  is given, and the heap the decoding thread holds. They are a test binary
+  of their own because they run on a counting allocator
+  (`tests/raster_cost/heap.rs`, per thread, so the tests still run in
+  parallel), which the JPEG 2000 decoder exercised by the main integration
+  binary does not tolerate in a debug build.
 - Discovery builds each file's catalog metadata in one parse (`loader/entry.rs`
   `read_discovery_header`): it builds the metadata object from the parser's
   tokens up to the earliest standard pixel-data tag, exactly as
@@ -1159,8 +1287,9 @@ Not current correctness blockers:
 3. Keep external upstream fixtures opt-in unless their availability and cache
    behavior become deterministic enough for normal CI.
 4. A new raster format is a `FileFormat` variant, a signature in
-   `loader/format.rs`, a header reader in `loader/raster.rs`, and a decoder
-   in `pixels/`; nothing else names formats.
+   `loader/format.rs`, a header reader in `loader/raster.rs`, and an arm of
+   `decode_raster_frame` in `pixels/raster.rs` that keeps its limits; nothing
+   else names formats.
 5. When adding an endpoint, add it to `endpoints` in the Rust contract,
    register its route, regenerate the checked-in TypeScript, and add a wrapper
    in `frontend/src/api.ts`; the runtime contract test covers it through

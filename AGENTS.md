@@ -55,6 +55,12 @@ would remove behavior, raise it as a question instead of acting.
   the earlier DICOM-only behaviour) and never excludes a file named as an
   input path. `--filter` has `format` and `path` fields. Coordinates and
   sizes are in the stored pixel grid; orientation is reported, not applied.
+  Their frames are decoded and served through the same display, raw,
+  thumbnail and redaction paths as DICOM frames: raw frames hold the samples
+  the file stores (low-bit values unscaled, WhiteIsZero un-inverted, alpha
+  unassociated), gray is windowed and colour is not, and a frame of up to
+  268,435,456 pixels is decoded whole. A raster the viewer does not decode
+  is listed with a `raster.*` reason.
 - **Remote use** - loopback bind plus the printed `ssh -L` hint. (`--tunnel`
   was removed with the owner's agreement on 2026-09-25.)
 - **Python package** - `view()` with blocking and non-blocking handles,
@@ -112,11 +118,17 @@ would remove behavior, raise it as a question instead of acting.
 
 **Known gaps (intended work, not settled scope):**
 
-- **Raster images are listed but not yet decoded.** A raster reports
-  `support_state: unsupported` with `raster.decode_not_available`, its frame
-  endpoints answer 422, and its tag tree is empty. Decoders, the metadata
-  tree (which must honour `--mask`), decode admission and file keys are the
-  planned follow-ups in `docs/design/image-formats.md`.
+- **Raster images have no metadata tree and no decode admission.** A
+  raster's tag tree is empty, and nothing bounds how many large raster
+  frames decode at once beyond the decode permits (one frame near the pixel
+  limit takes gigabytes). The metadata tree (which must honour `--mask`),
+  byte-based decode admission and file keys are the planned follow-ups in
+  `docs/design/image-formats.md`.
+- **Some TIFF layouts the design lists are not decoded.** JPEG-compressed
+  and 1-bit TIFF are reported as `raster.unsupported_compression` and
+  `raster.unsupported_sample_format`: the linked `tiff` crate decodes the
+  first without a limit on what a tile declares and does not unpack the
+  second. Palette, CMYK and gray-with-alpha TIFF are out of scope by design.
 
 - **VOI LUT Function is not interpreted.** DICOM VOI LUT Function
   (0028,1056), including `LINEAR_EXACT` and `SIGMOID`, is currently ignored.
@@ -313,8 +325,9 @@ dcmview/
 |   |-- masking.rs       --mask display masking rules and the PS3.15 profile list
 |   |-- redactions.rs    in-memory redaction boxes and their revisions
 |   |-- signals.rs       stop-signal listeners registered before startup output
-|   |-- pixels/          service, caches, codecs, render seam, thumbnails, decode
-|   |                    classes, windowing, shutters, overlay colorwash
+|   |-- pixels/          service, caches, codecs, the raster decoder, render seam,
+|   |                    thumbnails, decode classes, windowing, shutters, overlay
+|   |                    colorwash
 |   |-- server/          API, catalog, lifecycle, runtime, tags, web assets
 |   |-- dicom_values.rs  shared lenient attribute readers
 |   |-- object_kind.rs   SOP class to object-kind classification
@@ -379,6 +392,8 @@ dcmview/
 |-- tests/
 |   |-- integration.rs  Integration test module root
 |   |-- integration/    Axum and pixel-path integration tests
+|   |-- raster_cost/    what a raster decode may read and allocate, on a
+|   |                   counting allocator (its own test binary)
 |   |-- windowing-cases.json  windowing oracle shared with rawWindowing.test.ts
 |   `-- fixtures/       Small generated DICOM fixtures
 |-- scripts/check.py    Canonical local and CI check profiles
@@ -512,6 +527,34 @@ valid Extended or Basic Offset Table it seeks to the frame's first item;
 without one it steps over item headers and reads only each fragment's end to
 find a JPEG end marker (RLE is one fragment per frame). No frame-offset index
 is cached between requests.
+
+**Raster files**
+
+- `pixels/raster.rs` `decode_raster_frame` is the only code that reads a
+  raster file's pixels, and its doc comment is the contract for what that
+  may cost: the read budget, the heap limit, the page, strip, tag and scan
+  limits. Every number is fixed by the catalog entry or a constant there,
+  never by a length the file declares. A change that reads or allocates more
+  is a change to those numbers, made there and in `tests/raster_cost/`, not
+  around them.
+- Check the image a decoder finds against the `FileEntry` before sizing
+  anything from it: discovery's header read is not proof of what the file
+  holds now.
+- No decoder sizes an allocation or bounds a loop from the file before that
+  number has been compared with the entry or a constant. A container that
+  repeats a size in its bitstream (WebP), a tag a page may hold twice
+  (TIFF), a chunk or tile that declares its own extent: each is a row in
+  `tests/raster_cost/agreement.rs`. When a linked crate reads a number
+  itself, read it first and refuse what the crate would act on differently.
+- The read budget charges every byte a decoder is handed, re-reads
+  included. Do not add a path that reads the file around the one reader, or
+  a cache that hands bytes out again uncharged.
+- Raster limits are counted, not timed: tests count reads and bytes at the
+  source and heap at the allocator. Do not add a wall-clock limit or a test
+  that measures one.
+- What a raster's raw frame holds is the file's stored samples; undo what a
+  decoder changes (scaling, inversion, premultiplication) in the decoder
+  arm, so display, readout and annotations all see one meaning.
 
 **Masking and redaction**
 
@@ -715,7 +758,7 @@ the warning path in `server/runtime.rs`.
 | `src/api/contracts.rs` | Canonical HTTP endpoint and wire contract |
 | `src/server/` | Axum runtime, lifecycle, catalog, API, tags, and web assets |
 | `src/loader/` | Cancellable DICOM and raster discovery and metadata extraction |
-| `src/pixels/` | Pixel service, codecs, display/raw/thumbnail paths, render seam, decode classes, caches, and windowing |
+| `src/pixels/` | Pixel service, DICOM codecs and the raster decoder, display/raw/thumbnail paths, render seam, decode classes, caches, and windowing |
 | `src/annotations.rs` | ROI CSV import/export, validation, in-memory store |
 | `crates/dcmview-annotation/` | Neutral annotation model, validation, operations, generated schema |
 | `src/types.rs` | Internal domain, transfer-syntax, and cache-key types |
@@ -824,6 +867,12 @@ default suite.
 - A redaction box blanks the display and raw frame, is a cache `MISS` after a
   change, copies to the same-sized files of the series, and stays out of the
   ROI export.
+- A raster's raw frame holds the samples its file was written with, for
+  every supported layout; its display frame shows them windowed once,
+  inverted once for WhiteIsZero and with alpha flattened.
+- Decoding a raster frame reads no more than its entry's budget and holds no
+  more heap than its entry's limit, for hostile and damaged files too, and
+  never panics.
 
 **Test policy:**
 
