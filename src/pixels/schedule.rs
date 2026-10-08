@@ -354,8 +354,7 @@ impl DecodeScheduler {
         if self.limits == DecodeLimits::UNLIMITED {
             return Ok(self.acquire(class).await);
         }
-        let _ = bytes;
-        todo!("FMT4: admit a decode by the bytes it reserves")
+        self.wait_for_permit(class, bytes, true).await
     }
 
     /// Waits for a permit of `class`, by the rules on [`DecodeScheduler`].
@@ -365,13 +364,45 @@ impl DecodeScheduler {
     /// this inside its request future, so a client that aborts before the
     /// grant causes no decode at all.
     pub async fn acquire(self: &Arc<Self>, class: DecodeClass) -> DecodePermit {
+        self.wait_for_permit(class, 0, false)
+            .await
+            .expect("unlimited acquisition cannot be refused")
+    }
+
+    async fn wait_for_permit(
+        self: &Arc<Self>,
+        class: DecodeClass,
+        bytes: u64,
+        limited: bool,
+    ) -> Result<DecodePermit, DecodeRefusal> {
         let id = {
             let mut state = self.state.lock().expect("decode scheduler lock poisoned");
-            let id = state.next_id;
-            state.next_id += 1;
+            let limit_bytes = match class {
+                DecodeClass::Interactive => self.limits.memory_bytes,
+                DecodeClass::Background => background_memory_limit(self.limits.memory_bytes),
+            };
+            if limited && bytes > limit_bytes {
+                return Err(DecodeRefusal::TooLarge {
+                    needed_bytes: bytes,
+                    limit_bytes,
+                    class,
+                });
+            }
             if class == DecodeClass::Interactive {
                 state.last_interactive = Some(Instant::now());
             }
+            if state.queue(class).is_empty() && self.can_grant(&state, class, bytes, limited) {
+                return Ok(self.grant(&mut state, class, bytes));
+            }
+            let queue_limit = match class {
+                DecodeClass::Interactive => self.limits.interactive_queue,
+                DecodeClass::Background => self.limits.background_queue,
+            };
+            if limited && state.queue(class).len() >= queue_limit {
+                return Err(DecodeRefusal::Busy);
+            }
+            let id = state.next_id;
+            state.next_id += 1;
             state.queue(class).push_back(id);
             id
         };
@@ -390,34 +421,14 @@ impl DecodeScheduler {
             changed.as_mut().enable();
             let idle_until = {
                 let mut state = self.state.lock().expect("decode scheduler lock poisoned");
-                let idle_until = (self.permits == 1 && class == DecodeClass::Background)
-                    .then_some(state.last_interactive)
-                    .flatten()
-                    .map(|last| last + ONE_CORE_IDLE_WINDOW)
-                    .filter(|deadline| *deadline > Instant::now());
-                let eligible = state.running < self.permits
-                    && state.queue(class).front() == Some(&id)
-                    && (class == DecodeClass::Interactive
-                        || (state.interactive.is_empty()
-                            && state.background_running < background_limit(self.permits)
-                            && idle_until.is_none()));
-                if eligible {
+                if state.queue(class).front() == Some(&id)
+                    && self.can_grant(&state, class, bytes, limited)
+                {
                     state.queue(class).pop_front();
                     waiting.queued = false;
-                    state.running += 1;
-                    if class == DecodeClass::Background {
-                        state.background_running += 1;
-                    }
-                    // The next request in this class may now use another
-                    // free permit, without waiting for this decode to finish.
-                    self.changed.notify_waiters();
-                    return DecodePermit {
-                        scheduler: Arc::clone(self),
-                        class,
-                        bytes: 0,
-                    };
+                    return Ok(self.grant(&mut state, class, bytes));
                 }
-                idle_until
+                self.idle_until(&state, class)
             };
             if let Some(deadline) = idle_until {
                 tokio::select! {
@@ -427,6 +438,55 @@ impl DecodeScheduler {
             } else {
                 changed.await;
             }
+        }
+    }
+
+    fn idle_until(&self, state: &ScheduleState, class: DecodeClass) -> Option<Instant> {
+        (self.permits == 1 && class == DecodeClass::Background)
+            .then_some(state.last_interactive)
+            .flatten()
+            .map(|last| last + ONE_CORE_IDLE_WINDOW)
+            .filter(|deadline| *deadline > Instant::now())
+    }
+
+    // Queue order is checked by the caller, for both arrivals and waiters.
+    fn can_grant(
+        &self,
+        state: &ScheduleState,
+        class: DecodeClass,
+        bytes: u64,
+        limited: bool,
+    ) -> bool {
+        state.running < self.permits
+            && (!limited || state.reserved_bytes.saturating_add(bytes) <= self.limits.memory_bytes)
+            && (class == DecodeClass::Interactive
+                || (state.interactive.is_empty()
+                    && state.background_running < background_limit(self.permits)
+                    && self.idle_until(state, class).is_none()
+                    && (!limited
+                        || state.background_reserved_bytes.saturating_add(bytes)
+                            <= background_memory_limit(self.limits.memory_bytes))))
+    }
+
+    fn grant(
+        self: &Arc<Self>,
+        state: &mut ScheduleState,
+        class: DecodeClass,
+        bytes: u64,
+    ) -> DecodePermit {
+        state.running += 1;
+        state.reserved_bytes = state.reserved_bytes.saturating_add(bytes);
+        state.peak_reserved_bytes = state.peak_reserved_bytes.max(state.reserved_bytes);
+        if class == DecodeClass::Background {
+            state.background_running += 1;
+            state.background_reserved_bytes = state.background_reserved_bytes.saturating_add(bytes);
+        }
+        // A grant also lets the next waiter use another free permit.
+        self.changed.notify_waiters();
+        DecodePermit {
+            scheduler: Arc::clone(self),
+            class,
+            bytes,
         }
     }
 }
