@@ -63,6 +63,8 @@ pub enum DecodeWork {
 /// D = P       when samples_per_pixel < 3               the display buffer
 ///     3 * P   when samples_per_pixel >= 3 and B == 1
 ///     6 * P   when samples_per_pixel >= 3 and B >= 2
+/// V = 32 * S  when B >= 4                              windowing wide samples
+///     0       otherwise
 /// ```
 ///
 /// the decode of one frame is estimated as `decode`:
@@ -80,8 +82,8 @@ pub enum DecodeWork {
 /// | `work` | Bytes |
 /// |---|---|
 /// | [`DecodeWork::RawFrame`] | `decode` |
-/// | [`DecodeWork::DisplayFrame`] | `decode + 3 * D + `[`DISPLAY_BASE_BYTES`] |
-/// | [`DecodeWork::Thumbnail`] | `decode + D + `[`THUMBNAIL_BASE_BYTES`] |
+/// | [`DecodeWork::DisplayFrame`] | `decode + V + 3 * D + `[`DISPLAY_BASE_BYTES`] |
+/// | [`DecodeWork::Thumbnail`] | `decode + V + D + `[`THUMBNAIL_BASE_BYTES`] |
 /// | [`DecodeWork::PresentationLayer`] | `9 * P + `[`DISPLAY_BASE_BYTES`] |
 /// | [`DecodeWork::RawRedaction`] | `F` |
 ///
@@ -99,6 +101,11 @@ pub enum DecodeWork {
 ///   beside a fixed overhead) and one more buffer while redaction boxes are
 ///   painted on the decoded PNG. The steps after the decode run while the
 ///   raw frame may still be held, which `decode` already counts.
+/// - `V` is for samples of 32 or 64 bits, which have no lookup table: the
+///   frame is converted to 64-bit values, rescaled and sorted for its
+///   percentiles, each in an array of its own, three arrays of eight bytes
+///   a sample, with a quarter more beside. Samples of 16 bits or fewer are
+///   windowed through a table and need none of it.
 /// - `9 * P` is the layer's four bytes a pixel, a PNG no larger than it, and
 ///   one byte a pixel for the shutter's visibility.
 /// - The DICOM rows are rules, not measurements of every codec: the data
