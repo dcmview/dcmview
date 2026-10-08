@@ -216,6 +216,118 @@ fn a_field_keeps_only_the_members_it_does_not_know_as_unknown() {
     }
 }
 
+/// A field changed in Rust can end up holding one name in two places: its
+/// type's member and an entry of `unknown` (a `boolean` field read with
+/// `options`, then made a `category`), or an entry named like one of the
+/// field's own members. The field writes the member itself and leaves the
+/// entry out, so the text names nothing twice and reads back.
+#[test]
+fn a_field_changed_in_rust_writes_each_member_once() {
+    let option = json!({ "id": "a", "name": "A", "deprecated": false });
+    let options: Vec<dcmview_annotation::OptionDef> =
+        serde_json::from_value(json!([option.clone()])).expect("options read");
+    // (name, wire read, unknown entries added, the new field type, wire written)
+    type Case = (
+        &'static str,
+        Value,
+        Vec<(&'static str, Value)>,
+        Option<FieldType>,
+        Value,
+    );
+    let cases: Vec<Case> = vec![
+        (
+            "boolean with options becomes a category",
+            json!({ "id": "f", "name": "F", "type": "boolean", "options": [{ "id": "stale" }],
+                "applies_to": [], "required": false, "hint": "x" }),
+            vec![],
+            Some(FieldType::Category {
+                options: options.clone(),
+                ordered: false,
+            }),
+            json!({ "id": "f", "name": "F", "type": "category", "options": [option.clone()],
+                "ordered": false, "applies_to": [], "required": false, "hint": "x" }),
+        ),
+        (
+            "boolean with options becomes a multi-category",
+            json!({ "id": "f", "name": "F", "type": "boolean", "options": [{ "id": "stale" }],
+                "ordered": true, "applies_to": [], "required": false }),
+            vec![],
+            Some(FieldType::MultiCategory {
+                options: options.clone(),
+            }),
+            // `ordered` is not a member of a multi-category field: it stays.
+            json!({ "id": "f", "name": "F", "type": "multi_category",
+                "options": [option.clone()], "applies_to": [], "required": false,
+                "ordered": true }),
+        ),
+        (
+            "text with min and unit becomes a number",
+            json!({ "id": "f", "name": "F", "type": "text", "min": 7, "unit": "cm",
+                "applies_to": ["file"], "required": true }),
+            vec![],
+            Some(FieldType::Number {
+                min: Some(1.0),
+                max: None,
+                step: None,
+                unit: None,
+                integer: true,
+            }),
+            json!({ "id": "f", "name": "F", "type": "number", "min": 1, "integer": true,
+                "applies_to": ["file"], "required": true }),
+        ),
+        (
+            "number with max_length becomes text",
+            json!({ "id": "f", "name": "F", "type": "number", "integer": false,
+                "max_length": 3, "applies_to": [], "required": false }),
+            vec![],
+            Some(FieldType::Text {
+                max_length: Some(80),
+            }),
+            json!({ "id": "f", "name": "F", "type": "text", "max_length": 80,
+                "applies_to": [], "required": false }),
+        ),
+        (
+            "unknown entries named like the field's own members",
+            json!({ "id": "f", "name": "F", "type": "boolean", "applies_to": ["file"],
+                "required": true, "hint": "x" }),
+            vec![
+                ("id", json!("g")),
+                ("name", json!("G")),
+                ("type", json!("text")),
+                ("applies_to", json!([])),
+                ("required", json!(false)),
+            ],
+            None,
+            json!({ "id": "f", "name": "F", "type": "boolean", "applies_to": ["file"],
+                "required": true, "hint": "x" }),
+        ),
+    ];
+    for (name, wire, added, field_type, written) in cases {
+        let mut field: FieldDef = serde_json::from_value(wire).expect("field reads");
+        for (member, value) in added {
+            field.unknown.insert(member.to_string(), value);
+        }
+        if let Some(field_type) = field_type {
+            field.field_type = field_type;
+        }
+        let text = serde_json::to_string(&field).expect("field serializes");
+        assert_no_member_twice(name, &text);
+        assert_eq!(
+            serde_json::from_str::<Value>(&text).expect("written field is JSON"),
+            written,
+            "{name}"
+        );
+        let read: FieldDef = serde_json::from_str(&text)
+            .unwrap_or_else(|error| panic!("{name}: written text does not read: {error}"));
+        assert_eq!(read.field_type, field.field_type, "{name}");
+        assert_eq!(
+            serde_json::to_string(&read).expect("field serializes"),
+            text,
+            "{name}"
+        );
+    }
+}
+
 /// A member named twice. Where the model names the member, the text is
 /// refused; inside a map whose keys are data (attributes, extensions, mask
 /// frames and tiles, members this version does not know) the last one is

@@ -126,7 +126,7 @@ pub enum FieldType {
 /// that belongs to another field type (`options` on a `boolean` field) is
 /// not a member of this field, so it is kept and written back like any
 /// other unknown one.
-#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema, TS)]
+#[derive(Debug, Clone, PartialEq, JsonSchema, TS)]
 pub struct FieldDef {
     pub id: String,
     pub name: String,
@@ -142,6 +142,13 @@ pub struct FieldDef {
     pub required: bool,
     /// Members this version does not know, kept so they survive a round trip.
     /// Reading never puts `type` or a member of the field's own type here.
+    ///
+    /// Writing leaves out an entry whose name is `id`, `name`, `applies_to`,
+    /// `required`, `type` or a member of the current field type: that member
+    /// is written from the field itself. Reading never produces such an
+    /// entry, but code that changes `field_type` to a type owning a member
+    /// already held here does (`options` kept from a `boolean` field that
+    /// becomes a `category`).
     #[serde(flatten)]
     #[ts(skip)]
     pub unknown: BTreeMap<String, Value>,
@@ -188,6 +195,59 @@ impl<'de> Deserialize<'de> for FieldDef {
             required,
             unknown,
         })
+    }
+}
+
+/// The members [`FieldDef`] writes from its own Rust fields, the field type's
+/// aside.
+const FIELD_MEMBERS: [&str; 4] = ["id", "name", "applies_to", "required"];
+
+/// [`FieldDef`] as serde writes it: the same members in the same order as
+/// the derived form, with the unknown map filtered.
+#[derive(Serialize)]
+#[serde(rename = "FieldDef")]
+struct FieldDefOut<'a> {
+    id: &'a str,
+    name: &'a str,
+    #[serde(flatten)]
+    field_type: &'a FieldType,
+    applies_to: &'a [TargetKind],
+    required: bool,
+    #[serde(flatten)]
+    rest: UnknownMembers<'a>,
+}
+
+/// The unknown members of a field without the ones the field writes itself.
+/// A field type changed in Rust can own a member the map already holds;
+/// writing both would name the member twice, and the text would not read.
+struct UnknownMembers<'a> {
+    unknown: &'a BTreeMap<String, Value>,
+    owned: &'static [&'static str],
+}
+
+impl Serialize for UnknownMembers<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_map(self.unknown.iter().filter(|(member, _)| {
+            let member = member.as_str();
+            !FIELD_MEMBERS.contains(&member) && !self.owned.contains(&member)
+        }))
+    }
+}
+
+impl Serialize for FieldDef {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        FieldDefOut {
+            id: &self.id,
+            name: &self.name,
+            field_type: &self.field_type,
+            applies_to: &self.applies_to,
+            required: self.required,
+            rest: UnknownMembers {
+                unknown: &self.unknown,
+                owned: self.field_type.wire_members(),
+            },
+        }
+        .serialize(serializer)
     }
 }
 
