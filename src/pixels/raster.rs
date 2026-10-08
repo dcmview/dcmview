@@ -11,6 +11,7 @@
 //! `service.rs`, so a raster frame takes the same caches, decode permits,
 //! redaction and thumbnail paths as a DICOM frame.
 
+mod image;
 mod png;
 mod reader;
 
@@ -430,6 +431,9 @@ fn decode_format(
     match _file.format {
         crate::api::contracts::FileFormat::Png => {
             png::decode(_file, _reader, _length).map_err(PixelError::frame_decode)
+        }
+        crate::api::contracts::FileFormat::Jpeg | crate::api::contracts::FileFormat::Webp => {
+            image::decode(_file, _reader, _length, _expected).map_err(PixelError::frame_decode)
         }
         _ => Err(PixelError::frame_decode(anyhow::anyhow!(
             "raster codec not implemented"
