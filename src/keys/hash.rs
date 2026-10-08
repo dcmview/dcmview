@@ -61,7 +61,9 @@ impl FileHasher {
     ///
     /// - On Unix the file is opened with `O_NONBLOCK`, so opening never
     ///   waits: a FIFO put in a file's place, at any moment, neither blocks
-    ///   the caller nor is read. On other platforms it is opened as usual.
+    ///   the caller nor is read. The flag is cleared again once the opened
+    ///   file is known to be a regular one, so the reads that follow are
+    ///   ordinary blocking reads. On other platforms it is opened as usual.
     /// - Anything that is not a regular file is [`KeyFailure::Unreadable`],
     ///   as is a path that cannot be opened or inspected.
     /// - A regular file whose length is not `expected_len` is
@@ -106,6 +108,22 @@ impl FileHasher {
         let opened = file.metadata().map_err(|_| KeyFailure::Unreadable)?;
         if !opened.is_file() {
             return Err(KeyFailure::Unreadable);
+        }
+        // The flag was for the open alone. A read of a regular file that
+        // finds nothing ready (a file on a network mount, say) has to wait
+        // for the bytes, not fail as if the file could not be read.
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            let descriptor = file.as_raw_fd();
+            // SAFETY: `descriptor` is open for as long as `file` lives,
+            // and these calls only read and set its status flags.
+            let flags = unsafe { libc::fcntl(descriptor, libc::F_GETFL) };
+            if flags < 0
+                || unsafe { libc::fcntl(descriptor, libc::F_SETFL, flags & !libc::O_NONBLOCK) } < 0
+            {
+                return Err(KeyFailure::Unreadable);
+            }
         }
         let modified = opened.modified().ok();
         if opened.len() != expected_len
@@ -400,6 +418,26 @@ mod tests {
         let name = std::ffi::CString::new(path.to_str().expect("utf-8 path")).expect("c string");
         // SAFETY: `name` is a valid NUL-terminated path for the whole call.
         assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0, "mkfifo");
+    }
+
+    /// The flag that keeps the open from waiting is for the open alone: a
+    /// file that is hashed is read with ordinary blocking reads.
+    #[cfg(unix)]
+    #[test]
+    fn a_regular_file_is_read_without_the_nonblocking_flag() {
+        use std::os::fd::AsRawFd;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("file");
+        write(&path, &patterned(1_000));
+        let hasher = FileHasher::open(&path, 1_000, None).expect("open");
+        // SAFETY: the descriptor is open while `hasher` lives.
+        let flags = unsafe { libc::fcntl(hasher.file.as_raw_fd(), libc::F_GETFL) };
+        assert!(flags >= 0, "fcntl");
+        assert_eq!(flags & libc::O_NONBLOCK, 0);
+        assert_eq!(
+            finish(hasher).0,
+            Ok(*blake3::hash(&patterned(1_000)).as_bytes())
+        );
     }
 
     /// Opening a FIFO for reading waits until a writer appears, and nothing
