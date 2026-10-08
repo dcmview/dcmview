@@ -32,6 +32,24 @@ fn coordinates_quantize_to_a_thousandth_of_a_pixel() {
     }
     assert!(quantize(f64::NAN).is_nan());
     assert_eq!(quantize(f64::INFINITY), f64::INFINITY);
+    // A finite value too large to scale by 1000 stays as it is, so it can
+    // still be written and is refused as outside the image, not as a number
+    // that is not finite.
+    for value in [1e306, -1e306, f64::MAX, f64::MIN] {
+        assert_eq!(quantize(value), value, "quantize({value:e})");
+        let point = Geometry::Point { x: value, y: 1.0 };
+        let text = serde_json::to_string(&point).expect("a finite coordinate serializes");
+        assert_eq!(
+            serde_json::from_str::<Geometry>(&text).expect("and reads back"),
+            point
+        );
+        let invalid = point.validate(SIZE).expect_err("outside the image");
+        assert!(
+            invalid.has(ViolationCode::OutOfBounds) && !invalid.has(ViolationCode::NonFinite),
+            "{value:e}: {:?}",
+            invalid.violations
+        );
+    }
 
     let polygon = Geometry::Polygon {
         points: vec![

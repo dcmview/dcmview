@@ -45,15 +45,22 @@ pub struct ImageSize {
 }
 
 /// Rounds a coordinate to the nearest 1/1000 px, halves away from zero, and
-/// returns positive zero for anything that rounds to zero. A value that is
-/// not finite is returned unchanged.
+/// returns positive zero for anything that rounds to zero.
 ///
-/// `quantize(12.3456) == 12.346`, `quantize(-0.0004) == 0.0` (positive).
+/// A value is returned unchanged when it is not finite, and when it is too
+/// large to be scaled: `value * 1000` is infinite for a magnitude above about
+/// 1.8e305, and such a value has no fraction to round. So a finite value
+/// stays finite: a coordinate that can be read can be written, and
+/// [`Geometry::validate`] reports it as `out_of_bounds`, not `non_finite`.
+///
+/// `quantize(12.3456) == 12.346`, `quantize(-0.0004) == 0.0` (positive),
+/// `quantize(1e306) == 1e306`.
 pub fn quantize(value: f64) -> f64 {
-    if !value.is_finite() {
+    let scaled = value * QUANTA_PER_PIXEL;
+    if !scaled.is_finite() {
         return value;
     }
-    let rounded = (value * QUANTA_PER_PIXEL).round() / QUANTA_PER_PIXEL;
+    let rounded = scaled.round() / QUANTA_PER_PIXEL;
     if rounded == 0.0 {
         0.0
     } else {
