@@ -14,6 +14,7 @@
 mod image;
 mod png;
 mod reader;
+mod tiff;
 
 use super::error::{PixelError, PixelResult};
 use super::render::{DisplayBuffer, DisplayPng};
@@ -434,6 +435,9 @@ fn decode_format(
         }
         crate::api::contracts::FileFormat::Jpeg | crate::api::contracts::FileFormat::Webp => {
             image::decode(_file, _reader, _length, _expected).map_err(PixelError::frame_decode)
+        }
+        crate::api::contracts::FileFormat::Tiff => {
+            tiff::decode(_file, _frame, _reader, _length, _expected, _budget)
         }
         _ => Err(PixelError::frame_decode(anyhow::anyhow!(
             "raster codec not implemented"
