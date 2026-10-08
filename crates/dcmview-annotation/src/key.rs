@@ -72,9 +72,7 @@ impl FileKey {
             return Err(invalid("file key"));
         }
         let valid = if let Some(uid) = text.strip_prefix("sop:") {
-            !uid.is_empty()
-                && uid.len() <= crate::limits::MAX_SOP_UID_BYTES
-                && uid.bytes().all(id_byte)
+            Self::is_sop_uid(uid)
         } else if let Some(digest) = text.strip_prefix("b3:") {
             digest.len() == 64
                 && digest
@@ -88,6 +86,15 @@ impl FileKey {
         } else {
             Err(invalid("file key"))
         }
+    }
+
+    /// Whether `sop:<uid>` is a file key: `uid` is 1 to 128 bytes
+    /// ([`crate::limits::MAX_SOP_UID_BYTES`]), each an ASCII letter, a
+    /// digit, `.`, `-` or `_`. True exactly when [`FileKey::sop`] succeeds,
+    /// and it builds nothing, so code that only has to know whether a file
+    /// gets a UID key (once per file of a scan) does not pay for the string.
+    pub fn is_sop_uid(uid: &str) -> bool {
+        !uid.is_empty() && uid.len() <= crate::limits::MAX_SOP_UID_BYTES && uid.bytes().all(id_byte)
     }
 
     /// The key `sop:<uid>` for a SOP Instance UID. Fails exactly when
