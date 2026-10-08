@@ -10,6 +10,8 @@ diagnostic viewer.
 
 ## Unreleased
 
+## 0.4.0 - 2026-10-08
+
 ### Breaking changes
 
 - Every `/api` request now requires `Authorization: Bearer <token>` by default,
@@ -17,10 +19,20 @@ diagnostic viewer.
   read `token` and `base_url` from `--startup-json` (or extract the token from
   the launch URL fragment and remove the fragment before adding API paths).
   Missing or invalid credentials return `401 unauthorized` with
-  `WWW-Authenticate: Bearer`. Startup `url` now carries `#token=...`; JSON adds
-  `base_url`, `token`, and `protocol`. `DCMVIEW_TOKEN` fixes the session token;
-  `--no-token` explicitly disables authentication with a warning for use behind
-  an authenticating proxy. Public binds still warn about unencrypted HTTP.
+  `WWW-Authenticate: Bearer`, for unknown API routes too. Startup `url` now
+  carries `#token=...`; JSON adds `base_url`, `token`, and `protocol`.
+  `DCMVIEW_TOKEN` fixes the session token; `--no-token` explicitly disables
+  authentication with a warning for use behind an authenticating proxy.
+  Public binds still warn about unencrypted HTTP.
+- The token is accepted in the `Authorization` header only: a query parameter
+  or cookie does not authenticate. The viewer page and its hashed assets stay
+  public and hold no file data. `DCMVIEW_TOKEN` must be non-empty and use only
+  `A-Z a-z 0-9 - . _ ~`; an invalid value, or the variable set together with
+  `--no-token`, stops startup. The token is never read from the command line.
+- Opening the viewer from the terminal, Python `view()` and the VS Code
+  extension need no change: each uses the launch URL, which carries the
+  token. A bookmarked or hand-typed `http://127.0.0.1:PORT/` without the
+  fragment now shows a page asking for the access link.
 
 ### Added
 
@@ -29,12 +41,12 @@ diagnostic viewer.
   `16MiB` minimum. The default remains 704 MiB; this is not a process memory cap.
 - Python non-blocking handles expose read-only `token` and `base_url` startup
   fields for authenticated API calls, while `url` remains the launch URL.
-  Older binaries leave the new properties as `None`.
+  Older binaries, and viewers routed into VS Code through the bridge, leave
+  the new properties as `None`.
 - VS Code reads `base_url` and `token` separately so the token survives port
   forwarding, with `url` as the fallback for older binaries. Bridge launch
   URLs retain the token fragment, extension output omits startup credentials,
   and socket-only startup events report an unsupported-launch error.
-
 - `--unix-socket PATH` serves the viewer through a private Unix domain socket
   on Linux and macOS, for shared-server inspection with SSH forwarding.
   The parent directory must be owned by the current effective user and not
@@ -43,7 +55,9 @@ diagnostic viewer.
   An adjacent mode `0600` lock file prevents a busy or hung viewer's socket
   from being replaced and is also removed on shutdown.
   Socket mode conflicts with `--host` and `--port`, always bypasses VS Code
-  routing, and never opens a browser automatically.
+  routing, and never opens a browser automatically. It prints the
+  `ssh -L 8080:<socket> user@host` command and the link to open, and its
+  `--startup-json` line reports `socket` with `url: null` and no `base_url`.
 - The viewer reads the access token from its launch link
   (`http://127.0.0.1:PORT/#token=…`), removes it from the address bar, keeps
   it for the tab across reloads, and sends it with every API request. Opened
@@ -53,17 +67,72 @@ diagnostic viewer.
 - Export ROIs reports a failed export in the viewer instead of leaving the
   browser on an error page or doing nothing.
 
+### Changed
+
+- The printed viewer URL (`dcmview: server running at ...`) now ends in
+  `/#token=...`, and the SSH forwarding hint is followed by a
+  `then open http://localhost:PORT/#token=...` line to copy on the local
+  machine.
+- The warning for a non-loopback bind now says that plain HTTP does not
+  encrypt the access token or DICOM data; it says the endpoints are
+  unauthenticated only under `--no-token`.
+- A failed browser launch no longer prints the opener's error text, which
+  could contain the launch URL; it says to open the launch URL manually.
+- The repository is a Cargo workspace. The root package is still the
+  `dcmview` binary and library, so `cargo build --release --locked` and the
+  wheel and VSIX builds are unchanged; `cargo test` and `cargo clippy` need
+  `--workspace` to cover the new `crates/dcmview-protocol` member, which owns
+  the launch and startup contract.
+- Tagged releases publish only after the CLI, the Python package and the VS
+  Code extension pass checks over real SSH and VS Code Remote-SSH against
+  the built Linux wheel and VSIX.
+
 ### Fixed
 
 - A redaction box change can no longer leave a frame cached without the new
   box. A frame requested at the same instant as the change could be rendered
   with the earlier boxes and then served from the cache until the next
-  change.
+  change. This affected 0.3.2.
 - Tool, frame, cine and file shortcuts no longer fire while Ctrl, Cmd or Alt
   is held, so Ctrl+Z no longer selects the Zoom tool and Ctrl+R no longer
   selects the ROI tool before the browser or VS Code handles the combination.
   `[` and `]` still step frames when typed with Option or AltGr, and Delete
   and Backspace still remove the selected ROI with a modifier held.
+
+### Documentation
+
+- The README mouse summary described a right-drag zoom and wheel frame
+  scrolling that do not exist. It now says what the viewer does: middle-drag
+  pans, the wheel zooms about the pointer, and the wheel steps frames in the
+  Scroll tool.
+- The annotation CSV reference now states the checks that run when a CSV
+  loads (non-negative integer coordinates, frame indices, matching counts;
+  box bounds are checked when an edit is saved, not on load) and shows the
+  empty `ROI_frames` value unquoted, as export writes it.
+- `docs/design/` holds the confirmed design for upcoming releases. It is
+  design, not current behavior.
+
+### Known limitations
+
+- The token does not encrypt anything: over plain HTTP on a non-loopback
+  bind, the token and the DICOM data are readable on the network. Keep the
+  loopback default and forward with SSH.
+- When dcmview opens the browser itself, the operating system's opener
+  receives the launch URL, token included, as a process argument that other
+  local users can read on some systems. On a shared machine use
+  `--no-browser` and open the printed link, or use `--unix-socket`.
+- A token fixed with `DCMVIEW_TOKEN` is not rate-limited; use a long random
+  value.
+- The `--unix-socket` directory needs a filesystem that supports file locks.
+  Some network filesystems do not; use a local directory such as one under
+  `$XDG_RUNTIME_DIR`. A forced kill can leave a stale socket, which the next
+  launch on that path replaces. Unix socket forwarding needs OpenSSH 6.7 or
+  newer on both ends.
+- Python `view()` and the VS Code extension do not offer socket mode, and
+  `--unix-socket` is not available on Windows.
+- `DCMVIEW_TOKEN` set only in a launching terminal or notebook is not passed
+  through the VS Code bridge: a viewer the extension manages inherits the
+  extension host's environment and otherwise generates its own token.
 
 ## 0.3.2 - 2026-10-02
 
