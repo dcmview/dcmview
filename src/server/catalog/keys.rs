@@ -6,11 +6,12 @@
 //! module owns everything around them that needs the registry: its lock,
 //! its entries, a runtime and the files themselves.
 
-use super::FileRegistry;
+use super::{FileRegistry, RegistryStatus};
 use crate::api::contracts::{FileKeyError, FileRekey, FileSummary};
 use crate::keys::{
     FileHasher, FileKey, FileKeyStatus, HashProgress, KeyFailure, KeyScheme, KeyView,
 };
+use crate::loader::DiscoveryRecord;
 use crate::masking::Masker;
 use crate::pixels::{self, DecodeClass, DecodeScheduler};
 use std::collections::{HashSet, VecDeque};
@@ -20,9 +21,11 @@ use std::sync::{
 };
 use tokio::sync::Notify;
 
-/// One answer to `GET /api/files`, before the fields the handler adds. The
-/// members are those of `FilesResponse` with the same names, and their
-/// contract is written there.
+/// One answer to `GET /api/files`, before the fields the handler adds that
+/// do not come from the registry. The first six members are those of
+/// `FilesResponse` with the same names, and their contract is written
+/// there. Every member was read at the same moment
+/// ([`FileRegistry::files_page`]).
 #[derive(Debug, Clone)]
 pub struct FilesPage {
     pub files: Vec<FileSummary>,
@@ -31,6 +34,10 @@ pub struct FilesPage {
     pub more: bool,
     pub keys_hashing: usize,
     pub rekeys: Vec<FileRekey>,
+    /// The scan state and counters the entries belong to.
+    pub status: RegistryStatus,
+    /// The most recent skipped and filtered records, sorted by path.
+    pub discovery: Vec<DiscoveryRecord>,
 }
 
 /// How much whole-file hashing a registry has done since it was created.

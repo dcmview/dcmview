@@ -475,6 +475,14 @@ requires an existing `frontend/dist/index.html`.
   can do filesystem, codec, or CPU-heavy work.
 - Display and raw LRU cache locks are held only for lookup/insert. Never hold a
   cache lock while decoding, encoding, reading DICOM files, or serializing tags.
+- A response that reports more than one fact about the registry takes them
+  from one read of it (`FileRegistry::files_page`, `status`,
+  `get_or_count`). Two reads are two moments: a catalog assembled from them
+  can say the scan is complete beside a list that predates its end, and the
+  page stops polling on `scan_complete`.
+- The key hashing queue's lock may be taken while the registry lock is held,
+  never the other way round, and neither is held across an `.await`, a file
+  operation or `spawn_blocking`.
 
 **Error handling**
 

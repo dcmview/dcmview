@@ -70,18 +70,19 @@ pub(super) async fn files(
     if query.limit == Some(0) {
         return Err(ApiError::invalid_query("limit must be at least 1"));
     }
+    // One read of the registry: the entries, the scan state and the
+    // counters in this response are of the same moment. A second read here
+    // could report a completed scan beside a list that predates its end.
     let page = state.registry().files_page(
         query.since,
         query
             .limit
             .map(|limit| usize::try_from(limit).unwrap_or(usize::MAX)),
     );
-    let status = state.registry().status();
     Ok(Json(FilesResponse {
         files: page.files,
-        discovery: state
-            .registry()
-            .discovery_response_snapshot()
+        discovery: page
+            .discovery
             .into_iter()
             .map(|record| DiscoveryResult {
                 path: record.path.display().to_string(),
@@ -96,10 +97,10 @@ pub(super) async fn files(
             .collect(),
         server_start_ms: state.server_start_ms(),
         masked: state.registry().masker().is_some(),
-        scan_complete: status.scan_complete,
-        scanned: status.scanned,
-        skipped: status.skipped,
-        filtered: status.filtered,
+        scan_complete: page.status.scan_complete,
+        scanned: page.status.scanned,
+        skipped: page.status.skipped,
+        filtered: page.status.filtered,
         revision: page.revision,
         reset: page.reset,
         more: page.more,
@@ -127,9 +128,7 @@ pub(super) fn registered_file(
     index: usize,
     role: &str,
 ) -> Result<Arc<FileEntry>, ApiError> {
-    let registry = state.registry();
-    registry.get(index).ok_or_else(|| {
-        let count = registry.status().file_count;
+    state.registry().get_or_count(index).map_err(|count| {
         ApiError::not_found(format!(
             "{role} index {index} is out of range: {count} file(s) are loaded"
         ))
@@ -824,5 +823,81 @@ pub(super) async fn select_tag(
 fn insert_header_if_valid(headers: &mut HeaderMap, name: &'static str, value: String) {
     if let Ok(parsed) = HeaderValue::from_str(&value) {
         headers.insert(name, parsed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::annotations::AnnotationStore;
+    use crate::server::{router, AppState, FileRegistry};
+    use axum_test::TestServer;
+    use serde_json::Value;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    /// The catalog a client polls must be one moment of the registry. The
+    /// scan is made to find its last files and finish at the one point where
+    /// a response assembled from two reads would differ from one assembled
+    /// from a single read: after the entries were read. A response that then
+    /// reports the finished scan lists fewer files than the scan found, and
+    /// the page stops polling on `scan_complete`.
+    #[tokio::test]
+    async fn a_catalog_response_is_one_moment_of_the_scan() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/golden-uncompressed-u16-multiframe.dcm");
+        let template = crate::loader::test_entry(&fixture);
+        let entry = move |number: usize| {
+            let mut file = template.clone();
+            file.path = PathBuf::from(format!("/scan/{number}.dcm"));
+            file.sop_instance_uid = format!("1.2.826.0.1.3680043.10.515.{number}");
+            file
+        };
+        // (query, how the request is paged): the plain listing and the cursor
+        // take the same snapshot.
+        for query in ["", "?since=0", "?since=0&limit=1000"] {
+            let registry = FileRegistry::new();
+            registry.insert(entry(0));
+            let scan = registry.clone();
+            let entry = entry.clone();
+            let finished = Arc::new(AtomicBool::new(false));
+            let registry = registry.with_after_page(Arc::new({
+                let finished = finished.clone();
+                move || {
+                    if !finished.swap(true, Ordering::AcqRel) {
+                        scan.insert(entry(1));
+                        scan.insert(entry(2));
+                        scan.mark_scan_complete();
+                    }
+                }
+            }));
+            let server = TestServer::new(router(AppState::new(
+                registry.clone(),
+                AnnotationStore::empty(),
+            )));
+
+            let during: Value = server.get(&format!("/api/files{query}")).await.json();
+            assert!(
+                finished.load(Ordering::Acquire),
+                "{query}: the scan finished while the request was answered"
+            );
+            let listed = during["files"].as_array().expect("files").len();
+            assert_eq!(
+                (listed, &during["scan_complete"]),
+                (1, &Value::Bool(false)),
+                "{query}: the response is the catalog as it was when its entries were read"
+            );
+            assert_eq!(during["revision"], 1, "{query}");
+
+            let after: Value = server.get(&format!("/api/files{query}")).await.json();
+            assert_eq!(
+                (
+                    after["files"].as_array().expect("files").len(),
+                    &after["scan_complete"]
+                ),
+                (3, &Value::Bool(true)),
+                "{query}"
+            );
+        }
     }
 }

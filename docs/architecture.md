@@ -944,6 +944,13 @@ catalog's revision comes from another process and is answered from the start
 with `reset: true`. A poll from the current revision costs the same whatever
 the size of the catalog.
 
+A response is one moment of the registry. `FileRegistry::files_page` reads
+the entries, the scan state and counters, the discovery records and the
+hashing count under one hold of the registry lock, and the handler reads
+nothing else for the response. A response that says `scan_complete` therefore
+lists every file the scan found, which matters because the page stops
+polling when it sees that member.
+
 ## Annotation Model
 
 `crates/dcmview-annotation` is the one definition of what an annotation is.
