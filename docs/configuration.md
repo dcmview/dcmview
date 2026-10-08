@@ -29,6 +29,7 @@ dcmview [OPTIONS] <PATH> [PATH ...]
 | `--no-browser` | `false` | Print the viewer URL instead of opening a browser automatically. |
 | `--timeout <SECONDS>` | none | Exit after this many seconds without API or browser requests once the scan has finished. |
 | `--cache-budget <BYTES>` | `768MiB` | Total memory for cached display, raw, overlay and thumbnail frame bodies; minimum `16MiB`. |
+| `--decode-memory <BYTES>` | `4GiB` | Memory that frames being decoded may use between them; minimum `256MiB`. |
 | `--no-recursive` | `false` | Scan only the top level of input directories. |
 | `--annotations <CSV>` | none | Load EMBED-style ROI annotations from CSV without modifying the file. |
 | `--formats <NAMES>` | all five formats | Comma-separated `dicom,png,jpeg,tiff,webp`; narrows directory walks only. |
@@ -85,9 +86,41 @@ overlay and thumbnail caches using their default sizes of 256, 384, 64 and
 served without being retained.
 
 This limits retained frame bodies, not total process memory. It does not cover
-in-flight decoding and responses, cache metadata, the file catalog, annotations,
+decodes in progress (see "Decode memory" below), responses being sent, cache metadata, the file catalog, annotations,
 or the tag, semantic and value-mapping caches (which use entry limits).
 Browser memory is separate.
+
+### Decode memory
+
+Decoding a frame takes several times the frame's size while it runs. dcmview
+reserves an estimate of that memory before each decode starts and keeps the
+total reserved by the decodes running at once within `--decode-memory`
+(default 4 GiB). Values are written as for `--cache-budget`; totals below
+`256MiB` are rejected.
+
+- Frames of ordinary size are unaffected: a 4096 x 5120 16-bit mammogram
+  reserves well under 1 GiB, so several decode at once.
+- Large frames take turns. With the default, 16,384 x 16,384 gray images,
+  8-bit or 16-bit, are decoded one at a time.
+- A frame that would need more than the whole budget is not decoded. The
+  viewer says how much memory it needs and names this option; the file is
+  still listed, and starting dcmview with a larger value decodes it. At the
+  default that is 8-bit colour above about 150 megapixels (12,000 x 12,000)
+  and 16-bit colour or 32- or 64-bit samples above about 50 to 80
+  megapixels.
+  `--decode-memory 8GiB` shows 8-bit colour up to the 16,384 x 16,384
+  limit; 16-bit colour with alpha at that size needs `17GiB`.
+- Thumbnails may use half of the budget between them, so they never hold up
+  the image you open. A frame too large for that half has no thumbnail and
+  still opens in the viewer.
+- If more than 1,024 frame requests (256 for thumbnails) are already
+  waiting for memory, the next is answered `503` with `Retry-After: 1`
+  instead of waiting; the same request succeeds once decodes finish.
+
+This limits the memory of decodes in progress, not total process memory. The
+frame caches (`--cache-budget`), responses being sent, and browser memory are
+separate. The estimate is deliberately high (about six times the decoded
+frame for image files), so real use is usually well below the limit.
 
 ### Private Unix socket and SSH forwarding
 

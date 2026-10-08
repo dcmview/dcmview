@@ -61,6 +61,14 @@ would remove behavior, raise it as a question instead of acting.
   unassociated), gray is windowed and colour is not, and a frame of up to
   268,435,456 pixels is decoded whole. A raster the viewer does not decode
   is listed with a `raster.*` reason.
+- **Decode memory budget** - every decode, render and frame-sized copy
+  reserves an estimate of the memory it will hold, from the catalog entry,
+  before it starts, and the decodes running at once never have more
+  reserved than `--decode-memory` (default 4 GiB). Thumbnails share half of
+  it. A frame that needs more than the budget answers
+  `422 decode_memory_exceeded` and stays listed as renderable; a request
+  that would wait behind a full queue answers `503 decode_busy` with
+  `Retry-After`. It applies to DICOM and raster frames alike.
 - **Remote use** - loopback bind plus the printed `ssh -L` hint. (`--tunnel`
   was removed with the owner's agreement on 2026-09-25.)
 - **Python package** - `view()` with blocking and non-blocking handles,
@@ -118,12 +126,15 @@ would remove behavior, raise it as a question instead of acting.
 
 **Known gaps (intended work, not settled scope):**
 
-- **Raster images have no metadata tree and no decode admission.** A
-  raster's tag tree is empty, and nothing bounds how many large raster
-  frames decode at once beyond the decode permits (one frame near the pixel
-  limit takes gigabytes). The metadata tree (which must honour `--mask`),
-  byte-based decode admission and file keys are the planned follow-ups in
-  `docs/design/image-formats.md`.
+- **Raster images have no metadata tree.** A raster's tag tree is empty.
+  The metadata tree (which must honour `--mask`) and file keys are the
+  planned follow-ups in `docs/design/image-formats.md`.
+- **The decode memory budget is not a process limit.** Beside it are the
+  frame caches, response bodies while they are sent, and the resampling and
+  encoding of segmentation and value overlays. A DICOM decoder is not held
+  to its catalog entry the way the raster decoder is: an encapsulated
+  codestream that declares a larger image than its data set is decoded at
+  the size it declares, whatever was reserved.
 - **Some TIFF layouts the design lists are not decoded.** JPEG-compressed
   and 1-bit TIFF are reported as `raster.unsupported_compression` and
   `raster.unsupported_sample_format`: the linked `tiff` crate decodes the
@@ -301,11 +312,14 @@ boxes on it, shrinks it and encodes a JPEG. A new decoder returns a
 stored pixel grid with the default presentation, kept in their own cache and
 never written to the display or raw caches.
 
-Every decode takes a permit from `pixels::decode_scheduler()` and names its
-`DecodeClass`: `Background` for thumbnails and other work nobody is waiting
-on, `Interactive` for everything else. The class is fixed by the endpoint,
-not by the `X-Dcmview-Background` header. `docs/architecture.md`, "Render
-Seam, Thumbnails And Decode Classes", is normative for both.
+Every decode takes a permit from its viewer's `DecodeScheduler` (the one its
+cache names) and names its `DecodeClass`: `Background` for thumbnails and
+other work nobody is waiting on, `Interactive` for everything else. The
+class is fixed by the endpoint, not by the `X-Dcmview-Background` header.
+The permit comes from `pixels/admission.rs` `admit` and carries the bytes
+the work reserves of the decode memory budget (`decode_estimate`, by
+`DecodeWork` kind). `docs/architecture.md`, "Render Seam, Thumbnails And
+Decode Classes" and "Decode Admission", is normative for all of it.
 
 ---
 
@@ -326,8 +340,8 @@ dcmview/
 |   |-- redactions.rs    in-memory redaction boxes and their revisions
 |   |-- signals.rs       stop-signal listeners registered before startup output
 |   |-- pixels/          service, caches, codecs, the raster decoder, render seam,
-|   |                    thumbnails, decode classes, windowing, shutters, overlay
-|   |                    colorwash
+|   |                    thumbnails, decode classes and admission, windowing,
+|   |                    shutters, overlay colorwash
 |   |-- server/          API, catalog, lifecycle, runtime, tags, web assets
 |   |-- dicom_values.rs  shared lenient attribute readers
 |   |-- object_kind.rs   SOP class to object-kind classification
@@ -392,7 +406,8 @@ dcmview/
 |-- tests/
 |   |-- integration.rs  Integration test module root
 |   |-- integration/    Axum and pixel-path integration tests
-|   |-- raster_cost/    what a raster decode may read and allocate, on a
+|   |-- raster_cost/    what a raster decode may read and allocate, and what
+|   |                   each request holds against what it reserved, on a
 |   |                   counting allocator (its own test binary)
 |   |-- windowing-cases.json  windowing oracle shared with rawWindowing.test.ts
 |   `-- fixtures/       Small generated DICOM fixtures
@@ -484,6 +499,10 @@ requires an existing `frontend/dist/index.html`.
 - Frame decode errors return HTTP 500 JSON and the server continues.
 - Unsupported transfer syntax returns HTTP 422 JSON and must never panic.
 - Missing pixel data returns 404 for frame endpoints.
+- A frame whose decode needs more than the decode memory budget returns HTTP
+  422 `decode_memory_exceeded`; a request refused because the queue for that
+  memory is full returns HTTP 503 `decode_busy` with `Retry-After`. Neither
+  is cached, and neither changes what the catalog reports for the file.
 - Tag serialization errors for individual values should emit `TagValue::Error`
   and continue serializing the response where possible.
 - Zero valid files after scan is a non-zero CLI error.
@@ -501,6 +520,25 @@ requires an existing `frontend/dist/index.html`.
   `AppState` methods. Tag reads parse only up to pixel data and describe the
   pixel element from its header, seeking past its value (a deflated data set
   is inflated through it into a sink); pixel values are never kept.
+
+**Decode admission**
+
+- Nothing that holds a frame runs without a permit: a decode, a render, a
+  frame-sized copy or buffer. A new one gets a `DecodeWork` kind, a row in
+  `decode_estimate`'s table, and a path in `tests/raster_cost/admission.rs`
+  that measures what it holds against what it reserves.
+- An estimate is computed from the `FileEntry` alone. Never lower or size
+  one from what the file declares or from the file's current length; the
+  decoder checks the file against the entry instead.
+- One piece of work takes one permit. Do not wait for a permit, or for work
+  that may be waiting for one, while holding one (`RawAdmission::Covered`
+  is how a display frame's raw decode avoids it).
+- Work a request can abandon (thumbnails, previews) waits for its permit in
+  the request future and then runs in its own task, which owns the permit
+  until the blocking work ends. Do not hold a permit in a request future
+  across `spawn_blocking`.
+- Tests of admission read `DecodeScheduler::load` and wait with
+  `load_when`; they do not sleep or time anything.
 
 **Windowing**
 
@@ -729,6 +767,7 @@ dcmview [OPTIONS] <PATH> [PATH ...]
   --unix-socket <path>      listen on a private Unix socket instead of TCP (Unix only)
   --no-token                serve the API without the bearer token (warns)
   --cache-budget <bytes>    total size of the frame caches, e.g. 256MiB
+  --decode-memory <bytes>   memory frames being decoded may use, default 4GiB
 ```
 
 Hidden and experimental, for a supervising parent process, and outside the
@@ -873,6 +912,15 @@ default suite.
 - Decoding a raster frame reads no more than its entry's budget and holds no
   more heap than its entry's limit, for hostile and damaged files too, and
   never panics.
+- The bytes running decodes have reserved never exceed the decode memory
+  budget, and thumbnails never more than half of it; a full queue answers
+  503 with `Retry-After` on the decoding endpoints only; a frame too large
+  for the budget answers 422 and stays renderable; a permit comes back
+  however its holder ends, and a request dropped after its decode began
+  stays counted until the decode ends.
+- No path of the pixel service holds more heap for a frame than it reserved,
+  for hostile raster files too, and many requests at once hold no more than
+  the budget.
 
 **Test policy:**
 
