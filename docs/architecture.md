@@ -736,7 +736,8 @@ from) is `Interactive`. The scheduler:
   always left for interactive work), and no interactive request is waiting;
 - on a one-core host, where no permit can be reserved, additionally holds a
   background request back until no interactive request has arrived for
-  `ONE_CORE_IDLE_WINDOW` (one second);
+  `ONE_CORE_IDLE_WINDOW` (one second); a request that is refused is not
+  an arrival;
 - considers waiting interactive requests first whenever a permit returns;
 - forgets a request that stops waiting.
 

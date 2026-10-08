@@ -201,9 +201,11 @@ pub fn background_limit(permits: usize) -> usize {
 ///   request is waiting. Background requests are granted in arrival order.
 /// - With one permit, a background request additionally waits until
 ///   [`ONE_CORE_IDLE_WINDOW`] has passed since the last interactive request
-///   arrived (called [`Self::acquire`]); a later interactive arrival starts
-///   the window again. Without any interactive request so far there is
-///   nothing to wait for. The window is measured with `tokio::time`.
+///   arrived (called [`Self::acquire`], or [`Self::admit`] and was not
+///   refused); a later interactive arrival starts the window again. A
+///   request that [`Self::admit`] refuses is not an arrival. Without any
+///   interactive request so far there is nothing to wait for. The window is
+///   measured with `tokio::time`.
 /// - When a permit is released, waiting interactive requests are considered
 ///   before waiting background ones.
 /// - A request that stops waiting (its future is dropped before it is
@@ -416,18 +418,25 @@ impl DecodeScheduler {
                     class,
                 });
             }
-            if class == DecodeClass::Interactive {
-                state.last_interactive = Some(Instant::now());
-            }
-            if state.queue(class).is_empty() && self.can_grant(&state, class, bytes, limited) {
-                return Ok(self.grant(&mut state, class, bytes));
-            }
+            let granted_now =
+                state.queue(class).is_empty() && self.can_grant(&state, class, bytes, limited);
             let queue_limit = match class {
                 DecodeClass::Interactive => self.limits.interactive_queue,
                 DecodeClass::Background => self.limits.background_queue,
             };
-            if limited && (state.refuse_waiting || state.queue(class).len() >= queue_limit) {
+            if !granted_now
+                && limited
+                && (state.refuse_waiting || state.queue(class).len() >= queue_limit)
+            {
                 return Err(DecodeRefusal::Busy);
+            }
+            // Only a request that is served counts as the viewer's activity:
+            // a refused one leaves nothing behind, the idle window included.
+            if class == DecodeClass::Interactive {
+                state.last_interactive = Some(Instant::now());
+            }
+            if granted_now {
+                return Ok(self.grant(&mut state, class, bytes));
             }
             let id = state.next_id;
             state.next_id += 1;
@@ -729,5 +738,44 @@ mod tests {
         assert!(!granted(&mut background).await);
         tokio::time::advance(Duration::from_millis(1)).await;
         let _background = take(&mut background).await;
+    }
+
+    /// The one-core idle window is started by interactive requests that
+    /// are served. One that is refused, as too large or as busy, leaves
+    /// background work free to start; the clock is paused, so any wait for
+    /// the window would show as time passing.
+    #[tokio::test(start_paused = true)]
+    async fn a_refused_request_does_not_start_the_one_core_idle_window() {
+        use DecodeClass::{Background, Interactive};
+        let scheduler = DecodeScheduler::with_limits(
+            1,
+            DecodeLimits {
+                memory_bytes: 100,
+                interactive_queue: 0,
+                background_queue: 8,
+            },
+        );
+        let admit = |class, bytes| scheduler.admit(class, bytes);
+
+        let running = admit(Background, 10).await.expect("nothing to wait for");
+        assert!(matches!(
+            admit(Interactive, 101).await,
+            Err(DecodeRefusal::TooLarge { .. })
+        ));
+        assert_eq!(
+            admit(Interactive, 10).await.err(),
+            Some(DecodeRefusal::Busy)
+        );
+        drop(running);
+        let before = Instant::now();
+        let background = admit(Background, 10).await.expect("granted");
+        assert_eq!(Instant::now(), before, "a refused request was waited for");
+        drop(background);
+
+        // A request that is served does start it.
+        drop(admit(Interactive, 10).await.expect("granted"));
+        let before = Instant::now();
+        let _background = admit(Background, 10).await.expect("granted");
+        assert_eq!(Instant::now() - before, ONE_CORE_IDLE_WINDOW);
     }
 }
