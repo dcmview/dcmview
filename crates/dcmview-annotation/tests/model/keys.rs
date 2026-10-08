@@ -82,6 +82,8 @@ fn a_file_key_has_exactly_two_forms() {
         "sop:1.2.3"
     );
     assert!(FileKey::sop("").is_err());
+    assert!(FileKey::sop(&"1".repeat(128)).is_ok());
+    assert!(FileKey::sop(&"1".repeat(129)).is_err());
     assert!(FileKey::sop("1.2 3").is_err());
 
     let mut digest = [0_u8; 32];
@@ -115,6 +117,8 @@ fn layer_ids_authors_and_timestamps_each_have_one_syntax() {
         ("user:jos\u{e9}.garc\u{ed}a", AuthorKind::User),
         ("model:detector@2.1", AuthorKind::Model),
         ("model:org/detector@v2@2026-01", AuthorKind::Model),
+        // The version is what follows the last `@`.
+        ("model:@detector@2.1", AuthorKind::Model),
         ("import:embed", AuthorKind::Import),
     ];
     for (text, kind) in authors {
@@ -133,6 +137,7 @@ fn layer_ids_authors_and_timestamps_each_have_one_syntax() {
         "model:detector",
         "model:@2.1",
         "model:detector@",
+        "model:detector@2.1@",
         "import:",
         "hub:admin",
         &format!("user:{}", "a".repeat(252)),

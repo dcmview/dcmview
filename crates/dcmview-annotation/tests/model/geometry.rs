@@ -199,6 +199,18 @@ fn a_geometry_is_checked_against_its_image() {
             ellipse(49.999, 30.0, 50.0, 30.0, 0.0),
             Code(OutOfBounds),
         ),
+        // Turned by 45 degrees its half extent is the square root of 1,700,
+        // 41.23106: on the grid that is 41.231, so it touches the left edge.
+        (
+            "ellipse whose turned extent is within half a quantum of the edge",
+            ellipse(41.231, 80.0, 50.0, 30.0, 45.0),
+            Valid,
+        ),
+        (
+            "ellipse whose turned extent is one quantum past the edge",
+            ellipse(41.23, 80.0, 50.0, 30.0, 45.0),
+            Code(OutOfBounds),
+        ),
         (
             "ellipse turned to fit",
             ellipse(120.0, 80.0, 20.0, 100.0, 90.0),

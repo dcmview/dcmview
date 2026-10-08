@@ -174,6 +174,15 @@ fn an_operation_that_breaks_one_rule_reports_it() {
             Code(MaskPayload),
         ),
         (
+            "tile whose content before the stroke is not base64",
+            "mask_tiles",
+            vec![Set(
+                "/op/tiles",
+                json!([{ "tx": 1, "ty": 0, "before": "!!!!", "after": null }]),
+            )],
+            Code(MaskPayload),
+        ),
+        (
             "tiles on an unknown file",
             "mask_tiles",
             vec![Set("/op/file", json!("sop:9.9.9"))],
