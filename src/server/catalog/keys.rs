@@ -10,7 +10,7 @@ use super::{FileRegistry, RegistryStatus};
 use crate::api::contracts::{FileKeyError, FileRekey, FileSummary};
 use crate::keys::{
     FileHasher, FileKey, FileKeyStatus, HashProgress, KeyFailure, KeyRef, KeyScheme, KeyView,
-    KeyedFile,
+    KeyedFile, Reliance,
 };
 use crate::loader::DiscoveryRecord;
 use crate::masking::Masker;
@@ -262,6 +262,7 @@ impl FileRegistry {
     /// background.
     pub async fn ensure_key(&self, index: usize) -> Result<FileKey, KeyError> {
         let mut asked = HashSet::new();
+        let mut waiting = VecDeque::new();
         loop {
             let changed = self.hashing.changed.notified();
             tokio::pin!(changed);
@@ -269,48 +270,57 @@ impl FileRegistry {
             if self.hashing.stopped.load(Ordering::Acquire) {
                 return Err(KeyError::Stopped);
             }
-            // Sample queue membership before the table. Outcomes update the
-            // table before leaving the pending set, so an absent request is
-            // complete when its failure is inspected below.
-            let pending = {
-                let work = self.hashing.work();
-                asked
-                    .iter()
-                    .copied()
-                    .filter(|index| work.pending.contains(index))
-                    .collect::<HashSet<_>>()
-            };
-            let needed = {
+            {
                 let inner = self.read();
-                let state = inner.keys.view(index).ok_or(KeyError::NotFound(index))?;
-                let required = inner.keys.required_for(index);
-                if required.is_empty() {
+                inner.keys.view(index).ok_or(KeyError::NotFound(index))?;
+                if inner.keys.settled(index) {
                     return inner
                         .keys
                         .status(index)
-                        .and_then(|status| status.key)
-                        .ok_or(KeyError::Unavailable(
-                            state.failure.unwrap_or(KeyFailure::Unreadable),
-                        ));
+                        .and_then(|state| state.key)
+                        .ok_or(KeyError::Unavailable(KeyFailure::Unreadable));
                 }
-                let mut needed = Vec::new();
-                for file in required {
-                    if asked.contains(&file) {
-                        if !pending.contains(&file) {
-                            if let Some(failure) =
-                                inner.keys.view(file).and_then(|state| state.failure)
-                            {
-                                return Err(KeyError::Unavailable(failure));
-                            }
-                        }
-                    } else {
-                        asked.insert(file);
-                        needed.push(file);
+            }
+            // Each requested file leaves this list once. A digest wake-up
+            // must not rescan a group whose other files are still queued.
+            {
+                let work = self.hashing.work();
+                while waiting
+                    .front()
+                    .is_some_and(|file| !work.pending.contains(file))
+                {
+                    waiting.pop_front();
+                }
+            }
+            if waiting.is_empty() {
+                let mut inner = self.write();
+                let needed: Vec<_> = inner
+                    .keys
+                    .required_for(index)
+                    .into_iter()
+                    .filter(|file| asked.insert(*file))
+                    .collect();
+                if needed.is_empty() {
+                    let (reliance, changes) = inner.keys.rely_on(index);
+                    self.apply_key_changes(&mut inner, &changes);
+                    drop(inner);
+                    if !changes.updated.is_empty() {
+                        self.notify.notify_waiters();
                     }
+                    match reliance {
+                        Some(Reliance::Final(key)) => return Ok(key),
+                        Some(Reliance::Failed(failure)) => {
+                            return Err(KeyError::Unavailable(failure))
+                        }
+                        Some(Reliance::Wanted) => {}
+                        None => return Err(KeyError::NotFound(index)),
+                    }
+                } else {
+                    drop(inner);
+                    waiting.extend(needed.iter().copied());
+                    self.queue_keys(needed, true);
                 }
-                needed
-            };
-            self.queue_keys(needed, true);
+            }
             changed.await;
         }
     }
@@ -395,16 +405,14 @@ impl FileRegistry {
                 return;
             }
             if front {
-                // Move an already queued request too: explicit callers
-                // take precedence over files queued by viewing.
+                // Promote the whole batch with one pass over the queue.
+                let promoted: HashSet<_> = indexes.iter().copied().collect();
+                work.queue.retain(|queued| !promoted.contains(queued));
                 for index in indexes.into_iter().rev() {
-                    if work.active == Some(index) {
-                        continue;
+                    if work.active != Some(index) {
+                        work.pending.insert(index);
+                        work.queue.push_front(index);
                     }
-                    if !work.pending.insert(index) {
-                        work.queue.retain(|queued| *queued != index);
-                    }
-                    work.queue.push_front(index);
                 }
             } else {
                 for index in indexes {
