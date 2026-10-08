@@ -3,6 +3,7 @@ mod integration {
     mod annotations_endpoint;
     mod api_contract;
     mod codec_contract;
+    mod codestream_files;
     mod display_masking;
     mod display_shutters;
     mod embed_goldens;
