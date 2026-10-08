@@ -139,9 +139,7 @@ impl Document {
                             && part.len() <= 9
                             && part.bytes().all(|b| b.is_ascii_digit())
                     };
-                    digits(major)
-                        && digits(minor)
-                        && major.parse::<u32>().ok() == Some(VERSION_MAJOR)
+                    major == VERSION_MAJOR.to_string() && digits(minor)
                 });
         if !valid {
             return Err(DocumentError::UnsupportedVersion {
