@@ -125,7 +125,8 @@ Every success status is `200`.
 Display, raw, raw-pixel, thumbnail and presentation-layer requests, segmentation
 and value overlays (PNG and values), and the semantic context of an RT Dose or
 Parametric Map may answer `503 decode_busy` with `Retry-After: 1` when their
-class's decode queue is full. All but semantic context may also answer
+class's decode queue is full, or when the viewer is stopping while they wait
+for decode capacity. All but semantic context may also answer
 `422 decode_memory_exceeded` when the work needs more than the decode memory
 budget (`--decode-memory`), or more than half of it for a thumbnail.
 

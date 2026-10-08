@@ -834,6 +834,13 @@ dropped, so the bytes reserved are always those of decodes that are running:
 Requests the caches can answer take no permit, so a busy viewer still serves
 what it holds.
 
+**Shutdown.** When the server is told to stop it calls
+`DecodeScheduler::refuse_waiting` before it drains its requests: every
+request waiting for a permit is answered `503 decode_busy` at once, and so
+is any that would have to wait from then on. Decodes that hold a permit
+finish, so the drain is bounded by the work already running and not by the
+length of the queue.
+
 **Who waits where.** An interactive decode waits inside its own task, and a
 refusal is the result for every request that shared it. The task counts the
 requests waiting for it: when the last of them is dropped before the permit
@@ -1197,7 +1204,9 @@ cancellation and remains a successful process outcome.
 
 `RequestActivity` tracks in-flight requests and a monotonic idle baseline.
 Idle timeout does not start until the scan has finished,
-and graceful shutdown lets in-flight requests drain. The browser task
+and graceful shutdown lets in-flight requests drain; those waiting for
+decode capacity are answered `503 decode_busy` first ("Decode Admission",
+Shutdown), so the drain waits only for decodes that are running. The browser task
 is owned by `BoundServer::serve` and cleaned up on every normal return or
 error.
 

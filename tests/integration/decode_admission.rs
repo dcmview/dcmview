@@ -266,6 +266,50 @@ async fn a_request_that_would_wait_behind_a_full_queue_is_refused_as_busy() {
     .await;
 }
 
+/// A scheduler told to stop making requests wait (a viewer shutting down)
+/// refuses everything that is waiting, and everything that would wait from
+/// then on, as busy. What is running keeps its permit, and what fits beside
+/// it is still granted.
+#[tokio::test]
+async fn a_scheduler_that_stops_making_requests_wait_refuses_them_as_busy() {
+    finishes(async {
+        let scheduler = DecodeScheduler::with_limits(2, limits(100, 8, 8));
+        let running = granted(&scheduler, Interactive, 60).await;
+        let interactive = [
+            request(&scheduler, Interactive, 50),
+            request(&scheduler, Interactive, 10),
+        ];
+        waiting(&scheduler, 2, 0).await;
+        let background = request(&scheduler, Background, 10);
+        waiting(&scheduler, 2, 1).await;
+
+        scheduler.refuse_waiting();
+        for refused in interactive.into_iter().chain([background]) {
+            let refusal = eventually("a refusal", refused)
+                .await
+                .expect("request task");
+            assert_eq!(refusal.err(), Some(DecodeRefusal::Busy));
+        }
+        let load = waiting(&scheduler, 0, 0).await;
+        assert_eq!((load.running, load.reserved_bytes), (1, 60));
+
+        // What fits beside the running decode is granted; what would wait
+        // is refused, and what could never fit says so as before.
+        let beside = granted(&scheduler, Interactive, 40).await;
+        for class in [Interactive, Background] {
+            let refusal = eventually("a refusal", scheduler.admit(class, 1)).await;
+            assert_eq!(refusal.err(), Some(DecodeRefusal::Busy), "{class:?}");
+        }
+        assert!(matches!(
+            scheduler.admit(Interactive, 101).await,
+            Err(DecodeRefusal::TooLarge { .. })
+        ));
+        drop((running, beside));
+        idle(&scheduler).await;
+    })
+    .await;
+}
+
 /// Background decodes share half the budget between them and wait for it
 /// while the other half is free; the viewer's half is never theirs.
 #[tokio::test]

@@ -320,7 +320,9 @@ impl DecodeScheduler {
     ///    and its class already has `limits.interactive_queue` (or
     ///    `limits.background_queue`) requests waiting. A request that can be
     ///    granted now is granted whatever the queue limit, 0 included.
-    ///    Requests waiting in [`Self::acquire`] count as waiting.
+    ///    Requests waiting in [`Self::acquire`] count as waiting. After
+    ///    [`Self::refuse_waiting`] every request that cannot be granted now
+    ///    is refused this way, and so is every request already waiting.
     ///
     /// **Granted** when all of these hold; until then the request waits in
     /// its class's queue:
@@ -361,6 +363,26 @@ impl DecodeScheduler {
             return Ok(self.acquire(class).await);
         }
         self.wait_for_permit(class, bytes, true).await
+    }
+
+    /// Stops making requests wait, for a viewer that is shutting down: every
+    /// request now waiting in [`Self::admit`] is refused with
+    /// [`DecodeRefusal::Busy`] as soon as it is next polled, and from now on
+    /// so is every request that cannot be granted at once. Nothing is taken
+    /// from a decode that is running: its permit and bytes come back when
+    /// it ends, and a request that fits beside what is still running is
+    /// granted as before. It cannot be undone.
+    ///
+    /// What is left to wait for is then only the decodes that already
+    /// hold a permit. Requests in [`Self::acquire`], which cannot be
+    /// refused, and schedulers with [`DecodeLimits::UNLIMITED`] are not
+    /// affected.
+    pub fn refuse_waiting(&self) {
+        self.state
+            .lock()
+            .expect("decode scheduler lock poisoned")
+            .refuse_waiting = true;
+        self.changed.notify_waiters();
     }
 
     /// Waits for a permit of `class`, by the rules on [`DecodeScheduler`].
@@ -404,7 +426,7 @@ impl DecodeScheduler {
                 DecodeClass::Interactive => self.limits.interactive_queue,
                 DecodeClass::Background => self.limits.background_queue,
             };
-            if limited && state.queue(class).len() >= queue_limit {
+            if limited && (state.refuse_waiting || state.queue(class).len() >= queue_limit) {
                 return Err(DecodeRefusal::Busy);
             }
             let id = state.next_id;
@@ -427,6 +449,11 @@ impl DecodeScheduler {
             changed.as_mut().enable();
             let idle_until = {
                 let mut state = self.state.lock().expect("decode scheduler lock poisoned");
+                if limited && state.refuse_waiting {
+                    // `waiting` leaves the queue and wakes the others as it
+                    // is dropped, after this lock.
+                    return Err(DecodeRefusal::Busy);
+                }
                 if state.queue(class).front() == Some(&id)
                     && self.can_grant(&state, class, bytes, limited)
                 {
@@ -509,6 +536,8 @@ struct ScheduleState {
     interactive: VecDeque<u64>,
     background: VecDeque<u64>,
     last_interactive: Option<Instant>,
+    /// Set by `refuse_waiting`: limited requests no longer wait.
+    refuse_waiting: bool,
 }
 
 impl ScheduleState {
