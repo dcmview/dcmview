@@ -252,7 +252,7 @@ impl DecodeScheduler {
     /// [`DecodeLimits::DEFAULT`]. `AppState::new` builds its own with this,
     /// so two viewers in one process (two tests) do not share a budget.
     pub fn for_host() -> Arc<Self> {
-        Self::new(host_permits())
+        Self::with_limits(host_permits(), DecodeLimits::DEFAULT)
     }
 
     /// The total number of permits.
