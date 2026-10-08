@@ -176,8 +176,11 @@ pub enum Reliance {
 ///   group's first file for as long as the table lives.
 /// - A group that is not relied on is *split* once two of its files are
 ///   known to hold different bytes: their sizes differ, or their digests
-///   are both known and differ. A split group stays split and is never
-///   relied on; a group that is relied on never splits.
+///   are both known and differ. It is also split when a key of it is asked
+///   for ([`KeyTable::rely_on`]) and its first file could not be hashed:
+///   `sop:<uid>` would name bytes nobody can read, so no file can be said
+///   to share them. A split group stays split and is never relied on; a
+///   group that is relied on never splits.
 ///
 /// # The key a file has
 ///
@@ -209,7 +212,10 @@ pub enum Reliance {
 /// Under rules 1 to 3 the keys do not depend on registration order: a group
 /// has `sop:` keys exactly while nothing shows its files to differ, and once
 /// something does, every file of it is keyed by content, so byte-identical
-/// copies share one `b3:` key and a differing copy gets its own. Rule 4 is
+/// copies share one `b3:` key and a differing copy gets its own. (A group
+/// split because its first file could not be hashed is keyed by content the
+/// same way, which is true of every file whatever the first file holds.)
+/// Rule 4 is
 /// what makes a key that was written down final. It does depend on what was
 /// registered when the key was relied on: a file that turns up afterwards
 /// can no longer change that key, so it is the late file that waits for a
@@ -525,14 +531,24 @@ impl<F: KeyedFile + Clone> KeyTable<F> {
     ///   `Failed` with its recorded failure, else `Wanted`.
     /// - Rule 2, in a group of one file: the group becomes relied on;
     ///   `Final(sop:<uid>)`. Nothing was read and nothing changes.
-    /// - Rule 2, in a group of more than one file: `Failed` when the file's
-    ///   own digest is unknown and a failure is recorded for it, else when
-    ///   the first file's is; `Wanted` when any file of the group has
-    ///   neither a digest nor a recorded failure. Otherwise the known
-    ///   digests are equal (a difference would have split the group), the
-    ///   group becomes relied on and the answer is `Final(sop:<uid>)`. The
-    ///   files of the group without a digest lose their key then (rule 4)
-    ///   and are in `updated`.
+    /// - Rule 2, in a group of more than one file, in this order:
+    ///   - the file's own digest is unknown: `Failed` with its recorded
+    ///     failure, else `Wanted`;
+    ///   - the first file's digest is unknown and no failure is recorded
+    ///     for it: `Wanted`;
+    ///   - the first file's digest is unknown and a failure is recorded for
+    ///     it: the group is split, here and now. The file takes its `b3:`
+    ///     key, which is the answer, `Final`. Every other file of the group
+    ///     whose digest is known is rekeyed to its `b3:` key in the same
+    ///     call, those without a digest keep `sop:<uid>` until they are
+    ///     hashed (rule 3), and the first file has no key and keeps its
+    ///     failure;
+    ///   - any file of the group has neither a digest nor a recorded
+    ///     failure: `Wanted`;
+    ///   - otherwise the known digests are equal (a difference would have
+    ///     split the group), the group becomes relied on and the answer is
+    ///     `Final(sop:<uid>)`. The files of the group without a digest lose
+    ///     their key then (rule 4) and are in `updated`.
     /// - Rule 4, the first file or a file compared equal to it:
     ///   `Final(sop:<uid>)`.
     /// - Rule 4, a file not compared with the first file yet: `Failed` with
@@ -543,10 +559,16 @@ impl<F: KeyedFile + Clone> KeyTable<F> {
     /// The first file's digest is asked of every file that shares its key
     /// because `sop:<uid>` names the first file's bytes
     /// ([`KeyTable::file_for_key`]): a file that cannot be compared with
-    /// them cannot be said to be that image.
+    /// them cannot be said to be that image. Before any key of the group
+    /// was relied on, a first file that cannot be read therefore costs the
+    /// group its shared key and nothing else: each readable file is keyed
+    /// by its own bytes. Afterwards the shared key stands, and it is the
+    /// file asked about that has none.
     ///
-    /// `None` for an index that is not registered. Only `updated` of the
-    /// changes can be non-empty.
+    /// `None` for an index that is not registered. The changes are empty
+    /// unless the call made the group relied on (only `updated`) or split
+    /// it (`updated`, `rekeys`, and in `wanted` the served files that now
+    /// await a content key).
     pub fn rely_on(&mut self, index: usize) -> (Option<Reliance>, KeyChanges) {
         let Some(entry) = self.entries.get(index).copied() else {
             return (None, KeyChanges::default());
@@ -561,10 +583,18 @@ impl<F: KeyedFile + Clone> KeyTable<F> {
                 .get(&entry.group)
                 .is_some_and(|g| g.multiple_files);
             if multiple {
-                for member in [index, entry.group as usize] {
-                    if self.digest(member).is_none() {
-                        return (Some(self.missing(member)), changes);
+                if self.digest(index).is_none() {
+                    return (Some(self.missing(index)), changes);
+                }
+                let first = entry.group as usize;
+                if self.digest(first).is_none() {
+                    if self.failure(first).is_none() {
+                        return (Some(Reliance::Wanted), changes);
                     }
+                    // The key would name bytes that cannot be read.
+                    self.entries[first].flags |= SPLIT;
+                    changes = self.refresh(self.groups[&entry.group].members.clone());
+                    return (self.owned_key(index).map(Reliance::Final), changes);
                 }
                 let group = &self.groups[&entry.group];
                 if group
@@ -1610,10 +1640,9 @@ mod tests {
             );
         }
 
-        // The file asked about, or the group's first file, cannot be read:
-        // no key of the group that depends on it can be relied on, and
-        // nothing changes but the failure shown.
-        for (gone, asked, failed) in [(1_usize, 1_usize, true), (0, 1, true), (0, 0, true)] {
+        // The file asked about cannot be read: its key cannot be relied on,
+        // and nothing changes but the failure shown.
+        for (gone, asked, failed) in [(1_usize, 1_usize, true), (0, 0, true)] {
             let context = format!("file {gone} unreadable, file {asked} asked");
             let mut table = Table::new();
             table.register(file(UID, 10, "/a"));
@@ -1654,6 +1683,88 @@ mod tests {
                 vec![gone],
                 "{context}: only the failed file is read again"
             );
+        }
+
+        // The group's first file cannot be read when another file's key is
+        // asked for: the shared key would name bytes nobody can read, so
+        // the group is split there. Every file that was read has its
+        // content key, which is true whatever the first file holds; one
+        // that was not read keeps the key it showed until it is; the first
+        // file has no key and keeps its failure.
+        for failure in [KeyFailure::Unreadable, KeyFailure::Changed] {
+            let context = format!("the first file is {failure:?}");
+            let mut table = Table::new();
+            for path in ["/a", "/copy", "/copy-2", "/unread"] {
+                table.register(file(UID, 10, path));
+            }
+            assert!(table.frame_sent(3).wanted.is_empty(), "{context}");
+            table.resolve(0, Err(failure));
+            table.resolve(1, Ok(digest(1)));
+            table.resolve(2, Ok(digest(1)));
+            assert_eq!(
+                table.rely_on(0).0,
+                Some(Reliance::Failed(failure)),
+                "{context}: the first file's own key"
+            );
+            assert_eq!(keys(&table)[1], (key(&sop(UID)), Some(0)), "{context}");
+
+            let (reliance, changes) = table.rely_on(1);
+            assert_eq!(
+                reliance,
+                Some(Reliance::Final(FileKey::parse(&b3(1)).expect("key"))),
+                "{context}"
+            );
+            assert_eq!(changes.updated, vec![0, 1, 2, 3], "{context}");
+            let rekeyed = changes
+                .rekeys
+                .iter()
+                .map(|rekey| {
+                    (
+                        rekey.index,
+                        rekey.old_key.as_str().to_string(),
+                        rekey.new_key.as_str().to_string(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                rekeyed,
+                vec![(1, sop(UID), b3(1)), (2, sop(UID), b3(1))],
+                "{context}"
+            );
+            assert_eq!(
+                changes.wanted,
+                vec![3],
+                "{context}: the viewed file now awaits a content key"
+            );
+            assert_eq!(
+                keys(&table),
+                vec![
+                    (None, None),
+                    (key(&b3(1)), None),
+                    (key(&b3(1)), Some(1)),
+                    (key(&sop(UID)), None),
+                ],
+                "{context}"
+            );
+            let first = table.status(0).expect("registered");
+            assert_eq!((first.failure, first.settled), (Some(failure), false));
+            assert!(table.settled(1) && table.settled(2) && !table.settled(3));
+            assert_eq!(
+                table.file_for_key(&FileKey::sop(UID).expect("key")),
+                Some(0),
+                "{context}: the replaced key still names its file"
+            );
+
+            // The first file is read after all: it is keyed like the rest,
+            // and no key that was given changes.
+            let changes = table.resolve(0, Ok(digest(1)));
+            assert_eq!(changes.updated, vec![0], "{context}");
+            assert!(changes.rekeys.is_empty(), "{context}");
+            assert_eq!(keys(&table)[0], (key(&b3(1)), Some(1)), "{context}");
+            assert_eq!(table.status(0).expect("registered").failure, None);
+            let changes = table.resolve(3, Ok(digest(2)));
+            assert_eq!(changes.rekeys.len(), 1, "{context}");
+            assert_eq!(keys(&table)[3], (key(&b3(2)), None), "{context}");
         }
 
         // The first file of a group that is relied on, read only later for

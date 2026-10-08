@@ -306,12 +306,16 @@ impl FileRegistry {
     /// costs `O(n)` plus one pass over the queue.
     ///
     /// Errors: [`KeyError::NotFound`]; [`KeyError::Unavailable`] when the
-    /// file's own digest or its group's first file's digest could not be
-    /// computed, with that failure (another file of the group that cannot
-    /// be read does not fail the call: that file loses the shared key
-    /// instead, `KeyTable` rule 4); [`KeyError::Stopped`]. Cancel safe:
-    /// dropping the future leaves the queued work to finish in the
-    /// background.
+    /// file's own digest could not be computed, with that failure, and for
+    /// a file found after a key of its UID was returned also when the first
+    /// file's could not; [`KeyError::Stopped`]. Another file of the group
+    /// that cannot be read does not fail the call. When it is the group's
+    /// first file, and no key of the group was returned yet, the group
+    /// gives up its shared key: this file and every other file of it that
+    /// was read get their own `b3:` keys, and the first file has none.
+    /// When it is any other file, that file loses the shared key instead
+    /// (`KeyTable` rule 4). Cancel safe: dropping the future leaves the
+    /// queued work to finish in the background.
     pub async fn ensure_key(&self, index: usize) -> Result<FileKey, KeyError> {
         let mut asked = HashSet::new();
         let mut waiting = VecDeque::new();
@@ -359,6 +363,7 @@ impl FileRegistry {
                     if !changes.updated.is_empty() {
                         self.notify.notify_waiters();
                     }
+                    self.queue_keys(changes.wanted, false);
                     match reliance {
                         Some(Reliance::Final(key)) => return Ok(key),
                         Some(Reliance::Failed(failure)) => {

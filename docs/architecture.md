@@ -873,7 +873,11 @@ a record or an export. To settle `sop:<uid>` for a file whose UID other
 loaded files of the same length carry, every one of those files is hashed
 first (`docs/design/annotation-model.md` 1.7: verified "before the first
 annotation write on either file"), so two files with one settled key hold
-the same bytes, whatever order they were found or asked about in.
+the same bytes, whatever order they were found or asked about in. When the
+first file with the UID cannot be hashed at that point, `sop:<uid>` would
+name bytes nobody can read: the group is split instead, each file that was
+read takes its `b3:` key, and the first file has no key and keeps its
+`key_error`.
 
 **After a key was relied on.** `sop:<uid>` then names the bytes of the first
 file with that UID for the rest of the session, and nothing replaces it. A

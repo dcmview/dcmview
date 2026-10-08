@@ -180,7 +180,10 @@ bytes are compared only when a caller needs a settled key, and then every
 file with that UID is read, whichever of them the caller asked about. If
 they differ, each takes its content key; existing UID keys remain until
 replaced by a digest, except that a failed digest removes such a key. If
-they agree, the UID key is settled.
+they agree, the UID key is settled. If the first file with the UID cannot
+be read when a settled key is first asked for, the UID key would name bytes
+nobody can read, so it is given up: each file that can be read takes its
+content key, and the first file has `file_key: null` and a `key_error`.
 
 A settled key is final: every `b3:` key, and a `sop:` key once it has been
 returned for a write or an export. It stays the file's key for the rest of
