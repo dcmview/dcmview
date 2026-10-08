@@ -110,13 +110,14 @@ pub(super) async fn presentation_layer(
         }));
     }
     PixelError::ensure_frame(frame, file.frame_count).map_err(error::pixel_error)?;
+    // The layer is sized by the entry's rows and columns: a raster the
+    // viewer does not decode (too large, for one) gets none.
     if file.format.is_raster() {
-        return Err(error::pixel_error(PixelError::UnsupportedLayout(
-            pixels::classify_pixel_support(&file)
-                .reason_id()
-                .unwrap_or_default()
-                .to_string(),
-        )));
+        if let Some(reason) = pixels::classify_pixel_support(&file).reason_id() {
+            return Err(error::pixel_error(PixelError::UnsupportedLayout(
+                reason.to_string(),
+            )));
+        }
     }
     // A file's own frame as overlay and target: no SEG is its own source.
     let key = OverlayCacheKey {

@@ -6,8 +6,11 @@
 //! says. Decoding belongs to `pixels/` and is not part of this module.
 
 use super::{discovery::DiscoveryReason, entry::EntryInspection};
-use crate::api::contracts::{RasterColorType, RasterSampleFormat};
-use crate::types::{FileEntry, NativePixelDataKind, RasterMetadata, SeriesMetadata};
+use crate::api::contracts::{RasterColorType, RasterSampleFormat, WindowPreset};
+use crate::types::{
+    FileEntry, NativePixelDataKind, RasterMetadata, RasterUnsupported, SeriesMetadata,
+    RASTER_MAX_FRAME_PIXELS,
+};
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 
@@ -109,8 +112,10 @@ use std::path::Path;
 ///   `native_pixel.pixel_data_kind`: `Integer`, or `Float32`/`Float64` for
 ///   32- and 64-bit float samples, so `value_mapping::stored_value_type`
 ///   answers for a raster as it does for DICOM.
-/// - `has_pixels` is `true`; `rescale_slope` is 1, `rescale_intercept` 0;
-///   `default_window` is `None`.
+/// - `has_pixels` is `true`; `rescale_slope` is 1, `rescale_intercept` 0.
+///   `default_window` is the whole stored range of gray samples of 8 bits
+///   or fewer, a TIFF's declared sample range, and `None` otherwise
+///   (`default_window` below has the rule).
 /// - `rows` and `columns` are the stored pixel grid. Orientation is recorded
 ///   in `raster.orientation` and never applied here.
 /// - `frame_count` is `raster.frame_pages.len()`: 1 for PNG, JPEG and WebP
@@ -129,16 +134,27 @@ use std::path::Path;
 /// | CMYK, YCCK (JPEG) | `cmyk` | 3 | `RGB` |
 /// | anything else (TIFF) | `other` | the stored count | empty |
 ///
-/// - A TIFF layout outside the table is still listed, with
-///   `raster.unsupported` set, so the catalog reports it as unsupported
-///   rather than dropping the file: `RasterUnsupported::Color` with
-///   `color_type` `other` for CIELab, more than four samples, or an extra
-///   sample that is not alpha (`ExtraSamples` 0), in which case `has_alpha`
-///   is false; `RasterUnsupported::SampleFormat` for 16-bit float samples,
-///   whose `color_type`, `bit_depth` 16 and `sample_format` `float` are
-///   reported as stored. `RasterHeaderInvalid` is for a header that cannot
-///   be described at all: no dimensions, a depth that is not 1, 2, 4, 8, 16,
-///   32 or 64, samples of mixed depth or format.
+/// - A file the viewer does not decode is still listed, with
+///   `raster.unsupported` set, so the catalog reports it as unsupported and
+///   says why rather than dropping the file. The reasons, and the order in
+///   which one is chosen when several apply, are `RasterUnsupported`'s:
+///   - `Color` (TIFF): CIELab, more than four samples, or an extra sample
+///     that is not alpha (`ExtraSamples` 0), reported as `color_type`
+///     `other` with `has_alpha` false; palette; CMYK; gray with alpha;
+///     YCbCr unless JPEG-compressed; more than one sample with
+///     `PlanarConfiguration` 2.
+///   - `SampleFormat` (TIFF): gray that is not 8-, 16- or 32-bit integer or
+///     32- or 64-bit float; colour that is not 8- or 16-bit unsigned. The
+///     `color_type`, `bit_depth` and `sample_format` are reported as stored.
+///   - `Compression` (TIFF): `Compression` other than 1 (none), 5 (LZW), 8
+///     or 32946 (Deflate) or 32773 (PackBits), read from page 0.
+///   - `JpegProcess`: a frame header other than `SOF0`, `SOF1` or `SOF2`, or
+///     a sample precision other than 8.
+///   - `TooLarge`: more than `RASTER_MAX_FRAME_PIXELS` pixels in a frame.
+///
+///   `RasterHeaderInvalid` is for a header that cannot be described at all:
+///   no dimensions, a depth that is not 1, 2, 4, 8, 16, 32 or 64, samples of
+///   mixed depth or format.
 ///
 /// - `raster.bit_depth` is the stored bits per sample. `bits_allocated` is
 ///   the width a raw sample is served in: 8 for depths up to 8, else the
@@ -179,8 +195,13 @@ use std::path::Path;
 /// the stderr line above, since a frame map that silently stops would shift
 /// what "the last frame" means.
 ///
-/// Compression is not read here; which compressions decode is the decoder
-/// work's classification.
+/// `raster.frame_offsets` holds the file offset of each frame's IFD, in
+/// frame order, so a frame is decoded from its own page. Later pages may be
+/// compressed differently from page 0; the decoder checks each page it
+/// reads.
+///
+/// A CMYK or YCCK JPEG adds the warning that it is converted approximately
+/// to sRGB and its profile not used.
 pub(super) fn inspect_raster(
     _path: &Path,
     _format: FileFormat,
@@ -261,7 +282,12 @@ pub(super) fn inspect_raster_source(
             ));
         }
     };
-    let raster = header.metadata;
+    let mut raster = header.metadata;
+    if raster.unsupported.is_none()
+        && u64::from(header.width) * u64::from(header.height) > RASTER_MAX_FRAME_PIXELS
+    {
+        raster.unsupported = Some(RasterUnsupported::TooLarge);
+    }
     for note in &raster.warnings {
         eprintln!("dcmview: warning — {}: {note}", _path.display());
     }
@@ -322,9 +348,44 @@ pub(super) fn inspect_raster_source(
         photometric_interpretation: photometric.into(),
         rescale_slope: 1.0,
         rescale_intercept: 0.0,
-        default_window: None,
+        default_window: default_window(&raster, header.sample_range),
         raster: Some(Box::new(raster)),
     })))
+}
+
+/// The default window of a gray raster
+/// (`docs/design/image-formats.md` section 5.3), as the linear DICOM window
+/// that maps `low..=high` onto the display range: center `(low + high + 1) /
+/// 2`, width `high - low + 1`.
+///
+/// - TIFF `MinSampleValue`/`MaxSampleValue` on unsigned samples: that range.
+/// - Otherwise integer samples of 8 bits or fewer: the whole stored range,
+///   `0..=2^depth - 1`, or `-128..=127` when signed. An 8-bit image is shown
+///   as it is, a one-bit image black and white.
+/// - Otherwise `None`: wider and floating-point samples take the percentile
+///   window of each frame. PNG `sBIT` never narrows a window.
+///
+/// Colour frames have no window.
+fn default_window(
+    raster: &RasterMetadata,
+    sample_range: Option<(u64, u64)>,
+) -> Option<WindowPreset> {
+    if !matches!(
+        raster.color_type,
+        RasterColorType::Gray | RasterColorType::GrayAlpha
+    ) {
+        return None;
+    }
+    let (low, high) = match (sample_range, raster.sample_format, raster.bit_depth) {
+        (Some((low, high)), _, _) => (low as f64, high as f64),
+        (None, RasterSampleFormat::Uint, depth @ 1..=8) => (0.0, f64::from((1_u32 << depth) - 1)),
+        (None, RasterSampleFormat::Int, 8) => (-128.0, 127.0),
+        _ => return None,
+    };
+    Some(WindowPreset {
+        center: (low + high + 1.0) / 2.0,
+        width: high - low + 1.0,
+    })
 }
 
 struct Header {
@@ -333,6 +394,8 @@ struct Header {
     white_is_zero: bool,
     // TIFF retains its channel count even when its layout has no decoder.
     stored_samples: u64,
+    /// TIFF `MinSampleValue..=MaxSampleValue` of unsigned gray samples.
+    sample_range: Option<(u64, u64)>,
     metadata: RasterMetadata,
 }
 
@@ -343,6 +406,7 @@ impl Header {
             height,
             white_is_zero: false,
             stored_samples: 1,
+            sample_range: None,
             metadata: RasterMetadata {
                 color_type,
                 bit_depth,
@@ -356,6 +420,7 @@ impl Header {
                 has_icc: false,
                 pages_total: 1,
                 frame_pages: vec![0],
+                frame_offsets: Vec::new(),
                 excluded_pages: Vec::new(),
                 excluded_pages_total: 0,
                 unsupported: None,

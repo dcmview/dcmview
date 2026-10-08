@@ -15,6 +15,7 @@ mod native_layout;
 mod overlay;
 mod palette;
 mod pixeldata_frame;
+mod raster;
 mod redaction;
 mod render;
 mod rle;
@@ -40,6 +41,12 @@ pub use colorwash::{
 pub use error::{PixelError, PixelResult};
 pub(crate) use header::open_header;
 pub(crate) use native_layout::{NativeByteOrder, NativeFrameLayout};
+pub use raster::{
+    decode_raster_frame, raster_decode_heap_limit, raster_frame_bytes, raster_read_budget,
+    RasterFrame, RasterSource, RASTER_DECODE_HEAP_BASE_BYTES, RASTER_ICC_MAX_BYTES,
+    RASTER_JPEG_MAX_SCANS, RASTER_READ_BUDGET_BASE_BYTES, RASTER_READ_BUDGET_PER_DECODED_BYTE,
+    RASTER_READ_BUFFER_BYTES, RASTER_TIFF_MAX_CHUNKS, RASTER_TIFF_MAX_TAGS,
+};
 pub use redaction::Redaction;
 pub(crate) use render::encode_presentation_layer_png;
 pub use render::AppliedWindow;
@@ -54,7 +61,8 @@ pub use service::{
     raw_pixel, FrameRequest, FrameResponse, RawFrameRequest, RawFrameResponse,
 };
 pub use syntax::{
-    classify_pixel_support, codec_for_syntax, Codec, PixelSupport, PixelSupportReason,
+    classify_pixel_support, codec_for_file, codec_for_syntax, Codec, PixelSupport,
+    PixelSupportReason,
 };
 pub use thumbnail::{
     thumbnail_bucket, thumbnail_dimensions, ThumbnailRequest, ThumbnailResponse,

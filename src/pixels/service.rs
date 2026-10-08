@@ -26,6 +26,7 @@ use super::jpeg2000::{decode_jp2_fragment_to_png, decode_raw_jp2_samples, render
 use super::jpegls::{decode_jpeg_ls_to_png, decode_raw_jpeg_ls, render_jpeg_ls};
 use super::jpegxl::{decode_jpeg_xl_to_png, decode_raw_jpeg_xl, render_jpeg_xl};
 use super::native::{decode_uncompressed_to_png, read_raw_uncompressed, render_uncompressed};
+use super::raster::{decode_raster_to_png, decode_raw_raster, render_raster};
 use super::redaction::{redact_png, redact_raw, RawLayout, Redaction};
 use super::render::{
     encode_real_world_windowed_png, encode_windowed_luminance_png, AppliedWindow, DisplayBuffer,
@@ -33,7 +34,7 @@ use super::render::{
 };
 use super::rle::{decode_raw_rle, decode_rle_to_png, render_rle};
 use super::schedule::{decode_scheduler, DecodeClass, DecodePermit};
-use super::syntax::{classify_pixel_support, codec_for_syntax, Codec, PixelSupportReason};
+use super::syntax::{classify_pixel_support, codec_for_file, Codec, PixelSupportReason};
 use super::thumbnail::{encode_thumbnail_jpeg, ThumbnailRequest, ThumbnailResponse};
 
 #[derive(Debug, Clone)]
@@ -75,14 +76,6 @@ pub async fn load_raw_frame(
         });
     }
     PixelError::ensure_frame(request.frame, file.frame_count)?;
-    if file.format.is_raster() {
-        return Err(PixelError::UnsupportedLayout(
-            classify_pixel_support(&file)
-                .reason_id()
-                .unwrap_or_default()
-                .to_string(),
-        ));
-    }
 
     let codec = codec_or_unsupported(&file)?;
     reject_unsupported_layout(&file, FrameKind::Raw)?;
@@ -109,6 +102,7 @@ pub async fn load_raw_frame(
                 .await
                 .map_err(PixelError::raw_decode)?,
             Codec::Rle => decode_raw_rle(file.clone(), frame).await?,
+            Codec::Raster => decode_raw_raster(file.clone(), frame).await?,
         };
         if let Some([low, high]) = raw_padding_bounds(&file, &metadata) {
             metadata.padding_low = Some(low);
@@ -214,14 +208,6 @@ pub async fn load_redacted_frame(
         });
     }
     PixelError::ensure_frame(request.frame, file.frame_count)?;
-    if file.format.is_raster() {
-        return Err(PixelError::UnsupportedLayout(
-            classify_pixel_support(&file)
-                .reason_id()
-                .unwrap_or_default()
-                .to_string(),
-        ));
-    }
 
     let window = WindowRequest::new(
         request.window_center,
@@ -349,14 +335,6 @@ pub async fn load_thumbnail(
         });
     }
     PixelError::ensure_frame(request.frame, file.frame_count)?;
-    if file.format.is_raster() {
-        return Err(PixelError::UnsupportedLayout(
-            classify_pixel_support(&file)
-                .reason_id()
-                .unwrap_or_default()
-                .to_string(),
-        ));
-    }
     let codec = codec_or_unsupported(&file)?;
     reject_unsupported_layout(&file, FrameKind::Display)?;
     let key = ThumbnailCacheKey {
@@ -534,6 +512,7 @@ async fn decode_display_frame(
             .await
             .map_err(PixelError::frame_decode)?,
         Codec::Rle => decode_rle_to_png(file, frame, center, width, mode).await?,
+        Codec::Raster => decode_raster_to_png(file, frame, center, width, mode).await?,
     })
 }
 
@@ -568,6 +547,7 @@ async fn render_display_frame(
             .await
             .map_err(PixelError::frame_decode)?,
         Codec::Rle => render_rle(file, frame, center, width, mode).await?,
+        Codec::Raster => render_raster(file, frame, center, width, mode).await?,
     })
 }
 
@@ -686,6 +666,16 @@ fn displays_grayscale(file: &FileEntry, codec: Codec) -> bool {
                     && matches!(file.bits_allocated, 1 | 8 | 16)
             }
             Codec::Rle => monochrome && matches!(file.pixel_representation, 0 | 1),
+            // Gray with alpha has two samples and is flattened by its own
+            // renderer; wider and floating-point gray is windowed per sample.
+            Codec::Raster => {
+                monochrome
+                    && matches!(
+                        file.series_metadata.native_pixel.pixel_data_kind,
+                        None | Some(NativePixelDataKind::Integer)
+                    )
+                    && matches!(file.bits_allocated, 8 | 16)
+            }
             Codec::DeflatedImageFrame
             | Codec::JpegBaseline
             | Codec::JpegLossless
@@ -864,8 +854,11 @@ fn reject_unsupported_layout(file: &FileEntry, kind: FrameKind) -> PixelResult<(
     let Some(reason) = support.reason else {
         return Ok(());
     };
+    // No tier serves a raster the catalog reports as unsupported: its reason
+    // is why nothing decodes it.
     let applies = support.state == SupportState::Unsupported
         && (kind == FrameKind::Display
+            || file.format.is_raster()
             || matches!(
                 reason,
                 PixelSupportReason::InvalidGeometry
@@ -878,7 +871,7 @@ fn reject_unsupported_layout(file: &FileEntry, kind: FrameKind) -> PixelResult<(
 }
 
 fn codec_or_unsupported(file: &FileEntry) -> PixelResult<Codec> {
-    codec_for_syntax(&file.transfer_syntax_uid)
+    codec_for_file(file)
         .ok_or_else(|| PixelError::UnsupportedTransferSyntax(file.transfer_syntax_uid.clone()))
 }
 
@@ -899,7 +892,7 @@ mod tests {
                 continue;
             }
             let file = Arc::new(crate::loader::test_entry(&path));
-            let Some(codec) = codec_for_syntax(&file.transfer_syntax_uid) else {
+            let Some(codec) = codec_for_file(&file) else {
                 continue;
             };
             if !file.has_pixels || reject_unsupported_layout(&file, FrameKind::Display).is_err() {
@@ -946,5 +939,79 @@ mod tests {
             compared += 1;
         }
         assert!(compared >= 15, "only {compared} fixtures took the raw tier");
+    }
+
+    /// A gray raster frame is the same image, with the same window, whether
+    /// it is windowed from the raw tier (the viewer's display frames) or
+    /// rendered by the raster decoder itself (thumbnails).
+    #[tokio::test]
+    async fn a_gray_raster_renders_alike_from_the_raw_tier_and_from_its_own_decode() {
+        use image::{ExtendedColorType, ImageEncoder};
+        use tiff::encoder::{colortype, TiffEncoder};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ramp8: Vec<u8> = (0..64).map(|index| index * 4).collect();
+        let ramp16: Vec<u8> = (0..64_u16)
+            .flat_map(|index| (index * 1000).to_ne_bytes())
+            .collect();
+        for (name, color, data) in [
+            ("gray8.png", ExtendedColorType::L8, &ramp8),
+            ("gray16.png", ExtendedColorType::L16, &ramp16),
+        ] {
+            let mut bytes = Vec::new();
+            image::codecs::png::PngEncoder::new(&mut bytes)
+                .write_image(data, 8, 8, color)
+                .expect("encode PNG");
+            std::fs::write(dir.path().join(name), bytes).expect("write PNG");
+        }
+        // Signed samples, shown inverted: WhiteIsZero.
+        let signed: Vec<i16> = (0..64).map(|index| (index - 32) * 500).collect();
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        {
+            let mut encoder = TiffEncoder::new(&mut bytes).expect("TIFF encoder");
+            let mut image = encoder
+                .new_image::<colortype::GrayI16>(8, 8)
+                .expect("TIFF page");
+            image
+                .encoder()
+                .write_tag(tiff::tags::Tag::PhotometricInterpretation, 0_u16)
+                .expect("TIFF tag");
+            image.write_data(&signed).expect("TIFF samples");
+        }
+        std::fs::write(dir.path().join("int16.tif"), bytes.into_inner()).expect("write TIFF");
+
+        for name in ["gray8.png", "gray16.png", "int16.tif"] {
+            let file = Arc::new(crate::loader::test_entry(&dir.path().join(name)));
+            let codec = codec_for_file(&file).expect("a raster has a codec");
+            assert_eq!(codec, Codec::Raster, "{name}");
+            let raw_cache = new_raw_cache();
+            let (raw, layout) = raw_samples_for_display(&file, codec, &raw_cache, 0, false)
+                .await
+                .unwrap_or_else(|| panic!("{name} takes the raw tier"));
+            for (center, width, mode) in [
+                (None, None, WindowMode::Default),
+                (Some(100.0), Some(5000.0), WindowMode::Default),
+                (None, None, WindowMode::FullDynamic),
+            ] {
+                let window = DisplayWindow {
+                    frame: 0,
+                    center,
+                    width,
+                    mode,
+                    redaction: 0,
+                };
+                let decoded = decode_display_frame(codec, file.clone(), window)
+                    .await
+                    .expect("display decode");
+                let windowed = window_raw_samples(file.clone(), raw.clone(), layout, window)
+                    .await
+                    .expect("raw-tier display");
+                assert_eq!(
+                    (decoded.png, decoded.window),
+                    (windowed.png, windowed.window),
+                    "{name}"
+                );
+            }
+        }
     }
 }
