@@ -1,3 +1,4 @@
+mod admission;
 mod cache;
 mod color;
 mod colorwash;
@@ -28,6 +29,9 @@ mod syntax;
 mod thumbnail;
 mod window;
 
+pub use admission::{
+    decode_estimate, DecodeWork, DICOM_DECODE_BASE_BYTES, DISPLAY_BASE_BYTES, THUMBNAIL_BASE_BYTES,
+};
 pub use cache::{
     new_cache, new_overlay_cache, new_raw_cache, new_thumbnail_cache, parse_byte_size, CacheBudget,
     FrameCache, OverlayCache, RawFrameCache, ThumbnailCache, FRAME_CACHE_MAX_BYTES,
@@ -52,14 +56,17 @@ pub use redaction::Redaction;
 pub(crate) use render::encode_presentation_layer_png;
 pub use render::AppliedWindow;
 pub use schedule::{
-    background_limit, decode_scheduler, DecodeClass, DecodePermit, DecodeScheduler,
-    INTERACTIVE_LATENCY_TARGET, ONE_CORE_IDLE_WINDOW,
+    background_limit, background_memory_limit, decode_scheduler, host_permits, DecodeClass,
+    DecodeLimits, DecodeLoad, DecodePermit, DecodeRefusal, DecodeScheduler,
+    DECODE_MEMORY_DEFAULT_BYTES, DECODE_MEMORY_MIN_BYTES, DECODE_QUEUE_BACKGROUND,
+    DECODE_QUEUE_INTERACTIVE, INTERACTIVE_LATENCY_TARGET, ONE_CORE_IDLE_WINDOW,
 };
 pub use segmentation::encode_segmentation_overlay_png;
 pub(crate) use segmentation::segmentation_has_only_binary_samples;
 pub use service::{
-    load_frame, load_raw_frame, load_redacted_frame, load_redacted_raw_frame, load_thumbnail,
-    raw_pixel, FrameRequest, FrameResponse, RawFrameRequest, RawFrameResponse,
+    admit_presentation_layer, load_frame, load_raw_frame, load_redacted_frame,
+    load_redacted_raw_frame, load_thumbnail, raw_pixel, FrameRequest, FrameResponse,
+    RawFrameRequest, RawFrameResponse,
 };
 pub use syntax::{
     classify_pixel_support, codec_for_file, codec_for_syntax, Codec, PixelSupport,

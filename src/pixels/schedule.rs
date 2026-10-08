@@ -13,6 +13,15 @@
 //! are background work, every other decode is interactive. It is unrelated
 //! to the `X-Dcmview-Background` request header, which only keeps a request
 //! off the idle clock and never changes how it is served.
+//!
+//! A permit also carries the decode's share of the **decode memory budget**
+//! (`docs/design/image-formats.md` section 2.3, "Byte-based decode
+//! admission"): the bytes the decode may hold while it runs, estimated from
+//! the catalog entry by `admission::decode_estimate` before anything is
+//! read. Permit and bytes are granted together and returned together, so
+//! the bytes reserved are always the bytes of decodes that are running, and
+//! their sum never exceeds the budget. [`DecodeScheduler::admit`] states the
+//! rules; [`DecodeLimits`] holds the numbers.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -49,6 +58,120 @@ pub const INTERACTIVE_LATENCY_TARGET: Duration = Duration::from_millis(100);
 /// permit for this long.
 pub const ONE_CORE_IDLE_WINDOW: Duration = Duration::from_secs(1);
 
+/// The decode memory budget when `--decode-memory` is not given: 4 GiB.
+///
+/// It bounds what running decodes hold, not the process: the frame caches
+/// (`--cache-budget`) and the bodies of responses being sent are beside it.
+pub const DECODE_MEMORY_DEFAULT_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+
+/// The smallest decode memory budget `--decode-memory` accepts: 256 MiB.
+/// Below it frames of ordinary size are refused, and the answer to that is
+/// a larger budget, not a smaller one.
+pub const DECODE_MEMORY_MIN_BYTES: u64 = 256 * 1024 * 1024;
+
+/// The most interactive requests that may wait for a permit at once. The
+/// next is refused with [`DecodeRefusal::Busy`].
+///
+/// A waiting request holds no decode memory, so this bounds the tasks and
+/// the delay behind a full budget, not bytes. It is far above what one
+/// viewer produces (a drag along a long stack leaves a few hundred decodes
+/// waiting), so a viewer only meets the refusal when the budget is held by
+/// large frames and requests keep arriving.
+pub const DECODE_QUEUE_INTERACTIVE: usize = 1024;
+
+/// The most background requests that may wait for a permit at once. A
+/// gallery keeps a handful in flight and abandons the ones it scrolls past.
+pub const DECODE_QUEUE_BACKGROUND: usize = 256;
+
+/// The share of a decode memory budget of `memory_bytes` that background
+/// decodes may reserve between them: half, rounded down. The other half is
+/// never reserved by a thumbnail, so the viewer always has it.
+pub fn background_memory_limit(memory_bytes: u64) -> u64 {
+    memory_bytes / 2
+}
+
+/// What bounds the decodes of one [`DecodeScheduler`] beside its permits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DecodeLimits {
+    /// The decode memory budget: the most bytes the running decodes may
+    /// have reserved between them.
+    pub memory_bytes: u64,
+    /// The most interactive requests that may wait at once.
+    pub interactive_queue: usize,
+    /// The most background requests that may wait at once.
+    pub background_queue: usize,
+}
+
+impl DecodeLimits {
+    /// What a viewer started without `--decode-memory` runs with.
+    pub const DEFAULT: Self = Self {
+        memory_bytes: DECODE_MEMORY_DEFAULT_BYTES,
+        interactive_queue: DECODE_QUEUE_INTERACTIVE,
+        background_queue: DECODE_QUEUE_BACKGROUND,
+    };
+
+    /// No memory budget and no queue limit: decodes are bounded by the
+    /// permits alone. [`DecodeScheduler::new`] builds this; the viewer never
+    /// runs with it.
+    pub const UNLIMITED: Self = Self {
+        memory_bytes: u64::MAX,
+        interactive_queue: usize::MAX,
+        background_queue: usize::MAX,
+    };
+
+    /// [`Self::DEFAULT`] with a budget of `memory_bytes` (`--decode-memory`).
+    /// A budget below [`DECODE_MEMORY_MIN_BYTES`] is an error that names the
+    /// minimum.
+    pub fn with_memory(memory_bytes: u64) -> Result<Self, String> {
+        if memory_bytes < DECODE_MEMORY_MIN_BYTES {
+            return Err(format!(
+                "decode memory must be at least {DECODE_MEMORY_MIN_BYTES} bytes (256MiB)"
+            ));
+        }
+        Ok(Self {
+            memory_bytes,
+            ..Self::DEFAULT
+        })
+    }
+}
+
+/// Why [`DecodeScheduler::admit`] did not grant a permit. Neither is a
+/// property of the file: the catalog's `support_state` never depends on the
+/// budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecodeRefusal {
+    /// The request needs more bytes than its class may ever reserve, so
+    /// waiting cannot help. `limit_bytes` is the whole budget for an
+    /// interactive request and [`background_memory_limit`] of it for a
+    /// background one.
+    TooLarge {
+        needed_bytes: u64,
+        limit_bytes: u64,
+        class: DecodeClass,
+    },
+    /// The request would have to wait, and its class's queue is full.
+    Busy,
+}
+
+/// What a scheduler is doing now, for tests and diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DecodeLoad {
+    /// Permits held.
+    pub running: usize,
+    /// Permits held by background decodes.
+    pub background_running: usize,
+    /// Bytes reserved by the permits held.
+    pub reserved_bytes: u64,
+    /// Bytes reserved by the background permits held.
+    pub background_reserved_bytes: u64,
+    /// Interactive requests waiting.
+    pub waiting_interactive: usize,
+    /// Background requests waiting.
+    pub waiting_background: usize,
+    /// The highest `reserved_bytes` has been since the scheduler was built.
+    pub peak_reserved_bytes: u64,
+}
+
 /// The most permits background work may hold at once out of `permits`:
 /// half of them, at least one, and never all of them when there is more than
 /// one, so interactive work always has a permit it does not share.
@@ -59,9 +182,11 @@ pub fn background_limit(permits: usize) -> usize {
     }
 }
 
-/// Grants decode permits by class.
+/// Grants decode permits by class and by memory.
 ///
-/// With `permits` permits in total:
+/// [`Self::admit`] is what the pixel service calls and states the rules for
+/// memory. The rules for permits, which [`Self::acquire`] applies alone, are
+/// these. With `permits` permits in total:
 ///
 /// - An interactive request is granted as soon as a permit is free.
 ///   Interactive requests are granted in arrival order.
@@ -80,32 +205,157 @@ pub fn background_limit(permits: usize) -> usize {
 ///   as a waiting interactive request.
 pub struct DecodeScheduler {
     permits: usize,
+    limits: DecodeLimits,
     state: Mutex<ScheduleState>,
     changed: Notify,
 }
 
-/// One running decode's share of the pool, returned to the scheduler when
-/// dropped. It owns its scheduler, so it can move into the task that runs
-/// the decode.
+/// One running decode's share of the pool and of the decode memory budget,
+/// both returned to the scheduler when it is dropped: when the decode ends,
+/// when it panics, and when the task that holds it is aborted. It owns its
+/// scheduler, so it can move into the task that runs the decode.
 #[must_use = "a decode permit is released when dropped"]
 pub struct DecodePermit {
     scheduler: Arc<DecodeScheduler>,
     class: DecodeClass,
+    /// The bytes this permit reserved; 0 for one from [`DecodeScheduler::acquire`].
+    bytes: u64,
+}
+
+impl DecodePermit {
+    /// The bytes of the decode memory budget this permit holds.
+    pub fn reserved_bytes(&self) -> u64 {
+        self.bytes
+    }
 }
 
 impl DecodeScheduler {
-    /// A scheduler with `permits` permits (at least one).
+    /// A scheduler with `permits` permits (at least one) and
+    /// [`DecodeLimits::UNLIMITED`]: no memory budget.
     pub fn new(permits: usize) -> Arc<Self> {
+        Self::with_limits(permits, DecodeLimits::UNLIMITED)
+    }
+
+    /// A scheduler with `permits` permits (at least one) that admits by
+    /// `limits`.
+    pub fn with_limits(permits: usize, limits: DecodeLimits) -> Arc<Self> {
         Arc::new(Self {
             permits: permits.max(1),
+            limits,
             state: Mutex::new(ScheduleState::default()),
             changed: Notify::new(),
         })
     }
 
+    /// A new scheduler for one viewer in this process: one permit per core
+    /// the host makes available (four when that is unknown) and
+    /// [`DecodeLimits::DEFAULT`]. `AppState::new` builds its own with this,
+    /// so two viewers in one process (two tests) do not share a budget.
+    pub fn for_host() -> Arc<Self> {
+        Self::new(host_permits())
+    }
+
     /// The total number of permits.
     pub fn permits(&self) -> usize {
         self.permits
+    }
+
+    /// The limits this scheduler admits by.
+    pub fn limits(&self) -> DecodeLimits {
+        self.limits
+    }
+
+    /// What the scheduler is doing now.
+    pub fn load(&self) -> DecodeLoad {
+        let state = self.state.lock().expect("decode scheduler lock poisoned");
+        DecodeLoad {
+            running: state.running,
+            background_running: state.background_running,
+            reserved_bytes: state.reserved_bytes,
+            background_reserved_bytes: state.background_reserved_bytes,
+            waiting_interactive: state.interactive.len(),
+            waiting_background: state.background.len(),
+            peak_reserved_bytes: state.peak_reserved_bytes,
+        }
+    }
+
+    /// Waits until [`Self::load`] satisfies `reached` and returns that load.
+    /// Every change to what `load` reports wakes it, so a test can wait for
+    /// a request to start waiting or for a decode to end without sleeping.
+    pub async fn load_when(&self, reached: impl Fn(&DecodeLoad) -> bool) -> DecodeLoad {
+        loop {
+            let changed = self.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            let load = self.load();
+            if reached(&load) {
+                return load;
+            }
+            changed.await;
+        }
+    }
+
+    /// Waits for a permit of `class` that reserves `bytes` of the decode
+    /// memory budget, or refuses at once. This is the only way the pixel
+    /// service starts a decode.
+    ///
+    /// With [`DecodeLimits::UNLIMITED`] it is [`Self::acquire`]: nothing is
+    /// reserved and nothing is refused. Otherwise, with `limits` and
+    /// `budget = limits.memory_bytes`:
+    ///
+    /// **Refused at once, without waiting** (checked in this order, when the
+    /// call is first polled):
+    ///
+    /// 1. [`DecodeRefusal::TooLarge`] when `bytes` exceeds what the class
+    ///    may ever reserve: `budget` for an interactive request,
+    ///    [`background_memory_limit`]`(budget)` for a background one. The
+    ///    refusal carries `bytes` and that limit.
+    /// 2. [`DecodeRefusal::Busy`] when the request cannot be granted now
+    ///    and its class already has `limits.interactive_queue` (or
+    ///    `limits.background_queue`) requests waiting. A request that can be
+    ///    granted now is granted whatever the queue limit, 0 included.
+    ///    Requests waiting in [`Self::acquire`] count as waiting.
+    ///
+    /// **Granted** when all of these hold; until then the request waits in
+    /// its class's queue:
+    ///
+    /// - it is at the front of its class's queue (arrival order within a
+    ///   class; a large request at the front is not overtaken by smaller
+    ///   ones behind it, so it cannot starve);
+    /// - a permit is free, by the rules on [`DecodeScheduler`], the
+    ///   background cap and the one-core idle window included;
+    /// - `reserved + bytes <= budget`, where `reserved` is the sum of the
+    ///   bytes of the permits now held;
+    /// - for a background request, also `background_reserved + bytes <=
+    ///   background_memory_limit(budget)`, and no interactive request is
+    ///   waiting (for a permit or for bytes).
+    ///
+    /// The permit and the bytes are taken in one step under the scheduler's
+    /// lock and returned in one step when the [`DecodePermit`] is dropped,
+    /// so `load().reserved_bytes` never exceeds `budget`, and
+    /// `background_reserved_bytes` never exceeds its share, at any instant.
+    /// `peak_reserved_bytes` is raised in the same step. Sums that could
+    /// overflow saturate.
+    ///
+    /// Every grant, release, arrival in a queue and departure from one
+    /// wakes the waiters ([`Self::load_when`] included). When a permit is
+    /// released, waiting interactive requests are considered before
+    /// waiting background ones.
+    ///
+    /// Cancel safe, as [`Self::acquire`]: dropping the future before it
+    /// resolves leaves the queue, reserves nothing and takes no permit. A
+    /// request of zero bytes reserves nothing and is otherwise admitted by
+    /// the same rules.
+    pub async fn admit(
+        self: &Arc<Self>,
+        class: DecodeClass,
+        bytes: u64,
+    ) -> Result<DecodePermit, DecodeRefusal> {
+        if self.limits == DecodeLimits::UNLIMITED {
+            return Ok(self.acquire(class).await);
+        }
+        let _ = bytes;
+        todo!("FMT4: admit a decode by the bytes it reserves")
     }
 
     /// Waits for a permit of `class`, by the rules on [`DecodeScheduler`].
@@ -164,6 +414,7 @@ impl DecodeScheduler {
                     return DecodePermit {
                         scheduler: Arc::clone(self),
                         class,
+                        bytes: 0,
                     };
                 }
                 idle_until
@@ -184,6 +435,10 @@ impl DecodeScheduler {
 struct ScheduleState {
     running: usize,
     background_running: usize,
+    /// The sum of the bytes of the permits held, and of the background ones.
+    reserved_bytes: u64,
+    background_reserved_bytes: u64,
+    peak_reserved_bytes: u64,
     next_id: u64,
     interactive: VecDeque<u64>,
     background: VecDeque<u64>,
@@ -231,21 +486,29 @@ impl Drop for DecodePermit {
             .lock()
             .expect("decode scheduler lock poisoned");
         state.running -= 1;
+        state.reserved_bytes = state.reserved_bytes.saturating_sub(self.bytes);
         if self.class == DecodeClass::Background {
             state.background_running -= 1;
+            state.background_reserved_bytes =
+                state.background_reserved_bytes.saturating_sub(self.bytes);
         }
         drop(state);
         self.scheduler.changed.notify_waiters();
     }
 }
 
-/// The process's scheduler, sized to the host's available parallelism (four
-/// when that is unknown). Every decode of the pixel service takes its permit
-/// here; it replaces the first-come-first-served `DECODE_PERMITS` semaphore.
+/// One permit per core the host makes available; four when that is unknown.
+pub fn host_permits() -> usize {
+    std::thread::available_parallelism().map_or(4, |cores| cores.get())
+}
+
+/// A scheduler shared by everything in the process that was not given one:
+/// the caches `pixels::new_cache` and its siblings build. It is
+/// [`DecodeScheduler::for_host`], built once. A viewer's `AppState` has its
+/// own.
 pub fn decode_scheduler() -> &'static Arc<DecodeScheduler> {
-    static SCHEDULER: std::sync::LazyLock<Arc<DecodeScheduler>> = std::sync::LazyLock::new(|| {
-        DecodeScheduler::new(std::thread::available_parallelism().map_or(4, |cores| cores.get()))
-    });
+    static SCHEDULER: std::sync::LazyLock<Arc<DecodeScheduler>> =
+        std::sync::LazyLock::new(DecodeScheduler::for_host);
     &SCHEDULER
 }
 

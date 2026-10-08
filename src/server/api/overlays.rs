@@ -136,7 +136,13 @@ pub(super) async fn presentation_layer(
     if let Some(png) = state.cached_overlay(&key).filter(|_| cacheable) {
         return Ok(overlay_response(png, true, OverlayEncoding::Png));
     }
+    // The layer is four bytes a pixel whatever the file holds, so it is
+    // drawn under a permit like a decode, held until the drawing ends.
+    let permit = pixels::admit_presentation_layer(&state.decode_scheduler(), &file)
+        .await
+        .map_err(error::pixel_error)?;
     let png = task::spawn_blocking(move || {
+        let _permit = permit;
         pixels::encode_presentation_layer_png(&file, frame, &redaction.boxes)
     })
     .await
@@ -231,7 +237,7 @@ async fn value_overlay(
     }
     let context = semantic_context_for(state, overlay.clone(), state.registry().files_snapshot())
         .await
-        .map_err(|error| ApiError::internal(format!("{error:#}")))?;
+        .map_err(error::context_failure)?;
     let (stack, legend) = overlay_plan(&overlay, &context)?;
     let frame_of_reference = &overlay.series_metadata.frame_of_reference_uid;
     if target.series_metadata.frame_of_reference_uid != *frame_of_reference {
@@ -356,11 +362,15 @@ enum LegendScale {
 /// which spans the values of every frame so all displayed frames share one
 /// color scale. Frames that cannot be decoded, or hold no usable value,
 /// make the overlay ineligible instead.
+///
+/// `Err(PixelError::DecodeBusy)` when a frame could not be decoded only
+/// because the viewer was busy: that says nothing about the overlay, so the
+/// context is left incomplete for the caller to discard, not to cache.
 pub(super) async fn add_overlay_legend(
     state: &AppState,
     file: &Arc<FileEntry>,
     context: &mut SemanticContextResponse,
-) {
+) -> PixelResult<()> {
     let (eligibility, source_frames, legend, scale): (
         &mut OverlayEligibility,
         &mut Vec<ResolvedSegmentSourceFrame>,
@@ -379,17 +389,33 @@ pub(super) async fn add_overlay_legend(
             &mut map.legend,
             LegendScale::MappedRange,
         ),
-        _ => return,
+        _ => return Ok(()),
     };
     if !eligibility.eligible {
-        return;
+        return Ok(());
     }
     match value_legend(state, file, scale).await {
         Ok(value) => *legend = Some(value),
-        Err(reason) => {
+        Err(LegendFailure::Busy) => return Err(PixelError::DecodeBusy),
+        Err(LegendFailure::Unavailable(reason)) => {
             *eligibility = crate::semantic::ineligible(&reason);
             source_frames.clear();
         }
+    }
+    Ok(())
+}
+
+/// Why an overlay has no legend.
+enum LegendFailure {
+    /// A frame was not decoded because the viewer was busy; ask again.
+    Busy,
+    /// The overlay cannot be drawn, for this reason.
+    Unavailable(String),
+}
+
+impl From<&str> for LegendFailure {
+    fn from(reason: &str) -> Self {
+        Self::Unavailable(reason.to_string())
     }
 }
 
@@ -397,10 +423,12 @@ async fn value_legend(
     state: &AppState,
     file: &Arc<FileEntry>,
     scale: LegendScale,
-) -> Result<OverlayLegend, String> {
+) -> Result<OverlayLegend, LegendFailure> {
     let mappings = value_mappings_for(state, file.clone())
         .await
-        .map_err(|error| format!("overlay metadata could not be read: {error:#}"))?;
+        .map_err(|error| {
+            LegendFailure::Unavailable(format!("overlay metadata could not be read: {error:#}"))
+        })?;
     let map = mappings
         .real_world(0)
         .next()
@@ -410,7 +438,12 @@ async fn value_legend(
     for frame in 0..file.frame_count {
         let values = mapped_frame_values(state, file, &mappings, frame)
             .await
-            .map_err(|error| format!("overlay frames could not be decoded: {error}"))?;
+            .map_err(|error| match error {
+                PixelError::DecodeBusy => LegendFailure::Busy,
+                error => LegendFailure::Unavailable(format!(
+                    "overlay frames could not be decoded: {error}"
+                )),
+            })?;
         for value in values.into_iter().filter(|value| value.is_finite()) {
             min = min.min(value);
             max = max.max(value);

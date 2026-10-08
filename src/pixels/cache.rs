@@ -1,5 +1,6 @@
 use super::error::PixelError;
 use super::render::DisplayPng;
+use super::schedule::{decode_scheduler, DecodeScheduler};
 use crate::api::contracts::RawFrameMetadata;
 use crate::types::{FrameCacheKey, OverlayCacheKey, RawFrameCacheKey, ThumbnailCacheKey};
 use bytes::Bytes;
@@ -58,21 +59,40 @@ pub(crate) type InFlight<V> = Shared<BoxFuture<'static, Result<V, Arc<PixelError
 ///
 /// Callers hold the surrounding mutex only for lookups and inserts; decoding
 /// and encoding happen outside the lock.
+///
+/// A cache also names the [`DecodeScheduler`] that admits the decodes which
+/// fill it, so the pixel service takes a cache and needs nothing else to
+/// know whose permits and whose decode memory budget a miss uses. The
+/// caches of one viewer share one scheduler (`AppState`).
 pub struct BudgetedLru<K: Hash + Eq, V> {
     entries: LruCache<K, V>,
     bytes: usize,
     max_bytes: usize,
     in_flight: HashMap<K, InFlight<V>>,
+    scheduler: Arc<DecodeScheduler>,
 }
 
 impl<K: Hash + Eq, V: FrameBody> BudgetedLru<K, V> {
+    /// A cache whose misses are admitted by the process's shared scheduler
+    /// ([`decode_scheduler`]).
     pub(crate) fn new(max_bytes: usize) -> Self {
+        Self::with_scheduler(max_bytes, Arc::clone(decode_scheduler()))
+    }
+
+    /// A cache whose misses are admitted by `scheduler`.
+    pub(crate) fn with_scheduler(max_bytes: usize, scheduler: Arc<DecodeScheduler>) -> Self {
         Self {
             entries: LruCache::unbounded(),
             bytes: 0,
             max_bytes,
             in_flight: HashMap::new(),
+            scheduler,
         }
+    }
+
+    /// The scheduler that admits the decodes filling this cache.
+    pub(crate) fn scheduler(&self) -> Arc<DecodeScheduler> {
+        Arc::clone(&self.scheduler)
     }
 
     pub(crate) fn in_flight(&self, key: &K) -> Option<InFlight<V>> {
