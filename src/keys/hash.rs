@@ -91,24 +91,28 @@ impl FileHasher {
         expected_modified: Option<SystemTime>,
         before_open: impl FnOnce(),
     ) -> Result<Self, KeyFailure> {
-        let _ = expected_modified;
-        let metadata = std::fs::metadata(path).map_err(|_| KeyFailure::Unreadable)?;
-        if !metadata.is_file() {
-            return Err(KeyFailure::Unreadable);
-        }
-        if metadata.len() != expected_len {
-            return Err(KeyFailure::Changed);
-        }
         before_open();
-        let file = File::open(path).map_err(|_| KeyFailure::Unreadable)?;
+        #[cfg(unix)]
+        let file = {
+            use std::os::unix::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(path)
+        };
+        #[cfg(not(unix))]
+        let file = File::open(path);
+        let file = file.map_err(|_| KeyFailure::Unreadable)?;
         let opened = file.metadata().map_err(|_| KeyFailure::Unreadable)?;
         if !opened.is_file() {
             return Err(KeyFailure::Unreadable);
         }
-        if opened.len() != expected_len || opened.modified().ok() != metadata.modified().ok() {
+        let modified = opened.modified().ok();
+        if opened.len() != expected_len
+            || matches!((modified, expected_modified), (Some(actual), Some(expected)) if actual != expected)
+        {
             return Err(KeyFailure::Changed);
         }
-        let modified = opened.modified().ok();
         Ok(Self {
             file,
             expected_len,
