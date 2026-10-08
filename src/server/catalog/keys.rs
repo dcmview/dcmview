@@ -370,9 +370,21 @@ struct HashWork {
     stats: KeyStats,
 }
 
-// Own the worker's queue claim even when its future unwinds or is dropped.
+/// Gives the worker's claim on the queue back when its task is dropped
+/// before it ran out of work: its runtime shut down, or it was dropped
+/// before its first poll. The file it held goes back to the front of the
+/// queue, with no failure recorded: nothing went wrong with that file. The
+/// next request that queues from a live runtime starts a worker again.
+///
+/// This never spawns and never looks at whether the thread is panicking. A
+/// runtime is dropped on a panicking thread whenever a test fails, and a
+/// task spawned on a runtime that is shutting down is dropped at once, so a
+/// guard that restarted the worker there would run inside its own drop
+/// without end. A panic of the worker itself never reaches this guard
+/// (`FileRegistry::hash_worker` catches it and carries on).
 struct HashWorkerGuard {
-    registry: FileRegistry,
+    hashing: Arc<Hashing>,
+    notify: Arc<Notify>,
     armed: bool,
 }
 
@@ -381,47 +393,19 @@ impl Drop for HashWorkerGuard {
         if !self.armed {
             return;
         }
-        let registry = &self.registry;
-        let panicking = std::thread::panicking();
-        let active = {
-            let work = registry
-                .hashing
-                .work
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            work.active
-        };
-        if panicking {
-            if let Some(index) = active {
-                // Do not try to repair a poisoned registry while unwinding.
-                if let Ok(mut inner) = registry.inner.write() {
-                    let changes = inner.keys.resolve(index, Err(KeyFailure::Unreadable));
-                    registry.apply_key_changes(&mut inner, &changes);
-                }
-            }
-        }
         {
-            let mut work = registry
-                .hashing
-                .work
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            // Keep the worker claim until the outcome is recorded, so a
-            // replacement cannot race its predecessor's cleanup.
+            let mut work = self.hashing.work();
             work.running = false;
-            work.active = None;
-            if let Some(index) = active {
-                work.pending.remove(&index);
-                if panicking {
-                    work.stats.files_hashed += 1;
+            if let Some(index) = work.active.take() {
+                if self.hashing.stopped.load(Ordering::Acquire) {
+                    work.pending.remove(&index);
+                } else {
+                    work.queue.push_front(index);
                 }
             }
         }
-        registry.hashing.changed.notify_waiters();
-        registry.notify.notify_waiters();
-        if panicking {
-            registry.queue_keys(Vec::new(), false);
-        }
+        self.hashing.changed.notify_waiters();
+        self.notify.notify_waiters();
     }
 }
 
@@ -487,14 +471,22 @@ impl FileRegistry {
         if let Some(runtime) = start {
             let registry = self.clone();
             let guard = HashWorkerGuard {
-                registry: self.clone(),
+                hashing: self.hashing.clone(),
+                notify: self.notify.clone(),
                 armed: true,
             };
             runtime.spawn(async move { registry.hash_worker(guard).await });
         }
     }
 
+    /// Hashes what is queued, one file at a time, until the queue is empty.
+    ///
+    /// A panic while a file is being worked on is caught here, so the worker
+    /// survives its own fault: that file is recorded as unreadable, as the
+    /// one thing known about it is that it could not be hashed, and the
+    /// files queued behind it are hashed without anyone asking again.
     async fn hash_worker(self, mut guard: HashWorkerGuard) {
+        use futures::FutureExt;
         loop {
             let next = {
                 let mut work = self.hashing.work();
@@ -518,41 +510,57 @@ impl FileRegistry {
             let Some((index, scheduler)) = next else {
                 return;
             };
-            #[cfg(test)]
-            self.hashing.fault(index);
-            let known = self
-                .read()
-                .keys
-                .status(index)
-                .is_some_and(|state| state.digest.is_some());
-            let outcome = if known {
-                None
-            } else {
-                self.hash_file(index, scheduler).await
-            };
-            let wanted = if let Some(outcome) = outcome {
-                if self.hashing.stopped.load(Ordering::Acquire) {
-                    Vec::new()
-                } else {
-                    let mut inner = self.write();
-                    let changes = inner.keys.resolve(index, outcome);
-                    self.apply_key_changes(&mut inner, &changes);
-                    drop(inner);
-                    self.hashing.work().stats.files_hashed += 1;
-                    changes.wanted
-                }
-            } else {
-                Vec::new()
-            };
+            let turn = std::panic::AssertUnwindSafe(self.hash_turn(index, scheduler));
+            if turn.catch_unwind().await.is_err() {
+                self.record_worker_fault(index);
+            }
             {
                 let mut work = self.hashing.work();
                 work.active = None;
                 work.pending.remove(&index);
             }
-            self.queue_keys(wanted, false);
             self.hashing.changed.notify_waiters();
             self.notify.notify_waiters();
         }
+    }
+
+    /// One file's turn in the worker: hashes it unless its digest is known
+    /// and records the outcome.
+    async fn hash_turn(&self, index: usize, scheduler: Arc<DecodeScheduler>) {
+        #[cfg(test)]
+        self.hashing.fault(index);
+        let known = self
+            .read()
+            .keys
+            .status(index)
+            .is_some_and(|state| state.digest.is_some());
+        if known {
+            return;
+        }
+        let Some(outcome) = self.hash_file(index, scheduler).await else {
+            return;
+        };
+        if self.hashing.stopped.load(Ordering::Acquire) {
+            return;
+        }
+        let mut inner = self.write();
+        let changes = inner.keys.resolve(index, outcome);
+        self.apply_key_changes(&mut inner, &changes);
+        drop(inner);
+        self.hashing.work().stats.files_hashed += 1;
+        self.queue_keys(changes.wanted, false);
+    }
+
+    /// Records that the worker panicked while it held `index`. A registry
+    /// whose lock the panic poisoned is left alone.
+    fn record_worker_fault(&self, index: usize) {
+        if let Ok(mut inner) = self.inner.write() {
+            let changes = inner.keys.resolve(index, Err(KeyFailure::Unreadable));
+            self.apply_key_changes(&mut inner, &changes);
+            drop(inner);
+            self.queue_keys(changes.wanted, false);
+        }
+        self.hashing.work().stats.files_hashed += 1;
     }
 
     async fn hash_file(
@@ -692,5 +700,95 @@ mod tests {
         );
         assert_eq!(registry.files_page(None, None).keys_hashing, 0);
         assert_eq!(registry.key_stats().files_hashed, 3);
+    }
+
+    /// The files queued behind the one a worker died on are hashed without
+    /// anyone asking again: a viewer that opened them makes no further
+    /// request for their keys. This test only waits; a key request would
+    /// start a worker itself and hide one that was never restarted.
+    #[tokio::test]
+    async fn files_queued_behind_a_worker_fault_are_hashed_without_another_request() {
+        let (first, _) = pending("golden-uncompressed-u16-multiframe.dcm");
+        let (second, second_key) = pending("golden-image-no-pixels.dcm");
+        let registry = FileRegistry::new();
+        registry.insert(first);
+        registry.insert(second);
+        registry.hashing.fail_at(0);
+        registry.frame_sent(0);
+        registry.frame_sent(1);
+
+        let hashed = async {
+            loop {
+                let changed = registry.changed();
+                tokio::pin!(changed);
+                changed.as_mut().enable();
+                if registry.files_page(None, None).keys_hashing == 0 {
+                    return;
+                }
+                changed.await;
+            }
+        };
+        // A hang guard, not a measurement.
+        tokio::time::timeout(Duration::from_secs(30), hashed)
+            .await
+            .expect("the file queued behind the fault is never hashed");
+
+        let key = |index: usize| {
+            let status = registry.key_status(index).expect("registered");
+            (
+                status.key.map(|key| key.as_str().to_string()),
+                status.failure,
+            )
+        };
+        assert_eq!(key(0), (None, Some(KeyFailure::Unreadable)));
+        assert_eq!(key(1), (Some(second_key), None));
+    }
+
+    /// A test that fails drops its runtime while its thread unwinds, and
+    /// the worker with it. That must end nothing but the test: the process
+    /// goes on (a restart from the worker's drop would run inside itself
+    /// until the stack ran out, taking every other test's result with it),
+    /// no failure is recorded for files nothing was wrong with, and they
+    /// are hashed once a runtime is there again.
+    #[test]
+    fn a_runtime_dropped_by_a_panic_fails_no_file_and_ends_no_process() {
+        let (first, first_key) = pending("golden-uncompressed-u16-multiframe.dcm");
+        let (second, second_key) = pending("golden-image-no-pixels.dcm");
+        let registry = FileRegistry::new();
+        registry.insert(first);
+        registry.insert(second);
+
+        let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime");
+            runtime.block_on(async {
+                registry.frame_sent(0);
+                registry.frame_sent(1);
+                panic!("a failing assertion of the test itself");
+            });
+        }));
+        assert!(failed.is_err());
+        for index in 0..2 {
+            let status = registry.key_status(index).expect("registered");
+            assert_eq!((status.key, status.failure), (None, None), "file {index}");
+        }
+        assert_eq!(registry.files_page(None, None).keys_hashing, 2);
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime.block_on(async {
+            for (index, key) in [(0, first_key), (1, second_key)] {
+                let decided =
+                    tokio::time::timeout(Duration::from_secs(30), registry.ensure_key(index))
+                        .await
+                        .unwrap_or_else(|_| panic!("the key of file {index} is never decided"));
+                assert_eq!(decided.as_ref().map(FileKey::as_str), Ok(key.as_str()));
+            }
+        });
+        assert_eq!(registry.key_stats().files_hashed, 2);
     }
 }

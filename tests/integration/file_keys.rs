@@ -1580,6 +1580,67 @@ fn a_queue_filled_outside_a_runtime_is_hashed_once_a_runtime_calls() {
     assert_eq!(registry.key_stats().files_hashed, 1);
 }
 
+/// A runtime that goes away takes the hashing worker with it, wherever the
+/// worker was: not polled yet, or holding a file and waiting for a permit.
+/// Nothing was wrong with any file, so none has a failure, none is dropped
+/// from the queue, and all are hashed once a call arrives inside a runtime
+/// again, without their keys being asked for.
+#[test]
+fn files_queued_when_the_workers_runtime_goes_away_are_still_hashed() {
+    for mid_file in [false, true] {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let paths = [dir.path().join("a.dcm"), dir.path().join("b.dcm")];
+        write_dicom(&paths[0], None, 1, 8);
+        write_dicom(&paths[1], None, 2, 8);
+        let scheduler = DecodeScheduler::new(1);
+        let registry = FileRegistry::new().with_decode_scheduler(scheduler.clone());
+        let runtime = || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime")
+        };
+
+        let first = runtime();
+        let viewer = first.block_on(async {
+            scan(&registry, &paths[0]).await;
+            scan(&registry, &paths[1]).await;
+            let viewer = scheduler.acquire(DecodeClass::Interactive).await;
+            registry.frame_sent(0);
+            registry.frame_sent(1);
+            if mid_file {
+                // The worker takes the first file and waits for a permit.
+                let_tasks_run().await;
+            }
+            viewer
+        });
+        drop(first);
+        drop(viewer);
+        assert_eq!(
+            registry.files_page(None, None).keys_hashing,
+            2,
+            "mid_file={mid_file}"
+        );
+        assert_eq!(registry.key_stats().files_hashed, 0);
+
+        runtime().block_on(async {
+            // A frame of a file that is already queued: it asks for no key.
+            registry.frame_sent(1);
+            tokio::time::timeout(Duration::from_secs(30), hashing_done(&registry))
+                .await
+                .unwrap_or_else(|_| panic!("mid_file={mid_file}: a queued file is never hashed"));
+        });
+        for (index, path) in paths.iter().enumerate() {
+            assert_eq!(
+                key_text(&registry, index),
+                Some(b3(path)),
+                "mid_file={mid_file}"
+            );
+        }
+        assert_eq!(registry.key_stats().files_hashed, 2);
+    }
+}
+
 /// A hub that computes keys with other tooling has to read the UID the way
 /// discovery does, or it builds another key for the same file. This is that
 /// reading: the data set's SOP Instance UID, its first value, without
