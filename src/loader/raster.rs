@@ -292,6 +292,7 @@ pub(super) fn inspect_raster_source(
     Ok(EntryInspection::Selected(Box::new(FileEntry {
         index: 0,
         path: _path.to_path_buf(),
+        size_bytes: _length,
         format: _format,
         label: super::build_label("", "", "", &file_name),
         patient_id: String::new(),

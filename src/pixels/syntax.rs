@@ -303,6 +303,7 @@ mod tests {
         FileEntry {
             format: Default::default(),
             raster: None,
+            size_bytes: 0,
             index: 0,
             path: PathBuf::from("fixture.dcm"),
             label: String::new(),

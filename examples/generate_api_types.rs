@@ -4,13 +4,14 @@
 //! it exits non-zero when the committed file differs from the Rust contract.
 
 use dcmview::api::contracts::{
-    endpoints, DoseOverlayQuery, EmbedRoiAnnotations, ErrorResponse, FilesResponse, FrameInfo,
-    FrameQuery, FrameValueMapping, FrameWindowApplied, GraphicAnnotationsQuery,
+    endpoints, DoseOverlayQuery, EmbedRoiAnnotations, ErrorResponse, FilesQuery, FilesResponse,
+    FrameInfo, FrameQuery, FrameValueMapping, FrameWindowApplied, GraphicAnnotationsQuery,
     GraphicAnnotationsResponse, HealthResponse, ParametricMapOverlayQuery, PixelQuery,
     RawFrameMetadata, RedactionSeriesResponse, ReferenceCatalogResponse, SemanticContextResponse,
     SeriesCatalogResponse, TagNode, TagQuery, ThumbnailQuery, ThumbnailSource,
     WsiFrameContextResponse, API_PREFIX, API_RESPONSE_HEADERS, DISPLAY_FRAME_HEADERS,
-    RAW_FRAME_HEADERS, THUMBNAIL_DEFAULT_SIZE, THUMBNAIL_HEADERS, THUMBNAIL_SIZE_BUCKETS,
+    FILE_KEY_HEADER, RAW_FRAME_HEADERS, THUMBNAIL_DEFAULT_SIZE, THUMBNAIL_HEADERS,
+    THUMBNAIL_SIZE_BUCKETS,
 };
 use std::any::TypeId;
 use std::collections::{BTreeMap, HashSet};
@@ -57,6 +58,7 @@ fn render() -> String {
     };
     declarations.visit::<HealthResponse>();
     declarations.visit::<FilesResponse>();
+    declarations.visit::<FilesQuery>();
     declarations.visit::<SeriesCatalogResponse>();
     declarations.visit::<FrameInfo>();
     declarations.visit::<RedactionSeriesResponse>();
@@ -120,6 +122,12 @@ fn render() -> String {
         writeln!(out, "\t{field}: \"{name}\",").expect("write to string");
     }
     out.push_str("} as const;\n\n");
+
+    writeln!(
+        out,
+        "export const FILE_KEY_HEADER = \"{FILE_KEY_HEADER}\";\n"
+    )
+    .expect("write to string");
 
     let buckets = THUMBNAIL_SIZE_BUCKETS.map(|bucket| bucket.to_string());
     writeln!(

@@ -61,6 +61,8 @@ export const THUMBNAIL_HEADERS = {
 	cacheControl: "Cache-Control",
 } as const;
 
+export const FILE_KEY_HEADER = "X-File-Key";
+
 export const THUMBNAIL_SIZE_BUCKETS = [128, 256, 512, 1024] as const;
 export const THUMBNAIL_DEFAULT_SIZE = 256;
 
@@ -87,6 +89,32 @@ export type ErrorResponse = { code: ApiErrorCode, error: string, };
  * the values of `--formats` and of the `format` scan filter.
  */
 export type FileFormat = "dicom" | "png" | "jpeg" | "tiff" | "webp";
+
+/**
+ * Why a whole-file digest could not be computed.
+ */
+export type FileKeyError = "unreadable" | "changed";
+
+/**
+ * One file's key replaced by another (`docs/design/annotation-model.md`
+ * 1.7). A client applies it in one step to everything it holds under
+ * `old_key` for the file `index`: records, queued operations, history and
+ * selection. For the rest of the session the server accepts `old_key` as
+ * naming the first file that held it.
+ */
+export type FileRekey = { 
+/**
+ * The catalog revision at which the key changed.
+ */
+revision: number, index: number, 
+/**
+ * The key the file had, in full.
+ */
+old_key: string, 
+/**
+ * The key the file has now, in full.
+ */
+new_key: string, };
 
 export type FileSummary = { index: number, path: string, 
 /**
@@ -133,13 +161,106 @@ burned_in_annotation: boolean, has_pixels: boolean, frame_count: number, rows: n
 /**
  * Effective physical row-to-column pixel extent ratio.
  */
-pixel_aspect_ratio: number | null, transfer_syntax_uid: string, default_window: WindowPreset | null, };
+pixel_aspect_ratio: number | null, transfer_syntax_uid: string, default_window: WindowPreset | null, 
+/**
+ * The file's stable key (`docs/design/annotation-model.md` 1.3):
+ * `sop:<SOP Instance UID>` or `b3:<64 lowercase hex>`, the BLAKE3 digest
+ * of the file's bytes.
+ *
+ * - Left out when the key is `sop:` followed by this entry's
+ *   `sop_instance_uid`, which is the case for a DICOM file whose UID no
+ *   other loaded file is known to contradict. A reader rebuilds it.
+ * - `null` while the file has no key: a raster, a DICOM file without a
+ *   usable UID, or one whose UID another loaded file with different
+ *   bytes also carries, until its bytes have been hashed. Hashing starts
+ *   once a frame of the file has been served. `key_error` says when it
+ *   failed.
+ * - Otherwise the key in full.
+ *
+ * A key is at most 132 bytes. It is stable for the life of the process
+ * except that a `sop:` key is replaced, once, by a `b3:` key when the
+ * file turns out to share its UID with different bytes; `rekeys` in
+ * [`FilesResponse`] reports each replacement. In a masked session a
+ * `sop:` key is built from the masked UID, so the rule for leaving it
+ * out is unchanged and no real UID is sent.
+ */
+file_key?: string | null, 
+/**
+ * The `index` of the first loaded file that holds the same key, when
+ * that is another file: the two are one image under two paths and share
+ * annotations. Left out otherwise. Two DICOM files with one UID and one
+ * size are aliases without their bytes having been compared; comparing
+ * them later may give both a `b3:` key instead.
+ */
+alias_of?: number, 
+/**
+ * Why the file's bytes could not be hashed for its key. Left out when
+ * hashing has not failed. A file with `file_key: null` and an error
+ * stays without a key until hashing is asked for again and succeeds.
+ */
+key_error?: FileKeyError, };
 
-export type FilesResponse = { files: Array<FileSummary>, discovery: Array<DiscoveryResult>, server_start_ms: number, 
+/**
+ * Query of `GET /api/files`.
+ */
+export type FilesQuery = { 
+/**
+ * A `revision` from an earlier response. The response then lists only
+ * the entries added or changed after it. Absent or 0 lists every entry.
+ * A value above the catalog's current revision is answered with every
+ * entry and `reset: true`.
+ */
+since?: number, 
+/**
+ * The most entries to return, at least 1. Absent returns all of them.
+ * 0 is `400 invalid_query`.
+ */
+limit?: number, };
+
+export type FilesResponse = { 
+/**
+ * With neither `since` nor `limit`, every entry in index order.
+ * Otherwise the entries added or changed after `since` (after 0 when it
+ * is absent), least recently changed first, each as it is now and each
+ * once, and at most `limit` of them. An entry that changes while a
+ * client pages through the list is listed again on a later page, so
+ * applying every page by `index` ends with the current catalog.
+ */
+files: Array<FileSummary>, discovery: Array<DiscoveryResult>, server_start_ms: number, 
 /**
  * Whether this session masks patient identifiers (`--mask`).
  */
-masked: boolean, scan_complete: boolean, scanned: number, skipped: number, filtered: number, };
+masked: boolean, scan_complete: boolean, scanned: number, skipped: number, filtered: number, 
+/**
+ * The catalog revision this response is complete up to: pass it as
+ * `since` to receive what changed afterwards. It starts at 0 and rises
+ * by one for every entry added and every entry whose `file_key`,
+ * `alias_of` or `key_error` changes. When `more` is `true` it is the
+ * revision of the last entry listed, not the catalog's latest.
+ */
+revision: number, 
+/**
+ * `true` when `since` was above the catalog's revision, which means it
+ * came from another process: the client drops the entries it holds and
+ * takes this response, which then lists from the start, as the catalog.
+ */
+reset: boolean, 
+/**
+ * `true` when `limit` cut the list short: ask again with
+ * `since=<revision>` for the rest.
+ */
+more: boolean, 
+/**
+ * Files whose bytes are being hashed for a key now, or are queued for
+ * it. A client that shows pending keys polls while this is above zero.
+ */
+keys_hashing: number, 
+/**
+ * The key replacements after `since` and up to `revision`, oldest
+ * first. A file's key is replaced at most once, so the list never holds
+ * more entries than there are files.
+ */
+rekeys: Array<FileRekey>, };
 
 export type FrameInfo = { frame_count: number, rows: number, columns: number, transfer_syntax_uid: string, has_pixels: boolean, sop_class_uid: string, object_kind: string, support_state: SupportState, support_reason: string | null, default_window: WindowPreset | null, };
 

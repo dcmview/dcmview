@@ -53,6 +53,7 @@ pub(super) fn build_entry_selected(
 ) -> Result<EntryInspection> {
     let DiscoveryHeader {
         object: obj,
+        file_length,
         odd_item_length,
         pixels: pixel_header,
     } = match read_discovery_header(path, formats)? {
@@ -206,6 +207,7 @@ pub(super) fn build_entry_selected(
     let mut entry = FileEntry {
         index: 0,
         path: path.to_path_buf(),
+        size_bytes: file_length,
         format: FileFormat::Dicom,
         raster: None,
         label,
@@ -322,6 +324,8 @@ const PART10_PREFIX_LENGTH: usize = 132;
 /// Float Pixel Data, and the top-level pixel element's header.
 struct DiscoveryHeader {
     object: dicom_object::DefaultDicomObject,
+    /// The file's length from the `stat` taken when it was opened.
+    file_length: u64,
     /// A sequence item before the pixel data declares an odd length, which a
     /// conformant data set never does.
     odd_item_length: bool,
@@ -419,6 +423,7 @@ fn parse_data_set(
     };
     HeaderRead::Read(Box::new(DiscoveryHeader {
         object: InMemDicomObject::from_element_iter(elements).with_exact_meta(meta),
+        file_length,
         odd_item_length,
         pixels: pixels.map(|element| {
             element.map(|(kind, native_length)| PixelDataHeader {

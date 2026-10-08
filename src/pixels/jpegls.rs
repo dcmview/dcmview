@@ -179,6 +179,7 @@ mod tests {
         FileEntry {
             format: Default::default(),
             raster: None,
+            size_bytes: 0,
             index: 0,
             path: path.to_path_buf(),
             label: "fixture".to_string(),

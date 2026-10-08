@@ -1006,6 +1006,7 @@ mod tests {
         Arc::new(FileEntry {
             format: Default::default(),
             raster: None,
+            size_bytes: 0,
             index,
             path,
             label: "fixture".to_string(),

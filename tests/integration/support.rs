@@ -79,6 +79,7 @@ pub fn file_entry(path: PathBuf, transfer_syntax_uid: &str, frame_count: u32) ->
         format: Default::default(),
         raster: None,
         index: 0,
+        size_bytes: std::fs::metadata(&path).map_or(0, |metadata| metadata.len()),
         path,
         label: "fixture".to_string(),
         patient_id: "TEST".to_string(),

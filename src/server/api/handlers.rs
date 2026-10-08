@@ -3,13 +3,13 @@ use super::overlays;
 use super::state::AppState;
 use crate::api::contracts::RedactionSeriesResponse;
 use crate::api::contracts::{
-    DiscoveryResult, EmbedRoiAnnotations, FileSummary, FilesResponse, FrameInfo, FrameQuery,
-    GraphicAnnotationsQuery, GraphicAnnotationsResponse, HealthResponse, PixelQuery,
+    DiscoveryResult, EmbedRoiAnnotations, FileSummary, FilesQuery, FilesResponse, FrameInfo,
+    FrameQuery, GraphicAnnotationsQuery, GraphicAnnotationsResponse, HealthResponse, PixelQuery,
     ReferenceCatalogResponse, SemanticContextResponse, TagNode, TagQuery, ThumbnailQuery,
     ViewerIdentity, CACHE_HEADER, CACHE_HIT, CACHE_MISS, CSV_MEDIA_TYPE,
     DISPLAY_FRAME_HEADER_WINDOW_APPLIED, DISPLAY_FRAME_HEADER_WINDOW_CENTER,
     DISPLAY_FRAME_HEADER_WINDOW_WIDTH, EXPORT_CONTENT_DISPOSITION_HEADER,
-    EXPORT_CONTENT_DISPOSITION_VALUE, JPEG_MEDIA_TYPE, OCTET_STREAM_MEDIA_TYPE,
+    EXPORT_CONTENT_DISPOSITION_VALUE, FILE_KEY_HEADER, JPEG_MEDIA_TYPE, OCTET_STREAM_MEDIA_TYPE,
     RAW_FRAME_HEADER_BITS_ALLOCATED, RAW_FRAME_HEADER_COLUMNS, RAW_FRAME_HEADER_DEFAULT_WC,
     RAW_FRAME_HEADER_DEFAULT_WW, RAW_FRAME_HEADER_PADDING_HIGH, RAW_FRAME_HEADER_PADDING_LOW,
     RAW_FRAME_HEADER_PHOTOMETRIC_INTERPRETATION, RAW_FRAME_HEADER_PIXEL_REPRESENTATION,
@@ -62,10 +62,23 @@ fn ensure_pixels_shown(state: &AppState, file: &FileEntry) -> Result<(), ApiErro
     Ok(())
 }
 
-pub(super) async fn files(State(state): State<AppState>) -> Json<FilesResponse> {
+pub(super) async fn files(
+    State(state): State<AppState>,
+    query: Result<Query<FilesQuery>, QueryRejection>,
+) -> Result<Json<FilesResponse>, ApiError> {
+    let Query(query) = query.map_err(error::query_rejection)?;
+    if query.limit == Some(0) {
+        return Err(ApiError::invalid_query("limit must be at least 1"));
+    }
+    let page = state.registry().files_page(
+        query.since,
+        query
+            .limit
+            .map(|limit| usize::try_from(limit).unwrap_or(usize::MAX)),
+    );
     let status = state.registry().status();
-    Json(FilesResponse {
-        files: state.registry().summaries_snapshot(),
+    Ok(Json(FilesResponse {
+        files: page.files,
         discovery: state
             .registry()
             .discovery_response_snapshot()
@@ -87,7 +100,24 @@ pub(super) async fn files(State(state): State<AppState>) -> Json<FilesResponse> 
         scanned: status.scanned,
         skipped: status.skipped,
         filtered: status.filtered,
-    })
+        revision: page.revision,
+        reset: page.reset,
+        more: page.more,
+        keys_hashing: page.keys_hashing,
+        rekeys: page.rekeys,
+    }))
+}
+
+/// What every display and raw frame response does for file keys: sends the
+/// file's key as the session shows it in [`FILE_KEY_HEADER`] when it has
+/// one, and notes that a frame was served, which starts the hashing of a
+/// file that has none.
+fn note_frame_served(state: &AppState, index: usize, headers: &mut HeaderMap) {
+    let registry = state.registry();
+    if let Some(key) = registry.shown_file_key(index) {
+        insert_header_if_valid(headers, FILE_KEY_HEADER, key);
+    }
+    registry.frame_sent(index);
 }
 
 /// The registered file at `index`, or a 404 naming the index and how many

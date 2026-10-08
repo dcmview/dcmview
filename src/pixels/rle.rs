@@ -551,6 +551,7 @@ mod tests {
         let file = FileEntry {
             format: Default::default(),
             raster: None,
+            size_bytes: 0,
             index: 0,
             path,
             label: String::new(),

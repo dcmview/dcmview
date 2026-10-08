@@ -12,8 +12,13 @@ use crate::types::FileEntry;
 use bytes::Bytes;
 use dicom_dictionary_std::uids;
 use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use tokio::sync::{futures::Notified, Notify};
+
+mod keys;
+
+pub use keys::{FilesPage, KeyError, KeyStats};
 
 pub const DISCOVERY_RESPONSE_MAX_RECORDS: usize = 256;
 
@@ -93,7 +98,31 @@ impl FileRegistry {
         registry
     }
 
-    pub fn insert(&self, mut file: FileEntry) -> usize {
+    /// Registers a file discovery selected, with its discovery record. The
+    /// record's path is the one discovery resolved, which is what tells two
+    /// entries of one file (a symbolic link and its target, or a path named
+    /// twice) from two files.
+    pub fn record_selected(&self, file: FileEntry, mut record: DiscoveryRecord) -> usize {
+        // A selected record is only counted, so its path can move on.
+        let resolved = std::mem::take(&mut record.path);
+        self.record_discovery(record);
+        self.insert_identified(file, resolved)
+    }
+
+    /// Registers a file whose own path identifies it. Discovery registers
+    /// through [`FileRegistry::record_selected`], which knows the resolved
+    /// path.
+    pub fn insert(&self, file: FileEntry) -> usize {
+        let path = file.path.clone();
+        self.insert_identified(file, path)
+    }
+
+    /// Registers `file`, whose key identity is its SOP Instance UID, its
+    /// `size_bytes` and `resolved` (`crate::keys::FileIdentity`).
+    fn insert_identified(&self, mut file: FileEntry, resolved: PathBuf) -> usize {
+        // FND4: register the identity with the key table, write the key
+        // state of every entry it changed and give each a revision.
+        let _ = resolved;
         let mut inner = self.write();
         let index = inner.files.len();
         file.index = index;
@@ -146,6 +175,44 @@ impl FileRegistry {
 
     pub fn summaries_snapshot(&self) -> Vec<FileSummary> {
         self.read().summaries.clone()
+    }
+
+    /// The catalog entries for one `GET /api/files` request, by the contract
+    /// on `FilesResponse` and `FilesQuery`.
+    ///
+    /// The catalog's revision starts at 0. Each entry added, and each entry
+    /// whose `file_key`, `alias_of` or `key_error` changes, takes the next
+    /// revision as its own, in ascending index order when one event changes
+    /// several, so no two entries share a revision and a page can end
+    /// after any entry.
+    ///
+    /// - `since` and `limit` both absent: every entry in index order, with
+    ///   the catalog's revision.
+    /// - Otherwise the entries whose revision is above `since` (0 when
+    ///   absent), in ascending revision order, at most `limit`. When entries
+    ///   remain, `more` is `true` and `revision` is the revision of the last
+    ///   entry returned; otherwise `revision` is the catalog's.
+    /// - `since` above the catalog's revision: `reset` is `true` and the
+    ///   request is answered as if `since` were 0.
+    /// - `rekeys`: the logged replacements whose revision is above `since`
+    ///   (as answered) and at most the returned `revision`, oldest first.
+    ///
+    /// Finding where a page starts must not walk the entries before it: a
+    /// client that polls with the current revision costs the same whether
+    /// the catalog holds ten files or a million.
+    pub fn files_page(&self, since: Option<u64>, limit: Option<usize>) -> FilesPage {
+        if since.is_none() && limit.is_none() {
+            // FND4: the catalog's revision, hashing count and rekey log.
+            return FilesPage {
+                files: self.summaries_snapshot(),
+                revision: 0,
+                reset: false,
+                more: false,
+                keys_hashing: 0,
+                rekeys: Vec::new(),
+            };
+        }
+        todo!("FND4: the entries changed after a revision, in change order")
     }
 
     /// The series catalog, serialized as its API response.
