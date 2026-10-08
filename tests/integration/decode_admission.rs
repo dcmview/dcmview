@@ -399,6 +399,150 @@ async fn a_permit_and_its_bytes_come_back_however_their_holder_ends() {
 }
 
 // ---------------------------------------------------------------------------
+// The estimate
+
+/// What a piece of work reserves is the documented formula of the catalog
+/// entry, for every codec and sample layout, with each number written out
+/// here: 100 x 200 pixels throughout.
+#[test]
+fn the_estimate_is_the_documented_formula_of_the_catalog_entry() {
+    const MIB: u64 = 1024 * 1024;
+    const PIXELS: u64 = 100 * 200;
+    let entry = |syntax: &str, samples: u32, bits: u32| {
+        let mut entry = support::file_entry(PathBuf::from("not-read.dcm"), syntax, 1);
+        (entry.rows, entry.columns) = (100, 200);
+        (entry.samples_per_pixel, entry.bits_allocated) = (samples, bits);
+        entry
+    };
+    assert_eq!(pixels::DICOM_DECODE_BASE_BYTES, 16 * MIB);
+    assert_eq!(pixels::DISPLAY_BASE_BYTES, MIB);
+    assert_eq!(pixels::THUMBNAIL_BASE_BYTES, 8 * MIB);
+
+    // (transfer syntax, samples per pixel, bits allocated,
+    //  the decode beside its 16 MiB, V, D, F)
+    let p = PIXELS;
+    let cases: [(&str, u32, u32, u64, u64, u64, u64); 16] = [
+        // Native, 16-bit gray: F = 2 P; decode 3 F.
+        (EXPLICIT_LE, 1, 16, 6 * p, 0, p, 2 * p),
+        ("1.2.840.10008.1.2", 1, 8, 3 * p, 0, p, p),
+        // One bit a sample is served a byte a sample.
+        (EXPLICIT_LE, 1, 1, 3 * p, 0, p, p),
+        // 8-bit colour: F = 3 P, D = 3 P. Deeper colour: D = 6 P.
+        (EXPLICIT_LE, 3, 8, 9 * p, 0, 3 * p, 3 * p),
+        (EXPLICIT_LE, 3, 16, 18 * p, 0, 6 * p, 6 * p),
+        // 32- and 64-bit samples: V = 32 S.
+        (EXPLICIT_LE, 1, 32, 12 * p, 32 * p, p, 4 * p),
+        (EXPLICIT_LE, 1, 64, 24 * p, 32 * p, p, 8 * p),
+        // RLE and the deflated frame: 3 F.
+        ("1.2.840.10008.1.2.5", 1, 16, 6 * p, 0, p, 2 * p),
+        ("1.2.840.10008.1.2.8.1", 1, 1, 3 * p, 0, p, p),
+        // JPEG Baseline, JPEG Lossless (both syntaxes), JPEG-LS: 5 F.
+        ("1.2.840.10008.1.2.4.50", 3, 8, 15 * p, 0, 3 * p, 3 * p),
+        ("1.2.840.10008.1.2.4.57", 1, 16, 10 * p, 0, p, 2 * p),
+        ("1.2.840.10008.1.2.4.70", 1, 16, 10 * p, 0, p, 2 * p),
+        ("1.2.840.10008.1.2.4.80", 1, 16, 10 * p, 0, p, 2 * p),
+        // JPEG 2000 and JPEG XL: 16 S + 2 F.
+        ("1.2.840.10008.1.2.4.90", 1, 16, 16 * p + 4 * p, 0, p, 2 * p),
+        (
+            "1.2.840.10008.1.2.4.110",
+            3,
+            8,
+            16 * 3 * p + 6 * p,
+            0,
+            3 * p,
+            3 * p,
+        ),
+        // A syntax with no codec: as native.
+        ("1.2.840.10008.1.2.4.91", 1, 16, 6 * p, 0, p, 2 * p),
+    ];
+    for (syntax, samples, bits, decode, wide, display, frame) in cases {
+        let entry = entry(syntax, samples, bits);
+        let decode = 16 * MIB + decode;
+        let expected = [
+            (DecodeWork::RawFrame, decode),
+            (DecodeWork::DisplayFrame, decode + wide + 3 * display + MIB),
+            (DecodeWork::Thumbnail, decode + wide + display + 8 * MIB),
+            (DecodeWork::PresentationLayer, 9 * p + MIB),
+            (DecodeWork::RawRedaction, frame),
+        ];
+        for (work, bytes) in expected {
+            assert_eq!(
+                pixels::decode_estimate(&entry, work),
+                bytes,
+                "{work:?} of {samples} x {bits}-bit samples in {syntax}"
+            );
+        }
+    }
+
+    // An entry nothing vouches for cannot overflow the sums.
+    let mut vast = entry(EXPLICIT_LE, u32::MAX, 64);
+    (vast.rows, vast.columns) = (u32::MAX, u32::MAX);
+    for work in [
+        DecodeWork::RawFrame,
+        DecodeWork::DisplayFrame,
+        DecodeWork::Thumbnail,
+        DecodeWork::RawRedaction,
+    ] {
+        assert_eq!(pixels::decode_estimate(&vast, work), u64::MAX, "{work:?}");
+    }
+    assert_eq!(
+        pixels::decode_estimate(&vast, DecodeWork::PresentationLayer),
+        u64::MAX
+    );
+}
+
+/// A raster reserves the heap limit its decoder is held to, at the length
+/// the file had when it was listed, whatever the file has become since; one
+/// with more pixels than the viewer decodes has no estimate to fit a budget.
+#[tokio::test]
+async fn a_raster_reserves_its_decode_limit_at_the_length_it_was_listed_with() {
+    finishes(async {
+        const MIB: u64 = 1024 * 1024;
+        let dir = tempdir().expect("temp dir");
+        let bytes = rgba_png(40);
+        let entry = listed_raster(dir.path(), "image.png", &bytes).await;
+        let (p, frame, length) = (40 * 40, 40 * 40 * 4, bytes.len() as u64);
+        // 32 MiB and one 64 KiB read buffer, six frames, four files.
+        let decode = 32 * MIB + 64 * 1024 + 6 * frame + 4 * length;
+        assert_eq!(
+            pixels::raster_decode_heap_limit(&entry, length),
+            Some(decode)
+        );
+        std::fs::write(&entry.path, [0; 16]).expect("shrink the file");
+        let expected = [
+            (DecodeWork::RawFrame, decode),
+            (DecodeWork::DisplayFrame, decode + 3 * 3 * p + MIB),
+            (DecodeWork::Thumbnail, decode + 3 * p + 8 * MIB),
+            (DecodeWork::PresentationLayer, 9 * p + MIB),
+            (DecodeWork::RawRedaction, frame),
+        ];
+        for (work, bytes) in expected {
+            assert_eq!(pixels::decode_estimate(&entry, work), bytes, "{work:?}");
+        }
+
+        // More pixels than the viewer decodes: listed, never admitted.
+        let huge = files::png_from_chunks(
+            (20_000, 20_000),
+            8,
+            0,
+            false,
+            &[files::png_chunk(b"IDAT", &[])],
+        );
+        let entry = listed_raster(dir.path(), "huge.png", &huge).await;
+        assert_eq!(pixels::raster_frame_bytes(&entry), None);
+        assert_eq!(
+            pixels::decode_estimate(&entry, DecodeWork::RawFrame),
+            u64::MAX
+        );
+        assert_eq!(
+            pixels::decode_estimate(&entry, DecodeWork::Thumbnail),
+            u64::MAX
+        );
+    })
+    .await;
+}
+
+// ---------------------------------------------------------------------------
 // Through the API
 
 fn fixture(name: &str) -> PathBuf {
@@ -1154,6 +1298,9 @@ async fn a_raster_that_has_grown_since_it_was_listed_is_not_decoded() {
 #[cfg(unix)]
 struct HeldFile {
     path: PathBuf,
+    /// A second name for the pipe, so it can still be opened once the file
+    /// is back under the first.
+    pipe: PathBuf,
     original: Vec<u8>,
     released: bool,
 }
@@ -1167,43 +1314,35 @@ impl HeldFile {
         let name = std::ffi::CString::new(entry.path.as_os_str().as_bytes()).expect("path");
         // SAFETY: `name` is a valid NUL-terminated path for the call.
         assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0, "mkfifo");
+        let pipe = entry.path.with_extension("pipe");
+        std::fs::hard_link(&entry.path, &pipe).expect("name the pipe twice");
         Self {
             path: entry.path.clone(),
+            pipe,
             original,
             released: false,
         }
     }
 
-    /// Lets the decode go on: the file is put back, and whoever is opening
-    /// the pipe is let through to find it empty.
+    /// Lets the decode go on. The file is put back first, so whoever opens
+    /// the path from now on finds it; then whoever is already waiting in
+    /// the pipe's `open` is let through, to find the pipe empty. Nothing
+    /// here waits: a writer opens the pipe at once if a reader is there and
+    /// fails at once if none is.
     fn release(&mut self) {
         use std::os::unix::fs::OpenOptionsExt;
         if std::mem::replace(&mut self.released, true) {
             return;
         }
-        // A writer can only open the pipe once a reader is opening it, so
-        // this turns until the decode has reached its `open`.
-        let writer = loop {
-            match std::fs::OpenOptions::new()
-                .write(true)
-                .custom_flags(libc::O_NONBLOCK)
-                .open(&self.path)
-            {
-                Ok(writer) => break Some(writer),
-                Err(error) if error.raw_os_error() == Some(libc::ENXIO) => {
-                    if std::thread::panicking() {
-                        break None;
-                    }
-                    std::thread::yield_now();
-                }
-                Err(error) => panic!("open the pipe: {error}"),
-            }
-        };
-        // Later opens find the file, not the pipe.
         let restored = self.path.with_extension("restored");
         std::fs::write(&restored, &self.original).expect("write raster");
         std::fs::rename(&restored, &self.path).expect("restore raster");
+        let writer = std::fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&self.pipe);
         drop(writer);
+        let _ = std::fs::remove_file(&self.pipe);
     }
 }
 
@@ -1264,9 +1403,7 @@ async fn a_request_dropped_after_its_decode_began_keeps_its_permit_until_the_dec
             drop(beside);
             drop(joined(third).await);
 
-            tokio::task::spawn_blocking(move || held.release())
-                .await
-                .expect("release");
+            held.release();
             let load = idle(&scheduler).await;
             assert_eq!(load.peak_reserved_bytes, estimate, "{suffix}");
         }
