@@ -55,6 +55,14 @@ pub const RASTER_TIFF_MAX_CHUNKS: usize = 65_536;
 /// The most entries the IFD of a TIFF page may have. Real pages have tens.
 pub const RASTER_TIFF_MAX_TAGS: usize = 4096;
 
+/// How much larger than its image a TIFF tile may be: its width must be less
+/// than this many pixels more than the image's, and so must its length. The
+/// decoder reads and discards what a tile holds beside the image, so this
+/// bounds work the frame's size does not account for. Writers use tiles of
+/// up to 4,096 pixels, whatever the image, or one tile of the image's size
+/// rounded up to a multiple of 16.
+pub const RASTER_TIFF_TILE_MARGIN: u32 = 4096;
+
 /// The most scans a progressive JPEG may have and be decoded. Every scan is a
 /// pass over the whole image, and a scan can be a few bytes long, so without
 /// a limit a small file buys unbounded work. Encoders write about ten.
@@ -177,6 +185,49 @@ impl<T: Read + Seek> RasterSource for T {}
 /// again. Any difference is a decode error, never a frame of another size or
 /// layout and never an allocation sized by the file's own claim.
 ///
+/// The rule covers every size a decoder would otherwise take from the file
+/// on its own: nothing the file declares sizes an allocation or bounds a
+/// loop before it has been compared with the entry or with a constant here.
+/// Beyond the image header of each format, that is:
+///
+/// - **WebP.** A lossy bitstream (`VP8 `) states its own width and height
+///   and its decoder allocates by them, while the entry of an extended file
+///   (`VP8X`) is made from the canvas. So before the decoder is given the
+///   file, its chunks are walked, through the same reader and budget, up to
+///   the first image. In a simple file that is the first chunk, `VP8 ` or
+///   `VP8L`, and it must state the entry's size. In an extended file the
+///   canvas must have the entry's size, and of the chunks after `VP8X` the
+///   first that is `VP8 `, `VP8L` or `ANMF` decides: a `VP8 ` or `VP8L`
+///   chunk must state the entry's size, in a file not flagged animated; an
+///   `ANMF` chunk must be in a file flagged animated, its frame must lie
+///   inside the canvas, and the bitstream it holds (after an `ALPH` chunk,
+///   when there is one, and then `VP8 `) must state the frame's size. A
+///   file with no such chunk, or whose first one breaks a rule, is a decode
+///   error. A first frame smaller than the canvas is not: it is composed on
+///   the canvas, as the format intends. The size a `VP8 ` bitstream states
+///   is the two 14-bit numbers after its start code `9D 01 2A`; a `VP8L`
+///   bitstream's is the two 14-bit numbers, each one less than the size,
+///   after its signature byte `2F`.
+/// - **WebP profile.** An `ICCP` chunk is read only when it comes before the
+///   first image chunk, as the format requires, declares at most
+///   [`RASTER_ICC_MAX_BYTES`] and ends inside the file. Any other is left
+///   out without being read and the frame is decoded.
+/// - **TIFF tags.** A page whose IFD holds any tag twice is a decode error,
+///   whichever tag it is: readers disagree on which entry counts, so the
+///   page checked here would not be the page the decoder reads. (Discovery
+///   does not list such a page; a file can become one afterwards.) Entries
+///   need not be in ascending order.
+/// - **TIFF tiles.** A tile must be less than [`RASTER_TIFF_TILE_MARGIN`]
+///   pixels wider than the image and less than that many longer; a page
+///   with a larger tile is a decode error before any tile is read. Rows per
+///   strip may exceed the image's rows (the format's default is 2^32 - 1,
+///   meaning one strip), since a strip never holds more than the image.
+/// - **TIFF strips and tiles.** A strip or tile is read to the end of the
+///   bytes its byte count gives it and no further, whatever its compressed
+///   stream goes on to say.
+/// - **TIFF photometric interpretation** may be stored as a SHORT or a
+///   LONG; discovery reads both, so a decode does.
+///
 /// # What a decode may cost
 ///
 /// All of it is fixed by the entry and by constants here, never by a length,
@@ -222,7 +273,8 @@ impl<T: Read + Seek> RasterSource for T {}
 ///   [`RASTER_TIFF_MAX_TAGS`] entries, or whose layout tags (254, 256 to
 ///   259, 262, 273, 277 to 279, 284, 317, 322 to 325, 338, 339) hold more
 ///   than [`RASTER_TIFF_MAX_CHUNKS`] values each, is a decode error before
-///   any of those values is read.
+///   any of those values is read. So is a page with a repeated tag or a
+///   tile past [`RASTER_TIFF_TILE_MARGIN`], before any strip or tile is.
 /// - **JPEG scans.** At most [`RASTER_JPEG_MAX_SCANS`]; a file with more is a
 ///   decode error, not a longer decode.
 /// - **Memory.** The decoding thread's heap never holds more than

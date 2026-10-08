@@ -15,6 +15,7 @@
 //! `RASTER_COST_REPORT=1 cargo test --test raster_cost -- --nocapture` prints
 //! what each hostile case and each scaled file cost.
 
+mod agreement;
 mod bounds;
 mod heap;
 mod layout;

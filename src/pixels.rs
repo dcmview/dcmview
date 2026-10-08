@@ -46,6 +46,7 @@ pub use raster::{
     RasterFrame, RasterSource, RASTER_DECODE_HEAP_BASE_BYTES, RASTER_ICC_MAX_BYTES,
     RASTER_JPEG_MAX_SCANS, RASTER_READ_BUDGET_BASE_BYTES, RASTER_READ_BUDGET_PER_DECODED_BYTE,
     RASTER_READ_BUFFER_BYTES, RASTER_TIFF_MAX_CHUNKS, RASTER_TIFF_MAX_TAGS,
+    RASTER_TIFF_TILE_MARGIN,
 };
 pub use redaction::Redaction;
 pub(crate) use render::encode_presentation_layer_png;
