@@ -136,10 +136,11 @@ Run without opening a browser, useful on a remote server:
 dcmview --no-browser ./study_dir
 ```
 
-When ready, `dcmview` prints a URL:
+When ready, `dcmview` prints the launch URL. Its `#token=...` fragment is the
+session's access token, so open the complete link:
 
 ```text
-dcmview: server running at http://127.0.0.1:<port>
+dcmview: server running at http://127.0.0.1:<port>/#token=<session-token>
 ```
 
 Press Ctrl+C to stop the server.
