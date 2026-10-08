@@ -5,6 +5,7 @@ mod integration {
     mod codec_contract;
     mod codestream_agreement;
     mod codestream_files;
+    mod codestream_thumbnails;
     mod display_masking;
     mod display_shutters;
     mod embed_goldens;
