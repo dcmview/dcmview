@@ -1,7 +1,9 @@
 //! Which key each loaded file has.
 
 use super::FileKey;
-use std::collections::HashMap;
+use std::borrow::Borrow;
+use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -264,57 +266,101 @@ pub enum Reliance {
 /// `sop:` key is text only in [`KeyTable::status`], [`Reliance::Final`] and
 /// [`Rekey`]. `tests/key_table_memory.rs` holds the bound.
 pub struct KeyTable<F> {
-    registered: Vec<F>,
+    files: Vec<F>,
     entries: Vec<Entry>,
-    paths: HashMap<PathBuf, usize>,
-    files: Vec<PhysicalFile>,
-    uids: HashMap<String, usize>,
-    groups: Vec<Group>,
-    holders: HashMap<Arc<FileKey>, usize>,
+    paths: HashMap<ByPath<F>, u32>,
+    uids: HashMap<ByUid<F>, u32>,
+    groups: HashMap<u32, Group>,
+    digests: HashMap<u32, Digest>,
+    holders: HashMap<FileKey, usize>,
 }
 
+const NONE: u32 = u32::MAX;
+const SOP: u16 = 1;
+const CONTENT: u16 = 2;
+const SERVED: u16 = 4;
+const WANTED: u16 = 8;
+const SPLIT: u16 = 16;
+const RELIED: u16 = 32;
+const UNREADABLE: u16 = 64;
+const CHANGED: u16 = 128;
+const FAILURE: u16 = UNREADABLE | CHANGED;
+
+#[derive(Clone, Copy)]
 struct Entry {
-    file: usize,
-    group: Option<usize>,
-    key: Option<Arc<FileKey>>,
-    alias_of: Option<usize>,
-    failure: Option<KeyFailure>,
-    served: bool,
-    wanted: bool,
-}
-
-#[derive(Default)]
-struct PhysicalFile {
-    entries: Vec<usize>,
-    digest: Option<[u8; 32]>,
-    failure: Option<KeyFailure>,
+    file: u32,
+    group: u32,
+    alias_of: u32,
+    next: u32,
+    flags: u16,
 }
 
 struct Group {
-    key: Arc<FileKey>,
-    size: u64,
-    digest: Option<[u8; 32]>,
-    split: bool,
     members: Vec<usize>,
+    multiple_files: bool,
+    agreed: Option<[u8; 32]>,
 }
+
+struct Digest {
+    bytes: [u8; 32],
+    key: FileKey,
+}
+
+struct ByUid<F>(F);
+
+impl<F: KeyedFile> Borrow<str> for ByUid<F> {
+    fn borrow(&self) -> &str {
+        self.0.sop_instance_uid()
+    }
+}
+impl<F: KeyedFile> Hash for ByUid<F> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.sop_instance_uid().hash(state);
+    }
+}
+impl<F: KeyedFile> PartialEq for ByUid<F> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.sop_instance_uid() == other.0.sop_instance_uid()
+    }
+}
+impl<F: KeyedFile> Eq for ByUid<F> {}
+
+struct ByPath<F>(F);
+
+impl<F: KeyedFile> Borrow<Path> for ByPath<F> {
+    fn borrow(&self) -> &Path {
+        self.0.path()
+    }
+}
+impl<F: KeyedFile> Hash for ByPath<F> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.path().hash(state);
+    }
+}
+impl<F: KeyedFile> PartialEq for ByPath<F> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.path() == other.0.path()
+    }
+}
+impl<F: KeyedFile> Eq for ByPath<F> {}
 
 impl<F: KeyedFile + Clone> KeyTable<F> {
     /// An empty table.
     pub fn new() -> Self {
         Self {
-            registered: Vec::new(),
+            files: Vec::new(),
             entries: Vec::new(),
             paths: HashMap::new(),
-            files: Vec::new(),
             uids: HashMap::new(),
-            groups: Vec::new(),
+            groups: HashMap::new(),
+            digests: HashMap::new(),
             holders: HashMap::new(),
         }
     }
 
     /// The number of registered files.
     pub fn len(&self) -> usize {
-        self.registered.len()
+        self.files.len()
     }
 
     /// Whether no file is registered.
@@ -341,55 +387,50 @@ impl<F: KeyedFile + Clone> KeyTable<F> {
     /// hash-map insertions and no allocation beyond the result and the
     /// growth of the table.
     pub fn register(&mut self, file: F) -> KeyChanges {
-        let identity = FileIdentity {
-            sop_instance_uid: file.sop_instance_uid().to_string(),
-            size_bytes: file.size_bytes(),
-            path: file.path().to_path_buf(),
-        };
-        self.registered.push(file);
         let index = self.entries.len();
-        let file = *self.paths.entry(identity.path).or_insert_with(|| {
-            let file = self.files.len();
-            self.files.push(PhysicalFile::default());
-            file
-        });
-        self.files[file].entries.push(index);
-        let group = if let Some(&group) = self.uids.get(&identity.sop_instance_uid) {
-            Some(group)
-        } else if let Ok(key) = FileKey::sop(&identity.sop_instance_uid) {
-            let group = self.groups.len();
-            self.uids.insert(identity.sop_instance_uid, group);
-            self.groups.push(Group {
-                key: Arc::new(key),
-                size: identity.size_bytes,
-                digest: None,
-                split: false,
-                members: Vec::new(),
-            });
-            Some(group)
+        let id = u32::try_from(index).expect("file index exceeds table capacity");
+        assert_ne!(id, NONE, "file index exceeds table capacity");
+        let physical = *self.paths.entry(ByPath(file.clone())).or_insert(id);
+        let group = if FileKey::is_sop_uid(file.sop_instance_uid()) {
+            *self.uids.entry(ByUid(file.clone())).or_insert(id)
         } else {
-            None
+            NONE
         };
+        let next = if physical != id {
+            self.entries[physical as usize].next
+        } else {
+            NONE
+        };
+        self.files.push(file);
         self.entries.push(Entry {
-            file,
+            file: physical,
             group,
-            key: None,
-            alias_of: None,
-            failure: None,
-            served: false,
-            wanted: false,
+            alias_of: NONE,
+            next,
+            flags: if group == id { SOP } else { 0 },
         });
+        // The ordinary case needs only the two entry insertions above.
+        if physical == id && (group == id || group == NONE) {
+            return KeyChanges {
+                updated: vec![index],
+                ..KeyChanges::default()
+            };
+        }
+        if physical != id {
+            self.entries[physical as usize].next = id;
+        }
         let mut affected = Vec::new();
-        if let Some(group) = group {
-            self.check_group(
-                group,
-                identity.size_bytes,
-                self.files[file].digest,
-                &mut affected,
-            );
-            if !self.groups[group].split {
-                self.groups[group].members.push(index);
-            }
+        if group != NONE && group != id {
+            let first = group as usize;
+            let agreed = self.digest(first);
+            let members = self.groups.entry(group).or_insert_with(|| Group {
+                members: vec![first],
+                multiple_files: false,
+                agreed,
+            });
+            members.members.push(index);
+            members.multiple_files |= physical != self.entries[first].file;
+            self.check_group(index, &mut affected);
         }
         affected.push(index);
         let mut changes = self.refresh(affected);
@@ -405,15 +446,18 @@ impl<F: KeyedFile + Clone> KeyTable<F> {
     pub fn frame_sent(&mut self, index: usize) -> KeyChanges {
         let mut changes = KeyChanges::default();
         if let Some(entry) = self.entries.get_mut(index) {
-            entry.served = true;
+            entry.flags |= SERVED;
             self.want(index, &mut changes);
+            changes.wanted.sort_unstable();
         }
         changes
     }
 
     /// Whether [`KeyTable::frame_sent`] has been called for the file.
     pub fn served(&self, index: usize) -> bool {
-        self.entries.get(index).is_some_and(|entry| entry.served)
+        self.entries
+            .get(index)
+            .is_some_and(|entry| entry.flags & SERVED != 0)
     }
 
     /// The files whose digests are unknown and must be computed before
@@ -440,21 +484,34 @@ impl<F: KeyedFile + Clone> KeyTable<F> {
         let Some(entry) = self.entries.get(index) else {
             return Vec::new();
         };
-        let alias = entry
-            .alias_of
-            .filter(|&alias| self.entries[alias].file != entry.file);
         let mut required = Vec::new();
-        if self.files[entry.file].digest.is_none()
-            && (entry.key.is_none() || self.content_key(entry) || alias.is_some())
-        {
-            required.push(index);
-        }
-        if let Some(alias) = alias {
-            if self.files[self.entries[alias].file].digest.is_none() {
-                required.push(alias);
+        if self.provisional_group(index) {
+            if let Some(group) = self.groups.get(&entry.group).filter(|g| g.multiple_files) {
+                let mut seen = HashSet::new();
+                for &member in &group.members {
+                    let file = self.entries[member].file;
+                    if seen.insert(file) && self.digest(member).is_none() {
+                        required.push(if file == entry.file {
+                            index
+                        } else {
+                            file as usize
+                        });
+                    }
+                }
+            }
+        } else if !self.settled(index) {
+            if self.digest(index).is_none() {
+                required.push(index);
+            }
+            if self.awaiting_comparison(index) {
+                let first = entry.group as usize;
+                if self.digest(first).is_none() {
+                    required.push(self.entries[first].file as usize);
+                }
             }
         }
         required.sort_unstable();
+        required.dedup();
         required
     }
 
@@ -491,17 +548,56 @@ impl<F: KeyedFile + Clone> KeyTable<F> {
     /// `None` for an index that is not registered. Only `updated` of the
     /// changes can be non-empty.
     pub fn rely_on(&mut self, index: usize) -> (Option<Reliance>, KeyChanges) {
-        let _ = index;
-        todo!("settle the key of a file (KeyTable, rule 4)")
+        let Some(entry) = self.entries.get(index).copied() else {
+            return (None, KeyChanges::default());
+        };
+        let mut changes = KeyChanges::default();
+        if self.settled(index) {
+            return (self.owned_key(index).map(Reliance::Final), changes);
+        }
+        if self.provisional_group(index) {
+            let multiple = self
+                .groups
+                .get(&entry.group)
+                .is_some_and(|g| g.multiple_files);
+            if multiple {
+                for member in [index, entry.group as usize] {
+                    if self.digest(member).is_none() {
+                        return (Some(self.missing(member)), changes);
+                    }
+                }
+                let group = &self.groups[&entry.group];
+                if group
+                    .members
+                    .iter()
+                    .any(|&member| self.digest(member).is_none() && self.failure(member).is_none())
+                {
+                    return (Some(Reliance::Wanted), changes);
+                }
+            }
+            self.entries[entry.group as usize].flags |= RELIED;
+            if let Some(group) = self.groups.get(&entry.group) {
+                changes = self.refresh(group.members.clone());
+            }
+            return (self.owned_key(index).map(Reliance::Final), changes);
+        }
+        let missing = if self.digest(index).is_none() {
+            index
+        } else {
+            entry.group as usize
+        };
+        (Some(self.missing(missing)), changes)
     }
 
     /// Whether the file's key is settled: it has a `b3:` key, or it has
     /// `sop:<uid>` and its group is relied on. False for an index that is
     /// not registered.
     pub fn settled(&self, index: usize) -> bool {
-        self.entries
-            .get(index)
-            .is_some_and(|entry| entry.key.is_some() && self.required_for(index).is_empty())
+        self.entries.get(index).is_some_and(|entry| {
+            entry.flags & CONTENT != 0
+                || (entry.flags & SOP != 0
+                    && self.entries[entry.group as usize].flags & RELIED != 0)
+        })
     }
 
     /// Records the outcome of hashing the file, for every entry of it.
@@ -526,26 +622,41 @@ impl<F: KeyedFile + Clone> KeyTable<F> {
             return KeyChanges::default();
         };
         let file = entry.file;
-        if self.files[file].digest.is_some() {
+        if self.digests.contains_key(&file) {
             return KeyChanges::default();
         }
-        match outcome {
-            Ok(digest) => {
-                self.files[file].digest = Some(digest);
-                self.files[file].failure = None;
-            }
-            Err(failure) => self.files[file].failure = Some(failure),
+        if let Ok(bytes) = outcome {
+            self.digests.insert(
+                file,
+                Digest {
+                    bytes,
+                    key: FileKey::blake3(&bytes),
+                },
+            );
         }
-        let mut affected = self.files[file].entries.clone();
-        if let Ok(digest) = outcome {
-            for position in 0..self.files[file].entries.len() {
-                let member = self.files[file].entries[position];
-                if let Some(group) = self.entries[member].group {
-                    self.check_group(group, self.groups[group].size, Some(digest), &mut affected);
+        let mut affected = Vec::new();
+        let mut member = file;
+        let mut groups = HashSet::new();
+        while member != NONE {
+            let index = member as usize;
+            affected.push(index);
+            if outcome.is_ok() {
+                self.check_group(index, &mut affected);
+                let group = self.entries[index].group;
+                if group != NONE
+                    && groups.insert(group)
+                    && self.entries[group as usize].flags & RELIED != 0
+                    && self.entries[group as usize].file == file
+                {
+                    if let Some(group) = self.groups.get(&group) {
+                        affected.extend_from_slice(&group.members);
+                    }
                 }
             }
+            member = self.entries[index].next;
         }
-        self.refresh(affected)
+        // Refresh compares against the previous visible failure before it is changed.
+        self.refresh_outcome(affected, Some((file, outcome.err())))
     }
 
     /// What a catalog entry shows of the file's key, borrowed, or `None` for
@@ -553,19 +664,25 @@ impl<F: KeyedFile + Clone> KeyTable<F> {
     /// file it registers and every frame it serves, so it allocates nothing.
     pub fn view(&self, index: usize) -> Option<KeyView<'_>> {
         self.entries.get(index).map(|entry| KeyView {
-            key: entry.key.as_deref().map(KeyRef::from),
-            alias_of: entry.alias_of,
-            failure: entry.failure,
+            key: if entry.flags & SOP != 0 {
+                Some(KeyRef::Sop(self.files[index].sop_instance_uid()))
+            } else if entry.flags & CONTENT != 0 {
+                Some(KeyRef::Content(&self.digests[&entry.file].key))
+            } else {
+                None
+            },
+            alias_of: (entry.alias_of != NONE).then_some(entry.alias_of as usize),
+            failure: self.failure(index),
         })
     }
 
     /// The file's key state, or `None` for an index that is not registered.
     pub fn status(&self, index: usize) -> Option<FileKeyStatus> {
         self.entries.get(index).map(|entry| FileKeyStatus {
-            key: entry.key.as_deref().cloned(),
-            alias_of: entry.alias_of,
-            failure: entry.failure,
-            digest: self.files[entry.file].digest,
+            key: self.owned_key(index),
+            alias_of: (entry.alias_of != NONE).then_some(entry.alias_of as usize),
+            failure: self.failure(index),
+            digest: self.digest(index),
             settled: self.settled(index),
         })
     }
@@ -580,88 +697,185 @@ impl<F: KeyedFile + Clone> KeyTable<F> {
     /// For a settled key the answer never changes, and it is the file the
     /// key was settled for or one that holds the same bytes.
     pub fn file_for_key(&self, key: &FileKey) -> Option<usize> {
-        self.holders.get(key).copied()
+        match key.scheme() {
+            super::KeyScheme::Sop => self.uids.get(key.body()).map(|&index| index as usize),
+            super::KeyScheme::Blake3 => self.holders.get(key).copied(),
+        }
     }
 }
 
 impl<F: KeyedFile + Clone> KeyTable<F> {
-    fn content_key(&self, entry: &Entry) -> bool {
-        entry.group.is_none_or(|group| self.groups[group].split)
+    fn digest(&self, index: usize) -> Option<[u8; 32]> {
+        self.digests.get(&self.entries[index].file).map(|d| d.bytes)
     }
 
-    fn check_group(
-        &mut self,
-        group: usize,
-        size: u64,
-        digest: Option<[u8; 32]>,
-        affected: &mut Vec<usize>,
-    ) {
-        let group = &mut self.groups[group];
-        if group.split {
+    fn failure(&self, index: usize) -> Option<KeyFailure> {
+        match self.entries[index].flags & FAILURE {
+            UNREADABLE => Some(KeyFailure::Unreadable),
+            CHANGED => Some(KeyFailure::Changed),
+            _ => None,
+        }
+    }
+
+    fn owned_key(&self, index: usize) -> Option<FileKey> {
+        match self.view(index)?.key? {
+            KeyRef::Sop(uid) => FileKey::sop(uid).ok(),
+            KeyRef::Content(key) => Some(key.clone()),
+        }
+    }
+
+    fn missing(&self, index: usize) -> Reliance {
+        self.failure(index)
+            .map_or(Reliance::Wanted, Reliance::Failed)
+    }
+
+    fn provisional_group(&self, index: usize) -> bool {
+        let group = self.entries[index].group;
+        group != NONE && self.entries[group as usize].flags & (SPLIT | RELIED) == 0
+    }
+
+    fn awaiting_comparison(&self, index: usize) -> bool {
+        let entry = &self.entries[index];
+        if entry.group == NONE {
+            return false;
+        }
+        let first = entry.group as usize;
+        self.entries[first].flags & RELIED != 0
+            && entry.file != self.entries[first].file
+            && self.files[index].size_bytes() == self.files[first].size_bytes()
+            && (self.digest(index).is_none() || self.digest(first).is_none())
+    }
+
+    fn check_group(&mut self, index: usize, affected: &mut Vec<usize>) {
+        if !self.provisional_group(index) {
             return;
         }
-        if group.size != size || matches!((group.digest, digest), (Some(a), Some(b)) if a != b) {
-            group.split = true;
-            affected.append(&mut group.members);
-        } else if group.digest.is_none() {
-            group.digest = digest;
+        let first = self.entries[index].group;
+        let digest = self.digest(index);
+        let Some(group) = self.groups.get_mut(&first) else {
+            return;
+        };
+        if self.files[index].size_bytes() != self.files[first as usize].size_bytes()
+            || matches!((digest, group.agreed), (Some(a), Some(b)) if a != b)
+        {
+            self.entries[first as usize].flags |= SPLIT;
+            affected.extend_from_slice(&group.members);
+        } else if group.agreed.is_none() {
+            group.agreed = digest;
         }
     }
 
-    fn want(&mut self, index: usize, changes: &mut KeyChanges) {
-        let entry = &self.entries[index];
-        let file = &self.files[entry.file];
-        if entry.served
-            && !entry.wanted
-            && file.digest.is_none()
-            && file.failure.is_none()
-            && self.content_key(entry)
+    fn mark_wanted(&mut self, index: usize, changes: &mut KeyChanges) {
+        if self.entries[index].flags & WANTED == 0
+            && self.digest(index).is_none()
+            && self.failure(index).is_none()
         {
-            self.entries[index].wanted = true;
+            self.entries[index].flags |= WANTED;
             changes.wanted.push(index);
         }
     }
 
-    fn refresh(&mut self, mut affected: Vec<usize>) -> KeyChanges {
+    fn want(&mut self, index: usize, changes: &mut KeyChanges) {
+        if !self.served(index)
+            || self.provisional_group(index)
+            || self.settled(index)
+            || self.failure(index).is_some()
+        {
+            return;
+        }
+        self.mark_wanted(index, changes);
+        if self.awaiting_comparison(index) {
+            self.mark_wanted(self.entries[index].group as usize, changes);
+        }
+    }
+
+    fn refresh(&mut self, affected: Vec<usize>) -> KeyChanges {
+        self.refresh_outcome(affected, None)
+    }
+
+    fn refresh_outcome(
+        &mut self,
+        mut affected: Vec<usize>,
+        outcome: Option<(u32, Option<KeyFailure>)>,
+    ) -> KeyChanges {
         affected.sort_unstable();
         affected.dedup();
         let mut changes = KeyChanges::default();
         for index in affected {
-            let entry = &self.entries[index];
-            let file = &self.files[entry.file];
-            let content = self.content_key(entry);
-            let key = if content {
-                match (file.digest, file.failure) {
-                    (Some(digest), _) => Some(Arc::new(FileKey::blake3(&digest))),
-                    (_, Some(_)) => None,
-                    _ => entry.key.clone(),
+            let old = self.entries[index];
+            let failure = if let Some((_, failure)) = outcome.filter(|(file, _)| *file == old.file)
+            {
+                failure
+            } else {
+                self.failure(old.file as usize)
+            };
+            let digest = self.digest(index);
+            let key = if old.group == NONE {
+                if digest.is_some() {
+                    CONTENT
+                } else {
+                    0
                 }
             } else {
-                entry.group.map(|group| self.groups[group].key.clone())
+                let first = old.group as usize;
+                let state = self.entries[first].flags;
+                if state & SPLIT != 0 {
+                    if digest.is_some() {
+                        CONTENT
+                    } else if failure.is_some() {
+                        0
+                    } else {
+                        old.flags & SOP
+                    }
+                } else if state & RELIED != 0 {
+                    if old.file == self.entries[first].file
+                        || matches!((digest, self.digest(first)), (Some(a), Some(b)) if a == b)
+                    {
+                        SOP
+                    } else if digest.is_some()
+                        && (self.files[index].size_bytes() != self.files[first].size_bytes()
+                            || self.digest(first).is_some())
+                    {
+                        CONTENT
+                    } else {
+                        0
+                    }
+                } else {
+                    SOP
+                }
             };
-            let alias_of = key.as_ref().and_then(|key| {
-                let first = *self.holders.entry(key.clone()).or_insert(index);
-                (first != index && !(content && file.digest.is_none())).then_some(first)
-            });
-            let failure = file.failure;
-            let entry = &mut self.entries[index];
-            if entry.key != key || entry.alias_of != alias_of || entry.failure != failure {
-                if let (Some(old), Some(new)) = (&entry.key, &key) {
-                    if old != new {
+            let alias = if key == CONTENT {
+                let digest = &self.digests[&old.file];
+                *self.holders.entry(digest.key.clone()).or_insert(index) as u32
+            } else if key == SOP && self.entries[old.group as usize].flags & SPLIT == 0 {
+                old.group
+            } else {
+                NONE
+            };
+            let alias = if alias as usize == index { NONE } else { alias };
+            let failure = match failure {
+                Some(KeyFailure::Unreadable) => UNREADABLE,
+                Some(KeyFailure::Changed) => CHANGED,
+                None => 0,
+            };
+            if old.flags & (SOP | CONTENT | FAILURE) != key | failure || old.alias_of != alias {
+                if old.flags & SOP != 0 && key == CONTENT {
+                    if let Ok(old_key) = FileKey::sop(self.files[index].sop_instance_uid()) {
                         changes.rekeys.push(Rekey {
                             index,
-                            old_key: (**old).clone(),
-                            new_key: (**new).clone(),
+                            old_key,
+                            new_key: self.digests[&old.file].key.clone(),
                         });
                     }
                 }
-                entry.key = key;
-                entry.alias_of = alias_of;
-                entry.failure = failure;
+                let entry = &mut self.entries[index];
+                entry.flags = (entry.flags & !(SOP | CONTENT | FAILURE)) | key | failure;
+                entry.alias_of = alias;
                 changes.updated.push(index);
             }
             self.want(index, &mut changes);
         }
+        changes.wanted.sort_unstable();
         changes
     }
 }
