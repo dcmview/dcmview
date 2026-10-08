@@ -1046,6 +1046,7 @@ async fn every_endpoint_answers_for_a_raster_without_a_server_error() {
     // with the catalog's reason.
     for endpoint in [
         &endpoints::FILE_FRAME,
+        &endpoints::FILE_THUMBNAIL,
         &endpoints::FILE_RAW_FRAME,
         &endpoints::FILE_RAW_PIXEL,
         // Sized from the header's rows and columns, so it is refused too.

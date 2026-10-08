@@ -191,7 +191,7 @@ For a raster file index, the following responses require no DICOM parsing:
 
 | Endpoint suffix under `/api/file/{index}` | Raster response |
 |---|---|
-| `/frame/{frame}`, `/frame/{frame}/raw`, `/frame/{frame}/raw/pixel`, `/frame/{frame}/presentation-layer` | `422 unsupported_pixel_layout`, error text containing the raster support reason above. Missing pixels and out-of-range frames are checked first; the latter is `404 frame_out_of_range`. The presentation layer rejects before allocating an image. |
+| `/frame/{frame}`, `/frame/{frame}/thumbnail`, `/frame/{frame}/raw`, `/frame/{frame}/raw/pixel`, `/frame/{frame}/presentation-layer` | `422 unsupported_pixel_layout`, error text containing the raster support reason above. Missing pixels and out-of-range frames are checked first; the latter is `404 frame_out_of_range`. The presentation layer rejects before allocating an image. |
 | `/tags` | `200` with `[]`. |
 | `/tags/select` | `400 bad_request`: tag selection is not available for image files. |
 | `/references` | `200` with `source_file_index`, empty `source_sop_instance_uid`, and `references: []`. Rasters are never reference targets. |
