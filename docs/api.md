@@ -27,8 +27,8 @@ Keep the listener on loopback and use SSH forwarding for remote work: plain
 HTTP does not encrypt bearer headers or DICOM data.
 
 For scripts, start with `dcmview --no-browser --startup-json ./study_dir`.
-Its `server_started` JSON line provides `base_url`, `token`, and `protocol`,
-along with the launch `url`. In another shell, paste that JSON line when
+Its `server_started` JSON line provides `base_url`, `token`, `protocol`, and
+`key_rules` (the file-key rules version), along with the launch `url`. In another shell, paste that JSON line when
 `read` waits, then request the API (requires `jq` and `curl`):
 
 ```bash
@@ -91,14 +91,14 @@ and redirects the bare prefix to its trailing-slash form.
 | Method | Path | Success response |
 |---|---|---|
 | GET | `/health` | `HealthResponse`: `status: "ok"`, viewer name/version/build identity, `file_count`, `server_start_ms`, `masked`. |
-| GET | `/files` | `FilesResponse`: file summaries plus scan progress. |
+| GET | `/files` | `FilesResponse`: file summaries plus scan progress. Query: `since`, `limit`. |
 | GET | `/series` | `SeriesCatalogResponse`: logical series and ordered frame stacks. |
 | GET | `/file/{index}/info` | `FrameInfo` for one file. |
 | GET | `/file/{index}/references` | `ReferenceCatalogResponse`: declared DICOM relationships and their local matches. |
 | GET | `/file/{index}/semantic-context` | `SemanticContextResponse`: SEG, Parametric Map, RT Dose, or softcopy presentation state context, or `not_applicable`. |
-| GET | `/file/{index}/frame/{frame}` | Display frame as `image/png`, with `X-Cache` and, for linearly windowed frames, `X-Frame-Window-Center`/`X-Frame-Window-Width`. Query: `wc`, `ww`, `mode`, `unit`, `preview`. |
+| GET | `/file/{index}/frame/{frame}` | Display frame as `image/png`, with `X-Cache`, `X-File-Key` when resolved, and, for linearly windowed frames, `X-Frame-Window-Center`/`X-Frame-Window-Width`. Query: `wc`, `ww`, `mode`, `unit`, `preview`. |
 | GET | `/file/{index}/frame/{frame}/thumbnail` | Small `image/jpeg` preview, with `X-Cache`, `X-Thumbnail-Source` and `Cache-Control: no-store`. Query: `size`, `window_mode`. |
-| GET | `/file/{index}/frame/{frame}/raw` | Decoded samples as `application/octet-stream`, with `X-Cache` and `X-Frame-*` metadata headers. |
+| GET | `/file/{index}/frame/{frame}/raw` | Decoded samples as `application/octet-stream`, with `X-Cache`, `X-File-Key` when resolved, and `X-Frame-*` metadata headers. |
 | GET | `/file/{index}/frame/{frame}/raw/pixel?row=&column=` | One pixel of the raw frame as a 1x1 raw frame: its stored samples in color-by-pixel order (planar and subsampled YBR_FULL_422 resolved), with the same headers. `400` outside the frame. |
 | GET | `/file/{index}/frame/{frame}/presentation-layer` | The display shutter fill and overlay graphics of a grayscale display frame as an RGBA `image/png` of the frame's size, opaque gray where drawn and transparent elsewhere (fully transparent without a shutter or overlay), with `X-Cache`. |
 | GET | `/file/{index}/frame/{frame}/segmentation-overlay` | Transparent source-sized SEG mask as `image/png`, with `X-Cache`. |
@@ -145,6 +145,61 @@ now let a client reproduce every one, so it is always `true` and
 grayscale display frames carry a display shutter or overlay graphics; neither
 depends on the window, so `presentation-layer` drawn over a frame windowed in
 the browser gives exactly the display frame for that window.
+
+### File keys
+
+Every file has a session-scoped identity independent of its discovery index.
+`file_key` has three states:
+
+| Value | Meaning |
+|---|---|
+| Left out | The key is `sop:` followed by the entry's `sop_instance_uid`. Ordinary DICOM entries need no extra member. |
+| `null` | No key is available yet; the file needs a whole-file digest. |
+| A string | The file's explicit key. |
+
+Keys are at most 132 bytes: `sop:<uid>` has a body of 1–128 ASCII letters,
+digits, `.`, `-` or `_`, taken as written; `b3:<digest>` has the full BLAKE3
+digest of the stored file bytes, as 64 lowercase hex characters. A masked
+session builds `sop:` keys from masked UIDs and accepts only that shown form;
+`b3:` keys are sent unchanged.
+
+`alias_of`, when present, is the index of the first entry that held the same
+key. Files with the same UID and length provisionally share a key; their
+bytes are compared only when a caller needs a settled key. If any files of
+that UID differ, the group uses content keys. Existing UID keys remain until
+replaced by a digest, except that a failed digest removes such a key.
+`key_error`, when present, is `unreadable` or `changed` (the file is no longer
+what discovery saw). A later explicit key request retries a failed digest.
+
+Discovery performs no reads for keys. A file needing a digest starts hashing
+in the background after its first successful display or raw frame, or when a
+caller explicitly requests its settled key. Thumbnails do not start hashing.
+Display and raw frame responses include `X-File-Key` once a key is available;
+the frame response never waits for hashing. The current viewer needs no change.
+
+### Catalog revisions
+
+`revision` starts at 0 and rises once for every inserted entry or change to
+its `file_key`, `alias_of` or `key_error`. A plain `/api/files` request returns
+all entries in index order. `since=<revision>` returns entries inserted or
+updated after that revision, each as it stands now, least recently changed
+first. `limit=<count>` caps the page; with `limit` alone, `since` defaults to
+0. A zero limit returns `400 invalid_query`.
+
+`more: true` means entries remain, and the returned `revision` is the cursor
+for the next page. Otherwise it is the current catalog revision. An entry
+updated during paging can appear again; replace the client's entry at that
+index. A `since` greater than the current catalog revision returns
+`reset: true` and starts from 0, so the client can rebuild its catalog.
+Otherwise `reset` is false. `keys_hashing` counts queued files plus the file
+currently being hashed. Key changes can arrive after `scan_complete`.
+
+`rekeys` contains replacements after the requested cursor and through the
+returned revision, oldest first. Each has `revision`, `index`, `old_key` and
+`new_key`; a file replaces its key at most once. The replacement takes the
+revision of its changed entry. A plain request includes all replacements.
+An old key continues to name its first holder for the rest of the session.
+Existing clients may keep requesting the full catalog without a cursor.
 
 ### Raster image summaries
 

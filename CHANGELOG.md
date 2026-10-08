@@ -21,6 +21,11 @@ diagnostic viewer.
 
 ### Added
 
+- Catalog entries carry stable session file keys through `file_key`,
+  `alias_of` and `key_error`. `GET /api/files` accepts `since` and `limit`
+  and reports `revision`, `reset`, `more`, `keys_hashing` and `rekeys`.
+  Display and raw frames carry `X-File-Key` when available, and the startup
+  JSON line reports `key_rules`. Existing clients need no change.
 - `GET /api/file/{index}/frame/{frame}/thumbnail` returns JPEG previews at
   bucketed sizes in physical aspect, with the default or full-dynamic window.
   Thumbnails honour redaction boxes and display masking, omit shutters and
