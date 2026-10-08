@@ -116,6 +116,13 @@ extensions: { [key in string]: JsonValue }, };
 /**
  * One field: an attribute of a class, a label on the targets in
  * `applies_to`, or both.
+ *
+ * On the wire the field is one object: `id`, `name`, `applies_to` and
+ * `required`, the `type` member and the members of that field type, and any
+ * member this version does not know. Each member is written once. A member
+ * that belongs to another field type (`options` on a `boolean` field) is
+ * not a member of this field, so it is kept and written back like any
+ * other unknown one.
  */
 export type FieldDef = { id: string, name: string, 
 /**

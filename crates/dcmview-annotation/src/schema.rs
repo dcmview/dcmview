@@ -119,7 +119,14 @@ pub enum FieldType {
 
 /// One field: an attribute of a class, a label on the targets in
 /// `applies_to`, or both.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+///
+/// On the wire the field is one object: `id`, `name`, `applies_to` and
+/// `required`, the `type` member and the members of that field type, and any
+/// member this version does not know. Each member is written once. A member
+/// that belongs to another field type (`options` on a `boolean` field) is
+/// not a member of this field, so it is kept and written back like any
+/// other unknown one.
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema, TS)]
 pub struct FieldDef {
     pub id: String,
     pub name: String,
@@ -134,9 +141,78 @@ pub struct FieldDef {
     #[serde(default)]
     pub required: bool,
     /// Members this version does not know, kept so they survive a round trip.
+    /// Reading never puts `type` or a member of the field's own type here.
     #[serde(flatten)]
     #[ts(skip)]
     pub unknown: BTreeMap<String, Value>,
+}
+
+/// [`FieldDef`] as serde reads it. Two flattened members share the object's
+/// remaining members: the field type takes the ones it knows but does not
+/// remove them, so the map receives them as well. [`FieldDef`]'s
+/// `Deserialize` drops those from the map; without that every field would
+/// be written with `type` and its type's members twice.
+#[derive(Deserialize)]
+#[serde(rename = "FieldDef")]
+struct FieldDefWire {
+    id: String,
+    name: String,
+    #[serde(flatten)]
+    field_type: FieldType,
+    #[serde(default)]
+    applies_to: Vec<TargetKind>,
+    #[serde(default)]
+    required: bool,
+    #[serde(flatten)]
+    rest: BTreeMap<String, Value>,
+}
+
+impl<'de> Deserialize<'de> for FieldDef {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let FieldDefWire {
+            id,
+            name,
+            field_type,
+            applies_to,
+            required,
+            rest: mut unknown,
+        } = FieldDefWire::deserialize(deserializer)?;
+        for member in field_type.wire_members() {
+            unknown.remove(*member);
+        }
+        Ok(FieldDef {
+            id,
+            name,
+            field_type,
+            applies_to,
+            required,
+            unknown,
+        })
+    }
+}
+
+impl FieldType {
+    /// The names of the wire members this field type owns, the tag included.
+    /// Every member is named in its pattern, so a member added to a variant
+    /// does not compile until it is listed here.
+    fn wire_members(&self) -> &'static [&'static str] {
+        match self {
+            FieldType::Category {
+                options: _,
+                ordered: _,
+            } => &["type", "options", "ordered"],
+            FieldType::MultiCategory { options: _ } => &["type", "options"],
+            FieldType::Boolean => &["type"],
+            FieldType::Number {
+                min: _,
+                max: _,
+                step: _,
+                unit: _,
+                integer: _,
+            } => &["type", "min", "max", "step", "unit", "integer"],
+            FieldType::Text { max_length: _ } => &["type", "max_length"],
+        }
+    }
 }
 
 /// What a shape can be.

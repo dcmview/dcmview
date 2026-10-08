@@ -1,11 +1,12 @@
 //! The wire format: what is written, and what is refused when read.
 
 use super::support::{
-    apply, document_value, fixture, operation_cases, read_envelope, Edit, DOCUMENT,
+    apply, assert_no_member_twice, document, document_value, fixture, operation_cases,
+    read_envelope, Edit, DOCUMENT,
 };
 use dcmview_annotation::{
-    ApplyResult, Context, Current, Document, DocumentError, Geometry, LabelValue, RevEntry,
-    Violation, ViolationCode,
+    ApplyResult, Context, Current, Document, DocumentError, FieldDef, FieldType, Geometry,
+    LabelValue, OpEnvelope, RevEntry, Violation, ViolationCode,
 };
 use serde_json::{json, Value};
 
@@ -47,6 +48,243 @@ fn every_operation_round_trips_and_names_its_queue_keys() {
         let keys = envelope.op.queue_keys();
         let keys: Vec<&str> = keys.iter().map(|key| key.as_str()).collect();
         assert_eq!(keys, case.queue_keys, "{}: queue keys", case.name);
+    }
+}
+
+/// What is written is text another reader takes: every member is written
+/// once, and the text reads back to the value that was written. Comparing
+/// through `serde_json::Value` cannot see a member written twice.
+#[test]
+fn written_text_reads_back_equal_and_names_no_member_twice() {
+    let document = document();
+    let text = serde_json::to_string(&document).expect("document serializes");
+    assert_no_member_twice("document", &text);
+    assert_eq!(
+        Document::from_json_str(&text).expect("written document reads"),
+        document
+    );
+
+    for case in operation_cases() {
+        let envelope = read_envelope(&case.envelope);
+        let text = serde_json::to_string(&envelope).expect("envelope serializes");
+        assert_no_member_twice(&case.name, &text);
+        assert_eq!(
+            OpEnvelope::from_json_str(&text).expect("written envelope reads"),
+            envelope,
+            "{}",
+            case.name
+        );
+    }
+
+    // A field whose type was changed in Rust is written as the new type
+    // alone: nothing of the type it was read with is left behind.
+    let mut edited = document;
+    let schema = edited.schema.as_mut().expect("fixture has a schema");
+    for (index, field) in schema.fields.iter_mut().enumerate() {
+        field.field_type = if index % 2 == 0 {
+            FieldType::Boolean
+        } else {
+            FieldType::Text {
+                max_length: Some(7),
+            }
+        };
+    }
+    let text = serde_json::to_string(&edited).expect("edited document serializes");
+    assert_no_member_twice("edited document", &text);
+    assert_eq!(
+        Document::from_json_str(&text).expect("edited document reads"),
+        edited
+    );
+}
+
+/// Every type that keeps unknown members is one object shared by its own
+/// members, sometimes a nested value written into the same object (a field's
+/// type, a record's metadata), and the unknown ones. After reading the
+/// fixture, which has every member, each type holds as unknown exactly the
+/// members the fixture invents, and none of its own.
+#[test]
+fn reading_keeps_as_unknown_only_what_the_fixture_invents() {
+    let document = document();
+    let schema = document.schema.as_ref().expect("fixture has a schema");
+    let mut kept: Vec<(String, Vec<String>)> = Vec::new();
+    let mut note = |place: String, unknown: &std::collections::BTreeMap<String, Value>| {
+        if !unknown.is_empty() {
+            kept.push((place, unknown.keys().cloned().collect()));
+        }
+    };
+    note("document".to_string(), &document.unknown);
+    note("schema".to_string(), &schema.unknown);
+    for (index, class) in schema.classes.iter().enumerate() {
+        note(format!("class {index}"), &class.unknown);
+    }
+    for (index, field) in schema.fields.iter().enumerate() {
+        note(format!("field {index}"), &field.unknown);
+        if let FieldType::Category { options, .. } | FieldType::MultiCategory { options } =
+            &field.field_type
+        {
+            for (option, def) in options.iter().enumerate() {
+                note(format!("field {index} option {option}"), &def.unknown);
+            }
+        }
+    }
+    for (index, file) in document.files.iter().enumerate() {
+        note(format!("file {index}"), &file.unknown);
+        note(format!("file {index} space"), &file.space.unknown);
+    }
+    for (index, layer) in document.layers.iter().enumerate() {
+        note(format!("layer {index}"), &layer.unknown);
+        note(format!("layer {index} source"), &layer.source.unknown);
+    }
+    for (index, annotation) in document.annotations.iter().enumerate() {
+        note(format!("annotation {index}"), &annotation.unknown);
+    }
+    for (index, label) in document.labels.iter().enumerate() {
+        note(format!("label {index}"), &label.unknown);
+    }
+    let invented: Vec<(String, Vec<String>)> = [
+        ("document", "producer"),
+        ("schema", "owner_note"),
+        ("class 0", "ui_group"),
+        ("field 0 option 1", "retired_in"),
+        ("field 4", "help"),
+        ("file 1", "inventory_run"),
+        ("file 2 space", "kind"),
+        ("layer 1", "pinned"),
+        ("layer 1 source", "file"),
+        ("annotation 4", "future_member"),
+        ("label 4", "future_member"),
+    ]
+    .into_iter()
+    .map(|(place, member)| (place.to_string(), vec![member.to_string()]))
+    .collect();
+    assert_eq!(kept, invented);
+}
+
+/// A field is one object that holds its own members, its type's members and
+/// the ones this version does not know. Reading sorts them: only the last
+/// kind is kept as unknown, whatever the field type.
+#[test]
+fn a_field_keeps_only_the_members_it_does_not_know_as_unknown() {
+    let option = json!({ "id": "a", "name": "A", "deprecated": false });
+    // (wire, the members kept as unknown)
+    let cases: Vec<(Value, Vec<&str>)> = vec![
+        (
+            json!({ "id": "f", "name": "F", "type": "category", "options": [option.clone()],
+                "ordered": true, "applies_to": ["file"], "required": true }),
+            vec![],
+        ),
+        (
+            json!({ "id": "f", "name": "F", "type": "multi_category", "options": [option.clone()],
+                "applies_to": [], "required": false, "hint": "x" }),
+            vec!["hint"],
+        ),
+        (
+            json!({ "id": "f", "name": "F", "type": "boolean", "applies_to": [], "required": false }),
+            vec![],
+        ),
+        (
+            json!({ "id": "f", "name": "F", "type": "number", "min": 0, "max": 9.5, "step": 0.5,
+                "unit": "mm", "integer": false, "applies_to": [], "required": false,
+                "precision": 2 }),
+            vec!["precision"],
+        ),
+        (
+            json!({ "id": "f", "name": "F", "type": "text", "max_length": 80,
+                "applies_to": [], "required": false }),
+            vec![],
+        ),
+        // A member of another field type is not a member of this field.
+        (
+            json!({ "id": "f", "name": "F", "type": "boolean", "options": [option.clone()],
+                "min": 1, "applies_to": [], "required": false }),
+            vec!["min", "options"],
+        ),
+    ];
+    for (wire, unknown) in cases {
+        let field: FieldDef = serde_json::from_value(wire.clone()).expect("field reads");
+        assert_eq!(
+            field.unknown.keys().map(String::as_str).collect::<Vec<_>>(),
+            unknown,
+            "{wire}"
+        );
+        let text = serde_json::to_string(&field).expect("field serializes");
+        assert_no_member_twice(&wire.to_string(), &text);
+        assert_eq!(
+            serde_json::from_str::<Value>(&text).expect("written field is JSON"),
+            wire
+        );
+    }
+}
+
+/// A member named twice. Where the model names the member, the text is
+/// refused; inside a map whose keys are data (attributes, extensions, mask
+/// frames and tiles, members this version does not know) the last one is
+/// kept, as JSON readers commonly do.
+#[test]
+fn a_member_named_twice_is_refused_where_the_model_names_it() {
+    let text = document_value().to_string();
+    // Writes `again` in front of the first place `written` occurs.
+    let twice = |written: &str, again: &str| {
+        assert!(text.contains(written), "the fixture has {written}");
+        text.replacen(written, &format!("{again},{written}"), 1)
+    };
+    // (name, text, whether it reads)
+    let cases: Vec<(&str, String, bool)> = vec![
+        ("unchanged", text.clone(), true),
+        (
+            "a document member",
+            twice(r#""version":"#, r#""version":"1.0""#),
+            false,
+        ),
+        (
+            "an annotation member",
+            twice(r#""geometry":{"#, r#""geometry":null"#),
+            false,
+        ),
+        (
+            "a geometry's type",
+            twice(r#""type":"rect""#, r#""type":"rect""#),
+            false,
+        ),
+        // `rev` sits in the record metadata, which is written into the
+        // record's own object.
+        (
+            "a record metadata member",
+            twice(r#""rev":"#, r#""rev":1"#),
+            false,
+        ),
+        (
+            "a field's type",
+            twice(r#""type":"category""#, r#""type":"boolean""#),
+            false,
+        ),
+        (
+            "a field type's member",
+            twice(r#""max_length":"#, r#""max_length":5"#),
+            false,
+        ),
+        (
+            "a mask member",
+            twice(r#""encoding":"#, r#""encoding":"tiles-v1""#),
+            false,
+        ),
+        (
+            "an attribute",
+            twice(r#""clip_shape":"ribbon""#, r#""clip_shape":"coil""#),
+            true,
+        ),
+        (
+            "a member this version does not know",
+            twice(r#""ui_group":"#, r#""ui_group":1"#),
+            true,
+        ),
+    ];
+    for (name, text, reads) in cases {
+        let read = Document::from_json_str(&text);
+        assert_eq!(read.is_ok(), reads, "{name}: {:?}", read.err());
+        if let Ok(read) = read {
+            assert_eq!(read, document(), "{name}: the last one is kept");
+        }
     }
 }
 

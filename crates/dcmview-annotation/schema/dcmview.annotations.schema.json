@@ -234,7 +234,7 @@
       ]
     },
     "FieldDef": {
-      "description": "One field: an attribute of a class, a label on the targets in\n`applies_to`, or both.",
+      "description": "One field: an attribute of a class, a label on the targets in\n`applies_to`, or both.\n\nOn the wire the field is one object: `id`, `name`, `applies_to` and\n`required`, the `type` member and the members of that field type, and any\nmember this version does not know. Each member is written once. A member\nthat belongs to another field type (`options` on a `boolean` field) is\nnot a member of this field, so it is kept and written back like any\nother unknown one.",
       "type": "object",
       "properties": {
         "applies_to": {
