@@ -290,6 +290,26 @@ pub fn subsampled_jpeg() -> Vec<u8> {
     embedded(SUBSAMPLED_JPEG)
 }
 
+/// Baseline, 4:1:1 (chroma at a quarter of the width), 32 x 16 of
+/// (90, 140, 200). Written by libjpeg-turbo's `cjpeg -sample 4x1,1x1,1x1`.
+pub fn quarter_width_chroma_jpeg() -> Vec<u8> {
+    let mut hex = SAMPLED_JPEG_START.to_vec();
+    hex.extend_from_slice(&["ffc00011080010002003014100021101031101"]);
+    hex.extend_from_slice(SAMPLED_JPEG_TABLES);
+    hex.extend_from_slice(&["ffda000c03010002110311003f00b7451457eca7e5e145145007ffd9"]);
+    embedded(&hex)
+}
+
+/// Baseline, 4:4:0 (chroma at half the height), 32 x 16 of (90, 140, 200).
+/// Written by libjpeg-turbo's `cjpeg -sample 1x2,1x1,1x1`.
+pub fn half_height_chroma_jpeg() -> Vec<u8> {
+    let mut hex = SAMPLED_JPEG_START.to_vec();
+    hex.extend_from_slice(&["ffc00011080010002003011200021101031101"]);
+    hex.extend_from_slice(SAMPLED_JPEG_TABLES);
+    hex.extend_from_slice(&["ffda000c03010002110311003f00b7457eca7e5e1450014500145007ffd9"]);
+    embedded(&hex)
+}
+
 /// Four-channel (Adobe transform 0, CMYK), 32 x 8: blocks of no ink, full
 /// cyan, full black, and magenta with yellow: white, (0, 255, 255), black
 /// and (255, 0, 0) in RGB.
@@ -557,6 +577,33 @@ const SUBSAMPLED_JPEG: &[&str] = &[
     "767778797a82838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7",
     "b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae2e3e4e5e6e7e8e9eaf2f3f4f5f6f7f8f9",
     "faffda000c03010002110311003f00d0a28a2bfa60fc1cffd9",
+];
+
+/// What the two `cjpeg -quality 90` files share: the start of the file with
+/// its quantization tables, and the standard Huffman tables. Their frame
+/// headers and scans differ.
+const SAMPLED_JPEG_START: &[&str] = &[
+    "ffd8ffe000104a46494600010100000100010000ffdb00430003020203020203030303040303",
+    "04050805050404050a070706080c0a0c0c0b0a0b0b0d0e12100d0e110e0b0b10161011131415",
+    "15150c0f171816141812141514ffdb00430103040405040509050509140d0b0d141414141414",
+    "1414141414141414141414141414141414141414141414141414141414141414141414141414",
+    "141414141414",
+];
+
+const SAMPLED_JPEG_TABLES: &[&str] = &[
+    "ffc4001f0000010501010101010100000000000000000102030405060708090a0bffc400b510",
+    "00020103030204030505040400",
+    "00017d01020300041105122131410613516107227114328191a1082342b1c11552d1f0243362",
+    "7282090a161718191a25262728292a3435363738393a434445464748494a535455565758595a",
+    "636465666768696a737475767778797a838485868788898a92939495969798999aa2a3a4a5a6",
+    "a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7",
+    "e8e9eaf1f2f3f4f5f6f7f8f9faffc4001f010003010101010101010101000000000000010203",
+    "0405060708090a0bffc400b51100020102040403040705040400010277000102031104052131",
+    "061241510761711322328108144291a1b1c109233352f0156272d10a162434e125f11718191a",
+    "262728292a35363738393a434445464748494a535455565758595a636465666768696a737475",
+    "767778797a82838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7",
+    "b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae2e3e4e5e6e7e8e9eaf2f3f4f5f6f7f8f9",
+    "fa",
 ];
 
 const CMYK_JPEG: &[&str] = &[

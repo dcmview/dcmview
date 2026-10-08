@@ -441,6 +441,24 @@ pub fn jpeg_cases() -> Vec<Case> {
             flat(&[90, 140, 200], 16 * 16),
             4,
         ),
+        // Chroma at a quarter of the width (4:1:1), and at half the height
+        // (4:4:0).
+        lossy(
+            "quarter-width-chroma.jpg",
+            files::quarter_width_chroma_jpeg(),
+            (16, 32),
+            RGB8,
+            flat(&[90, 140, 200], 32 * 16),
+            4,
+        ),
+        lossy(
+            "half-height-chroma.jpg",
+            files::half_height_chroma_jpeg(),
+            (16, 32),
+            RGB8,
+            flat(&[90, 140, 200], 32 * 16),
+            4,
+        ),
         // Four channels are served as an approximate RGB.
         lossy(
             "cmyk.jpg",
