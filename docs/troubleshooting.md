@@ -156,6 +156,9 @@ The file's support reason identifies what prevents decoding:
 - `raster.jpeg_unsupported_process`: JPEG other than 8-bit baseline,
   extended sequential, or progressive Huffman.
 - `raster.too_large`: a frame exceeds 268,435,456 pixels.
+- `raster.file_too_large`: a PNG, JPEG or WebP is longer than 64 MiB plus
+  four times its decoded frame, usually because a large payload was appended.
+  It is listed as unsupported; frame requests do not attempt to decode it.
 
 Convert a copy to a supported layout: for example, re-encode JPEG-compressed
 TIFF using LZW, expand bilevel TIFF to 8-bit gray, or convert separate color
@@ -173,9 +176,10 @@ is built in a way the viewer refuses to follow:
 - a TIFF whose tiles are 4,096 pixels or more wider or longer than the
   image, which would have the decoder read far more than the image holds;
 - a TIFF strip or tile whose compressed data runs past its declared length;
-- a PNG, JPEG or WebP file larger than 64 MiB plus four times one decoded
-  frame, which a long WebP animation can be, or a TIFF frame whose data
-  takes more than that to read.
+- a TIFF frame whose data takes more than 64 MiB plus four times its
+  decoded frame to read;
+- a raster file that has grown since discovery listed it. Restart the viewer
+  to inspect the file again at its new length.
 
 Re-encode a copy with an ordinary tool (`tiffcp`, ImageMagick, `cwebp`); a
 file such tools cannot read is damaged.
@@ -240,6 +244,37 @@ Unset it before using `--no-token`, which is intended for a proxy that already
 authenticates and leaves the listener's API open.
 
 ## Viewer And Decode Errors
+
+### A frame is refused: it needs more decode memory than the budget
+
+Symptom: `422 decode_memory_exceeded`. The message says how many bytes the
+frame needs, how much the budget allows, and asks you to start dcmview with a
+larger `--decode-memory`. The file stays listed as renderable; repeating the
+request in the same session cannot help.
+
+Restart with a larger budget, for example:
+
+```bash
+dcmview --decode-memory 8GiB ./study_dir
+```
+
+The default is 4 GiB. See [Decode memory](configuration.md#decode-memory) for
+examples: 8 GiB serves 8-bit color up to 16,384 x 16,384 pixels, while 16-bit
+color with alpha at that size needs 17 GiB. Thumbnails share only half the
+budget, so a frame may open in the viewer but need a larger budget to have a
+thumbnail. The budget covers decodes in progress separately from the caches.
+
+### The API answers 503 decode_busy
+
+The request would have to wait for decode capacity, and its class's waiting
+queue is full. Wait the number of seconds in `Retry-After` (currently 1), then
+repeat the request. This answer is not cached and does not change the file's
+support state. Cached frames remain available.
+
+For ordinary viewer use this requires large frames decoding while over a
+thousand interactive requests accumulate: the queue holds 1,024 waiting
+requests. Thumbnails have a separate queue of 256. Reduce the number of
+requests in flight if an API client repeatedly reaches the limit.
 
 ### Image frame returns unsupported transfer syntax
 
