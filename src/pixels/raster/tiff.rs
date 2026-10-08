@@ -85,10 +85,15 @@ impl Page {
             "truncated TIFF page"
         );
         let mut entries = Vec::with_capacity(count as usize);
+        let mut seen = [0_u64; 1024];
         for index in 0..count {
             let mut raw = [0; 20];
             reader.read_exact(&mut raw[..size as usize])?;
             let tag = order.number(&raw[..2]) as u16;
+            let word = &mut seen[usize::from(tag / 64)];
+            let bit = 1_u64 << (tag % 64);
+            ensure!(*word & bit == 0, "TIFF page repeats a tag");
+            *word |= bit;
             let kind = order.number(&raw[2..4]) as u16;
             let value_start = if wide { 12 } else { 8 };
             let count = order.number(&raw[4..value_start]);
