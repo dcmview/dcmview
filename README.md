@@ -447,7 +447,11 @@ for display PNGs, 384 MiB for raw frames, 64 MiB for overlays and 64 MiB for
 thumbnail JPEGs. On smaller machines, `--cache-budget 256MiB` reduces these
 retained caches proportionally; it does not cap total process or browser
 memory. See [frame cache memory](docs/configuration.md#frame-cache-memory)
-for accepted sizes and limits.
+for accepted sizes and limits. Decodes in progress have a separate
+[`--decode-memory` budget](docs/configuration.md#decode-memory), defaulting
+to 4 GiB; a frame whose estimate exceeds it is refused with
+`422 decode_memory_exceeded` and a message naming the flag, while staying
+listed as renderable.
 
 ## Reporting Issues
 

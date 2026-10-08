@@ -21,6 +21,16 @@ diagnostic viewer.
 
 ### Added
 
+- `--decode-memory BYTES` sets a separate budget for decodes in progress,
+  defaulting to 4 GiB, with a 256 MiB minimum.
+- Byte-based decode admission reserves samples, intermediates and output
+  frames before work starts, with half the budget kept for interactive work
+  while thumbnails load. A frame too large for its class's share answers
+  `422 decode_memory_exceeded`; a full waiting queue answers `503 decode_busy`
+  with `Retry-After: 1`. Neither refusal is cached or changes catalog support.
+- `raster.file_too_large` identifies a PNG, JPEG or WebP longer than its
+  read budget (64 MiB plus four times its decoded frame).
+
 - `GET /api/file/{index}/frame/{frame}/thumbnail` returns JPEG previews at
   bucketed sizes in physical aspect, with the default or full-dynamic window.
   Thumbnails honour redaction boxes and display masking, omit shutters and
@@ -54,7 +64,8 @@ diagnostic viewer.
   first page repeats a tag is not listed. Refused images report
   `raster.unsupported_color`, `raster.unsupported_sample_format`,
   `raster.unsupported_compression`,
-  `raster.jpeg_unsupported_process`, or `raster.too_large`. JPEG-compressed
+  `raster.jpeg_unsupported_process`, `raster.too_large`, or
+  `raster.file_too_large`. JPEG-compressed
   and 1-, 2- and 4-bit TIFF are not decoded, and gray profiles are not
   carried.
 - The Explorer's Study view lists PNG, JPEG, TIFF and WebP files in an
@@ -80,6 +91,17 @@ diagnostic viewer.
   discovery: at most 16 per file, the last counting any that are not shown.
 
 ### Changed
+
+- A DICOM or raster frame whose decode estimate exceeds the budget is now
+  refused with `422 decode_memory_exceeded` instead of being attempted.
+  The default is 4 GiB; `--decode-memory` increases it without changing
+  whether the catalog lists a file as renderable.
+- A PNG, JPEG or WebP longer than its read budget is listed as unsupported
+  instead of failing with 500 on every frame request.
+- A raster file that has grown since it was listed is not decoded; restart
+  the viewer to inspect it again at its new length.
+- A dropped window/level preview no longer frees its decode permit while
+  its decode is still running.
 
 - `--cache-budget BYTES` now also covers the thumbnail cache, and its default
   total is 768 MiB instead of 704 MiB: 256, 384, 64 and 64 MiB for the
