@@ -121,12 +121,14 @@ impl Checks {
                 ] {
                     self.coordinate(*value, max, &format!("{path}/{name}"))?;
                 }
-                self.require(
-                    quantize(*x0) < quantize(*x1) && quantize(*y0) < quantize(*y1),
-                    Degenerate,
-                    path,
-                    "The rectangle must have ordered corners and positive area.",
-                )?;
+                if [x0, y0, x1, y1].iter().all(|v| v.is_finite()) {
+                    self.require(
+                        quantize(*x0) < quantize(*x1) && quantize(*y0) < quantize(*y1),
+                        Degenerate,
+                        path,
+                        "The rectangle must have ordered corners and positive area.",
+                    )?;
+                }
             }
             Geometry::Ellipse {
                 cx,
@@ -156,19 +158,19 @@ impl Checks {
                         "The ellipse number must be finite.",
                     )?;
                 }
-                self.require(
-                    rx > 0.0 && ry > 0.0,
-                    Degenerate,
-                    path,
-                    "The ellipse radii must be positive.",
-                )?;
-                self.require(
-                    (0.0..180.0).contains(&angle),
-                    BadAngle,
-                    &format!("{path}/angle"),
-                    "The angle must be at least zero and below 180 degrees.",
-                )?;
                 if [cx, cy, rx, ry, angle].iter().all(|v| v.is_finite()) {
+                    self.require(
+                        rx > 0.0 && ry > 0.0,
+                        Degenerate,
+                        path,
+                        "The ellipse radii must be positive.",
+                    )?;
+                    self.require(
+                        (0.0..180.0).contains(&angle),
+                        BadAngle,
+                        &format!("{path}/angle"),
+                        "The angle must be at least zero and below 180 degrees.",
+                    )?;
                     let (sin, cos) = angle.to_radians().sin_cos();
                     let dx = quantize((rx * cos).hypot(ry * sin));
                     let dy = quantize((rx * sin).hypot(ry * cos));
