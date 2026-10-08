@@ -176,11 +176,13 @@ the same way to arrive at the same key: this reading is part of the rules
 
 `alias_of`, when present, is the index of the first entry that held the same
 key. Files with the same UID and length provisionally share a key; their
-bytes are compared only when a caller needs a settled key, and then every
-file with that UID is read, whichever of them the caller asked about. If
-they differ, each takes its content key; existing UID keys remain until
-replaced by a digest, except that a failed digest removes such a key. If
-they agree, the UID key is settled. If the first file with the UID cannot
+bytes are compared only when a caller needs a settled key. The file asked
+about and the first file with the UID are read first. If they differ, each
+file of the group takes its content key: the two that were read at once,
+the others when they are viewed or asked about, and until then an existing
+UID key remains, except that a failed digest removes it. If they agree,
+every other file with that UID is read, whichever of them the caller asked
+about, and the UID key is settled when all agree. If the first file with the UID cannot
 be read when a settled key is first asked for, the UID key would name bytes
 nobody can read, so it is given up: each file that can be read takes its
 content key, and the first file has `file_key: null` and a `key_error`.

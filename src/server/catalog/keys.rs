@@ -285,10 +285,16 @@ impl FileRegistry {
     /// - nothing for a DICOM file whose UID no other loaded file has: the
     ///   key is returned at once and no byte is read;
     /// - the file for one without a key;
-    /// - every file that has the UID for a file whose UID another file of
-    ///   the same size also has, whichever of them is asked about. The cost
-    ///   is the bytes of those files, each read once, however many of their
-    ///   keys are asked for afterwards;
+    /// - for a file whose UID another file of the same size also has: first
+    ///   the file and the group's first file (the group's first two files
+    ///   when the first is asked about). When those two differ the group
+    ///   has split, the file's `b3:` key is returned, and no other file of
+    ///   the group is read on this call's behalf: the others are hashed
+    ///   when they are viewed or asked about. When they agree, every other
+    ///   file that has the UID is read before `sop:<uid>` is returned,
+    ///   whichever of them is asked about. The cost is then the bytes of
+    ///   those files, each read once, however many of their keys are asked
+    ///   for afterwards;
     /// - the file and the first file that has the UID for a file found
     ///   after a key of its UID was returned.
     ///

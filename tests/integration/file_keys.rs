@@ -633,7 +633,8 @@ fn orders(count: usize) -> Vec<Vec<usize>> {
 /// file of such a group is asked about first, in whatever order the files
 /// were found, the key `ensure_key` returns is the one the file ends the
 /// session with; two files given one key hold the same bytes; and every
-/// file of the group was read once to know it.
+/// file of the group was read once to know it. A key of the file's own
+/// content costs two reads when the file and the group's first file differ.
 #[tokio::test]
 async fn a_key_that_was_asked_for_is_final_whatever_order_files_are_found_and_asked_in() {
     const UID: &str = "1.2.826.0.1.3680043.10.516.1";
@@ -688,19 +689,23 @@ async fn a_key_that_was_asked_for_is_final_whatever_order_files_are_found_and_as
                     .unwrap_or_else(|error| panic!("{context}: {error}"));
                 assert_eq!(key.as_str(), expected[first_asked], "{context}");
                 // A key the files share is returned only when every one of
-                // them was read. A key of the file's own content is known as
-                // soon as one file is seen to differ.
+                // them was read. The file asked about and the group's first
+                // file are read first (the first two files when the first
+                // is asked about): when they differ the answer is known,
+                // and nothing else was read for it.
                 let stats = registry.key_stats();
-                if identical {
+                let compared = if first_asked == 0 { 1 } else { first_asked };
+                if b3(&paths[0]) == b3(&paths[compared]) {
                     assert_eq!(
                         (stats.files_hashed, stats.bytes_hashed),
                         (group.len() as u64, group_bytes),
                         "{context}"
                     );
                 } else {
-                    assert!(
-                        (2..=group.len() as u64).contains(&stats.files_hashed),
-                        "{context}: {stats:?}"
+                    assert_eq!(
+                        (stats.files_hashed, stats.bytes_hashed),
+                        (2, size(&paths[0]) + size(&paths[compared])),
+                        "{context}"
                     );
                 }
                 let returned_at = registry.files_page(None, None).revision;
@@ -772,6 +777,61 @@ async fn a_key_that_was_asked_for_is_final_whatever_order_files_are_found_and_as
             }
         }
     }
+}
+
+/// A folder whose files all carry one UID and one length and differ (a
+/// de-identifier that wrote a constant UID) is not read whole for one key:
+/// the file asked about and the first file are read, they differ, and that
+/// is the answer. The other files are read when they are viewed or asked
+/// about, each once.
+#[tokio::test]
+async fn one_key_of_a_folder_with_a_constant_uid_costs_two_reads() {
+    const UID: &str = "1.2.826.0.1.3680043.10.522.1";
+    const FILES: usize = 12;
+    let dir = tempfile::tempdir().expect("temp dir");
+    let paths = (0..FILES)
+        .map(|index| dir.path().join(format!("{index:02}.dcm")))
+        .collect::<Vec<_>>();
+    for (index, path) in paths.iter().enumerate() {
+        write_dicom(path, Some(UID), index as u16 + 1, 8);
+    }
+    let (server, registry) = serve(&paths).await;
+
+    // (the file asked about, the files read for its key)
+    for (asked, read) in [(9_usize, vec![0, 9]), (0, vec![]), (4, vec![4])] {
+        let before = registry.key_stats();
+        let key = registry.ensure_key(asked).await.expect("key");
+        assert_eq!(key.as_str(), b3(&paths[asked]), "file {asked}");
+        hashing_done(&registry).await;
+        let stats = registry.key_stats();
+        assert_eq!(
+            (
+                stats.files_hashed - before.files_hashed,
+                stats.bytes_hashed - before.bytes_hashed
+            ),
+            (
+                read.len() as u64,
+                read.iter().map(|&index| size(&paths[index])).sum::<u64>()
+            ),
+            "file {asked}: nothing is read but {read:?}, also once the queue is empty"
+        );
+    }
+
+    // A file nobody asked about still shows the UID key until it is viewed;
+    // it is then hashed, and its key replaced once.
+    let listed = catalog(&server, "").await;
+    assert_eq!(shown(&entries(&listed)[5]), Shown::Implied);
+    assert_eq!(frame_key(&server, 5).await, Some(format!("sop:{UID}")));
+    hashing_done(&registry).await;
+    assert_eq!(key_text(&registry, 5), Some(b3(&paths[5])));
+    assert_eq!(registry.key_stats().files_hashed, 4);
+    let replaced = registry
+        .files_page(Some(0), None)
+        .rekeys
+        .iter()
+        .map(|rekey| rekey.index)
+        .collect::<Vec<_>>();
+    assert_eq!(replaced, vec![0, 9, 4, 5]);
 }
 
 /// What the late file gets is a decision the design leaves open, and the

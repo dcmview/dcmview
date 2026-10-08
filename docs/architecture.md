@@ -873,7 +873,10 @@ a record or an export. To settle `sop:<uid>` for a file whose UID other
 loaded files of the same length carry, every one of those files is hashed
 first (`docs/design/annotation-model.md` 1.7: verified "before the first
 annotation write on either file"), so two files with one settled key hold
-the same bytes, whatever order they were found or asked about in. When the
+the same bytes, whatever order they were found or asked about in. The file
+asked about and the group's first file are hashed before the others: when
+those two differ the group is split, the file has its `b3:` key, and the
+rest of the group is not read for that request. When the
 first file with the UID cannot be hashed at that point, `sop:<uid>` would
 name bytes nobody can read: the group is split instead, each file that was
 read takes its `b3:` key, and the first file has no key and keeps its
@@ -930,12 +933,14 @@ needs it and somebody has a use for the key:
 - **On request.** `FileRegistry::ensure_key` returns a file's key once it is
   settled, hashing first what that takes: nothing for a DICOM file whose UID
   no other loaded file has; the file itself for one without a key; and, for
-  a file whose UID other files of the same length carry, every one of those
-  files, whichever of them is asked about. That last case costs the bytes
+  a file whose UID other files of the same length carry, that file and the
+  first file with the UID, then every other one of those files if the two
+  agree, whichever of them is asked about. That last case costs the bytes
   of the group's files, each read once, and is paid only when a key of the
   group is relied on: a dataset that holds a copy of every file is not read
   twice for being opened. A folder whose files all carry one UID and one
-  length is read whole before the first key of it is returned.
+  length and differ costs two reads for a key; its other files are hashed
+  as they are viewed or asked about.
 - **For a file found after its UID's key was relied on,** when a frame of it
   is served: the file and, if it was never hashed, the first file with the
   UID, since the late file has no key until the two are compared.
