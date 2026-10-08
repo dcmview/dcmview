@@ -289,9 +289,7 @@ pub fn declared(kind: CodestreamKind, frame: &[u8]) -> Result<Declared> {
     match kind {
         CodestreamKind::Jpeg | CodestreamKind::JpegLs => read_jpeg(frame, kind),
         CodestreamKind::Jpeg2000 => read_jpeg2000(frame),
-        CodestreamKind::JpegXl => {
-            todo!("read the remaining codestream headers")
-        }
+        CodestreamKind::JpegXl => read_jpeg_xl(frame),
     }
 }
 
@@ -645,6 +643,45 @@ fn ceil_shift(value: u64, exponent: u8) -> u64 {
     (value + (1_u64 << exponent) - 1) >> exponent
 }
 
+fn read_jpeg_xl(frame: &[u8]) -> Result<Declared> {
+    let mut uninit = jxl_oxide::JxlImage::builder()
+        .alloc_tracker(jxl_oxide::AllocTracker::with_limit(
+            usize::try_from(JXL_DECODE_BASE_BYTES).unwrap_or(usize::MAX),
+        ))
+        .build_uninit();
+    let header = frame
+        .get(..frame.len().min(JXL_HEADER_MAX_BYTES))
+        .ok_or_else(|| anyhow!("invalid JPEG XL header range"))?;
+    uninit
+        .feed_bytes(header)
+        .map_err(|error| anyhow!("{error}"))?;
+    let image = match uninit.try_init().map_err(|error| anyhow!("{error}"))? {
+        jxl_oxide::InitializeResult::Initialized(image) => image,
+        jxl_oxide::InitializeResult::NeedMoreData(_) => {
+            return Err(anyhow!(
+                "JPEG XL header needs more bytes than available within the limit"
+            ));
+        }
+    };
+    let metadata = &image.image_header().metadata;
+    let (precision, integer_samples) = match metadata.bit_depth {
+        jxl_oxide::image::BitDepth::IntegerSample { bits_per_sample } => (bits_per_sample, true),
+        jxl_oxide::image::BitDepth::FloatSample {
+            bits_per_sample, ..
+        } => (bits_per_sample, false),
+    };
+    Ok(Declared {
+        columns: image.width(),
+        rows: image.height(),
+        components: u32::try_from(image.pixel_format().channels())?,
+        precision,
+        structure: Structure::JpegXl {
+            integer_samples,
+            animated: metadata.animation.is_some(),
+        },
+    })
+}
+
 /// Whether what a frame declares is what the entry says, so that decoding
 /// it costs what the entry's image costs.
 ///
@@ -757,8 +794,69 @@ pub fn jxl_decode_limit(file: &FileEntry) -> u64 {
 /// `file.bits_allocated` other than 8 or 16; a short write. The output
 /// buffer is sized from the entry, never from the stream.
 pub(crate) fn decode_jpeg_xl(file: &FileEntry, frame: &[u8]) -> Result<Vec<u8>> {
-    let _ = (file, frame);
-    todo!("DCM1: decode a JPEG XL frame under the allocation limit")
+    if !matches!(file.bits_allocated, 8 | 16) {
+        return Err(anyhow!(
+            "JPEG XL output Bits Allocated is {}, expected 8 or 16",
+            file.bits_allocated
+        ));
+    }
+    let image = jxl_oxide::JxlImage::builder()
+        .alloc_tracker(jxl_oxide::AllocTracker::with_limit(
+            usize::try_from(jxl_decode_limit(file)).unwrap_or(usize::MAX),
+        ))
+        .read(frame)
+        .map_err(|error| anyhow!("{error}"))?;
+    let render = image.render_frame(0).map_err(|error| anyhow!("{error}"))?;
+    let mut stream = render.stream();
+    for (name, actual, expected) in [
+        ("width", stream.width(), file.columns),
+        ("height", stream.height(), file.rows),
+        ("channels", stream.channels(), file.samples_per_pixel),
+    ] {
+        if actual != expected {
+            return Err(anyhow!(
+                "JPEG XL stream {name} is {actual}, expected {expected}"
+            ));
+        }
+    }
+    let samples = usize::try_from(file.rows)?
+        .checked_mul(usize::try_from(file.columns)?)
+        .and_then(|pixels| pixels.checked_mul(usize::try_from(file.samples_per_pixel).ok()?))
+        .ok_or_else(|| anyhow!("JPEG XL output sample count overflows"))?;
+    if file.bits_allocated == 8 {
+        let mut buffer = sample_buffer::<u8>(samples)?;
+        let written = stream.write_to_buffer(&mut buffer);
+        if written != samples {
+            return Err(anyhow!(
+                "JPEG XL stream wrote {written} samples, expected {samples}"
+            ));
+        }
+        Ok(buffer)
+    } else {
+        let mut buffer = sample_buffer::<u16>(samples)?;
+        let written = stream.write_to_buffer(&mut buffer);
+        if written != samples {
+            return Err(anyhow!(
+                "JPEG XL stream wrote {written} samples, expected {samples}"
+            ));
+        }
+        let byte_count = samples
+            .checked_mul(2)
+            .ok_or_else(|| anyhow!("JPEG XL output byte count overflows"))?;
+        let mut output = Vec::new();
+        output.try_reserve_exact(byte_count)?;
+        for sample in buffer {
+            output.extend_from_slice(&sample.to_le_bytes());
+        }
+        Ok(output)
+    }
+}
+
+fn sample_buffer<T: Default + Clone>(samples: usize) -> Result<Vec<T>> {
+    let mut buffer = Vec::new();
+    buffer.try_reserve_exact(samples)?;
+    buffer.resize(samples, T::default());
+    Ok(buffer)
 }
 
 /// Inflates one Deflated Image Frame fragment (a raw deflate stream) that
