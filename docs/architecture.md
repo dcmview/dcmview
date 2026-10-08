@@ -646,8 +646,11 @@ See [the HTTP API reference](api.md) for endpoint payloads and headers.
 
 `crates/dcmview-annotation` is the one definition of what an annotation is.
 It is a pure model: types, their JSON form, and the rules a value must meet.
-It holds no state and applies no operation; a store does that. The viewer
-does not depend on it yet. The design it implements is
+It holds no state and applies no operation; a store does that. It does not
+touch the filesystem, the network or the environment, and every function
+gives the same result for the same arguments except `new_id`, which reads
+the system clock and the operating system's random number generator. The
+viewer does not depend on it yet. The design it implements is
 `docs/design/annotation-model.md`.
 
 | Module | Holds |
@@ -685,10 +688,24 @@ Rules the crate keeps:
   and distinct in `set`, and beside it the list an import read when that
   differs (`as_written`), so an unedited EMBED row writes back the list it
   was read from. An explicit list that names every frame is not `"all"`.
-- **Unknown members survive.** A document, file, layer, annotation, label
-  and schema item keep members this version does not know and write them
-  back. Within a document major version members are only added; a new
+- **Unknown members survive where a type keeps them.** The document, the
+  schema and its classes, fields and options, a file and its `space`, a
+  layer and its `source`, an annotation and a label keep members this
+  version does not know and write them back. A geometry, a frame set, a
+  code, a spacing entry, an operation, its envelope and its patches do not:
+  an unknown member there is ignored when read. A label target with one is
+  refused. Within a document major version members are only added; a new
   geometry type, operation or enum value is a new major version.
+- **Each member is written once.** A member the model names is refused when
+  the text holds it twice. A repeated key inside a map whose keys are data
+  (`attributes`, `extensions`, a mask's frames and tiles, the unknown
+  members) is not: the last one is kept.
+- **Absent is left out.** An optional member is not written when it is
+  absent, and `null` is read as absent: a record read with `"score": null`
+  or `"derived_from": null` is written back without the member. The members
+  written as `null` are a file's identifiers and digests, a layer's `color`,
+  a document's `schema`, and an operation's `base_rev`, `before` and
+  `after`.
 - **Ids.** Record and operation ids are UUIDv7. Layer ids and schema ids are
   1 to 64 characters of `A-Z a-z 0-9 . - _`.
 - **Queue keys.** `Op::queue_keys` gives what a client orders an operation
@@ -696,8 +713,17 @@ Rules the crate keeps:
   frame, the label target's canonical id (`patient:`, `study:`, `series:`,
   `folder:<root>/<path>`) otherwise, and the layer id for layer operations.
 - **Bounded input.** Every parser and validator returns an error and never
-  panics, and refuses input past the constants in `limits` before doing work
-  in proportion to it. A validation reports at most 32 violations.
+  panics. Reading refuses text longer than its bound (256 MiB for a
+  document, 16 MiB for an operation envelope) before parsing it, and within
+  that bound builds every list the text holds. A validation compares each
+  list and string with its constant in `limits` before visiting its items,
+  does work linear in the size of the value, and reports at most 32
+  violations.
+- **An operation is at most 16 MiB of text.** Create, delete and restore
+  carry the whole annotation, mask included, so a mask of more tiles than
+  fit in one envelope cannot travel as one of them: about 2,000 tiles at the
+  longest payload, an area near 2,900 by 2,900 pixels, where a mask may hold
+  262,144. A full-frame mask at depth 8 on a large image is past it.
 - **Redaction boxes are not part of the model.** They stay in
   `src/redactions.rs`, outside the model, its operations and every export.
 

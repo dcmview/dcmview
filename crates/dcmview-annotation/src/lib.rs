@@ -5,7 +5,9 @@
 //! repositories that pin it by dcmview release tag. It is a pure model:
 //! types, their wire format, and the rules a value must meet. It has no
 //! axum, tokio, DICOM or pixel-pipeline dependency and never touches the
-//! filesystem or the network.
+//! filesystem, the network or the environment. Every function gives the same
+//! result for the same arguments, with one exception: [`new_id`] reads the
+//! system clock and the operating system's random number generator.
 //!
 //! The design is `docs/design/annotation-model.md`; section numbers in the
 //! documentation of this crate refer to it.
@@ -45,10 +47,29 @@
 //! - Every floating-point member is written without a fraction when it is a
 //!   whole number (`340`, not `340.0`), so Rust and JavaScript writers agree.
 //! - Nothing here panics on input: every parser and validator returns an
-//!   error, and refuses input past the bounds in [`limits`] before doing
-//!   work proportional to it.
-//! - Within a document major version, members are only added; unknown
-//!   members are kept and written back.
+//!   error. Reading is bounded by the length of the text, which is checked
+//!   before it is parsed; it builds every list the text holds, however long.
+//!   `validate` then compares each list and string with its bound in
+//!   [`limits`] before it visits the items, and its work is linear in the
+//!   size of the value.
+//! - Within a document major version, members are only added. A member this
+//!   version does not know is kept and written back on the types that have an
+//!   `unknown` map: the document, the schema and its classes, fields and
+//!   options, a file and its `space`, a layer and its `source`, an
+//!   annotation and a label. Everywhere else (a geometry, a frame set, a
+//!   code, a spacing entry, an operation, its envelope and its patches) it is
+//!   ignored when read and so not written back, and a label target with one
+//!   is refused.
+//! - A member that is optional is left out when it is absent, and `null` is
+//!   read as absent (`score`, `derived_from`, a class's `color` and `code`,
+//!   a patch's members). The members that are written as `null` are the ones
+//!   a type's example shows as `null`: a file's identifiers and digests, a
+//!   layer's `color`, a document's `schema`, an operation's `base_rev`,
+//!   `before` and `after`.
+//! - A member the model names is refused when the text holds it twice. A
+//!   repeated key inside a map whose keys are data (`attributes`,
+//!   `extensions`, a mask's frames and tiles, the unknown members) is not:
+//!   the last one is kept.
 //! - The wire shapes are pinned by the fixtures under `tests/fixtures/`.
 //!   Extend them when a member is added.
 

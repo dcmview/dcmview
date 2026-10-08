@@ -208,8 +208,10 @@ Frontend (Svelte 5, compiled into the binary via rust-embed):
   types (`Document`, `FileRef`, `Annotation`, `Label`, `Layer`,
   `LabelSchema`, `Geometry`, `FrameScope`), `FileKey` and `KEY_RULES`, the
   operations (`Op`, `OpEnvelope`, `ApplyResult`) and the `validate`
-  functions. It is a pure model with no viewer, server or DICOM dependency,
-  and the viewer does not use it yet. Its TypeScript
+  functions. It is a pure model with no viewer, server or DICOM dependency
+  and no filesystem, network or environment access; `new_id` is its one
+  function that reads the clock and the random number generator. The viewer
+  does not use it yet. Its TypeScript
   (`frontend/src/generated/annotation-types.ts`) and JSON Schema
   (`crates/dcmview-annotation/schema/`) are generated; never hand-edit them.
 - `src/api/contracts.rs` is the source of truth for the HTTP contract: the
@@ -508,9 +510,16 @@ is cached between requests.
 - Reading checks shape; the `validate` functions check every invariant, and
   every write goes through them. Do not move an invariant into
   deserialization: records the lenient EMBED import read must stay readable.
-- Nothing in the crate panics on input. A parser or validator refuses input
-  past the constants in `limits` before doing work in proportion to it; a
-  new list or string gets a bound there, stated as a fixed number.
+- Nothing in the crate panics on input. Reading is bounded by the length of
+  the text, checked before parsing. A `validate` function compares a list or
+  string with its constant in `limits` before visiting its items, and its
+  work stays linear in the size of the value: look things up through an
+  index built once per call, never by scanning a schema list per record. A
+  new list or string gets a bound in `limits`, stated as a fixed number.
+- Tests of what is written compare text, not only `serde_json::Value`: a
+  `Value` keeps the last of two members with one name and hides a member
+  written twice. A type that flattens a nested value beside an `unknown` map
+  must keep the nested value's members out of the map.
 - A new member of a wire type is optional on read and is added to
   `tests/fixtures/document.json` or `operations.json`; then regenerate the
   TypeScript and JSON Schema. A new geometry type, operation or enum value

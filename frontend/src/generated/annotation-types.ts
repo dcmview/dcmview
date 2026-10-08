@@ -33,7 +33,15 @@ attributes: { [key in string]: LabelValue },
 /**
  * Adapter-specific data, keyed by adapter id.
  */
-extensions: { [key in string]: JsonValue }, rev: number, created_by: Author, created_at: Timestamp, modified_by: Author, modified_at: Timestamp, derived_from?: string, score?: number, };
+extensions: { [key in string]: JsonValue }, rev: number, created_by: Author, created_at: Timestamp, modified_by: Author, modified_at: Timestamp, 
+/**
+ * Left out when absent; `null` is read as absent.
+ */
+derived_from?: string, 
+/**
+ * Left out when absent; `null` is read as absent.
+ */
+score?: number, };
 
 /**
  * The result of one envelope (`docs/design/annotation-model.md` 7.4). A
@@ -103,9 +111,11 @@ export type Current = { "kind": "annotation", record: Annotation, } | { "kind": 
  * `schema` is `null` for a session without one, which means
  * [`LabelSchema::implicit`]. A deleted record is not in a document.
  *
- * Members this version does not know are kept on the document and on every
- * file, layer, annotation, label and schema item, and written back
- * unchanged, so a round trip through an older reader loses nothing.
+ * Members this version does not know are kept and written back unchanged
+ * on the document, on the schema and each of its classes, fields and
+ * options, and on every file (and its `space`), layer (and its `source`),
+ * annotation and label. Inside a geometry, a frame set, a code or a spacing
+ * entry they are ignored when read, and a label target with one is refused.
  */
 export type Document = { format: string, version: string, schema: LabelSchema | null, files: Array<FileRef>, layers: Array<Layer>, annotations: Array<Annotation>, labels: Array<Label>, 
 /**
@@ -336,7 +346,15 @@ field: string, value: LabelValue, layer: LayerId,
 /**
  * Adapter-specific data, keyed by adapter id.
  */
-extensions: { [key in string]: JsonValue }, rev: number, created_by: Author, created_at: Timestamp, modified_by: Author, modified_at: Timestamp, derived_from?: string, score?: number, };
+extensions: { [key in string]: JsonValue }, rev: number, created_by: Author, created_at: Timestamp, modified_by: Author, modified_at: Timestamp, 
+/**
+ * Left out when absent; `null` is read as absent.
+ */
+derived_from?: string, 
+/**
+ * Left out when absent; `null` is read as absent.
+ */
+score?: number, };
 
 /**
  * A label schema. It has its own id and version, independent of the model

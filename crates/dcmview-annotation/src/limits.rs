@@ -1,17 +1,25 @@
 //! Every size bound the crate enforces, as fixed numbers.
 //!
-//! Model data arrives from other processes and from files a user picked, so
-//! every parser and validator in this crate refuses input past these bounds
-//! before doing work proportional to it. The bounds are part of the contract:
-//! a consumer may rely on a validated value staying inside them. Raising one
-//! is a compatible change; lowering one is not.
+//! Model data arrives from other processes and from files a user picked.
+//! The two text bounds are checked before any parsing; within them, reading
+//! builds whatever the text holds. Every other bound is checked by the
+//! `validate` functions, each before the items of the list or the bytes of
+//! the string it bounds are visited. A parser of one of the validated
+//! strings ([`crate::FileKey`] and the like) refuses an over-long string on
+//! its length. The bounds are part of the contract: a consumer may rely on a
+//! validated value staying inside them. Raising one is a compatible change;
+//! lowering one is not.
 
 /// Largest JSON document [`crate::Document::from_json_str`] reads:
 /// 268,435,456 bytes (256 MiB). Larger exports use JSON Lines.
 pub const MAX_DOCUMENT_BYTES: usize = 268_435_456;
 
 /// Largest JSON operation envelope [`crate::OpEnvelope::from_json_str`]
-/// reads: 16,777,216 bytes (16 MiB).
+/// reads: 16,777,216 bytes (16 MiB). A `Batch` is one envelope. An operation
+/// that carries a whole annotation (create, delete and restore) carries its
+/// mask, so a mask of more tiles than fit here cannot travel as one
+/// operation: about 2,000 tiles at the longest payload
+/// ([`MAX_TILE_PAYLOAD_CHARS`]), far fewer than [`MAX_MASK_TILES`].
 pub const MAX_ENVELOPE_BYTES: usize = 16_777_216;
 
 /// Most operations in one `Batch`: 10,000.

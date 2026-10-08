@@ -40,9 +40,11 @@ pub const VERSION_MAJOR: u32 = 1;
 /// `schema` is `null` for a session without one, which means
 /// [`LabelSchema::implicit`]. A deleted record is not in a document.
 ///
-/// Members this version does not know are kept on the document and on every
-/// file, layer, annotation, label and schema item, and written back
-/// unchanged, so a round trip through an older reader loses nothing.
+/// Members this version does not know are kept and written back unchanged
+/// on the document, on the schema and each of its classes, fields and
+/// options, and on every file (and its `space`), layer (and its `source`),
+/// annotation and label. Inside a geometry, a frame set, a code or a spacing
+/// entry they are ignored when read, and a label target with one is refused.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct Document {
     pub format: String,

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Document",
-  "description": "One self-contained set of model data.\n\n```json\n{ \"format\": \"dcmview.annotations\", \"version\": \"1.0\",\n  \"schema\": { ... }, \"files\": [ ... ], \"layers\": [ ... ],\n  \"annotations\": [ ... ], \"labels\": [ ... ] }\n```\n\n`schema` is `null` for a session without one, which means\n[`LabelSchema::implicit`]. A deleted record is not in a document.\n\nMembers this version does not know are kept on the document and on every\nfile, layer, annotation, label and schema item, and written back\nunchanged, so a round trip through an older reader loses nothing.",
+  "description": "One self-contained set of model data.\n\n```json\n{ \"format\": \"dcmview.annotations\", \"version\": \"1.0\",\n  \"schema\": { ... }, \"files\": [ ... ], \"layers\": [ ... ],\n  \"annotations\": [ ... ], \"labels\": [ ... ] }\n```\n\n`schema` is `null` for a session without one, which means\n[`LabelSchema::implicit`]. A deleted record is not in a document.\n\nMembers this version does not know are kept and written back unchanged\non the document, on the schema and each of its classes, fields and\noptions, and on every file (and its `space`), layer (and its `source`),\nannotation and label. Inside a geometry, a frame set, a code or a spacing\nentry they are ignored when read, and a label target with one is refused.",
   "type": "object",
   "properties": {
     "annotations": {
@@ -91,6 +91,7 @@
           "$ref": "#/$defs/Author"
         },
         "derived_from": {
+          "description": "Left out when absent; `null` is read as absent.",
           "type": [
             "string",
             "null"
@@ -132,6 +133,7 @@
           "minimum": 0
         },
         "score": {
+          "description": "Left out when absent; `null` is read as absent.",
           "type": [
             "number",
             "null"
@@ -801,6 +803,7 @@
           "$ref": "#/$defs/Author"
         },
         "derived_from": {
+          "description": "Left out when absent; `null` is read as absent.",
           "type": [
             "string",
             "null"
@@ -837,6 +840,7 @@
           "minimum": 0
         },
         "score": {
+          "description": "Left out when absent; `null` is read as absent.",
           "type": [
             "number",
             "null"

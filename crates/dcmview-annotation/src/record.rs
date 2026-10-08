@@ -16,6 +16,10 @@ use uuid::Uuid;
 /// A new record or operation id: a UUIDv7 for the current time. Ids are time
 /// ordered and unique across users and processes, so records from several
 /// annotators merge with no renumbering.
+///
+/// This is the one function of the crate that is not a function of its
+/// arguments: it reads the system clock and the operating system's random
+/// number generator. Code that needs repeatable ids builds them itself.
 pub fn new_id() -> Uuid {
     Uuid::now_v7()
 }
@@ -36,6 +40,10 @@ pub fn new_id() -> Uuid {
 /// - `score` is a model's confidence, from 0 to 1 inclusive. Human records
 ///   leave it out.
 ///
+/// `derived_from` and `score` are left out when absent. `null` is read as
+/// absent, so a record written with `"score": null` is written back without
+/// the member.
+///
 /// Invariants, checked wherever a record is validated: `score`, when
 /// present, is finite and in `[0, 1]` (`bad_score`); `derived_from`, when
 /// present, is a UUIDv7 (`id_not_uuid_v7`).
@@ -46,9 +54,11 @@ pub struct RecordMeta {
     pub created_at: Timestamp,
     pub modified_by: Author,
     pub modified_at: Timestamp,
+    /// Left out when absent; `null` is read as absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub derived_from: Option<Uuid>,
+    /// Left out when absent; `null` is read as absent.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
