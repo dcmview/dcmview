@@ -230,7 +230,23 @@ async fn a_webp_profile_chunk_is_never_allocated_at_a_length_it_only_declares() 
     claim.extend_from_slice(&[0x33; 64]);
     let too_large = files::icc_profile(b"RGB ", pixels::RASTER_ICC_MAX_BYTES + 2, 0x33);
     let largest = files::icc_profile(b"RGB ", pixels::RASTER_ICC_MAX_BYTES, 0x33);
+    // Two profile chunks before the image: the first is the file's profile,
+    // whatever a later one holds.
+    let first = files::icc_profile(b"RGB ", 600, 0x44);
     let cases = [
+        (
+            "two-profiles.webp",
+            extended(
+                PROFILE,
+                (8, 8),
+                &[
+                    &files::riff_chunk(b"ICCP", &first),
+                    &files::riff_chunk(b"ICCP", &too_large),
+                    &image,
+                ],
+            ),
+            Some(first.len()),
+        ),
         (
             "claim.webp",
             extended(PROFILE, (8, 8), &[&image, &claim]),

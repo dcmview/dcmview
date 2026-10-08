@@ -527,7 +527,9 @@ pub fn tiff_cases() -> Vec<Case> {
     let rgb16: Vec<u16> = vec![65_535, 0, 256, 1, 2, 3, 40_000, 50_000, 60_000, 0, 0, 0];
     let rgba: Vec<u8> = vec![200, 100, 50, 255, 100, 50, 25, 128, 0, 0, 0, 0, 7, 7, 7, 7];
     // The same kind of pixels stored premultiplied: colour times alpha / 255.
-    let premultiplied: Vec<u8> = vec![200, 100, 50, 255, 50, 25, 13, 128, 0, 0, 0, 0, 7, 7, 7, 7];
+    // The last pixel has a colour above its alpha, which no premultiplied
+    // pixel has: it ends at full scale.
+    let premultiplied: Vec<u8> = vec![200, 100, 50, 255, 50, 25, 13, 128, 0, 0, 0, 0, 9, 7, 7, 7];
     let unassociated: Vec<u8> = premultiplied
         .chunks(4)
         .flat_map(|pixel| {

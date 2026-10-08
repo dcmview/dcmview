@@ -7,7 +7,7 @@ use super::raster_files::{self as files, CountedFile, TiffPage, TiffValue};
 use dcmview::loader::{self, DiscoverOptions, FormatSelection};
 use dcmview::pixels::{
     self, PixelError, PixelResult, RasterFrame, RASTER_JPEG_MAX_SCANS, RASTER_READ_BUFFER_BYTES,
-    RASTER_TIFF_MAX_CHUNKS,
+    RASTER_TIFF_MAX_CHUNKS, RASTER_TIFF_MAX_TAGS,
 };
 use dcmview::types::FileEntry;
 use image::ExtendedColorType;
@@ -514,6 +514,44 @@ fn hostile_files() -> Vec<Hostile> {
     )
     .0;
 
+    // A palette image, and the same image once its palette has
+    // transparency: three samples a pixel, then four.
+    let palette_png = |transparency: bool| {
+        let mut chunks = vec![files::png_chunk(b"PLTE", &[0, 0, 0, 255, 255, 255])];
+        if transparency {
+            chunks.push(files::png_chunk(b"tRNS", &[0, 128]));
+        }
+        chunks.push(files::png_idat(&[0b0101_0101], 1));
+        files::png_from_chunks((8, 1), 1, 3, false, &chunks)
+    };
+    // The same colour and alpha samples, declared unassociated (2) and
+    // associated (1).
+    let alpha_tiff = |kind: u16| {
+        files::tiff_file(
+            false,
+            &[TiffPage::strip((4, 4), &[8, 8, 8, 8], 2, vec![40; 64])
+                .with(338, TiffValue::Short(vec![kind]))],
+        )
+        .0
+    };
+    // Eight rows in strips of four, with a table of one strip: the lower
+    // half of the image has no samples.
+    let tiff_half = files::tiff_file(
+        false,
+        &[TiffPage::strip((8, 8), &[8], 1, vec![5; 32]).with(278, TiffValue::Long(vec![4]))],
+    )
+    .0;
+    // A page of `count` tags: the nine of the plain page and private ones,
+    // each stored in its entry, so the page stays where the listed one is.
+    let tagged = |count: usize| {
+        let mut page = small_tiff(1, vec![5; 64]);
+        let private = count - page.tags.len() - 2;
+        for tag in 0..private {
+            page = page.with(40_000 + tag as u16, TiffValue::Short(vec![1]));
+        }
+        files::tiff_file(false, &[page]).0
+    };
+
     let budget_of_small = 64 * MIB + 4 * 64 * 3;
     let longer_than_budget =
         |bytes: &[u8]| CountedFile::with_tail(bytes.to_vec(), &[0], budget_of_small + MIB);
@@ -554,6 +592,14 @@ fn hostile_files() -> Vec<Hostile> {
                 &[files::png_idat(&[1, 2, 3, 4], 4)],
             ),
         ),
+        // A palette that gained transparency is another layout than the one
+        // listed, and is not served as the old one.
+        Hostile::new(
+            "png palette that gained transparency",
+            palette_png(false),
+            Fails,
+        )
+        .replaced_by(palette_png(true)),
         Hostile {
             replaced: Some(longer_than_budget(&small_jpeg)),
             ..Hostile::new("jpeg longer than its budget", small_jpeg.clone(), Fails)
@@ -651,6 +697,17 @@ fn hostile_files() -> Vec<Hostile> {
         .replaced_by(tiff_resized),
         Hostile::new("tiff cut before its page", plain_tiff.clone(), Fails)
             .replaced_by(plain_tiff[..plain_tiff.len() - 40].to_vec()),
+        // Alpha that is now declared associated would be served without
+        // being un-premultiplied.
+        Hostile::new("tiff alpha that became associated", alpha_tiff(2), Fails)
+            .replaced_by(alpha_tiff(1)),
+        // A frame is never padded out where the page has no strip.
+        Hostile::new("tiff with strips for half its rows", tiff_half, Fails),
+        // As many tags as a page may have decode; one more does not.
+        Hostile::new("tiff at the tag limit", plain_tiff.clone(), Decodes)
+            .replaced_by(tagged(RASTER_TIFF_MAX_TAGS)),
+        Hostile::new("tiff over the tag limit", plain_tiff.clone(), Fails)
+            .replaced_by(tagged(RASTER_TIFF_MAX_TAGS + 1)),
     ]
 }
 
@@ -737,8 +794,8 @@ pub(super) async fn assert_hostile(cases: Vec<Hostile>) {
     }
 }
 
-/// A profile that is too large or is not for RGB is left out; the frame is
-/// still decoded.
+/// A profile that is too large, is not where its tag says, or belongs to a
+/// gray image is left out; the frame is still decoded.
 #[tokio::test]
 async fn an_unusable_profile_is_dropped_and_the_frame_kept() {
     let small_jpeg = files::baseline_jpeg(ExtendedColorType::Rgb8, (8, 8), &[90; 8 * 8 * 3]);
@@ -757,9 +814,31 @@ async fn an_unusable_profile_is_dropped_and_the_frame_kept() {
     };
     let largest = files::icc_profile(b"RGB ", pixels::RASTER_ICC_MAX_BYTES, 0x33);
     let too_large = files::icc_profile(b"RGB ", pixels::RASTER_ICC_MAX_BYTES + 1, 0x33);
+    // A gray image with a profile for RGB: no gray frame carries a profile.
+    let mut gray_profile = b"profile\0\0".to_vec();
+    gray_profile.extend(files::zlib(&files::icc_profile(b"RGB ", 600, 0x33)));
+    let gray_png = files::png_from_chunks(
+        (4, 4),
+        8,
+        0,
+        false,
+        &[
+            files::png_chunk(b"iCCP", &gray_profile),
+            files::png_idat(&[7; 16], 4),
+        ],
+    );
+    // A profile tag of 600 bytes at an offset past the end of the file.
+    let tiff_past_end = files::tiff_file(
+        false,
+        &[TiffPage::strip((2, 2), &[8, 8, 8], 2, vec![9; 12])
+            .with(34675, TiffValue::Raw(7, 600, [0, 0, 0xff, 0x7f]))],
+    )
+    .0;
     let cases = [
         ("largest.jpg", with_profile(&largest), Some(largest)),
         ("too-large.jpg", with_profile(&too_large), None),
+        ("gray.png", gray_png, None),
+        ("past-end.tif", tiff_past_end, None),
     ];
     let listed: Vec<(&str, &[u8])> = cases
         .iter()

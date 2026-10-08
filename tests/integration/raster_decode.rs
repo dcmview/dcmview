@@ -159,8 +159,10 @@ async fn raw_frames_hold_the_samples_each_file_stores() {
 async fn display_frames_window_gray_once_and_flatten_alpha() {
     use png::{BitDepth, ColorType};
     let full = |bits: u32| (f64::from(1_u32 << (bits - 1)), f64::from(1_u32 << bits));
-    let gray_alpha: Vec<u8> = vec![0, 0, 100, 128, 200, 255, 255, 1];
-    let rgba: Vec<u8> = vec![255, 0, 0, 255, 0, 255, 0, 128, 0, 0, 255, 0, 10, 20, 30, 1];
+    // Gray 3 and red 3 at alpha 128 are 1.506 over black: shown as 2, the
+    // nearest value, where dropping the fraction gives 1.
+    let gray_alpha: Vec<u8> = vec![0, 0, 3, 128, 200, 255, 255, 1];
+    let rgba: Vec<u8> = vec![255, 0, 0, 255, 3, 255, 0, 128, 0, 0, 255, 0, 10, 20, 30, 1];
     let rgb16: Vec<u16> = vec![
         65_535, 0, 256, 1, 2, 3, 40_000, 50_000, 60_000, 128, 129, 32_768,
     ];

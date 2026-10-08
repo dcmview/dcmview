@@ -233,7 +233,9 @@ impl<T: Read + Seek> RasterSource for T {}
 /// - **WebP profile.** An `ICCP` chunk is read only when it comes before the
 ///   first image chunk, as the format requires, declares at most
 ///   [`RASTER_ICC_MAX_BYTES`] and ends inside the file. Any other is left
-///   out without being read and the frame is decoded.
+///   out without being read and the frame is decoded. When several come
+///   before the image only the first is considered, whatever a later one
+///   holds.
 /// - **TIFF tags.** A page whose IFD holds any tag twice is a decode error,
 ///   whichever tag it is: readers disagree on which entry counts, so the
 ///   page checked here would not be the page the decoder reads. (Discovery
