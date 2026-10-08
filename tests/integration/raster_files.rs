@@ -313,6 +313,20 @@ pub fn subsampled_jpeg() -> Vec<u8> {
     embedded(SUBSAMPLED_JPEG)
 }
 
+/// [`subsampled_jpeg`] with the sampling factors of its third component
+/// changed from 1 x 1 to 4 x 2, larger than the first component's: a frame
+/// header no encoder writes, on which the linked JPEG decoder panics instead
+/// of returning an error.
+pub fn jpeg_its_decoder_panics_on() -> Vec<u8> {
+    let mut jpeg = subsampled_jpeg();
+    // The frame header: length, precision, height, width, the number of
+    // components, then three bytes for each, the second its factors.
+    let third = jpeg_frame_marker(&jpeg) + 9 + 2 * 3 + 1;
+    assert_eq!(jpeg[third], 0x11);
+    jpeg[third] = 0x42;
+    jpeg
+}
+
 /// Baseline, 4:1:1 (chroma at a quarter of the width), 32 x 16 of
 /// (90, 140, 200). Written by libjpeg-turbo's `cjpeg -sample 4x1,1x1,1x1`.
 pub fn quarter_width_chroma_jpeg() -> Vec<u8> {

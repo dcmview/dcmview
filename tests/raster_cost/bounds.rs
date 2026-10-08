@@ -565,6 +565,12 @@ fn hostile_files() -> Vec<Hostile> {
             files::baseline_jpeg(ExtendedColorType::Rgb8, (16, 8), &[90; 16 * 8 * 3]),
         ),
         Hostile::new("jpeg with six megabytes of profile", jpeg_profile, Decodes),
+        // The linked decoder panics on this frame header; a decode does not.
+        Hostile::new(
+            "jpeg its decoder panics on",
+            files::jpeg_its_decoder_panics_on(),
+            Fails,
+        ),
         // Scans up to the limit decode; one more does not.
         Hostile::new(
             "jpeg at the scan limit",

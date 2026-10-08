@@ -686,6 +686,47 @@ async fn redaction_and_masking_apply_to_raster_frames_and_thumbnails() {
     assert!(image.get_pixel(24, 24).0[0].abs_diff(200) <= 6);
 }
 
+/// A file its decoder crate panics on answers a decode error on every
+/// endpoint that decodes it, as often as it is asked for, and the server
+/// goes on serving the files beside it.
+#[tokio::test]
+async fn a_file_its_decoder_panics_on_is_a_decode_error_and_the_server_keeps_serving() {
+    let dir = tempdir().expect("temp dir");
+    fs::write(
+        dir.path().join("panics.jpg"),
+        files::jpeg_its_decoder_panics_on(),
+    )
+    .expect("write JPEG");
+    fs::write(dir.path().join("sound.jpg"), files::subsampled_jpeg()).expect("write JPEG");
+    let scan = scan_dir(dir.path()).await;
+    assert_eq!(scan.file("panics.jpg")["support_state"], "renderable");
+
+    let index = scan.index("panics.jpg");
+    for _ in 0..2 {
+        for endpoint in ["", "/raw", "/thumbnail?size=64"] {
+            let response = scan
+                .server
+                .get(&format!("/api/file/{index}/frame/0{endpoint}"))
+                .await;
+            assert_eq!(response.status_code(), 500, "frame/0{endpoint}");
+            let body: Value = response.json();
+            assert!(body["error"].is_string(), "frame/0{endpoint}: {body}");
+        }
+        let sound = raw(&scan, "sound.jpg", 0).await;
+        assert_eq!(sound.status_code(), 200, "{}", sound.text());
+        assert_close(
+            sound.as_bytes(),
+            &flat(&[90, 140, 200], 16 * 16),
+            4,
+            "sound.jpg",
+        );
+        assert_eq!(
+            display(&scan, "sound.jpg", "").await.pixels.len(),
+            16 * 16 * 3
+        );
+    }
+}
+
 /// A frame larger than the raw cache is served every time and never kept,
 /// and what the catalog says about the file does not depend on the budget.
 #[tokio::test]
