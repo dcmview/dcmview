@@ -362,6 +362,10 @@ python scripts/check.py e2e --install
 # Independent upstream remote fixtures; may download/cache data
 python scripts/check.py external
 
+# Remote-server workflow over real SSH against a manylinux wheel, in a Docker
+# container; set DCMVIEW_REMOTE_WHEEL to skip building one
+python scripts/check.py remote-ssh --install
+
 # Ignored prepared-corpus tests against a local prepared corpus (flat `all`
 # or per-profile layout); fails if the corpus path is missing
 python scripts/check.py corpus --corpus /path/to/prepared-corpus

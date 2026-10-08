@@ -20,6 +20,7 @@ FRONTEND_FIXTURES = (
 	FIXTURE_DIR / "golden-no-pixels-sr.dcm",
 )
 VSCODE_TEST_VERSION = "1.90.2"
+PLAYWRIGHT_VERSION = "1.56.0"
 
 
 class CheckError(RuntimeError):
@@ -285,6 +286,29 @@ class CheckRunner:
 			env=env,
 		)
 
+	def remote_ssh(self) -> None:
+		"""Run the remote-server workflow over real SSH against a manylinux wheel."""
+		wheel = os.environ.get("DCMVIEW_REMOTE_WHEEL")
+		if not wheel:
+			run("Build the manylinux wheel", ["bash", "scripts/build_linux_wheel.sh"])
+			built = sorted(
+				(REPO_ROOT / "dist").glob("dcmview_py-*-manylinux_2_28_x86_64.whl"),
+				key=lambda path: path.stat().st_mtime,
+			)
+			if not built:
+				raise CheckError("scripts/build_linux_wheel.sh left no manylinux wheel in dist/")
+			wheel = str(built[-1])
+		if self.install:
+			run("Install Playwright", [self.python, "-m", "pip", "install", f"playwright=={PLAYWRIGHT_VERSION}"])
+			run("Install Chromium for Playwright", [self.python, "-m", "playwright", "install", "--with-deps", "chromium"])
+		env = os.environ.copy()
+		env["DCMVIEW_REMOTE_WHEEL"] = str(Path(wheel).resolve())
+		run(
+			"Run remote SSH workflow tests",
+			[self.python, "-m", "unittest", "-v", "python.tests.remote_ssh_integration"],
+			env=env,
+		)
+
 	def quick(self) -> None:
 		self.versions()
 		self.frontend()
@@ -365,6 +389,7 @@ def parse_args() -> argparse.Namespace:
 			"core",
 			"e2e",
 			"external",
+			"remote-ssh",
 			"marketing",
 		],
 		help="check profile to execute",
@@ -372,7 +397,8 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument(
 		"--install",
 		action="store_true",
-		help="run npm ci for profiles which use frontend or VS Code dependencies",
+		help="run npm ci for profiles which use frontend or VS Code dependencies, "
+		"and install Playwright for remote-ssh",
 	)
 	parser.add_argument(
 		"--corpus",
@@ -402,6 +428,7 @@ def main() -> int:
 		"core": runner.core,
 		"e2e": runner.e2e,
 		"external": runner.external,
+		"remote-ssh": runner.remote_ssh,
 		"marketing": runner.marketing,
 	}
 

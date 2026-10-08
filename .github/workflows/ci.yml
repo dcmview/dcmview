@@ -33,6 +33,7 @@ jobs:
               - "python/**"
               - "scripts/**"
               - "src/**"
+              - "tests/remote/**"
 
   frontend:
     name: Frontend
@@ -200,3 +201,26 @@ jobs:
           python scripts/verify_wheel_install.py
           dist
           --expected-platform manylinux_2_28_x86_64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: manylinux-wheel
+          path: dist/*manylinux_2_28_x86_64.whl
+          retention-days: 7
+
+  remote-ssh:
+    name: Remote server over SSH (CLI and Python)
+    needs: packaging-smoke
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@v4
+        with:
+          name: manylinux-wheel
+          path: dist
+      - name: Run CLI and Python workflows against an SSH server container
+        run: |
+          export DCMVIEW_REMOTE_WHEEL="$(ls dist/*manylinux_2_28_x86_64.whl)"
+          python scripts/check.py remote-ssh --install
