@@ -956,6 +956,23 @@ fn sample_buffer<T: Default + Clone>(samples: usize) -> Result<Vec<T>> {
 /// the message of the last two contains [`CODESTREAM_MISMATCH`]. The output
 /// is allocated at `expected`, which the caller derives from the entry.
 pub(crate) fn inflate_frame(fragment: &[u8], expected: usize) -> Result<Vec<u8>> {
-    let _ = (fragment, expected);
-    todo!("DCM1: inflate a frame to the size its entry gives")
+    use std::io::Read;
+
+    let limit = u64::try_from(expected)?
+        .checked_add(1)
+        .ok_or_else(|| anyhow!("inflated frame byte limit overflows"))?;
+    if expected > isize::MAX as usize {
+        return Err(anyhow!("inflated frame capacity overflows"));
+    }
+    let mut output = Vec::with_capacity(expected);
+    flate2::read::DeflateDecoder::new(fragment)
+        .take(limit)
+        .read_to_end(&mut output)?;
+    if output.len() != expected {
+        return Err(anyhow!(
+            "{CODESTREAM_MISMATCH}: inflated frame holds {} bytes, expected {expected}",
+            output.len()
+        ));
+    }
+    Ok(output)
 }
