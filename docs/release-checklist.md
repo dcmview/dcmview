@@ -176,9 +176,15 @@ at the end of this checklist.
   python scripts/check.py external --install
   ```
 
-- [ ] Perform any release-specific manual browser, platform, remote, semantic,
-      WSI, annotation, or Marketplace checks that automated profiles do not
-      cover.
+- [ ] Perform any release-specific manual browser, platform, semantic, WSI,
+      annotation, or Marketplace checks that automated profiles do not cover.
+      Remote use needs no manual check: the `remote-ssh` and
+      `vscode-remote-ssh` jobs in `ci.yml` and `release.yml` drive the CLI,
+      Python and the VS Code extension over real SSH and Remote-SSH, and
+      `release.yml` publishes nothing unless both pass on the tagged artifacts.
+- [ ] Optional: open a fixture in Cursor over Remote-SSH and confirm an image
+      appears. Cursor's remote extension cannot run in CI, so this is the only
+      check of its port forwarding.
 - [ ] Confirm `git status --short` is clean and review the final diff from the
       previous stable release.
 - [ ] Commit each remaining logical change according to the repository commit
@@ -229,8 +235,8 @@ at the end of this checklist.
   ```
 
 - [ ] Monitor every required job in `.github/workflows/release.yml`, including
-      native builds, archive and wheel smoke tests, VSIX packaging, GitHub
-      Release creation, and each enabled PyPI, Open VSX, and Homebrew publisher.
+      native builds, archive and wheel smoke tests, VSIX packaging, the remote
+      SSH and VS Code Remote-SSH gates, GitHub Release creation, and each enabled PyPI, Open VSX, and Homebrew publisher.
 - [ ] Monitor the Azure VS Code Marketplace pipeline and its approval-bound
       deployment.
 - [ ] Apply the prepared notes to the GitHub Release and verify its files,
@@ -318,7 +324,8 @@ Release automation spans two GitHub Actions workflows and one Azure pipeline:
 - `.github/workflows/ci.yml` runs frontend, Rust, Python, packaging, and VS Code
   checks on Linux, with Rust coverage on macOS and Windows
 - `.github/workflows/release.yml` builds tagged release artifacts for Linux,
-  macOS Intel, macOS Apple Silicon, and Windows x64, then publishes approved
+  macOS Intel, macOS Apple Silicon, and Windows x64, runs the remote SSH and
+  VS Code Remote-SSH checks on the Linux wheel and VSIX, then publishes approved
   releases to PyPI, Homebrew, and Open VSX when configured
 - `azure-pipelines/vscode-marketplace.yml` publishes VS Code Marketplace
   packages from GitHub Release assets
