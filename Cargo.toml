@@ -28,7 +28,7 @@ categories = ["command-line-utilities", "science", "visualization"]
 # No `[workspace.lints]`: the lint policy is `clippy --workspace -D warnings`
 # in `scripts/check.py`, the same for every member.
 [workspace]
-members = ["crates/dcmview-protocol"]
+members = ["crates/dcmview-annotation", "crates/dcmview-protocol"]
 resolver = "2"
 
 [workspace.package]
