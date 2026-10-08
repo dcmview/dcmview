@@ -40,6 +40,29 @@ class ThresholdTests(unittest.TestCase):
 		self.assertFalse(result.comparable)
 		self.assertTrue(all(metric.passed for metric in result.metrics))
 
+	def test_the_merge_base_is_reported_and_never_gated(self) -> None:
+		profile = timing.PROFILES[0]
+		# Far slower than the merge base and within the gate against the release.
+		result = timing.compare(profile, 10, [run(100)], [run(104)], [run(50)])
+		self.assertEqual(len(result.base_metrics), len(timing.GATED_METRICS) + len(timing.REPORTED_METRICS))
+		self.assertTrue(all(not metric.gated and metric.passed for metric in result.base_metrics))
+		self.assertEqual([round(metric.change_percent) for metric in result.base_metrics], [108] * len(result.base_metrics))
+		self.assertTrue(all(metric.passed for metric in result.metrics))
+		self.assertEqual(sorted(result.runs), ["base", "baseline", "candidate"])
+		# The gate itself is unchanged by the third binary.
+		slower = timing.compare(profile, 10, [run(100)], [run(900)], [run(900)])
+		self.assertFalse(all(metric.passed for metric in slower.metrics))
+		# A merge base that lists other files is left out, like a baseline that does.
+		other = timing.compare(profile, 10, [run(100)], [run(104)], [run(50, files=3)])
+		self.assertEqual(other.base_metrics, [])
+
+	def test_resident_memory_is_the_median_of_the_runs_that_report_it(self) -> None:
+		runs = [run(1), run(1), run(1), run(1)]
+		for measured, kib in zip(runs, (2048, None, 4096, 3072)):
+			measured.resident_kib = kib
+		self.assertEqual(timing.resident_mib(runs), 3.0)
+		self.assertIsNone(timing.resident_mib([run(1)]))
+
 
 class SyntheticInputTests(unittest.TestCase):
 	def test_generated_files_are_part_10_dicom_and_png_and_differ_per_instance(self) -> None:
@@ -52,9 +75,34 @@ class SyntheticInputTests(unittest.TestCase):
 		self.assertEqual(timing.png_file(0)[:8], b"\x89PNG\r\n\x1a\n")
 		self.assertNotEqual(timing.png_file(0), timing.png_file(1))
 
+	def test_a_file_can_lack_its_uid_or_have_another_length(self) -> None:
+		ordinary = timing.dicom_file(1, 1, 1, 1)
+		sop_instance_uid = b"\x08\x00\x18\x00UI"
+		self.assertIn(sop_instance_uid, ordinary)
+		without = timing.dicom_file(1, 1, 1, 1, with_uid=False)
+		self.assertNotIn(sop_instance_uid, without)
+		self.assertEqual(without[128:132], b"DICM")
+		longer = timing.dicom_file(1, 1, 1, 1, rows=33)
+		self.assertIn(sop_instance_uid, longer)
+		self.assertGreater(len(longer), len(ordinary), "the same instance at another length")
+		self.assertEqual(len(longer) % 2, 0)
+
+	def test_the_profiles_cover_the_key_cases(self) -> None:
+		profiles = {profile.name: profile for profile in timing.PROFILES}
+		for name in ("cohort", "duplicated", "collision", "no-uid", "masked"):
+			self.assertIn(name, profiles)
+		self.assertEqual(profiles["masked"].arguments, ("--mask",))
+		self.assertEqual(profiles["masked"].folder_of, "tree", "the masked session reads the folder the plain one reads")
+		self.assertEqual(profiles["tree"].arguments, ())
+
 	def test_the_baseline_is_a_released_tag_kept_under_target(self) -> None:
 		self.assertEqual(timing.BASELINE_REF, "v0.4.0")
 		self.assertEqual(timing.timing_root(), Path(timing.REPO_ROOT, "target", "timing"))
+
+	def test_a_kept_binary_is_named_for_its_compiler(self) -> None:
+		version, _, commit = timing.toolchain().partition("-")
+		self.assertRegex(version, r"^\d+\.\d+\.\d+")
+		self.assertTrue(commit)
 
 
 if __name__ == "__main__":
