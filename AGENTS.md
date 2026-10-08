@@ -525,6 +525,15 @@ is cached between requests.
 - Check the image a decoder finds against the `FileEntry` before sizing
   anything from it: discovery's header read is not proof of what the file
   holds now.
+- No decoder sizes an allocation or bounds a loop from the file before that
+  number has been compared with the entry or a constant. A container that
+  repeats a size in its bitstream (WebP), a tag a page may hold twice
+  (TIFF), a chunk or tile that declares its own extent: each is a row in
+  `tests/raster_cost/agreement.rs`. When a linked crate reads a number
+  itself, read it first and refuse what the crate would act on differently.
+- The read budget charges every byte a decoder is handed, re-reads
+  included. Do not add a path that reads the file around the one reader, or
+  a cache that hands bytes out again uncharged.
 - Raster limits are counted, not timed: tests count reads and bytes at the
   source and heap at the allocator. Do not add a wall-clock limit or a test
   that measures one.

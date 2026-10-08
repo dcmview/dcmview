@@ -193,6 +193,8 @@ layout and orientation match page 0 and they are neither reduced-resolution
 nor mask pages. A damaged later IFD ends the walk; earlier pages remain listed.
 A TIFF may have at most 65,535 pages; a longer chain is skipped as
 `raster_header_invalid`, rather than listed with a truncated frame map.
+A page that holds any tag twice cannot be read: as the first page it makes
+the file `raster_header_invalid`, and as a later page it ends the walk.
 
 Discovery reasons include `valid_image` for accepted rasters,
 `unrecognized_format` for content that is neither DICOM nor a recognized image

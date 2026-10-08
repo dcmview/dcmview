@@ -133,6 +133,11 @@ dcmview: warning — {path}: {note}
 
 Each file prints at most 16 notes; the last one counts any that are not shown.
 
+A TIFF whose first page lists the same tag twice is skipped as an unreadable
+image header, and a later page that does ends the page walk: TIFF readers
+disagree on which of the two entries counts. Rewrite the file with a tool
+that removes the duplicate, for example `tiffcp in.tif out.tif`.
+
 ### Image files now appear beside DICOM
 
 PNG, JPEG, TIFF, and WebP images are displayed beside DICOM by default. Run
@@ -156,6 +161,23 @@ Convert a copy to a supported layout: for example, re-encode JPEG-compressed
 TIFF using LZW, expand bilevel TIFF to 8-bit gray, or convert separate color
 planes to interleaved RGB. Resize or split images above the pixel limit.
 Keep the source if its precision or metadata matters to your work.
+
+### A listed image fails to decode
+
+An image that is listed but answers `500` with a decode error is damaged or
+is built in a way the viewer refuses to follow:
+
+- a WebP whose image data states another size than the file's header;
+- a TIFF page that lists a tag twice (the file changed after it was listed);
+- a TIFF whose tiles are 4,096 pixels or more wider or longer than the
+  image, which would have the decoder read far more than the image holds;
+- a TIFF strip or tile whose compressed data runs past its declared length;
+- a PNG, JPEG or WebP file larger than 64 MiB plus four times one decoded
+  frame, which a long WebP animation can be, or a TIFF frame whose data
+  takes more than that to read.
+
+Re-encode a copy with an ordinary tool (`tiffcp`, ImageMagick, `cwebp`); a
+file such tools cannot read is damaged.
 
 ### The viewer opens before every file appears
 

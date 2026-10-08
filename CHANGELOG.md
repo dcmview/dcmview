@@ -47,7 +47,11 @@ diagnostic viewer.
   percentiles. Display flattens alpha over black and carries valid RGB ICC
   profiles up to 4 MiB, dropping converted CMYK JPEG profiles. Each frame is
   capped at 268,435,456 pixels; reads, TIFF tags and chunks, JPEG scans, and
-  decode memory are bounded. Refused images report `raster.unsupported_color`,
+  decode memory are bounded. TIFF strips and tiles may be stored in any
+  order. A WebP whose image does not have the size its header gives, and a
+  TIFF page that repeats a tag or whose tiles are 4,096 pixels or more larger
+  than the image, fail to decode; a TIFF whose first page repeats a tag is
+  not listed. Refused images report `raster.unsupported_color`,
   `raster.unsupported_sample_format`, `raster.unsupported_compression`,
   `raster.jpeg_unsupported_process`, or `raster.too_large`. JPEG-compressed
   and 1-, 2- and 4-bit TIFF are not decoded in this version, and gray profiles

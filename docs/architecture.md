@@ -843,14 +843,40 @@ the file, for a raster that has one.
   TIFF page found by offset), and the file may have changed since. Before
   any buffer is sized, the image in the file must have the entry's width,
   height, colour type, depth and sample format; otherwise the decode fails.
-  A frame is never another size than the catalog says.
+  A frame is never another size than the catalog says. The same holds for
+  every other size a decoder would take from the file on its own, each
+  compared with the entry or a constant before anything is allocated or
+  looped by it:
+  - a WebP's chunks are walked up to its first image before its decoder
+    sees the file: the bitstream there (`VP8 `, `VP8L`, or the one inside
+    the first `ANMF` frame) must state the size of the canvas, or of its
+    frame inside the canvas, because a lossy bitstream's decoder allocates
+    by the size the bitstream states;
+  - a WebP profile chunk is read only when it precedes the image, declares
+    at most 4 MiB and ends inside the file;
+  - a TIFF page that holds any tag twice is refused, by discovery and again
+    by the decoder, since readers disagree on which entry counts (the linked
+    crate takes the last) and the page checked would not be the page read;
+  - a TIFF tile must be less than 4,096 pixels wider and less than 4,096
+    longer than the image (`RASTER_TIFF_TILE_MARGIN`), because the decoder
+    reads and discards what a tile holds beside the image;
+  - a TIFF strip or tile is read to the end of its byte count and no
+    further.
 - **What a decode may cost is fixed by the catalog entry**, never by a
   length, count or size the file declares, and none of it is a time limit:
   - at most 268,435,456 pixels, so at most 2 GiB of samples;
-  - at most `raster_read_budget` bytes obtained from the file (64 MiB plus
-    four times the frame's bytes), counted at one buffered reader; a PNG,
-    JPEG or WebP longer than that is refused unread;
+  - at most `raster_read_budget` bytes handed to a decoder (64 MiB plus
+    four times the frame's bytes), counted at one buffered reader: every
+    byte read from the file, read-ahead included, and every buffered byte
+    handed out again after a seek back, so strips or tiles that share bytes
+    are charged for each use; a PNG, JPEG or WebP longer than the budget is
+    refused unread;
   - reads of 64 KiB, with seeks inside the buffer costing none;
+  - a TIFF page's strips or tiles read for their own bytes whatever order
+    the file stores them in: those that lie end to start in decode order
+    are a run, and a read that begins in a run never reads past its end. A
+    file written last row first, or with its tiles scattered, costs its
+    length and its page's tags a second time, like one written in order;
   - a TIFF frame read from its own IFD (`RasterMetadata.frame_offsets`), not
     by walking the page chain, so the last frame costs what the first does;
     at most 65,536 strips or tiles and 4,096 tags on a page;
@@ -861,6 +887,17 @@ the file, for a raster that has one.
     declares.
   A decode holds a scheduler permit and runs to completion; these limits,
   not cancellation, bound it.
+- **Memory across decodes.** The limits above are per decode. A frame at
+  the pixel limit is 256 MiB of 8-bit gray samples and 2 GiB at four 16-bit
+  samples or one 64-bit sample a pixel, and `raster_decode_heap_limit` for
+  it is 16 MiB, six times that frame and four times the file read (itself
+  at most the read budget, 64 MiB plus four times the frame). The decoder
+  paths hold about half of the frame term on the files
+  `tests/raster_cost/scale.rs` measures: at most three frames. Nothing admits
+  decodes by the memory they will take: the number running at once is
+  bounded only by the `DecodeScheduler`'s permits, one per core, of which
+  thumbnails may hold half. A host with `n` cores can therefore hold `n`
+  decodes of the largest frames at once.
 - **Raw frames hold stored sample semantics**, whatever a decoder returns
   (design section 5.2): low-bit PNG samples keep their stored values (a
   one-bit image is 0 and 1) in one byte each; 16-bit and wider samples are
