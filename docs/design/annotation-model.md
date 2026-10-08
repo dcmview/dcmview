@@ -158,6 +158,14 @@ SHA-256 is fine too if we prefer a dependency that is already present; the
 scheme prefix lets us change it later. Recommend `b3`, use the full 256-bit
 digest in keys (64 hex chars), never a truncation.
 
+**Key syntax (added 2026-10-08).** The body of a `sop:` key is 1 to 128
+characters, each an ASCII letter, a digit, `.`, `-` or `_`, taken as written
+with no trimming or case folding. A conforming DICOM UID is digits and dots
+in at most 64 characters, but real files carry UIDs that a de-identifier
+replaced with something else, and such a file keeps a UID key instead of
+being hashed. The body of a `b3:` key is exactly 64 lowercase hex characters.
+No other string is a file key.
+
 **Who decides a key (amended 2026-09-30).** A DICOM key depends on
 which *other* loaded files share its UID, so a key is not computable from the
 file alone, and the model no longer claims it is:
@@ -446,6 +454,15 @@ have; millimetre values are derived at export from `PixelSpacing`/
   not trigger the all-or-nothing failure). The new native formats
   (`dcmview.annotations` JSON/JSONL) validate strictly. A record
   loaded this way stays as loaded until edited; the first edit clamps it.
+  **Amended 2026-10-08**: what stays as loaded is a box past the image edge,
+  with no area, or with its corners out of order. A negative coordinate
+  becomes 0 and a non-integer coordinate is rounded to the nearest pixel,
+  each with a warning in the import report; a value that is not a number is
+  a shape error (the EMBED parity amendment at the end of this doc). The
+  model holds a record loaded this way unchanged, so a native export can
+  contain a record the strict native import refuses; whether the native
+  export clamps or the native import accepts is still to be settled in
+  `output-adapters.md`.
 - **Snapping is a tool property, not a model property.** The rect tool keeps
   today's snap-to-pixel-edge default, which keeps EMBED round-trips exact;
   the point tool defaults to snapping to pixel centres. Both can be turned off
@@ -477,14 +494,24 @@ have; millimetre values are derived at export from `PixelSpacing`/
 Every geometric annotation has a `frames` scope:
 
 ```
-FrameScope = "all" | { "set": [u32, ...] }   // sorted, unique, < frame_count
+FrameScope = "all"
+           | { "set": [u32, ...],            // sorted, unique, < frame_count
+               "as_written"?: [u32, ...] }   // the list an import read
 ```
 
 - `all` is a real value, not a missing list (fixes parity finding 1 and 2).
 - A set with several frames means "the same 2D shape on each of these
   frames", which is EMBED's DBT use (a lesion visible over slices 12 to 18).
   It is not a 3D shape.
-- Single-frame files use `all`.
+- Tools write `all` on a single-frame file.
+- **The list as written is kept inside the scope** (amended 2026-10-08).
+  `as_written` is present only when the list an import read differs from
+  the sorted set: `[2, 0, 0]` is `{ "set": [0, 2], "as_written": [2, 0, 0] }`.
+  A reader that uses `set` alone is always right about which frames are
+  meant. A `frames` patch replaces the whole scope and so drops it.
+- **An explicit set is never turned into `all`** (amended 2026-10-08), even
+  when it names every frame: `[0]` on a single-frame file stays
+  `{ "set": [0] }`.
 - Genuinely 3D annotations (a box over a CT series, a tracked contour that
   changes per slice) are **out of scope for v1**. The forward path is a
   `group_id` linking per-frame annotations, not a 3D geometry type, so v1 data
@@ -499,7 +526,7 @@ FrameScope = "all" | { "set": [u32, ...] }   // sorted, unique, < frame_count
 | Type | Data | Notes |
 |---|---|---|
 | `point` | `{x, y}` | |
-| `line` | `{points: [p0, p1]}` | measurement length derived at display/export |
+| `line` | `{points: [p0, p1]}` | each point is an `{x, y}` object, here and in `polyline` and `polygon`; measurement length derived at display/export |
 | `polyline` | `{points: [...≥2]}` | open |
 | `polygon` | `{points: [...≥3]}` | implicitly closed, no self-intersection check in v1 |
 | `rect` | `{x0, y0, x1, y1}` | axis-aligned, `x0 < x1`, `y0 < y1`. The model is x-first; **EMBED is y-first, `[ymin, xmin, ymax, xmax]`**, and COCO is `[x, y, w, h]`, so both adapters reorder (9.2) |
@@ -511,6 +538,11 @@ need the exact rectangle; ellipse area and DICOM SCOORD `ELLIPSE` export need
 the parameters; editing handles differ. Rotated rectangles are a polygon.
 Circles are ellipses with `rx == ry`. A freehand tool produces a polygon or
 polyline (with simplification, the tools doc).
+
+On the wire a geometry is one object whose `type` member names it, for
+example `{ "type": "point", "x": 120.5, "y": 80.5 }` (confirmed 2026-10-08).
+A whole number is written without a fraction (`340`, never `340.0`), and
+every coordinate is written quantized (2.1).
 
 ### 3.2 Masks
 
@@ -676,10 +708,13 @@ LabelTarget =
   gives them one.
 - `folder` targets exist so directory-mode users (and raster datasets) can
   label a folder from the gallery (the gallery doc).
-- A label record: `{ id, target, field, value, layer, author, created_at, rev, score? }`.
-  One value per `(target, field, layer, author)`, where a frame target's
-  index is part of the target. `SetLabel` addresses the record by `id` and
-  `base_rev` (7.2).
+- A label record: `{ id, target, field, value, layer }` plus the per-record
+  metadata of 6.1 (`rev`, `created_by`, `created_at`, `modified_by`,
+  `modified_at`, and `derived_from` and `score` when present). One value per
+  `(target, field, layer, created_by)`, where a frame target's index is part
+  of the target. `SetLabel` addresses the record by `id` and `base_rev`
+  (7.2). (Amended 2026-10-08: this line named an `author` member; a label
+  carries `created_by` like every other record.)
 
 ---
 
@@ -717,9 +752,13 @@ Every annotation and label carries:
 ```json
 { "id": "01J9Z3...", "rev": 4,
   "created_by": "user:alice", "created_at": "2026-09-29T21:04:11.120Z",
-  "modified_by": "user:alice", "modified_at": "2026-09-29T21:06:02.004Z",
-  "derived_from": null, "score": null }
+  "modified_by": "user:alice", "modified_at": "2026-09-29T21:06:02.004Z" }
 ```
+
+`derived_from` and `score` are optional and **left out when absent**
+(amended 2026-10-08; the example above used to show both as `null`). `null`
+is accepted on read and means absent, so a record read with `"score": null`
+is written back without the member.
 
 - **Ids are UUIDv7**, generated by the client that creates the record. Time
   ordered, unique across users and spokes, so records from several annotators
@@ -742,7 +781,7 @@ Every annotation and label carries:
   conflict checks (section 7).
 - `derived_from` links an accepted pre-label or a copied annotation to its
   source id.
-- `score` (0 to 1) is for model outputs. Human records leave it null.
+- `score` (0 to 1) is for model outputs. Human records leave it out.
 
 ### 6.2 Model versioning
 
@@ -750,6 +789,17 @@ Every annotation and label carries:
   **Same major reads fine; unknown fields are preserved on round-trip
   (not dropped) and ignored for display.** A major bump needs a migration
   function in the crate.
+- **Where unknown members are kept (amended 2026-10-08).** The document, a
+  file, a layer, an annotation, a label and the schema with its classes,
+  fields and options keep members this version does not know and write them
+  back. A geometry, a frame set, an operation, its envelope and a patch do
+  not: an unknown member there is dropped on read.
+- **Defaults are always written (confirmed 2026-10-08).** A member that has
+  a default is written with it, for example `"attributes": {}`,
+  `"extensions": {}` and `"deprecated": false`, so every writer produces
+  the same text. An optional member with no default, such as
+  `derived_from`, `score` (6.1) or `as_written` (2.3), is left out when
+  absent.
 - An `extensions` object on documents, annotations and labels holds
   adapter-specific data (for example EMBED extra columns, if we ever preserve
   them), namespaced by adapter id.
@@ -786,6 +836,29 @@ crate is shared between repos is in `seams.md` 13.
 
 JSON for documents; the same records one per line (JSONL) for streaming.
 
+### 6.5 Size bounds (added 2026-10-08)
+
+Model data arrives from other processes and from files a user picked, so
+every size is bounded by a fixed number. A consumer may rely on a validated
+value staying inside them; raising one is a compatible change, lowering one
+is not.
+
+| Bound | Value |
+|---|---|
+| JSON document | 256 MiB (larger exports use JSONL) |
+| Operation envelope (a `Batch` is one envelope) | 16 MiB |
+| Operations in one `Batch` | 10,000 |
+| Points in one polyline or polygon | 100,000 |
+| Frames in one frame set, and in the list kept as written | 65,536 |
+| `rows` or `columns` of a file | 1,048,576 |
+| Tiles in one mask, and tile changes in one `MaskTiles` | 262,144 |
+| One tile payload | 8,192 base64 characters |
+| Violations reported by one validation | 32 |
+
+One consequence: create, delete and restore carry the whole annotation, so
+a mask too large for one envelope cannot travel as one operation. A
+full-frame `depth: 8` mask on a large image is past it.
+
 ---
 
 ## 7. The operation model (undo and syncing)
@@ -801,10 +874,10 @@ of the same user clobber each other silently. Operations fix all three.
 ```
 Op =
   | CreateAnnotation  { annotation }
-  | UpdateAnnotation  { id, base_rev, before: Patch, after: Patch }
+  | UpdateAnnotation  { id, file, base_rev, before: Patch, after: Patch }
   | DeleteAnnotation  { id, base_rev, snapshot }
   | RestoreAnnotation { id, base_rev, snapshot }   // undo of a delete
-  | MaskTiles         { id, base_rev, frame, tiles: [{ tx, ty, before, after }] }
+  | MaskTiles         { id, file, base_rev, frame, tiles: [{ tx, ty, before, after }] }
   | SetLabel          { id, base_rev: Option<u64>, target, field, layer,
                         before: Option<Value>, after: Option<Value> }
   | CreateLayer       { layer }
@@ -814,6 +887,16 @@ Op =
 ```
 
 Envelope: `{ op_id (UUIDv7), actor, ts, op }`.
+
+On the wire an op is one object whose `type` member names it in snake case,
+for example `{ "type": "update_annotation", "id": ..., "file": ..., ... }`
+(confirmed 2026-10-08).
+
+**`UpdateAnnotation` and `MaskTiles` carry the annotation's file key**
+(amended 2026-10-08; the list above used to give them the id alone). The
+file key is their queue key, and the other annotation ops already hold it
+inside `annotation` or `snapshot`, so a queue key never needs a lookup
+(`seams.md` 9).
 
 **Every op names a versioned target** (amended 2026-09-30):
 
@@ -964,7 +1047,10 @@ Unchanged, owned by the EMBED adapter plus a thin compatibility layer:
   zero-area rects, which 0.3 does not check, load as they do today and are
   **listed in the import report** with path and ROI index; they do not fail
   the import (2.1). Shipped `docs/annotations.md` overstates today's checks;
-  correcting it is a separate docs fix.
+  correcting it is a separate docs fix. **Amended 2026-10-08**: a negative or
+  non-integer coordinate, which fails the import in 0.3, is brought to 0 or
+  rounded to the nearest pixel and listed the same way; a value that is not
+  a number stays invalid.
 - Path matching rules: normalized absolute paths, CWD-relative resolution,
   canonical alias for symlinks.
 - `GET`/`PUT /api/file/{index}/annotations` with the `EmbedRoiAnnotations`
@@ -1093,7 +1179,11 @@ adapters doc can fix it.
 12. **EMBED CSV import bounds** (added 2026-09-30, confirmed by the owner):
     lenient import with a report for EMBED CSV (out-of-range and zero-area
     rows load and are listed); strict validation for the new native formats
-    only (2.1, 9.1). Such rows go into the goldens.
+    only (2.1, 9.1). Such rows go into the goldens. **Amended 2026-10-08**
+    (the EMBED parity amendment below): a coordinate past the image edge is
+    kept as loaded and exported as written; only a negative coordinate
+    (becomes 0) and a non-integer coordinate (rounded to the nearest pixel)
+    are changed on load, each with a warning.
 13. **Op protocol targets** (added 2026-09-30, a review fix, no new
     decision): every op names a versioned target, queue keys are file key,
     canonical label target id or layer id, and `Batch` is atomic with one
@@ -1107,7 +1197,8 @@ What this doc fixes for later areas, assuming the owner confirms section 12.
 
 **All areas**
 - A file is identified by a `FileKey` string (`sop:<SOPInstanceUID>` or
-  `b3:<64 hex>`), never by `FileEntry.index` outside one process. Every file
+  `b3:<64 hex>`, syntax in 1.3), never by `FileEntry.index` outside one
+  process. Every file
   in model data has a `FileRef` with key, kind, UIDs, relative path,
   size, optional digest, rows, columns, frames and `space`.
 - Keys are **hub-authoritative in hub mode and session-scoped in
@@ -1118,20 +1209,21 @@ What this doc fixes for later areas, assuming the owner confirms section 12.
   `folder:<root>/<path>`, or the file key); folder targets carry a root id and
   missing hierarchy ids fall back to `missing:<FileKey>` (4.3).
 - Frames are zero-based within a file. `FrameScope` is `"all"` or a sorted
-  unique set.
+  unique set, which may keep beside it the list as an import read it (2.3).
 - Coordinates: `f64`, corner origin (pixel centre at `+0.5`), x = column,
   y = row, range `[0, columns] × [0, rows]`, quantized to 1/1000 px, in the
   stored matrix (DICOM) or the recorded oriented space (rasters). Never
   millimetres, never display orientation.
 - Records have UUIDv7 ids created by the client, `rev`, `created_by`/
   `modified_by` as `user:`/`model:`/`import:` strings, server timestamps,
-  optional `derived_from` and `score`.
+  optional `derived_from` and `score`, left out when absent.
 
 **Integration (`seams.md`)**
 - The sync unit is `OpEnvelope { op_id (UUIDv7), actor, ts, op }`; ops are
   idempotent by `op_id` and checked by `base_rev`; there is no undo op. Every
   op names a versioned target, including `SetLabel` (id, `base_rev`) and layer
   ops (id, `base_rev`); delete is undone by `RestoreAnnotation` (7.2).
+  `UpdateAnnotation` and `MaskTiles` carry the file key.
 - Queue key per op: file key, canonical label target id, or layer id; one
   global ordered client queue; `Batch` is atomic, one envelope, one result
   (7.2).
@@ -1207,7 +1299,8 @@ What this doc fixes for later areas, assuming the owner confirms section 12.
 - EMBED mapping and loss policy (9.2, 9.3); `embed-extended` as a separate
   mode once the owner's schema is known. EMBED export rows sorted by path;
   EMBED CSV import lenient with a report for out-of-range and zero-area rows,
-  native formats strict.
+  native formats strict. On that import a coordinate past the edge is kept,
+  a negative one becomes 0 and a non-integer one is rounded, with a warning.
 - Centre-origin conversions and millimetre values are adapter work.
 - `code` on classes and options is what DICOM SEG/SR exports read.
 
@@ -1232,7 +1325,22 @@ Freezing the 0.3 bytes as goldens (`tests/fixtures/embed-goldens/`) showed four 
 
 - **Frame lists are kept as written.** A per-ROI frame list that is unsorted or repeats a frame round-trips through EMBED import and export unchanged, as in 0.3. The `FrameScope` set in section 4 is described there as sorted and unique; the model must still be able to reproduce the list as it was written for a record that came from EMBED and has not been edited (for example by keeping the original list beside the normalised set). An edit may normalise it.
 - **An unedited explicit list stays explicit.** `[[0]]` on a single-frame file exports as `[[0]]`, not `[]`. Only the post-edit expansion changes, as decision 12.6 already says.
-- **Coordinates that are negative or not integers are clamped with a warning, not fatal.** In 0.3 such a value fails the whole import. The lenient import clamps the box to the image (a negative value becomes 0, a value past the edge becomes the edge, a non-integer value is rounded to the nearest pixel first) and lists the row in the import report, the same way out-of-range boxes are handled. A value that is not a number at all is still a shape error. What happens to a box with no area after clamping follows the existing lenient-import rule.
+- **Coordinates that are negative or not integers are corrected with a warning, not fatal.** In 0.3 such a value fails the whole import. The lenient import changes only those two kinds of value: a negative coordinate becomes 0, and a non-integer coordinate is rounded to the nearest pixel. Either way the row is listed in the import report. A coordinate past the image edge is not changed: it is kept as loaded and exported as written, byte for byte as in 0.3, as sections 2.1 and 12.12 say and as the `unchecked-geometry` golden freezes. A value that is not a number at all is still a shape error. What happens to a box with no area follows the existing lenient-import rule. (Amended 2026-10-08. This item used to say the box is clamped to the image, with "a value past the edge becomes the edge". That contradicted sections 2.1 and 12.12 and the golden, and the owner ruled on 2026-10-08: keep as loaded, and clamp only negative and non-integer values.)
 - **Paths through a symlink are resolved on export.** In 0.3 a file discovered through a symlinked directory is exported under the link path. Export writes the resolved absolute path, as `output-adapters.md` section 1 already states; matching on import keeps accepting either spelling.
 
 The goldens mark the last two as expected changes and the first two as behaviour to keep.
+
+---
+
+## Model crate amendment (confirmed by the owner 2026-10-08)
+
+Writing the model as a crate (`crates/dcmview-annotation`) showed eight places where this doc was silent or disagreed with itself or with `seams.md`. The owner confirmed all eight on 2026-10-08. Each is also written into the section it belongs to, marked with the date; where this amendment and an earlier section disagree, this amendment wins.
+
+1. **A frame list as written is kept inside the scope** (2.3): `{ "set": [0, 2], "as_written": [2, 0, 0] }`, with `as_written` present only when it differs from the sorted set. A `frames` patch drops it. `[0]` stays a set and never becomes `"all"`.
+2. **A `sop:` key body is 1 to 128 characters of `A-Z a-z 0-9 . _ -`** (1.3), not digits and dots only, so a file with a non-conforming UID keeps a UID key instead of being hashed.
+3. **A leniently loaded record is held unchanged** (2.1). Reading checks shape only and every write is validated, so a native export can contain a record the strict native import refuses. Whether the native export clamps or the native import accepts is still to be settled in `output-adapters.md`.
+4. **Wire shapes** (3.1, 6.1, 6.2, 7.2): points are `{x, y}` objects; a geometry and an operation are objects tagged by `type` (`"type": "update_annotation"`); defaults are always written (`"attributes": {}`, `"extensions": {}`, `"deprecated": false`); a whole number is written without a fraction; `score` and `derived_from` are left out when absent and `null` is accepted on read. The example in 6.1 showed `null` for both and is corrected.
+5. **Size bounds** (6.5): document 256 MiB, operation envelope 16 MiB, 10,000 operations in a batch, 100,000 points, 65,536 frames in a set, 1,048,576 for a dimension, 262,144 mask tiles, 8,192 characters for a tile payload, 32 violations per validation. A full-frame `depth: 8` mask does not fit one operation envelope.
+6. **Out-of-range EMBED coordinates**: the owner's ruling is "keep as loaded and clamp only negative/non-integer values". A coordinate past the image edge is kept as loaded and exported as written, byte for byte as in 0.3; a negative coordinate becomes 0 with a warning; a non-integer coordinate is rounded to the nearest pixel with a warning; a value that is not a number is still a shape error. The `unchecked-geometry` golden stays as it is. This corrects the third item of the EMBED parity amendment above, which said "a value past the edge becomes the edge" against 2.1 and 12.12; that item, 2.1, 9.1 and 12.12 now say the same thing.
+7. **Three places where two texts disagreed.** `UpdateAnnotation` and `MaskTiles` carry the file key, as `seams.md` 9 says and 7.2 did not. A label carries `created_by`, as 6.1 says, not the `author` member 4.3 named. The `key_rules` constant (`KEY_RULES`) lives in `dcmview-annotation` beside the key syntax it versions, not in `dcmview-protocol` as `seams.md` 13 said. 7.2, 4.3 and `seams.md` 12, 13 and 15 are corrected.
+8. **Unknown members are kept on the document, a file, a layer, an annotation, a label and the schema's items only** (6.2). In a geometry, a frame set, an operation, an envelope or a patch they are dropped on read.

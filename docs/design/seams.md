@@ -489,7 +489,9 @@ required.
 **`key_rules`** is a separate integer for the file-key rules
 (annotation-model 1.3, 1.7), reported in `server_started`, in the `dcmview
 inventory` summary line and in `/spoke/v1/hello`. Any change to how a key is
-derived bumps it. A spoke or inventory run whose `key_rules` differs from the
+derived or written bumps it. The number is the constant `KEY_RULES` in
+`dcmview-annotation`, beside the key syntax it versions (amended 2026-10-08;
+section 13 used to place it in `dcmview-protocol`). A spoke or inventory run whose `key_rules` differs from the
 one its peer recorded is **refused loudly**, because a key-rule change would
 orphan stored records. Keys are authoritative from the file list in hub mode
 (section 6) and session-scoped in standalone; persisted records resolve
@@ -503,14 +505,14 @@ through `FileRef` evidence, not through the key alone.
 `dcmview` binary and library, so the Python and VS Code build paths do not
 move.
 
-- `crates/dcmview-annotation`: the neutral model, validation, ops
-  (annotation-model). No dependency on dicom-rs, axum, tokio or the pixel
-  pipeline.
+- `crates/dcmview-annotation`: the neutral model, validation, ops, file
+  keys and the `key_rules` constant (annotation-model). No dependency on
+  dicom-rs, axum, tokio or the pixel pipeline.
 - `crates/dcmview-adapters`: EMBED CSV and the other adapters
   (output-adapters).
 - `crates/dcmview-protocol`: startup events, the `--annotation-config`
-  envelope, the `/spoke/v1` wire types, the `protocol` and `key_rules`
-  constants. Its types feed `ts-rs` like `contracts.rs` does today.
+  envelope, the `/spoke/v1` wire types, the `protocol` constant. Its types
+  feed `ts-rs` like `contracts.rs` does today.
 
 Other repositories consume them as git dependencies pinned to dcmview release
 tags. Publication on crates.io can follow if outside adapter authors need it.
@@ -577,7 +579,8 @@ counts as the `AGENTS.md` sign-off for narrowing unauthenticated API access.
    queue to drain; a later op reopens it.
 7. **Crate sharing:** dcmview as a workspace, tagged git dependencies.
    **Confirmed.** **Amended 2026-09-30**: the `protocol` bump rule and this
-   consolidated seam list.
+   consolidated seam list. **Amended 2026-10-08**: the `key_rules` constant
+   lives in `dcmview-annotation`, not `dcmview-protocol` (sections 12, 13).
 8. **Standalone sidecar:** opt-in `file:` backend shipped together with the
    new annotation tools; in-memory stays the default. **Confirmed.**
    **Amended 2026-09-30**: exclusive writer lock, directory fsync after
