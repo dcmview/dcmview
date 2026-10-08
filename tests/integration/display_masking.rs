@@ -285,3 +285,121 @@ async fn presentation_state_text_is_withheld_and_graphics_are_kept() {
         catalog["files"][1]["sop_instance_uid"]
     );
 }
+
+/// A file key built from a SOP Instance UID is an identifier: a masked
+/// session sends it built from the masked UID, in the catalog, in the frame
+/// header and in a key replacement, and accepts it back in that form only.
+#[tokio::test]
+async fn file_keys_carry_the_masked_uid_and_never_the_real_one() {
+    let fixture = |name: &str| {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(name)
+    };
+    // A second file with the first one's UID and other bytes, so that the
+    // first file's key is replaced by a digest during the session.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let twin = dir.path().join("twin.dcm");
+    let mut bytes = std::fs::read(fixture(PATIENT_A_1)).expect("read fixture");
+    bytes.extend_from_slice(&[0; 64]);
+    std::fs::write(&twin, bytes).expect("write twin");
+
+    let options = || DiscoverOptions {
+        recursive: false,
+        filters: Vec::new(),
+        formats: Default::default(),
+    };
+    let registry = FileRegistry::masked(Arc::new(Masker::new()));
+    for path in [fixture(PATIENT_A_1), fixture(PATIENT_B)] {
+        let report = support::discover(&[path], options())
+            .await
+            .expect("discover fixture");
+        registry.insert(report.files.into_iter().next().expect("one file"));
+    }
+    registry.mark_scan_complete();
+    let server = TestServer::new(server::router(support::app_state_with_registry(
+        registry.clone(),
+    )));
+    let real_uid = registry
+        .get(0)
+        .expect("first file")
+        .sop_instance_uid
+        .clone();
+    assert!(real_uid.starts_with("2.25.20008"), "{real_uid}");
+
+    // A UID key is implied by the entry's masked UID, so it is not sent
+    // twice; the frame header spells it out, masked.
+    let catalog: Value = server.get("/api/files").await.json();
+    let mut shown_keys = Vec::new();
+    for (index, entry) in catalog["files"]
+        .as_array()
+        .expect("files")
+        .iter()
+        .enumerate()
+    {
+        assert!(entry.get("file_key").is_none(), "{entry}");
+        let masked_uid = entry["sop_instance_uid"].as_str().expect("masked UID");
+        let frame = server.get(&format!("/api/file/{index}/frame/0")).await;
+        frame.assert_status_ok();
+        let header = frame
+            .header("x-file-key")
+            .to_str()
+            .expect("key header")
+            .to_string();
+        assert_eq!(header, format!("sop:{masked_uid}"));
+        assert_no_identifiers("frame key header", &header);
+        assert_eq!(registry.file_for_shown_key(&header), Some(index));
+        shown_keys.push(header);
+    }
+    // The real UID is not a key this session ever sent, so it names nothing.
+    assert_eq!(
+        registry.file_for_shown_key(&format!("sop:{real_uid}")),
+        None
+    );
+    assert_eq!(
+        registry
+            .key_status(0)
+            .expect("first file")
+            .key
+            .expect("key")
+            .as_str(),
+        format!("sop:{real_uid}"),
+        "the server keeps the real key"
+    );
+
+    // The twin arrives; both files end with content keys.
+    let report = support::discover(&[twin], options())
+        .await
+        .expect("discover twin");
+    registry.insert(report.files.into_iter().next().expect("one file"));
+    for index in [0, 2] {
+        registry.ensure_key(index).await.expect("content key");
+    }
+    let catalog: Value = server.get("/api/files").await.json();
+    assert_no_identifiers("catalog", &without_paths(catalog.clone()).to_string());
+    let rekeys = catalog["rekeys"].as_array().expect("rekeys");
+    assert_eq!(rekeys.len(), 1, "{rekeys:?}");
+    assert_eq!(rekeys[0]["old_key"], shown_keys[0].as_str());
+    let new_key = rekeys[0]["new_key"].as_str().expect("new key");
+    // A content key holds no header value and is sent as it is.
+    assert_eq!(
+        new_key,
+        format!(
+            "b3:{}",
+            blake3::hash(&std::fs::read(fixture(PATIENT_A_1)).expect("read fixture")).to_hex()
+        )
+    );
+    assert_eq!(catalog["files"][0]["file_key"], new_key);
+    assert!(catalog["files"][2]["file_key"]
+        .as_str()
+        .expect("twin key")
+        .starts_with("b3:"));
+    // The replaced key is still accepted in the form it was sent in.
+    assert_eq!(registry.file_for_shown_key(&shown_keys[0]), Some(0));
+    assert_eq!(
+        registry.file_for_shown_key(&format!("sop:{real_uid}")),
+        None
+    );
+    let frame = server.get("/api/file/0/frame/0").await;
+    assert_eq!(frame.header("x-file-key"), new_key);
+}

@@ -6,6 +6,7 @@ mod integration {
     mod display_masking;
     mod display_shutters;
     mod embed_goldens;
+    mod file_keys;
     mod golden_fixtures;
     mod graphic_annotations;
     mod loader_discovery;
