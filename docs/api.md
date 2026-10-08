@@ -246,13 +246,27 @@ Existing clients may keep requesting the full catalog without a cursor.
 `FileSummary.file_format` is `dicom`, `png`, `jpeg`, `tiff`, or `webp`, detected
 from content. `raster` is `null` for DICOM and the following object for images.
 Rasters have `object_kind: "image"`, empty DICOM identity and transfer-syntax
-strings, `has_pixels: true`, `support_state: "unsupported"`, and
-`support_reason: "raster.decode_not_available"`. TIFF layouts without a decoder
-instead report `raster.unsupported_color` (for example CIELab, more than four
-bands, or an extra sample that is not alpha) or
-`raster.unsupported_sample_format` (16-bit float). Their headers are listed;
-pixel decoding is not available yet. Dimensions and coordinates remain in
-the stored pixel grid.
+strings, `has_pixels: true`, and `support_state: "renderable"` unless a
+`raster.*` reason applies. Unsupported rasters remain listed, with the first
+applicable `support_reason`:
+
+- `raster.unsupported_color`: TIFF CIELab, more than four bands, an extra
+  sample that is not alpha, palette, CMYK, gray with alpha, YCbCr outside
+  JPEG compression, or color stored as separate planes.
+- `raster.unsupported_sample_format`: TIFF 16-bit float, 1-, 2- or 4-bit or
+  64-bit integer samples, or color other than 8- or 16-bit unsigned.
+- `raster.unsupported_compression`: TIFF compression other than none, LZW,
+  Deflate or PackBits, including JPEG-compressed TIFF.
+- `raster.jpeg_unsupported_process`: JPEG other than 8-bit baseline, extended
+  sequential or progressive Huffman.
+- `raster.too_large`: a frame above 268,435,456 pixels, independent of host
+  memory and cache budget.
+
+Dimensions and coordinates remain in the stored pixel grid. For gray rasters,
+`default_window` covers the full stored range of integer samples of 8 bits or
+fewer, or a TIFF's declared `MinSampleValue`/`MaxSampleValue` range. Otherwise
+it is `null` and display uses the frame's percentiles. PNG `sBIT` does not
+narrow the window.
 
 | `RasterSummary` field | Meaning |
 |---|---|
@@ -274,6 +288,8 @@ layout and orientation match page 0 and they are neither reduced-resolution
 nor mask pages. A damaged later IFD ends the walk; earlier pages remain listed.
 A TIFF may have at most 65,535 pages; a longer chain is skipped as
 `raster_header_invalid`, rather than listed with a truncated frame map.
+A page that holds any tag twice cannot be read: as the first page it makes
+the file `raster_header_invalid`, and as a later page it ends the walk.
 
 Discovery reasons include `valid_image` for accepted rasters,
 `unrecognized_format` for content that is neither DICOM nor a recognized image
@@ -286,7 +302,7 @@ For a raster file index, the following responses require no DICOM parsing:
 
 | Endpoint suffix under `/api/file/{index}` | Raster response |
 |---|---|
-| `/frame/{frame}`, `/frame/{frame}/thumbnail`, `/frame/{frame}/raw`, `/frame/{frame}/raw/pixel`, `/frame/{frame}/presentation-layer` | `422 unsupported_pixel_layout`, error text containing the raster support reason above. Missing pixels and out-of-range frames are checked first; the latter is `404 frame_out_of_range`. The presentation layer rejects before allocating an image. |
+| `/frame/{frame}`, `/frame/{frame}/thumbnail`, `/frame/{frame}/raw`, `/frame/{frame}/raw/pixel`, `/frame/{frame}/presentation-layer` | As for DICOM for a renderable raster. A refused raster returns `422 unsupported_pixel_layout` naming its reason, without opening the file; a damaged file that cannot decode returns `500` in the shared JSON error envelope. Missing pixels and out-of-range frames are checked first; the latter is `404 frame_out_of_range`. |
 | `/tags` | `200` with `[]`. |
 | `/tags/select` | `400 bad_request`: tag selection is not available for image files. |
 | `/references` | `200` with `source_file_index`, empty `source_sop_instance_uid`, and `references: []`. Rasters are never reference targets. |
@@ -296,8 +312,8 @@ For a raster file index, the following responses require no DICOM parsing:
 
 Rasters are absent from `/api/series`. DICOM-only overlay, WSI, and presentation
 state operations retain their existing wrong-kind errors rather than attempting
-to open an image as DICOM. Per-file ROI and redaction storage remains available;
-frame requests still return the unsupported-layout response above.
+to open an image as DICOM. Per-file ROI and redaction storage is available,
+and redactions apply to display, raw, presentation-layer and thumbnail pixels.
 
 ## Thumbnails
 
@@ -350,12 +366,22 @@ Errors use the shared JSON envelope: `404 not_found`, `404 frame_out_of_range`,
 
 ## Display And Raw Frames
 
+Raster raw frames always contain interleaved stored samples: low-bit PNG gray
+values are unscaled, and WhiteIsZero TIFF values are un-inverted with
+`MONOCHROME1` so display inverts once. Two samples (`MONOCHROME2`) mean gray
+and alpha; four (`RGBA`) mean color with unassociated alpha. Wider samples
+are little endian. Orientation never rotates the samples or coordinates.
+Display flattens alpha over black, windows gray, and reduces 16-bit color to
+8-bit RGB without windowing color. A valid RGB ICC profile of at most 4 MiB
+is carried by color display frames; gray and converted CMYK JPEG profiles
+are dropped.
+
 Display frames are always decoded server-side and PNG-encoded; the endpoint
 never returns compressed DICOM fragments. The window is chosen in this order:
 
 1. `mode=full_dynamic`: current-frame min/max; `wc`/`ww` are ignored.
 2. Explicit `wc` and `ww`, which must be sent together with a positive width.
-3. DICOM Window Center/Width.
+3. DICOM Window Center/Width or the raster `default_window`.
 4. The current frame's 1st/99th percentile.
 
 `unit` (with `wc` and `ww`) puts the explicit window in a real-world unit: it

@@ -42,6 +42,10 @@ struct Page {
     orientation: u8,
     subfile: u64,
     icc: bool,
+    compression: u64,
+    planar: u64,
+    /// `MinSampleValue` and `MaxSampleValue`, when both are usable.
+    range: Option<(u64, u64)>,
 }
 
 impl Page {
@@ -93,13 +97,43 @@ impl Page {
         let mut header = Header::new(self.width, self.height, color, depth as u32);
         header.white_is_zero = self.photometric == 0;
         header.stored_samples = self.samples;
-        header.metadata.unsupported = if color == RasterColorType::Other {
+        // The layouts and compressions the decoder takes
+        // (`pixels/raster.rs`); the first reason that applies is reported.
+        let jpeg = self.compression == 7;
+        let unsupported_color = match color {
+            RasterColorType::Gray => false,
+            // YCbCr is RGB only once a JPEG decoder has converted it.
+            RasterColorType::Rgb => self.photometric == 6 && !jpeg,
+            RasterColorType::Rgba => false,
+            RasterColorType::GrayAlpha
+            | RasterColorType::Palette
+            | RasterColorType::Cmyk
+            | RasterColorType::Other => true,
+        } || (self.planar == 2 && self.samples > 1);
+        let supported_samples = match (color, sample_format, depth) {
+            (RasterColorType::Gray, RasterSampleFormat::Uint | RasterSampleFormat::Int, d) => {
+                matches!(d, 8 | 16 | 32)
+            }
+            (RasterColorType::Gray, RasterSampleFormat::Float, d) => matches!(d, 32 | 64),
+            (_, RasterSampleFormat::Uint, d) => matches!(d, 8 | 16),
+            _ => false,
+        };
+        header.metadata.unsupported = if unsupported_color {
             Some(RasterUnsupported::Color)
-        } else if sample_format == RasterSampleFormat::Float && depth == 16 {
+        } else if !supported_samples {
             Some(RasterUnsupported::SampleFormat)
+        } else if !matches!(self.compression, 1 | 5 | 8 | 32946 | 32773) {
+            Some(RasterUnsupported::Compression)
         } else {
             None
         };
+        // A declared range sets the default window of unsigned gray samples.
+        header.sample_range = self.range.filter(|(low, high)| {
+            color == RasterColorType::Gray
+                && sample_format == RasterSampleFormat::Uint
+                && low < high
+                && (depth >= 64 || *high < 1_u64 << depth)
+        });
         header.metadata.sample_format = sample_format;
         header.metadata.has_alpha = alpha;
         header.metadata.alpha_associated = alpha && self.extra.contains(&1);
@@ -132,6 +166,7 @@ pub(super) fn inspect(input: &mut HeaderReader) -> Result<Header> {
     input.step()?;
     let (first, next) = read_page(input, encoding, offset)?;
     let mut header = first.header()?;
+    header.metadata.frame_offsets = vec![offset];
     // Keep exact cycle detection so a repeated page is never counted twice.
     // The step check precedes insertion, bounding this set to 65,535 offsets.
     let mut seen = HashSet::from([offset]);
@@ -167,6 +202,7 @@ pub(super) fn inspect(input: &mut HeaderReader) -> Result<Header> {
             }
         } else {
             header.metadata.frame_pages.push(page);
+            header.metadata.frame_offsets.push(offset);
             if current.icc != first.icc {
                 note(
                     &mut header,
@@ -218,28 +254,44 @@ fn read_page(input: &mut HeaderReader, encoding: Encoding, offset: u64) -> Resul
     let table = input.bytes(start, table_len)?;
     let mut tags = BTreeMap::new();
     let mut icc = false;
+    // One bit per tag number. A page that holds any tag twice is refused:
+    // readers disagree on which entry counts, so what this lists would not
+    // be what a decoder is given (`pixels/raster.rs` refuses it again).
+    let mut seen = [0_u64; 1024];
     let entries_len = table.len() - encoding.offset_size() as usize;
     for entry in table[..entries_len].chunks_exact(entry_size as usize) {
         let tag = encoding.number(&entry[..2]);
+        let (word, bit) = ((tag / 64) as usize, 1_u64 << (tag % 64));
+        ensure!(seen[word] & bit == 0, "duplicate TIFF tag");
+        seen[word] |= bit;
         if tag == 34675 {
             icc = true;
         }
-        if !matches!(tag, 254 | 256 | 257 | 258 | 262 | 274 | 277 | 338 | 339) {
+        if !matches!(
+            tag,
+            254 | 256 | 257 | 258 | 259 | 262 | 274 | 277 | 280 | 281 | 284 | 338 | 339
+        ) {
             continue;
         }
-        ensure!(!tags.contains_key(&tag), "duplicate TIFF layout tag");
-        let size = match encoding.number(&entry[2..4]) {
-            1 => 1,
-            3 => 2,
-            4 => 4,
-            16 => 8,
-            _ => anyhow::bail!("invalid TIFF layout tag type"),
-        };
+        // The sample range only sets a default window: one in a form this
+        // does not read is left out, not a reason to drop the file.
+        let optional = matches!(tag, 280 | 281);
         let (values, value_slot) = if encoding.big {
             (encoding.number(&entry[4..12]), 12)
         } else {
             (encoding.number(&entry[4..8]), 8)
         };
+        let size = match encoding.number(&entry[2..4]) {
+            1 => 1,
+            3 => 2,
+            4 => 4,
+            16 => 8,
+            _ if optional => continue,
+            _ => anyhow::bail!("invalid TIFF layout tag type"),
+        };
+        if optional && (values == 0 || values > u64::from(u16::MAX)) {
+            continue;
+        }
         ensure!(values > 0, "empty TIFF layout tag");
         ensure!(
             values <= u64::from(u16::MAX),
@@ -250,6 +302,10 @@ fn read_page(input: &mut HeaderReader, encoding: Encoding, offset: u64) -> Resul
         let len = values
             .checked_mul(size)
             .ok_or_else(|| anyhow::anyhow!("TIFF tag length overflow"))?;
+        if optional && len > encoding.offset_size() {
+            // One value per sample of a colour image: no window comes of it.
+            continue;
+        }
         let data = if len <= encoding.offset_size() {
             entry[value_slot..value_slot + len as usize].to_vec()
         } else {
@@ -301,6 +357,16 @@ fn read_page(input: &mut HeaderReader, encoding: Encoding, offset: u64) -> Resul
         orientation: orientation(scalar(274, 1)?),
         subfile: scalar(254, 0)?,
         icc,
+        compression: scalar(259, 1)?,
+        planar: scalar(284, 1)?,
+        range: match (tags.get(&280), tags.get(&281)) {
+            (low, Some(high)) => Some((
+                low.and_then(|values| values.iter().copied().min())
+                    .unwrap_or(0),
+                high.iter().copied().max().unwrap_or(0),
+            )),
+            _ => None,
+        },
     };
     let next = encoding.number(&table[entries_len..]);
     Ok((page, next))

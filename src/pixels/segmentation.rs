@@ -60,6 +60,7 @@ pub(crate) fn segmentation_has_only_binary_samples(
         }
         let samples: Bytes = match codec {
             Codec::Native => unreachable!("native samples use the streaming path"),
+            Codec::Raster => unreachable!("a transfer syntax never selects the raster codec"),
             Codec::Rle => super::rle::decode_fragment(file, &encoded)?.into(),
             Codec::Jpeg2000 => {
                 let (bytes, metadata) = super::jpeg2000::decode_raw_fragment(file, &encoded)?;

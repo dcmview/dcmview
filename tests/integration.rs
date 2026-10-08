@@ -15,7 +15,10 @@ mod integration {
     mod pixels_jpeg_decode;
     mod pixels_raw_endpoint;
     mod pixels_uncompressed;
+    mod raster_cases;
+    mod raster_decode;
     mod raster_discovery;
+    mod raster_files;
     mod redactions;
     mod remote_fixtures;
     mod semantic_context;

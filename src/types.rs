@@ -151,13 +151,20 @@ pub struct RasterMetadata {
     pub pages_total: u32,
     /// The zero-based IFD index of each frame; never empty.
     pub frame_pages: Vec<u32>,
+    /// TIFF: the file offset of each frame's IFD, in frame order, so a frame
+    /// request seeks to its page instead of walking the chain to it. Empty
+    /// for PNG, JPEG and WebP. A decoder checks what it finds there against
+    /// the entry: the file may have changed since it was listed.
+    pub frame_offsets: Vec<u64>,
     /// The first [`RASTER_EXCLUDED_PAGES_LISTED`] pages left out of the frame
     /// map, in page order.
     pub excluded_pages: Vec<RasterExcludedPage>,
     /// How many pages are left out of the frame map, listed or not.
     pub excluded_pages_total: u32,
-    /// Why no decoder will take this file whatever decoders exist, from its
-    /// header alone; `None` for a layout the format table maps.
+    /// Why the viewer does not decode this file, from its header alone;
+    /// `None` for a file whose frames decode. The catalog reports it as
+    /// `support_reason` and the frame endpoints answer it without reading
+    /// the file.
     pub unsupported: Option<RasterUnsupported>,
     /// Animated PNG (`acTL`) or animated WebP.
     pub animated: bool,
@@ -176,15 +183,32 @@ pub const RASTER_EXCLUDED_PAGES_LISTED: usize = 16;
 /// How many warnings a raster's metadata keeps.
 pub const RASTER_WARNINGS_MAX: usize = 16;
 
-/// A raster layout the viewer lists and does not decode
-/// (`docs/design/image-formats.md` section 2.3).
+/// The most pixels one raster frame may have and be decoded: 16,384 x
+/// 16,384 (`docs/design/image-formats.md` section 2.3). It depends on nothing
+/// about the host. A frame is decoded whole, so this is what bounds the
+/// memory one decode can take; a larger file is listed and not decoded.
+pub const RASTER_MAX_FRAME_PIXELS: u64 = 268_435_456;
+
+/// Why the viewer lists a raster file and does not decode it
+/// (`docs/design/image-formats.md` sections 2.3 and 11), decided from the
+/// header at discovery. When several apply, the first in this order is
+/// reported.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RasterUnsupported {
-    /// The colour layout: CIELab, more than four bands, an extra sample that
-    /// is not alpha. `color_type` is `Other`.
+    /// The colour layout. TIFF: CIELab, more than four bands, an extra
+    /// sample that is not alpha (`color_type` `Other`); palette; CMYK; gray
+    /// with alpha; YCbCr; more than one sample stored as separate planes.
     Color,
-    /// The sample format at this depth: 16-bit float.
+    /// The sample format at this depth. TIFF: 16-bit float; 1-, 2- and 4-bit
+    /// samples; 64-bit integers; colour that is not 8- or 16-bit unsigned.
     SampleFormat,
+    /// TIFF compression other than none, LZW, Deflate or PackBits.
+    Compression,
+    /// A JPEG that is not 8-bit baseline, extended sequential or progressive
+    /// Huffman: 12-bit, lossless, hierarchical or arithmetic-coded.
+    JpegProcess,
+    /// More than [`RASTER_MAX_FRAME_PIXELS`] pixels in a frame.
+    TooLarge,
 }
 
 impl RasterMetadata {

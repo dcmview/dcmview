@@ -1,13 +1,18 @@
 use crate::api::contracts::SupportState;
 use crate::types::{FileEntry, NativePixelDataKind, RasterUnsupported};
 
-/// The decoder that handles one transfer syntax's pixel data.
+/// The decoder that handles one file's pixel data: one per group of transfer
+/// syntaxes, and one for raster image files.
 ///
 /// This table is the single source for both frame dispatch (`service.rs`) and
 /// the support state reported to clients (`classify_pixel_support`), so a
-/// syntax cannot be advertised under one decoder and routed to another.
+/// file cannot be advertised under one decoder and routed to another.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Codec {
+    /// A raster image file (PNG, JPEG, TIFF, WebP), decoded by
+    /// `pixels/raster.rs` from the file's own format. Chosen from
+    /// `FileEntry.format`, never from a transfer syntax.
+    Raster,
     /// Implicit/Explicit VR Little Endian, Explicit VR Big Endian, and
     /// Deflated Explicit VR Little Endian.
     Native,
@@ -51,6 +56,17 @@ pub fn codec_for_syntax(uid: &str) -> Option<Codec> {
         "1.2.840.10008.1.2.4.110" => Some(Codec::JpegXl),
         "1.2.840.10008.1.2.5" => Some(Codec::Rle),
         _ => None,
+    }
+}
+
+/// The decoder for `file`: [`Codec::Raster`] for a raster image, chosen from
+/// its format before any transfer-syntax lookup (its transfer syntax is
+/// empty), otherwise [`codec_for_syntax`] of its transfer syntax.
+pub fn codec_for_file(file: &FileEntry) -> Option<Codec> {
+    if file.format.is_raster() {
+        Some(Codec::Raster)
+    } else {
+        codec_for_syntax(&file.transfer_syntax_uid)
     }
 }
 
@@ -124,14 +140,16 @@ pub enum PixelSupportReason {
     GenericColorRenderingOnly,
     PaletteColorNotSupported,
     PhotometricInterpretationNotSupported,
-    /// A raster image file: discovered and described, with no decoder yet.
-    /// The raster decoders replace this with `Renderable` or a specific
-    /// `raster.*` reason.
-    RasterDecodeNotAvailable,
     /// A raster whose colour layout the viewer does not decode.
     RasterUnsupportedColor,
     /// A raster whose sample format the viewer does not decode at its depth.
     RasterUnsupportedSampleFormat,
+    /// A TIFF whose compression the viewer does not decode.
+    RasterUnsupportedCompression,
+    /// A JPEG coded with a process the viewer does not decode.
+    RasterJpegUnsupportedProcess,
+    /// A raster with more pixels in a frame than the viewer decodes.
+    RasterTooLarge,
 }
 
 impl PixelSupportReason {
@@ -151,9 +169,11 @@ impl PixelSupportReason {
             Self::PhotometricInterpretationNotSupported => {
                 "pixel_layout.photometric_interpretation_not_supported"
             }
-            Self::RasterDecodeNotAvailable => "raster.decode_not_available",
             Self::RasterUnsupportedColor => "raster.unsupported_color",
             Self::RasterUnsupportedSampleFormat => "raster.unsupported_sample_format",
+            Self::RasterUnsupportedCompression => "raster.unsupported_compression",
+            Self::RasterJpegUnsupportedProcess => "raster.jpeg_unsupported_process",
+            Self::RasterTooLarge => "raster.too_large",
         }
     }
 }
@@ -199,22 +219,28 @@ impl PixelSupport {
 /// Semantic interpretation such as segmentation or parametric mapping is
 /// separate.
 ///
-/// A raster image is `Unsupported`: with `raster.unsupported_color` or
-/// `raster.unsupported_sample_format` when its header declares a layout no
-/// decoder will take, else with `raster.decode_not_available`: it has
-/// pixels and no transfer syntax, and nothing decodes it yet. The display,
-/// raw, raw-pixel and presentation-layer endpoints answer
-/// `422 unsupported_pixel_layout` naming that reason.
+/// A raster image is `Renderable` unless discovery found, in its header, a
+/// reason the viewer does not decode it (`RasterMetadata.unsupported`); then
+/// it is `Unsupported` with that `raster.*` reason, and the display, raw,
+/// raw-pixel, thumbnail and presentation-layer endpoints answer
+/// `422 unsupported_pixel_layout` naming it, without reading the file. The
+/// reason depends on the file alone, never on a cache budget or another
+/// setting of the host (`docs/design/image-formats.md` section 2.3).
 pub fn classify_pixel_support(file: &FileEntry) -> PixelSupport {
     if file.format.is_raster() {
         let unsupported = file.raster.as_deref().and_then(|raster| raster.unsupported);
-        return PixelSupport::unsupported(match unsupported {
-            Some(RasterUnsupported::Color) => PixelSupportReason::RasterUnsupportedColor,
-            Some(RasterUnsupported::SampleFormat) => {
-                PixelSupportReason::RasterUnsupportedSampleFormat
-            }
-            None => PixelSupportReason::RasterDecodeNotAvailable,
-        });
+        return match unsupported {
+            None => PixelSupport::renderable(),
+            Some(reason) => PixelSupport::unsupported(match reason {
+                RasterUnsupported::Color => PixelSupportReason::RasterUnsupportedColor,
+                RasterUnsupported::SampleFormat => {
+                    PixelSupportReason::RasterUnsupportedSampleFormat
+                }
+                RasterUnsupported::Compression => PixelSupportReason::RasterUnsupportedCompression,
+                RasterUnsupported::JpegProcess => PixelSupportReason::RasterJpegUnsupportedProcess,
+                RasterUnsupported::TooLarge => PixelSupportReason::RasterTooLarge,
+            }),
+        };
     }
     if !file.has_pixels {
         return PixelSupport::metadata_only(PixelSupportReason::PixelDataAbsentOrUnrecognized);
