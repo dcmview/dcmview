@@ -122,6 +122,13 @@ diagnostic viewer.
   not delay the ones it still wants. A decode that has started still
   finishes and is cached.
 
+- Discovery reads a DICOM file's header within fixed limits. It passes over
+  any value longer than 1 MiB before the pixel data without reading it
+  (Overlay Data excepted), so large private or bulk elements no longer cost
+  scan time or memory. A file whose sequences nest more than 64 deep, or
+  whose Deflated Explicit VR Little Endian data set needs more than 64 MiB
+  to read up to its pixel data, is skipped as `dicom_parse_failed`.
+
 - `--cache-budget BYTES` now also covers the thumbnail cache, and its default
   total is 768 MiB instead of 704 MiB: 256, 384, 64 and 64 MiB for the
   display, raw, overlay and thumbnail caches respectively.
@@ -135,6 +142,10 @@ diagnostic viewer.
 
 ### Fixed
 
+- Discovery no longer sizes what it reads from the lengths a DICOM file
+  declares. Before, a file whose header declared more data than the file
+  held could make the viewer allocate that much memory while scanning a
+  folder.
 - Segmentation, RT Dose and Parametric Map overlays and the legend of an RT
   Dose or Parametric Map are now reserved against the decode memory budget
   as whole pieces of work: the frames they decode, the values they are

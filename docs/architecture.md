@@ -64,6 +64,7 @@ application module:
 | Display masking | `src/masking.rs` | `Masker`: the per-process keyed replacements of a `--mask` session (patient pseudonym, date shift, UID hash) and the tag rules, with the PS3.15 Table E.1-1 attribute list in `masking/profile.rs`, and the allowlist for raster metadata in `masking/raster.rs`. The registry holds it and masks the catalog as files register; handlers mask tag trees, semantic context and UID fields of other responses. |
 | Redaction boxes | `src/redactions.rs`, `src/pixels/redaction.rs` | `RedactionStore`: per-file boxes and their revision, in memory. The pixel service paints them into display PNGs and thumbnails (revision in the display and thumbnail cache keys), fills them in raw frame copies, and the presentation layer paints them too. |
 | WSI tile context | `src/wsi.rs` | Bounded positioning of one selected WSI tile without stitching or Total Pixel Matrix reconstruction. |
+| Data set reads | `src/data_set.rs` | `read_for_catalog` and `read_for_tags`: the only reads of a DICOM data set for the catalog and the tag endpoints, and the limits on what they read and hold whatever a file declares. See [DICOM Data Set Reads](#dicom-data-set-reads). |
 | Attribute readers | `src/dicom_values.rs` | Lenient string, number, and sequence readers shared by discovery, references, semantic context, and WSI context. |
 | File discovery | `src/loader/` | `discovery.rs` progressive events, cancellation, and reports; `entry.rs` format detection from content and DICOM `FileEntry` construction; `format.rs` the `--formats` selection and raster signatures; `raster.rs` header-only inspection of PNG, JPEG, TIFF and WebP into a `FileEntry`; `metadata.rs` geometry, LUT, overlay, and shutter extraction; `filter.rs` `--filter` predicates. |
 | Frontend client | `frontend/src/api.ts` | Typed fetch wrappers over the generated endpoint paths and wire types. |
@@ -999,6 +1000,41 @@ the bytes that are decoded.
 RLE Lossless and native pixel data need none of this: their decoders size
 every buffer from the entry (`pixels/rle.rs`, `pixels/native.rs`).
 
+### DICOM Data Set Reads
+
+Every element of a DICOM data set declares its own length, a deflated data
+set inflates to a size nothing declares, and sequences nest as deep as the
+file says. `src/data_set.rs` is the only code that reads a data set for the
+catalog (`read_for_catalog`, called by `loader/entry.rs`), and its doc
+comment is the contract for what that read may cost. The limits are fixed
+numbers or the file's real length, never a length the file declares:
+
+| Limit | Value | What it bounds |
+|---|---|---|
+| A value is read only when it fits | the bytes the file has left | No value is allocated at a length the file does not hold. Checked for every element of the file meta group before the group is parsed, too. |
+| `DATA_SET_VALUE_MAX_BYTES` | 1 MiB | No longer value is read. The one exception is Overlay Data (60xx,3000), which the catalog entry keeps. |
+| `DATA_SET_INFLATED_BUDGET_BYTES` | 64 MiB | What one read of a Deflated Explicit VR Little Endian data set may spend: every byte it inflates, kept or discarded, plus `DATA_SET_INFLATED_ELEMENT_CHARGE_BYTES` (512) for each element it builds and twice that for each item. |
+| `DATA_SET_MAX_DEPTH` | 64 | How deep sequences nest. |
+
+A value that is not read is passed over by seeking, so it costs neither
+memory nor a read of its bytes; a deflated data set cannot be seeked, and
+its skipped values are inflated and discarded. The read goes through the
+parser's lazy tokens (`dicom-parser` `LazyDataSetReader`), which hand over
+each header before its value, and builds the same object `dicom-object`
+would for what it keeps.
+
+The catalog read keeps the data set before Float Pixel Data (7FE0,0008),
+the earliest standard pixel element, and ends at the header of the data
+set's own top-level pixel element, so it reads no pixel value and nothing
+behind one. Pixel elements nested in sequences, such as an Icon Image
+Sequence, do not count, and their fragments are passed over. A file that
+breaks a limit before its pixel element is not listed: discovery skips it as
+`dicom_parse_failed`, as it does a file that does not parse.
+
+What a read holds is proportional to the bytes it read: the values it kept,
+each backed by its bytes in the file, and one in-memory element per element
+read. A read of a deflated data set holds no more than its budget.
+
 ### Raster Image Files
 
 Discovery lists PNG, JPEG, TIFF and still WebP files beside DICOM
@@ -1795,13 +1831,21 @@ installation and VS Code Electron integration can also use network/cache state;
   the budget answers 422, and one nobody waits for leaves the queue. On Unix a decode is held
   in place by a pipe put where its file was, to show that a request dropped
   after its decode began stays counted until the decode ends.
-- Discovery builds each file's catalog metadata in one parse (`loader/entry.rs`
-  `read_discovery_header`): it builds the metadata object from the parser's
-  tokens up to the earliest standard pixel-data tag, exactly as
-  `OpenFileOptions::read_until(FLOAT_PIXEL_DATA)` would, then continues the
-  same parse to the data set's own top-level pixel element (deflated data sets
-  through their inflating adapter). Pixel elements nested in sequences, such
-  as an Icon Image Sequence, do not count. It does not retain integer, float,
+- Data set cost tests (`tests/raster_cost/data_sets.rs`) call
+  `read_for_catalog` on files written element by element
+  (`data_set_files.rs`): values declared past the end of the file, bulk
+  values the catalog has no use for, sequences nested to and past the limit,
+  and deflated data sets that inflate, in bytes or in elements, past their
+  budget. They count the bytes read at the source and the heap at the
+  allocator, then run the real loader over the same files to show that it
+  lists and refuses them as the read does.
+- Discovery builds each file's catalog metadata in one bounded read
+  (`loader/entry.rs` `read_discovery_header`, "DICOM Data Set Reads"): the
+  metadata object holds what
+  `OpenFileOptions::read_until(FLOAT_PIXEL_DATA)` would build, less the
+  values the limits leave out, and the same read goes on to the header of
+  the data set's own top-level pixel element (deflated data sets through
+  their inflating adapter). It does not retain integer, float,
   or double-float pixel values in the catalog. Selected candidate FRACTIONAL
   SEGs additionally receive the bounded sample inspection described above; this
   is one pixel-stream pass per object, not a header parse per frame.
@@ -1935,6 +1979,10 @@ Not current correctness blockers:
   one, and never derive an estimate from what the file declares.
 - No codec library is handed a compressed frame before
   `pixels::codestream::checked` has accepted it for the catalog entry.
+- Discovery reads a DICOM data set only through `data_set::read_for_catalog`.
+  Nothing there is sized from a length the file declares before that length
+  has been checked against the file's real length or a constant, and its
+  limits change only together with `tests/raster_cost/data_sets.rs`.
 - Thumbnails write their own cache only, and anything that returns source
   pixels applies the frame's redaction boxes and the masked-session refusal
   before encoding.

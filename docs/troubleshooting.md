@@ -95,6 +95,22 @@ permissions and try opening that file directly:
 dcmview ./expected-file.dcm
 ```
 
+A DICOM file is skipped as `dicom_parse_failed` ("unparsable DICOM") when its
+header cannot be read within fixed limits, whatever the reason the file was
+written that way:
+
+- an element before the pixel data declares a value longer than the rest of
+  the file (a truncated or damaged file);
+- sequences nest more than 64 deep;
+- a Deflated Explicit VR Little Endian data set needs more than 64 MiB to
+  read up to its pixel data, counting the bytes it inflates and 512 bytes
+  for each element (1,024 for each sequence item) before the pixel data.
+
+Large values before the pixel data are not a reason: discovery passes over
+any value longer than 1 MiB without reading it, and the file is listed.
+Re-export a deflated file that is skipped with an uncompressed transfer
+syntax, for example `dcmconv +te in.dcm out.dcm`.
+
 If filters are in use, confirm that the field name and value match the file's
 metadata. DICOM fields and paths use case-insensitive substring matching;
 `format` matches a whole format name.

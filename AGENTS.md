@@ -363,6 +363,8 @@ dcmview/
 |   |                    thumbnails, decode classes and admission, windowing,
 |   |                    shutters, overlay colorwash
 |   |-- server/          API, catalog, lifecycle, runtime, tags, web assets
+|   |-- data_set.rs      the bounded reads of a DICOM data set for the catalog
+|   |                    and the tag endpoints
 |   |-- dicom_values.rs  shared lenient attribute readers
 |   |-- object_kind.rs   SOP class to object-kind classification
 |   |-- geometry.rs      patient geometry and frame-to-frame transforms
@@ -426,10 +428,10 @@ dcmview/
 |-- tests/
 |   |-- integration.rs  Integration test module root
 |   |-- integration/    Axum and pixel-path integration tests
-|   |-- raster_cost/    what a raster decode and a raster metadata read may
-|   |                   read and allocate, and what each request holds
-|   |                   against what it reserved, on a counting allocator
-|   |                   (its own test binary)
+|   |-- raster_cost/    what a raster decode, a raster metadata read and a
+|   |                   DICOM data set read may read and allocate, and what
+|   |                   each request holds against what it reserved, on a
+|   |                   counting allocator (its own test binary)
 |   |-- codestream_cost/  what a compressed DICOM frame may cost before it is
 |   |                   known to match its header (its own test binary)
 |   |-- windowing-cases.json  windowing oracle shared with rawWindowing.test.ts
@@ -645,6 +647,27 @@ is cached between requests.
 - A decoder that sizes everything from the entry (RLE Lossless, native
   pixel data) needs no check; keep it that way rather than reading a size
   from the pixel data.
+
+**DICOM data sets**
+
+- `src/data_set.rs` `read_for_catalog` is the only code that reads a DICOM
+  data set for the catalog, and the module's doc comment is the contract for
+  what that may cost: no value is read that the file does not hold or that
+  is longer than `DATA_SET_VALUE_MAX_BYTES` (Overlay Data excepted), a
+  deflated data set is read within `DATA_SET_INFLATED_BUDGET_BYTES`, and
+  sequences nest to `DATA_SET_MAX_DEPTH`. `docs/architecture.md`, "DICOM
+  Data Set Reads", is normative.
+- Do not open a file with `dicom_object::open_file`, `OpenFileOptions` or
+  `DataSetReader` in discovery: they allocate every value at its declared
+  length. Read through the lazy tokens and decide per header, as the module
+  does.
+- A new catalog field that needs a value longer than
+  `DATA_SET_VALUE_MAX_BYTES` is an exception named in the module's `keep`
+  rule beside Overlay Data, with a row in `tests/raster_cost/data_sets.rs`.
+  The meta group is checked header by header before `FileMetaTable` parses
+  it; keep that check in front of any new meta read.
+- The limits are counted, not timed: tests count bytes at the source and
+  heap at the allocator.
 
 **Raster files**
 
@@ -1074,6 +1097,10 @@ default suite.
   structure) is a decode error at every endpoint that decodes it, costs no
   more heap to refuse than its own bytes, and leaves its file listed and its
   other frames decoding; honest codestreams from other encoders decode.
+- Reading a DICOM file for the catalog allocates no value the file does not
+  hold, reads no value the catalog has no use for, nests sequences to a
+  fixed depth and reads a deflated data set within a fixed budget; a file
+  past a limit is skipped as `dicom_parse_failed`.
 - Decoding a raster frame reads no more than its entry's budget and holds no
   more heap than its entry's limit, for hostile and damaged files too, and
   never panics.
