@@ -542,7 +542,9 @@ requires an existing `frontend/dist/index.html`.
   the file. State a reason worth showing with `pixels::Stated` (fixed
   wording and numbers the viewer computed, nothing read from the file as
   text); pass any other cause to `ApiError::failed` or leave it in the
-  chain, where only the debug log of an unmasked session sees it. Do not
+  chain, where only the debug log of an unmasked session sees it. A log
+  line that reports why a file could not be read writes the cause with
+  `masking::logged_cause`, never with `{error}` or `{error:#}`. Do not
   format a cause chain into an `ApiError` message or a `warn!` line in any
   endpoint that reads a file: the metadata endpoints answer through
   `ApiError::failed` too.
@@ -684,10 +686,12 @@ is cached between requests.
   fixed bound on what is read, and never read pixel data for a tag request.
 - The limits are counted, not timed: tests count bytes at the source and
   heap at the allocator.
-- A read of a deflated data set holds no more than its budget. Anything
-  the read builds that holds more than the bytes it came from (an element,
-  an item, each value of a split string) is charged to the budget before
-  or as it is built; a new such structure gets a charge and a row in
+- A read of a deflated data set holds no more than its budget and the two
+  buffers a value passes through (each at most `DATA_SET_VALUE_MAX_BYTES`).
+  Anything the read builds that holds more than the bytes it came from (an
+  element, an item, each value of a split string, text that decodes to more
+  than its bytes) is charged to the budget, from the value's bytes, before
+  it is built; a new such structure gets a charge and a row in
   `tests/raster_cost/data_sets.rs`. A read by seeking has no budget: say
   only that it is bounded by what the file supplies.
 

@@ -174,10 +174,15 @@ struct ProbeLog(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
 
 const PROBE: &str = "probe=decode-error-";
 
+/// The tag of the element the test's DICOM files are cut in, as a parser's
+/// account of such a file writes it. Lines that hold it are kept too,
+/// whichever request or task logged them.
+const MARKED_TAG: &str = "0BAD,0F0D";
+
 impl std::io::Write for ProbeLog {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         let line = String::from_utf8_lossy(bytes);
-        if line.contains(PROBE) {
+        if line.contains(PROBE) || line.to_uppercase().contains(MARKED_TAG) {
             self.0.lock().expect("log").push(line.into_owned());
         }
         Ok(bytes.len())
@@ -310,23 +315,52 @@ async fn a_failed_decode_is_answered_in_the_viewers_words_whatever_the_file_hold
         }
     };
     let untouched = |_: &Path| {};
-    // Every file of the directory cut to `bytes`, inside its data set.
+    // Every file of the directory cut `bytes` into the value of its
+    // marked element, so that a parser's account of the file names that
+    // element.
     let cut_all = |bytes: u64| {
         move |dir: &Path| {
             for entry in std::fs::read_dir(dir).expect("list files") {
+                let path = entry.expect("entry").path();
+                let content = std::fs::read(&path).expect("read file");
+                let marker = [0xad, 0x0b, 0x0d, 0x0f, b'L', b'O'];
+                let at = content
+                    .windows(marker.len())
+                    .position(|window| window == marker)
+                    .expect("the marked element");
                 let file = std::fs::OpenOptions::new()
                     .write(true)
-                    .open(entry.expect("entry").path())
+                    .open(&path)
                     .expect("open file");
-                file.set_len(bytes).expect("cut file");
+                file.set_len(at as u64 + 8 + bytes).expect("cut file");
             }
         }
     };
+    // A fixture with a marked element among its others.
+    let marked = |name: &str| {
+        let dir = tempdir().expect("temp dir");
+        let path = dir.path().join("marked.dcm");
+        let mut object = dicom_object::open_file(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures")
+                .join(name),
+        )
+        .expect("open fixture");
+        object.put(DataElement::new(
+            dicom_core::Tag(0x0bad, 0x0f0d),
+            VR::LO,
+            PrimitiveValue::from("x".repeat(64)),
+        ));
+        object.write_to_file(&path).expect("write file");
+        std::fs::read(&path).expect("read file")
+    };
     let metadata_files = || {
         vec![
-            ("0-state.dcm", fixture("golden-gsps-conforming.dcm")),
-            ("1-image.dcm", fixture("golden-gsps-target-u8.dcm")),
-            ("2-slide.dcm", fixture("golden-masking-wsi-label.dcm")),
+            ("0-state.dcm", marked("golden-gsps-conforming.dcm")),
+            ("1-image.dcm", marked("golden-gsps-target-u8.dcm")),
+            ("2-slide.dcm", marked("golden-masking-wsi-label.dcm")),
+            // An object the value mappings of every image are read from.
+            ("3-mapping.dcm", marked("golden-rwvm-ct-hounsfield.dcm")),
         ]
     };
     let metadata = vec![
@@ -394,18 +428,31 @@ async fn a_failed_decode_is_answered_in_the_viewers_words_whatever_the_file_hold
         (
             "files cut inside their data sets after they were listed",
             [
-                (metadata_files(), Box::new(cut_all(407))),
-                (metadata_files(), Box::new(cut_all(423))),
+                (metadata_files(), Box::new(cut_all(10))),
+                (metadata_files(), Box::new(cut_all(30))),
             ],
             metadata,
-            &[],
+            &[MARKED_TAG, "0bad,0f0d"],
         ),
     ];
     for (row, (name, [first, second], requests, planted)) in rows.into_iter().enumerate() {
         let probe = |label: &str| format!("{row}-{label}");
         let unmasked = answers(&first.0, &first.1, &requests, false, &probe("first")).await;
         let other = answers(&second.0, &second.1, &requests, false, &probe("second")).await;
+        let marked_lines = || {
+            let lines = probe_log().0.lock().expect("log");
+            lines
+                .iter()
+                .filter(|line| line.to_uppercase().contains(MARKED_TAG))
+                .count()
+        };
+        let before_masked = marked_lines();
         let masked = answers(&first.0, &first.1, &requests, true, &probe("masked")).await;
+        assert_eq!(
+            marked_lines(),
+            before_masked,
+            "{name}: a masked session logged a parser's account of a file"
+        );
         for (index, request) in requests.iter().enumerate() {
             let (answer, other, masked) = (&unmasked[index], &other[index], &masked[index]);
             let context = format!("{name}, {request}");
@@ -429,10 +476,20 @@ async fn a_failed_decode_is_answered_in_the_viewers_words_whatever_the_file_hold
                 "{context}: masked"
             );
             for text in planted {
+                // An unmasked session may log a parser's account of a
+                // DICOM file at debug level; no response and no masked
+                // session's log repeats it, and nothing repeats a raster
+                // decoder's.
+                let unmasked_log = name.contains("PNG") && answer.log.contains(text);
+                let repeated = [&answer.body, &other.body, &masked.body]
+                    .iter()
+                    .any(|body| body.to_string().contains(text));
                 assert!(
-                    !answer.log.contains(text) && !masked.log.contains(text),
-                    "{context}: the log repeats {text} from the file: {}",
-                    answer.log
+                    !unmasked_log && !repeated && !masked.log.contains(text),
+                    "{context}: {text} from the file is repeated: {} {} {}",
+                    answer.body,
+                    answer.log,
+                    masked.log
                 );
             }
             if answer.status < 500 {
@@ -450,5 +507,95 @@ async fn a_failed_decode_is_answered_in_the_viewers_words_whatever_the_file_hold
                 masked.log
             );
         }
+    }
+
+    // A file read on another file's behalf: an image's value mappings are
+    // also read from the mapping objects beside it, and one that cannot be
+    // read is only logged. A masked session does not log why.
+    let cut_mapping = |dir: &Path| {
+        let path = dir.join("3-mapping.dcm");
+        let content = std::fs::read(&path).expect("read file");
+        let marker = [0xad, 0x0b, 0x0d, 0x0f, b'L', b'O'];
+        let at = content
+            .windows(marker.len())
+            .position(|window| window == marker)
+            .expect("the marked element");
+        std::fs::write(&path, &content[..at + 18]).expect("cut file");
+    };
+    let before_masked = {
+        let lines = probe_log().0.lock().expect("log");
+        lines.len()
+    };
+    let mapped = answers(
+        &metadata_files(),
+        &cut_mapping,
+        &["/api/file/1/frame/0/value-mapping".to_string()],
+        true,
+        "mapping",
+    )
+    .await;
+    assert_eq!(mapped[0].status, 200, "{}", mapped[0].body);
+    {
+        let lines = probe_log().0.lock().expect("log");
+        let logged: Vec<_> = lines[before_masked..]
+            .iter()
+            .filter(|line| line.to_uppercase().contains(MARKED_TAG))
+            .collect();
+        assert!(logged.is_empty(), "a masked session logged {logged:?}");
+    }
+
+    // The reasons that are the viewer's own are shown, whatever their
+    // numbers. Each file is damaged after it was listed.
+    let cut_at = |marker: &'static [u8], keep: usize| {
+        move |dir: &Path| {
+            let path = dir.join("a.dcm");
+            let content = std::fs::read(&path).expect("read file");
+            let at = content
+                .windows(marker.len())
+                .rposition(|window| window == marker)
+                .expect("the pixel element");
+            std::fs::write(&path, &content[..at + keep]).expect("cut file");
+        }
+    };
+    const PIXEL_DATA: &[u8] = &[0xe0, 0x7f, 0x10, 0x00];
+    let stated: Vec<(&str, Vec<u8>, Damage, &str)> = vec![
+        (
+            "native pixel data shorter than a frame",
+            short_native(1),
+            Box::new(untouched),
+            "native pixel data frame  extends beyond  source bytes",
+        ),
+        (
+            "a fragment cut short",
+            fixture("golden-jpeg2000-lossless-u8-single-frame.dcm"),
+            // The element's header, an empty offset table, the fragment's
+            // item header and a little of the fragment.
+            Box::new(cut_at(PIXEL_DATA, 12 + 8 + 8 + 20)),
+            "encapsulated fragment is truncated",
+        ),
+        (
+            "no pixel data element",
+            short_native(1),
+            Box::new(cut_at(PIXEL_DATA, 0)),
+            "native pixel data element",
+        ),
+    ];
+    for (index, (name, file, damage, reason)) in stated.into_iter().enumerate() {
+        let request = ["/api/file/0/frame/0/raw".to_string()];
+        let answer = answers(
+            &[("a.dcm", file)],
+            &damage,
+            &request,
+            false,
+            &format!("stated-{index}"),
+        )
+        .await;
+        let error = answer[0].body["error"]
+            .as_str()
+            .expect("error text")
+            .chars()
+            .filter(|character| !character.is_ascii_digit())
+            .collect::<String>();
+        assert!(error.contains(reason), "{name}: {error}");
     }
 }

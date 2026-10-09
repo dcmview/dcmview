@@ -445,7 +445,10 @@ Fields are only added, and the crate's own test pins the exact shapes.
   `PixelError::detail`; `server/api/error.rs` keeps it off the response
   (`ApiError::failed` does the same for the overlay endpoints' other
   causes), and the request logger writes it at debug level, escaped, only
-  when the session is not masked. `pixels/raster.rs` `decoder_failure`
+  when the session is not masked. Any other log line that reports why a
+  file could not be read writes the cause through `masking::logged_cause`,
+  which leaves it out once the process has a masked session.
+  `pixels/raster.rs` `decoder_failure`
   reduces a PNG, JPEG, TIFF or WebP library's error to its kind before it
   enters a chain, so a raster's cause holds no library text at any level.
   The warning logged for a server error is the response's message.
@@ -1035,7 +1038,8 @@ numbers or the file's real length, never a length the file declares:
 |---|---|---|
 | A value is read only when it fits | the bytes the file has left | No value is allocated at a length the file does not hold. Checked for every element of the file meta group before the group is parsed, too. |
 | `DATA_SET_VALUE_MAX_BYTES` | 1 MiB | No longer value is read. The one exception is Overlay Data (60xx,3000), which the catalog entry keeps. |
-| `DATA_SET_INFLATED_BUDGET_BYTES` | 64 MiB | What one read of a Deflated Explicit VR Little Endian data set may spend: every byte it inflates, kept or discarded, plus `DATA_SET_INFLATED_ELEMENT_CHARGE_BYTES` (512) for each element it builds, twice that for each item, and `DATA_SET_INFLATED_VALUE_CHARGE_BYTES` (96) for each value of a multi-valued string after its first. A string is read only when the budget would cover it at one value a byte. |
+| `DATA_SET_INFLATED_BUDGET_BYTES` | 64 MiB | What one read of a Deflated Explicit VR Little Endian data set may spend: every byte it inflates, kept or discarded, plus `DATA_SET_INFLATED_ELEMENT_CHARGE_BYTES` (512) for each element it builds, twice that for each item, and, for a kept value, what it holds beyond its bytes, worked out from the bytes before anything is built from them: `DATA_SET_INFLATED_VALUE_CHARGE_BYTES` (72) for each value of a multi-valued string after its first, `DATA_SET_INFLATED_TEXT_CHARGE` (4) times its length for text that is not plain ASCII, and its length once more for a list of tags. A value whose charge the budget does not cover is not read. |
+| `DATA_SET_CATALOG_MAX_VALUES` | 4,096 | The most values a multi-valued string may have for the catalog read to keep it, counted in its bytes before it is split. The tag read has no such limit. |
 | `DATA_SET_MAX_DEPTH` | 64 | How deep sequences nest. |
 
 A value that is not read is passed over by seeking, so it costs neither
@@ -1073,14 +1077,17 @@ ends early, without failing, in these cases:
 - sequences nested past the limit end the tree at the sequence that is too
   deep, which is listed without items; the top-level element it is in
   shows an error value that says so (`TagDataSet::too_deep`);
-- behind the pixel data, a top-level element whose tag is lower than the
-  pixel elements' ends the tree: tags ascend, so it is not an element of
-  the data set but bytes after it, such as zero padding.
+- top-level bytes that are not an element end the tree and are not listed:
+  a header that cannot be read (which is also how a file cut inside a
+  header looks), or the tag (0000,0000), which is what zero padding after a
+  data set parses as and no data set holds. A well-formed element is listed
+  wherever it stands, a lower tag behind the pixel data included.
 
 What a read holds is bounded by what the file supplies: the values it kept,
 each backed by its bytes in the file, and the in-memory elements and values
 built from the bytes it read. That is not a fixed budget. Only a read of a
-deflated data set has one, and holds no more than it.
+deflated data set has one: it holds no more than the budget and the two
+buffers a value passes through, each at most `DATA_SET_VALUE_MAX_BYTES`.
 
 ### Raster Image Files
 

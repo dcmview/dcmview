@@ -176,7 +176,7 @@ async fn track_request_activity(
     // The cause is a library's or a parser's text and may quote the file:
     // debug level, escaped, and never in a masked session.
     if let (false, Some(error::ServerErrorDetail(detail))) = (masked, response.extensions().get()) {
-        tracing::debug!(%method, %uri, "cause: {}", detail.escape_debug());
+        tracing::debug!(%method, %uri, "cause: {}", crate::masking::logged_cause(detail));
     }
     response
 }

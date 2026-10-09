@@ -19,7 +19,9 @@ use super::color::color_samples_to_rgb8;
 use super::error::Stated;
 use super::header::open_header;
 use super::icc::select_icc_profile;
-use super::native_layout::{native_pixel_element_tag, NativeByteOrder, NativeFrameLayout};
+use super::native_layout::{
+    native_pixel_element_tag, NativeByteOrder, NativeFrameLayout, NativeLayoutError,
+};
 use super::palette::palette_indices_to_rgb8;
 use super::render::{
     render_windowed_luminance, DisplayBuffer, DisplayPng, LuminanceRenderOptions, StoredSamples,
@@ -314,9 +316,7 @@ fn read_deflated_frame_bytes(
         available.context(Stated::new("missing native pixel data element"))?
     };
     if end > available {
-        return Err(anyhow!(
-            "native pixel data frame {frame} extends beyond {available} source bytes"
-        ));
+        return Err(NativeLayoutError::FrameOutOfBounds { frame, available }.into());
     }
     io::copy(&mut (&mut inflated).take(start as u64), &mut io::sink())?;
     let mut bytes = vec![0; end - start];
@@ -368,9 +368,7 @@ fn read_native_frame_bytes(
                     .and_then(|length| usize::try_from(length).ok())
                     .context("native pixel data has undefined length")?;
                 if end > available {
-                    return Err(anyhow!(
-                        "native pixel data frame {frame} extends beyond {available} source bytes"
-                    ));
+                    return Err(NativeLayoutError::FrameOutOfBounds { frame, available }.into());
                 }
                 let value_start = decoder.position();
                 decoder.seek(value_start + start as u64)?;

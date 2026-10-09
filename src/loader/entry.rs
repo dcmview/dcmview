@@ -287,8 +287,11 @@ pub(super) fn build_entry_selected(
             match crate::pixels::segmentation_has_only_binary_samples(&entry, &obj, check_active) {
                 Ok(true) => entry.series_metadata.binary_fractional_seg_maximum = Some(maximum),
                 Ok(false) => {}
-                Err(error) => tracing::warn!(path = %path.display(), %error,
-                    "could not inspect fractional SEG samples; retaining declared interpretation"),
+                Err(error) => tracing::warn!(
+                    path = %path.display(),
+                    cause = %crate::masking::logged_cause(&error),
+                    "could not inspect fractional SEG samples; retaining declared interpretation"
+                ),
             }
         }
     }

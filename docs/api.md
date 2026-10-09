@@ -688,8 +688,13 @@ Little Endian data set is read within 64 MiB of inflated data, so when its
 pixel data is larger than that, elements behind the pixel data are not
 listed; and when sequences nest more than 64 deep, the tree ends at that
 sequence and the top-level element it is in has the value
-`{"type": "error", "message": "..."}`. Bytes after the data set, such as
-zero padding, are not listed. Both endpoints answer `500` when a value they
+`{"type": "error", "message": "..."}`. Bytes after the data set that are
+not an element end the tree and are not listed: zero padding of any length,
+and anything whose element header cannot be read, which includes a file cut
+inside a header. An element that can be read is listed wherever it stands.
+(`/tags/select` for a tag before the pixel data reads only up to the pixel
+data, so it does not find an element of that tag placed behind it.)
+Both endpoints answer `500` when a value they
 would read runs past the end of the file, or when a deflated data set
 cannot be read within its budget before its pixel data (see
 [troubleshooting](troubleshooting.md#files-are-reported-as-skipped)); a
@@ -881,7 +886,10 @@ for any two files that fail at the same step, apart from numbers the viewer
 computed. The endpoints that read a file's metadata (`/tags`,
 `/tags/select`, `/references`, `/semantic-context`, `/value-mapping`,
 `/graphic-annotations` and `/wsi-context`) answer `500 internal_error` with
-one fixed sentence each when the file cannot be read. `unsupported_transfer_syntax`
+one fixed sentence each when the file cannot be read. The reasons the viewer states include
+"pixel data disagrees with the header", "native pixel data frame N extends
+beyond M source bytes", "encapsulated fragment is truncated" and "missing
+native pixel data element". `unsupported_transfer_syntax`
 names the UID only when it is written as a UID is. The library's account is
 written to the log at debug level (`RUST_LOG=dcmview=debug`), with the
 request, except in a `--mask` session, which logs nothing a file holds; for
