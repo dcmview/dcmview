@@ -22,7 +22,7 @@ use dcmview::pixels::{
     self, DecodeClass, DecodeLimits, DecodeLoad, DecodePermit, DecodeRefusal, DecodeScheduler,
     DecodeWork,
 };
-use dcmview::server;
+use dcmview::server::{self, FileRegistry};
 use dcmview::types::FileEntry;
 use futures::poll;
 use serde_json::{json, Value};
@@ -2268,6 +2268,103 @@ async fn an_overlay_nobody_waits_for_any_longer_leaves_the_queue() {
             let response = server.get(path).await;
             assert_eq!(response.status_code(), 200, "{path}");
             assert_eq!(response.header("x-cache"), "MISS", "{path}");
+        }
+        idle(&scheduler).await;
+    })
+    .await;
+}
+
+/// A viewer over `entries`, admitted by `scheduler`, with the registry it
+/// serves, so a test can add a file to the file set.
+fn growing_viewer(
+    entries: Vec<FileEntry>,
+    scheduler: &Arc<DecodeScheduler>,
+) -> (FileRegistry, TestServer) {
+    let registry = FileRegistry::from_files(entries);
+    let state =
+        support::app_state_with_registry(registry.clone()).with_decode_scheduler(scheduler.clone());
+    (registry, TestServer::new(server::router(state)))
+}
+
+/// A scheduler on which nothing waits: with `HELD_BYTES` held, whatever
+/// needs a permit is answered 503 and whatever is kept is served.
+fn nothing_waits() -> Arc<DecodeScheduler> {
+    DecodeScheduler::with_limits(4, limits(HELD_BYTES, 0, 0))
+}
+
+const HELD_BYTES: u64 = 1 << 40;
+
+/// Asserts that `path` is answered 503: the viewer had to do work for it.
+async fn assert_busy(server: &TestServer, path: &str) {
+    let response = server.get(path).await;
+    assert_eq!(response.status_code(), 503, "{path}");
+    assert_eq!(response.json::<Value>()["code"], "decode_busy", "{path}");
+    assert!(response.maybe_header("x-cache").is_none(), "{path}");
+}
+
+/// The legend `path`'s semantic context carries, which must be there.
+async fn legend_of(server: &TestServer, path: &str) -> Value {
+    let response = server.get(path).await;
+    assert_eq!(response.status_code(), 200, "{path}: {}", response.text());
+    let legend = response.json::<Value>()["context"]["legend"].clone();
+    assert!(legend.is_object(), "{path}: no legend");
+    legend
+}
+
+/// The value range a legend spans is kept for its object and its file set
+/// and for nothing else: another object's legend, and the same object's
+/// once a file has been added, are found by decoding again, while the
+/// legend of an object whose context the viewer no longer keeps is served
+/// with the budget held.
+#[tokio::test]
+async fn a_legend_range_is_kept_for_its_object_and_file_set() {
+    finishes(async {
+        let mut entries = overlay_fixtures().await;
+        let context = |object: usize| format!("/api/file/{object}/semantic-context");
+        // Each legend as a viewer that is asked for nothing else gives it.
+        let mut alone = Vec::new();
+        for object in [DOSE, MAP] {
+            let server = serve(entries.clone(), &default_scheduler(1));
+            alone.push(legend_of(&server, &context(object)).await);
+        }
+        assert_ne!(alone[0]["max_value"], alone[1]["max_value"]);
+
+        // Many more files than a viewer keeps semantic contexts for.
+        let others = entries.len()..entries.len() + 96;
+        let other = entries[DOSE_ON_A_PLANE].clone();
+        entries.extend(others.clone().map(|_| other.clone()));
+        let scheduler = nothing_waits();
+        let (registry, server) = growing_viewer(entries, &scheduler);
+
+        // Another object: the dose's range does not answer for the map.
+        assert_eq!(legend_of(&server, &context(DOSE)).await, alone[0]);
+        let held = granted(&scheduler, Interactive, HELD_BYTES).await;
+        assert_busy(&server, &context(MAP)).await;
+        drop(held);
+        assert_eq!(legend_of(&server, &context(MAP)).await, alone[1]);
+        assert_eq!(legend_of(&server, &context(DOSE)).await, alone[0]);
+
+        // The same object again, once its context is no longer kept: the
+        // contexts of the other files have taken its place. The range is
+        // still there, so the legend needs no permit.
+        let held = granted(&scheduler, Interactive, HELD_BYTES).await;
+        for object in others {
+            let response = server.get(&context(object)).await;
+            assert_eq!(response.status_code(), 200, "{}", response.text());
+        }
+        for (object, legend) in [(DOSE, &alone[0]), (MAP, &alone[1])] {
+            assert_eq!(&legend_of(&server, &context(object)).await, legend);
+        }
+
+        // Another file set: a range found before the file was added is not
+        // the range of the set with it.
+        registry.insert(other);
+        for object in [DOSE, MAP] {
+            assert_busy(&server, &context(object)).await;
+        }
+        drop(held);
+        for (object, legend) in [(DOSE, &alone[0]), (MAP, &alone[1])] {
+            assert_eq!(&legend_of(&server, &context(object)).await, legend);
         }
         idle(&scheduler).await;
     })
