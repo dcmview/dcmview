@@ -93,7 +93,7 @@ struct Cli {
         long = "decode-memory",
         value_name = "BYTES",
         value_parser = parse_decode_memory,
-        help = "Memory that frames being decoded may use between them, such as 8GiB; default 4GiB"
+        help = "Memory that frames being decoded may use between them, such as 8GiB; default a quarter of physical memory, from 1GiB to 4GiB"
     )]
     decode_memory: Option<DecodeLimits>,
 

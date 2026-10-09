@@ -64,7 +64,8 @@ would remove behavior, raise it as a question instead of acting.
 - **Decode memory budget** - every decode, render and frame-sized copy
   reserves an estimate of the memory it will hold, from the catalog entry,
   before it starts, and the decodes running at once never have more
-  reserved than `--decode-memory` (default 4 GiB). Thumbnails share half of
+  reserved than `--decode-memory` (default: a quarter of physical memory,
+  from 1 GiB to 4 GiB; 4 GiB where it is not read). Thumbnails share half of
   it. A frame that needs more than the budget answers
   `422 decode_memory_exceeded` and stays listed as renderable; a request
   that would wait behind a full queue answers `503 decode_busy` with
@@ -772,7 +773,8 @@ dcmview [OPTIONS] <PATH> [PATH ...]
   --unix-socket <path>      listen on a private Unix socket instead of TCP (Unix only)
   --no-token                serve the API without the bearer token (warns)
   --cache-budget <bytes>    total size of the frame caches, e.g. 256MiB
-  --decode-memory <bytes>   memory frames being decoded may use, default 4GiB
+  --decode-memory <bytes>   memory frames being decoded may use; default a quarter
+                            of physical memory, from 1GiB to 4GiB
 ```
 
 Hidden and experimental, for a supervising parent process, and outside the

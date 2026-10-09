@@ -3,7 +3,6 @@ use crate::startup::{self, LocalViewerOptions};
 use crate::Cli;
 use anyhow::Result;
 use clap::Parser;
-use dcmview::pixels::DecodeLimits;
 use std::sync::Once;
 
 /// Route the launch into VS Code when the routing rule selects a bridge;
@@ -58,7 +57,7 @@ fn local_viewer_options(cli: Cli) -> LocalViewerOptions {
         unix_socket: cli.unix_socket,
         timeout_seconds: cli.timeout,
         cache_budget: cli.cache_budget,
-        decode_limits: cli.decode_memory.unwrap_or(DecodeLimits::DEFAULT),
+        decode_limits: cli.decode_memory,
         exit_with_parent: cli.exit_with_parent,
         open_browser: !cli.no_browser,
         startup_json: cli.startup_json,

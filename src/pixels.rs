@@ -56,10 +56,11 @@ pub use redaction::Redaction;
 pub(crate) use render::encode_presentation_layer_png;
 pub use render::AppliedWindow;
 pub use schedule::{
-    background_limit, background_memory_limit, decode_scheduler, host_permits, DecodeClass,
-    DecodeLimits, DecodeLoad, DecodePermit, DecodeRefusal, DecodeScheduler,
-    DECODE_MEMORY_DEFAULT_BYTES, DECODE_MEMORY_MIN_BYTES, DECODE_QUEUE_BACKGROUND,
-    DECODE_QUEUE_INTERACTIVE, INTERACTIVE_LATENCY_TARGET, ONE_CORE_IDLE_WINDOW,
+    background_limit, background_memory_limit, decode_scheduler, default_decode_memory,
+    host_permits, DecodeClass, DecodeLimits, DecodeLoad, DecodePermit, DecodeRefusal,
+    DecodeScheduler, DECODE_MEMORY_DEFAULT_BYTES, DECODE_MEMORY_DEFAULT_FLOOR_BYTES,
+    DECODE_MEMORY_MIN_BYTES, DECODE_QUEUE_BACKGROUND, DECODE_QUEUE_INTERACTIVE,
+    INTERACTIVE_LATENCY_TARGET, ONE_CORE_IDLE_WINDOW,
 };
 pub use segmentation::encode_segmentation_overlay_png;
 pub(crate) use segmentation::segmentation_has_only_binary_samples;

@@ -770,8 +770,15 @@ A decode holds its frame several times over while it runs, so the number of
 permits does not bound memory: a frame at the raster pixel limit is up to
 2 GiB of samples. Each permit therefore also carries a share of the **decode
 memory budget** (`docs/design/image-formats.md` section 2.3): `--decode-memory`,
-4 GiB by default and at least 256 MiB. It is its own setting and not a share
-of `--cache-budget`, and nothing the catalog reports depends on it.
+at least 256 MiB. Without the flag it is `pixels::default_decode_memory`: a
+quarter of the machine's physical memory, not less than 1 GiB and not more
+than 4 GiB, and 4 GiB when physical memory is not known. `startup/memory.rs`
+reads physical memory with `sysconf` on Linux and macOS and does not read it
+elsewhere (Windows included), and startup prints the budget in effect and
+whether it is the machine's default or came from the flag on standard error.
+`AppState::new` and `DecodeLimits::DEFAULT` are 4 GiB on every machine, so
+tests do not depend on the host. The budget is its own setting and not a
+share of `--cache-budget`, and nothing the catalog reports depends on it.
 
 **What is reserved.** `pixels::decode_estimate` (`pixels/admission.rs`)
 gives the bytes one piece of work reserves, from the catalog entry alone and
@@ -1046,7 +1053,8 @@ the file, for a raster that has one.
   pixels: a display frame at the pixel limit reserves 2.3 GiB and four
   times its file's length for 8-bit gray, 3.8 GiB and four times its file's
   length for 16-bit gray, 6.8 GiB and the same for 8-bit RGB, and 16.6 GiB
-  and the same for 16-bit RGBA. With the default 4 GiB the first fits when
+  and the same for 16-bit RGBA. With a budget of 4 GiB (the default on a machine with
+  16 GiB or more) the first fits when
   its file is no longer than 439 MiB and the second when its file is no
   longer than 55 MiB; the colour layouts do not fit at that size. A frame
   that does not fit is refused with `422 decode_memory_exceeded`, which
@@ -1223,7 +1231,8 @@ join guarantees after hard task abortion.
 ### Process Seams For A Supervising Parent
 
 - `--decode-memory BYTES` sets the decode memory budget
-  (`DecodeLimits::with_memory`, `AppState::with_decode_limits`). The local
+  (`DecodeLimits::with_memory`, `AppState::with_decode_limits`); without it
+  the budget is `DecodeLimits::default_for` the machine's physical memory. The local
   viewer always starts with a limited scheduler; `DecodeScheduler::new`,
   which has no budget, is for tests of the permit rules.
 - `--cache-budget BYTES` sets one total for the display, raw, overlay and

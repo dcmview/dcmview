@@ -22,7 +22,10 @@ diagnostic viewer.
 ### Added
 
 - `--decode-memory BYTES` sets a separate budget for decodes in progress,
-  defaulting to 4 GiB, with a 256 MiB minimum.
+  with a 256 MiB minimum. Without it the budget is a quarter of the
+  machine's physical memory, from 1 GiB to 4 GiB (4 GiB on Windows and
+  where physical memory cannot be read), and startup states the budget in
+  effect on standard error.
 - Byte-based decode admission reserves samples, intermediates and output
   frames before work starts, with half the budget kept for interactive work
   while thumbnails load. A frame too large for its class's share answers
@@ -94,7 +97,8 @@ diagnostic viewer.
 
 - A DICOM or raster frame whose decode estimate exceeds the budget is now
   refused with `422 decode_memory_exceeded` instead of being attempted.
-  The default is 4 GiB; `--decode-memory` increases it without changing
+  The default is a quarter of physical memory, from 1 GiB to 4 GiB;
+  `--decode-memory` sets it without changing
   whether the catalog lists a file as renderable.
 - A PNG, JPEG or WebP longer than its read budget is listed as unsupported
   instead of failing with 500 on every frame request.

@@ -29,7 +29,7 @@ dcmview [OPTIONS] <PATH> [PATH ...]
 | `--no-browser` | `false` | Print the viewer URL instead of opening a browser automatically. |
 | `--timeout <SECONDS>` | none | Exit after this many seconds without API or browser requests once the scan has finished. |
 | `--cache-budget <BYTES>` | `768MiB` | Total memory for cached display, raw, overlay and thumbnail frame bodies; minimum `16MiB`. |
-| `--decode-memory <BYTES>` | `4GiB` | Memory that frames being decoded may use between them; minimum `256MiB`. |
+| `--decode-memory <BYTES>` | a quarter of physical memory, from `1GiB` to `4GiB` | Memory that frames being decoded may use between them; minimum `256MiB`. See [Decode memory](#decode-memory). |
 | `--no-recursive` | `false` | Scan only the top level of input directories. |
 | `--annotations <CSV>` | none | Load EMBED-style ROI annotations from CSV without modifying the file. |
 | `--formats <NAMES>` | all five formats | Comma-separated `dicom,png,jpeg,tiff,webp`; narrows directory walks only. |
@@ -94,9 +94,32 @@ Browser memory is separate.
 
 Decoding a frame takes several times the frame's size while it runs. dcmview
 reserves an estimate of that memory before each decode starts and keeps the
-total reserved by the decodes running at once within `--decode-memory`
-(default 4 GiB). Values are written as for `--cache-budget`; totals below
-`256MiB` are rejected.
+total reserved by the decodes running at once within `--decode-memory`.
+Values are written as for `--cache-budget`; totals below `256MiB` are
+rejected, and a value given is used exactly.
+
+Without the flag the budget follows the machine: one quarter of its physical
+memory, but not less than 1 GiB and not more than 4 GiB.
+
+| Physical memory | Default decode memory |
+|---|---|
+| 4 GiB or less | 1 GiB |
+| 8 GiB | 2 GiB |
+| 12 GiB | 3 GiB |
+| 16 GiB or more | 4 GiB |
+| not known | 4 GiB |
+
+Physical memory is read on Linux and macOS. On Windows and other platforms
+it is not read, and the default is 4 GiB whatever the machine has. It is the
+machine's memory, not the limit of a container or cgroup, and an operating
+system may report a little less than the installed amount: a Linux machine
+sold as 8 GB that reports 7.6 GiB gets 1.9 GiB. dcmview states the budget
+in effect on standard error when it starts:
+
+```text
+dcmview: decode memory 2GiB (default for this machine)
+dcmview: decode memory 8GiB (set by --decode-memory)
+```
 
 Showing one frame of an image file (PNG, JPEG, TIFF or WebP) reserves
 
@@ -114,7 +137,7 @@ its file; [Decode Admission](architecture.md#decode-admission) lists every
 case.
 
 For a frame of 16,384 x 16,384 pixels, the largest an image file may have,
-that is:
+that is, whatever the budget:
 
 | Stored samples | Without the file term | Uncompressed file | File term at its most |
 |---|---|---|---|
@@ -128,27 +151,40 @@ The first column is what the frame reserves before four times its file's
 length is added; the second is a file as long as its decoded frame; the last
 is a file of 64 MiB plus four frames or longer.
 
+The examples below that name "4 GiB" assume a budget of 4 GiB: the default
+on a machine with 16 GiB of physical memory or more, or `--decode-memory
+4GiB` on any machine.
+
 - Frames of ordinary size are unaffected: a 4096 x 5120 16-bit mammogram
   reserves between 197 and 477 MiB, depending on its transfer syntax, so
-  several decode at once.
+  several decode at once with 4 GiB, at least four with the 2 GiB an 8 GiB
+  machine gets, and at least two with 1 GiB.
 - Large frames take turns: a frame whose reservation does not fit beside
   the decodes that are running waits for them to finish.
 - A frame that would need more than the whole budget is not decoded. The
   viewer says how many bytes it needs and names this option; the file is
   still listed, and starting dcmview with at least that value decodes it.
-- With the default, an 8-bit gray frame at the 16,384 x 16,384 limit is
+- With 4 GiB, an 8-bit gray frame at the 16,384 x 16,384 limit is
   shown when its file is no longer than 439 MiB, and a 16-bit gray one only
   when its file is no longer than 55 MiB: an uncompressed 16-bit TIFF of
   that size is 512 MiB and needs `--decode-memory 6GiB`. Colour at that
-  size needs more than the default whatever the file's length.
-- Whatever the file's length, the default shows square frames of 8-bit gray
-  up to 12,636 x 12,636, of 16-bit gray up to 9,215 x 9,215, of 8-bit RGB
-  up to 7,295 x 7,295 and of 16-bit RGBA up to 4,536 x 4,536. A larger
-  frame is shown only when its file is short enough for the sum above.
+  size needs more than 4 GiB whatever the file's length. With the 2 GiB an
+  8 GiB machine gets by default, no frame at the limit is shown: the
+  smallest reservation there, 2.3 GiB, is more than the budget.
+- Whatever the file's length, the largest square frames shown are:
+
+  | Budget | 8-bit gray | 16-bit gray | 8-bit RGB | 16-bit RGBA |
+  |---|---|---|---|---|
+  | 4 GiB (default with 16 GiB or more) | 12,636 | 9,215 | 7,295 | 4,536 |
+  | 2 GiB (default with 8 GiB) | 8,589 | 6,264 | 4,959 | 3,083 |
+  | 1 GiB (default with 4 GiB or less) | 5,552 | 4,049 | 3,205 | 1,993 |
+
+  A larger frame is shown only when its file is short enough for the sum
+  above.
 - Thumbnails may reserve half of the budget between them, and no thumbnail
   starts decoding while a frame the viewer asked for is waiting; one that
   has already started finishes first. A frame too large for that half has
-  no thumbnail and still opens in the viewer: at the default, an 8-bit gray
+  no thumbnail and still opens in the viewer: with 4 GiB, an 8-bit gray
   frame at the pixel limit has a thumbnail only when its file is no longer
   than 53 MiB.
 - When 1,024 frame requests are already waiting for memory, the next one

@@ -259,7 +259,11 @@ Restart with a larger budget, for example:
 dcmview --decode-memory 8GiB ./study_dir
 ```
 
-The default is 4 GiB. The message gives the bytes this frame needs: a budget
+The default is a quarter of the machine's physical memory, not less than
+1 GiB and not more than 4 GiB (4 GiB on Windows), so a frame that opens on a
+16 GiB machine may be refused on an 8 GiB one. dcmview prints the budget in
+effect when it starts (`dcmview: decode memory 2GiB (default for this
+machine)`). The message gives the bytes this frame needs: a budget
 of at least that many decodes it. Thumbnails share only half the budget, so a
 frame may open in the viewer and still have no thumbnail until the budget is
 twice what the thumbnail's message says it needs. See

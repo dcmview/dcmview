@@ -58,11 +58,36 @@ pub const INTERACTIVE_LATENCY_TARGET: Duration = Duration::from_millis(100);
 /// permit for this long.
 pub const ONE_CORE_IDLE_WINDOW: Duration = Duration::from_secs(1);
 
-/// The decode memory budget when `--decode-memory` is not given: 4 GiB.
+/// The most the decode memory budget is when `--decode-memory` is not
+/// given, and the whole of it when the machine's physical memory is not
+/// known: 4 GiB. [`default_decode_memory`] is the rule.
 ///
 /// It bounds what running decodes hold, not the process: the frame caches
 /// (`--cache-budget`) and the bodies of responses being sent are beside it.
 pub const DECODE_MEMORY_DEFAULT_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+
+/// The least the decode memory budget is when `--decode-memory` is not
+/// given: 1 GiB, on a machine with 4 GiB of physical memory or less.
+pub const DECODE_MEMORY_DEFAULT_FLOOR_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// The decode memory budget when `--decode-memory` is not given, on a
+/// machine with `physical` bytes of physical memory: a quarter of it,
+/// rounded down, but not less than [`DECODE_MEMORY_DEFAULT_FLOOR_BYTES`]
+/// and not more than [`DECODE_MEMORY_DEFAULT_BYTES`]. `None` is a machine
+/// whose physical memory could not be read, which gets
+/// [`DECODE_MEMORY_DEFAULT_BYTES`].
+///
+/// A flat 4 GiB is the whole of a small machine's memory, so a few large
+/// decodes at once would push it into swap before the budget refused any.
+pub fn default_decode_memory(physical: Option<u64>) -> u64 {
+    match physical {
+        Some(physical) => (physical / 4).clamp(
+            DECODE_MEMORY_DEFAULT_FLOOR_BYTES,
+            DECODE_MEMORY_DEFAULT_BYTES,
+        ),
+        None => DECODE_MEMORY_DEFAULT_BYTES,
+    }
+}
 
 /// The smallest decode memory budget `--decode-memory` accepts: 256 MiB.
 /// Below it frames of ordinary size are refused, and the answer to that is
@@ -109,7 +134,10 @@ pub struct DecodeLimits {
 }
 
 impl DecodeLimits {
-    /// What a viewer started without `--decode-memory` runs with.
+    /// The limits of a scheduler that was given none, and what a viewer
+    /// started without `--decode-memory` runs with on a machine with 16 GiB
+    /// of physical memory or more, or whose memory is unknown. It does not
+    /// depend on the machine; [`Self::default_for`] does.
     pub const DEFAULT: Self = Self {
         memory_bytes: DECODE_MEMORY_DEFAULT_BYTES,
         interactive_queue: DECODE_QUEUE_INTERACTIVE,
@@ -124,6 +152,17 @@ impl DecodeLimits {
         interactive_queue: usize::MAX,
         background_queue: usize::MAX,
     };
+
+    /// What a viewer started without `--decode-memory` runs with on a
+    /// machine with `physical` bytes of physical memory (`None` when that
+    /// is unknown): [`Self::DEFAULT`] with a budget of
+    /// [`default_decode_memory`].
+    pub fn default_for(physical: Option<u64>) -> Self {
+        Self {
+            memory_bytes: default_decode_memory(physical),
+            ..Self::DEFAULT
+        }
+    }
 
     /// [`Self::DEFAULT`] with a budget of `memory_bytes` (`--decode-memory`).
     /// A budget below [`DECODE_MEMORY_MIN_BYTES`] is an error that names the
@@ -257,7 +296,8 @@ impl DecodeScheduler {
 
     /// A new scheduler for one viewer in this process: one permit per core
     /// the host makes available (four when that is unknown) and
-    /// [`DecodeLimits::DEFAULT`]. `AppState::new` builds its own with this,
+    /// [`DecodeLimits::DEFAULT`], whatever the machine's memory.
+    /// `AppState::new` builds its own with this,
     /// so two viewers in one process (two tests) do not share a budget.
     pub fn for_host() -> Arc<Self> {
         Self::with_limits(host_permits(), DecodeLimits::DEFAULT)
@@ -642,6 +682,45 @@ mod tests {
             Poll::Ready(permit) => permit,
             Poll::Pending => panic!("the permit was not granted"),
         }
+    }
+
+    #[test]
+    fn the_default_decode_memory_is_a_quarter_of_the_machine_within_bounds() {
+        const MIB: u64 = 1024 * 1024;
+        const GIB: u64 = 1024 * MIB;
+        for (physical, expected) in [
+            (None, 4 * GIB),
+            (Some(0), GIB),
+            (Some(GIB), GIB),
+            (Some(2 * GIB), GIB),
+            (Some(4 * GIB - 1), GIB),
+            (Some(4 * GIB), GIB),
+            // A quarter is rounded down, so the next whole byte of budget
+            // takes four more bytes of machine.
+            (Some(4 * GIB + 3), GIB),
+            (Some(4 * GIB + 4), GIB + 1),
+            (Some(8 * GIB), 2 * GIB),
+            (Some(12 * GIB), 3 * GIB),
+            (Some(16 * GIB - 4), 4 * GIB - 1),
+            (Some(16 * GIB - 1), 4 * GIB - 1),
+            (Some(16 * GIB), 4 * GIB),
+            (Some(16 * GIB + 4), 4 * GIB),
+            (Some(64 * GIB), 4 * GIB),
+            (Some(u64::MAX), 4 * GIB),
+        ] {
+            assert_eq!(default_decode_memory(physical), expected, "{physical:?}");
+            assert_eq!(
+                DecodeLimits::default_for(physical),
+                DecodeLimits {
+                    memory_bytes: expected,
+                    ..DecodeLimits::DEFAULT
+                },
+                "{physical:?}"
+            );
+        }
+        // The default never falls to where the flag's own minimum applies.
+        const { assert!(DECODE_MEMORY_DEFAULT_FLOOR_BYTES >= DECODE_MEMORY_MIN_BYTES) };
+        assert_eq!(DecodeLimits::default_for(None), DecodeLimits::DEFAULT);
     }
 
     #[test]
