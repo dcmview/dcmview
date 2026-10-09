@@ -628,8 +628,10 @@ is cached between requests.
   way, and do not put a file's text in a note, an error or a log line.
 - Metadata reads step over image data by seeking and name the bytes they
   need (`Reader::read_span`); they never decode pixels and take no decode
-  permit. The one read that reaches into image data is the 36 bytes a JPEG
-  walk reads at its start-of-scan marker.
+  permit. The only reads that reach into image data are a JPEG walk's: it
+  reads 36 bytes at each marker, so the read at the start-of-scan marker,
+  and the read at a segment just before it that is shorter than those
+  bytes, take in the first bytes of the scan.
 
 **Masking and redaction**
 

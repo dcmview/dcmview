@@ -261,11 +261,13 @@ impl fmt::Display for RasterTagNote {
 ///   marker and no further, and at each marker 36 bytes are read (fewer at
 ///   the end of the file): the marker, the segment's length and the 32
 ///   bytes after them, where an application segment's identifier lies. So
-///   the first 32 bytes of every segment before the scan are read, and at
-///   the start-of-scan marker the 34 bytes after it, which are the scan
-///   header and the first bytes of entropy-coded data; those are read and
-///   not looked at. Nothing more of a scan is read, and no pixel is
-///   decoded.
+///   the first 32 bytes of every segment before the scan are read, and
+///   whatever follows a segment shorter than that. The read at the
+///   start-of-scan marker takes in the 34 bytes after it, which are the
+///   scan header and the first bytes of entropy-coded data, and the read
+///   at a short segment just before that marker reaches some of the same
+///   bytes; they are read and not looked at. Nothing more of a scan is
+///   read, and no pixel is decoded.
 /// - **Nodes.** At most [`RASTER_TAGS_MAX_NODES`], at most
 ///   [`RASTER_TAGS_MAX_DEPTH`] deep.
 /// - **Text.** One value shows at most [`RASTER_TAG_TEXT_MAX_CHARS`]
@@ -381,13 +383,13 @@ impl fmt::Display for RasterTagNote {
 /// every other control character (U+0000 to U+001F, U+007F to U+009F), the
 /// line and paragraph separators (U+2028, U+2029), every format character
 /// (Unicode general category Cf: the soft hyphen, the zero-width and
-/// directional characters, the byte order mark, the tag characters and the
-/// rest) and every other code point Unicode makes ignorable by default (the
-/// variation selectors, the combining grapheme joiner, the Hangul fillers,
+/// directional characters, the byte order mark, the Mongolian vowel
+/// separator, the tag characters and the rest) and every other code point
+/// Unicode makes ignorable by default (the variation selectors, the
+/// combining grapheme joiner, the Hangul fillers,
 /// all of U+E0000 to U+E0FFF); the ranges are the table `ESCAPED`. So an
 /// escape sequence in a value is visible text and cannot act on a terminal
-/// or reorder what is shown, nothing in a value is invisible, and a NUL
-/// inside a value is `\u{0}`.
+/// or reorder what is shown, and a NUL inside a value is `\u{0}`.
 /// A number that is not finite is a problem, not a value.
 pub fn read_raster_tags(
     format: FileFormat,
@@ -869,8 +871,8 @@ fn complete_utf8_prefix(bytes: &[u8]) -> usize {
 /// - the line and paragraph separators (Zl, Zp), U+2028 and U+2029;
 /// - every format character (Cf);
 /// - every code point with the property `Default_Ignorable_Code_Point`,
-///   which adds the variation selectors (U+180B to U+180F, U+FE00 to
-///   U+FE0F, U+E0100 to U+E01EF), the combining grapheme joiner, the
+///   which adds the variation selectors (U+180B to U+180D, U+180F,
+///   U+FE00 to U+FE0F, U+E0100 to U+E01EF), the combining grapheme joiner, the
 ///   Hangul fillers, the Khmer inherent vowels and all of U+E0000 to
 ///   U+E0FFF, assigned or not.
 ///

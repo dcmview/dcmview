@@ -592,9 +592,10 @@ U+009F), the line and paragraph separators (U+2028, U+2029), every format
 character (Unicode general category Cf, which holds the soft hyphen, the
 zero-width and bidirectional characters, the byte order mark and the tag
 characters), and every other code point Unicode makes ignorable by default
-(the variation selectors U+180B to U+180F, U+FE00 to U+FE0F and U+E0100 to
-U+E01EF, the combining grapheme joiner, the Hangul fillers, and the rest of
-U+E0000 to U+E0FFF). A variation selector or a joiner inside an emoji
+(the variation selectors U+180B to U+180D, U+180F, U+FE00 to U+FE0F and
+U+E0100 to U+E01EF, the combining grapheme joiner, the Hangul fillers, and
+the rest of U+E0000 to U+E0FFF; U+180E, the Mongolian vowel separator, is a
+format character). A variation selector or a joiner inside an emoji
 sequence is therefore shown escaped too.
 
 `/tags/select?path=...` returns one node of this tree; nothing more is read

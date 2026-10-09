@@ -1133,8 +1133,9 @@ the same component (`docs/design/image-formats.md` section 8).
   profile, and offsets checked against the file's real length (an EXIF
   block's against the block). Image data is stepped over by seeking; a
   JPEG is walked to its first scan, and the 36 bytes read at each of its
-  markers take in, at the start of that scan, the scan header and the
-  first entropy-coded bytes, which are not looked at. One read holds at most
+  markers take in, at the start of that scan and at a short segment just
+  before it, the scan header and the first entropy-coded bytes, which
+  are not looked at. One read holds at most
   2 MiB of heap. Reading never fails and never panics: damage and limits
   become notes (`RasterTagNote`), which are fixed words and never hold a
   byte of the file, and the rest of the tree is still shown.
@@ -1146,7 +1147,7 @@ the same component (`docs/design/image-formats.md` section 8).
   character (general category Cf) and every other code point that is
   ignorable by default, variation selectors and the tag block included
   (one table, `ESCAPED`), so an escape sequence in a comment is visible
-  text and nothing in a value is invisible.
+  text.
 - **No decode permit.** A metadata read decodes no pixels and is bounded by
   the numbers above, so it runs on a blocking thread beside the decode
   scheduler, not through it. The tag cache keeps the tree as the session
