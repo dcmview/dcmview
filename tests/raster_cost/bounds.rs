@@ -278,6 +278,14 @@ pub(super) struct Hostile {
     most_heap: Option<u64>,
 }
 
+/// A hostile case as files: what is listed, and what is then put in its
+/// place.
+pub(super) struct OnDisk<'a> {
+    pub name: &'static str,
+    pub listed: &'a [u8],
+    pub replaced: Option<&'a [u8]>,
+}
+
 impl Hostile {
     pub(super) fn new(name: &'static str, listed: Vec<u8>, outcome: Outcome) -> Self {
         Self {
@@ -289,6 +297,20 @@ impl Hostile {
             most_bytes: None,
             most_heap: None,
         }
+    }
+
+    /// The case as files on disk, or `None` for a case whose replacement
+    /// is longer than the bytes it holds.
+    pub(super) fn on_disk(&self) -> Option<OnDisk<'_>> {
+        let replaced = match &self.replaced {
+            None => None,
+            Some(replaced) => Some(replaced.whole()?),
+        };
+        Some(OnDisk {
+            name: self.name,
+            listed: &self.listed,
+            replaced,
+        })
     }
 
     pub(super) fn replaced_by(mut self, bytes: Vec<u8>) -> Self {
@@ -346,7 +368,7 @@ fn jpeg_with_scans(jpeg: &[u8], scans: usize) -> Vec<u8> {
     out
 }
 
-fn hostile_files() -> Vec<Hostile> {
+pub(super) fn hostile_files() -> Vec<Hostile> {
     use Outcome::{Decodes, Fails, Refused};
     let small_png = gray_png(4, 4);
     let rgb: Vec<u8> = (0..8 * 8 * 3).map(|index| index as u8).collect();
@@ -704,8 +726,18 @@ fn hostile_files() -> Vec<Hostile> {
         // A frame is never padded out where the page has no strip.
         Hostile::new("tiff with strips for half its rows", tiff_half, Fails),
         // As many tags as a page may have decode; one more does not.
-        Hostile::new("tiff at the tag limit", plain_tiff.clone(), Decodes)
-            .replaced_by(tagged(RASTER_TIFF_MAX_TAGS)),
+        // Listed at the length it is decoded at: a file that has grown
+        // since it was listed is refused, whatever it holds.
+        Hostile::new(
+            "tiff at the tag limit",
+            {
+                let mut listed = plain_tiff.clone();
+                listed.resize(tagged(RASTER_TIFF_MAX_TAGS).len(), 0);
+                listed
+            },
+            Decodes,
+        )
+        .replaced_by(tagged(RASTER_TIFF_MAX_TAGS)),
         Hostile::new("tiff over the tag limit", plain_tiff.clone(), Fails)
             .replaced_by(tagged(RASTER_TIFF_MAX_TAGS + 1)),
     ]

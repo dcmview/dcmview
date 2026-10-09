@@ -141,10 +141,12 @@ modules, not the reverse:
 6. `pixels/service.rs` is the server-facing pixel boundary. Codec, cache,
    rendering, and window modules remain below it. A cache miss registers an
    in-flight decode that later requests for the key await; the decode runs as
-   its own task and caches its result even if its client disconnected, and
-   `schedule.rs` bounds concurrent decodes to the core count and grants
-   permits by decode class (see "Render Seam, Thumbnails And Decode
-   Classes"). The frame caches are bounded by bytes only. Grayscale 8- and 16-bit frames are presented through
+   its own task and, once it has started, caches its result even if its
+   client disconnected, and
+   `schedule.rs` bounds concurrent decodes to the core count and to the
+   decode memory budget and grants permits by decode class (see "Render
+   Seam, Thumbnails And Decode Classes" and "Decode Admission"). The frame
+   caches are bounded by bytes only. Grayscale 8- and 16-bit frames are presented through
    a per-stored-value lookup table (`render.rs`), with automatic windows from a
    histogram of stored values. `pixels/native_layout.rs`
    validates native frame sizing and normalizes bit-packed, planar, subsampled,
@@ -719,9 +721,11 @@ encoded JPEGs by default). They never write the display or raw caches, which
 hold the viewer's working set, and do not read them. Identical concurrent
 requests share one render.
 
-**Decode classes.** Every decode holds a permit of the process's
-`DecodeScheduler` (`pixels/schedule.rs`), which has one permit per core. A
-request names its class. Thumbnails are `Background`; every other decode
+**Decode classes.** Every decode holds a permit of its viewer's
+`DecodeScheduler` (`pixels/schedule.rs`), which has one permit per core.
+`AppState` owns the scheduler, and each of its caches names it, so the pixel
+service finds from a cache whose permits a miss uses. A request names its
+class. Thumbnails are `Background`; every other decode
 (display frames, raw frames, previews, the frames overlays are resampled
 from) is `Interactive`. The scheduler:
 
@@ -732,12 +736,15 @@ from) is `Interactive`. The scheduler:
   always left for interactive work), and no interactive request is waiting;
 - on a one-core host, where no permit can be reserved, additionally holds a
   background request back until no interactive request has arrived for
-  `ONE_CORE_IDLE_WINDOW` (one second);
+  `ONE_CORE_IDLE_WINDOW` (one second); a request that is refused is not
+  an arrival;
 - considers waiting interactive requests first whenever a permit returns;
 - forgets a request that stops waiting.
 
-An interactive decode waits for its permit inside its own task, as before,
-so it finishes and is cached even when its client disconnects. A thumbnail
+An interactive decode waits for its permit inside its own task, which the
+requests for that frame share. Once it holds the permit it finishes and is
+cached even when its client disconnects; while it still waits, it leaves the
+queue when the last request waiting for it is dropped. A thumbnail
 waits for its permit inside the request, so a tile the user scrolled past is
 dropped before any work starts; once it holds a permit its render runs as
 its own task and is cached regardless.
@@ -756,6 +763,121 @@ the HTTP boundary, on a host with four cores or more. The opt-in measurement
 `integration::thumbnail_timing` reports it and enforces it in a release
 build on such a host. On a one-core host the bound is one background decode
 that had already started.
+
+### Decode Admission
+
+A decode holds its frame several times over while it runs, so the number of
+permits does not bound memory: a frame at the raster pixel limit is up to
+2 GiB of samples. Each permit therefore also carries a share of the **decode
+memory budget** (`docs/design/image-formats.md` section 2.3): `--decode-memory`,
+at least 256 MiB. Without the flag it is `pixels::default_decode_memory`: a
+quarter of the machine's physical memory, not less than 1 GiB and not more
+than 4 GiB, and 4 GiB when physical memory is not known. `startup/memory.rs`
+reads physical memory with `sysconf` on Linux and macOS and does not read it
+elsewhere (Windows included), and startup prints the budget in effect and
+whether it is the machine's default or came from the flag on standard error.
+`AppState::new` and `DecodeLimits::DEFAULT` are 4 GiB on every machine, so
+tests do not depend on the host. The budget is its own setting and not a
+share of `--cache-budget`, and nothing the catalog reports depends on it.
+
+**What is reserved.** `pixels::decode_estimate` (`pixels/admission.rs`)
+gives the bytes one piece of work reserves, from the catalog entry alone and
+before the file is opened. With `P` pixels, `S` samples, a raw frame of `F`
+bytes, a display buffer of `D` bytes (`P`, or `3 * P` for 8-bit colour,
+`6 * P` for deeper colour), and `V` of `32 * S` for samples of 32 or 64 bits
+(which are windowed one at a time as 64-bit values) and 0 otherwise:
+
+| Work (`DecodeWork`) | Reserved |
+|---|---|
+| `RawFrame`: decoding a frame to its samples | `decode` |
+| `DisplayFrame`: a display frame or a preview from a cold cache | `decode + V + 3 * D + 1 MiB` |
+| `Thumbnail` | `decode + V + D + 8 MiB` |
+| `PresentationLayer` | `9 * P + 1 MiB` |
+| `RawRedaction`: the copy of a raw frame in which boxes are filled | `F` |
+
+where `decode` is, for a raster, `raster_decode_heap_limit` at the file
+length discovery recorded (32 MiB and a read buffer, `6 * F`, and four times
+the file or its read budget if that is less); for DICOM, 16 MiB plus `3 * F`
+(native, RLE, deflated frame), `5 * F` (JPEG Baseline, JPEG Lossless,
+JPEG-LS) or `16 * S + 2 * F` (JPEG 2000, JPEG XL). The raster row is the
+limit the raster decoder is held to for every file, so a raster's
+reservation is never less than what its decode holds; `tests/raster_cost`
+measures each path against it. The DICOM rows are rules: a compressed
+frame must declare the image of its catalog entry before it is decoded
+("Compressed Frames Are Held To The Header"), but the heap a DICOM decoder
+holds for that image is not limited the way the raster decoder's is.
+
+A raster's reservation uses the length the file had when it was listed
+(`RasterMetadata.file_length`). A decode of a file that has grown past that
+length since fails before anything is read.
+
+**One permit for one piece of work.** A display frame takes one permit for
+its decode, window, shutter and overlay planes, PNG and redaction. When its
+samples come through the raw tier, that decode runs under the display
+frame's permit and takes none of its own, and it never waits for a decode
+another request announced (which may itself be waiting for a permit): it
+reads the raw cache and otherwise decodes. No work waits for a second
+permit while it holds one.
+
+**Admission.** `DecodeScheduler::admit(class, bytes)` grants the permit and
+the bytes in one step and takes both back when the `DecodePermit` is
+dropped, so the bytes reserved are always those of decodes that are running:
+
+- a request is granted when it is first in its class's queue, a permit is
+  free under the rules above, and the bytes reserved plus its own do not
+  exceed the budget;
+- a background request also needs the bytes reserved by background decodes
+  plus its own to stay within half the budget
+  (`background_memory_limit`), and no interactive request to be waiting. The
+  other half is never reserved by a thumbnail;
+- requests of a class are granted in arrival order, so a large request at
+  the front is not overtaken by small ones and cannot starve;
+- a request for more than its class may ever reserve (the budget, or half
+  of it for a thumbnail) is refused at once: `422 decode_memory_exceeded`,
+  which says how much was needed and names `--decode-memory`. The file stays
+  `renderable` in the catalog; a larger budget decodes it;
+- a request that would have to wait while its class already has 1,024
+  requests waiting (each class has its own queue of that length) is
+  refused: `503 decode_busy` with `Retry-After: 1`. A waiting request holds no decode
+  memory, so the queue limits bound tasks and delay, not bytes.
+
+Requests the caches can answer take no permit, so a busy viewer still serves
+what it holds.
+
+**Shutdown.** When the server is told to stop it calls
+`DecodeScheduler::refuse_waiting` before it drains its requests: every
+request waiting for a permit is answered `503 decode_busy` at once, and so
+is any that would have to wait from then on. Decodes that hold a permit
+finish, so the drain is bounded by the work already running and not by the
+length of the queue.
+
+**Who waits where.** An interactive decode waits inside its own task, and a
+refusal is the result for every request that shared it. The task counts the
+requests waiting for it: when the last of them is dropped before the permit
+is granted, the decode leaves the queue, frees its place there and is never
+started, and the next request for the frame announces a decode of its own.
+A decode that has been granted its permit runs to its end and is cached
+whoever is still waiting. A thumbnail, a preview and the
+copy made for redaction boxes in a raw frame wait inside the request, so one
+that is dropped while it waits starts no work and reserves nothing. Once any
+of them holds a permit, its work runs in a task of its own and keeps the
+permit and the bytes until the blocking work ends, whether or not the
+request is still there. A panic, an error and an aborted task all drop the
+permit.
+
+**Where the answers appear.** The endpoints of `endpoints::DECODING`: the
+display, raw, raw-pixel, thumbnail and presentation-layer endpoints, the
+segmentation and value overlays (through the frames they decode), and the
+semantic context of an RT Dose or Parametric Map, whose legend decodes the
+object's frames. A legend refused because the viewer was busy answers 503
+and is not cached; one refused because a frame exceeds the budget makes the
+overlay ineligible, with that reason.
+
+**What the budget does not cover.** It bounds what running decodes hold.
+Beside it are the frame caches (`--cache-budget`), the body of each response
+while it is sent (a raw frame is `F` bytes, held once per response when it
+is too large to cache), the resampling and encoding of segmentation and
+value overlays (sized by the DICOM image they are drawn on), and tag trees.
 
 See [the HTTP API reference](api.md) for endpoint payloads and headers.
 
@@ -879,7 +1001,10 @@ Discovery lists PNG, JPEG, TIFF and still WebP files beside DICOM
   `raster.jpeg_unsupported_process` for a JPEG that is not 8-bit baseline,
   extended sequential or progressive Huffman;
   `raster.too_large` for a frame of more than 268,435,456 pixels (16,384 x
-  16,384), whatever the host's memory or cache budget.
+  16,384), whatever the host's memory or cache budget;
+  `raster.file_too_large` for a PNG, JPEG or WebP file longer than its read
+  budget (64 MiB plus four times the frame), which no decode would read. A
+  TIFF may be any length.
   Only a header that cannot be described at all is `raster_header_invalid`.
 - **A raster `FileEntry`** has `format` set, `raster: Some(RasterMetadata)`,
   empty DICOM identity strings and an empty `transfer_syntax_uid`. Its
@@ -911,8 +1036,8 @@ Discovery lists PNG, JPEG, TIFF and still WebP files beside DICOM
 `pixels/syntax.rs` `codec_for_file` gives a raster `Codec::Raster` from its
 format, before any transfer-syntax lookup, and `service.rs` dispatches that
 codec to `pixels/raster.rs`. So a raster frame has the same raw and display
-caches, decode permits and classes, redaction boxes, presentation layer and
-thumbnails as a DICOM frame, and `classify_pixel_support` reports it
+caches, decode permits, classes and admission, redaction boxes, presentation
+layer and thumbnails as a DICOM frame, and `classify_pixel_support` reports it
 `renderable` unless discovery recorded a reason above. The frame endpoints
 answer `422 unsupported_pixel_layout` naming that reason, without opening
 the file, for a raster that has one.
@@ -955,7 +1080,7 @@ the file, for a raster that has one.
     byte read from the file, read-ahead included, and every buffered byte
     handed out again after a seek back, so strips or tiles that share bytes
     are charged for each use; a PNG, JPEG or WebP longer than the budget is
-    refused unread;
+    listed as `raster.file_too_large` and refused unread;
   - reads of 64 KiB, with seeks inside the buffer costing none;
   - a TIFF page's strips or tiles read for their own bytes whatever order
     the file stores them in: those that lie end to start in decode order
@@ -979,14 +1104,26 @@ the file, for a raster that has one.
 - **Memory across decodes.** The limits above are per decode. A frame at
   the pixel limit is 256 MiB of 8-bit gray samples and 2 GiB at four 16-bit
   samples or one 64-bit sample a pixel, and `raster_decode_heap_limit` for
-  it is 32 MiB, six times that frame and four times the file read (itself
-  at most the read budget, 64 MiB plus four times the frame). The decoder
+  it is 32 MiB and one read buffer, six times that frame and four times
+  the file read (itself at most the read budget, 64 MiB plus four times the
+  frame). The decoder
   paths hold about half of the frame term on the files
-  `tests/raster_cost/scale.rs` measures: at most three frames. Nothing admits
-  decodes by the memory they will take: the number running at once is
-  bounded only by the `DecodeScheduler`'s permits, one per core, of which
-  thumbnails may hold half. A host with `n` cores can therefore hold `n`
-  decodes of the largest frames at once.
+  `tests/raster_cost/scale.rs` measures: at most three frames. That limit
+  is what a raster decode reserves of the decode memory budget before it
+  starts ("Decode Admission"), so the decodes running at once never have
+  more reserved than the budget. The file term is part of every raster
+  reservation, so what fits depends on the file's length as well as on its
+  pixels: a display frame at the pixel limit reserves 2.3 GiB and four
+  times its file's length for 8-bit gray, 3.8 GiB and four times its file's
+  length for 16-bit gray, 6.8 GiB and the same for 8-bit RGB, and 16.6 GiB
+  and the same for 16-bit RGBA. With a budget of 4 GiB (the default on a machine with
+  16 GiB or more) the first fits when
+  its file is no longer than 439 MiB and the second when its file is no
+  longer than 55 MiB; the colour layouts do not fit at that size. A frame
+  that does not fit is refused with `422 decode_memory_exceeded`, which
+  states the bytes it needs, until the viewer is started with a
+  `--decode-memory` of at least that. `docs/configuration.md`, "Decode
+  memory", has the table of examples.
 - **Raw frames hold stored sample semantics**, whatever a decoder returns
   (design section 5.2): low-bit PNG samples keep their stored values (a
   one-bit image is 0 and 1) in one byte each; 16-bit and wider samples are
@@ -1143,7 +1280,9 @@ cancellation and remains a successful process outcome.
 
 `RequestActivity` tracks in-flight requests and a monotonic idle baseline.
 Idle timeout does not start until the scan has finished,
-and graceful shutdown lets in-flight requests drain. The browser task
+and graceful shutdown lets in-flight requests drain; those waiting for
+decode capacity are answered `503 decode_busy` first ("Decode Admission",
+Shutdown), so the drain waits only for decodes that are running. The browser task
 is owned by `BoundServer::serve` and cleaned up on every normal return or
 error.
 
@@ -1154,6 +1293,11 @@ join guarantees after hard task abortion.
 
 ### Process Seams For A Supervising Parent
 
+- `--decode-memory BYTES` sets the decode memory budget
+  (`DecodeLimits::with_memory`, `AppState::with_decode_limits`); without it
+  the budget is `DecodeLimits::default_for` the machine's physical memory. The local
+  viewer always starts with a limited scheduler; `DecodeScheduler::new`,
+  which has no budget, is for tests of the permit rules.
 - `--cache-budget BYTES` sets one total for the display, raw, overlay and
   thumbnail caches. `pixels::CacheBudget` splits it in the proportions of
   the defaults (256, 384, 64 and 64 MiB), and `AppState::with_cache_budget` builds
@@ -1248,7 +1392,12 @@ installation and VS Code Electron integration can also use network/cache state;
   of their own because they run on a counting allocator
   (`tests/raster_cost/heap.rs`, per thread, so the tests still run in
   parallel), which the JPEG 2000 decoder exercised by the main integration
-  binary does not tolerate in a debug build.
+  binary does not tolerate in a debug build. `admission.rs` there runs every
+  path of the pixel service (raw, display, preview, thumbnail, presentation
+  layer, with and without redaction boxes) for the same files and for DICOM
+  fixtures on a runtime whose threads are counted together, and holds the
+  heap of each to the bytes it reserved, and the heap of many at once to
+  the budget.
 - Codestream tests state the same for compressed DICOM frames.
   `integration::codestream_agreement` decodes honest codestreams written by
   encoders the viewer does not link (OpenJPEG, libjpeg, DCMTK, libjxl; the
@@ -1262,6 +1411,16 @@ installation and VS Code Electron integration can also use network/cache state;
   is refused. Its counting allocator counts every thread, because decoders
   run on blocking threads, so its tests run one at a time; it decodes no
   honest JPEG 2000 frame, for the reason given above.
+- Decode admission tests (`tests/integration/decode_admission.rs`) hold the
+  scheduler to its rules through its own account of itself
+  (`DecodeScheduler::load` and `load_when`), never through time: the bytes
+  reserved never pass the budget, thumbnails keep to their half, a full
+  queue answers 503 with `Retry-After` on the decoding endpoints and on no
+  other, a frame too large for the budget answers 422 and stays renderable,
+  a permit comes back however its holder ends, and a queued decode whose
+  requests have all been dropped leaves the queue. On Unix a decode is held
+  in place by a pipe put where its file was, to show that a request dropped
+  after its decode began stays counted until the decode ends.
 - Discovery builds each file's catalog metadata in one parse (`loader/entry.rs`
   `read_discovery_header`): it builds the metadata object from the parser's
   tokens up to the earliest standard pixel-data tag, exactly as
@@ -1387,6 +1546,12 @@ Not current correctness blockers:
 - Do not hold cache or registry locks across I/O, decode, encode, or await.
 - Every decode takes a `DecodeScheduler` permit of the right class; only
   gallery and other non-interactive work is `Background`.
+- Work that holds a frame (a decode, a render, a frame-sized copy) starts
+  only under a permit from `admission::admit`, reserving
+  `decode_estimate` bytes computed from the catalog entry. New work gets a
+  `DecodeWork` kind and a row in the estimate, measured in
+  `tests/raster_cost/admission.rs`. Never wait for a permit while holding
+  one, and never derive an estimate from what the file declares.
 - No codec library is handed a compressed frame before
   `pixels::codestream::checked` has accepted it for the catalog entry.
 - Thumbnails write their own cache only, and anything that returns source

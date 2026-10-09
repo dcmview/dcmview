@@ -76,12 +76,39 @@ async fn serve_masked(names: &[&str]) -> TestServer {
 }
 
 fn assert_no_identifiers(what: &str, text: &str) {
+    let text = without_hashed_uids(text);
     for identifier in IDENTIFIERS {
         assert!(
             !text.contains(identifier),
             "{what} shows {identifier}: {text}"
         );
     }
+}
+
+/// `text` with each hashed UID replaced by a marker. A masked session
+/// sends `2.25.` and a random 128-bit number in place of a UID, and about
+/// one such number in three thousand happens to contain one of the short
+/// numeric identifiers above. The fixtures' identifying UIDs begin
+/// `2.25.20008` and have at most 20 digits after `2.25.`, so they are left
+/// in and still fail the check.
+fn without_hashed_uids(text: &str) -> String {
+    const PREFIX: &str = "2.25.";
+    const FIXTURE_UID_DIGITS: usize = 20;
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(PREFIX) {
+        let after = &rest[at + PREFIX.len()..];
+        let digits = after.bytes().take_while(u8::is_ascii_digit).count();
+        if digits > FIXTURE_UID_DIGITS {
+            out.push_str(&rest[..at]);
+            out.push_str("<hashed uid>");
+        } else {
+            out.push_str(&rest[..at + PREFIX.len() + digits]);
+        }
+        rest = &after[digits..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// The response with every `path` field removed: paths are the one

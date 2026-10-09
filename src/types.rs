@@ -151,6 +151,10 @@ pub struct RasterMetadata {
     pub pages_total: u32,
     /// The zero-based IFD index of each frame; never empty.
     pub frame_pages: Vec<u32>,
+    /// The file's length in bytes when discovery listed it. A decode's
+    /// reservation of decode memory is computed from it, so a decoder
+    /// refuses a file that has grown past it since.
+    pub file_length: u64,
     /// TIFF: the file offset of each frame's IFD, in frame order, so a frame
     /// request seeks to its page instead of walking the chain to it. Empty
     /// for PNG, JPEG and WebP. A decoder checks what it finds there against
@@ -209,6 +213,13 @@ pub enum RasterUnsupported {
     JpegProcess,
     /// More than [`RASTER_MAX_FRAME_PIXELS`] pixels in a frame.
     TooLarge,
+    /// A PNG, JPEG or WebP file longer than the bytes a decode of it may
+    /// read (`pixels::raster_read_budget`: 64 MiB plus four times the
+    /// frame). These are decoded from front to back, so the decoder would
+    /// refuse every frame; the length is known at discovery, and the file
+    /// is listed as not decoded instead. Never a TIFF, which is read a page
+    /// at a time and may be any length.
+    FileLength,
 }
 
 impl RasterMetadata {

@@ -20,7 +20,7 @@ fn riff_payload(webp: &[u8]) -> &[u8] {
     &webp[12..]
 }
 
-fn stand_ins() -> Vec<(&'static str, Vec<u8>)> {
+pub(super) fn stand_ins() -> Vec<(&'static str, Vec<u8>)> {
     let side = SIDE as usize;
     let pixels = side * side;
     let gray = noise(pixels);

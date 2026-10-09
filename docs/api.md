@@ -120,6 +120,23 @@ and redirects the bare prefix to its trailing-slash form.
 
 Every success status is `200`.
 
+### Decode admission
+
+Display, raw, raw-pixel, thumbnail and presentation-layer requests, segmentation
+and value overlays (PNG and values), and the semantic context of an RT Dose or
+Parametric Map may answer `503 decode_busy` with `Retry-After: 1` when their
+class's decode queue is full, or when the viewer is stopping while they wait
+for decode capacity. All but semantic context may also answer
+`422 decode_memory_exceeded` when the work needs more than the decode memory
+budget (`--decode-memory`), or more than half of it for a thumbnail.
+
+Neither refusal is cached, and neither changes the file's `support_state`.
+After a 503, wait the `Retry-After` number of seconds and repeat the request.
+Do not repeat a 422 in the same session: its message names the required bytes
+and `--decode-memory`; restart with a larger budget. Cache hits take no decode
+permit and remain available while the budget is held. No other endpoints
+answer these two admission errors.
+
 ## Files And Scan Progress
 
 `/api/files` is available before the scan finishes. Its progress fields are:
@@ -166,6 +183,10 @@ applicable `support_reason`:
   sequential or progressive Huffman.
 - `raster.too_large`: a frame above 268,435,456 pixels, independent of host
   memory and cache budget.
+- `raster.file_too_large`: a PNG, JPEG or WebP longer than its read budget
+  (64 MiB plus four times its decoded frame). It is listed as unsupported,
+  rather than failing every frame request with 500. TIFF reads individual
+  pages and has no whole-file length cap.
 
 Dimensions and coordinates remain in the stored pixel grid. For gray rasters,
 `default_window` covers the full stored range of integer samples of 8 bits or
@@ -207,7 +228,7 @@ For a raster file index, the following responses require no DICOM parsing:
 
 | Endpoint suffix under `/api/file/{index}` | Raster response |
 |---|---|
-| `/frame/{frame}`, `/frame/{frame}/thumbnail`, `/frame/{frame}/raw`, `/frame/{frame}/raw/pixel`, `/frame/{frame}/presentation-layer` | As for DICOM for a renderable raster. A refused raster returns `422 unsupported_pixel_layout` naming its reason, without opening the file; a damaged file that cannot decode returns `500` in the shared JSON error envelope. Missing pixels and out-of-range frames are checked first; the latter is `404 frame_out_of_range`. |
+| `/frame/{frame}`, `/frame/{frame}/thumbnail`, `/frame/{frame}/raw`, `/frame/{frame}/raw/pixel`, `/frame/{frame}/presentation-layer` | As for DICOM for a renderable raster. A refused raster returns `422 unsupported_pixel_layout` naming its reason, without opening the file; a damaged file that cannot decode returns `500` in the shared JSON error envelope. A renderable file may answer `422 decode_memory_exceeded` or `503 decode_busy`; neither is cached or changes `support_state`. Follow the [decode admission retry rules](#decode-admission). Missing pixels and out-of-range frames are checked first; the latter is `404 frame_out_of_range`. |
 | `/tags` | `200` with `[]`. |
 | `/tags/select` | `400 bad_request`: tag selection is not available for image files. |
 | `/references` | `200` with `source_file_index`, empty `source_sop_instance_uid`, and `references: []`. Rasters are never reference targets. |
@@ -266,10 +287,20 @@ render starts it finishes and caches its result even after disconnection.
 
 Errors use the shared JSON envelope: `404 not_found`, `404 frame_out_of_range`,
 `404 no_pixel_data`, `400 invalid_query`, `403 masked`,
-`422 unsupported_transfer_syntax`, `422 unsupported_pixel_layout`, or
-`500 pixel_decode_failed`. The common authentication requirement also applies.
+`422 unsupported_transfer_syntax`, `422 unsupported_pixel_layout`,
+`422 decode_memory_exceeded`, `503 decode_busy` (with `Retry-After: 1`), or
+`500 pixel_decode_failed`. Admission refusals are not cached and do not change
+`support_state`: [wait and retry a 503, but do not repeat a 422](#decode-admission).
+Thumbnails may reserve only half the decode memory budget between them.
+The common authentication requirement also applies.
 
 ## Display And Raw Frames
+
+Display, raw, `raw/pixel` and `presentation-layer` requests may answer
+`422 decode_memory_exceeded` or `503 decode_busy` with `Retry-After: 1`.
+Neither is cached or changes `support_state`; follow the
+[decode admission retry rules](#decode-admission): wait the stated seconds
+and repeat a 503, but do not repeat a 422 in the same session.
 
 Raster raw frames always contain interleaved stored samples: low-bit PNG gray
 values are unscaled, and WhiteIsZero TIFF values are un-inverted with
@@ -313,8 +344,9 @@ of a real-world window (windows
 that render alike, such as `wc=-0` and `wc=0` or widths below 1, share a key);
 the raw cache key is file and frame only. Both endpoints send `X-Cache: HIT` or
 `X-Cache: MISS`. A request for a frame another request is already decoding
-waits for that decode and reports `HIT`, and a decode whose client
-disconnected still fills the cache. A display request can fill the raw cache
+waits for that decode and reports `HIT`. A decode that has started still
+fills the cache when its client disconnects; one that is still waiting for
+decode capacity when its last client disconnects is not started. A display request can fill the raw cache
 too (grayscale frames are windowed from decoded samples kept there), so a raw
 request after a display request of the same frame may report `HIT`.
 
@@ -490,14 +522,22 @@ volume's Frame of Reference that it covers, in file and frame order, at most
 is the declared source image when exactly one covered file is declared, or
 the only covered file. The Parametric Map overlay also needs a usable
 mapping on every frame, all in one unit. A volume whose frames cannot be
-decoded, or a dose grid without positive dose, is ineligible.
+decoded, or a dose grid without positive dose, is ineligible. A frame whose
+decode exceeds the budget makes the overlay ineligible with the memory-budget
+reason. If the viewer instead refuses a legend decode because it is busy,
+the legend is not computed: semantic context answers `503 decode_busy` with
+`Retry-After: 1`, and the incomplete context is not cached as ineligible.
+Wait that many seconds and repeat the request.
 
 The overlay endpoints answer `400` when the query names the wrong kind of
 object, `404` for an unknown file index or out-of-range frame, `404
 overlay_not_covering_frame` when no pixel center of the displayed frame
 lies inside the volume, and `422 semantic_mapping_unavailable` when the
 volume is ineligible or the displayed frame lies in another Frame of
-Reference or lacks geometry.
+Reference or lacks geometry. Segmentation and value overlays also follow
+[decode admission](#decode-admission): `503 decode_busy` with `Retry-After: 1`
+or `422 decode_memory_exceeded`, neither cached nor changing `support_state`.
+Wait and repeat a 503; do not repeat a 422 in the same session.
 
 `wsi-context` positions one tile of a Whole Slide Microscopy object in its Total
 Pixel Matrix without stitching. It answers `400` for other objects.
@@ -602,8 +642,9 @@ Branch on `code`; `error` is diagnostic text and may change.
 | `405` | `method_not_allowed` |
 | `413` | `invalid_json` (a JSON body over 2 MiB, about 200,000 ROIs in one annotation edit) |
 | `415` | `invalid_json` (missing `Content-Type: application/json`) |
-| `422` | `invalid_json` (valid JSON of the wrong shape), `unsupported_transfer_syntax`, `unsupported_pixel_layout` (display frames for any layout the catalog marks unsupported; raw frames for invalid geometry or numeric precision), `semantic_mapping_unavailable` |
+| `422` | `invalid_json` (valid JSON of the wrong shape), `unsupported_transfer_syntax`, `unsupported_pixel_layout` (display frames for any layout the catalog marks unsupported; raw frames for invalid geometry or numeric precision), `semantic_mapping_unavailable`, `decode_memory_exceeded` (decode estimate exceeds the budget or thumbnail share; increase `--decode-memory`) |
 | `500` | `pixel_decode_failed`, `internal_error` |
+| `503` | `decode_busy` (decode queue full; `Retry-After: 1`) |
 
 A failed decode affects only that request; the server keeps running, and logs
 the failure (with the request) to stderr. A compressed frame whose pixel data

@@ -4,7 +4,7 @@ mod startup;
 
 use clap::Parser;
 use dcmview::loader;
-use dcmview::pixels::{parse_byte_size, CacheBudget};
+use dcmview::pixels::{parse_byte_size, CacheBudget, DecodeLimits};
 use std::env;
 use std::path::PathBuf;
 
@@ -89,6 +89,14 @@ struct Cli {
     )]
     cache_budget: Option<CacheBudget>,
 
+    #[arg(
+        long = "decode-memory",
+        value_name = "BYTES",
+        value_parser = parse_decode_memory,
+        help = "Memory that frames being decoded may use between them, such as 8GiB; default a quarter of physical memory, from 1GiB to 4GiB"
+    )]
+    decode_memory: Option<DecodeLimits>,
+
     #[arg(long = "exit-with-parent", hide = true)]
     exit_with_parent: bool,
 
@@ -156,6 +164,10 @@ fn parse_formats(raw: &str) -> std::result::Result<loader::FormatSelection, Stri
 
 fn parse_cache_budget(raw: &str) -> Result<CacheBudget, String> {
     CacheBudget::from_total(parse_byte_size(raw)?)
+}
+
+fn parse_decode_memory(raw: &str) -> Result<DecodeLimits, String> {
+    DecodeLimits::with_memory(parse_byte_size(raw)?)
 }
 
 #[tokio::main]
