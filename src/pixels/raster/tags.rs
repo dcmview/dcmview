@@ -262,7 +262,9 @@ impl fmt::Display for RasterTagNote {
 ///   [`RASTER_TAG_NUMBERS_MAX`] numbers and states its count.
 /// - **Directories.** At most [`RASTER_TAGS_MAX_IFD_ENTRIES`] entries of a
 ///   directory are shown, whatever count it declares: its entry table is
-///   read for those and no further. At most [`RASTER_TAGS_MAX_PAGES`] TIFF
+///   read for those and no further, and a larger count is noted as that
+///   limit. The link to the next directory lies after all the entries the
+///   directory declares. At most [`RASTER_TAGS_MAX_PAGES`] TIFF
 ///   pages and [`RASTER_TAGS_MAX_IFDS`] directories are read. A directory
 ///   reached twice, by any path, is not read again, so a chain or pointer
 ///   that loops ends there with a `Damaged` note. The only pointers
@@ -274,7 +276,10 @@ impl fmt::Display for RasterTagNote {
 /// - **Offsets and counts.** An offset is used only when what it names lies
 ///   inside the file (inside its block, for an EXIF block): compared in
 ///   `u64`, without overflow, before anything is read. A value whose bytes
-///   do not is shown as a problem and the directory goes on.
+///   do not is shown as a problem, its directory's part is noted as
+///   damaged, and the directory goes on. So does a walk after a chunk or
+///   segment it could not use: only damage to the structure that leads to
+///   the next one ends it.
 /// - **Compressed data.** A `zTXt`, compressed `iTXt` or `iCCP` stream is
 ///   inflated to at most [`RASTER_TAGS_INFLATE_MAX_BYTES`] and read only as
 ///   far as that takes. A stream that would inflate to more is cut there
@@ -300,10 +305,11 @@ impl fmt::Display for RasterTagNote {
 /// Top level, in this order (a part the file lacks is absent):
 ///
 /// 1. the container's own leaves, in file order;
-/// 2. `EXIF`, a group (PNG `eXIf`, JPEG `APP1` `Exif`, WebP `EXIF`: the
-///    first of each), with the groups `IFD0`, `Exif`, `GPS`, `Interop` and
-///    `IFD1` in that order, each present when the block has that directory;
-///    for TIFF there is none, the pages hold these directories;
+/// 2. `EXIF`, a group (PNG `eXIf`, JPEG `APP1` `Exif`, WebP `EXIF`, whose
+///    block may follow the six bytes `Exif\0\0`: the first of each), with
+///    the groups `IFD0`, `Exif`, `GPS`, `Interop` and `IFD1` in that order,
+///    each present when the block has that directory; for TIFF there is
+///    none, the pages hold these directories;
 /// 3. `XMP` leaf, keyword `Packet`: the start of the first XMP packet of a
 ///    JPEG (`APP1` `http://ns.adobe.com/xap/1.0/`) or WebP (`XMP `), as
 ///    UTF-8 text;
@@ -315,7 +321,10 @@ impl fmt::Display for RasterTagNote {
 ///    ASCII of a `desc` type, or the first record of an `mluc` type as
 ///    UTF-16 big endian) when it lies within the head. A profile shorter
 ///    than its 128-byte header or without `acsp` at byte 36 gives no `ICC`
-///    leaves and a `Damaged(Icc)` note.
+///    leaves and a `Damaged(Icc)` note. A tag table or description that
+///    lies past the head of a longer profile is the `Inflate` limit, not
+///    damage; one that lies outside the head of a profile that ends within
+///    it is `Damaged(Icc)`.
 ///
 /// Container leaves, as `tag`: `keyword` (value):
 ///
