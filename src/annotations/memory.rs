@@ -1,8 +1,6 @@
 //! The in-memory annotation store: the default backend of a session
 //! (`docs/design/annotation-model.md` 7.3).
 
-#![expect(dead_code, reason = "nothing calls into the store yet")]
-
 use super::backend::{AnnotationBackend, BackendError, Snapshot};
 use dcmview_annotation::{
     limits, Annotation, ApplyResult, Author, Context, Current, Document, FileKey, FileSizes,

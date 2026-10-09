@@ -1,8 +1,6 @@
 //! What a session holds of annotations: the backend, and the state of the
 //! `--annotations` import.
 
-#![expect(dead_code, reason = "nothing calls into the store yet")]
-
 use super::memory::{MemoryBackend, MemoryConfig};
 use anyhow::{anyhow, Result};
 use dcmview_annotation::Author;

@@ -23,10 +23,21 @@
 //!   neither accepts nor sends a key that holds a real UID. Records hold
 //!   real keys.
 
-use super::FileRegistry;
-use crate::annotations::{AnnotationIndexMap, AnnotationStore, EmbedRoiAnnotations};
+use super::{FileRegistry, KeyError};
+use crate::annotations::{
+    canonicalize_annotations,
+    embed::{replacement_ops, rois_of, rows_as_creates, write_embed_csv},
+    memory::{now, Checking, Write},
+    AnnotationBackend, AnnotationIndexMap, AnnotationStore, EmbedRoiAnnotations,
+    EMBED_IMPORT_AUTHOR,
+};
 use crate::api::contracts::FileKeyError;
-use dcmview_annotation::{ApplyResult, OpEnvelope};
+use crate::types::FileEntry;
+use dcmview_annotation::{
+    new_id, ApplyResult, Author, Current, FileKey, ImageSize, LabelTarget, Op, OpEnvelope,
+    Violation, ViolationCode,
+};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// Why an annotation request could not be served. A refused operation is
 /// not one of these: it is an [`ApplyResult`] inside [`OpOutcome`].
@@ -95,8 +106,14 @@ pub async fn embed_rois(
     store: &AnnotationStore,
     index: usize,
 ) -> Result<EmbedRoiAnnotations, AnnotationError> {
-    let _ = (registry, store, index);
-    todo!("the EMBED view of one file")
+    store
+        .wait_until_ready()
+        .await
+        .map_err(|error| AnnotationError::ImportFailed(error.to_string()))?;
+    let file = registry
+        .get(index)
+        .ok_or(AnnotationError::NotFound(index))?;
+    file_rois(registry, store, &file)
 }
 
 /// `PUT /api/file/{index}/annotations`: replaces the ROIs the file's EMBED
@@ -138,8 +155,61 @@ pub async fn replace_embed_rois(
     index: usize,
     rois: EmbedRoiAnnotations,
 ) -> Result<EmbedRoiAnnotations, AnnotationError> {
-    let _ = (registry, store, index, rois);
-    todo!("replace a file's EMBED ROIs through the store")
+    let file = registry
+        .get(index)
+        .ok_or(AnnotationError::NotFound(index))?;
+    let wanted = canonicalize_annotations(rois, file.rows, file.columns, file.frame_count)
+        .map_err(|error| AnnotationError::Rejected(error.to_string()))?;
+    let key = settle_key(registry, index).await?;
+    store.mark_edited(index).map_err(store_error)?;
+    let backend = store.backend();
+    let author = &backend.config().author;
+    let sizes = BTreeMap::from([(key.clone(), image_size(&file))]);
+    for _ in 0..16 {
+        let current = backend.embed_records(&key, index).map_err(store_error)?;
+        let stamp = now();
+        let ops = replacement_ops(
+            &current,
+            &wanted,
+            file.frame_count,
+            backend.default_layer(),
+            author,
+            &stamp,
+            &key,
+        );
+        if ops.is_empty() {
+            return Ok(wanted);
+        }
+        let envelope = OpEnvelope {
+            op_id: new_id(),
+            actor: author.clone(),
+            ts: stamp,
+            op: Op::Batch { ops },
+        };
+        match backend
+            .transact(
+                &envelope,
+                &sizes,
+                Write {
+                    checking: Checking::AsLoaded,
+                    author,
+                    embed_slot: Some(index),
+                },
+            )
+            .map_err(store_error)?
+        {
+            ApplyResult::Ok { .. } => return Ok(wanted),
+            ApplyResult::Conflict { .. } => continue,
+            refused => {
+                return Err(AnnotationError::Store(format!(
+                    "The EMBED replacement was refused: {refused:?}"
+                )))
+            }
+        }
+    }
+    Err(AnnotationError::Store(
+        "The EMBED replacement conflicted 16 times.".to_string(),
+    ))
 }
 
 /// `GET /api/annotations/export.csv`: the EMBED CSV of every file's view.
@@ -158,8 +228,18 @@ pub async fn export_embed_csv(
     registry: &FileRegistry,
     store: &AnnotationStore,
 ) -> Result<String, AnnotationError> {
-    let _ = (registry, store);
-    todo!("the EMBED CSV of every file's view")
+    store
+        .wait_until_ready()
+        .await
+        .map_err(|error| AnnotationError::ImportFailed(error.to_string()))?;
+    let mut rows = Vec::new();
+    for file in registry.files_snapshot() {
+        let rois = file_rois(registry, store, &file)?;
+        if rois.num_roi > 0 {
+            rows.push((file.path.to_string_lossy().into_owned(), rois));
+        }
+    }
+    write_embed_csv(&rows).map_err(store_error)
 }
 
 /// Turns the rows an EMBED CSV matched to loaded files into records, and
@@ -191,8 +271,69 @@ pub async fn import_embed_rows(
     store: &AnnotationStore,
     rows: AnnotationIndexMap,
 ) -> Result<EmbedImportReport, AnnotationError> {
-    let _ = (registry, store, rows);
-    todo!("store the rows of an EMBED CSV")
+    let outcome = async {
+        let mut rows: Vec<_> = rows.into_iter().collect();
+        rows.sort_unstable_by_key(|(index, _)| *index);
+        let mut report = EmbedImportReport::default();
+        let author = Author::parse(EMBED_IMPORT_AUTHOR).map_err(store_error)?;
+        let backend = store.backend();
+        for (index, rois) in rows {
+            let Some(file) = registry.get(index) else {
+                continue;
+            };
+            if rois.roi_coords.is_empty() {
+                continue;
+            }
+            let key = match settle_key(registry, index).await {
+                Ok(key) => key,
+                Err(AnnotationError::KeyUnavailable { .. }) => {
+                    report.files_without_key += 1;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            let stamp = now();
+            let ops = rows_as_creates(&rois, &key, backend.default_layer(), &author, &stamp);
+            let envelope = OpEnvelope {
+                op_id: new_id(),
+                actor: author.clone(),
+                ts: stamp,
+                op: Op::Batch { ops },
+            };
+            let sizes = BTreeMap::from([(key, image_size(&file))]);
+            let result = store
+                .load_unless_edited(index, || {
+                    backend.transact(
+                        &envelope,
+                        &sizes,
+                        Write {
+                            checking: Checking::AsLoaded,
+                            author: &author,
+                            embed_slot: Some(index),
+                        },
+                    )
+                })
+                .map_err(store_error)?;
+            match result {
+                None => report.files_edited += 1,
+                Some(result) => match result.map_err(store_error)? {
+                    ApplyResult::Ok { .. } => report.files_loaded += 1,
+                    refused => {
+                        return Err(AnnotationError::Store(format!(
+                            "The EMBED import was refused: {refused:?}"
+                        )))
+                    }
+                },
+            }
+        }
+        store.finish_loading().map_err(store_error)?;
+        Ok(report)
+    }
+    .await;
+    if let Err(error) = &outcome {
+        store.fail_loading(error.to_string()).map_err(store_error)?;
+    }
+    outcome
 }
 
 /// `POST /api/annotations/ops`: one operation envelope, as one transaction
@@ -229,6 +370,163 @@ pub async fn apply_op(
     store: &AnnotationStore,
     envelope: OpEnvelope,
 ) -> Result<OpOutcome, AnnotationError> {
-    let _ = (registry, store, envelope);
-    todo!("apply one operation envelope")
+    let mut envelope = envelope;
+    let mut keys = Vec::new();
+    let mut seen = HashSet::new();
+    visit_op_keys(&mut envelope.op, &mut |key| {
+        if seen.insert(key.clone()) {
+            keys.push(key.clone());
+        }
+        Ok(())
+    })?;
+    let mut resolved = Vec::new();
+    for key in keys {
+        let Some(index) = registry.file_for_shown_key(key.as_str()) else {
+            return Ok(OpOutcome {
+                result: ApplyResult::Invalid {
+                    violations: vec![Violation {
+                        code: ViolationCode::UnknownFile,
+                        path: String::new(),
+                        detail: "The operation names a file key this session does not know."
+                            .to_string(),
+                    }],
+                },
+                revision: store.backend().revision().map_err(store_error)?,
+            });
+        };
+        resolved.push((key, index));
+    }
+    let mut settled = HashMap::new();
+    let mut replacements = HashMap::new();
+    let mut sizes = BTreeMap::new();
+    for (shown, index) in resolved {
+        let key = if let Some(key) = settled.get(&index) {
+            key
+        } else {
+            let key = settle_key(registry, index).await?;
+            let file = registry
+                .get(index)
+                .ok_or(AnnotationError::NotFound(index))?;
+            sizes.insert(key.clone(), image_size(&file));
+            settled.entry(index).or_insert(key)
+        };
+        replacements.insert(shown, key.clone());
+    }
+    visit_op_keys(&mut envelope.op, &mut |key| {
+        *key = replacements.get(key).cloned().ok_or_else(|| {
+            AnnotationError::Store("An operation key was not resolved.".to_string())
+        })?;
+        Ok(())
+    })?;
+    let mut result = store
+        .backend()
+        .apply(vec![envelope], &sizes)
+        .map_err(store_error)?
+        .pop()
+        .ok_or_else(|| {
+            AnnotationError::Store("The store returned no operation result.".to_string())
+        })?;
+    visit_result_keys(&mut result, &mut |key| {
+        *key = FileKey::parse(&registry.shown_key_of(key)).map_err(store_error)?;
+        Ok(())
+    })?;
+    Ok(OpOutcome {
+        result,
+        revision: store.backend().revision().map_err(store_error)?,
+    })
+}
+
+fn store_error(error: impl std::fmt::Display) -> AnnotationError {
+    AnnotationError::Store(error.to_string())
+}
+
+async fn settle_key(registry: &FileRegistry, index: usize) -> Result<FileKey, AnnotationError> {
+    registry
+        .ensure_key(index)
+        .await
+        .map_err(|error| match error {
+            KeyError::NotFound(index) => AnnotationError::NotFound(index),
+            KeyError::Unavailable(failure) => AnnotationError::KeyUnavailable {
+                index,
+                reason: failure.into(),
+            },
+            KeyError::Stopped => AnnotationError::Stopped,
+        })
+}
+
+fn image_size(file: &FileEntry) -> ImageSize {
+    ImageSize {
+        columns: file.columns,
+        rows: file.rows,
+        frames: file.frame_count,
+    }
+}
+
+fn file_rois(
+    registry: &FileRegistry,
+    store: &AnnotationStore,
+    file: &FileEntry,
+) -> Result<EmbedRoiAnnotations, AnnotationError> {
+    if let Some(status) = registry.key_status(file.index) {
+        if status.settled {
+            if let Some(key) = status.key {
+                let records = store
+                    .backend()
+                    .embed_records(&key, file.index)
+                    .map_err(store_error)?;
+                return Ok(rois_of(&records, file.frame_count));
+            }
+        }
+    }
+    Ok(EmbedRoiAnnotations::empty())
+}
+
+fn visit_target_key(
+    target: &mut LabelTarget,
+    visit: &mut impl FnMut(&mut FileKey) -> Result<(), AnnotationError>,
+) -> Result<(), AnnotationError> {
+    match target {
+        LabelTarget::File { file } | LabelTarget::Frame { frame: file, .. } => visit(file),
+        _ => Ok(()),
+    }
+}
+
+fn visit_op_keys(
+    op: &mut Op,
+    visit: &mut impl FnMut(&mut FileKey) -> Result<(), AnnotationError>,
+) -> Result<(), AnnotationError> {
+    match op {
+        Op::CreateAnnotation { annotation } => visit(&mut annotation.file),
+        Op::UpdateAnnotation { file, .. } | Op::MaskTiles { file, .. } => visit(file),
+        Op::DeleteAnnotation { snapshot, .. } | Op::RestoreAnnotation { snapshot, .. } => {
+            visit(&mut snapshot.file)
+        }
+        Op::SetLabel { target, .. } => visit_target_key(target, visit),
+        Op::CreateLayer { .. } | Op::UpdateLayer { .. } | Op::DeleteLayer { .. } => Ok(()),
+        Op::Batch { ops } => {
+            for op in ops {
+                // Nested batches are refused by validation. Do not descend
+                // into client-built recursive input before that check.
+                if !matches!(op, Op::Batch { .. }) {
+                    visit_op_keys(op, visit)?;
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+fn visit_result_keys(
+    result: &mut ApplyResult,
+    visit: &mut impl FnMut(&mut FileKey) -> Result<(), AnnotationError>,
+) -> Result<(), AnnotationError> {
+    match result {
+        ApplyResult::Conflict {
+            current: Current::Annotation { record },
+        } => visit(&mut record.file),
+        ApplyResult::Conflict {
+            current: Current::Label { record },
+        } => visit_target_key(&mut record.target, visit),
+        _ => Ok(()),
+    }
 }

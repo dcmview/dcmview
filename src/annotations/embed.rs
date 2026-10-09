@@ -39,8 +39,6 @@
 //! Rows the mapping read come back from it unchanged, which is what keeps
 //! the export byte for byte what it was.
 
-#![expect(dead_code, reason = "nothing calls into the store yet")]
-
 use crate::api::contracts::EmbedRoiAnnotations;
 use anyhow::Result;
 use dcmview_annotation::{
