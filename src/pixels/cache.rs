@@ -2,7 +2,9 @@ use super::error::PixelError;
 use super::render::DisplayPng;
 use super::schedule::{decode_scheduler, DecodeScheduler};
 use crate::api::contracts::RawFrameMetadata;
-use crate::types::{FrameCacheKey, OverlayCacheKey, RawFrameCacheKey, ThumbnailCacheKey};
+use crate::types::{
+    FrameCacheKey, OverlayCacheKey, RawFrameCacheKey, ThumbnailCacheKey, ValueRangeCacheKey,
+};
 use bytes::Bytes;
 use futures::future::{BoxFuture, Shared};
 use lru::LruCache;
@@ -17,6 +19,9 @@ pub const FRAME_CACHE_MAX_BYTES: usize = 256 * 1024 * 1024; // 256 MiB
 pub const RAW_CACHE_MAX_BYTES: usize = 384 * 1024 * 1024; // 384 MiB
 pub const OVERLAY_CACHE_MAX_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
 pub const THUMBNAIL_CACHE_MAX_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
+/// Room for the value ranges of 64 objects. It is not a share of
+/// `--cache-budget`: a range is two numbers.
+pub const VALUE_RANGE_CACHE_MAX_BYTES: usize = 64 * std::mem::size_of::<ValueRange>();
 
 /// Encoded display frames keyed by file, frame, and window request.
 pub type FrameCache = BudgetedLru<FrameCacheKey, DisplayPng>;
@@ -29,9 +34,56 @@ pub type OverlayCache = BudgetedLru<OverlayCacheKey, Bytes>;
 /// scroll must not evict the viewer's display and raw frames.
 pub type ThumbnailCache = BudgetedLru<ThumbnailCacheKey, Bytes>;
 
+/// The value ranges of RT Dose and Parametric Map objects, keyed by object
+/// and file set. A range is found by decoding every frame of its object, so
+/// it is computed once, by one request, like a frame
+/// (`service::compute_from_frames`).
+pub type ValueRangeCache = BudgetedLru<ValueRangeCacheKey, ValueRange>;
+
+/// The smallest and the largest finite value among the mapped values of an
+/// object's frames. Values that are not finite (samples without a mapping)
+/// are not counted.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ValueRange {
+    pub min: f64,
+    pub max: f64,
+}
+
+impl ValueRange {
+    /// The range of no values: `min > max`. Including a finite value in it
+    /// gives the range of that value.
+    pub const EMPTY: Self = Self {
+        min: f64::INFINITY,
+        max: f64::NEG_INFINITY,
+    };
+
+    /// This range widened to hold `value`; unchanged when `value` is not
+    /// finite.
+    pub fn including(self, value: f64) -> Self {
+        if !value.is_finite() {
+            return self;
+        }
+        Self {
+            min: self.min.min(value),
+            max: self.max.max(value),
+        }
+    }
+
+    /// Whether no finite value has been included.
+    pub fn is_empty(&self) -> bool {
+        self.min > self.max
+    }
+}
+
 /// A cached value whose memory cost is the length of its frame body.
 pub trait FrameBody: Clone {
     fn body_len(&self) -> usize;
+}
+
+impl FrameBody for ValueRange {
+    fn body_len(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
 }
 
 impl FrameBody for Bytes {

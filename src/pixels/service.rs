@@ -1046,6 +1046,87 @@ where
     Flight::new(decode, waiters)
 }
 
+/// The frames of one file, for work that holds a permit whose estimate
+/// includes decoding them ([`compute_from_frames`]). A frame read through
+/// this takes no permit of its own and waits for none.
+pub struct CoveredFrames {
+    file: Arc<FileEntry>,
+    raw_cache: Arc<Mutex<RawFrameCache>>,
+}
+
+impl CoveredFrames {
+    /// The file whose frames these are.
+    pub fn file(&self) -> &Arc<FileEntry> {
+        &self.file
+    }
+
+    /// The raw samples of frame `frame`, as [`load_raw_frame`] returns them
+    /// and with its errors, but under the permit the work already holds
+    /// ([`RawAdmission::Covered`]): the raw cache is read, and a frame it
+    /// does not hold is decoded here and cached. It never waits for a
+    /// permit, nor for a decode another request announced.
+    pub async fn raw(&self, frame: u32) -> PixelResult<RawFrameResponse> {
+        raw_frame(
+            self.file.clone(),
+            self.raw_cache.clone(),
+            RawFrameRequest { frame },
+            RawAdmission::Covered,
+        )
+        .await
+    }
+}
+
+/// The value `compute` derives from frames of `file`, computed once for
+/// `key` and shared: the cached value (`true`), or the result of `compute`
+/// (`false`; `true` for a request that joined a computation another
+/// request announced).
+///
+/// This is how work that decodes frames and then holds more than a decode
+/// does (an overlay resampled and encoded, a legend's value range) is
+/// admitted. It is [`cached_or_decoded`] with the frames handed to the
+/// work:
+///
+/// - a value `cache` holds is returned without a permit;
+/// - otherwise one computation is announced for `key`, which every request
+///   for `key` waits for, and it runs as its own task;
+/// - the task first waits for one interactive permit for `work` on `file`
+///   from `cache`'s scheduler. A refusal
+///   ([`PixelError::DecodeMemoryExceeded`], [`PixelError::DecodeBusy`]) is
+///   the result for every request that shared it, and nothing is cached.
+///   While it waits, the computation leaves the queue when the last request
+///   waiting for it is dropped;
+/// - `compute` then runs under that permit until it ends, whoever is still
+///   waiting, and its value is cached. It reads frames only through the
+///   [`CoveredFrames`] it is given, so every decode it causes runs under
+///   the same permit; `raw_cache` is where those frames are read from and
+///   kept. `compute` must not wait for another permit, nor for work that
+///   may be waiting for one.
+///
+/// `work` must cover everything `compute` holds: the caller sizes it from
+/// the catalog (the displayed frame an overlay is drawn on, the number of
+/// planes it samples) and `compute` holds no more than that.
+///
+/// `cache` and `raw_cache` belong to one viewer and share its scheduler.
+pub async fn compute_from_frames<K, V, Fut>(
+    file: Arc<FileEntry>,
+    work: DecodeWork,
+    cache: Arc<Mutex<BudgetedLru<K, V>>>,
+    key: K,
+    raw_cache: Arc<Mutex<RawFrameCache>>,
+    compute: impl FnOnce(CoveredFrames) -> Fut,
+) -> PixelResult<(V, bool)>
+where
+    K: Hash + Eq + Clone + Send + 'static,
+    V: FrameBody + Send + Sync + 'static,
+    Fut: Future<Output = PixelResult<V>> + Send + 'static,
+{
+    let frames = CoveredFrames {
+        file: file.clone(),
+        raw_cache,
+    };
+    cached_or_decoded(&cache, key, file, work, compute(frames)).await
+}
+
 /// The scheduler that admits the decodes filling `cache`.
 fn scheduler_of<K, V>(cache: &Arc<Mutex<BudgetedLru<K, V>>>) -> PixelResult<Arc<DecodeScheduler>>
 where

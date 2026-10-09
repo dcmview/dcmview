@@ -34,8 +34,9 @@ pub use admission::{
 };
 pub use cache::{
     new_cache, new_overlay_cache, new_raw_cache, new_thumbnail_cache, parse_byte_size, CacheBudget,
-    FrameCache, OverlayCache, RawFrameCache, ThumbnailCache, FRAME_CACHE_MAX_BYTES,
-    OVERLAY_CACHE_MAX_BYTES, RAW_CACHE_MAX_BYTES, THUMBNAIL_CACHE_MAX_BYTES,
+    FrameCache, OverlayCache, RawFrameCache, ThumbnailCache, ValueRange, ValueRangeCache,
+    FRAME_CACHE_MAX_BYTES, OVERLAY_CACHE_MAX_BYTES, RAW_CACHE_MAX_BYTES, THUMBNAIL_CACHE_MAX_BYTES,
+    VALUE_RANGE_CACHE_MAX_BYTES,
 };
 pub(crate) use color::cielab_to_srgb8;
 pub use colorwash::{
@@ -65,8 +66,8 @@ pub use schedule::{
 pub use segmentation::encode_segmentation_overlay_png;
 pub(crate) use segmentation::segmentation_has_only_binary_samples;
 pub use service::{
-    draw_presentation_layer, load_frame, load_raw_frame, load_redacted_frame,
-    load_redacted_raw_frame, load_thumbnail, raw_pixel, FrameRequest, FrameResponse,
+    compute_from_frames, draw_presentation_layer, load_frame, load_raw_frame, load_redacted_frame,
+    load_redacted_raw_frame, load_thumbnail, raw_pixel, CoveredFrames, FrameRequest, FrameResponse,
     RawFrameRequest, RawFrameResponse,
 };
 pub use syntax::{

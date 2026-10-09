@@ -687,6 +687,17 @@ pub struct OverlayCacheKey {
     pub encoding: OverlayEncoding,
 }
 
+/// The range of an RT Dose or Parametric Map's mapped values, which its
+/// legend spans: one per object and file set, since the Real World Value
+/// Mapping instances of the file set decide the mapping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ValueRangeCacheKey {
+    pub file_index: usize,
+    /// How many files were registered when the range was asked for. The
+    /// registry only grows, so its length names the file set.
+    pub file_set: usize,
+}
+
 /// How an overlay is sent: a colored PNG, or a value overlay's resampled
 /// values as little-endian `f32`s.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
