@@ -222,19 +222,23 @@ of its own; so does a file of the group that could not be read when the key
 was settled. The key an entry or `X-File-Key` shows is the key as it
 stands and may not be settled yet.
 
-A `file_key: null` does not always mean a digest is on its way. When the
-first file that carries the UID cannot be read after its key was returned,
-a copy found afterwards has been read but cannot be compared: its entry
-shows `file_key: null` with no `key_error` of its own while `keys_hashing`
-is 0, and stays so for the rest of the session unless a later key request
-reads the first file. The `key_error` is on the first file's entry, which
-keeps its key.
+A `file_key: null` without a `key_error` means a digest is on its way: the
+file is queued or being hashed, or will be once a frame of it is served.
+With a `key_error` it means no key is coming until a key request succeeds.
+When the first file that carries a UID cannot be read after its key was
+returned, a file with that UID found afterwards cannot be compared with it:
+its entry shows `file_key: null` with `key_error: "uncompared"`, and stays
+so until a later key request reads the first file. The first file's own
+entry keeps its key and carries the `unreadable` or `changed` that says why.
 
-`key_error`, when present, is `unreadable` or `changed`. `changed` means the
-file is not the one discovery saw: its length or its modification time
-differs, or it changed while it was read. A file rewritten with other bytes
-of the same length is recognised by its modification time alone. A later
-explicit key request retries a failed digest.
+`key_error`, when present, is `unreadable`, `changed` or `uncompared`.
+`changed` means the file is not the one discovery saw: its length or its
+modification time differs, or it changed while it was read. A file
+rewritten with other bytes of the same length is recognised by its
+modification time alone. `uncompared` says nothing is wrong with the file
+itself: it waits for the first file of its UID, as above. A later explicit
+key request retries a failed digest, the first file's included. Clients
+should treat a `key_error` value they do not know as "no key for now".
 
 Discovery performs no reads for keys. A file needing a digest starts hashing
 in the background after its first successful display or raw frame, or when a

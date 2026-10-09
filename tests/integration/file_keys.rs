@@ -932,6 +932,90 @@ async fn a_file_found_after_a_key_was_returned_never_changes_that_key() {
     }
 }
 
+/// A file found after the key of its UID was returned waits to be compared
+/// with the first file. When the first file can no longer be read, nothing
+/// is being hashed and nothing will be: the late file's entry says that it
+/// could not be compared, where it used to look like a file still waiting
+/// for its hash, and it gets its key once the first file can be read.
+#[tokio::test]
+async fn a_late_file_whose_first_file_cannot_be_read_says_it_was_not_compared() {
+    const UID: &str = "1.2.826.0.1.3680043.10.519.1";
+    // (what happened to the first file, what its own entry says, whether
+    // the late file is viewed or its key asked for)
+    for (damage, first_error) in [("removed", "unreadable"), ("rewritten", "changed")] {
+        for viewed in [true, false] {
+            let context = format!("first file {damage}, late file viewed: {viewed}");
+            let dir = tempfile::tempdir().expect("temp dir");
+            let first = dir.path().join("first.dcm");
+            write_dicom(&first, Some(UID), 1, 8);
+            let original = fs::read(&first).expect("read");
+            let seen = modified(&first);
+            let late = dir.path().join("late.dcm");
+            fs::copy(&first, &late).expect("copy");
+
+            let (server, registry) = serve(std::slice::from_ref(&first)).await;
+            let key = registry.ensure_key(0).await.expect("key");
+            assert_eq!(key.as_str(), format!("sop:{UID}"), "{context}");
+            if damage == "removed" {
+                fs::remove_file(&first).expect("remove the first file");
+            } else {
+                write_dicom(&first, Some(UID), 0x7777, 8);
+                set_modified(&first, seen + Duration::from_secs(10));
+            }
+            scan(&registry, &late).await;
+            let since = registry.files_page(None, None).revision;
+
+            if viewed {
+                assert_eq!(frame_key(&server, 1).await, None, "{context}");
+                hashing_done(&registry).await;
+            } else {
+                assert!(
+                    matches!(registry.ensure_key(1).await, Err(KeyError::Unavailable(_))),
+                    "{context}"
+                );
+            }
+            let listed = catalog(&server, "").await;
+            assert_eq!(listed["keys_hashing"], 0, "{context}");
+            let state = |entry: &Value| (shown(entry), entry.get("key_error").cloned());
+            assert_eq!(
+                state(&entries(&listed)[0]),
+                (Shown::Implied, Some(Value::from(first_error))),
+                "{context}: the first file keeps the key that was returned"
+            );
+            assert_eq!(
+                state(&entries(&listed)[1]),
+                (Shown::Pending, Some(Value::from("uncompared"))),
+                "{context}: the late file"
+            );
+            // A client that polls with `since` is told.
+            let page = catalog(&server, &format!("?since={since}")).await;
+            assert!(
+                entries(&page).iter().any(|entry| entry["index"] == 1
+                    && entry.get("key_error") == Some(&Value::from("uncompared"))),
+                "{context}: {page}"
+            );
+
+            // The first file is as discovery saw it again: asking reads
+            // both, and the late file is the same image.
+            fs::write(&first, &original).expect("restore the first file");
+            set_modified(&first, seen);
+            let late_key = registry.ensure_key(1).await.expect("late key");
+            assert_eq!(late_key, key, "{context}");
+            let listed = catalog(&server, "").await;
+            assert_eq!(
+                state(&entries(&listed)[0]),
+                (Shown::Implied, None),
+                "{context}"
+            );
+            assert_eq!(
+                (state(&entries(&listed)[1]), alias_of(&entries(&listed)[1])),
+                ((Shown::Implied, None), Some(0)),
+                "{context}"
+            );
+        }
+    }
+}
+
 #[tokio::test]
 async fn a_file_that_cannot_be_read_fails_only_the_keys_that_depend_on_it() {
     const UID: &str = "1.2.826.0.1.3680043.10.518.1";

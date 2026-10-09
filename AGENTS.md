@@ -780,6 +780,10 @@ is cached between requests.
 - A member of `FileSummary` that can change after the file is registered
   must give the entry a new catalog revision, or clients that poll with
   `since` never see the change.
+- An entry with `file_key: null` and no `key_error` promises a digest. A
+  state in which a file has no key and nothing is queued for it must show a
+  `key_error` (`uncompared` is the one for a file that waits on another
+  file's failed digest).
 - A change to which key a file gets, or to how a key is written, raises
   `KEY_RULES`.
 - Code that needs a key for a write or an export awaits `ensure_key`; it
@@ -1091,6 +1095,9 @@ default suite.
 - Paging `/api/files` with `since` and `limit` ends with the current catalog
   while files are added and keys change; a cursor from another process is
   answered with `reset`.
+- A file that waits to be compared with a first file that cannot be read
+  shows `key_error: uncompared`, reaches a client that polls with `since`,
+  and gets its key once the first file is read.
 - A masked session sends file keys built from masked UIDs only.
 - A thumbnail is the default display frame shrunk, within JPEG tolerance; it
   is blanked under a redaction box, a cache `MISS` after the boxes change,

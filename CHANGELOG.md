@@ -163,6 +163,10 @@ diagnostic viewer.
   declares. Before, a file whose header declared more data than the file
   held could make the viewer allocate that much memory while scanning a
   folder.
+- A file that has no key because the first loaded file with its UID could
+  not be read now reports `key_error: "uncompared"`. Before, its entry
+  showed `file_key: null` with no error and `keys_hashing` 0, which a
+  client could not tell from a file still waiting for its hash.
 - Error responses of the frame, raw frame, thumbnail and overlay endpoints
   no longer repeat a decoding library's message. Before, such a message
   could carry a few bytes of the file into the response and the log,

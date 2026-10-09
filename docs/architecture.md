@@ -1515,7 +1515,12 @@ it out. `FileRegistry::stop_key_work` ends hashing at shutdown.
   `sop_instance_uid` (an ordinary DICOM file adds no bytes to the catalog),
   `null` while the file has no key, and the key otherwise. `alias_of` names
   the first file that holds the same key. `key_error` is `unreadable` or
-  `changed`. What an entry shows is the key as it stands, settled or not.
+  `changed` for the file's own digest, or `uncompared` for a file that
+  waits to be compared with the first file of its UID while that file has
+  one of the other two (`KeyView::uncompared`, `KeyTable` rule 4): an entry
+  with `file_key: null` and no `key_error` is always one whose digest is
+  still to come. What an entry shows is the key as it stands, settled or
+  not.
 - Display and raw frame responses carry `X-File-Key` whenever the file has a
   key, so a viewer showing a file whose key was pending learns it from the
   next frame.
