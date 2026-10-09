@@ -128,7 +128,11 @@ Parametric Map may answer `503 decode_busy` with `Retry-After: 1` when their
 class's decode queue is full, or when the viewer is stopping while they wait
 for decode capacity. All but semantic context may also answer
 `422 decode_memory_exceeded` when the work needs more than the decode memory
-budget (`--decode-memory`), or more than half of it for a thumbnail.
+budget (`--decode-memory`), or more than half of it for a thumbnail. An
+overlay is one piece of work: the frames it decodes, the resampling and the
+encoding are reserved together, by the overlay's object and by the size of
+the displayed frame it is drawn on, so an overlay may be refused on a large
+displayed frame although every frame involved can be shown on its own.
 
 Neither refusal is cached, and neither changes the file's `support_state`.
 After a 503, wait the `Retry-After` number of seconds and repeat the request.
@@ -505,7 +509,9 @@ legend spans the minimum to maximum mapped value of every frame with no
 floor. Both use one scale for every slice. Encoded overlays are cached per
 volume and displayed frame, and SEG overlays per SEG frame and resolved
 source frame; every overlay endpoint's `X-Cache` reports that encoded-PNG
-cache, not the decoded frames beneath it.
+cache, not the decoded frames beneath it. Requests for the same overlay
+that arrive while it is being drawn wait for that one drawing and report
+`X-Cache: HIT`.
 
 The `/values` form of each value overlay sends the resampled values instead
 of colors, so a viewer can read the volume's value under the cursor: one
@@ -522,12 +528,15 @@ volume's Frame of Reference that it covers, in file and frame order, at most
 is the declared source image when exactly one covered file is declared, or
 the only covered file. The Parametric Map overlay also needs a usable
 mapping on every frame, all in one unit. A volume whose frames cannot be
-decoded, or a dose grid without positive dose, is ineligible. A frame whose
-decode exceeds the budget makes the overlay ineligible with the memory-budget
-reason. If the viewer instead refuses a legend decode because it is busy,
-the legend is not computed: semantic context answers `503 decode_busy` with
-`Retry-After: 1`, and the incomplete context is not cached as ineligible.
-Wait that many seconds and repeat the request.
+decoded, or a dose grid without positive dose, is ineligible. The legend
+spans the values of every frame of the volume; finding that range is
+reserved against the decode memory budget as one piece of work, and
+requests that ask for it meanwhile share it. A volume whose range needs
+more than the budget is ineligible with the memory-budget reason. If the
+viewer instead refuses that work because it is busy, the legend is not
+computed: semantic context answers `503 decode_busy` with `Retry-After: 1`,
+and the incomplete context is not cached as ineligible. Wait that many
+seconds and repeat the request.
 
 The overlay endpoints answer `400` when the query names the wrong kind of
 object, `404` for an unknown file index or out-of-range frame, `404

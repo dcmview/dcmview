@@ -69,7 +69,10 @@ would remove behavior, raise it as a question instead of acting.
   it. A frame that needs more than the budget answers
   `422 decode_memory_exceeded` and stays listed as renderable; a request
   that would wait behind a full queue answers `503 decode_busy` with
-  `Retry-After`. It applies to DICOM and raster frames alike.
+  `Retry-After`. It applies to DICOM and raster frames alike, and to
+  segmentation and value overlays and the legend of an RT Dose or
+  Parametric Map, each reserved as one piece of work: the frames it
+  decodes, the values it resamples and the image it encodes.
 - **Remote use** - loopback bind plus the printed `ssh -L` hint. (`--tunnel`
   was removed with the owner's agreement on 2026-09-25.)
 - **Python package** - `view()` with blocking and non-blocking handles,
@@ -131,11 +134,10 @@ would remove behavior, raise it as a question instead of acting.
   The metadata tree (which must honour `--mask`) and file keys are the
   planned follow-ups in `docs/design/image-formats.md`.
 - **The decode memory budget is not a process limit.** Beside it are the
-  frame caches, response bodies while they are sent, and the resampling and
-  encoding of segmentation and value overlays. A DICOM decoder is not held
-  to its catalog entry the way the raster decoder is: an encapsulated
-  codestream that declares a larger image than its data set is decoded at
-  the size it declares, whatever was reserved.
+  frame caches and response bodies while they are sent. A DICOM decoder is
+  not held to its catalog entry the way the raster decoder is: an
+  encapsulated codestream that declares a larger image than its data set is
+  decoded at the size it declares, whatever was reserved.
 - **Some TIFF layouts the design lists are not decoded.** JPEG-compressed
   and 1-bit TIFF are reported as `raster.unsupported_compression` and
   `raster.unsupported_sample_format`: the linked `tiff` crate decodes the
@@ -527,7 +529,8 @@ requires an existing `frontend/dist/index.html`.
 - Nothing that holds a frame runs without a permit: a decode, a render, a
   frame-sized copy or buffer. A new one gets a `DecodeWork` kind, a row in
   `decode_estimate`'s table, and a path in `tests/raster_cost/admission.rs`
-  that measures what it holds against what it reserves.
+  (or, for work reached only through the API, `overlays.rs` beside it) that
+  measures what it holds against what it reserves.
 - An estimate is computed from the `FileEntry` alone. Never lower or size
   one from what the file declares or from the file's current length; the
   decoder checks the file against the entry instead.
@@ -543,6 +546,17 @@ requires an existing `frontend/dist/index.html`.
   (`BudgetedLru::join_flight`). It leaves the queue when the last of them
   is dropped before the permit is granted. Wait for a shared decode only
   through `join_flight`, under the cache lock, so that count stays true.
+- Work that decodes frames and then holds more than a decode does (an
+  overlay, a legend's value range) goes through
+  `pixels::compute_from_frames`: one permit for a `DecodeWork` kind that
+  covers all of it, one computation per cache key shared by its requests,
+  and frames read only through the `CoveredFrames` it hands over. Do not
+  call `load_raw_frame` and then keep working on the frame outside a
+  permit, and do not call it under one.
+- An overlay's estimate may take, beside the object's `FileEntry`, the rows
+  and columns of the displayed frame and the number of planes the work
+  holds, each computed from the catalog before the permit is asked for.
+  The work must hold no more than it stated.
 - Tests of admission read `DecodeScheduler::load` and wait with
   `load_when`; they do not sleep or time anything.
 
@@ -929,6 +943,10 @@ default suite.
 - No path of the pixel service holds more heap for a frame than it reserved,
   for hostile raster files too, and many requests at once hold no more than
   the budget.
+- An overlay and a legend reserve their estimate once, under one permit,
+  and hold no more heap than that; requests for the same one share a
+  computation; one over the budget answers 422 and one nobody waits for is
+  not started.
 
 **Test policy:**
 
