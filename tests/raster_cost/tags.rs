@@ -1460,6 +1460,19 @@ fn hostile_containers() -> Vec<Hostile> {
         )
         .holding_at_most(256 * 1024),
     );
+    // A sound stream that yields nothing in the bytes read of it (empty
+    // stored blocks, here) is more than is shown, not damage.
+    let mut idle = b"k\0\0\x78\x01".to_vec();
+    for _ in 0..2000 {
+        idle.extend_from_slice(&[0, 0, 0, 0xff, 0xff]);
+    }
+    cases.push(hostile(
+        "compressed text that yields nothing in what is read of it",
+        FileFormat::Png,
+        png(vec![png_chunk(b"zTXt", &idle)]),
+        "PNG:zTXt | Text |  | \"k:…\"",
+        Some(Note::Limit(Limit::Inflate)),
+    ));
     // Compressed text whose stream ends before its end marker.
     let stream = files::zlib(&super::bounds::noise(1000));
     let mut cut = b"k\0\0".to_vec();

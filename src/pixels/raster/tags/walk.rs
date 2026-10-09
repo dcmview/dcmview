@@ -98,14 +98,26 @@ pub(super) fn le32(bytes: &[u8]) -> u32 {
     u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
 }
 
+/// How far inflating the bytes given of a stream got.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Stream {
+    /// The stream ended.
+    Ended,
+    /// The stream is sound as far as it was read, and goes on.
+    Open,
+    /// The bytes are not a deflate stream.
+    Corrupt,
+}
+
 /// A fixed output buffer also bounds inflation when the stream is incomplete.
-pub(super) fn inflate(bytes: &[u8], capacity: usize) -> (Vec<u8>, bool) {
+pub(super) fn inflate(bytes: &[u8], capacity: usize) -> (Vec<u8>, Stream) {
     let mut decoder = flate2::Decompress::new(true);
     let mut out = vec![0; capacity];
-    let ended = matches!(
-        decoder.decompress(bytes, &mut out, flate2::FlushDecompress::Finish),
-        Ok(flate2::Status::StreamEnd)
-    );
+    let stream = match decoder.decompress(bytes, &mut out, flate2::FlushDecompress::Finish) {
+        Ok(flate2::Status::StreamEnd) => Stream::Ended,
+        Ok(_) => Stream::Open,
+        Err(_) => Stream::Corrupt,
+    };
     out.truncate(decoder.total_out() as usize);
-    (out, ended)
+    (out, stream)
 }

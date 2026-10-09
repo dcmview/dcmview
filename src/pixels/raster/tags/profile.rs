@@ -1,5 +1,5 @@
 //! The bounded head of an ICC profile and its first description record.
-use super::walk::{be32, inflate, Block, Walk};
+use super::walk::{be32, inflate, Block, Stream, Walk};
 use super::*;
 
 pub(super) fn read(w: &mut Walk<'_, '_>, block: Block) {
@@ -19,8 +19,8 @@ pub(super) fn read(w: &mut Walk<'_, '_>, block: Block) {
     let (head, cut) = if compressed {
         // No byte past the inflation contract is produced, even to probe
         // for the end. The decoder's status tells us whether it ended.
-        let (out, ended) = inflate(&bytes, RASTER_TAGS_INFLATE_MAX_BYTES);
-        (out, !ended || block.length > limit as u64)
+        let (out, stream) = inflate(&bytes, RASTER_TAGS_INFLATE_MAX_BYTES);
+        (out, stream != Stream::Ended || block.length > limit as u64)
     } else {
         (bytes, block.length > limit as u64)
     };

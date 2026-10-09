@@ -1,5 +1,5 @@
 //! PNG chunk headers, bounded text and deferred EXIF/profile locations.
-use super::walk::{be16, be32, inflate, Block, Walk};
+use super::walk::{be16, be32, inflate, Block, Stream, Walk};
 use super::*;
 
 pub(super) fn read(w: &mut Walk<'_, '_>) {
@@ -232,10 +232,15 @@ fn text(w: &mut Walk<'_, '_>, kind: &[u8], block: Block) {
         return;
     };
     let (mut value, more) = if compressed {
-        let (out, ended) = inflate(&bytes, RASTER_TAG_VALUE_MAX_BYTES as usize + 1);
-        // Nothing inflated and no end of stream is a stream that could not
-        // be read. Nothing inflated at its end is text that is empty.
-        if out.is_empty() && !ended {
+        let (out, stream) = inflate(&bytes, RASTER_TAG_VALUE_MAX_BYTES as usize + 1);
+        let ended = stream == Stream::Ended;
+        // Nothing inflated at the end of a stream is text that is empty.
+        // Nothing inflated from a sound stream that goes on past the bytes
+        // read of it is more than is shown: the value is cut there. Nothing
+        // inflated otherwise is a stream that could not be read.
+        if out.is_empty() && stream == Stream::Open && length > limit {
+            w.sink.note(RasterTagNote::Limit(RasterTagLimit::Inflate));
+        } else if out.is_empty() && !ended {
             w.damaged(RasterTagPart::Text);
             w.sink.leaf(
                 TagName::Fixed(name),
