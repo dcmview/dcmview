@@ -912,7 +912,15 @@ what it holds.
 request waiting for a permit is answered `503 decode_busy` at once, and so
 is any that would have to wait from then on. Decodes that hold a permit
 finish, so the drain is bounded by the work already running and not by the
-length of the queue.
+length of the queue. The refusal is permanent for that scheduler: a new
+viewer in the same process is given a new one.
+
+A waiting request registers for the scheduler's next change before it
+checks the state it waits on, so a release or a refusal that happens
+between its check and its wait still wakes it. A unit test in
+`pixels/schedule.rs` polls a request by hand against a release and a
+refusal made from another thread and tells a missed change from the
+scheduler's own account and a counting waker, without a clock.
 
 **Who waits where.** An interactive decode waits inside its own task, and a
 refusal is the result for every request that shared it. The task counts the

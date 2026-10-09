@@ -604,6 +604,9 @@ requires an existing `frontend/dist/index.html`.
   The work must hold no more than it stated.
 - Tests of admission read `DecodeScheduler::load` and wait with
   `load_when`; they do not sleep or time anything.
+- A request that waits on the scheduler creates its `Notified` before it
+  reads the state it waits on. Do not move the check in front of it:
+  `schedule.rs` has the test that catches a change made in between.
 
 **Windowing**
 
