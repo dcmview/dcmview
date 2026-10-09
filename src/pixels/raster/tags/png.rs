@@ -233,7 +233,9 @@ fn text(w: &mut Walk<'_, '_>, kind: &[u8], block: Block) {
     };
     let (mut value, more) = if compressed {
         let (out, ended) = inflate(&bytes, RASTER_TAG_VALUE_MAX_BYTES as usize + 1);
-        if !bytes.is_empty() && out.is_empty() {
+        // Nothing inflated and no end of stream is a stream that could not
+        // be read. Nothing inflated at its end is text that is empty.
+        if out.is_empty() && !ended {
             w.damaged(RasterTagPart::Text);
             w.sink.leaf(
                 TagName::Fixed(name),

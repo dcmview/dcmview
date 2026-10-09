@@ -704,6 +704,7 @@ fn shown_png_text(chunk: Vec<u8>) -> String {
     use dcmview::api::contracts::TagValue;
     let read = read(FileFormat::Png, &png_with_chunks(&[chunk], &[]));
     assert_within_limits("a text chunk", &read);
+    assert_eq!(read.tree.notes, [], "a text chunk that is whole");
     let node = read
         .tree
         .nodes
@@ -761,6 +762,13 @@ fn text_of_a_file_is_decoded_escaped_and_cut_before_it_is_shown() {
     for (bytes, shown) in cases {
         assert_eq!(utf8(bytes), shown, "{:?}", String::from_utf8_lossy(bytes));
     }
+    // Compressed text that is empty is empty text: its stream ends having
+    // produced nothing, which is not damage.
+    assert_eq!(shown_png_text(png_compressed_text(b"k", b"")), "");
+    assert_eq!(
+        shown_png_text(png_international_text(b"k", b"", b"", b"", true)),
+        ""
+    );
     // Latin-1 has no invalid bytes; its control range is escaped like any.
     assert_eq!(
         latin1(b"Ren\xe9 \x9b31m \x85!"),
