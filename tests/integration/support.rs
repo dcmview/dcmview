@@ -1,5 +1,5 @@
 use axum_test::{TestRequest, TestServer};
-use dcmview::annotations::{AnnotationStore, EmbedRoiAnnotations};
+use dcmview::annotations::{AnnotationIndexMap, AnnotationStore, EmbedRoiAnnotations};
 use dcmview::api::contracts::{endpoints, ApiMethod, Endpoint, API_PREFIX};
 use dcmview::loader::{self, DiscoverOptions};
 use dcmview::server::{AppState, FileRegistry};
@@ -190,6 +190,20 @@ pub fn app_state(files: Vec<FileEntry>) -> AppState {
 
 pub fn app_state_with_annotations(files: Vec<FileEntry>, annotations: AnnotationStore) -> AppState {
     AppState::new(FileRegistry::from_files(files), annotations)
+}
+
+/// A state whose annotation store holds `rows` the way an `--annotations`
+/// CSV that matched them to these files leaves it.
+pub async fn app_state_with_embed_rows(
+    files: Vec<FileEntry>,
+    rows: AnnotationIndexMap,
+) -> AppState {
+    let registry = FileRegistry::from_files(files);
+    let store = AnnotationStore::loading();
+    dcmview::server::annotations::import_embed_rows(&registry, &store, rows)
+        .await
+        .expect("import EMBED rows");
+    AppState::new(registry, store)
 }
 
 pub fn app_state_with_registry(registry: FileRegistry) -> AppState {

@@ -3,14 +3,16 @@ use super::error;
 use super::handlers;
 use super::overlays;
 use super::state::AppState;
-use crate::api::contracts::{endpoints, API_PREFIX, SERVER_INSTANCE_HEADER};
+use crate::api::contracts::{
+    endpoints, ANNOTATION_OP_MAX_BYTES, API_PREFIX, SERVER_INSTANCE_HEADER,
+};
 use crate::server::web;
 use crate::server::RequestActivity;
-use axum::extract::{Request, State};
+use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::{header, HeaderName, HeaderValue};
 use axum::middleware::{self, Next};
 use axum::response::Response;
-use axum::routing::{any, get, put};
+use axum::routing::{any, get, post, put};
 use axum::Router;
 use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Predicate};
 use tower_http::compression::{CompressionLayer, CompressionLevel};
@@ -87,6 +89,12 @@ pub(crate) fn router(state: AppState) -> Router {
         .route(
             endpoints::ANNOTATIONS_EXPORT.path,
             get(handlers::export_annotations),
+        )
+        // The annotation model bounds an operation envelope, not the
+        // extractor's default, which is smaller.
+        .route(
+            endpoints::ANNOTATION_OPS.path,
+            post(handlers::annotation_ops).layer(DefaultBodyLimit::max(ANNOTATION_OP_MAX_BYTES)),
         )
         .fallback(error::not_found_handler)
         .method_not_allowed_fallback(error::method_not_allowed_handler);

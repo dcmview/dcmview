@@ -238,6 +238,13 @@ impl FileRegistry {
             .map(|key| shown_key(key, self.masker.as_deref()))
     }
 
+    /// A file key in the form this session sends it (see `shown_key`): the
+    /// text a client is given for a key a record holds. The inverse of
+    /// [`FileRegistry::file_for_shown_key`] for a key some file has.
+    pub fn shown_key_of(&self, key: &FileKey) -> String {
+        shown_key(KeyRef::from(key), self.masker.as_deref())
+    }
+
     /// The file a key received from a client names: `key` is a key as this
     /// session sends it, current or replaced. In a masked session a `sop:`
     /// key is looked up by its masked UID; a real UID a client could not

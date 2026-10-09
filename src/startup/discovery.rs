@@ -1,5 +1,6 @@
 use dcmview::annotations::{AnnotationSource, AnnotationStore};
 use dcmview::loader;
+use dcmview::server::annotations;
 use dcmview::server::FileRegistry;
 use std::path::PathBuf;
 use tokio::sync::mpsc;
@@ -94,7 +95,7 @@ async fn run_discovery(
         if let Some(source) = inputs.annotation_source {
             load_annotations(
                 source,
-                inputs.registry.files_snapshot(),
+                inputs.registry,
                 inputs.annotation_store,
                 cancellation,
             )
@@ -160,12 +161,16 @@ fn record_event(event: loader::DiscoveryEvent, registry: &FileRegistry) {
     }
 }
 
+/// Reads the annotation CSV against the files discovery found, then turns
+/// its rows into records. The read is all or nothing; a failure of either
+/// step leaves the store failed and the viewer serving.
 async fn load_annotations(
     source: AnnotationSource,
-    files: Vec<std::sync::Arc<dcmview::types::FileEntry>>,
+    registry: FileRegistry,
     store: AnnotationStore,
     cancellation: loader::DiscoveryCancellation,
 ) {
+    let files = registry.files_snapshot();
     let scan_cancellation = cancellation.clone();
     let result = tokio::task::spawn_blocking(move || {
         source.load_for_files_with_check(&files, || {
@@ -178,11 +183,22 @@ async fn load_annotations(
     .await;
 
     match result {
-        Ok(Ok((annotations, report))) => {
-            if let Err(error) = store.commit_csv_if_unedited(annotations) {
-                eprintln!("dcmview: warning — failed to commit annotations: {error:#}");
-                let _ = store.fail_loading(error.to_string());
-                return;
+        Ok(Ok((rows, report))) => {
+            match annotations::import_embed_rows(&registry, &store, rows).await {
+                Ok(imported) => {
+                    if imported.files_without_key > 0 {
+                        eprintln!(
+                            "dcmview: warning — annotation rows of {} file(s) were not loaded: the files could not be read for their key",
+                            imported.files_without_key
+                        );
+                    }
+                }
+                Err(error) => {
+                    if !cancellation.is_cancelled() {
+                        eprintln!("dcmview: warning — failed to commit annotations: {error}");
+                    }
+                    return;
+                }
             }
             if report.unmatched_rows > 0 {
                 eprintln!(
