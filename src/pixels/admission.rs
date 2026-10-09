@@ -223,10 +223,33 @@ pub fn decode_estimate(file: &FileEntry, work: DecodeWork) -> u64 {
             pixels.saturating_mul(9).saturating_add(DISPLAY_BASE_BYTES)
         }
         DecodeWork::RawRedaction => frame,
-        DecodeWork::ValueLegend
-        | DecodeWork::SegmentationOverlay { .. }
-        | DecodeWork::ValueOverlay { .. } => {
-            todo!("the overlay and legend rows of the table above")
+        DecodeWork::ValueLegend => decode.saturating_add(pixels.saturating_mul(8)),
+        DecodeWork::SegmentationOverlay {
+            target_rows,
+            target_columns,
+        } => {
+            let target = u64::from(target_rows).saturating_mul(u64::from(target_columns));
+            decode
+                .saturating_add(target.saturating_mul(24))
+                .saturating_add(DISPLAY_BASE_BYTES)
+        }
+        DecodeWork::ValueOverlay {
+            target_rows,
+            target_columns,
+            planes,
+            encoding,
+        } => {
+            let target = u64::from(target_rows).saturating_mul(u64::from(target_columns));
+            let encoded = target
+                .saturating_mul(match encoding {
+                    OverlayEncoding::Png => 32,
+                    OverlayEncoding::Values => 12,
+                })
+                .saturating_add(DISPLAY_BASE_BYTES);
+            pixels
+                .saturating_mul(u64::from(planes))
+                .saturating_mul(8)
+                .saturating_add(decode.max(encoded))
         }
     }
 }
