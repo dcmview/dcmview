@@ -1421,11 +1421,29 @@ async fn rasters_the_viewer_does_not_decode_say_why_and_their_frames_are_refused
             raster_files::webp_from_chunks(&wide_canvas),
             "raster.too_large",
         ),
+        // A byte longer than the read budget of its 8 x 8 frame (lengthened
+        // below).
+        (
+            "too-long.png",
+            png(ExtendedColorType::L8, 8, 8),
+            "raster.file_too_large",
+        ),
     ];
     let dir = tempdir().expect("temp dir");
     for (name, bytes, _) in &cases {
         fs::write(dir.path().join(name), bytes).expect("write raster");
     }
+    // Zeros after the image; a sparse file where the system has them.
+    fs::OpenOptions::new()
+        .write(true)
+        .open(dir.path().join("too-long.png"))
+        .expect("open PNG")
+        .set_len(
+            dcmview::pixels::RASTER_READ_BUDGET_BASE_BYTES
+                + dcmview::pixels::RASTER_READ_BUDGET_PER_DECODED_BYTE * 64
+                + 1,
+        )
+        .expect("lengthen PNG");
     // Exactly at the limit a file is not too large.
     fs::write(
         dir.path().join("largest.png"),

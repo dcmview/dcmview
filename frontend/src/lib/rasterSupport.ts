@@ -6,6 +6,7 @@ const REASON_DETAIL: Record<string, string> = {
 	"raster.unsupported_compression": "Its compression is not one dcmview will decode.",
 	"raster.jpeg_unsupported_process": "Its JPEG process is not one dcmview will decode.",
 	"raster.too_large": "It has more pixels in a frame than dcmview will decode.",
+	"raster.file_too_large": "The file is longer than dcmview will read for an image of its size.",
 };
 
 /** What the tag panel is called for a file: a raster has metadata, not DICOM tags. */

@@ -4,9 +4,15 @@
 //! The counts are per thread: a call measured with [`peak_during`] is charged
 //! what it allocates on the calling thread and nothing another test does
 //! meanwhile. Code that hands its work to other threads is not measured.
+//!
+//! Work that does run on other threads (the pixel service decodes on the
+//! blocking pool) is measured on a [`CountedRuntime`]: every thread of that
+//! runtime adds to one shared count, and no thread of another test does.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
+use std::future::Future;
+use std::sync::atomic::{AtomicI64, Ordering};
 
 thread_local! {
     /// Bytes allocated minus bytes freed on this thread. Negative when the
@@ -16,9 +22,26 @@ thread_local! {
     static PEAK: Cell<i64> = const { Cell::new(0) };
 }
 
+/// What the threads of one [`CountedRuntime`] hold between them.
+#[derive(Default)]
+struct Shared {
+    held: AtomicI64,
+    peak: AtomicI64,
+}
+
+thread_local! {
+    /// The count this thread also adds to, when it belongs to a
+    /// [`CountedRuntime`] or is driving one.
+    static SHARED: Cell<Option<&'static Shared>> = const { Cell::new(None) };
+}
+
 pub struct CountingAllocator;
 
 fn charge(bytes: i64) {
+    if let Ok(Some(shared)) = SHARED.try_with(Cell::get) {
+        let now = shared.held.fetch_add(bytes, Ordering::SeqCst) + bytes;
+        shared.peak.fetch_max(now, Ordering::SeqCst);
+    }
     // A thread that is shutting down has no counters left; it is not one a
     // measurement runs on.
     let _ = HELD.try_with(|held| {
@@ -71,4 +94,46 @@ pub fn peak_during<T>(call: impl FnOnce() -> T) -> (T, u64) {
     let result = call();
     let peak = PEAK.with(Cell::get);
     (result, (peak - start).max(0) as u64)
+}
+
+/// A runtime whose threads (its workers and its blocking pool) are counted
+/// together, so the heap of work the pixel service spreads over tasks and
+/// blocking threads can be measured whole, apart from whatever other tests
+/// allocate meanwhile.
+pub struct CountedRuntime {
+    runtime: tokio::runtime::Runtime,
+    shared: &'static Shared,
+}
+
+impl CountedRuntime {
+    pub fn new() -> Self {
+        // One small count for the life of the test binary.
+        let shared: &'static Shared = Box::leak(Box::default());
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .max_blocking_threads(64)
+            .enable_all()
+            .on_thread_start(move || SHARED.with(|slot| slot.set(Some(shared))))
+            .build()
+            .expect("counted runtime");
+        Self { runtime, shared }
+    }
+
+    /// Runs `work` to completion on this runtime and returns its result
+    /// with the most bytes the runtime's threads, and the calling thread
+    /// while it drives them, held at once during it, over what they held
+    /// when it began.
+    ///
+    /// `work` must free only what it allocated: memory from before the call
+    /// that is freed during it lowers the count. Work it leaves running
+    /// when it returns is charged to whatever is measured next.
+    pub fn peak_during<F: Future>(&self, work: F) -> (F::Output, u64) {
+        let outer = SHARED.with(|slot| slot.replace(Some(self.shared)));
+        let start = self.shared.held.load(Ordering::SeqCst);
+        self.shared.peak.store(start, Ordering::SeqCst);
+        let result = self.runtime.block_on(work);
+        let peak = self.shared.peak.load(Ordering::SeqCst);
+        SHARED.with(|slot| slot.set(outer));
+        (result, (peak - start).max(0) as u64)
+    }
 }

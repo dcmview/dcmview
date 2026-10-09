@@ -542,6 +542,12 @@ impl CountedFile {
     pub fn length(&self) -> u64 {
         self.length
     }
+
+    /// The whole file, when it holds every byte of its length: what a test
+    /// can write to disk.
+    pub fn whole(&self) -> Option<&[u8]> {
+        (self.length == self.bytes.len() as u64).then_some(self.bytes.as_slice())
+    }
 }
 
 impl Read for CountedFile {
