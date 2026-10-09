@@ -335,9 +335,15 @@ async fn a_failed_decode_is_answered_in_the_viewers_words_whatever_the_file_hold
     ];
     type Damage = Box<dyn Fn(&Path)>;
     type Variant = (Vec<(&'static str, Vec<u8>)>, Damage);
-    // The last member is what the first file holds that its decoder's own
-    // account of it would repeat.
-    let rows: Vec<(&str, [Variant; 2], Vec<String>, &[&str])> = vec![
+    // A name, two files that fail differently, the requests, and what the
+    // first file holds that its decoder's own account of it would repeat.
+    type Row = (
+        &'static str,
+        [Variant; 2],
+        Vec<String>,
+        &'static [&'static str],
+    );
+    let rows: Vec<Row> = vec![
         (
             "a PNG with a wrong checksum",
             [
