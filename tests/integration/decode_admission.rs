@@ -1723,3 +1723,539 @@ async fn a_presentation_layer_dropped_while_it_is_drawn_keeps_its_permit() {
     })
     .await;
 }
+
+// ---------------------------------------------------------------------------
+// Overlays and legends
+
+use dcmview::types::OverlayEncoding;
+
+/// The estimate of an overlay drawn on a displayed frame of `rows` x
+/// `columns` from `planes` frames of `overlay`.
+fn value_overlay(
+    overlay: &FileEntry,
+    (rows, columns): (u32, u32),
+    planes: u32,
+    encoding: OverlayEncoding,
+) -> u64 {
+    pixels::decode_estimate(
+        overlay,
+        DecodeWork::ValueOverlay {
+            target_rows: rows,
+            target_columns: columns,
+            planes,
+            encoding,
+        },
+    )
+}
+
+/// The estimate of a SEG frame of `segmentation` painted on `target`.
+fn segmentation_overlay(segmentation: &FileEntry, target: &FileEntry) -> u64 {
+    pixels::decode_estimate(
+        segmentation,
+        DecodeWork::SegmentationOverlay {
+            target_rows: target.rows,
+            target_columns: target.columns,
+        },
+    )
+}
+
+/// The committed overlay fixtures, in the order the tests name them by
+/// index: the RT Dose grid (4 x 4, three planes at z = 0, 4 and 8), the CT
+/// slices at z = 0 (on a plane) and z = 6 (between two), the Parametric Map
+/// (4 x 4, planes at z = 0 and 2), its source at z = 1 (between them), the
+/// binary SEG and its source.
+async fn overlay_fixtures() -> Vec<FileEntry> {
+    listed(&[
+        fixture("golden-rtdose-u16-grid.dcm"),
+        fixture("golden-rtdose-ct-source-z0.dcm"),
+        fixture("golden-rtdose-ct-source-z6.dcm"),
+        fixture("golden-parametric-map-u16-linear.dcm"),
+        fixture("golden-parametric-map-mr-source-z1.dcm"),
+        fixture("golden-seg-binary.dcm"),
+        fixture("golden-seg-binary-source.dcm"),
+    ])
+    .await
+}
+
+const DOSE: usize = 0;
+const DOSE_ON_A_PLANE: usize = 1;
+const DOSE_BETWEEN_PLANES: usize = 2;
+const MAP: usize = 3;
+const MAP_BETWEEN_PLANES: usize = 4;
+const SEG: usize = 5;
+const SEG_SOURCE: usize = 6;
+
+/// Overlay and legend work reserves the documented formula of the overlay
+/// object's entry and the displayed frame it is drawn on.
+#[test]
+fn the_estimate_of_overlay_work_is_the_documented_formula() {
+    const MIB: u64 = 1024 * 1024;
+    // The overlay object: 100 x 200. The displayed frame: 300 x 500.
+    let p = 100 * 200;
+    let t = 300 * 500;
+    let entry = |syntax: &str, bits: u32| {
+        let mut entry = support::file_entry(PathBuf::from("not-read.dcm"), syntax, 4);
+        (entry.rows, entry.columns) = (100, 200);
+        entry.bits_allocated = bits;
+        entry
+    };
+    let overlay = |entry: &FileEntry, planes, encoding| {
+        pixels::decode_estimate(
+            entry,
+            DecodeWork::ValueOverlay {
+                target_rows: 300,
+                target_columns: 500,
+                planes,
+                encoding,
+            },
+        )
+    };
+    let painted = |entry: &FileEntry| {
+        pixels::decode_estimate(
+            entry,
+            DecodeWork::SegmentationOverlay {
+                target_rows: 300,
+                target_columns: 500,
+            },
+        )
+    };
+
+    // (transfer syntax, bits allocated, the decode beside its 16 MiB)
+    let cases = [
+        (EXPLICIT_LE, 16, 6 * p),
+        (EXPLICIT_LE, 1, 3 * p),
+        (EXPLICIT_LE, 8, 3 * p),
+        (EXPLICIT_LE, 32, 12 * p),
+        (EXPLICIT_LE, 64, 24 * p),
+        ("1.2.840.10008.1.2.4.70", 16, 10 * p),
+        ("1.2.840.10008.1.2.4.90", 16, 20 * p),
+    ];
+    for (syntax, bits, decode) in cases {
+        let entry = entry(syntax, bits);
+        let decode = 16 * MIB + decode;
+        let what = format!("{bits}-bit samples in {syntax}");
+        assert_eq!(
+            pixels::decode_estimate(&entry, DecodeWork::RawFrame),
+            decode,
+            "{what}"
+        );
+        // A legend: the decode and one frame of eight-byte values.
+        assert_eq!(
+            pixels::decode_estimate(&entry, DecodeWork::ValueLegend),
+            decode + 8 * p,
+            "{what}"
+        );
+        // A SEG frame painted on the displayed frame: 24 bytes a pixel of it.
+        assert_eq!(painted(&entry), decode + 24 * t + MIB, "{what}");
+        // A value overlay: its planes, and the larger of the decode and of
+        // what the displayed frame takes (here the displayed frame, which
+        // is larger than 16 MiB only as an image of many planes' worth).
+        for planes in [0, 1, 2, 4] {
+            let held = 8 * u64::from(planes) * p;
+            assert_eq!(
+                overlay(&entry, planes, OverlayEncoding::Png),
+                held + decode.max(32 * t + MIB),
+                "{what}, {planes} planes"
+            );
+            assert_eq!(
+                overlay(&entry, planes, OverlayEncoding::Values),
+                held + decode.max(12 * t + MIB),
+                "{what}, {planes} planes"
+            );
+        }
+    }
+    // Both sides of the larger-of are met: a small displayed frame leaves
+    // the decode as the larger, a large one does not.
+    let small = entry(EXPLICIT_LE, 16);
+    assert_eq!(
+        overlay(&small, 2, OverlayEncoding::Values),
+        16 * p + 16 * MIB + 6 * p
+    );
+    assert_eq!(
+        pixels::decode_estimate(
+            &small,
+            DecodeWork::ValueOverlay {
+                target_rows: 3000,
+                target_columns: 5000,
+                planes: 2,
+                encoding: OverlayEncoding::Values,
+            },
+        ),
+        16 * p + 12 * 15_000_000 + MIB
+    );
+
+    // Neither an entry nor a displayed frame nothing vouches for can
+    // overflow the sums.
+    let mut vast = entry(EXPLICIT_LE, 64);
+    (vast.rows, vast.columns) = (u32::MAX, u32::MAX);
+    for work in [
+        DecodeWork::ValueLegend,
+        DecodeWork::SegmentationOverlay {
+            target_rows: 1,
+            target_columns: 1,
+        },
+        DecodeWork::ValueOverlay {
+            target_rows: 1,
+            target_columns: 1,
+            planes: u32::MAX,
+            encoding: OverlayEncoding::Png,
+        },
+    ] {
+        assert_eq!(pixels::decode_estimate(&vast, work), u64::MAX, "{work:?}");
+    }
+    let vast_target = DecodeWork::ValueOverlay {
+        target_rows: u32::MAX,
+        target_columns: u32::MAX,
+        planes: u32::MAX,
+        encoding: OverlayEncoding::Png,
+    };
+    assert_eq!(pixels::decode_estimate(&small, vast_target), u64::MAX);
+    let vast_image = DecodeWork::SegmentationOverlay {
+        target_rows: u32::MAX,
+        target_columns: u32::MAX,
+    };
+    assert_eq!(pixels::decode_estimate(&small, vast_image), u64::MAX);
+}
+
+/// The overlay requests of the fixtures with what each reserves: a path,
+/// and the estimate of its work.
+fn overlay_requests(entries: &[FileEntry]) -> Vec<(String, u64)> {
+    let on = |target: usize| (entries[target].rows, entries[target].columns);
+    let dose = |target: usize, planes, suffix: &str, encoding| {
+        (
+            format!("/api/file/{target}/frame/0/dose-overlay{suffix}?dose={DOSE}"),
+            value_overlay(&entries[DOSE], on(target), planes, encoding),
+        )
+    };
+    vec![
+        dose(DOSE_ON_A_PLANE, 1, "", OverlayEncoding::Png),
+        dose(DOSE_BETWEEN_PLANES, 2, "", OverlayEncoding::Png),
+        dose(DOSE_BETWEEN_PLANES, 2, "/values", OverlayEncoding::Values),
+        (
+            format!("/api/file/{MAP_BETWEEN_PLANES}/frame/0/parametric-map-overlay?map={MAP}"),
+            value_overlay(
+                &entries[MAP],
+                on(MAP_BETWEEN_PLANES),
+                2,
+                OverlayEncoding::Png,
+            ),
+        ),
+        (
+            format!(
+                "/api/file/{MAP_BETWEEN_PLANES}/frame/0/parametric-map-overlay/values?map={MAP}"
+            ),
+            value_overlay(
+                &entries[MAP],
+                on(MAP_BETWEEN_PLANES),
+                2,
+                OverlayEncoding::Values,
+            ),
+        ),
+        (
+            format!("/api/file/{SEG}/frame/0/segmentation-overlay"),
+            segmentation_overlay(&entries[SEG], &entries[SEG_SOURCE]),
+        ),
+    ]
+}
+
+/// An overlay and a legend each reserve their documented estimate, once:
+/// the frames they decode run under the same permit, so a viewer with one
+/// permit serves them.
+#[tokio::test]
+async fn each_overlay_and_legend_reserves_its_documented_estimate_under_one_permit() {
+    finishes(async {
+        let entries = overlay_fixtures().await;
+        let legends = [DOSE, MAP].map(|object| {
+            (
+                format!("/api/file/{object}/semantic-context"),
+                pixels::decode_estimate(&entries[object], DecodeWork::ValueLegend),
+            )
+        });
+        let overlays = overlay_requests(&entries);
+
+        // One permit: a second, taken while the first was held, would
+        // never be granted.
+        let state = support::app_state(entries.clone());
+        let scheduler = default_scheduler(1);
+        let server = TestServer::new(server::router(
+            state.clone().with_decode_scheduler(scheduler.clone()),
+        ));
+        for (path, _) in &legends {
+            let response = eventually("a legend", async { server.get(path).await }).await;
+            assert_eq!(response.status_code(), 200, "{path}: {}", response.text());
+            let context: Value = response.json();
+            assert_eq!(context["context"]["overlay"]["eligible"], true, "{context}");
+            assert!(context["context"]["legend"].is_object(), "{context}");
+        }
+        let load = idle(&scheduler).await;
+        assert_eq!(
+            load.peak_reserved_bytes,
+            legends[0].1.max(legends[1].1),
+            "a legend reserves its estimate"
+        );
+
+        // The contexts are kept with their legends, so an overlay is now
+        // the only work its request does. Each is drawn by a viewer with a
+        // scheduler of its own, whose account is that overlay's alone.
+        for (path, estimate) in &overlays {
+            let scheduler = default_scheduler(1);
+            let server = TestServer::new(server::router(
+                state.clone().with_decode_scheduler(scheduler.clone()),
+            ));
+            let response = eventually("an overlay", async { server.get(path).await }).await;
+            assert_eq!(response.status_code(), 200, "{path}: {}", response.text());
+            assert_eq!(response.header("x-cache"), "MISS", "{path}");
+            let load = idle(&scheduler).await;
+            assert_eq!(
+                load.peak_reserved_bytes, *estimate,
+                "{path} reserves its estimate"
+            );
+            // Kept: asked again, it is served without a permit.
+            let held = granted(&scheduler, Interactive, 0).await;
+            let again = eventually("a cached overlay", async { server.get(path).await }).await;
+            assert_eq!(again.status_code(), 200, "{path}");
+            assert_eq!(again.header("x-cache"), "HIT", "{path}");
+            assert_eq!(again.as_bytes(), response.as_bytes(), "{path}");
+            drop(held);
+        }
+    })
+    .await;
+}
+
+/// Requests for one overlay share one computation, and so do requests for
+/// one legend: the queue has room for a single piece of work, the requests
+/// arrive while it waits there, and none is turned away.
+#[tokio::test]
+async fn identical_overlay_requests_share_one_computation() {
+    finishes(async {
+        const REQUESTS: usize = 6;
+        let entries = overlay_fixtures().await;
+        let legend = pixels::decode_estimate(&entries[DOSE], DecodeWork::ValueLegend);
+        let overlays = overlay_requests(&entries);
+        let state = support::app_state(entries);
+        let room_for_one =
+            || DecodeScheduler::with_limits(1, limits(pixels::DECODE_MEMORY_DEFAULT_BYTES, 1, 0));
+
+        // A legend. Its requests read the object's metadata first, each on
+        // its own, so they reach the legend one after another.
+        let scheduler = room_for_one();
+        let server = Arc::new(TestServer::new(server::router(
+            state.clone().with_decode_scheduler(scheduler.clone()),
+        )));
+        let held = granted(&scheduler, Interactive, 0).await;
+        let path = format!("/api/file/{DOSE}/semantic-context");
+        let requests: Vec<_> = (0..REQUESTS).map(|_| get(&server, &path)).collect();
+        waiting(&scheduler, 1, 0).await;
+        drop(held);
+        for request in requests {
+            assert_eq!(status(request).await, 200, "{path}");
+        }
+        let load = idle(&scheduler).await;
+        assert_eq!(load.peak_reserved_bytes, legend, "one legend served them");
+
+        // Overlays. The context is kept, so each request goes straight to
+        // its overlay: given their turn (the test's runtime has one
+        // thread), all of them have asked for it before it is admitted.
+        for (path, estimate) in &overlays {
+            let scheduler = room_for_one();
+            let server = Arc::new(TestServer::new(server::router(
+                state.clone().with_decode_scheduler(scheduler.clone()),
+            )));
+            let held = granted(&scheduler, Interactive, 0).await;
+            let requests: Vec<_> = (0..REQUESTS)
+                .map(|_| {
+                    let (server, path) = (server.clone(), path.clone());
+                    tokio::spawn(async move {
+                        let response = server.get(&path).await;
+                        (
+                            response.status_code(),
+                            response
+                                .maybe_header("x-cache")
+                                .map(|value| value.to_str().expect("header text").to_string()),
+                        )
+                    })
+                })
+                .collect();
+            waiting(&scheduler, 1, 0).await;
+            for _ in 0..8 {
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(scheduler.load().waiting_interactive, 1, "{path}");
+            drop(held);
+
+            let mut computed = 0;
+            for request in requests {
+                let (status, cache) = eventually("a response", request)
+                    .await
+                    .expect("request task");
+                assert_eq!(status, 200, "{path}");
+                match cache.as_deref() {
+                    Some("MISS") => computed += 1,
+                    Some("HIT") => {}
+                    other => panic!("{path}: X-Cache {other:?}"),
+                }
+            }
+            assert_eq!(computed, 1, "{path}: one request computed the overlay");
+            let load = idle(&scheduler).await;
+            assert_eq!(
+                load.peak_reserved_bytes, *estimate,
+                "{path}: one overlay served them"
+            );
+        }
+    })
+    .await;
+}
+
+/// An overlay that needs more than the budget is refused for the request
+/// with 422 and the budget's code, at once and every time; a busy viewer
+/// answers 503 with `Retry-After`; and neither changes what the catalog or
+/// the semantic context say. A legend over the budget makes its overlay
+/// ineligible, naming the budget.
+#[tokio::test]
+async fn an_overlay_over_the_budget_is_refused_and_a_busy_viewer_asks_to_retry() {
+    finishes(async {
+        let entries = overlay_fixtures().await;
+        let overlays = overlay_requests(&entries);
+        let legend = [DOSE, MAP]
+            .map(|object| pixels::decode_estimate(&entries[object], DecodeWork::ValueLegend));
+        async fn renderable(server: &TestServer) {
+            let files: Value = server.get("/api/files").await.json();
+            for file in files["files"].as_array().expect("files") {
+                assert_eq!(file["support_state"], "renderable", "{file}");
+            }
+        }
+
+        let mut refused = 0;
+        for (path, estimate) in &overlays {
+            // A value overlay is drawn with its legend, so the budget must
+            // leave room for that: the overlays of two planes need more
+            // than their legend, the one of a single plane does not.
+            if !path.contains("segmentation") && *estimate <= legend[0].max(legend[1]) {
+                continue;
+            }
+            refused += 1;
+            for round in 0..2 {
+                let scheduler = DecodeScheduler::with_limits(2, limits(estimate - 1, 8, 8));
+                let server = serve(entries.clone(), &scheduler);
+                let response = server.get(path).await;
+                let what = format!("{path} one byte short, round {round}");
+                assert_eq!(response.status_code(), 422, "{what}: {}", response.text());
+                let body: Value = response.json();
+                assert_eq!(body["code"], "decode_memory_exceeded", "{what}");
+                let text = body["error"].to_string();
+                assert!(text.contains(&estimate.to_string()), "{what}: {text}");
+                assert!(text.contains("--decode-memory"), "{what}: {text}");
+                assert!(response.maybe_header("retry-after").is_none(), "{what}");
+                assert!(response.maybe_header("x-cache").is_none(), "{what}");
+                renderable(&server).await;
+                assert!(idle(&scheduler).await.peak_reserved_bytes < *estimate);
+            }
+
+            // With exactly its estimate it is drawn.
+            let scheduler = DecodeScheduler::with_limits(2, limits(*estimate, 8, 8));
+            let server = serve(entries.clone(), &scheduler);
+            let response = server.get(path).await;
+            assert_eq!(response.status_code(), 200, "{path}: {}", response.text());
+            assert_eq!(idle(&scheduler).await.peak_reserved_bytes, *estimate);
+
+            // Busy: the budget is held and nothing may wait.
+            let memory = 1 << 40;
+            let scheduler = DecodeScheduler::with_limits(4, limits(memory, 0, 0));
+            let server = serve(entries.clone(), &scheduler);
+            let held = granted(&scheduler, Interactive, memory).await;
+            let response = server.get(path).await;
+            assert_eq!(response.status_code(), 503, "{path}: {}", response.text());
+            assert_eq!(response.json::<Value>()["code"], "decode_busy", "{path}");
+            assert_eq!(
+                response.header("retry-after"),
+                DECODE_BUSY_RETRY_AFTER_SECONDS.to_string(),
+                "{path}"
+            );
+            assert!(response.maybe_header("x-cache").is_none(), "{path}");
+            drop(held);
+            let response = server.get(path).await;
+            assert_eq!(response.status_code(), 200, "{path}: {}", response.text());
+            assert_eq!(response.header("x-cache"), "MISS", "{path}");
+            idle(&scheduler).await;
+        }
+        assert_eq!(refused, overlays.len() - 1);
+
+        // A legend one byte short of its estimate: the context is served,
+        // its overlay is not eligible and says why, and the overlay
+        // endpoint reports that instead of drawing.
+        for (object, target, endpoint) in [
+            (DOSE, DOSE_BETWEEN_PLANES, "dose-overlay?dose"),
+            (MAP, MAP_BETWEEN_PLANES, "parametric-map-overlay?map"),
+        ] {
+            let estimate = pixels::decode_estimate(&entries[object], DecodeWork::ValueLegend);
+            let scheduler = DecodeScheduler::with_limits(2, limits(estimate - 1, 8, 8));
+            let server = serve(entries.clone(), &scheduler);
+            let response = server
+                .get(&format!("/api/file/{object}/semantic-context"))
+                .await;
+            assert_eq!(response.status_code(), 200, "{}", response.text());
+            let context: Value = response.json();
+            let overlay = &context["context"]["overlay"];
+            assert_eq!(overlay["eligible"], false, "{context}");
+            let reason = overlay["reason"].to_string();
+            assert!(reason.contains("--decode-memory"), "{reason}");
+            assert!(reason.contains(&estimate.to_string()), "{reason}");
+            assert!(context["context"]["legend"].is_null(), "{context}");
+            let response = server
+                .get(&format!("/api/file/{target}/frame/0/{endpoint}={object}"))
+                .await;
+            assert_eq!(response.status_code(), 422, "{}", response.text());
+            assert_eq!(
+                response.json::<Value>()["code"],
+                "semantic_mapping_unavailable"
+            );
+            renderable(&server).await;
+            assert!(idle(&scheduler).await.peak_reserved_bytes < estimate);
+        }
+    })
+    .await;
+}
+
+/// An overlay whose requests were all dropped while it waited leaves the
+/// queue and is never drawn; asked for again, it is new work.
+#[tokio::test]
+async fn an_overlay_nobody_waits_for_any_longer_leaves_the_queue() {
+    finishes(async {
+        let entries = overlay_fixtures().await;
+        let overlays = overlay_requests(&entries);
+        let state = support::app_state(entries);
+        // The contexts and their legends first, on a viewer of their own.
+        let warm = TestServer::new(server::router(state.clone()));
+        for object in [DOSE, MAP] {
+            let response = warm
+                .get(&format!("/api/file/{object}/semantic-context"))
+                .await;
+            assert_eq!(response.status_code(), 200, "{}", response.text());
+        }
+
+        let scheduler = default_scheduler(1);
+        let server = Arc::new(TestServer::new(server::router(
+            state.with_decode_scheduler(scheduler.clone()),
+        )));
+        let held = granted(&scheduler, Interactive, 0).await;
+        for (path, _) in &overlays {
+            let dropped = [get(&server, path), get(&server, path)];
+            waiting(&scheduler, 1, 0).await;
+            for request in dropped {
+                request.abort();
+                assert!(eventually("the abort", request).await.is_err());
+            }
+            waiting(&scheduler, 0, 0).await;
+        }
+        drop(held);
+        let load = idle(&scheduler).await;
+        assert_eq!(load.peak_reserved_bytes, 0, "nothing was drawn");
+        for (path, _) in &overlays {
+            let response = server.get(path).await;
+            assert_eq!(response.status_code(), 200, "{path}");
+            assert_eq!(response.header("x-cache"), "MISS", "{path}");
+        }
+        idle(&scheduler).await;
+    })
+    .await;
+}
