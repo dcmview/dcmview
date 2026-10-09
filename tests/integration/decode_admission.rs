@@ -24,6 +24,8 @@ use dcmview::pixels::{
 };
 use dcmview::server::{self, FileRegistry};
 use dcmview::types::FileEntry;
+use dicom_core::{DataElement, PrimitiveValue, VR};
+use dicom_dictionary_std::tags;
 use futures::poll;
 use serde_json::{json, Value};
 use std::future::Future;
@@ -2446,6 +2448,142 @@ async fn a_refused_overlay_is_not_kept_as_its_answer() {
             idle(&scheduler).await;
         }
         assert!(refused >= 4, "only {refused} overlays were over a budget");
+    })
+    .await;
+}
+
+/// The committed fixture `fixture` written to `dir` as `name` with `rows`
+/// and `columns` and, if given, that many frames. Its geometry is kept: a
+/// grid of the same spacing from the same origin. No sample is zero.
+fn resized(
+    dir: &Path,
+    name: &str,
+    fixture_name: &str,
+    (rows, columns): (u16, u16),
+    frames: Option<u32>,
+) -> PathBuf {
+    let mut object = dicom_object::open_file(fixture(fixture_name)).expect("open fixture");
+    for (tag, value) in [(tags::ROWS, rows), (tags::COLUMNS, columns)] {
+        object.put(DataElement::new(tag, VR::US, PrimitiveValue::from(value)));
+    }
+    if let Some(frames) = frames {
+        object.put(DataElement::new(
+            tags::NUMBER_OF_FRAMES,
+            VR::IS,
+            frames.to_string().as_str(),
+        ));
+    }
+    let number = |tag| {
+        object
+            .element_opt(tag)
+            .expect("read element")
+            .map_or(1, |element| element.to_int::<u64>().expect("a number"))
+    };
+    let bits = u64::from(rows)
+        * u64::from(columns)
+        * number(tags::NUMBER_OF_FRAMES)
+        * number(tags::BITS_ALLOCATED);
+    let length = bits.div_ceil(16) * 2;
+    let vr = object.element(tags::PIXEL_DATA).expect("pixel data").vr();
+    let samples: Vec<u8> = (0..length).map(|index| (index % 7) as u8 + 1).collect();
+    object.put(DataElement::new(
+        tags::PIXEL_DATA,
+        vr,
+        PrimitiveValue::from(samples),
+    ));
+    let path = dir.join(name);
+    object.write_to_file(&path).expect("write DICOM");
+    path
+}
+
+/// An overlay is sized by its own object and by the displayed frame it is
+/// drawn on, each for its own part: with a small object on a large frame
+/// and a large object on a small frame, each overlay reserves the
+/// documented bytes of that pair, which are not those of the pair the
+/// other way round.
+#[tokio::test]
+async fn an_overlay_reserves_for_its_object_and_for_the_displayed_frame() {
+    const MIB: u64 = 1024 * 1024;
+    const DOSE_FIXTURE: &str = "golden-rtdose-u16-grid.dcm";
+    const SLICE_FIXTURE: &str = "golden-rtdose-ct-source-z0.dcm";
+    const SEG_FIXTURE: &str = "golden-seg-binary.dcm";
+    const SEG_SOURCE_FIXTURE: &str = "golden-seg-binary-source.dcm";
+    // The documented rows, written out: `p` pixels of the object, `t` of
+    // the displayed frame. A dose is 16-bit and a binary SEG one-bit, both
+    // uncompressed, and a slice on a plane of the dose samples that plane.
+    let dose_as_png = |p: u64, t: u64| 8 * p + (16 * MIB + 6 * p).max(32 * t + MIB);
+    let dose_as_values = |p: u64, t: u64| 8 * p + (16 * MIB + 6 * p).max(12 * t + MIB);
+    let painted = |p: u64, t: u64| 16 * MIB + 3 * p + 24 * t + MIB;
+    type Row<'a> = (&'a str, &'a dyn Fn(u64, u64) -> u64);
+    let dose: [Row; 2] = [
+        ("/api/file/1/frame/0/dose-overlay?dose=0", &dose_as_png),
+        (
+            "/api/file/1/frame/0/dose-overlay/values?dose=0",
+            &dose_as_values,
+        ),
+    ];
+    let seg: [Row; 1] = [("/api/file/0/frame/0/segmentation-overlay", &painted)];
+    // (the object's fixture and size, the displayed frame's, the requests)
+    type Case<'a> = (&'a str, (u16, u16), &'a str, (u16, u16), &'a [Row<'a>]);
+    let cases: [Case; 4] = [
+        (DOSE_FIXTURE, (4, 4), SLICE_FIXTURE, (1200, 1300), &dose),
+        (DOSE_FIXTURE, (600, 700), SLICE_FIXTURE, (10, 10), &dose),
+        (SEG_FIXTURE, (2, 2), SEG_SOURCE_FIXTURE, (500, 600), &seg),
+        (SEG_FIXTURE, (300, 400), SEG_SOURCE_FIXTURE, (2, 2), &seg),
+    ];
+    finishes(async {
+        for (object, object_size, target, target_size, requests) in cases {
+            let dir = tempdir().expect("temp dir");
+            let entries = listed(&[
+                resized(dir.path(), "object.dcm", object, object_size, None),
+                resized(dir.path(), "target.dcm", target, target_size, None),
+            ])
+            .await;
+            let pixels = |(rows, columns): (u16, u16)| u64::from(rows) * u64::from(columns);
+            let (p, t) = (pixels(object_size), pixels(target_size));
+            let what = format!("{object} of {object_size:?} on {target} of {target_size:?}");
+            assert_eq!(
+                (entries[0].rows, entries[0].columns),
+                (object_size.0.into(), object_size.1.into()),
+                "{what}"
+            );
+            assert_eq!(
+                (entries[1].rows, entries[1].columns),
+                (target_size.0.into(), target_size.1.into()),
+                "{what}"
+            );
+
+            // The context and its legend first, on a viewer of their own.
+            let state = support::app_state(entries);
+            let warm = TestServer::new(server::router(state.clone()));
+            let response = warm.get("/api/file/0/semantic-context").await;
+            assert_eq!(response.status_code(), 200, "{what}: {}", response.text());
+
+            for (path, documented) in requests {
+                let estimate = documented(p, t);
+                assert_ne!(
+                    estimate,
+                    documented(t, p),
+                    "{what}: {path} tells the two apart"
+                );
+                let scheduler = default_scheduler(1);
+                let server = TestServer::new(server::router(
+                    state.clone().with_decode_scheduler(scheduler.clone()),
+                ));
+                let response = eventually("an overlay", async { server.get(path).await }).await;
+                assert_eq!(
+                    response.status_code(),
+                    200,
+                    "{what}, {path}: {}",
+                    response.text()
+                );
+                assert_eq!(
+                    idle(&scheduler).await.peak_reserved_bytes,
+                    estimate,
+                    "{what}: {path}"
+                );
+            }
+        }
     })
     .await;
 }
