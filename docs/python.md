@@ -14,6 +14,8 @@ plain HTTP does not encrypt the token or DICOM data. The binary inherits
 
 Folders now display PNG, JPEG, TIFF, and WebP image files beside DICOM,
 detected by content, with pixel readout, thumbnails, and redaction support.
+Their Metadata panel shows container fields, EXIF and TIFF directories,
+text, XMP and ICC profile descriptions.
 `python -m dcmview_py` forwards all arguments to the binary, including
 `--formats dicom ./mixed_dir` to get a
 DICOM-only directory list. `view()` has no `formats` keyword; its existing

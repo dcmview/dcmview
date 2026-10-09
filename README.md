@@ -8,9 +8,10 @@ starts a local browser viewer for images, tags, cine playback, and rectangular
 ROI annotations. Stop the process and the server is gone.
 
 PNG, JPEG, TIFF, and WebP image files are detected by content and displayed
-beside DICOM, with raw pixel readout, thumbnails, and redaction support. The
-Explorer's Study view groups them by folder under "Images" after the patients,
-and its filter takes `format:png` (or `jpg`, `tif`, `webp`, `dicom`) and path
+beside DICOM, with raw pixel readout, thumbnails, and redaction support.
+Their Metadata panel shows container fields, EXIF, text and profile details.
+The Explorer's Study view groups them by folder under "Images" after the
+patients, and its filter takes `format:png` (or `jpg`, `tif`, `webp`, `dicom`) and path
 fragments. Use `dcmview --formats dicom ./mixed_dir` for a DICOM-only
 directory list.
 
@@ -349,8 +350,8 @@ In a masked session:
 
 - Each patient is shown as `Patient 0001`, `Patient 0002`, ... and files as
   `File 1`, `File 2`, ... outside the directory tree.
-- Every date and date-time moves by one random offset per patient, within one
-  year. Times of day are kept.
+- Every DICOM date and date-time moves by one random offset per patient,
+  within one year. Times of day are kept.
 - Ages above 89 years show `089Y`, and a birth date that implies an age over
   89 is blank.
 - Person names, private elements and the attributes the DICOM PS3.15 Basic
@@ -362,6 +363,9 @@ In a masked session:
   hashed `2.25.` UIDs, consistently, so references still resolve.
 - Presentation state text is not drawn, and slide label and overview images
   are not shown.
+- Image-file metadata keeps only values that describe the pixel grid. Text,
+  GPS, dates, and device and software names show `[masked]`; raster dates
+  are masked, not shifted.
 
 What masking does **not** cover:
 

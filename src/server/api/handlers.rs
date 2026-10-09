@@ -766,7 +766,7 @@ pub(super) async fn tags(
     let file = registered_file(&state, index, "file")?;
 
     if file.format.is_raster() {
-        return Ok(Json(Vec::new()));
+        return Ok(Json(raster_tags(&state, index, file).await?));
     }
     if let Some(nodes) = state.cached_tags(index) {
         return Ok(Json(nodes));
@@ -791,6 +791,36 @@ pub(super) async fn tags(
     Ok(Json(nodes))
 }
 
+/// The metadata tree of a raster image file as this session shows it,
+/// from the tag cache or read now. Reading takes no decode permit: it is
+/// bounded by `pixels::read_raster_tags` and decodes no pixels. The error
+/// says nothing the file holds.
+async fn raster_tags(
+    state: &AppState,
+    index: usize,
+    file: Arc<FileEntry>,
+) -> Result<Vec<TagNode>, ApiError> {
+    if let Some(nodes) = state.cached_tags(index) {
+        return Ok(nodes);
+    }
+    let read = file.clone();
+    let mut nodes = tokio::task::spawn_blocking(move || pixels::raster_tag_nodes(&read))
+        .await
+        .map_err(|error| ApiError::internal(format!("metadata task failed: {error}")))?
+        .map_err(|_| {
+            error::gone_or(
+                &file.path,
+                ApiError::internal("the image file could not be opened to read its metadata"),
+            )
+        })?;
+    // The cache holds what the session shows: the mode never changes.
+    if let Some(masker) = state.registry().masker() {
+        masker.raster_tags(&mut nodes);
+    }
+    state.cache_tags(index, nodes.clone());
+    Ok(nodes)
+}
+
 pub(super) async fn select_tag(
     State(state): State<AppState>,
     path: Result<Path<usize>, PathRejection>,
@@ -800,9 +830,16 @@ pub(super) async fn select_tag(
     let Query(query) = query.map_err(error::query_rejection)?;
     let file = registered_file(&state, index, "file")?;
     if file.format.is_raster() {
-        return Err(ApiError::bad_request(
-            "tag selection is not available for image files",
-        ));
+        // Selected from the tree `/tags` answers with, masked as it is.
+        let nodes = raster_tags(&state, index, file).await?;
+        let node = tags::select_raster_node(
+            &nodes,
+            &query.path,
+            query.offset.unwrap_or(0),
+            query.limit.unwrap_or(tags::TAG_SELECT_DEFAULT_LIMIT),
+        )
+        .map_err(|error| ApiError::bad_request(error.to_string()))?;
+        return Ok(Json(node));
     }
     let path = file.path.clone();
     let selector = query.path.clone();

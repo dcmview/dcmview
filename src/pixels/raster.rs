@@ -15,6 +15,7 @@ mod display;
 mod image;
 mod png;
 mod reader;
+mod tags;
 mod tiff;
 
 use super::error::{PixelError, PixelResult};
@@ -27,6 +28,16 @@ use std::fs::File;
 use std::io::{Read, Seek};
 use std::sync::Arc;
 use tokio::task;
+
+pub(crate) use tags::raster_tag_nodes;
+pub use tags::{
+    read_raster_tags, RasterTagLimit, RasterTagNote, RasterTagPart, RasterTagTree,
+    RASTER_TAGS_HEAP_LIMIT_BYTES, RASTER_TAGS_ICC_HEAD_BYTES, RASTER_TAGS_INFLATE_MAX_BYTES,
+    RASTER_TAGS_MAX_DEPTH, RASTER_TAGS_MAX_IFDS, RASTER_TAGS_MAX_IFD_ENTRIES,
+    RASTER_TAGS_MAX_NODES, RASTER_TAGS_MAX_PAGES, RASTER_TAGS_MAX_READS,
+    RASTER_TAGS_MAX_TEXT_BYTES, RASTER_TAGS_READ_BUDGET_BYTES, RASTER_TAG_NUMBERS_MAX,
+    RASTER_TAG_TEXT_MAX_CHARS, RASTER_TAG_VALUE_MAX_BYTES,
+};
 
 /// The buffer a raster file is read through. A read issued to the file asks
 /// for this many bytes, or for less when less is left of the file, of the

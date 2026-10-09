@@ -54,14 +54,14 @@ application module:
 | Annotation model | `crates/dcmview-annotation` | The model's types and wire format, `validate` on each of them, `FileKey` and `KEY_RULES`, `Op` and `OpEnvelope`, the size bounds in `limits`, and the generated TypeScript and JSON Schema. The root package takes `FileKey` and `KEY_RULES` from it (`src/keys.rs`) and nothing else: `src/annotations.rs` is the EMBED store behind the annotation endpoints. |
 | File keys | `src/keys/` | `KeyTable`: which key each loaded file has and whether it is settled, as a plain data structure with no I/O that holds no string per file. `FileHasher`: one file's BLAKE3 digest in bounded slices. See [File Keys And The Catalog Cursor](#file-keys-and-the-catalog-cursor). |
 | HTTP runtime | `src/server/` | Listener/runtime, route registration, handlers, state, registry, activity tracking, tags, and embedded assets. `server/catalog.rs` holds the registry with its key table and catalog revisions; `server/catalog/keys.rs` holds background hashing and what a session shows for a key. |
-| Pixel service | `src/pixels/` | Typed display, raw and thumbnail requests, cache behavior, transfer-syntax classification, decoding, the render seam (`render.rs` `DisplayBuffer`), decode classes (`schedule.rs`), and `PixelError`. `raster.rs` decodes PNG, JPEG, TIFF and WebP frames within fixed read and memory limits and renders them. |
+| Pixel service | `src/pixels/` | Typed display, raw and thumbnail requests, cache behavior, transfer-syntax classification, decoding, the render seam (`render.rs` `DisplayBuffer`), decode classes (`schedule.rs`), and `PixelError`. `raster.rs` decodes PNG, JPEG, TIFF and WebP frames within fixed read and memory limits and renders them; `raster/tags.rs` reads their metadata tree through the same reader, within limits of its own and without reading pixels. |
 | Patient geometry | `src/geometry.rs` | Normalized per-frame position, orientation, pixel spacing, coplanarity checks, and target-to-source pixel transforms. |
 | Plane stacks | `src/plane_stack.rs` | RT Dose grids and Parametric Map frames as parallel planes; coverage and bracketing-plane sampling of a displayed frame. |
 | Value mapping | `src/value_mapping.rs` | Per-frame Modality transform and Real World Value Mappings (or Dose Grid Scaling) that convert stored samples. |
 | DICOM references | `src/references.rs` | Bounded extraction of typed instance relationships without implying target presence or semantic rendering. |
 | Semantic context | `src/semantic.rs` | Conservative SEG, Parametric Map, and RT Dose metadata interpretation layered beside unchanged pixel preview. |
 | Presentation states | `src/presentation_state.rs` | PIXEL-unit graphic and text annotations of softcopy presentation states, and which image frames each annotation item applies to. |
-| Display masking | `src/masking.rs` | `Masker`: the per-process keyed replacements of a `--mask` session (patient pseudonym, date shift, UID hash) and the tag rules, with the PS3.15 Table E.1-1 attribute list in `masking/profile.rs`. The registry holds it and masks the catalog as files register; handlers mask tag trees, semantic context and UID fields of other responses. |
+| Display masking | `src/masking.rs` | `Masker`: the per-process keyed replacements of a `--mask` session (patient pseudonym, date shift, UID hash) and the tag rules, with the PS3.15 Table E.1-1 attribute list in `masking/profile.rs`, and the allowlist for raster metadata in `masking/raster.rs`. The registry holds it and masks the catalog as files register; handlers mask tag trees, semantic context and UID fields of other responses. |
 | Redaction boxes | `src/redactions.rs`, `src/pixels/redaction.rs` | `RedactionStore`: per-file boxes and their revision, in memory. The pixel service paints them into display PNGs and thumbnails (revision in the display and thumbnail cache keys), fills them in raw frame copies, and the presentation layer paints them too. |
 | WSI tile context | `src/wsi.rs` | Bounded positioning of one selected WSI tile without stitching or Total Pixel Matrix reconstruction. |
 | Attribute readers | `src/dicom_values.rs` | Lenient string, number, and sequence readers shared by discovery, references, semantic context, and WSI context. |
@@ -336,7 +336,11 @@ view. `lib/rasterSupport.ts` decides from the catalog entry
 that a raster cannot be drawn; `ImageViewport` then views it as a file
 without pixels, shows why, and requests no frame, value mapping or layer.
 The tag panel's heading and the accessible names of its shell come from
-`tagPanelNames`: "Metadata" for a raster.
+`tagPanelNames`: "Metadata" for a raster. The panel shows a raster's
+metadata tree with the rows of a DICOM tag tree; a group of that tree (a
+node with children whose `vr` is not `SQ`, `tagRows.ts` `isGroupTag`)
+starts open where a DICOM sequence starts closed, so a file's EXIF entries
+and a filter's matches show without a click.
 
 `App.svelte` gives `ImageViewport` one ordered logical-frame sequence for the
 active tab. A sequence may describe frames from one multiframe object, many
@@ -520,7 +524,9 @@ Fields are only added, and the crate's own test pins the exact shapes.
   slide reconstruction.
 - `/api/file/{index}/tags/select` traverses explicit tag/item paths against the
   original object and pages sequence items, allowing targeted retrieval beyond
-  legacy tag-tree preview caps.
+  legacy tag-tree preview caps. For a raster image file it selects a node of
+  the tree `/tags` serves, by a path of node names, and reads nothing more
+  from the file.
 - Path, query, and JSON extractor failures pass through the same envelope.
 - Unknown `/api` routes return JSON `404`; unsupported methods return JSON
   `405`.
@@ -1027,14 +1033,16 @@ Discovery lists PNG, JPEG, TIFF and still WebP files beside DICOM
   `--filter path=<text>` matches a substring of the reported path, both
   ignoring case. The DICOM filter fields are empty for a raster, so any DICOM
   filter excludes rasters.
-- **Without DICOM to parse**, `/tags` answers an empty tree, `/value-mapping`
-  the identity mapping, `/references` an empty list and `/semantic-context`
-  `not_applicable`, none of which opens the file. No endpoint answers a
-  server error for a raster.
+- **Without DICOM to parse**, `/value-mapping` answers the identity mapping,
+  `/references` an empty list and `/semantic-context` `not_applicable`, none
+  of which opens the file, and `/tags` answers the file's metadata tree
+  (below). No endpoint answers a server error for a raster.
 - **Masked sessions** give a raster no patient: its patient fields stay empty
   and it takes no pseudonym. Its display name is the session's `File N`. Its
   pixels are served as they are: masking hides identifiers, and burned-in
-  text is what redaction boxes are for.
+  text is what redaction boxes are for. Of its metadata tree a masked
+  session shows the shape and the values that describe the pixel grid, and
+  nothing else (below).
 
 **Decoding.** A raster frame enters the pixel service like any other:
 `pixels/syntax.rs` `codec_for_file` gives a raster `Codec::Raster` from its
@@ -1151,6 +1159,103 @@ the file, for a raster that has one.
   decoder with no limit on the size the tile declares), 1-bit TIFF (the
   crate does not unpack it), palette, CMYK and gray-with-alpha TIFF, and
   planar colour. Animated PNG and WebP show their first frame only.
+
+**Metadata.** `/tags` and `/tags/select` serve a raster's metadata in the
+`TagNode` shape of the DICOM tag tree, so the Metadata panel shows it with
+the same component (`docs/design/image-formats.md` section 8).
+
+- **One function reads it**, `pixels::read_raster_tags`
+  (`pixels/raster/tags.rs`), from a `Read + Seek` source, and its doc
+  comment is the contract: the layout of the tree per format, how values
+  are shown and what a read may cost. `raster_tag_nodes` puts leaves from
+  the catalog entry before it (`File`: format, size, extension, pages,
+  frames, excluded pages) and one `Note` leaf after it for each thing a
+  reader should know: the entry's warnings, a name whose extension belongs
+  to another format, an animation, and the reader's own notes.
+- **The tree.** A node is a leaf or a group (a `sequence` value with one
+  item, its children; `vr` is empty, where a DICOM sequence has `SQ`).
+  Container fields are top-level leaves whose `tag` names their source and
+  whose `keyword` names the field (`PNG:IHDR` `Width`, `JPEG:SOF0`
+  `Precision`, `WEBP:VP8X` `CanvasWidth`, `PNG:tEXt` `Text`, `JPEG:COM`
+  `Comment`, `XMP` `Packet`, `ICC` `Description`). Directories of TIFF and
+  EXIF entries are groups: `TIFF:page N` for each of a TIFF's first 16
+  pages, with `Exif`, `GPS` and `Interop` groups inside a page, and `EXIF`
+  with `IFD0`, `Exif`, `GPS`, `Interop` and `IFD1` for the EXIF block of a
+  PNG, JPEG or WebP. An entry's `tag` is its number (`0x010F`), its
+  `keyword` its name in that kind of directory (`Unknown` when the table in
+  `tags/names.rs` has none) and its `vr` its TIFF type. Rationals are shown
+  as stored (`1/250`), binary values by their length, and a maker note, an
+  embedded thumbnail, IPTC and Photoshop blocks are never parsed. The tree
+  is one per file: a multi-page TIFF shows its pages as groups, and an
+  animation its container's fields.
+- **The file is not trusted, and the limits do not depend on the reader
+  getting them right.** Every byte comes through the pixel reader with a
+  budget of 4 MiB, behind a source that refuses the 16,385th read. Every
+  node enters the tree through `TagSink`, which holds the tree to 1,024
+  nodes three deep, one value to 1,024 characters or 64 numbers, and all
+  text of a tree to 128 KiB. The format readers add: 256 entries shown of a
+  directory whatever count it declares, 16 pages and 64 directories read, a
+  directory reached twice never read again, 4,096 bytes read of one value,
+  a compressed chunk inflated to 64 KiB at most, the first 64 KiB of a
+  profile, and offsets checked against the file's real length (an EXIF
+  block's against the block). Image data is stepped over by seeking; a
+  JPEG is walked to its first scan, and the 36 bytes read at each of its
+  markers take in, at the start of that scan and at a short segment just
+  before it, the scan header and the first entropy-coded bytes, which
+  are not looked at. One read holds at most
+  2 MiB of heap. Reading never fails and never panics: damage and limits
+  become notes (`RasterTagNote`), which are fixed words and never hold a
+  byte of the file, and the rest of the tree is still shown.
+- **A file's bytes reach only values, and only escaped.** `tag`, `keyword`
+  and `vr` are dcmview's own names. `TagSink` decodes every text value
+  (invalid bytes become U+FFFD), trims trailing NULs and white space, turns
+  tabs and line ends into spaces, and writes as `\u{..}` every other
+  control character, the line and paragraph separators, every format
+  character (general category Cf) and every other code point that is
+  ignorable by default, variation selectors and the tag block included
+  (one table, `ESCAPED`), so an escape sequence in a comment is visible
+  text.
+- **No decode permit.** A metadata read decodes no pixels and is bounded by
+  the numbers above, so it runs on a blocking thread beside the decode
+  scheduler, not through it. The tag cache keeps the tree as the session
+  shows it, like a DICOM tree; a tree is well under 1 MiB.
+- **Selection** (`server/tags.rs` `select_raster_node`) walks the served
+  tree by a path of steps, each a node's `tag`, optionally `.keyword`,
+  optionally `[n]` for the n-th match: `PNG:IHDR.Width`, `PNG:tEXt[2]`,
+  `EXIF/GPS/0x0002`. It reads nothing from the file, so what is selected is
+  what the tree shows, masked or not. A path that names nothing is `400`.
+- **Masked sessions** show a raster's tree through an allowlist
+  (`masking/raster.rs`): a value is kept only when its place is listed and
+  it is a number, a list of numbers or number-shaped text, and of a
+  directory entry text only when the entry's type is a rational (a file can
+  write any tag as text, and a date is digits too). Of a directory
+  a masked tree shows one value for each listed field and nothing else:
+  the first entry of that tag, when it has a type the field is defined
+  with (TIFF 6.0 and EXIF) and no more numbers than the field holds (one
+  for a size or a scalar field, the fixed count of a field such as
+  `PageNumber` or `PrimaryChromaticities`, four for a field with a number
+  for each sample). A repeated, longer or differently typed entry is
+  masked whole. Strip and tile offsets and byte counts are shown only when
+  there is one, as in a page stored in one strip; a colour map is never
+  shown. Each value shown is still a number the file chose, so this is a
+  display aid for honest files, not a guarantee against a file built to
+  carry something in those numbers. Listed are the
+  `File` leaves except the extension, the notes, the container's layout
+  fields (`PNG:IHDR`, `pHYs`, `gAMA`, `cHRM`, `sRGB`, `sBIT`, `acTL`; JFIF
+  version and density, the frame header, the Adobe version and transform;
+  the WebP headers and loop count), a profile's size and version, the
+  layout entries of an image directory (sizes, sample layout, compression,
+  strips and tiles, resolution, orientation) and of an EXIF directory only
+  the colour space and pixel dimensions. Everything else shows `[masked]`:
+  every unknown tag, all text of the file, GPS, dates and times (masked,
+  not shifted: a raster has no patient whose offset would apply), device
+  make, model and serial numbers, software and host names, owner, artist,
+  copyright, description and comment fields, PNG text chunks, XMP, maker
+  notes, thumbnail entries, profile names and descriptions, document and
+  page names, exposure settings. The catalog entry of a raster holds no
+  text of the file, and neither do the notes, the errors of these endpoints
+  or anything written to stderr. A colour display frame still carries the
+  file's ICC profile to the browser, as a DICOM colour frame does.
 
 ## File Keys And The Catalog Cursor
 
@@ -1596,6 +1701,14 @@ installation and VS Code Electron integration can also use network/cache state;
   PNG chunks and TIFF directories, and a few embedded files encoded by other
   tools from flat colours), and compare the raw and display frames with
   those values, so no expected pixel is one a decoder returned.
+- Raster metadata tests: `tests/raster_cost/tags.rs` reads trees through
+  `read_raster_tags` from files written with known values (hand-written
+  directories, chunks, segments and profiles in `raster_tag_files.rs`, and
+  four small files written by Pillow) and from hostile ones, on the counted
+  source and allocator; `tests/integration/raster_tags.rs` serves trees
+  through the router, selects from them, and plants a string in every place
+  a file can hold text to show that a masked session returns none of them
+  from any endpoint.
 - Raster cost tests (`tests/raster_cost/`) call `decode_raster_frame` on
   honest, hostile and damaged files and state what a decode may cost in
   things that are counted, never timed: the reads and bytes of the source it
