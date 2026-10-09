@@ -687,6 +687,14 @@ impl Planter {
             .map(u32::from)
             .collect();
         ifd0.push((273, V::Long(spelled)));
+        // A listed tag written twice: the second holds what the file
+        // likes. And listed tags in types their fields do not have.
+        ifd0.push((256, V::Long(vec![2])));
+        ifd0.push((256, V::Long(vec![self.number("a repeated ImageWidth")])));
+        let wide = self.number("ImageLength written as DOUBLE");
+        ifd0.push((257, V::Double(vec![f64::from(wide)])));
+        let ratio = self.number("Compression written as RATIONAL");
+        ifd0.push((259, V::Rational(vec![(ratio, 1)])));
         let exif = self.exif_entries();
         let gps = self.gps_entries();
         let interop = vec![(1, V::ascii(&self.text("InteroperabilityIndex", true)))];

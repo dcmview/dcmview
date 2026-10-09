@@ -23,17 +23,23 @@
 //! with a text type, and a date or a telephone number is digits and
 //! punctuation too.
 //!
-//! A listed directory entry must also be no longer than its field. A file
-//! can write any tag with any count, and an array of numbers can spell
-//! text one character code at a time, so each listed entry has the most
-//! numbers (or rationals) it may hold to be shown: one for a size or a
-//! scalar field, the field's own fixed count otherwise, and four for a
-//! field with a number for each sample. A value with more is masked whole.
-//! The offsets and byte counts of strips and tiles are shown only when
-//! there is one of them, which is all a page stored in one strip or tile
-//! has and no more than any scalar field shows; a longer one is a free
-//! array of whatever the file wrote. A colour map is such an array at any
-//! real length, so it is not listed.
+//! A listed directory entry must also be what its field is. A file can
+//! write any tag number with any type and count, and as often as it
+//! likes, so a listed entry is shown only when it is the first entry of
+//! its tag in its directory, has a type the field is defined with (TIFF
+//! 6.0 and EXIF), and holds no more numbers than the field does: one for
+//! a size or a scalar field, the field's own fixed count otherwise, and
+//! four for a field with a number for each sample. Anything else under a
+//! listed tag is masked whole. The offsets and byte counts of strips and
+//! tiles are shown only when there is one of them, which is all a page
+//! stored in one strip or tile has; a colour map has no small count, so
+//! it is not listed.
+//!
+//! What a masked tree shows of a directory is therefore one value for each
+//! listed field, of the field's own type and count, and nothing else. Each
+//! of those is still a number the file chose: masking is a display aid for
+//! honest files, not a guarantee against a file built to carry something
+//! in those numbers.
 
 use super::{masked_value, MASKED};
 use crate::api::contracts::{TagNode, TagValue};
@@ -97,52 +103,138 @@ const FRAME_HEADER_LEAVES: &[&str] = &["Precision", "Height", "Width", "Componen
 /// renders at most four bands.
 const PER_SAMPLE: usize = 4;
 
+/// The TIFF types a listed entry may have to be shown, as TIFF 6.0 and
+/// EXIF define its field. In a TIFF page, where the file may be a BigTIFF,
+/// `LONG8` counts as `LONG` and `IFD8` as `IFD`; in an EXIF block, which is
+/// never one, they are not shown.
+#[derive(Clone, Copy)]
+enum Types {
+    Short,
+    Long,
+    ShortOrLong,
+    Rational,
+    /// A pointer to another directory: `LONG` or `IFD`.
+    Pointer,
+}
+
+impl Types {
+    fn hold(self, vr: &str, big: bool) -> bool {
+        let vr = match vr {
+            "LONG8" if big => "LONG",
+            "IFD8" if big => "IFD",
+            vr => vr,
+        };
+        match self {
+            Self::Short => vr == "SHORT",
+            Self::Long => vr == "LONG",
+            Self::ShortOrLong => matches!(vr, "SHORT" | "LONG"),
+            Self::Rational => vr == "RATIONAL",
+            Self::Pointer => matches!(vr, "LONG" | "IFD"),
+        }
+    }
+}
+
+/// A listed directory entry: its tag, the most numbers or rationals it may
+/// hold to be shown, and the types it may have.
+type Entry = (u16, usize, Types);
+
 /// The entries of an image directory (a TIFF page, `IFD0`, `IFD1`) a masked
-/// session shows: the layout of the samples and where they lie. Each is
-/// `(tag, the most numbers or rationals it may hold to be shown)`. Sorted.
-const IMAGE_ENTRIES: &[(u16, usize)] = &[
-    (254, 1),          // NewSubfileType
-    (255, 1),          // SubfileType
-    (256, 1),          // ImageWidth
-    (257, 1),          // ImageLength
-    (258, PER_SAMPLE), // BitsPerSample
-    (259, 1),          // Compression
-    (262, 1),          // PhotometricInterpretation
-    (266, 1),          // FillOrder
-    (273, 1),          // StripOffsets, of a page in one strip
-    (274, 1),          // Orientation
-    (277, 1),          // SamplesPerPixel
-    (278, 1),          // RowsPerStrip
-    (279, 1),          // StripByteCounts, of a page in one strip
-    (280, PER_SAMPLE), // MinSampleValue
-    (281, PER_SAMPLE), // MaxSampleValue
-    (282, 1),          // XResolution
-    (283, 1),          // YResolution
-    (284, 1),          // PlanarConfiguration
-    (296, 1),          // ResolutionUnit
-    (297, 2),          // PageNumber: the page and how many there are
-    (317, 1),          // Predictor
-    (318, 2),          // WhitePoint: x and y
-    (319, 6),          // PrimaryChromaticities: x and y of three primaries
-    (322, 1),          // TileWidth
-    (323, 1),          // TileLength
-    (324, 1),          // TileOffsets, of a page in one tile
-    (325, 1),          // TileByteCounts, of a page in one tile
-    (338, PER_SAMPLE), // ExtraSamples
-    (339, PER_SAMPLE), // SampleFormat
-    (529, 3),          // YCbCrCoefficients
-    (530, 2),          // YCbCrSubSampling: horizontal and vertical
-    (531, 1),          // YCbCrPositioning
-    (532, 6),          // ReferenceBlackWhite: a pair for each component
-    (34665, 1),        // the pointer to the EXIF directory
-    (34853, 1),        // the pointer to the GPS directory
+/// session shows: the layout of the samples and where they lie. Sorted.
+const IMAGE_ENTRIES: &[Entry] = &[
+    (254, 1, Types::Long),           // NewSubfileType
+    (255, 1, Types::Short),          // SubfileType
+    (256, 1, Types::ShortOrLong),    // ImageWidth
+    (257, 1, Types::ShortOrLong),    // ImageLength
+    (258, PER_SAMPLE, Types::Short), // BitsPerSample
+    (259, 1, Types::Short),          // Compression
+    (262, 1, Types::Short),          // PhotometricInterpretation
+    (266, 1, Types::Short),          // FillOrder
+    (273, 1, Types::ShortOrLong),    // StripOffsets, of one strip
+    (274, 1, Types::Short),          // Orientation
+    (277, 1, Types::Short),          // SamplesPerPixel
+    (278, 1, Types::ShortOrLong),    // RowsPerStrip
+    (279, 1, Types::ShortOrLong),    // StripByteCounts, of one strip
+    (280, PER_SAMPLE, Types::Short), // MinSampleValue
+    (281, PER_SAMPLE, Types::Short), // MaxSampleValue
+    (282, 1, Types::Rational),       // XResolution
+    (283, 1, Types::Rational),       // YResolution
+    (284, 1, Types::Short),          // PlanarConfiguration
+    (296, 1, Types::Short),          // ResolutionUnit
+    (297, 2, Types::Short),          // PageNumber: page, and of how many
+    (317, 1, Types::Short),          // Predictor
+    (318, 2, Types::Rational),       // WhitePoint: x and y
+    (319, 6, Types::Rational),       // PrimaryChromaticities
+    (322, 1, Types::ShortOrLong),    // TileWidth
+    (323, 1, Types::ShortOrLong),    // TileLength
+    (324, 1, Types::Long),           // TileOffsets, of one tile
+    (325, 1, Types::ShortOrLong),    // TileByteCounts, of one tile
+    (338, PER_SAMPLE, Types::Short), // ExtraSamples
+    (339, PER_SAMPLE, Types::Short), // SampleFormat
+    (529, 3, Types::Rational),       // YCbCrCoefficients
+    (530, 2, Types::Short),          // YCbCrSubSampling
+    (531, 1, Types::Short),          // YCbCrPositioning
+    (532, 6, Types::Rational),       // ReferenceBlackWhite
+    (34665, 1, Types::Pointer),      // the EXIF directory
+    (34853, 1, Types::Pointer),      // the GPS directory
 ];
 
 /// The entries of an EXIF directory a masked session shows, as
 /// [`IMAGE_ENTRIES`]: the colour space, the pixel dimensions and the
 /// pointer to the interoperability directory. Exposure settings are not
 /// listed.
-const EXIF_ENTRIES: &[(u16, usize)] = &[(40961, 1), (40962, 1), (40963, 1), (40965, 1)];
+const EXIF_ENTRIES: &[Entry] = &[
+    (40961, 1, Types::Short),       // ColorSpace
+    (40962, 1, Types::ShortOrLong), // PixelXDimension
+    (40963, 1, Types::ShortOrLong), // PixelYDimension
+    (40965, 1, Types::Pointer),     // the interoperability directory
+];
+
+/// The listed entries of one directory, and which of them it has shown or
+/// masked so far: only the first entry of a tag is ever shown.
+struct Listed {
+    entries: &'static [Entry],
+    /// Whether the directory is a TIFF file's own, which may be a BigTIFF.
+    big: bool,
+    seen: Vec<u16>,
+}
+
+impl Listed {
+    fn new(entries: &'static [Entry], big: bool) -> Self {
+        Self {
+            entries,
+            big,
+            seen: Vec::new(),
+        }
+    }
+
+    /// Whether the entry `node`, the next of its directory, is shown.
+    fn shows(&mut self, node: &TagNode) -> bool {
+        let Some((tag, most, types)) = node
+            .tag
+            .strip_prefix("0x")
+            .filter(|digits| digits.len() == 4)
+            .and_then(|digits| u16::from_str_radix(digits, 16).ok())
+            .and_then(|number| {
+                let index = self.entries.binary_search_by_key(&number, |entry| entry.0);
+                index.ok().map(|index| self.entries[index])
+            })
+        else {
+            return false;
+        };
+        let first = !self.seen.contains(&tag);
+        if first {
+            self.seen.push(tag);
+        }
+        // Text is shown only where this module's reader composed it from
+        // numbers, which is a rational.
+        let text = matches!(node.value, TagValue::String { .. });
+        first
+            && types.hold(&node.vr, self.big)
+            && text == matches!(types, Types::Rational)
+            && numbers_in(&node.value) <= most
+            && looks_as_listed(&node.value, Shown::Numeric)
+    }
+}
 
 /// Masks a raster's metadata tree in place. Groups stay, with their names,
 /// which are dcmview's own; a leaf keeps its `tag`, `keyword` and `vr`,
@@ -150,15 +242,13 @@ const EXIF_ENTRIES: &[(u16, usize)] = &[(40961, 1), (40962, 1), (40963, 1), (409
 pub(super) fn mask_tree(nodes: &mut [TagNode]) {
     for node in nodes {
         if is_group(node) {
-            let entries = match node.tag.as_str() {
-                "EXIF" => None,
-                tag if tag.starts_with("TIFF:page ") => Some(IMAGE_ENTRIES),
-                _ => Some(&[][..]),
-            };
-            match entries {
+            match node.tag.as_str() {
                 // The EXIF block: only its directories, by name.
-                None => mask_children(node, None),
-                Some(entries) => mask_children(node, Some(entries)),
+                "EXIF" => mask_children(node, None, false),
+                tag if tag.starts_with("TIFF:page ") => {
+                    mask_children(node, Some(IMAGE_ENTRIES), true);
+                }
+                _ => mask_children(node, Some(&[]), false),
             }
         } else if !top_level_leaf_is_shown(node) {
             node.value = masked_value();
@@ -171,11 +261,13 @@ fn is_group(node: &TagNode) -> bool {
 }
 
 /// Masks the children of a group: its leaves by `entries` (`None` shows
-/// none), and the directories inside it by their own lists.
-fn mask_children(group: &mut TagNode, entries: Option<&[(u16, usize)]>) {
+/// none), and the directories inside it by their own lists. `big` says the
+/// group is a page of a TIFF file.
+fn mask_children(group: &mut TagNode, entries: Option<&'static [Entry]>, big: bool) {
     let TagValue::Sequence { items, .. } = &mut group.value else {
         return;
     };
+    let mut listed = Listed::new(entries.unwrap_or(&[]), big);
     for child in items.iter_mut().flatten() {
         if is_group(child) {
             let entries = match child.tag.as_str() {
@@ -184,39 +276,24 @@ fn mask_children(group: &mut TagNode, entries: Option<&[(u16, usize)]>) {
                 // GPS, interoperability and anything unnamed: nothing.
                 _ => &[],
             };
-            mask_directory(child, entries);
-        } else if !entries.is_some_and(|entries| entry_is_shown(child, entries)) {
+            mask_directory(child, Listed::new(entries, big));
+        } else if !listed.shows(child) {
             child.value = masked_value();
         }
     }
 }
 
-/// Masks a directory's entries by `entries`. Nothing lies deeper; a group
+/// Masks a directory's entries by `listed`. Nothing lies deeper; a group
 /// found here is masked whole.
-fn mask_directory(directory: &mut TagNode, entries: &[(u16, usize)]) {
+fn mask_directory(directory: &mut TagNode, mut listed: Listed) {
     let TagValue::Sequence { items, .. } = &mut directory.value else {
         return;
     };
     for entry in items.iter_mut().flatten() {
-        if is_group(entry) || !entry_is_shown(entry, entries) {
+        if is_group(entry) || !listed.shows(entry) {
             entry.value = masked_value();
         }
     }
-}
-
-fn entry_is_shown(node: &TagNode, entries: &[(u16, usize)]) -> bool {
-    let most = node
-        .tag
-        .strip_prefix("0x")
-        .filter(|digits| digits.len() == 4)
-        .and_then(|digits| u16::from_str_radix(digits, 16).ok())
-        .and_then(|number| entries.binary_search_by_key(&number, |(tag, _)| *tag).ok())
-        .map(|index| entries[index].1);
-    // Only a rational is text this module's reader composed from numbers.
-    let composed = matches!(node.vr.as_str(), "RATIONAL" | "SRATIONAL");
-    most.is_some_and(|most| numbers_in(&node.value) <= most)
-        && (composed || !matches!(node.value, TagValue::String { .. }))
-        && looks_as_listed(&node.value, Shown::Numeric)
 }
 
 /// How many numbers, or rationals, a directory entry's value holds, as the

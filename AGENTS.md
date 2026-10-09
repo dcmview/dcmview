@@ -644,8 +644,10 @@ is cached between requests.
 - Raster metadata is masked by the allowlist in `masking/raster.rs`: a value
   is shown only when its place is listed and it is number-shaped, text
   of a directory entry only for a rational type, and a directory entry
-  only when it holds no more numbers than the count listed with its tag
-  (an array of numbers can spell text). A new node is masked
+  only when it is the first of its tag in its directory and has a type
+  and a count listed with that tag. That is a display aid for honest
+  files, not a guarantee against a file built to carry something in the
+  numbers shown. A new node is masked
   until it is listed there, and only what describes the pixel grid or its
   encoding is listed. `tests/integration/raster_tags.rs`
   plants a string in every place a raster can hold text and fails when a

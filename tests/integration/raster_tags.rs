@@ -510,9 +510,10 @@ async fn a_masked_session_shows_no_text_of_a_raster_file() {
             "PNG:pHYs | PixelsPerUnitX |  | 2835",
             "PNG:pHYs | PixelsPerUnitY |  | 2835",
             "PNG:pHYs | Unit |  | 1",
-            "EXIF/IFD0/0x8769 | ExifIFD | LONG | 574",
-            "EXIF/IFD0/0x8825 | GPSIFD | LONG | 852",
-            "EXIF/Exif/0xA005 | InteropIFD | LONG | 1004",
+            "EXIF/IFD0/0x0100 | ImageWidth | LONG | 2",
+            "EXIF/IFD0/0x8769 | ExifIFD | LONG | 638",
+            "EXIF/IFD0/0x8825 | GPSIFD | LONG | 916",
+            "EXIF/Exif/0xA005 | InteropIFD | LONG | 1068",
             "ICC | Size |  | 172",
             "ICC | Version |  | \"2.1.0\"",
         ]
@@ -533,6 +534,11 @@ async fn a_masked_session_shows_no_text_of_a_raster_file() {
     for row in [
         "EXIF/IFD0/0x0111 | StripOffsets | LONG | \"[masked]\"",
         "EXIF/IFD0/0x0118 | MinSampleValue | SHORT | \"[masked]\"",
+        // Of a listed tag written twice only the first is shown, and a
+        // listed tag is shown only in a type its field has.
+        "EXIF/IFD0/0x0100 | ImageWidth | LONG | \"[masked]\"",
+        "EXIF/IFD0/0x0101 | ImageLength | DOUBLE | \"[masked]\"",
+        "EXIF/IFD0/0x0103 | Compression | RATIONAL | \"[masked]\"",
     ] {
         assert!(has_row(&rows(&png), row), "no row {row:?}");
     }
@@ -552,9 +558,10 @@ async fn a_masked_session_shows_no_text_of_a_raster_file() {
             "JPEG:SOF0 | Height |  | 8",
             "JPEG:SOF0 | Width |  | 8",
             "JPEG:SOF0 | Components |  | 3",
-            "EXIF/IFD0/0x8769 | ExifIFD | LONG | 574",
-            "EXIF/IFD0/0x8825 | GPSIFD | LONG | 852",
-            "EXIF/Exif/0xA005 | InteropIFD | LONG | 1004",
+            "EXIF/IFD0/0x0100 | ImageWidth | LONG | 2",
+            "EXIF/IFD0/0x8769 | ExifIFD | LONG | 638",
+            "EXIF/IFD0/0x8825 | GPSIFD | LONG | 916",
+            "EXIF/Exif/0xA005 | InteropIFD | LONG | 1068",
             "ICC | Size |  | 172",
             "ICC | Version |  | \"2.1.0\"",
         ]
@@ -606,9 +613,10 @@ async fn a_masked_session_shows_no_text_of_a_raster_file() {
             "WEBP:VP8X | Flags |  | 44",
             "WEBP:VP8X | CanvasWidth |  | 8",
             "WEBP:VP8X | CanvasHeight |  | 8",
-            "EXIF/IFD0/0x8769 | ExifIFD | LONG | 604",
-            "EXIF/IFD0/0x8825 | GPSIFD | LONG | 894",
-            "EXIF/Exif/0xA005 | InteropIFD | LONG | 1046",
+            "EXIF/IFD0/0x0100 | ImageWidth | LONG | 2",
+            "EXIF/IFD0/0x8769 | ExifIFD | LONG | 668",
+            "EXIF/IFD0/0x8825 | GPSIFD | LONG | 958",
+            "EXIF/Exif/0xA005 | InteropIFD | LONG | 1110",
             "ICC | Size |  | 200",
             "ICC | Version |  | \"4.3.0\"",
         ]
