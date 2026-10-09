@@ -81,6 +81,9 @@ pub const DATA_SET_INFLATED_ELEMENT_CHARGE_BYTES: u64 = 512;
 /// an element of an item of a top-level sequence at depth 1.
 pub const DATA_SET_MAX_DEPTH: usize = 64;
 
+/// Where the magic code of a Part 10 file is, and where both reads begin.
+const MAGIC_CODE_OFFSET: u64 = 128;
+
 /// A value shorter than this is passed over by reading it through the
 /// buffer the reads already share; a longer one by seeking.
 const SEEK_OVER_MIN_BYTES: u64 = 16 * 1024;
@@ -130,7 +133,7 @@ pub fn read_for_catalog<R: Read + Seek>(
     source: &mut BufReader<R>,
     file_length: u64,
 ) -> Option<CatalogDataSet> {
-    let (meta, transfer_syntax) = read_meta(source, file_length).ok()?;
+    let (meta, transfer_syntax, start) = read_meta(source, file_length).ok()?;
     let plan = Plan {
         keep: |top, header| {
             top < tags::FLOAT_PIXEL_DATA
@@ -146,7 +149,7 @@ pub fn read_for_catalog<R: Read + Seek>(
         list_passed_over: false,
         ends_inside_passed_over: false,
     };
-    let walked = walk_data_set(source, file_length, transfer_syntax, &plan).ok()?;
+    let walked = walk_data_set(source, start, file_length, transfer_syntax, &plan).ok()?;
     let reached_pixel_region = walked
         .last_top_level
         .is_some_and(|tag| tag >= tags::FLOAT_PIXEL_DATA);
@@ -203,7 +206,7 @@ pub fn read_for_tags<R: Read + Seek>(
     file_length: u64,
     extent: TagExtent,
 ) -> Result<TagDataSet> {
-    let (_, transfer_syntax) = read_meta(source, file_length)?;
+    let (_, transfer_syntax, start) = read_meta(source, file_length)?;
     let plan = Plan {
         keep: |_, header| {
             !shown_by_length(header.tag, header.vr) && header.len.0 <= DATA_SET_VALUE_MAX_BYTES
@@ -215,7 +218,7 @@ pub fn read_for_tags<R: Read + Seek>(
         list_passed_over: true,
         ends_inside_passed_over: true,
     };
-    let walked = walk_data_set(source, file_length, transfer_syntax, &plan)?;
+    let walked = walk_data_set(source, start, file_length, transfer_syntax, &plan)?;
     walked.end?;
     Ok(TagDataSet {
         object: walked.object,
@@ -229,8 +232,10 @@ pub fn read_for_tags<R: Read + Seek>(
 fn read_meta<R: Read + Seek>(
     source: &mut BufReader<R>,
     file_length: u64,
-) -> Result<(FileMetaTable, &'static TransferSyntax)> {
-    let start = source.stream_position().context("file position")?;
+) -> Result<(FileMetaTable, &'static TransferSyntax, u64)> {
+    // Positions are counted, not asked of the source: asking is a system
+    // call for every file of a scan.
+    let start = MAGIC_CODE_OFFSET;
     let mut position = start;
     let mut magic = [0_u8; 4];
     source.read_exact(&mut magic).context("magic code")?;
@@ -280,7 +285,9 @@ fn read_meta<R: Read + Seek>(
     let transfer_syntax = TransferSyntaxRegistry
         .get(meta.transfer_syntax())
         .context("unknown transfer syntax")?;
-    Ok((meta, transfer_syntax))
+    // The meta reader has read what the check stepped over: the data set
+    // starts where the check ended.
+    Ok((meta, transfer_syntax, position))
 }
 
 /// What one walk reads and what it leaves out.
@@ -318,11 +325,13 @@ struct Walked {
     fragment_bytes: Option<u64>,
 }
 
-/// Walks the data set that follows the file meta group. A deflated data set
+/// Walks the data set that follows the file meta group, from the offset
+/// `start` of the file. A deflated data set
 /// is read through its transfer syntax's adapter, within the inflated
 /// budget.
 fn walk_data_set<R: Read + Seek>(
     source: &mut BufReader<R>,
+    start: u64,
     file_length: u64,
     transfer_syntax: &TransferSyntax,
     plan: &Plan,
@@ -349,7 +358,6 @@ fn walk_data_set<R: Read + Seek>(
         }
         Codec::Dataset(None) => bail!("unsupported data set encoding"),
         _ => {
-            let start = source.stream_position().context("file position")?;
             let decoder = DynStatefulDecoder::new_with_ts(source, transfer_syntax, start)
                 .map_err(|_| anyhow!("no decoder for the transfer syntax"))?;
             Ok(walk(
