@@ -45,8 +45,11 @@
 //! in the file) and the in-memory elements and values built from the bytes
 //! read. That is not a fixed budget: an object model holds more than the
 //! bytes it was built from. Only a read of a deflated data set has one:
-//! what it holds was charged to the budget when it was built, and it never
-//! holds more than the budget and [`DATA_SET_INFLATED_OVERSHOOT_BYTES`].
+//! what it holds of the data set was charged to the budget when it was
+//! built, and never comes to more than the budget and
+//! [`DATA_SET_INFLATED_OVERSHOOT_BYTES`]. The file meta group is outside
+//! that budget in every file: it is not deflated, and what a read holds of
+//! it is bounded by the bytes the file supplies for it.
 //! `tests/raster_cost/data_sets.rs` counts the reads, the bytes and the
 //! heap at the source and the allocator.
 //!
@@ -102,7 +105,8 @@ pub const DATA_SET_INFLATED_ELEMENT_CHARGE_BYTES: u64 = 512;
 /// of this length or less is decoded whole. A longer one is decoded piece
 /// by piece and kept whole when it decodes to the bytes it is, as ASCII
 /// text does in every character set but for a few characters; otherwise
-/// only its first piece is decoded and kept.
+/// only its first piece is kept, up to the last character that is whole in
+/// it.
 pub const DATA_SET_INFLATED_TEXT_PIECE_BYTES: usize = 4096;
 
 /// What a read of a deflated data set may hold over its budget, while one
@@ -689,10 +693,11 @@ impl<D: StatefulDecode> Walk<'_, D> {
                     self.plan.max_values,
                     meter,
                 )?;
-                if let (Some(PrimitiveValue::Strs(names)), tags::SPECIFIC_CHARACTER_SET) =
-                    (&value, header.tag)
+                if let (Some(PrimitiveValue::Strs(names)), tags::SPECIFIC_CHARACTER_SET, VR::CS) =
+                    (&value, header.tag, header.vr)
                 {
-                    // As the parser does when it reads this element.
+                    // As the parser does when it reads this element as a
+                    // Code String, and only then.
                     if let Some(named) = names
                         .first()
                         .and_then(|name| SpecificCharacterSet::from_code(name))
@@ -854,6 +859,9 @@ fn inflated_value(
         meter.spent.fetch_add(held as u64, Ordering::Relaxed);
     };
     if header.vr == VR::AT {
+        // The parser reads whole tags and loses its place behind a
+        // length that is not a number of them.
+        ensure!(bytes.len() & 3 == 0, "a list of tags of a broken length");
         // Explicit VR Little Endian, as every deflated data set is.
         let mut tags = dicom_core::value::C::<Tag>::with_capacity(bytes.len() / 4);
         tags.extend(bytes.chunks_exact(4).map(|tag| {
@@ -878,19 +886,33 @@ fn inflated_value(
         let first = pieces.next().unwrap_or_default();
         let mut whole = decode(first)?;
         if text.len() > first.len() {
-            let unchanged = whole.as_bytes() == first;
-            if unchanged {
+            let mut kept_whole = whole.as_bytes() == first;
+            if kept_whole {
                 whole.reserve_exact(text.len() - first.len());
-            }
-            for piece in pieces.take_while(|_| unchanged) {
-                let decoded = decode(piece)?;
-                if decoded.as_bytes() != piece {
-                    // Text that decodes to something else is kept as its
-                    // first piece.
-                    whole.truncate(first.len());
-                    break;
+                for piece in pieces {
+                    let decoded = decode(piece)?;
+                    if decoded.as_bytes() != piece {
+                        kept_whole = false;
+                        break;
+                    }
+                    whole.push_str(&decoded);
                 }
-                whole.push_str(&decoded);
+            }
+            if !kept_whole {
+                // Text that decodes to something else is kept as its first
+                // piece, up to the last character that is whole in it: a
+                // character cut by the end of the piece decodes otherwise
+                // with the bytes behind it.
+                let ahead = (first.len() + 4).min(text.len());
+                let cut = decode(first)?;
+                let with_more = decode(&text[..ahead])?;
+                let same = cut
+                    .char_indices()
+                    .zip(with_more.chars())
+                    .find(|((_, kept), more)| kept != more)
+                    .map_or(cut.len().min(with_more.len()), |((at, _), _)| at);
+                whole = cut;
+                whole.truncate(same);
             }
         }
         whole.shrink_to_fit();

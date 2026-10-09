@@ -9,8 +9,7 @@ use super::data_set_files::{
     PRIVATE_BLOB,
 };
 use super::data_sets::{
-    deflated_values, discover, measured, report, BULK, DECLARED, DEFLATED_HEAP, INFLATER_HEAP,
-    READ_HEAP,
+    deflated_values, discover, measured, report, BULK, DECLARED, INFLATER_HEAP, READ_HEAP,
 };
 use super::heap::CountedRuntime;
 use dcmview::annotations::AnnotationStore;
@@ -372,10 +371,9 @@ fn a_tag_read_holds_no_value_it_shows_by_its_length() {
     // has no tree, whichever extent is read; an honest one that looks like
     // it has; and neither read holds more than the budget allows.
     for values in deflated_values() {
-        let file = image(DEFLATED_LE, &values.elements, &[]);
         for extent in [TagExtent::BeforePixelData, TagExtent::Whole] {
             let (shown, cost) = measured(
-                &file,
+                &values.file,
                 |source, length| read_for_tags(source, length, extent),
                 |read| read.is_ok(),
             );
@@ -383,12 +381,60 @@ fn a_tag_read_holds_no_value_it_shows_by_its_length() {
             report(|| format!("tags     {context:<60} {:>9} held", cost.heap));
             assert_eq!(shown, values.shown, "{context}");
             assert!(
-                cost.heap <= DEFLATED_HEAP,
-                "{context}: {} bytes of heap held, at most {DEFLATED_HEAP}",
-                cost.heap
+                cost.heap <= values.heap,
+                "{context}: {} bytes of heap held, at most {}",
+                cost.heap,
+                values.heap
             );
         }
     }
+
+    // Text of a deflated data set is decoded as the parser decodes it. A
+    // character set takes effect only when it is declared as a Code
+    // String; text longer than a piece that is not plain ASCII is kept as
+    // its first piece, up to the last whole character.
+    let text_of = |before: Vec<u8>, tag: Tag| {
+        let file = image(DEFLATED_LE, &before, &[]);
+        measured(
+            &file,
+            |source, length| read_for_tags(source, length, TagExtent::Whole),
+            |read| {
+                let read = read.expect("a tree");
+                let value = read.object.get(tag).expect("the element");
+                value.to_str().expect("text").to_string()
+            },
+        )
+        .0
+    };
+    let thai = element(Tag(0x0009, 0x1011), "LO", &[0xa1; 4]);
+    let set = |vr| element(tags::SPECIFIC_CHARACTER_SET, vr, b"ISO_IR 166");
+    let undeclared = text_of(thai.clone(), Tag(0x0009, 0x1011));
+    let as_code_string = text_of([set("CS"), thai.clone()].concat(), Tag(0x0009, 0x1011));
+    let as_long_string = text_of([set("LO"), thai].concat(), Tag(0x0009, 0x1011));
+    assert_ne!(
+        as_code_string, undeclared,
+        "a declared character set decodes"
+    );
+    assert_eq!(
+        as_long_string, undeclared,
+        "a character set that is not a Code String is not one"
+    );
+    // One ASCII letter, then two-byte characters: the 2,048th straddles
+    // the end of the first piece.
+    let straddling = [b"a".to_vec(), "\u{e9}".repeat(6_000).into_bytes()].concat();
+    let kept = text_of(
+        [
+            element(tags::SPECIFIC_CHARACTER_SET, "CS", b"ISO_IR 192"),
+            element(
+                Tag(0x0009, 0x1011),
+                "UT",
+                &straddling[..straddling.len() - 1],
+            ),
+        ]
+        .concat(),
+        Tag(0x0009, 0x1011),
+    );
+    assert_eq!(kept, format!("a{}", "\u{e9}".repeat(2_047)));
 
     let listed: Vec<_> = cases.iter().filter(|case| case.listed).collect();
     let files: Vec<_> = listed

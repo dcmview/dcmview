@@ -1094,10 +1094,13 @@ pixel data included.
 What a read holds is bounded by what the file supplies: the values it kept,
 each backed by its bytes in the file, and the in-memory elements and values
 built from the bytes it read. That is not a fixed budget. Only a read of a
-deflated data set has one: what it holds was charged when it was built,
-and it never holds more than the budget and
+deflated data set has one: what it holds of the data set was charged when
+it was built, and never comes to more than the budget and
 `DATA_SET_INFLATED_OVERSHOOT_BYTES` (the bytes of the one value being
-built, at most 1 MiB, and what a decoder holds for one piece of text).
+built, at most 1 MiB, and what a decoder holds for one piece of text). The
+file meta group is outside that budget in every file: it is not deflated,
+and what a read holds of it is bounded by the bytes the file supplies for
+it.
 
 ### Raster Image Files
 

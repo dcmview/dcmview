@@ -171,7 +171,10 @@ A file summary is built from the file's data set before its pixel data,
 read within fixed limits. Two of them can leave a field empty in a file
 that is listed: a value longer than 1 MiB is not read (Overlay Data
 excepted), and neither is a multi-valued text element of more than 65,536
-values. A summary field read from such an element is as it would be if the
+values. In a Deflated Explicit VR Little Endian file, a text value longer
+than 4,096 bytes that is not plain ASCII is read as its first 4,096 bytes,
+less a character they cut. A summary field read from such an element is as
+it would be if the
 element were absent; a polygonal display shutter with that many vertex
 values is not applied, as one whose vertices cannot be read is not. An
 element of an Explicit VR file other than UC cannot hold that many values.
@@ -710,12 +713,13 @@ Zero padding after a data set is not such a case: when everything from
 there to the end of the file is zero, the tree is whole and has no note
 (up to 1 MiB of padding; in a deflated data set padding is noted as
 something that is not an element). One to three stray bytes at the very end
-of a file are ignored. An element that can be read is listed wherever it
+of a file are ignored, and so is anything in a file behind the end of its
+deflate stream, which is never read: neither gets a note. An element that can be read is listed wherever it
 stands. `/tags/select` returns one node and carries no note.
 
 In a Deflated Explicit VR Little Endian file, a text value longer than
-4,096 bytes that is not plain ASCII is shown from its first 4,096 bytes
-(for a multi-valued element, each value); the preview shows 256 characters
+4,096 bytes that is not plain ASCII is shown from its first 4,096 bytes,
+less a character they cut (for a multi-valued element, each value); the preview shows 256 characters
 of a value in any case.
 (`/tags/select` for a tag before the pixel data reads only up to the pixel
 data, so it does not find an element of that tag placed behind it.)

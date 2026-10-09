@@ -686,8 +686,10 @@ is cached between requests.
   fixed bound on what is read, and never read pixel data for a tag request.
 - The limits are counted, not timed: tests count bytes at the source and
   heap at the allocator.
-- A read of a deflated data set holds no more than its budget and
-  `DATA_SET_INFLATED_OVERSHOOT_BYTES`, by construction: do not predict what
+- A read of a deflated data set holds no more of the data set than its
+  budget and `DATA_SET_INFLATED_OVERSHOOT_BYTES` (the file meta group is
+  outside the budget, bounded by the bytes the file supplies for it), by
+  construction: do not predict what
   a library allocates. Text and lists of tags are built in `data_set.rs`
   from their bytes, a list is sized and checked against the budget before
   it is filled, a value is charged what it holds once it is built, and a
