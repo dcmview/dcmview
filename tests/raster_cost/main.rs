@@ -20,6 +20,7 @@ mod agreement;
 mod bounds;
 mod heap;
 mod layout;
+mod overlays;
 #[path = "../integration/raster_cases.rs"]
 mod raster_cases;
 #[path = "../integration/raster_files.rs"]

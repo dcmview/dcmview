@@ -700,6 +700,22 @@ pub struct OverlayCacheKey {
     pub target_file_index: usize,
     pub target_frame: u32,
     pub encoding: OverlayEncoding,
+    /// For a value overlay, how many files were registered when the legend
+    /// it is colored by was read ([`ValueRangeCacheKey::file_set`]): the
+    /// file set decides the volume's mapping and so its scale. `None` for a
+    /// SEG overlay and a presentation layer, which have no legend.
+    pub file_set: Option<usize>,
+}
+
+/// The range of an RT Dose or Parametric Map's mapped values, which its
+/// legend spans: one per object and file set, since the Real World Value
+/// Mapping instances of the file set decide the mapping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ValueRangeCacheKey {
+    pub file_index: usize,
+    /// How many files were registered when the range was asked for. The
+    /// registry only grows, so its length names the file set.
+    pub file_set: usize,
 }
 
 /// How an overlay is sent: a colored PNG, or a value overlay's resampled

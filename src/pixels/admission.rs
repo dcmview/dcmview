@@ -12,7 +12,7 @@
 
 use super::error::{PixelError, PixelResult};
 use super::schedule::{DecodeClass, DecodeLimits, DecodePermit, DecodeRefusal, DecodeScheduler};
-use crate::types::FileEntry;
+use crate::types::{FileEntry, OverlayEncoding};
 use std::sync::Arc;
 
 /// The part of a DICOM decode's estimate that does not depend on the frame:
@@ -47,6 +47,36 @@ pub enum DecodeWork {
     /// The copy of a raw frame in which redaction boxes are filled for one
     /// response.
     RawRedaction,
+    /// The value range of an RT Dose or Parametric Map, which its legend
+    /// spans: every frame of the object, one after another, each decoded
+    /// and held once more as real-world values while its smallest and
+    /// largest are found. The file is the object.
+    ValueLegend,
+    /// One SEG frame painted on the displayed frame it segments: the SEG
+    /// frame's decode, an RGBA image of the displayed frame's size and its
+    /// PNG. The file is the SEG object.
+    SegmentationOverlay {
+        /// Rows of the displayed frame the overlay is drawn on.
+        target_rows: u32,
+        /// Columns of the displayed frame the overlay is drawn on.
+        target_columns: u32,
+    },
+    /// An RT Dose or Parametric Map resampled onto one displayed frame: the
+    /// decode of each plane the frame is sampled from, those planes held
+    /// together as real-world values, the resampled values of the displayed
+    /// frame, and what they are sent as. The file is the dose or map.
+    ValueOverlay {
+        /// Rows of the displayed frame the overlay is drawn on.
+        target_rows: u32,
+        /// Columns of the displayed frame the overlay is drawn on.
+        target_columns: u32,
+        /// How many of the object's frames the work decodes and holds at
+        /// once. The work decodes no frame beyond this count.
+        planes: u32,
+        /// What the resampled values are sent as: an RGBA image and its
+        /// PNG, or the values as 32-bit floats.
+        encoding: OverlayEncoding,
+    },
 }
 
 /// The bytes `work` on one frame of `file` reserves, from the catalog entry
@@ -65,6 +95,13 @@ pub enum DecodeWork {
 ///     6 * P   when samples_per_pixel >= 3 and B >= 2
 /// V = 32 * S  when B >= 4                              windowing wide samples
 ///     0       otherwise
+/// ```
+///
+/// and, from an overlay's [`DecodeWork`],
+///
+/// ```text
+/// T = target_rows * target_columns                     pixels of the displayed frame
+/// N = planes                                           frames held at once
 /// ```
 ///
 /// the decode of one frame is estimated as `decode`:
@@ -86,6 +123,10 @@ pub enum DecodeWork {
 /// | [`DecodeWork::Thumbnail`] | `decode + V + D + `[`THUMBNAIL_BASE_BYTES`] |
 /// | [`DecodeWork::PresentationLayer`] | `9 * P + `[`DISPLAY_BASE_BYTES`] |
 /// | [`DecodeWork::RawRedaction`] | `F` |
+/// | [`DecodeWork::ValueLegend`] | `decode + 8 * P` |
+/// | [`DecodeWork::SegmentationOverlay`] | `decode + 24 * T + `[`DISPLAY_BASE_BYTES`] |
+/// | [`DecodeWork::ValueOverlay`] as [`OverlayEncoding::Png`] | `8 * N * P + max(decode, 32 * T + `[`DISPLAY_BASE_BYTES`]`)` |
+/// | [`DecodeWork::ValueOverlay`] as [`OverlayEncoding::Values`] | `8 * N * P + max(decode, 12 * T + `[`DISPLAY_BASE_BYTES`]`)` |
 ///
 /// Every sum saturates at `u64::MAX`. A raster for which
 /// [`raster_decode_heap_limit`] is `None` (more pixels than the viewer
@@ -108,6 +149,19 @@ pub enum DecodeWork {
 ///   windowed through a table and need none of it.
 /// - `9 * P` is the layer's four bytes a pixel, a PNG no larger than it, and
 ///   one byte a pixel for the shutter's visibility.
+/// - `8 * P` is one frame as real-world values, eight bytes a pixel. A
+///   legend holds one frame's values at a time, beside the raw frame they
+///   were read from, which `decode` counts.
+/// - `24 * T` is an overlay image while it is encoded: four bytes a pixel
+///   of RGBA, the compressed stream in a buffer that has grown to at most
+///   twice its length, and the PNG it is copied into, which while it grows
+///   is held twice over. An image that does not compress is the bound, and
+///   `tests/raster_cost` measures it.
+/// - A value overlay holds its `N` planes as real-world values from the
+///   first decode to the end. Beside them it holds first a decode and then,
+///   with every decode over, the displayed frame's resampled values (eight
+///   bytes a pixel) and either the image (`24 * T`) or the 32-bit values
+///   that are sent (`4 * T`): whichever of the two stages is larger.
 /// - The DICOM rows are rules, not measurements of every codec: the data
 ///   set's frame, the decoder's own copy and the samples it is converted
 ///   to. A DICOM decoder is not yet held to its entry the way the raster
@@ -169,6 +223,34 @@ pub fn decode_estimate(file: &FileEntry, work: DecodeWork) -> u64 {
             pixels.saturating_mul(9).saturating_add(DISPLAY_BASE_BYTES)
         }
         DecodeWork::RawRedaction => frame,
+        DecodeWork::ValueLegend => decode.saturating_add(pixels.saturating_mul(8)),
+        DecodeWork::SegmentationOverlay {
+            target_rows,
+            target_columns,
+        } => {
+            let target = u64::from(target_rows).saturating_mul(u64::from(target_columns));
+            decode
+                .saturating_add(target.saturating_mul(24))
+                .saturating_add(DISPLAY_BASE_BYTES)
+        }
+        DecodeWork::ValueOverlay {
+            target_rows,
+            target_columns,
+            planes,
+            encoding,
+        } => {
+            let target = u64::from(target_rows).saturating_mul(u64::from(target_columns));
+            let encoded = target
+                .saturating_mul(match encoding {
+                    OverlayEncoding::Png => 32,
+                    OverlayEncoding::Values => 12,
+                })
+                .saturating_add(DISPLAY_BASE_BYTES);
+            pixels
+                .saturating_mul(u64::from(planes))
+                .saturating_mul(8)
+                .saturating_add(decode.max(encoded))
+        }
     }
 }
 

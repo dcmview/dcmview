@@ -136,6 +136,20 @@ more. A DICOM frame reserves by its transfer syntax and not by the length of
 its file; [Decode Admission](architecture.md#decode-admission) lists every
 case.
 
+A segmentation, RT Dose or Parametric Map overlay is reserved as a whole,
+by the image it is drawn on as well as by the object it is made from. A
+segmentation overlay reserves the decode of its frame and 24 bytes for
+every pixel of the displayed image. A dose or map overlay reserves 8 bytes
+for every pixel of each plane of the volume the image is sampled from (one
+or two planes for an image parallel to them, possibly all of them for an
+image that cuts through the volume) and, beside the planes, the larger of
+the decode of one plane and 32 bytes for every pixel of the displayed image
+(12 when only its values are read under the cursor). For a 4096 x 4096
+image the image's part is 384 MiB under a segmentation and 512 MiB under a
+dose or map; for a 512 x 512 slice it is 6 to 8 MiB, less than the 16 MiB
+every DICOM decode starts from. The colour scale of a dose or map reserves
+the decode of one of its frames and 8 bytes for every pixel of it.
+
 For a frame of 16,384 x 16,384 pixels, the largest an image file may have,
 that is, whatever the budget:
 

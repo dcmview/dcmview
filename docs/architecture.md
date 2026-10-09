@@ -472,7 +472,9 @@ Fields are only added, and the crate's own test pins the exact shapes.
   Unavailable semantic mappings return `422 semantic_mapping_unavailable`.
   Like the value overlays in `server/api/overlays.rs`, the encoded PNG is
   cached per SEG frame and resolved source frame, and `X-Cache` reports that
-  cache. Discovery inspects candidate FRACTIONAL SEGs with a maximum above 1
+  cache. The decode of the SEG frame, the image and its PNG are one piece
+  of admitted work that requests for the same overlay share ("Decode
+  Admission"). Discovery inspects candidate FRACTIONAL SEGs with a maximum above 1
   on its blocking workers after filters match. Native samples are streamed in
   bounded chunks (deflated datasets are inflated once); encapsulated samples
   reuse one header and sequential frame cursor, retaining at most one decoded
@@ -492,13 +494,19 @@ Fields are only added, and the crate's own test pins the exact shapes.
   parallel frame brackets the same planes everywhere, an oblique one per
   pixel). The planes it reaches are decoded through the raw cache and
   converted with `value_mapping`, and `pixels/colorwash.rs` encodes viridis
-  over the context legend's range. A frame with no pixel inside the volume
-  is `404 overlay_not_covering_frame`. Encoded PNGs are cached per volume and
-  displayed frame, and `X-Cache` reports that cache. The `/values` form
+  over the context legend's range. All of that is one piece of admitted
+  work, reserved for the planes the frame reaches and for the displayed
+  frame, and requests for the same overlay share it ("Decode Admission"). A frame with no pixel inside the volume
+  is `404 overlay_not_covering_frame`. Encoded PNGs are cached per volume,
+  displayed frame and file set (`OverlayCacheKey.file_set`, the value the
+  legend's `ValueRangeCacheKey` carries: the legend's scale is read against
+  the file set, and the overlay is colored by it), and `X-Cache` reports
+  that cache. The `/values` form
   sends the same resampled values as little-endian `f32`s for readouts,
   cached beside the PNG (`OverlayEncoding`). Semantic context lists
   covered source frames; the server completes its legend from the decoded
-  frames' value range.
+  frames' value range, found once per object and file set under one permit
+  and shared by the requests that ask for it meanwhile.
 - `/api/file/{index}/frame/{frame}/graphic-annotations?state=`
   (`presentation_state.rs`) returns, as JSON, the graphic and text objects a
   Grayscale or Color Softcopy Presentation State draws on one image frame
@@ -735,9 +743,9 @@ requests share one render.
 `DecodeScheduler` (`pixels/schedule.rs`), which has one permit per core.
 `AppState` owns the scheduler, and each of its caches names it, so the pixel
 service finds from a cache whose permits a miss uses. A request names its
-class. Thumbnails are `Background`; every other decode
-(display frames, raw frames, previews, the frames overlays are resampled
-from) is `Interactive`. The scheduler:
+class. Thumbnails are `Background`; all other work (display frames, raw
+frames, previews, presentation layers, segmentation and value overlays and
+the value range of a legend) is `Interactive`. The scheduler:
 
 - grants an interactive request as soon as a permit is free;
 - grants a background request only when a permit is free, background work
@@ -795,7 +803,9 @@ gives the bytes one piece of work reserves, from the catalog entry alone and
 before the file is opened. With `P` pixels, `S` samples, a raw frame of `F`
 bytes, a display buffer of `D` bytes (`P`, or `3 * P` for 8-bit colour,
 `6 * P` for deeper colour), and `V` of `32 * S` for samples of 32 or 64 bits
-(which are windowed one at a time as 64-bit values) and 0 otherwise:
+(which are windowed one at a time as 64-bit values) and 0 otherwise; and,
+for an overlay, the `T` pixels of the displayed frame it is drawn on and the
+`N` frames of its object it holds at once:
 
 | Work (`DecodeWork`) | Reserved |
 |---|---|
@@ -804,6 +814,10 @@ bytes, a display buffer of `D` bytes (`P`, or `3 * P` for 8-bit colour,
 | `Thumbnail` | `decode + V + D + 8 MiB` |
 | `PresentationLayer` | `9 * P + 1 MiB` |
 | `RawRedaction`: the copy of a raw frame in which boxes are filled | `F` |
+| `ValueLegend`: the value range of an RT Dose or Parametric Map, one frame after another | `decode + 8 * P` |
+| `SegmentationOverlay`: one SEG frame painted on a displayed frame | `decode + 24 * T + 1 MiB` |
+| `ValueOverlay` sent as a PNG | `8 * N * P + max(decode, 32 * T + 1 MiB)` |
+| `ValueOverlay` sent as values | `8 * N * P + max(decode, 12 * T + 1 MiB)` |
 
 where `decode` is, for a raster, `raster_decode_heap_limit` at the file
 length discovery recorded (32 MiB and a read buffer, `6 * F`, and four times
@@ -817,6 +831,24 @@ frame must declare the image of its catalog entry before it is decoded
 ("Compressed Frames Are Held To The Header"), but the heap a DICOM decoder
 holds for that image is not limited the way the raster decoder's is.
 
+The overlay rows are estimated from the entry of the overlay's object (the
+SEG, dose or map), which is what they decode; the displayed frame
+contributes its rows and columns only. An overlay holds much more than a
+decode. A frame as real-world values is eight bytes a pixel (`8 * P`): a
+legend holds one at a time, a value overlay the `N` planes its displayed
+frame is sampled from, from the first decode until it is done. `N` is one
+or two for a frame parallel to the planes and can be every plane of the
+volume for a frame that cuts through them; the server computes it from the
+geometry in the catalog before it asks for the permit and decodes no plane
+beyond it. An overlay image is 24 bytes a displayed pixel while it is
+encoded (`24 * T`: four of RGBA, a compressed stream in a buffer up to twice
+its length, and the PNG, held twice over while it grows), which an image
+that does not compress reaches; a value overlay adds the resampled values
+of the displayed frame, eight bytes a pixel, and sends either that image or
+four bytes a pixel of values. Its decodes are over before the displayed
+frame is resampled, so it reserves the larger of the two stages beside its
+planes. `tests/raster_cost/overlays.rs` measures each kind against its row.
+
 A raster's reservation uses the length the file had when it was listed
 (`RasterMetadata.file_length`). A decode of a file that has grown past that
 length since fails before anything is read.
@@ -828,6 +860,14 @@ frame's permit and takes none of its own, and it never waits for a decode
 another request announced (which may itself be waiting for a permit): it
 reads the raw cache and otherwise decodes. No work waits for a second
 permit while it holds one.
+
+An overlay and a legend are each one piece of work too
+(`pixels::compute_from_frames`): one permit covers every frame the work
+decodes, the values it converts them to, the resampling and the encoding.
+The work reads its frames through the `CoveredFrames` it is handed, which
+decode under that permit exactly as a display frame's raw decode does. A
+value overlay needs its volume's legend first; the legend is work of its
+own, finished and its permit returned before the overlay asks for one.
 
 **Admission.** `DecodeScheduler::admit(class, bytes)` grants the permit and
 the bytes in one step and takes both back when the `DecodePermit` is
@@ -867,7 +907,11 @@ requests waiting for it: when the last of them is dropped before the permit
 is granted, the decode leaves the queue, frees its place there and is never
 started, and the next request for the frame announces a decode of its own.
 A decode that has been granted its permit runs to its end and is cached
-whoever is still waiting. A thumbnail, a preview and the
+whoever is still waiting. An overlay and a legend's value range wait and
+are shared the same way: requests for the same overlay, or for the legend
+of the same object, wait for one computation, keyed as its cache is (the
+overlay cache; `ValueRangeCache` for a legend, per object and file set),
+and a refusal is the answer for all of them. A thumbnail, a preview and the
 copy made for redaction boxes in a raw frame wait inside the request, so one
 that is dropped while it waits starts no work and reserves nothing. Once any
 of them holds a permit, its work runs in a task of its own and keeps the
@@ -877,17 +921,18 @@ permit.
 
 **Where the answers appear.** The endpoints of `endpoints::DECODING`: the
 display, raw, raw-pixel, thumbnail and presentation-layer endpoints, the
-segmentation and value overlays (through the frames they decode), and the
-semantic context of an RT Dose or Parametric Map, whose legend decodes the
-object's frames. A legend refused because the viewer was busy answers 503
-and is not cached; one refused because a frame exceeds the budget makes the
-overlay ineligible, with that reason.
+segmentation and value overlays, and the semantic context of an RT Dose or
+Parametric Map, whose legend spans the values of every frame of the object.
+An overlay that needs more than the budget answers 422, and one that would
+wait behind a full queue 503, as a frame does. A legend refused because the
+viewer was busy answers 503 and is not cached; one that needs more than the
+budget makes the overlay ineligible, with that reason, and the overlay
+endpoints then answer `422 semantic_mapping_unavailable`.
 
 **What the budget does not cover.** It bounds what running decodes hold.
 Beside it are the frame caches (`--cache-budget`), the body of each response
 while it is sent (a raw frame is `F` bytes, held once per response when it
-is too large to cache), the resampling and encoding of segmentation and
-value overlays (sized by the DICOM image they are drawn on), and tag trees.
+is too large to cache), and tag trees.
 
 See [the HTTP API reference](api.md) for endpoint payloads and headers.
 
@@ -1721,7 +1766,9 @@ installation and VS Code Electron integration can also use network/cache state;
   layer, with and without redaction boxes) for the same files and for DICOM
   fixtures on a runtime whose threads are counted together, and holds the
   heap of each to the bytes it reserved, and the heap of many at once to
-  the budget.
+  the budget. `overlays.rs` there does the same for a legend and for every
+  kind of overlay, through the API, on objects and displayed frames enlarged
+  from the committed fixtures and filled with samples that do not compress.
 - Codestream tests state the same for compressed DICOM frames.
   `integration::codestream_agreement` decodes honest codestreams written by
   encoders the viewer does not link (OpenJPEG, libjpeg, DCMTK, libjxl; the
@@ -1742,7 +1789,10 @@ installation and VS Code Electron integration can also use network/cache state;
   queue answers 503 with `Retry-After` on the decoding endpoints and on no
   other, a frame too large for the budget answers 422 and stays renderable,
   a permit comes back however its holder ends, and a queued decode whose
-  requests have all been dropped leaves the queue. On Unix a decode is held
+  requests have all been dropped leaves the queue. Overlays and legends are
+  held to the same rules: each reserves its estimate once on a viewer with a
+  single permit, requests for the same one share a computation, one over
+  the budget answers 422, and one nobody waits for leaves the queue. On Unix a decode is held
   in place by a pipe put where its file was, to show that a request dropped
   after its decode began stays counted until the decode ends.
 - Discovery builds each file's catalog metadata in one parse (`loader/entry.rs`

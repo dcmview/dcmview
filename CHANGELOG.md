@@ -125,6 +125,29 @@ diagnostic viewer.
 - `--cache-budget BYTES` now also covers the thumbnail cache, and its default
   total is 768 MiB instead of 704 MiB: 256, 384, 64 and 64 MiB for the
   display, raw, overlay and thumbnail caches respectively.
+- Requests for the same segmentation, RT Dose or Parametric Map overlay that
+  arrive while it is being drawn now wait for that one drawing and report
+  `X-Cache: HIT`, and requests for the semantic context of the same RT Dose
+  or Parametric Map share one pass over its frames for the legend.
+- A segmentation, RT Dose or Parametric Map overlay that fails while it is
+  encoded now answers `500 pixel_decode_failed`, as one whose frames cannot
+  be decoded does, instead of `500 internal_error`.
+
+### Fixed
+
+- Segmentation, RT Dose and Parametric Map overlays and the legend of an RT
+  Dose or Parametric Map are now reserved against the decode memory budget
+  as whole pieces of work: the frames they decode, the values they are
+  resampled from and the image that is encoded. Before, only the decode of
+  each frame was limited, so the memory an overlay or legend took on top of
+  that was not bounded, and each of several requests for the same overlay
+  or legend did all of the work again. An overlay that needs
+  more than the budget now answers `422 decode_memory_exceeded`, and one
+  that would wait behind a full queue `503 decode_busy` with
+  `Retry-After: 1`, as frames do.
+- An RT Dose or Parametric Map overlay drawn before more files were loaded
+  is drawn again afterwards instead of being served from the cache, so its
+  colors follow the legend of the files now loaded.
 
 ## 0.4.1 - 2026-10-09
 

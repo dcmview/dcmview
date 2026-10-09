@@ -4,7 +4,7 @@ use crate::annotations::AnnotationStore;
 use crate::api::contracts::{SemanticContextResponse, TagNode};
 use crate::pixels::{
     self, CacheBudget, DecodeLimits, DecodeScheduler, FrameCache, OverlayCache, RawFrameCache,
-    ThumbnailCache,
+    ThumbnailCache, ValueRangeCache,
 };
 use crate::redactions::RedactionStore;
 use crate::types::OverlayCacheKey;
@@ -41,6 +41,7 @@ pub struct AppState {
     semantic_cache: Arc<Mutex<LruCache<FileSetCacheKey, Arc<SemanticContextResponse>>>>,
     value_mapping_cache: Arc<Mutex<LruCache<FileSetCacheKey, Arc<FileValueMappings>>>>,
     overlay_cache: Arc<Mutex<OverlayCache>>,
+    value_range_cache: Arc<Mutex<ValueRangeCache>>,
     thumbnail_cache: Arc<Mutex<ThumbnailCache>>,
     cache_budget: CacheBudget,
     decode_scheduler: Arc<DecodeScheduler>,
@@ -71,7 +72,14 @@ impl AppState {
             tag_cache: Arc::new(Mutex::new(LruCache::new(TAG_CACHE_MAX_FILES))),
             semantic_cache: Arc::new(Mutex::new(LruCache::new(SEMANTIC_CACHE_MAX_FILES))),
             value_mapping_cache: Arc::new(Mutex::new(LruCache::new(VALUE_MAPPING_CACHE_MAX_FILES))),
-            overlay_cache: pixels::new_overlay_cache(),
+            overlay_cache: Arc::new(Mutex::new(OverlayCache::with_scheduler(
+                cache_budget.overlay_bytes,
+                decode_scheduler.clone(),
+            ))),
+            value_range_cache: Arc::new(Mutex::new(ValueRangeCache::with_scheduler(
+                pixels::VALUE_RANGE_CACHE_MAX_BYTES,
+                decode_scheduler.clone(),
+            ))),
             thumbnail_cache: Arc::new(Mutex::new(ThumbnailCache::with_scheduler(
                 cache_budget.thumbnail_bytes,
                 decode_scheduler.clone(),
@@ -133,6 +141,10 @@ impl AppState {
             budget.overlay_bytes,
             scheduler.clone(),
         )));
+        self.value_range_cache = Arc::new(Mutex::new(ValueRangeCache::with_scheduler(
+            pixels::VALUE_RANGE_CACHE_MAX_BYTES,
+            scheduler.clone(),
+        )));
         self.thumbnail_cache = Arc::new(Mutex::new(ThumbnailCache::with_scheduler(
             budget.thumbnail_bytes,
             scheduler.clone(),
@@ -162,6 +174,14 @@ impl AppState {
 
     pub(crate) fn raw_cache(&self) -> Arc<Mutex<RawFrameCache>> {
         self.raw_cache.clone()
+    }
+
+    pub(crate) fn overlay_cache(&self) -> Arc<Mutex<OverlayCache>> {
+        self.overlay_cache.clone()
+    }
+
+    pub(crate) fn value_range_cache(&self) -> Arc<Mutex<ValueRangeCache>> {
+        self.value_range_cache.clone()
     }
 
     pub(crate) fn thumbnail_cache(&self) -> Arc<Mutex<ThumbnailCache>> {

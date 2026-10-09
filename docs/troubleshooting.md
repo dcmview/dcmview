@@ -285,6 +285,12 @@ its file, so of two images with the same pixels the longer file may be the
 one refused. The budget covers decodes in progress separately from the
 caches.
 
+A segmentation, dose or map overlay can be refused in the same way although
+the image under it is shown: an overlay reserves for the object it is made
+from and for every pixel of the displayed image. When the colour scale of a
+dose or map needs more than the budget, the viewer reports the overlay as
+unavailable and gives this message as the reason.
+
 ### The API answers 503 decode_busy
 
 The request would have to wait for decode capacity, and its class's waiting
