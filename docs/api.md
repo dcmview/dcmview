@@ -167,6 +167,15 @@ grayscale display frames carry a display shutter or overlay graphics; neither
 depends on the window, so `presentation-layer` drawn over a frame windowed in
 the browser gives exactly the display frame for that window.
 
+A file summary is built from the file's data set before its pixel data,
+read within fixed limits. Two of them can leave a field empty in a file
+that is listed: a value longer than 1 MiB is not read (Overlay Data
+excepted), and neither is a multi-valued text element of more than 65,536
+values. A summary field read from such an element is as it would be if the
+element were absent; a polygonal display shutter with that many vertex
+values is not applied, as one whose vertices cannot be read is not. An
+element of an Explicit VR file other than UC cannot hold that many values.
+
 ### File keys
 
 Every file has a session-scoped identity independent of its discovery index.
@@ -681,17 +690,33 @@ not grow with pixel data or bulk values. Reported as `{"type": "binary", "length
 with the length the element declares, are Pixel Data, every value of a bulk
 binary representation (OB, OW, OD, OF, OL, UN) and any other value longer
 than 1 MiB, whatever its representation; encapsulated Pixel Data reports the
-bytes of its fragments. A tree ends early in these cases, with status `200`:
-when the data set ends inside a value that is not read (a truncated file),
-that element is the last one listed; the tree of a Deflated Explicit VR
-Little Endian data set is read within 64 MiB of inflated data, so when its
-pixel data is larger than that, elements behind the pixel data are not
-listed; and when sequences nest more than 64 deep, the tree ends at that
-sequence and the top-level element it is in has the value
-`{"type": "error", "message": "..."}`. Bytes after the data set that are
-not an element end the tree and are not listed: zero padding of any length,
-and anything whose element header cannot be read, which includes a file cut
-inside a header. An element that can be read is listed wherever it stands.
+bytes of its fragments. A tree that does not reach the end of its data set
+still answers `200`, and its last node is then a leaf with `tag` `"Note"`,
+empty `vr` and `keyword`, and a string that says why:
+
+- the data set ends inside a value that is not read (a truncated file):
+  that element is the last one listed;
+- a Deflated Explicit VR Little Endian data set is read within 64 MiB, so
+  when its pixel data inflates to more than is left of that, the pixel
+  element is the last one listed;
+- sequences nest more than 64 deep: the tree ends at that sequence, and the
+  top-level element it is in also has the value
+  `{"type": "error", "message": "..."}`;
+- what follows in the file is not a data element: an element header that
+  cannot be read (a file cut inside a header, a read or inflate error), or
+  an element with the tag (0000,0000).
+
+Zero padding after a data set is not such a case: when everything from
+there to the end of the file is zero, the tree is whole and has no note
+(up to 1 MiB of padding; in a deflated data set padding is noted as
+something that is not an element). One to three stray bytes at the very end
+of a file are ignored. An element that can be read is listed wherever it
+stands. `/tags/select` returns one node and carries no note.
+
+In a Deflated Explicit VR Little Endian file, a text value longer than
+4,096 bytes that is not plain ASCII is shown from its first 4,096 bytes
+(for a multi-valued element, each value); the preview shows 256 characters
+of a value in any case.
 (`/tags/select` for a tag before the pixel data reads only up to the pixel
 data, so it does not find an element of that tag placed behind it.)
 Both endpoints answer `500` when a value they

@@ -125,7 +125,9 @@ diagnostic viewer.
 - Discovery reads a DICOM file's header within fixed limits. It passes over
   any value longer than 1 MiB before the pixel data without reading it
   (Overlay Data excepted), so large private or bulk elements no longer cost
-  scan time or memory. A file whose sequences nest more than 64 deep, or
+  scan time or memory. A multi-valued text element of more than 65,536
+  values is passed over in the same way, so a catalog field read from one
+  is empty. A file whose sequences nest more than 64 deep, or
   whose Deflated Explicit VR Little Endian data set needs more than 64 MiB
   to read up to its pixel data, is skipped as `dicom_parse_failed`.
 
@@ -136,7 +138,9 @@ diagnostic viewer.
   of failing, the tree of a Deflated Explicit VR Little Endian file
   whose pixel data inflates to more than 64 MiB ends with its pixel
   element, and a tree whose sequences nest more than 64 deep ends there
-  with an error value.
+  with an error value. A tree that ends before its data set ends with a
+  `Note` leaf that says why. In a deflated file, text longer than 4,096
+  bytes that is not plain ASCII is shown from its first 4,096 bytes.
 
 - The `error` text of a failed decode is now `frame decode failed` or
   `raw frame decode failed`, with a reason only where the viewer states one

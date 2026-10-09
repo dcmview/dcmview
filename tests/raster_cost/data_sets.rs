@@ -20,7 +20,8 @@ use super::heap;
 use super::raster_files::CountedFile;
 use dcmview::data_set::{
     read_for_catalog, DATA_SET_CATALOG_MAX_VALUES, DATA_SET_INFLATED_BUDGET_BYTES,
-    DATA_SET_INFLATED_ELEMENT_CHARGE_BYTES, DATA_SET_MAX_DEPTH, DATA_SET_VALUE_MAX_BYTES,
+    DATA_SET_INFLATED_ELEMENT_CHARGE_BYTES, DATA_SET_INFLATED_OVERSHOOT_BYTES, DATA_SET_MAX_DEPTH,
+    DATA_SET_VALUE_MAX_BYTES,
 };
 use dcmview::loader::{self, DiscoverOptions, DiscoveryReason, FormatSelection};
 use dcmview::types::FileEntry;
@@ -146,12 +147,10 @@ fn empty_elements(count: u32) -> Vec<u8> {
     elements_of(count, "LO", &[])
 }
 
-/// What a read of a deflated data set may hold: its budget, the two
-/// buffers a value passes through on its way in, and what any read holds.
-pub(super) const DEFLATED_HEAP: u64 = DATA_SET_INFLATED_BUDGET_BYTES
-    + 2 * DATA_SET_VALUE_MAX_BYTES as u64
-    + READ_HEAP
-    + INFLATER_HEAP;
+/// What a read of a deflated data set may hold: its budget, what it may
+/// hold over it while one value is built, and what any read holds.
+pub(super) const DEFLATED_HEAP: u64 =
+    DATA_SET_INFLATED_BUDGET_BYTES + DATA_SET_INFLATED_OVERSHOOT_BYTES + READ_HEAP + INFLATER_HEAP;
 
 /// A deflated data set whose values hold more, once read, than their
 /// bytes, or look as if they might.
@@ -176,28 +175,51 @@ pub(super) fn deflated_values() -> Vec<DeflatedValues> {
         listed,
         shown,
     };
+    let declared = |name: &str| element(tags::SPECIFIC_CHARACTER_SET, "CS", name.as_bytes());
+    // One-character values, as many as a value of the longest kept length
+    // holds, behind kept values that leave little of the budget.
+    let one_character_values = [
+        elements_of(60, "UT", &vec![b'a'; limit]),
+        element(PRIVATE_BLOB, "UC", &b"a\\".repeat(limit / 2)),
+    ]
+    .concat();
+    // Values that each grow when decoded, many to a string.
+    let growing = [vec![0xa1; 100], vec![b'\\']].concat().repeat(648);
     let mut cases = vec![
-        // The most values the catalog keeps of one string, in many strings.
         case(
             "strings split into values",
-            elements_of(
-                4_000,
-                "LO",
-                &vec![b'\\'; DATA_SET_CATALOG_MAX_VALUES as usize - 1],
-            ),
+            elements_of(4_000, "LO", &vec![b'\\'; 4_095]),
             false,
             false,
         ),
-        // More values than the catalog keeps: it passes them over.
         case(
             "strings of nothing but separators",
             elements_of(256, "LO", &vec![b'\\'; 65_534]),
+            false,
+            false,
+        ),
+        case(
+            "one-character values behind a nearly spent budget",
+            one_character_values,
+            // More values than the catalog keeps of one string.
             true,
+            false,
+        ),
+        case(
+            "strings of values that grow when decoded",
+            [declared("ISO_IR 166"), elements_of(1_100, "LO", &growing)].concat(),
+            false,
             false,
         ),
         case(
             "lists of tags",
             elements_of(1_500, "AT", &vec![0; 65_532]),
+            false,
+            false,
+        ),
+        case(
+            "plain text past the budget",
+            elements_of(70, "UT", &vec![b'a'; limit]),
             false,
             false,
         ),
@@ -215,24 +237,37 @@ pub(super) fn deflated_values() -> Vec<DeflatedValues> {
             true,
         ),
     ];
-    // Text of bytes that decode to more than themselves, with and without
-    // a character set that says how.
-    for character_set in [None, Some("ISO_IR 166"), Some("ISO_IR 13"), Some("GB18030")] {
-        let declared = character_set.map_or(Vec::new(), |name| {
-            element(tags::SPECIFIC_CHARACTER_SET, "CS", name.as_bytes())
-        });
-        let name = character_set.unwrap_or("no character set");
-        for (vr, length, count) in [("UT", limit, 20), ("LO", 65_534, 1_500)] {
-            cases.push(case(
-                &format!("{vr} text of high bytes in {name}"),
-                [
-                    declared.clone(),
-                    elements_of(count, vr, &vec![0xa1; length]),
-                ]
-                .concat(),
-                false,
-                false,
-            ));
+    // Text a decoder holds far more for than it has bytes: bytes that are
+    // valid in a character set, bytes that are not, and escapes, in every
+    // kind of text element, more of it than the budget.
+    for (bytes, what) in [(0xa1_u8, "high"), (0xff, "invalid"), (0x1b, "escape")] {
+        for character_set in [
+            None,
+            Some("ISO_IR 192"),
+            Some("ISO_IR 166"),
+            Some("ISO_IR 13"),
+            Some("GB18030"),
+            Some("ISO 2022 IR 87"),
+        ] {
+            let escapes = bytes == 0x1b;
+            if escapes != (character_set == Some("ISO 2022 IR 87")) {
+                continue;
+            }
+            let set = character_set.map_or(Vec::new(), declared);
+            let name = character_set.unwrap_or("no character set");
+            for (vr, length, count) in [
+                ("UT", limit, 70),
+                ("UC", limit, 70),
+                ("LT", 65_534, 1_100),
+                ("LO", 65_534, 1_100),
+            ] {
+                cases.push(case(
+                    &format!("{vr} text of {what} bytes in {name}"),
+                    [set.clone(), elements_of(count, vr, &vec![bytes; length])].concat(),
+                    false,
+                    false,
+                ));
+            }
         }
     }
     cases
@@ -392,6 +427,31 @@ fn catalog_cases() -> Vec<CatalogCase> {
                 Image,
             )
             .costing(64 * KIB, READ_HEAP);
+            case.omits = Some(PRIVATE_BLOB);
+            case
+        },
+        // The longest list of values the catalog keeps, and one value more.
+        {
+            let most = DATA_SET_CATALOG_MAX_VALUES as usize;
+            let mut case = before(
+                "a string of as many values as are kept",
+                element(PRIVATE_BLOB, "UC", &vec![b'\\'; most - 1]),
+                Image,
+            );
+            case.heap = READ_HEAP + 128 * most as u64;
+            case.bytes *= 2;
+            case.keeps = Some((PRIVATE_BLOB, most));
+            case
+        },
+        {
+            let most = DATA_SET_CATALOG_MAX_VALUES as usize;
+            let mut case = before(
+                "a string of more values than are kept",
+                element(PRIVATE_BLOB, "UC", &vec![b'\\'; most + 1]),
+                Image,
+            );
+            case.bytes *= 2;
+            case.heap = READ_HEAP + 2 * most as u64;
             case.omits = Some(PRIVATE_BLOB);
             case
         },

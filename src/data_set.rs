@@ -22,14 +22,16 @@
 //!   [`DATA_SET_INFLATED_BUDGET_BYTES`]**: every inflated byte counts, kept
 //!   or discarded, and so do
 //!   [`DATA_SET_INFLATED_ELEMENT_CHARGE_BYTES`] for every element the read
-//!   builds, twice that for every item, and
-//!   [`DATA_SET_INFLATED_VALUE_CHARGE_BYTES`] for every value of a
-//!   multi-valued string after its first, because a few bytes of a deflate
-//!   stream can inflate to thousands of elements or of values. Text that
-//!   is not plain ASCII is charged [`DATA_SET_INFLATED_TEXT_CHARGE`] times
-//!   its length more, and a list of tags its length once more. The charge
-//!   is worked out from the value's bytes before anything is built from
-//!   them, and a value whose charge the budget does not cover is not read.
+//!   builds and twice that for every item, because a few bytes of a
+//!   deflate stream can inflate to thousands of elements. Text and lists of
+//!   tags are built by this module from their bytes, not by the parser:
+//!   the list of a multi-valued string is sized, and checked against what
+//!   the budget has left, before a value is put in it, and each value is
+//!   charged what it holds beyond its bytes once it is built. Text is
+//!   handed to a decoder at most [`DATA_SET_INFLATED_TEXT_PIECE_BYTES`] at
+//!   a time, and text longer than that which does not decode to the bytes
+//!   it is, is kept as its first piece: the catalog and the tag tree use
+//!   far less of a value.
 //! - **The catalog read keeps no string of more than
 //!   [`DATA_SET_CATALOG_MAX_VALUES`] values**, counted in its bytes before
 //!   it is split.
@@ -42,10 +44,11 @@
 //! by a number the file declares: the values kept (each backed by its bytes
 //! in the file) and the in-memory elements and values built from the bytes
 //! read. That is not a fixed budget: an object model holds more than the
-//! bytes it was built from. Only a read of a deflated data set has one, and
-//! holds no more than it and the two buffers a value passes through, each
-//! at most [`DATA_SET_VALUE_MAX_BYTES`]. `tests/raster_cost/data_sets.rs` counts the
-//! reads, the bytes and the heap at the source and the allocator.
+//! bytes it was built from. Only a read of a deflated data set has one:
+//! what it holds was charged to the budget when it was built, and it never
+//! holds more than the budget and [`DATA_SET_INFLATED_OVERSHOOT_BYTES`].
+//! `tests/raster_cost/data_sets.rs` counts the reads, the bytes and the
+//! heap at the source and the allocator.
 //!
 //! The catalog read refuses a file that breaks a limit before its pixel
 //! element: discovery lists it as `dicom_parse_failed`. The tag read fails
@@ -55,9 +58,11 @@
 //! inside a value it is passing over ends there; and so does one whose
 //! sequences nest past the limit, at the sequence that does
 //! ([`TagDataSet::too_deep`]). Top-level bytes that are not an element end
-//! the tag read without an error and are not listed: a header that cannot
-//! be read, or the tag (0000,0000), which is what zero padding after a data
-//! set parses as. Every well-formed element is listed where it stands.
+//! the tag read too: a header that cannot be read, or the tag (0000,0000),
+//! which no data set holds. A tag read that ends early says why
+//! ([`TagDataSet::cut`]), with one exception: nothing but zeros from there
+//! to the end of the file is padding after a whole data set. Every
+//! well-formed element is listed where it stands.
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use dicom_core::header::{DataElementHeader, Length};
@@ -65,6 +70,7 @@ use dicom_core::value::{DataSetSequence, PrimitiveValue, Value};
 use dicom_core::{Tag, VR};
 use dicom_dictionary_std::tags;
 use dicom_encoding::decode::Decode;
+use dicom_encoding::text::{DefaultCharacterSetCodec, SpecificCharacterSet, TextCodec};
 use dicom_encoding::{Codec, TransferSyntax, TransferSyntaxIndex};
 use dicom_object::mem::InMemElement;
 use dicom_object::{DefaultDicomObject, FileMetaTable, InMemDicomObject};
@@ -91,21 +97,27 @@ pub const DATA_SET_INFLATED_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
 /// than the element or the item holds in memory.
 pub const DATA_SET_INFLATED_ELEMENT_CHARGE_BYTES: u64 = 512;
 
-/// What each value of a multi-valued string read from a deflated data set
-/// is charged against the budget after the first, beside its bytes: what a
-/// value holds in memory with the list it is kept in, while that list
-/// grows.
-pub const DATA_SET_INFLATED_VALUE_CHARGE_BYTES: u64 = 72;
+/// The most bytes of text a read of a deflated data set hands a text
+/// decoder at once. A value (of a multi-valued string: each of its values)
+/// of this length or less is decoded whole. A longer one is decoded piece
+/// by piece and kept whole when it decodes to the bytes it is, as ASCII
+/// text does in every character set but for a few characters; otherwise
+/// only its first piece is decoded and kept.
+pub const DATA_SET_INFLATED_TEXT_PIECE_BYTES: usize = 4096;
 
-/// How many times its length a text value read from a deflated data set is
-/// charged, beside its bytes, when it is not plain ASCII: a decoder
-/// reserves three bytes for each byte of such text.
-pub const DATA_SET_INFLATED_TEXT_CHARGE: u64 = 4;
+/// What a read of a deflated data set may hold over its budget, while one
+/// value is built: the value's bytes as they were inflated, at most
+/// [`DATA_SET_VALUE_MAX_BYTES`], beside the value built from them, and
+/// what a decoder holds while it decodes one piece of text, taken as
+/// sixteen times the piece.
+pub const DATA_SET_INFLATED_OVERSHOOT_BYTES: u64 =
+    DATA_SET_VALUE_MAX_BYTES as u64 + 16 * DATA_SET_INFLATED_TEXT_PIECE_BYTES as u64;
 
 /// The most values a multi-valued string may have for the catalog read to
-/// keep it. No catalog field is read from a longer list, and each value of
-/// one holds far more than its bytes.
-pub const DATA_SET_CATALOG_MAX_VALUES: u64 = 4096;
+/// keep it: more than an element of a 16-bit length can hold, which is
+/// every such element of an Explicit VR file. A longer list is passed
+/// over, so the entry is built as if the element were absent.
+pub const DATA_SET_CATALOG_MAX_VALUES: u64 = 65_536;
 
 /// How deep sequences may nest: an element of the data set is at depth 0,
 /// an element of an item of a top-level sequence at depth 1.
@@ -230,6 +242,22 @@ pub struct TagDataSet {
     /// [`DATA_SET_MAX_DEPTH`]. The object ends inside it, at the sequence
     /// that is too deep, which is listed without items.
     pub too_deep: Option<Tag>,
+    /// Why the object does not hold the whole extent, if it does not.
+    pub cut: Option<TagCut>,
+}
+
+/// Why a tag read ended before the end of its extent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TagCut {
+    /// The data set ended, or a deflated one ran out of budget, inside a
+    /// value that was being passed over, which is the last element.
+    InsideValue,
+    /// Sequences nest past [`DATA_SET_MAX_DEPTH`] ([`TagDataSet::too_deep`]).
+    TooDeep,
+    /// Top-level bytes are not an element: a header that cannot be read,
+    /// or the tag (0000,0000), with something other than zeros to the end
+    /// of the file behind it.
+    NotAnElement,
 }
 
 /// Reads what the tag endpoints show of a Part 10 file's data set.
@@ -259,11 +287,18 @@ pub fn read_for_tags<R: Read + Seek>(
         max_values: None,
     };
     let walked = walk_data_set(source, start, file_length, transfer_syntax, &plan)?;
-    walked.end?;
+    let end = walked.end?;
+    let cut = match end {
+        _ if walked.too_deep.is_some() => Some(TagCut::TooDeep),
+        End::CutShort => Some(TagCut::InsideValue),
+        _ if walked.not_an_element_at.is_some() => Some(TagCut::NotAnElement),
+        _ => None,
+    };
     Ok(TagDataSet {
         object: walked.object,
         pixel_fragment_bytes: walked.fragment_bytes,
         too_deep: walked.too_deep,
+        cut,
     })
 }
 
@@ -376,6 +411,9 @@ struct Walked {
     odd_item_length: bool,
     fragment_bytes: Option<u64>,
     too_deep: Option<Tag>,
+    /// Where top-level bytes that are not an element begin, when the walk
+    /// ended at them and they are not zero padding to the end of the file.
+    not_an_element_at: Option<u64>,
 }
 
 /// Walks the data set that follows the file meta group, from the offset
@@ -405,31 +443,60 @@ fn walk_data_set<R: Read + Seek>(
                     end: u64::MAX,
                     seek: None,
                     meter: Some(meter),
+                    header_at: Arc::default(),
                 },
                 plan,
             ))
         }
         Codec::Dataset(None) => bail!("unsupported data set encoding"),
         _ => {
-            let decoder = DynStatefulDecoder::new_with_ts(source, transfer_syntax, start)
+            let decoder = DynStatefulDecoder::new_with_ts(&mut *source, transfer_syntax, start)
                 .map_err(|_| anyhow!("no decoder for the transfer syntax"))?;
-            Ok(walk(
+            let mut walked = walk(
                 Bounded {
                     inner: decoder,
                     offset: 0,
                     end: file_length,
                     seek: Some(|decoder, position| decoder.seek(position)),
                     meter: None,
+                    header_at: Arc::default(),
                 },
                 plan,
-            ))
+            );
+            // Zeros from there to the end of the file are padding after the
+            // data set, which is whole.
+            if let Some(at) = walked.not_an_element_at {
+                if zeros_to_the_end(source, at, file_length) {
+                    walked.not_an_element_at = None;
+                }
+            }
+            Ok(walked)
         }
     }
 }
 
+/// The longest run of zeros after a data set that is checked to be one.
+const PADDING_MAX_BYTES: u64 = 1024 * 1024;
+
+/// Whether the file holds nothing but zeros from `at` to its end.
+fn zeros_to_the_end<R: Read + Seek>(source: &mut BufReader<R>, at: u64, file_length: u64) -> bool {
+    let length = file_length.saturating_sub(at);
+    if length > PADDING_MAX_BYTES || source.seek(std::io::SeekFrom::Start(at)).is_err() {
+        return false;
+    }
+    let mut rest = Vec::new();
+    source.take(length).read_to_end(&mut rest).is_ok()
+        && rest.len() as u64 == length
+        && rest.iter().all(|byte| *byte == 0)
+}
+
 fn walk<D: StatefulDecode>(source: Bounded<D>, plan: &Plan) -> Walked {
     let meter = source.meter.clone();
+    let header_at = Arc::clone(&source.header_at);
     let mut walk = Walk {
+        character_set: SpecificCharacterSet::default(),
+        header_at,
+        not_an_element_at: None,
         reader: LazyDataSetReader::new(source),
         meter: meter.clone(),
         plan,
@@ -458,6 +525,7 @@ fn walk<D: StatefulDecode>(source: Bounded<D>, plan: &Plan) -> Walked {
         odd_item_length: walk.odd_item_length,
         fragment_bytes: walk.fragment_bytes,
         too_deep: walk.too_deep,
+        not_an_element_at: walk.not_an_element_at,
     }
 }
 
@@ -482,6 +550,14 @@ struct Walk<'p, D: StatefulDecode> {
     odd_item_length: bool,
     fragment_bytes: Option<u64>,
     too_deep: Option<Tag>,
+    /// The character set in effect, as the parser tracks it, for the text
+    /// a budgeted read decodes itself.
+    character_set: SpecificCharacterSet,
+    /// Where the element header last asked for begins.
+    header_at: Arc<AtomicU64>,
+    /// Where top-level bytes that are not an element begin, when the walk
+    /// ended at them.
+    not_an_element_at: Option<u64>,
 }
 
 impl<D: StatefulDecode> Walk<'_, D> {
@@ -512,7 +588,10 @@ impl<D: StatefulDecode> Walk<'_, D> {
             return Ok(None);
         };
         let token = match token {
-            Err(_) if depth == 0 && self.plan.ends_at_padding => return Ok(None),
+            Err(_) if depth == 0 && self.plan.ends_at_padding => {
+                self.not_an_element_at = Some(self.header_at.load(Ordering::Relaxed));
+                return Ok(None);
+            }
             token => token.map_err(|_| anyhow!("unreadable element header"))?,
         };
         let header = match token {
@@ -532,6 +611,7 @@ impl<D: StatefulDecode> Walk<'_, D> {
         };
         if depth == 0 {
             if self.plan.ends_at_padding && header.tag == Tag(0, 0) {
+                self.not_an_element_at = Some(self.header_at.load(Ordering::Relaxed));
                 return Ok(None);
             }
             self.last_top_level = Some(header.tag);
@@ -579,50 +659,55 @@ impl<D: StatefulDecode> Walk<'_, D> {
                     "a value runs past the end of the data set"
                 );
             }
-            // What a value holds once read is not what it takes in the
-            // file: a string is one string per value, and text can decode
-            // to more bytes than it has. The bytes say which, before
-            // anything is built from them.
+            // The catalog keeps no string of very many values; in a file
+            // read by seeking, its bytes are looked at and left in place.
             let splits = splits_into_values(header.vr);
-            let text = splits || matches!(header.vr, VR::LT | VR::ST | VR::UT | VR::UR);
-            let budgeted = decoder.meter.is_some();
-            let capped = self
-                .plan
-                .max_values
-                .is_some_and(|most| splits && length > most);
-            let looked_at = if keep && length > 0 && ((budgeted && text) || capped) {
-                Some(
-                    decoder
-                        .look_at(header.len.0)
+            let budget = decoder.meter.clone();
+            if let (true, None, Some(most)) = (keep, &budget, self.plan.max_values) {
+                if splits && length > most {
+                    let values = decoder
+                        .values_ahead(header.len.0)
                         .map_err(|_| anyhow!("unreadable element value"))?
-                        .context("a value runs past the end of the data set")?,
-                )
-            } else {
-                None
-            };
-            if let (Some(most), Some(looked_at)) = (self.plan.max_values, looked_at) {
-                keep &= !(splits && looked_at.values > most);
-            }
-            if keep && budgeted {
-                let values = looked_at.filter(|_| splits).map_or(1, |value| value.values);
-                let expands = looked_at.is_some_and(|value| !value.plain);
-                let charge = (values - 1) * DATA_SET_INFLATED_VALUE_CHARGE_BYTES
-                    + if expands {
-                        length * DATA_SET_INFLATED_TEXT_CHARGE
-                    } else if header.vr == VR::AT {
-                        length
-                    } else {
-                        0
-                    };
-                ensure!(
-                    charge <= decoder.remaining(),
-                    "a value would hold more than the inflated budget has left"
-                );
-                if let Some(meter) = &decoder.meter {
-                    meter.spent.fetch_add(charge, Ordering::Relaxed);
+                        .context("a value runs past the end of the data set")?;
+                    keep = values <= most;
                 }
             }
-            if keep {
+            // Under a budget, text and lists of tags are built here from
+            // their bytes, so that what building one may hold does not
+            // depend on a decoder.
+            let built_here =
+                splits || matches!(header.vr, VR::LT | VR::ST | VR::UT | VR::UR | VR::AT);
+            if let (true, Some(meter), true) = (keep && length > 0, &budget, built_here) {
+                let bytes = decoder
+                    .take(header.len.0)
+                    .map_err(|_| anyhow!("unreadable element value"))?
+                    .context("a value runs past the end of the data set")?;
+                let value = inflated_value(
+                    &header,
+                    &bytes,
+                    &self.character_set,
+                    self.plan.max_values,
+                    meter,
+                )?;
+                if let (Some(PrimitiveValue::Strs(names)), tags::SPECIFIC_CHARACTER_SET) =
+                    (&value, header.tag)
+                {
+                    // As the parser does when it reads this element.
+                    if let Some(named) = names
+                        .first()
+                        .and_then(|name| SpecificCharacterSet::from_code(name))
+                    {
+                        self.character_set = named;
+                    }
+                }
+                match value {
+                    Some(value) => (
+                        Some(element_of(header, header.len, Value::Primitive(value))),
+                        true,
+                    ),
+                    None => (self.passed_over(header, header.len), true),
+                }
+            } else if keep {
                 let value = decoder
                     .read_value_preserved(&header)
                     .map_err(|_| anyhow!("unreadable element value"))?;
@@ -742,6 +827,100 @@ impl<D: StatefulDecode> Walk<'_, D> {
     }
 }
 
+/// The values a string of these bytes splits into: one more than its
+/// separators.
+fn values_in(bytes: &[u8]) -> u64 {
+    1 + bytes.iter().filter(|byte| **byte == b'\\').count() as u64
+}
+
+/// Builds a text value or a list of tags of a deflated data set from its
+/// bytes, as the parser would, and charges `meter` for what the value
+/// holds beyond those bytes: a string's reserved bytes after it has been
+/// shrunk, and one `String` for each value of a multi-valued string. The
+/// list is sized, and checked against what the budget has left, before a
+/// value is put in it. `None` for a string of more values than `most`.
+///
+/// Text is decoded at most [`DATA_SET_INFLATED_TEXT_PIECE_BYTES`] at a
+/// time, so what building holds beyond the value does not depend on the
+/// decoder.
+fn inflated_value(
+    header: &DataElementHeader,
+    bytes: &[u8],
+    character_set: &SpecificCharacterSet,
+    most: Option<u64>,
+    meter: &Meter,
+) -> Result<Option<PrimitiveValue>> {
+    let charge = |held: usize| {
+        meter.spent.fetch_add(held as u64, Ordering::Relaxed);
+    };
+    if header.vr == VR::AT {
+        // Explicit VR Little Endian, as every deflated data set is.
+        let mut tags = dicom_core::value::C::<Tag>::with_capacity(bytes.len() / 4);
+        tags.extend(bytes.chunks_exact(4).map(|tag| {
+            Tag(
+                u16::from_le_bytes([tag[0], tag[1]]),
+                u16::from_le_bytes([tag[2], tag[3]]),
+            )
+        }));
+        return Ok(Some(PrimitiveValue::Tags(tags)));
+    }
+    let own_set = !matches!(header.vr, VR::AE | VR::CS | VR::AS);
+    let decode = |text: &[u8]| -> Result<String> {
+        let decoded = if own_set {
+            character_set.decode(text)
+        } else {
+            DefaultCharacterSetCodec.decode(text)
+        };
+        decoded.map_err(|_| anyhow!("undecodable text"))
+    };
+    let text_of = |text: &[u8]| -> Result<String> {
+        let mut pieces = text.chunks(DATA_SET_INFLATED_TEXT_PIECE_BYTES);
+        let first = pieces.next().unwrap_or_default();
+        let mut whole = decode(first)?;
+        if text.len() > first.len() {
+            let unchanged = whole.as_bytes() == first;
+            if unchanged {
+                whole.reserve_exact(text.len() - first.len());
+            }
+            for piece in pieces.take_while(|_| unchanged) {
+                let decoded = decode(piece)?;
+                if decoded.as_bytes() != piece {
+                    // Text that decodes to something else is kept as its
+                    // first piece.
+                    whole.truncate(first.len());
+                    break;
+                }
+                whole.push_str(&decoded);
+            }
+        }
+        whole.shrink_to_fit();
+        charge(whole.capacity().saturating_sub(text.len()));
+        Ok(whole)
+    };
+    if !splits_into_values(header.vr) {
+        return Ok(Some(PrimitiveValue::Str(text_of(bytes)?)));
+    }
+    let count = values_in(bytes);
+    if most.is_some_and(|most| count > most) {
+        return Ok(None);
+    }
+    let slots = (count as usize).saturating_mul(std::mem::size_of::<String>());
+    ensure!(
+        slots as u64 <= meter.left(),
+        "a string has more values than the inflated budget has left"
+    );
+    charge(slots);
+    let mut values = dicom_core::value::C::<String>::with_capacity(count as usize);
+    for value in bytes.split(|byte| *byte == b'\\') {
+        ensure!(
+            meter.left() > 0,
+            "a string holds more than the inflated budget has left"
+        );
+        values.push(text_of(value)?);
+    }
+    Ok(Some(PrimitiveValue::Strs(values)))
+}
+
 /// Whether the parser reads a value of this representation as one string
 /// for each backslash-separated value.
 fn splits_into_values(vr: VR) -> bool {
@@ -780,9 +959,6 @@ struct Meter {
     spent: AtomicU64,
     /// A read was asked for after the budget was spent.
     exhausted: AtomicBool,
-    /// Bytes that were looked at and are still to be read: an inflating
-    /// source cannot go back, so they are handed out again from here.
-    looked_at: std::sync::Mutex<(Vec<u8>, usize)>,
 }
 
 impl Meter {
@@ -803,22 +979,6 @@ impl<R: Read> Read for Metered<R> {
         if buffer.is_empty() {
             return Ok(0);
         }
-        {
-            // Bytes looked at were counted and charged when they were
-            // inflated.
-            let mut looked_at = self.meter.looked_at.lock().expect("meter lock");
-            let (bytes, at) = &mut *looked_at;
-            if *at < bytes.len() {
-                let count = buffer.len().min(bytes.len() - *at);
-                buffer[..count].copy_from_slice(&bytes[*at..*at + count]);
-                *at += count;
-                if *at == bytes.len() {
-                    *looked_at = (Vec::new(), 0);
-                }
-                self.meter.read.fetch_add(count as u64, Ordering::Relaxed);
-                return Ok(count);
-            }
-        }
         let left = self.meter.left();
         if left == 0 {
             self.meter.exhausted.store(true, Ordering::Relaxed);
@@ -834,22 +994,13 @@ impl<R: Read> Read for Metered<R> {
     }
 }
 
-/// What a value's bytes say of what it will hold once it is read.
-#[derive(Clone, Copy)]
-struct LookedAt {
-    /// The values a string splits into: one more than its separators.
-    values: u64,
-    /// Every byte is ASCII and none is an escape, so the text decodes to as
-    /// many bytes as it has.
-    plain: bool,
-}
-
 /// A stateful decoder that knows where its data set must end and can pass
 /// over a value without reading it.
 struct Bounded<D: StatefulDecode> {
     inner: D,
     /// The bytes passed over by seeking, which `inner` did not count, less
-    /// the bytes looked at and given back, which it counted twice.
+    /// the bytes read to be looked at and gone back over, which it counted
+    /// twice.
     offset: i64,
     /// The length of the file, which a data set read by seeking cannot
     /// reach past. An inflating source ends with its meter's budget.
@@ -858,6 +1009,8 @@ struct Bounded<D: StatefulDecode> {
     seek: Option<fn(&mut D, u64) -> DecodeResult<()>>,
     /// The count of an inflating source.
     meter: Option<Arc<Meter>>,
+    /// Where the element header last asked for begins.
+    header_at: Arc<AtomicU64>,
 }
 
 impl<D: StatefulDecode> Bounded<D> {
@@ -869,30 +1022,27 @@ impl<D: StatefulDecode> Bounded<D> {
         }
     }
 
-    /// Looks at the next `length` bytes, which the caller has checked
-    /// against [`Self::remaining`], and leaves them to be read: counts the
-    /// values a string of them splits into and says whether any byte could
-    /// decode to more than itself. `None` when the data set ends first.
-    fn look_at(&mut self, length: u32) -> DecodeResult<Option<LookedAt>> {
-        let mut bytes = Vec::new();
+    /// Reads the next `length` bytes, which the caller has checked against
+    /// [`Self::remaining`], into a buffer of exactly that size. `None`
+    /// when the data set ends first.
+    fn take(&mut self, length: u32) -> DecodeResult<Option<Vec<u8>>> {
+        let mut bytes = Vec::with_capacity(length as usize);
         self.inner.read_to_vec(length, &mut bytes)?;
-        self.offset -= i64::from(length);
-        let whole = bytes.len() == length as usize;
-        let looked_at = LookedAt {
-            values: 1 + bytes.iter().filter(|byte| **byte == b'\\').count() as u64,
-            // Bytes of 0x80 and above, and an escape that changes what the
-            // bytes behind it mean.
-            plain: bytes.iter().all(|byte| *byte < 0x80 && *byte != 0x1b),
+        Ok((bytes.len() == length as usize).then_some(bytes))
+    }
+
+    /// Counts the values the string in the next `length` bytes splits into
+    /// and leaves the bytes to be read, in a source that can seek. `None`
+    /// when the data set ends first.
+    fn values_ahead(&mut self, length: u32) -> DecodeResult<Option<u64>> {
+        let Some(seek) = self.seek else {
+            return Ok(None);
         };
-        match (&self.meter, self.seek) {
-            (Some(meter), _) => *meter.looked_at.lock().expect("meter lock") = (bytes, 0),
-            (None, Some(seek)) => {
-                let target = self.position();
-                seek(&mut self.inner, target)?;
-            }
-            (None, None) => {}
-        }
-        Ok(whole.then_some(looked_at))
+        let bytes = self.take(length)?;
+        self.offset -= i64::from(length);
+        let target = self.position();
+        seek(&mut self.inner, target)?;
+        Ok(bytes.map(|bytes| values_in(&bytes)))
     }
 
     /// Passes over the next `length` bytes. False when the data set ends
@@ -930,6 +1080,7 @@ impl<D: StatefulDecode> StatefulDecode for Bounded<D> {
     type Reader = D::Reader;
 
     fn decode_header(&mut self) -> DecodeResult<DataElementHeader> {
+        self.header_at.store(self.position(), Ordering::Relaxed);
         self.inner.decode_header()
     }
 

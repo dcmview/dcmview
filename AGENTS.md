@@ -686,12 +686,14 @@ is cached between requests.
   fixed bound on what is read, and never read pixel data for a tag request.
 - The limits are counted, not timed: tests count bytes at the source and
   heap at the allocator.
-- A read of a deflated data set holds no more than its budget and the two
-  buffers a value passes through (each at most `DATA_SET_VALUE_MAX_BYTES`).
-  Anything the read builds that holds more than the bytes it came from (an
-  element, an item, each value of a split string, text that decodes to more
-  than its bytes) is charged to the budget, from the value's bytes, before
-  it is built; a new such structure gets a charge and a row in
+- A read of a deflated data set holds no more than its budget and
+  `DATA_SET_INFLATED_OVERSHOOT_BYTES`, by construction: do not predict what
+  a library allocates. Text and lists of tags are built in `data_set.rs`
+  from their bytes, a list is sized and checked against the budget before
+  it is filled, a value is charged what it holds once it is built, and a
+  decoder is never handed more than `DATA_SET_INFLATED_TEXT_PIECE_BYTES`.
+  Anything else the read builds that holds more than the bytes it came
+  from (an element, an item) has a fixed charge; a new such structure gets a charge and a row in
   `tests/raster_cost/data_sets.rs`. A read by seeking has no budget: say
   only that it is bounded by what the file supplies.
 
@@ -1136,8 +1138,10 @@ default suite.
   past a limit is skipped as `dicom_parse_failed`.
 - The tag endpoints never read pixel data, bulk values or values over
   1 MiB, whichever element is selected: those are shown by their declared
-  length. A tree ends, with status 200, at a value that runs past the file,
-  at sequences nested past the limit and at bytes after the data set.
+  length. A tree that ends before its data set (a value that runs past the
+  file, sequences nested past the limit, bytes that are not an element)
+  answers 200 and ends with a `Note` leaf; zero padding after a whole data
+  set is not noted.
 - A failed decode or metadata read is answered in the viewer's own words:
   two files damaged in different ways get the same body, numbers aside,
   from every endpoint that reads a file, a masked session logs only that

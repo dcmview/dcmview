@@ -1038,8 +1038,8 @@ numbers or the file's real length, never a length the file declares:
 |---|---|---|
 | A value is read only when it fits | the bytes the file has left | No value is allocated at a length the file does not hold. Checked for every element of the file meta group before the group is parsed, too. |
 | `DATA_SET_VALUE_MAX_BYTES` | 1 MiB | No longer value is read. The one exception is Overlay Data (60xx,3000), which the catalog entry keeps. |
-| `DATA_SET_INFLATED_BUDGET_BYTES` | 64 MiB | What one read of a Deflated Explicit VR Little Endian data set may spend: every byte it inflates, kept or discarded, plus `DATA_SET_INFLATED_ELEMENT_CHARGE_BYTES` (512) for each element it builds, twice that for each item, and, for a kept value, what it holds beyond its bytes, worked out from the bytes before anything is built from them: `DATA_SET_INFLATED_VALUE_CHARGE_BYTES` (72) for each value of a multi-valued string after its first, `DATA_SET_INFLATED_TEXT_CHARGE` (4) times its length for text that is not plain ASCII, and its length once more for a list of tags. A value whose charge the budget does not cover is not read. |
-| `DATA_SET_CATALOG_MAX_VALUES` | 4,096 | The most values a multi-valued string may have for the catalog read to keep it, counted in its bytes before it is split. The tag read has no such limit. |
+| `DATA_SET_INFLATED_BUDGET_BYTES` | 64 MiB | What one read of a Deflated Explicit VR Little Endian data set may spend: every byte it inflates, kept or discarded, `DATA_SET_INFLATED_ELEMENT_CHARGE_BYTES` (512) for each element it builds and twice that for each item, and, for text and lists of tags, what the built value holds beyond its bytes. Those values are built by the module itself from their bytes: the list of a multi-valued string is sized and checked against what is left before it is filled, each string is charged its reserved bytes once shrunk, and a decoder is handed at most `DATA_SET_INFLATED_TEXT_PIECE_BYTES` (4,096) at a time. Text longer than a piece that does not decode to the bytes it is, is kept as its first piece. |
+| `DATA_SET_CATALOG_MAX_VALUES` | 65,536 | The most values a multi-valued string may have for the catalog read to keep it, counted in its bytes before it is split; a longer list is passed over and the entry is built as if the element were absent. An element with a 16-bit length, which is every such element of an Explicit VR file, cannot hold that many. The tag read has no such limit. |
 | `DATA_SET_MAX_DEPTH` | 64 | How deep sequences nest. |
 
 A value that is not read is passed over by seeking, so it costs neither
@@ -1068,7 +1068,9 @@ which are stepped over one item header at a time. So the cost of `/tags`
 and `/tags/select` does not grow with pixel data or bulk values, whichever
 element is selected, and they take no decode permit. A value the read
 would keep that runs past the end of the file fails the read. The tree
-ends early, without failing, in these cases:
+ends early, without failing, in these cases, and then ends with a `Note`
+leaf that says which (`TagDataSet::cut`, added by `server/tags.rs` behind
+the masked nodes):
 
 - a data set that ends, or runs out of inflated budget, inside a value that
   is being passed over ends there: that element is listed and nothing after
@@ -1076,18 +1078,26 @@ ends early, without failing, in these cases:
   budget therefore ends with its pixel element;
 - sequences nested past the limit end the tree at the sequence that is too
   deep, which is listed without items; the top-level element it is in
-  shows an error value that says so (`TagDataSet::too_deep`);
-- top-level bytes that are not an element end the tree and are not listed:
-  a header that cannot be read (which is also how a file cut inside a
-  header looks), or the tag (0000,0000), which is what zero padding after a
-  data set parses as and no data set holds. A well-formed element is listed
-  wherever it stands, a lower tag behind the pixel data included.
+  also shows an error value that says so (`TagDataSet::too_deep`);
+- top-level bytes that are not an element end the tree: a header that
+  cannot be read (which is also how a file cut inside a header looks, and
+  an inflate or read error at a header), or the tag (0000,0000), which no
+  data set holds.
+
+One end is not partial and has no note: nothing but zeros from such a place
+to the end of the file (up to 1 MiB of them, in a file read by seeking) is
+padding after a whole data set. Fewer than four stray bytes at the end of a
+file are taken as its end by the parser and are not noted either. A
+well-formed element is listed wherever it stands, a lower tag behind the
+pixel data included.
 
 What a read holds is bounded by what the file supplies: the values it kept,
 each backed by its bytes in the file, and the in-memory elements and values
 built from the bytes it read. That is not a fixed budget. Only a read of a
-deflated data set has one: it holds no more than the budget and the two
-buffers a value passes through, each at most `DATA_SET_VALUE_MAX_BYTES`.
+deflated data set has one: what it holds was charged when it was built,
+and it never holds more than the budget and
+`DATA_SET_INFLATED_OVERSHOOT_BYTES` (the bytes of the one value being
+built, at most 1 MiB, and what a decoder holds for one piece of text).
 
 ### Raster Image Files
 

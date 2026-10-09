@@ -15,7 +15,7 @@ use super::data_sets::{
 use super::heap::CountedRuntime;
 use dcmview::annotations::AnnotationStore;
 use dcmview::data_set::{
-    read_for_tags, TagExtent, DATA_SET_INFLATED_BUDGET_BYTES, DATA_SET_VALUE_MAX_BYTES,
+    read_for_tags, TagCut, TagExtent, DATA_SET_INFLATED_BUDGET_BYTES, DATA_SET_VALUE_MAX_BYTES,
 };
 use dcmview::server::{self, AppState, FileRegistry};
 use dcmview::types::FileEntry;
@@ -41,6 +41,8 @@ struct TagCase {
     heap: u64,
     /// Whether discovery lists the file, so the endpoints can be asked.
     listed: bool,
+    /// Why the tree ends before the data set does, if it does.
+    cut: Option<TagCut>,
 }
 
 fn binary(length: usize) -> Value {
@@ -96,6 +98,7 @@ fn tag_cases() -> Vec<TagCase> {
         bytes: 64 * KIB,
         heap: READ_HEAP,
         listed: false,
+        cut: None,
     };
     let case = |name, file, shows, last, listed| TagCase {
         name,
@@ -105,8 +108,38 @@ fn tag_cases() -> Vec<TagCase> {
         bytes: 64 * KIB,
         heap: READ_HEAP,
         listed,
+        cut: None,
+    };
+    // Top-level bytes that are not an element, and not padding either.
+    let not_an_element = |name, before: Vec<u8>, after: Vec<u8>, last| TagCase {
+        cut: Some(TagCut::NotAnElement),
+        ..case(
+            name,
+            image(EXPLICIT_LE, &before, &after),
+            Vec::new(),
+            last,
+            false,
+        )
     };
     vec![
+        not_an_element(
+            "an element of tag zero in the middle of the data set",
+            element(Tag(0, 0), "UL", &[0; 4]),
+            Vec::new(),
+            "(0008,0060)",
+        ),
+        not_an_element(
+            "a header that cannot be read behind the pixel data",
+            Vec::new(),
+            vec![0x08, 0x00, 0x10, 0x00, b'L'],
+            PIXEL_DATA,
+        ),
+        not_an_element(
+            "zeros and then something else behind the pixel data",
+            Vec::new(),
+            [vec![0; 16], trailer.clone()].concat(),
+            PIXEL_DATA,
+        ),
         padded("4 bytes of padding behind the pixel data", 4, true),
         padded("6 bytes of padding behind the pixel data", 6, true),
         padded("8 bytes of padding behind the pixel data", 8, true),
@@ -159,6 +192,7 @@ fn tag_cases() -> Vec<TagCase> {
         ),
         // Sequences nested past the limit end the tree where they are.
         TagCase {
+            cut: Some(TagCut::TooDeep),
             heap: 4 * READ_HEAP,
             ..case(
                 "sequences nested without end behind the pixel data",
@@ -173,6 +207,7 @@ fn tag_cases() -> Vec<TagCase> {
             )
         },
         TagCase {
+            cut: Some(TagCut::TooDeep),
             heap: 4 * READ_HEAP,
             ..case(
                 "sequences nested without end before the pixel data",
@@ -224,18 +259,22 @@ fn tag_cases() -> Vec<TagCase> {
             )
         },
         // A data set that ends inside a value that is not read ends there.
-        case(
-            "a value declared past the end",
-            image(
-                EXPLICIT_LE,
-                &element_declaring(PRIVATE_BLOB, "OB", DECLARED, &[0; 8]),
-                &[],
-            ),
-            vec![(BLOB, binary(DECLARED as usize))],
-            BLOB,
-            false,
-        ),
         TagCase {
+            cut: Some(TagCut::InsideValue),
+            ..case(
+                "a value declared past the end",
+                image(
+                    EXPLICIT_LE,
+                    &element_declaring(PRIVATE_BLOB, "OB", DECLARED, &[0; 8]),
+                    &[],
+                ),
+                vec![(BLOB, binary(DECLARED as usize))],
+                BLOB,
+                false,
+            )
+        },
+        TagCase {
+            cut: Some(TagCut::InsideValue),
             bytes: MIB,
             heap: READ_HEAP + INFLATER_HEAP,
             ..case(
@@ -285,6 +324,7 @@ fn a_tag_read_holds_no_value_it_shows_by_its_length() {
             |source, length| read_for_tags(source, length, TagExtent::Whole),
             |read| {
                 let read = read.unwrap_or_else(|error| panic!("{}: {error:#}", case.name));
+                assert_eq!(read.cut, case.cut, "{}: why the tree ends", case.name);
                 read.object.tags().collect::<Vec<_>>()
             },
         );
@@ -389,7 +429,11 @@ fn a_tag_read_holds_no_value_it_shows_by_its_length() {
     };
     for (index, case) in listed.iter().enumerate() {
         let tree = ask(format!("/api/file/{index}/tags"), case.heap);
-        let last = tree.as_array().and_then(|nodes| nodes.last());
+        let nodes = tree.as_array().expect("a list of nodes");
+        // A tree that ends before its data set says so in a last leaf.
+        let noted = nodes.last().is_some_and(|node| node["tag"] == "Note");
+        assert_eq!(noted, case.cut.is_some(), "{}: {tree}", case.name);
+        let last = nodes.iter().rev().nth(usize::from(noted));
         assert_eq!(
             last.map(|node| &node["tag"]),
             Some(&Value::from(case.last)),

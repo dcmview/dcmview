@@ -1,5 +1,7 @@
 use crate::api::contracts::{TagNode, TagValue};
-use crate::data_set::{read_for_tags, shown_by_length, TagDataSet, TagExtent, DATA_SET_MAX_DEPTH};
+use crate::data_set::{
+    read_for_tags, shown_by_length, TagCut, TagDataSet, TagExtent, DATA_SET_MAX_DEPTH,
+};
 use anyhow::{anyhow, bail, Context, Result};
 use dicom_core::dictionary::{DataDictionary, DataDictionaryEntry};
 use dicom_core::header::HasLength;
@@ -27,7 +29,11 @@ pub(crate) const TAG_SELECT_MAX_LIMIT: usize = 256;
 /// (`data_set::read_for_tags`): no pixel value, no bulk binary value and no
 /// value over `DATA_SET_VALUE_MAX_BYTES` is read, and each of those is shown
 /// by its declared length.
-pub(crate) fn build_tag_tree(path: &Path) -> Result<Vec<TagNode>> {
+///
+/// The second member is a `Note` leaf, as a raster's tree has them, when
+/// the tree does not reach the end of the data set. It is the viewer's own
+/// text and goes behind the nodes after they are masked.
+pub(crate) fn build_tag_tree(path: &Path) -> Result<(Vec<TagNode>, Option<TagNode>)> {
     let data_set = read_data_set(path, TagExtent::Whole)?;
     let text_codec = declared_text_codec(&data_set.object);
     let mut nodes = serialize_object_tags(&data_set.object, 0, text_codec.as_ref());
@@ -37,7 +43,7 @@ pub(crate) fn build_tag_tree(path: &Path) -> Result<Vec<TagNode>> {
     if let Some(node) = too_deep_node(&mut nodes, &data_set) {
         node.value = too_deep_value();
     }
-    Ok(nodes)
+    Ok((nodes, data_set.cut.map(cut_note)))
 }
 
 const PIXEL_DATA_TAG: &str = "(7FE0,0010)";
@@ -49,6 +55,29 @@ fn show_fragment_bytes(node: &mut TagNode, data_set: &TagDataSet) {
         node.value = TagValue::Binary {
             length: usize::try_from(bytes).unwrap_or(usize::MAX),
         };
+    }
+}
+
+/// The leaf that says why a tree ends before its data set does.
+fn cut_note(cut: TagCut) -> TagNode {
+    let why = match cut {
+        TagCut::InsideValue => {
+            "the tree ends here: the data set ends inside the last element's value, \
+             or is deflated and larger than is read"
+                .to_string()
+        }
+        TagCut::TooDeep => {
+            format!("the tree ends here: sequences nest deeper than {DATA_SET_MAX_DEPTH}")
+        }
+        TagCut::NotAnElement => {
+            "the tree ends here: what follows in the file is not a data element".to_string()
+        }
+    };
+    TagNode {
+        tag: "Note".to_string(),
+        vr: String::new(),
+        keyword: String::new(),
+        value: TagValue::String { value: why },
     }
 }
 
@@ -572,7 +601,7 @@ mod tests {
         .expect("write deflated file");
 
         assert_eq!(
-            serde_json::to_value(build_tag_tree(&path).expect("tag tree")).unwrap(),
+            serde_json::to_value(build_tag_tree(&path).expect("tag tree").0).unwrap(),
             full_read_tree(&path)
         );
     }
@@ -587,7 +616,7 @@ mod tests {
                 continue;
             }
             assert_eq!(
-                serde_json::to_value(build_tag_tree(&path).expect("tag tree")).unwrap(),
+                serde_json::to_value(build_tag_tree(&path).expect("tag tree").0).unwrap(),
                 full_read_tree(&path),
                 "{}",
                 path.display()

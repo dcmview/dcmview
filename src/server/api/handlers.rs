@@ -798,7 +798,7 @@ pub(super) async fn tags(
     }
 
     let path = file.path.clone();
-    let mut nodes = tokio::task::spawn_blocking(move || tags::build_tag_tree(&path))
+    let (mut nodes, note) = tokio::task::spawn_blocking(move || tags::build_tag_tree(&path))
         .await
         .map_err(|error| ApiError::failed("the file's tags could not be read", error))?
         .map_err(|failure| {
@@ -812,6 +812,8 @@ pub(super) async fn tags(
     if let Some(masker) = state.registry().masker() {
         masker.tags(&file, &mut nodes);
     }
+    // The note that a tree is partial is the viewer's own text.
+    nodes.extend(note);
     state.cache_tags(index, nodes.clone());
     Ok(Json(nodes))
 }

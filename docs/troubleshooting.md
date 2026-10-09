@@ -105,9 +105,9 @@ written that way:
 - a Deflated Explicit VR Little Endian data set needs more than 64 MiB to
   read up to its pixel data, counting the bytes it inflates and 512 bytes
   for each element and 1,024 for each sequence item before the pixel data,
-  and for a value that is kept what it holds beyond its bytes: 72 bytes for
-  each further value of a multi-valued text element, and four times its
-  length for text that is not plain ASCII.
+  and for a text value that is kept what it holds in memory beyond its
+  bytes (24 bytes for each value of a multi-valued element, and whatever
+  its decoded text takes more than its bytes).
 
 Large values before the pixel data are not a reason: discovery passes over
 any value longer than 1 MiB without reading it, and the file is listed.
