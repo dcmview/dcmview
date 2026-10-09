@@ -148,6 +148,9 @@ diagnostic viewer.
 - An RT Dose or Parametric Map overlay drawn before more files were loaded
   is drawn again afterwards instead of being served from the cache, so its
   colors follow the legend of the files now loaded.
+- A frame of a Deflated Explicit VR Little Endian file is read into a
+  buffer that grows as its data inflates. Before, a file whose data ended
+  early still had memory set aside for the whole frame its header states.
 
 ## 0.4.1 - 2026-10-09
 

@@ -680,7 +680,10 @@ JPEG, JPEG-LS and JPEG XL share one dicom-pixeldata frame decode
 (`pixels/pixeldata_frame.rs`). Deflated Explicit VR Little Endian is a dataset
 encoding and routes through the native layout pipeline: the inflated stream is
 parsed to the pixel element and inflated up to the requested frame, keeping
-only that frame. Deflated Image Frame Compression (`.8.1`) carries one-bit
+only that frame. The frame's buffer grows with the bytes that inflate, up to
+the frame's size: neither the entry nor the length the pixel element
+declares sizes it before the data is there, so a stream that ends early
+costs what it supplied. Deflated Image Frame Compression (`.8.1`) carries one-bit
 monochrome frames, such as binary segmentations, each deflated on its own.
 
 Encapsulated frames are located by `pixels/encapsulated.rs` for every

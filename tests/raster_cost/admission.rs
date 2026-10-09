@@ -26,6 +26,9 @@ use dcmview::pixels::{
 };
 use dcmview::server::{self, AppState, FileRegistry};
 use dcmview::types::FileEntry;
+use dicom_core::{DataElement, PrimitiveValue, VR};
+use dicom_dictionary_std::{tags, uids};
+use dicom_object::{meta::FileMetaTableBuilder, InMemDicomObject};
 use std::sync::{Arc, Mutex};
 
 /// What a request may hold beside its reservation: the tasks, handles and
@@ -404,41 +407,122 @@ fn a_hostile_file_holds_no_more_heap_than_its_entry_reserved() {
 /// A native single-frame DICOM image of `side` x `side` gray samples of
 /// `bits` bits, holding `samples`.
 fn native_dicom(side: u16, bits: u16, samples: Vec<u8>) -> Vec<u8> {
-    use dicom_core::{DataElement, PrimitiveValue, VR};
-    use dicom_dictionary_std::{tags, uids};
-    use dicom_object::{meta::FileMetaTableBuilder, InMemDicomObject};
+    Native::gray(side, bits).file(samples)
+}
 
-    let unsigned = |value: u16| PrimitiveValue::from(value);
-    let object = InMemDicomObject::from_element_iter([
-        DataElement::new(tags::SOP_CLASS_UID, VR::UI, uids::CT_IMAGE_STORAGE),
-        DataElement::new(tags::SOP_INSTANCE_UID, VR::UI, format!("2.25.{bits}{side}")),
-        DataElement::new(tags::MODALITY, VR::CS, PrimitiveValue::from("OT")),
-        DataElement::new(tags::ROWS, VR::US, unsigned(side)),
-        DataElement::new(tags::COLUMNS, VR::US, unsigned(side)),
-        DataElement::new(tags::BITS_ALLOCATED, VR::US, unsigned(bits)),
-        DataElement::new(tags::BITS_STORED, VR::US, unsigned(bits)),
-        DataElement::new(tags::HIGH_BIT, VR::US, unsigned(bits - 1)),
-        DataElement::new(tags::PIXEL_REPRESENTATION, VR::US, unsigned(0)),
-        DataElement::new(tags::SAMPLES_PER_PIXEL, VR::US, unsigned(1)),
-        DataElement::new(
-            tags::PHOTOMETRIC_INTERPRETATION,
-            VR::CS,
-            PrimitiveValue::from("MONOCHROME2"),
-        ),
-        DataElement::new(tags::PIXEL_DATA, VR::OW, PrimitiveValue::from(samples)),
-    ]);
-    let mut bytes = Vec::new();
-    object
-        .with_meta(
-            FileMetaTableBuilder::new()
-                .transfer_syntax(uids::EXPLICIT_VR_LITTLE_ENDIAN)
-                .media_storage_sop_class_uid(uids::CT_IMAGE_STORAGE)
-                .media_storage_sop_instance_uid(format!("2.25.{bits}{side}")),
-        )
-        .expect("file meta")
-        .write_all(&mut bytes)
-        .expect("write DICOM");
-    bytes
+/// What a native single-frame DICOM image of `side` x `side` pixels says
+/// about itself.
+struct Native {
+    side: u16,
+    bits: u16,
+    samples_per_pixel: u16,
+    transfer_syntax: &'static str,
+}
+
+impl Native {
+    fn gray(side: u16, bits: u16) -> Self {
+        Self {
+            side,
+            bits,
+            samples_per_pixel: 1,
+            transfer_syntax: uids::EXPLICIT_VR_LITTLE_ENDIAN,
+        }
+    }
+
+    fn in_syntax(self, transfer_syntax: &'static str) -> Self {
+        Self {
+            transfer_syntax,
+            ..self
+        }
+    }
+
+    /// The bytes of one frame.
+    fn frame_bytes(&self) -> usize {
+        usize::from(self.side)
+            * usize::from(self.side)
+            * usize::from(self.samples_per_pixel)
+            * usize::from(self.bits / 8)
+    }
+
+    /// The file, holding `samples` as its pixel data.
+    fn file(&self, samples: Vec<u8>) -> Vec<u8> {
+        let Self { side, bits, .. } = *self;
+        let unsigned = |value: u16| PrimitiveValue::from(value);
+        let uid = format!("2.25.{}{bits}{side}", self.samples_per_pixel);
+        let mut object = InMemDicomObject::from_element_iter([
+            DataElement::new(tags::SOP_CLASS_UID, VR::UI, uids::CT_IMAGE_STORAGE),
+            DataElement::new(tags::SOP_INSTANCE_UID, VR::UI, uid.as_str()),
+            DataElement::new(tags::MODALITY, VR::CS, PrimitiveValue::from("OT")),
+            DataElement::new(tags::ROWS, VR::US, unsigned(side)),
+            DataElement::new(tags::COLUMNS, VR::US, unsigned(side)),
+            DataElement::new(tags::BITS_ALLOCATED, VR::US, unsigned(bits)),
+            DataElement::new(tags::BITS_STORED, VR::US, unsigned(bits)),
+            DataElement::new(tags::HIGH_BIT, VR::US, unsigned(bits - 1)),
+            DataElement::new(tags::PIXEL_REPRESENTATION, VR::US, unsigned(0)),
+            DataElement::new(
+                tags::SAMPLES_PER_PIXEL,
+                VR::US,
+                unsigned(self.samples_per_pixel),
+            ),
+            DataElement::new(
+                tags::PHOTOMETRIC_INTERPRETATION,
+                VR::CS,
+                PrimitiveValue::from(if self.samples_per_pixel == 3 {
+                    "RGB"
+                } else {
+                    "MONOCHROME2"
+                }),
+            ),
+            DataElement::new(tags::PIXEL_DATA, VR::OW, PrimitiveValue::from(samples)),
+        ]);
+        if self.samples_per_pixel == 3 {
+            object.put(DataElement::new(
+                tags::PLANAR_CONFIGURATION,
+                VR::US,
+                unsigned(0),
+            ));
+        }
+        let mut bytes = Vec::new();
+        object
+            .with_meta(
+                FileMetaTableBuilder::new()
+                    .transfer_syntax(self.transfer_syntax)
+                    .media_storage_sop_class_uid(uids::CT_IMAGE_STORAGE)
+                    .media_storage_sop_instance_uid(uid.as_str()),
+            )
+            .expect("file meta")
+            .write_all(&mut bytes)
+            .expect("write DICOM");
+        bytes
+    }
+}
+
+/// Where the data set of the DICOM file `bytes` starts: after the preamble,
+/// the magic code and the file meta group, whose first element is its
+/// length.
+fn data_set_start(bytes: &[u8]) -> usize {
+    let length = u32::from_le_bytes(bytes[140..144].try_into().expect("group length"));
+    144 + length as usize
+}
+
+/// A gray image as a Deflated Explicit VR Little Endian file whose deflated
+/// stream ends `kept` bytes into the pixel data. The header and the pixel
+/// element still state the whole frame.
+fn deflated_dicom_cut_short(side: u16, bits: u16, kept: usize) -> Vec<u8> {
+    use std::io::Write;
+
+    let image = Native::gray(side, bits);
+    let frame = image.frame_bytes();
+    let plain = image.file(vec![0x5a; frame]);
+    let data_set = &plain[data_set_start(&plain)..plain.len() - frame + kept];
+    let deflated = Native::gray(side, bits)
+        .in_syntax(uids::DEFLATED_EXPLICIT_VR_LITTLE_ENDIAN)
+        .file(Vec::new());
+    let mut file = deflated[..data_set_start(&deflated)].to_vec();
+    let mut encoder = flate2::write::DeflateEncoder::new(&mut file, flate2::Compression::fast());
+    encoder.write_all(data_set).expect("deflate");
+    encoder.finish().expect("deflate");
+    file
 }
 
 /// DICOM frames reserve by rule, not by a limit their decoders are held to;
@@ -491,6 +575,89 @@ fn a_dicom_fixture_holds_no_more_heap_than_it_reserved() {
         served >= 6 * files.len(),
         "only {served} paths served a frame"
     );
+}
+
+/// A deflated data set is not sized by its length on disk, and its pixel
+/// element's declared length is only a claim. Every path that reads a frame
+/// of one reserves the entry's frame and holds no more than that, and a
+/// stream that ends before the frame does is refused at the cost of what it
+/// supplied, not of the frame it announced.
+#[test]
+fn a_deflated_data_set_costs_what_it_supplies() {
+    const SIDE: u16 = 2048;
+    let frame = u64::from(SIDE) * u64::from(SIDE) * 2;
+    let plain = tokio::runtime::Runtime::new().expect("runtime");
+    let whole = Native::gray(SIDE, 16)
+        .in_syntax(uids::DEFLATED_EXPLICIT_VR_LITTLE_ENDIAN)
+        .file(noise(frame as usize));
+    // (file, bytes, whether its frame is there to be served)
+    let cases = [
+        ("whole.dcm", whole, true),
+        (
+            "no-pixels.dcm",
+            deflated_dicom_cut_short(SIDE, 16, 0),
+            false,
+        ),
+        (
+            "few-pixels.dcm",
+            deflated_dicom_cut_short(SIDE, 16, 4096),
+            false,
+        ),
+    ];
+    let files: Vec<(&str, Vec<u8>)> = cases
+        .iter()
+        .map(|(name, bytes, _)| (*name, bytes.clone()))
+        .collect();
+    let scan = listed(&plain, &files);
+    let runtime = CountedRuntime::new();
+    for (name, bytes, complete) in &cases {
+        let entry = Arc::new(scan.entry(name).clone());
+        assert_eq!(
+            (entry.rows, entry.columns, entry.bits_allocated),
+            (u32::from(SIDE), u32::from(SIDE), 16),
+            "{name} is listed with the frame its header states"
+        );
+        assert_eq!(
+            entry.transfer_syntax_uid,
+            uids::DEFLATED_EXPLICIT_VR_LITTLE_ENDIAN,
+            "{name}"
+        );
+        if !complete {
+            assert!((bytes.len() as u64) < MIB / 4, "{name} is a small file");
+        }
+        for path in Path::ALL {
+            // The layer is drawn from the header alone and reads no frame.
+            if path == Path::PresentationLayer {
+                continue;
+            }
+            let scheduler = roomy_scheduler();
+            let (served, heap) = runtime.peak_during(ask(entry.clone(), path, scheduler.clone()));
+            let reserved = runtime
+                .peak_during(scheduler.load_when(|load| load.running == 0))
+                .0
+                .peak_reserved_bytes;
+            if std::env::var_os("RASTER_COST_REPORT").is_some() {
+                eprintln!("{name} {path:?}: heap {heap}, reserved {reserved}");
+            }
+            assert_eq!(served, *complete, "{name} {path:?}");
+            assert_eq!(
+                reserved,
+                path.reserves(&entry),
+                "{name} {path:?} reserves its documented estimate"
+            );
+            assert!(reserved >= 3 * frame, "{name} {path:?}");
+            let may_hold = if *complete {
+                reserved - pixels::DICOM_DECODE_BASE_BYTES + REQUEST_OVERHEAD
+            } else {
+                REQUEST_OVERHEAD
+            };
+            assert!(
+                heap <= may_hold,
+                "{name} {path:?}: {heap} bytes of heap held for a frame of {frame}, \
+                 {reserved} reserved"
+            );
+        }
+    }
 }
 
 /// What many requests at once may hold beside the budget, whatever their
