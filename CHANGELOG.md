@@ -21,6 +21,13 @@ diagnostic viewer.
 
 ### Added
 
+- Raster metadata in the Metadata panel and `/tags`: PNG, JPEG, TIFF and
+  WebP container fields, EXIF and TIFF directories with GPS, text chunks,
+  comments, XMP and ICC profile descriptions. `/tags/select` accepts paths
+  such as `EXIF/GPS/0x0002`. Values are escaped and limited, and TIFF trees
+  show the first 16 pages. In a `--mask` session only values describing the
+  pixel grid are shown; dates are masked, not shifted.
+
 - `--decode-memory BYTES` sets a separate budget for decodes in progress,
   with a 256 MiB minimum. Without it the budget is a quarter of the
   machine's physical memory, from 1 GiB to 4 GiB (4 GiB on Windows and
