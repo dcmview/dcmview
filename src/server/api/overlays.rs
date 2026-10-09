@@ -75,6 +75,7 @@ pub(super) async fn segmentation_overlay(
         target_file_index: plan.source_file_index,
         target_frame: plan.source_frame_index,
         encoding: OverlayEncoding::Png,
+        file_set: None,
     };
     let work = DecodeWork::SegmentationOverlay {
         target_rows: target.rows,
@@ -140,6 +141,7 @@ pub(super) async fn presentation_layer(
         target_file_index: index,
         target_frame: frame,
         encoding: OverlayEncoding::Png,
+        file_set: None,
     };
     let redaction = state
         .redactions()
@@ -246,7 +248,11 @@ async fn value_overlay(
             "an overlay is drawn on image frames, not on its own frames",
         ));
     }
-    let context = semantic_context_for(state, overlay.clone(), state.registry().files_snapshot())
+    // The legend is read against this file set, so the overlay drawn with
+    // it is kept for this file set.
+    let files = state.registry().files_snapshot();
+    let file_set = files.len();
+    let context = semantic_context_for(state, overlay.clone(), files)
         .await
         .map_err(error::context_failure)?;
     let (stack, legend) = overlay_plan(&overlay, &context)?;
@@ -272,6 +278,7 @@ async fn value_overlay(
         target_file_index: target.index,
         target_frame: frame,
         encoding,
+        file_set: Some(file_set),
     };
     if let Some(body) = state.cached_overlay(&key) {
         return Ok(overlay_response(body, true, encoding));

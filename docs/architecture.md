@@ -489,8 +489,11 @@ Fields are only added, and the crate's own test pins the exact shapes.
   over the context legend's range. All of that is one piece of admitted
   work, reserved for the planes the frame reaches and for the displayed
   frame, and requests for the same overlay share it ("Decode Admission"). A frame with no pixel inside the volume
-  is `404 overlay_not_covering_frame`. Encoded PNGs are cached per volume and
-  displayed frame, and `X-Cache` reports that cache. The `/values` form
+  is `404 overlay_not_covering_frame`. Encoded PNGs are cached per volume,
+  displayed frame and file set (`OverlayCacheKey.file_set`, the value the
+  legend's `ValueRangeCacheKey` carries: the legend's scale is read against
+  the file set, and the overlay is colored by it), and `X-Cache` reports
+  that cache. The `/values` form
   sends the same resampled values as little-endian `f32`s for readouts,
   cached beside the PNG (`OverlayEncoding`). Semantic context lists
   covered source frames; the server completes its legend from the decoded

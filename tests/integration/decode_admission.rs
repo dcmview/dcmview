@@ -2653,3 +2653,47 @@ async fn an_overlay_of_another_frame_is_drawn_again() {
     })
     .await;
 }
+
+/// A value overlay is drawn with the legend of its volume, which is read
+/// against the file set, so one drawn before a file was added is not served
+/// for the file set with it.
+#[tokio::test]
+async fn a_value_overlay_is_drawn_again_once_the_file_set_has_grown() {
+    finishes(async {
+        let entries = overlay_fixtures().await;
+        let added = entries[DOSE_ON_A_PLANE].clone();
+        let overlays = overlay_requests(&entries);
+        let scheduler = default_scheduler(2);
+        let (registry, server) = growing_viewer(entries, &scheduler);
+        let answer = |path: &str| {
+            let (server, path) = (&server, path.to_string());
+            async move {
+                let response = server.get(&path).await;
+                assert_eq!(response.status_code(), 200, "{path}: {}", response.text());
+                (response.header("x-cache"), response.as_bytes().clone())
+            }
+        };
+        let values: Vec<&String> = overlays
+            .iter()
+            .map(|(path, _)| path)
+            .filter(|path| !path.contains("segmentation"))
+            .collect();
+        assert_eq!(values.len(), overlays.len() - 1);
+        let mut drawn = Vec::new();
+        for path in &values {
+            let (cache, body) = answer(path).await;
+            assert_eq!(cache, "MISS", "{path}");
+            assert_eq!(answer(path).await.0, "HIT", "{path}");
+            drawn.push(body);
+        }
+        registry.insert(added);
+        for (path, body) in values.iter().zip(&drawn) {
+            let (cache, again) = answer(path).await;
+            assert_eq!(cache, "MISS", "{path}: drawn for the new file set");
+            assert_eq!(&again, body, "{path}");
+            assert_eq!(answer(path).await.0, "HIT", "{path}");
+        }
+        idle(&scheduler).await;
+    })
+    .await;
+}

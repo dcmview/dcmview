@@ -131,6 +131,9 @@ diagnostic viewer.
   more than the budget now answers `422 decode_memory_exceeded`, and one
   that would wait behind a full queue `503 decode_busy` with
   `Retry-After: 1`, as frames do.
+- An RT Dose or Parametric Map overlay drawn before more files were loaded
+  is drawn again afterwards instead of being served from the cache, so its
+  colors follow the legend of the files now loaded.
 
 ## 0.4.0 - 2026-10-08
 

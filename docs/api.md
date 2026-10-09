@@ -507,9 +507,11 @@ outside the volume, without a mapped value, or at or below
 maximum dose of the whole grid with zero dose transparent; the Parametric Map
 legend spans the minimum to maximum mapped value of every frame with no
 floor. Both use one scale for every slice. Encoded overlays are cached per
-volume and displayed frame, and SEG overlays per SEG frame and resolved
-source frame; every overlay endpoint's `X-Cache` reports that encoded-PNG
-cache, not the decoded frames beneath it. Requests for the same overlay
+volume, displayed frame and file set (the legend they are colored by is
+read against the files loaded, so one drawn before a file was added is
+drawn again), and SEG overlays per SEG frame and resolved source frame;
+every overlay endpoint's `X-Cache` reports that encoded-PNG cache, not the
+decoded frames beneath it. Requests for the same overlay
 that arrive while it is being drawn wait for that one drawing and report
 `X-Cache: HIT`.
 
