@@ -43,14 +43,46 @@
 
 use crate::api::contracts::EmbedRoiAnnotations;
 use anyhow::Result;
-use dcmview_annotation::{Annotation, Author, FileKey, LayerId, Op, Timestamp};
+use dcmview_annotation::{
+    new_id, Annotation, Author, FileKey, FrameScope, Geometry, LayerId, Op, Patch, RecordMeta,
+    Timestamp, IMPLICIT_CLASS_ID,
+};
+use std::collections::BTreeMap;
 
 /// What the EMBED endpoints show for `records`, the view of one file in
 /// view order, by the rules in the module documentation. `frame_count` is
 /// the file's.
 pub(crate) fn rois_of(records: &[Annotation], frame_count: u32) -> EmbedRoiAnnotations {
-    let _ = (records, frame_count);
-    todo!("records as EMBED ROIs")
+    let mut roi_coords = Vec::new();
+    let mut scopes = Vec::new();
+    for record in records {
+        if let Geometry::Rect { x0, y0, x1, y1 } = record.geometry {
+            roi_coords.push([
+                edge(y0.floor()),
+                edge(x0.floor()),
+                edge(y1.ceil()),
+                edge(x1.ceil()),
+            ]);
+            scopes.push(&record.frames);
+        }
+    }
+    let roi_frames = if scopes.iter().all(|scope| **scope == FrameScope::All) {
+        Vec::new()
+    } else {
+        scopes
+            .into_iter()
+            .map(|scope| {
+                scope
+                    .written()
+                    .map_or_else(|| (0..frame_count).collect(), <[u32]>::to_vec)
+            })
+            .collect()
+    };
+    EmbedRoiAnnotations {
+        num_roi: roi_coords.len(),
+        roi_coords,
+        roi_frames,
+    }
 }
 
 /// One `CreateAnnotation` for each ROI of `rows`, in their order, by "A ROI
@@ -66,8 +98,11 @@ pub(crate) fn rows_as_creates(
     author: &Author,
     stamp: &Timestamp,
 ) -> Vec<Op> {
-    let _ = (rows, file, layer, author, stamp);
-    todo!("EMBED ROIs as create operations")
+    rows.roi_coords
+        .iter()
+        .enumerate()
+        .map(|(i, coords)| create_roi(*coords, scope_at(rows, i), file, layer, author, stamp))
+        .collect()
 }
 
 /// The operations that make a file's EMBED view show `wanted`, given the
@@ -101,8 +136,54 @@ pub(crate) fn replacement_ops(
     stamp: &Timestamp,
     file: &FileKey,
 ) -> Vec<Op> {
-    let _ = (current, wanted, frame_count, layer, author, stamp, file);
-    todo!("the operations a replaced ROI list amounts to")
+    let shown = rois_of(current, frame_count);
+    let mut ops = Vec::new();
+    for (i, (record, coords)) in current.iter().zip(&wanted.roi_coords).enumerate() {
+        let mut before = Patch::default();
+        let mut after = Patch::default();
+        if shown.roi_coords.get(i) != Some(coords) {
+            before.geometry = Some(record.geometry.clone());
+            after.geometry = Some(rectangle(*coords));
+        }
+        let frames = scope_at(wanted, i);
+        let same_frames = (shown.roi_frames.is_empty() && wanted.roi_frames.is_empty())
+            || matches!((shown.roi_frames.get(i), wanted.roi_frames.get(i)), (Some(a), Some(b)) if a == b)
+            || frames == record.frames;
+        if !same_frames {
+            before.frames = Some(record.frames.clone());
+            after.frames = Some(frames);
+        }
+        if after.geometry.is_some() || after.frames.is_some() {
+            ops.push(Op::UpdateAnnotation {
+                id: record.id,
+                file: record.file.clone(),
+                base_rev: record.meta.rev,
+                before: Box::new(before),
+                after: Box::new(after),
+            });
+        }
+    }
+    ops.extend(
+        current
+            .iter()
+            .skip(wanted.roi_coords.len())
+            .map(|record| Op::DeleteAnnotation {
+                id: record.id,
+                base_rev: record.meta.rev,
+                snapshot: Box::new(record.clone()),
+            }),
+    );
+    ops.extend(
+        wanted
+            .roi_coords
+            .iter()
+            .enumerate()
+            .skip(current.len())
+            .map(|(i, coords)| {
+                create_roi(*coords, scope_at(wanted, i), file, layer, author, stamp)
+            }),
+    );
+    ops
 }
 
 /// The EMBED CSV of `rows`, each a path and that file's ROIs, in the order
@@ -113,6 +194,70 @@ pub(crate) fn replacement_ops(
 /// needs to be, and records end with a line feed). A row is written as
 /// given, one with no ROI included; the caller leaves those out.
 pub(crate) fn write_embed_csv(rows: &[(String, EmbedRoiAnnotations)]) -> Result<String> {
-    let _ = rows;
-    todo!("the EMBED CSV of some rows")
+    let mut writer = csv::Writer::from_writer(Vec::new());
+    writer.write_record(["anon_dicom_path", "num_ROI", "ROI_coords", "ROI_frames"])?;
+    for (path, rois) in rows {
+        writer.write_record([
+            path.clone(),
+            rois.num_roi.to_string(),
+            serde_json::to_string(&rois.roi_coords)?,
+            serde_json::to_string(&rois.roi_frames)?,
+        ])?;
+    }
+    Ok(String::from_utf8(writer.into_inner()?)?)
+}
+
+fn edge(value: f64) -> u32 {
+    if value.is_nan() {
+        0
+    } else {
+        value.clamp(0.0, u32::MAX as f64) as u32
+    }
+}
+
+fn rectangle([ymin, xmin, ymax, xmax]: [u32; 4]) -> Geometry {
+    Geometry::Rect {
+        x0: f64::from(xmin),
+        y0: f64::from(ymin),
+        x1: f64::from(xmax),
+        y1: f64::from(ymax),
+    }
+}
+
+fn scope_at(rows: &EmbedRoiAnnotations, i: usize) -> FrameScope {
+    rows.roi_frames.get(i).map_or(FrameScope::All, |frames| {
+        FrameScope::from_written(frames.clone())
+    })
+}
+
+fn create_roi(
+    coords: [u32; 4],
+    frames: FrameScope,
+    file: &FileKey,
+    layer: &LayerId,
+    author: &Author,
+    stamp: &Timestamp,
+) -> Op {
+    Op::CreateAnnotation {
+        annotation: Box::new(Annotation {
+            id: new_id(),
+            file: file.clone(),
+            layer: layer.clone(),
+            class: IMPLICIT_CLASS_ID.to_string(),
+            geometry: rectangle(coords),
+            frames,
+            attributes: BTreeMap::new(),
+            extensions: BTreeMap::new(),
+            unknown: BTreeMap::new(),
+            meta: RecordMeta {
+                rev: 1,
+                created_by: author.clone(),
+                created_at: stamp.clone(),
+                modified_by: author.clone(),
+                modified_at: stamp.clone(),
+                derived_from: None,
+                score: None,
+            },
+        }),
+    }
 }
