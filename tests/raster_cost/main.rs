@@ -19,6 +19,7 @@ mod admission;
 mod agreement;
 mod bounds;
 mod data_set_files;
+mod data_set_tags;
 mod data_sets;
 mod heap;
 mod layout;

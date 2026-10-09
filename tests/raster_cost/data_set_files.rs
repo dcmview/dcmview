@@ -11,7 +11,9 @@ use std::io::Write;
 
 pub const EXPLICIT_LE: &str = uids::EXPLICIT_VR_LITTLE_ENDIAN;
 pub const DEFLATED_LE: &str = uids::DEFLATED_EXPLICIT_VR_LITTLE_ENDIAN;
+pub const JPEG_BASELINE: &str = uids::JPEG_BASELINE8_BIT;
 pub const KIB: u64 = 1024;
+pub const MIB: u64 = 1024 * KIB;
 
 /// A private element no reader of the viewer asks for.
 pub const PRIVATE_BLOB: Tag = Tag(0x0009, 0x1010);
@@ -132,6 +134,20 @@ pub fn nested(tag: Tag, depth: usize, innermost: &[u8], closed: bool) -> Vec<u8>
             bytes.extend_from_slice(&[0xfe, 0xff, 0xdd, 0xe0, 0, 0, 0, 0]);
         }
     }
+    bytes
+}
+
+/// Encapsulated Pixel Data: an empty offset table and one fragment per
+/// entry of `fragments`.
+pub fn encapsulated_pixel_data(fragments: &[Vec<u8>]) -> Vec<u8> {
+    let mut bytes = element_declaring(tags::PIXEL_DATA, "OB", u32::MAX, &[]);
+    bytes.extend_from_slice(&[0xfe, 0xff, 0x00, 0xe0, 0, 0, 0, 0]);
+    for fragment in fragments {
+        bytes.extend_from_slice(&[0xfe, 0xff, 0x00, 0xe0]);
+        bytes.extend_from_slice(&(fragment.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(fragment);
+    }
+    bytes.extend_from_slice(&[0xfe, 0xff, 0xdd, 0xe0, 0, 0, 0, 0]);
     bytes
 }
 

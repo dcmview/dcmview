@@ -933,7 +933,8 @@ endpoints then answer `422 semantic_mapping_unavailable`.
 **What the budget does not cover.** It bounds what running decodes hold.
 Beside it are the frame caches (`--cache-budget`), the body of each response
 while it is sent (a raw frame is `F` bytes, held once per response when it
-is too large to cache), and tag trees.
+is too large to cache), and tag trees, which are read within the limits of
+"DICOM Data Set Reads".
 
 See [the HTTP API reference](api.md) for endpoint payloads and headers.
 
@@ -1005,8 +1006,9 @@ every buffer from the entry (`pixels/rle.rs`, `pixels/native.rs`).
 Every element of a DICOM data set declares its own length, a deflated data
 set inflates to a size nothing declares, and sequences nest as deep as the
 file says. `src/data_set.rs` is the only code that reads a data set for the
-catalog (`read_for_catalog`, called by `loader/entry.rs`), and its doc
-comment is the contract for what that read may cost. The limits are fixed
+catalog (`read_for_catalog`, called by `loader/entry.rs`) and for the tag
+endpoints, and its doc comment is the contract for what those reads may
+cost. The limits are fixed
 numbers or the file's real length, never a length the file declares:
 
 | Limit | Value | What it bounds |
@@ -1030,6 +1032,22 @@ behind one. Pixel elements nested in sequences, such as an Icon Image
 Sequence, do not count, and their fragments are passed over. A file that
 breaks a limit before its pixel element is not listed: discovery skips it as
 `dicom_parse_failed`, as it does a file that does not parse.
+
+The tag endpoints read through the same module (`read_for_tags`, called by
+`server/tags.rs`) under the same limits, with two differences. The read
+walks the whole data set (a selection before the pixel data stops there),
+and it reads no value the tree shows by its length: Pixel Data, every bulk
+binary value representation (`shown_by_length`) and any value over
+`DATA_SET_VALUE_MAX_BYTES`. Each of those is listed, empty, at its declared
+length; encapsulated Pixel Data is listed at the length of its fragments,
+which are stepped over one item header at a time. So `/tags` and
+`/tags/select` cost the same for a file of any size, whichever element is
+selected, and take no decode permit. A value the read would keep that runs
+past the end of the file fails the read, as does a data set nested past the
+limit. A data set that ends, or runs out of inflated budget, inside a value
+that is being passed over ends there: that element is listed and nothing
+after it is. The tree of a deflated data set whose pixel data inflates past
+the budget therefore ends with its pixel element.
 
 What a read holds is proportional to the bytes it read: the values it kept,
 each backed by its bytes in the file, and one in-memory element per element
@@ -1838,7 +1856,10 @@ installation and VS Code Electron integration can also use network/cache state;
   and deflated data sets that inflate, in bytes or in elements, past their
   budget. They count the bytes read at the source and the heap at the
   allocator, then run the real loader over the same files to show that it
-  lists and refuses them as the read does.
+  lists and refuses them as the read does. `data_set_tags.rs` does the same
+  for `read_for_tags` (pixel data, bulk values and long text in files of
+  megabytes) and asks `/tags` and `/tags/select` through the router on a
+  counted runtime, for each element shown by its length.
 - Discovery builds each file's catalog metadata in one bounded read
   (`loader/entry.rs` `read_discovery_header`, "DICOM Data Set Reads"): the
   metadata object holds what
@@ -1979,10 +2000,12 @@ Not current correctness blockers:
   one, and never derive an estimate from what the file declares.
 - No codec library is handed a compressed frame before
   `pixels::codestream::checked` has accepted it for the catalog entry.
-- Discovery reads a DICOM data set only through `data_set::read_for_catalog`.
+- Discovery reads a DICOM data set only through `data_set::read_for_catalog`
+  and the tag endpoints only through `data_set::read_for_tags`.
   Nothing there is sized from a length the file declares before that length
   has been checked against the file's real length or a constant, and its
-  limits change only together with `tests/raster_cost/data_sets.rs`.
+  limits change only together with `tests/raster_cost/data_sets.rs` and
+  `data_set_tags.rs`.
 - Thumbnails write their own cache only, and anything that returns source
   pixels applies the frame's redaction boxes and the masked-session refusal
   before encoding.

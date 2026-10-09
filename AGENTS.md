@@ -557,9 +557,9 @@ requires an existing `frontend/dist/index.html`.
   frames (`pixels/service.rs` `raw_samples_for_display`); a new display
   decoder's integer layout must be mirrored in `display_integer_layout`.
 - Tag trees are cached per file index in a bounded LRU behind private
-  `AppState` methods. Tag reads parse only up to pixel data and describe the
-  pixel element from its header, seeking past its value (a deflated data set
-  is inflated through it into a sink); pixel values are never kept.
+  `AppState` methods. Tag reads go through `data_set::read_for_tags`, which
+  reads no pixel value, no bulk binary value and no value over
+  `DATA_SET_VALUE_MAX_BYTES`, and lists each at its declared length.
 
 **Decode admission**
 
@@ -650,22 +650,26 @@ is cached between requests.
 
 **DICOM data sets**
 
-- `src/data_set.rs` `read_for_catalog` is the only code that reads a DICOM
-  data set for the catalog, and the module's doc comment is the contract for
-  what that may cost: no value is read that the file does not hold or that
+- `src/data_set.rs` is the only code that reads a DICOM data set for the
+  catalog (`read_for_catalog`) and for the tag endpoints (`read_for_tags`),
+  and the module's doc comment is the contract for what those reads may
+  cost: no value is read that the file does not hold or that
   is longer than `DATA_SET_VALUE_MAX_BYTES` (Overlay Data excepted), a
   deflated data set is read within `DATA_SET_INFLATED_BUDGET_BYTES`, and
   sequences nest to `DATA_SET_MAX_DEPTH`. `docs/architecture.md`, "DICOM
   Data Set Reads", is normative.
 - Do not open a file with `dicom_object::open_file`, `OpenFileOptions` or
-  `DataSetReader` in discovery: they allocate every value at its declared
-  length. Read through the lazy tokens and decide per header, as the module
+  `DataSetReader` in discovery or for a tag endpoint: they allocate every
+  value at its declared length. Read through the lazy tokens and decide per header, as the module
   does.
 - A new catalog field that needs a value longer than
   `DATA_SET_VALUE_MAX_BYTES` is an exception named in the module's `keep`
   rule beside Overlay Data, with a row in `tests/raster_cost/data_sets.rs`.
   The meta group is checked header by header before `FileMetaTable` parses
   it; keep that check in front of any new meta read.
+- A tag endpoint shows a value it did not read by its length
+  (`TagValue::Binary`). Do not read a value to show more of it without a
+  fixed bound on what is read, and never read pixel data for a tag request.
 - The limits are counted, not timed: tests count bytes at the source and
   heap at the allocator.
 
@@ -1101,6 +1105,9 @@ default suite.
   hold, reads no value the catalog has no use for, nests sequences to a
   fixed depth and reads a deflated data set within a fixed budget; a file
   past a limit is skipped as `dicom_parse_failed`.
+- The tag endpoints hold no more than the tree for a DICOM file of any size:
+  pixel data, bulk values and values over 1 MiB are shown by their declared
+  length and never read, whichever element is selected.
 - Decoding a raster frame reads no more than its entry's budget and holds no
   more heap than its entry's limit, for hostile and damaged files too, and
   never panics.

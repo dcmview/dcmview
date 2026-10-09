@@ -129,6 +129,14 @@ diagnostic viewer.
   whose Deflated Explicit VR Little Endian data set needs more than 64 MiB
   to read up to its pixel data, is skipped as `dicom_parse_failed`.
 
+- `/tags` and `/tags/select` report a text or numeric value longer than
+  1 MiB as `{"type": "binary", "length": N}`, as they report binary values,
+  instead of a preview of it. A tag tree that reaches the end of a truncated
+  file inside a value it does not read now ends with that element instead
+  of failing, and the tree of a Deflated Explicit VR Little Endian file
+  whose pixel data inflates to more than 64 MiB ends with its pixel
+  element.
+
 - `--cache-budget BYTES` now also covers the thumbnail cache, and its default
   total is 768 MiB instead of 704 MiB: 256, 384, 64 and 64 MiB for the
   display, raw, overlay and thumbnail caches respectively.
@@ -146,6 +154,10 @@ diagnostic viewer.
   declares. Before, a file whose header declared more data than the file
   held could make the viewer allocate that much memory while scanning a
   folder.
+- `/tags` and `/tags/select` no longer read pixel data or bulk values.
+  Before, selecting an element at or behind the pixel data read the whole
+  file into memory outside the decode memory budget, and a tag tree read
+  every value before the pixel data at its declared length.
 - Segmentation, RT Dose and Parametric Map overlays and the legend of an RT
   Dose or Parametric Map are now reserved against the decode memory budget
   as whole pieces of work: the frames they decode, the values they are
