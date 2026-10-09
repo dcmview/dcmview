@@ -115,6 +115,28 @@ diagnostic viewer.
   total is 768 MiB instead of 704 MiB: 256, 384, 64 and 64 MiB for the
   display, raw, overlay and thumbnail caches respectively.
 
+### Fixed
+
+- A compressed DICOM frame whose pixel data declares a different image than
+  the file's header is now refused instead of being decoded at the size the
+  pixel data declares. Before, a small file could make the viewer hold
+  gigabytes of memory for one frame, and a JPEG frame larger than its header
+  ended in an internal error. This affected 0.4.0 and earlier, for JPEG,
+  JPEG-LS, JPEG 2000 and JPEG XL frames and for Deflated Image Frame
+  Compression. Such a frame now answers `500 pixel_decode_failed` with
+  "pixel data disagrees with the header"; the file stays listed and its
+  other frames display. Compared are rows, columns, samples per pixel and
+  the sample depth against Bits Allocated, and the frame's tile, packet and
+  scan structure against fixed limits (4,096 tiles, 100 scans). Files that
+  differ from their header only in Bits Stored, sign, colour transform,
+  resolution levels or chroma subsampling display as before.
+- A JPEG 2000 frame stored as a JP2 file is decoded from its codestream
+  alone: a palette or channel definition in the file's other boxes is no
+  longer applied.
+- A JPEG XL frame with an alpha channel, floating-point samples, more bits
+  than Bits Allocated, or an animation is refused; so is an 8-bit JPEG frame
+  under a 16-bit header, which was displayed as noise.
+
 ## 0.4.0 - 2026-10-08
 
 ### Breaking changes

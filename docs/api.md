@@ -647,7 +647,12 @@ Branch on `code`; `error` is diagnostic text and may change.
 | `503` | `decode_busy` (decode queue full; `Retry-After: 1`) |
 
 A failed decode affects only that request; the server keeps running, and logs
-the failure (with the request) to stderr. A file deleted or moved after
+the failure (with the request) to stderr. A compressed frame whose pixel data
+declares a different image than the file's header (another size, component
+count or sample depth, or a tile, packet or scan structure beyond the fixed
+limits) is such a failure: `500 pixel_decode_failed` with "pixel data
+disagrees with the header" in the message, on every endpoint that decodes
+the frame. The file stays listed and its other frames decode. A file deleted or moved after
 discovery answers `404 not_found` naming its path.
 
 JSON, CSV and the viewer's scripts and styles are gzip-compressed for clients
