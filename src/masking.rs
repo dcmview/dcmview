@@ -7,6 +7,7 @@
 //! are stable within a session and unrelated across sessions.
 
 mod profile;
+mod raster;
 
 use crate::api::contracts::{
     FileSummary, GraphicAnnotationsResponse, SemanticContext, SemanticContextResponse,
@@ -262,6 +263,17 @@ impl Masker {
         for node in nodes {
             self.mask_tag(&patient, node, false);
         }
+    }
+
+    /// Masks the metadata tree of a raster image file: the tree
+    /// `pixels::read_raster_tags` reads, with the server's `File` and `Note`
+    /// leaves. `masking/raster.rs` has the rule: only listed values that
+    /// describe the pixel grid are shown, and all text of the file, every
+    /// unknown tag, and everything that says who, where, when or with what
+    /// shows `[masked]`. A node selected from a tree masked here needs no
+    /// further masking.
+    pub fn raster_tags(&self, nodes: &mut [TagNode]) {
+        raster::mask_tree(nodes);
     }
 
     /// Masks one element selected by a `tag/item/tag...` path. The tags above
