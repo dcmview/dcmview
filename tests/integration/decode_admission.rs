@@ -633,6 +633,26 @@ fn the_estimate_is_the_documented_formula_of_the_catalog_entry() {
         }
     }
 
+    // A palette colour frame is one sample a pixel and is displayed as
+    // RGB: D = 3 P, whatever its transfer syntax.
+    for syntax in [EXPLICIT_LE, "1.2.840.10008.1.2.5"] {
+        let mut palette = entry(syntax, 1, 8);
+        palette.photometric_interpretation = "PALETTE COLOR".to_string();
+        let decode = 16 * MIB + 3 * p;
+        let expected = [
+            (DecodeWork::RawFrame, decode),
+            (DecodeWork::DisplayFrame, decode.max(p + 7 * 3 * p) + MIB),
+            (DecodeWork::Thumbnail, decode + 3 * p + 8 * MIB),
+        ];
+        for (work, bytes) in expected {
+            assert_eq!(
+                pixels::decode_estimate(&palette, work),
+                bytes,
+                "{work:?} of palette colour in {syntax}"
+            );
+        }
+    }
+
     // A frame large enough that encoding it, not decoding it, is the larger
     // stage: F + 7 D.
     let mut large = entry(EXPLICIT_LE, 1, 8);

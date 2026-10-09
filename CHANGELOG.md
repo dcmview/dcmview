@@ -166,6 +166,9 @@ diagnostic viewer.
 - Display frames and presentation layers reserve the decode memory an image
   that does not compress takes while it is encoded. Before, encoding such
   an image could hold more memory than had been reserved for it.
+- A PALETTE COLOR frame reserves decode memory for the RGB image it is
+  displayed as. Before, it reserved as a gray frame and could hold more
+  than that.
 - Cached display frames, thumbnails, presentation layers and overlays hold
   exactly the bytes `--cache-budget` counts for them. Before, a cached
   image could hold up to twice its length, so the caches could hold more

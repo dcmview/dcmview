@@ -93,6 +93,7 @@ pub enum DecodeWork {
 /// F = S * B                                            the raw frame
 /// D = 3 * P   when samples_per_pixel >= 3 and B == 1    the display buffer
 ///     6 * P   when samples_per_pixel >= 3 and B >= 2
+///     3 * P   for one sample a pixel that is PALETTE COLOR
 ///     P       otherwise
 /// V = 32 * S  when B >= 4                              windowing wide samples
 ///     0       otherwise
@@ -149,6 +150,8 @@ pub enum DecodeWork {
 ///   grows. `tests/raster_cost` measures such frames against it.
 ///   Redaction boxes are painted on a decoded copy of the PNG, which is
 ///   given up before the copy is encoded, so painting them holds no more.
+/// - A PALETTE COLOR frame is one sample a pixel and is displayed as RGB,
+///   so its display buffer is three bytes a pixel.
 /// - `V` is for samples of 32 or 64 bits, which have no lookup table: the
 ///   frame is converted to 64-bit values, rescaled and sorted for its
 ///   percentiles, each in an array of its own, three arrays of eight bytes
@@ -188,9 +191,15 @@ pub fn decode_estimate(file: &FileEntry, work: DecodeWork) -> u64 {
     let bytes_per_sample = u64::from(file.bits_allocated).saturating_add(7) / 8;
     let bytes_per_sample = bytes_per_sample.max(1);
     let frame = samples.saturating_mul(bytes_per_sample);
+    let palette = file.samples_per_pixel == 1
+        && file
+            .photometric_interpretation
+            .trim()
+            .eq_ignore_ascii_case("PALETTE COLOR");
     let display = pixels.saturating_mul(match (file.samples_per_pixel, bytes_per_sample) {
         (3.., 1) => 3,
         (3.., _) => 6,
+        _ if palette => 3,
         _ => 1,
     });
     let wide = if bytes_per_sample >= 4 {

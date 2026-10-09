@@ -804,8 +804,9 @@ share of `--cache-budget`, and nothing the catalog reports depends on it.
 **What is reserved.** `pixels::decode_estimate` (`pixels/admission.rs`)
 gives the bytes one piece of work reserves, from the catalog entry alone and
 before the file is opened. With `P` pixels, `S` samples, a raw frame of `F`
-bytes, a display buffer of `D` bytes (`P`, or `3 * P` for 8-bit colour,
-`6 * P` for deeper colour), and `V` of `32 * S` for samples of 32 or 64 bits
+bytes, a display buffer of `D` bytes (`P`, or `3 * P` for 8-bit colour and
+for a PALETTE COLOR frame, which is displayed as RGB, `6 * P` for deeper
+colour), and `V` of `32 * S` for samples of 32 or 64 bits
 (which are windowed one at a time as 64-bit values) and 0 otherwise; and,
 for an overlay, the `T` pixels of the displayed frame it is drawn on and the
 `N` frames of its object it holds at once:

@@ -224,10 +224,12 @@ fn display_frame_part(entry: &FileEntry, fixed: u64, reserved: u64) -> u64 {
     let pixels = u64::from(entry.rows) * u64::from(entry.columns);
     let bytes = u64::from(entry.bits_allocated).div_ceil(8).max(1);
     let frame = pixels * u64::from(entry.samples_per_pixel) * bytes;
+    let palette = entry.photometric_interpretation.trim() == "PALETTE COLOR";
     let display = pixels
         * match (entry.samples_per_pixel, bytes) {
             (3.., 1) => 3,
             (3.., _) => 6,
+            _ if palette => 3,
             _ => 1,
         };
     let wide = if bytes >= 4 {
@@ -458,6 +460,8 @@ pub(super) struct Native {
     side: u16,
     bits: u16,
     samples_per_pixel: u16,
+    /// One sample a pixel is an index into a colour palette.
+    palette: bool,
     transfer_syntax: &'static str,
     /// Elements beside the image's own, such as a shutter.
     more: Vec<DataElement<InMemDicomObject>>,
@@ -469,6 +473,7 @@ impl Native {
             side,
             bits,
             samples_per_pixel: 1,
+            palette: false,
             transfer_syntax: uids::EXPLICIT_VR_LITTLE_ENDIAN,
             more: Vec::new(),
         }
@@ -480,6 +485,48 @@ impl Native {
             samples_per_pixel: 3,
             ..Self::gray(side, bits)
         }
+    }
+
+    /// One 8-bit index a pixel into palettes that give every index a
+    /// colour unlike its neighbors'.
+    fn palette(side: u16) -> Self {
+        let table = |step: u16| {
+            let words: Vec<u16> = (0..256_u16)
+                .map(|index| (index * step % 251) << 8)
+                .collect();
+            PrimitiveValue::U16(words.into())
+        };
+        let descriptor = || PrimitiveValue::U16(vec![256, 0, 16].into());
+        let mut image = Self::gray(side, 8).with([
+            DataElement::new(
+                tags::RED_PALETTE_COLOR_LOOKUP_TABLE_DESCRIPTOR,
+                VR::US,
+                descriptor(),
+            ),
+            DataElement::new(
+                tags::GREEN_PALETTE_COLOR_LOOKUP_TABLE_DESCRIPTOR,
+                VR::US,
+                descriptor(),
+            ),
+            DataElement::new(
+                tags::BLUE_PALETTE_COLOR_LOOKUP_TABLE_DESCRIPTOR,
+                VR::US,
+                descriptor(),
+            ),
+            DataElement::new(tags::RED_PALETTE_COLOR_LOOKUP_TABLE_DATA, VR::OW, table(73)),
+            DataElement::new(
+                tags::GREEN_PALETTE_COLOR_LOOKUP_TABLE_DATA,
+                VR::OW,
+                table(151),
+            ),
+            DataElement::new(
+                tags::BLUE_PALETTE_COLOR_LOOKUP_TABLE_DATA,
+                VR::OW,
+                table(199),
+            ),
+        ]);
+        image.palette = true;
+        image
     }
 
     fn in_syntax(self, transfer_syntax: &'static str) -> Self {
@@ -528,10 +575,10 @@ impl Native {
             DataElement::new(
                 tags::PHOTOMETRIC_INTERPRETATION,
                 VR::CS,
-                PrimitiveValue::from(if self.samples_per_pixel == 3 {
-                    "RGB"
-                } else {
-                    "MONOCHROME2"
+                PrimitiveValue::from(match (self.samples_per_pixel, self.palette) {
+                    (3, _) => "RGB",
+                    (_, true) => "PALETTE COLOR",
+                    _ => "MONOCHROME2",
                 }),
             ),
             DataElement::new(tags::PIXEL_DATA, VR::OW, PrimitiveValue::from(samples)),
@@ -813,6 +860,10 @@ fn an_image_that_does_not_compress_holds_no_more_heap_than_it_reserved() {
         let image = Native::rgb(side, 8);
         image.file(noise(image.frame_bytes()))
     };
+    let palette = |side: u16| {
+        let image = Native::palette(side);
+        image.file(noise(image.frame_bytes()))
+    };
     let layer = |side: u16| {
         let image = Native::gray(side, 8).with(striped_shutter(side));
         image.file(noise(image.frame_bytes()))
@@ -825,6 +876,7 @@ fn an_image_that_does_not_compress_holds_no_more_heap_than_it_reserved() {
         ("gray-2714.dcm", gray(2714)),
         ("color-1028.dcm", color(1028)),
         ("color-1183.dcm", color(1183)),
+        ("palette-1183.dcm", palette(1183)),
         ("layer-1026.dcm", layer(1026)),
         ("layer-1195.dcm", layer(1195)),
     ];
