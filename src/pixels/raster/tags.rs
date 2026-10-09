@@ -23,6 +23,7 @@ mod directories;
 mod jpeg;
 mod names;
 mod png;
+mod profile;
 mod walk;
 mod webp;
 
@@ -450,6 +451,9 @@ fn read_format(format: FileFormat, reader: &mut Reader<'_>, length: u64, sink: &
                 },
             );
         }
+    }
+    if let Some(block) = walk.profile {
+        profile::read(&mut walk, block);
     }
 }
 
