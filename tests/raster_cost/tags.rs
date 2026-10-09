@@ -9,8 +9,7 @@
 
 use super::heap;
 use super::raster_files::{
-    self as files, png_chunk, png_from_chunks, riff_chunk, vp8x, webp_from_chunks, zlib,
-    CountedFile,
+    self as files, png_chunk, png_from_chunks, riff_chunk, vp8x, webp_from_chunks, CountedFile,
 };
 use super::raster_tag_files::{
     self as tagged, icc_with_description, icc_with_unicode_description, jpeg_exif, jpeg_profile,
@@ -1302,8 +1301,18 @@ fn hostile_containers() -> Vec<Hostile> {
     const PNG_ROW: &str = "PNG:IHDR | Width |  | 2";
     let container = Some(Note::Damaged(Part::Container));
 
-    // Compressed text and a compressed profile that inflate to 64 MiB.
-    let zeros = zlib(&vec![0; 64 * 1024 * 1024]);
+    // Compressed text and a compressed profile that inflate to 64 MiB,
+    // deflated as tightly as the format allows (about a thousand to one),
+    // so that even the few kilobytes read of a text chunk hold megabytes.
+    let zeros = {
+        use std::io::Write;
+        let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+        encoder
+            .write_all(&vec![0; 64 * 1024 * 1024])
+            .expect("deflate");
+        encoder.finish().expect("deflate")
+    };
+    assert!(zeros.len() < 80 * 1024, "{} bytes deflated", zeros.len());
     let mut bomb = b"bomb\0\0".to_vec();
     bomb.extend_from_slice(&zeros);
     let mut itxt = b"bomb\0\x01\0\0\0".to_vec();
