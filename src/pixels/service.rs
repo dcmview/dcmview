@@ -550,7 +550,7 @@ async fn redacted(
     if boxes.is_empty() {
         return Ok(display);
     }
-    display.png = tokio::task::spawn_blocking(move || redact_png(&display.png, &boxes))
+    display.png = tokio::task::spawn_blocking(move || redact_png(display.png, &boxes))
         .await
         .context("redaction task failed")
         .and_then(|result| result)

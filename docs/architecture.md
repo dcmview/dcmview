@@ -813,9 +813,9 @@ for an overlay, the `T` pixels of the displayed frame it is drawn on and the
 | Work (`DecodeWork`) | Reserved |
 |---|---|
 | `RawFrame`: decoding a frame to its samples | `decode` |
-| `DisplayFrame`: a display frame or a preview from a cold cache | `decode + V + 3 * D + 1 MiB` |
+| `DisplayFrame`: a display frame or a preview from a cold cache | `decode + V + 6 * D + 1 MiB` |
 | `Thumbnail` | `decode + V + D + 8 MiB` |
-| `PresentationLayer` | `9 * P + 1 MiB` |
+| `PresentationLayer` | `24 * P + 1 MiB` |
 | `RawRedaction`: the copy of a raw frame in which boxes are filled | `F` |
 | `ValueLegend`: the value range of an RT Dose or Parametric Map, one frame after another | `decode + 8 * P` |
 | `SegmentationOverlay`: one SEG frame painted on a displayed frame | `decode + 24 * T + 1 MiB` |
@@ -833,6 +833,16 @@ measures each path against it. The DICOM rows are rules: a compressed
 frame must declare the image of its catalog entry before it is decoded
 ("Compressed Frames Are Held To The Header"), but the heap a DICOM decoder
 holds for that image is not limited the way the raster decoder's is.
+
+An image is reserved six times over for the time it is encoded as a PNG: the
+image, the stream it compresses to in a buffer up to twice its length, and
+the PNG, held twice over while it grows. That is `6 * D` for a display
+buffer and `24 * P` for a presentation layer, which is four bytes a pixel.
+An image that does not compress reaches it: a frame of noise, or a layer
+whose shutter hides every other pixel. Redaction boxes are painted on a
+decoded copy of a display PNG, and the PNG is given up before the copy is
+encoded, so painting them holds no more than the first encoding did.
+`tests/raster_cost/admission.rs` measures such images against both rows.
 
 The overlay rows are estimated from the entry of the overlay's object (the
 SEG, dose or map), which is what they decode; the displayed frame
@@ -1173,13 +1183,13 @@ the file, for a raster that has one.
   starts ("Decode Admission"), so the decodes running at once never have
   more reserved than the budget. The file term is part of every raster
   reservation, so what fits depends on the file's length as well as on its
-  pixels: a display frame at the pixel limit reserves 2.3 GiB and four
-  times its file's length for 8-bit gray, 3.8 GiB and four times its file's
-  length for 16-bit gray, 6.8 GiB and the same for 8-bit RGB, and 16.6 GiB
+  pixels: a display frame at the pixel limit reserves 3.1 GiB and four
+  times its file's length for 8-bit gray, 4.6 GiB and four times its file's
+  length for 16-bit gray, 9.1 GiB and the same for 8-bit RGB, and 21.1 GiB
   and the same for 16-bit RGBA. With a budget of 4 GiB (the default on a machine with
   16 GiB or more) the first fits when
-  its file is no longer than 439 MiB and the second when its file is no
-  longer than 55 MiB; the colour layouts do not fit at that size. A frame
+  its file is no longer than 247 MiB; 16-bit gray and the colour layouts do
+  not fit at that size. A frame
   that does not fit is refused with `422 decode_memory_exceeded`, which
   states the bytes it needs, until the viewer is started with a
   `--decode-memory` of at least that. `docs/configuration.md`, "Decode

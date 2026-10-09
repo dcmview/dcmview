@@ -26,7 +26,7 @@ use dcmview::pixels::{
 };
 use dcmview::server::{self, AppState, FileRegistry};
 use dcmview::types::FileEntry;
-use dicom_core::{DataElement, PrimitiveValue, VR};
+use dicom_core::{DataElement, PrimitiveValue, Tag, VR};
 use dicom_dictionary_std::{tags, uids};
 use dicom_object::{meta::FileMetaTableBuilder, InMemDicomObject};
 use std::sync::{Arc, Mutex};
@@ -417,6 +417,8 @@ struct Native {
     bits: u16,
     samples_per_pixel: u16,
     transfer_syntax: &'static str,
+    /// Elements beside the image's own, such as a shutter.
+    more: Vec<DataElement<InMemDicomObject>>,
 }
 
 impl Native {
@@ -426,6 +428,15 @@ impl Native {
             bits,
             samples_per_pixel: 1,
             transfer_syntax: uids::EXPLICIT_VR_LITTLE_ENDIAN,
+            more: Vec::new(),
+        }
+    }
+
+    /// Three samples of `bits` bits a pixel, colour by pixel.
+    fn rgb(side: u16, bits: u16) -> Self {
+        Self {
+            samples_per_pixel: 3,
+            ..Self::gray(side, bits)
         }
     }
 
@@ -434,6 +445,11 @@ impl Native {
             transfer_syntax,
             ..self
         }
+    }
+
+    fn with(mut self, more: impl IntoIterator<Item = DataElement<InMemDicomObject>>) -> Self {
+        self.more.extend(more);
+        self
     }
 
     /// The bytes of one frame.
@@ -481,6 +497,9 @@ impl Native {
                 VR::US,
                 unsigned(0),
             ));
+        }
+        for element in &self.more {
+            object.put(element.clone());
         }
         let mut bytes = Vec::new();
         object
@@ -657,6 +676,84 @@ fn a_deflated_data_set_costs_what_it_supplies() {
                  {reserved} reserved"
             );
         }
+    }
+}
+
+/// A bitmap display shutter over a whole image of `side` x `side` pixels
+/// that hides every other pixel of a row, filled with mid gray: the layer
+/// then alternates between a transparent pixel and an opaque gray one, and
+/// every sample differs from its neighbor.
+fn striped_shutter(side: u16) -> Vec<DataElement<InMemDicomObject>> {
+    const GROUP: u16 = 0x6000;
+    let unsigned = |value: u16| PrimitiveValue::from(value);
+    let words = (usize::from(side) * usize::from(side)).div_ceil(16);
+    vec![
+        DataElement::new(Tag(GROUP, 0x0010), VR::US, unsigned(side)),
+        DataElement::new(Tag(GROUP, 0x0011), VR::US, unsigned(side)),
+        DataElement::new(Tag(GROUP, 0x0040), VR::CS, "G"),
+        DataElement::new(
+            Tag(GROUP, 0x0050),
+            VR::SS,
+            PrimitiveValue::I16(vec![1, 1].into()),
+        ),
+        DataElement::new(Tag(GROUP, 0x0100), VR::US, unsigned(1)),
+        DataElement::new(Tag(GROUP, 0x0102), VR::US, unsigned(0)),
+        DataElement::new(
+            Tag(GROUP, 0x3000),
+            VR::OW,
+            PrimitiveValue::U16(vec![0x5555; words].into()),
+        ),
+        DataElement::new(tags::SHUTTER_SHAPE, VR::CS, "BITMAP"),
+        DataElement::new(tags::SHUTTER_OVERLAY_GROUP, VR::US, unsigned(GROUP)),
+        DataElement::new(tags::SHUTTER_PRESENTATION_VALUE, VR::US, unsigned(0x8080)),
+    ]
+}
+
+/// Display frames and a presentation layer whose images do not compress.
+///
+/// An image is encoded through buffers that grow by doubling, and one that
+/// does not compress is written a second time, stored, beside the attempt
+/// to compress it. So what an encode holds is several times the image, and
+/// most at a size where the image has just passed a doubling. These are
+/// such images, of one, three and four bytes a pixel, at such sizes, and
+/// every path holds no more than it reserved, with the fixed part of a
+/// decode's estimate left out as for any frame large enough to measure.
+#[test]
+fn an_image_that_does_not_compress_holds_no_more_heap_than_it_reserved() {
+    let plain = tokio::runtime::Runtime::new().expect("runtime");
+    let gray = |side: u16| {
+        let image = Native::gray(side, 8);
+        image.file(noise(image.frame_bytes()))
+    };
+    let color = |side: u16| {
+        let image = Native::rgb(side, 8);
+        image.file(noise(image.frame_bytes()))
+    };
+    let layer = |side: u16| {
+        let image = Native::gray(side, 8).with(striped_shutter(side));
+        image.file(noise(image.frame_bytes()))
+    };
+    // Sides at which what is held is at its most for the bytes a pixel of
+    // each image, among those from 1,000 to 1,500 pixels; one of them twice
+    // over, where what a frame holds outgrows every fixed allowance.
+    let files = [
+        ("gray-1133.dcm", gray(1133)),
+        ("gray-2714.dcm", gray(2714)),
+        ("color-1028.dcm", color(1028)),
+        ("color-1183.dcm", color(1183)),
+        ("layer-1026.dcm", layer(1026)),
+        ("layer-1195.dcm", layer(1195)),
+    ];
+    let scan = listed(&plain, &files);
+    let runtime = CountedRuntime::new();
+    for (name, _) in &files {
+        let served = assert_reservations_cover(
+            &runtime,
+            name,
+            scan.entry(name),
+            pixels::DICOM_DECODE_BASE_BYTES,
+        );
+        assert_eq!(served, Path::ALL.len(), "{name}");
     }
 }
 

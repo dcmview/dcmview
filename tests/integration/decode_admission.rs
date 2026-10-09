@@ -616,9 +616,9 @@ fn the_estimate_is_the_documented_formula_of_the_catalog_entry() {
         let decode = 16 * MIB + decode;
         let expected = [
             (DecodeWork::RawFrame, decode),
-            (DecodeWork::DisplayFrame, decode + wide + 3 * display + MIB),
+            (DecodeWork::DisplayFrame, decode + wide + 6 * display + MIB),
             (DecodeWork::Thumbnail, decode + wide + display + 8 * MIB),
-            (DecodeWork::PresentationLayer, 9 * p + MIB),
+            (DecodeWork::PresentationLayer, 24 * p + MIB),
             (DecodeWork::RawRedaction, frame),
         ];
         for (work, bytes) in expected {
@@ -667,9 +667,9 @@ async fn a_raster_reserves_its_decode_limit_at_the_length_it_was_listed_with() {
         std::fs::write(&entry.path, [0; 16]).expect("shrink the file");
         let expected = [
             (DecodeWork::RawFrame, decode),
-            (DecodeWork::DisplayFrame, decode + 3 * 3 * p + MIB),
+            (DecodeWork::DisplayFrame, decode + 6 * 3 * p + MIB),
             (DecodeWork::Thumbnail, decode + 3 * p + 8 * MIB),
-            (DecodeWork::PresentationLayer, 9 * p + MIB),
+            (DecodeWork::PresentationLayer, 24 * p + MIB),
             (DecodeWork::RawRedaction, frame),
         ];
         for (work, bytes) in expected {

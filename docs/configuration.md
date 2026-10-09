@@ -124,14 +124,14 @@ dcmview: decode memory 8GiB (set by --decode-memory)
 Showing one frame of an image file (PNG, JPEG, TIFF or WebP) reserves
 
 ```text
-33.1 MiB + 6 x frame + 3 x display + 4 x min(file length, 64 MiB + 4 x frame)
+33.1 MiB + 6 x frame + 6 x display + 4 x min(file length, 64 MiB + 4 x frame)
 ```
 
 where `frame` is the decoded frame (pixels x samples per pixel x bytes per
 sample), `display` is one byte per pixel for gray, three for 8-bit colour
 and six for deeper colour, and the file length is the one the file had when
 it was listed. Samples of 32 or 64 bits add 32 bytes per sample. A
-thumbnail reserves the same with one `display` instead of three and 7 MiB
+thumbnail reserves the same with one `display` instead of six and 7 MiB
 more. A DICOM frame reserves by its transfer syntax and not by the length of
 its file; [Decode Admission](architecture.md#decode-admission) lists every
 case.
@@ -155,11 +155,11 @@ that is, whatever the budget:
 
 | Stored samples | Without the file term | Uncompressed file | File term at its most |
 |---|---|---|---|
-| 8-bit gray | 2.3 GiB | 3.3 GiB | 6.6 GiB |
-| 16-bit gray | 3.8 GiB | 5.8 GiB | 12.1 GiB |
-| 8-bit RGB | 6.8 GiB | 9.8 GiB | 19.1 GiB |
-| 8-bit RGBA | 8.3 GiB | 12.3 GiB | 24.6 GiB |
-| 16-bit RGBA | 16.6 GiB | 24.6 GiB | 48.8 GiB |
+| 8-bit gray | 3.1 GiB | 4.1 GiB | 7.3 GiB |
+| 16-bit gray | 4.6 GiB | 6.6 GiB | 12.8 GiB |
+| 8-bit RGB | 9.1 GiB | 12.1 GiB | 21.3 GiB |
+| 8-bit RGBA | 10.6 GiB | 14.6 GiB | 26.8 GiB |
+| 16-bit RGBA | 21.1 GiB | 29.1 GiB | 53.3 GiB |
 
 The first column is what the frame reserves before four times its file's
 length is added; the second is a file as long as its decoded frame; the last
@@ -170,28 +170,28 @@ on a machine with 16 GiB of physical memory or more, or `--decode-memory
 4GiB` on any machine.
 
 - Frames of ordinary size are unaffected: a 4096 x 5120 16-bit mammogram
-  reserves between 197 and 477 MiB, depending on its transfer syntax, so
-  several decode at once with 4 GiB, at least four with the 2 GiB an 8 GiB
-  machine gets, and at least two with 1 GiB.
+  reserves between 257 and 537 MiB, depending on its transfer syntax, so
+  several decode at once with 4 GiB, at least three with the 2 GiB an 8 GiB
+  machine gets, and at least one with 1 GiB.
 - Large frames take turns: a frame whose reservation does not fit beside
   the decodes that are running waits for them to finish.
 - A frame that would need more than the whole budget is not decoded. The
   viewer says how many bytes it needs and names this option; the file is
   still listed, and starting dcmview with at least that value decodes it.
 - With 4 GiB, an 8-bit gray frame at the 16,384 x 16,384 limit is
-  shown when its file is no longer than 439 MiB, and a 16-bit gray one only
-  when its file is no longer than 55 MiB: an uncompressed 16-bit TIFF of
-  that size is 512 MiB and needs `--decode-memory 6GiB`. Colour at that
-  size needs more than 4 GiB whatever the file's length. With the 2 GiB an
-  8 GiB machine gets by default, no frame at the limit is shown: the
-  smallest reservation there, 2.3 GiB, is more than the budget.
+  shown when its file is no longer than 247 MiB. A 16-bit gray one needs
+  more than 4 GiB whatever the file's length: an uncompressed 16-bit TIFF
+  of that size is 512 MiB and needs `--decode-memory 7GiB`. So does colour
+  at that size. With the 2 GiB an 8 GiB machine gets by default, no frame
+  at the limit is shown: the smallest reservation there, 3.1 GiB, is more
+  than the budget.
 - Whatever the file's length, the largest square frames shown are:
 
   | Budget | 8-bit gray | 16-bit gray | 8-bit RGB | 16-bit RGBA |
   |---|---|---|---|---|
-  | 4 GiB (default with 16 GiB or more) | 12,636 | 9,215 | 7,295 | 4,536 |
-  | 2 GiB (default with 8 GiB) | 8,589 | 6,264 | 4,959 | 3,083 |
-  | 1 GiB (default with 4 GiB or less) | 5,552 | 4,049 | 3,205 | 1,993 |
+  | 4 GiB (default with 16 GiB or more) | 11,940 | 8,935 | 6,893 | 4,339 |
+  | 2 GiB (default with 8 GiB) | 8,116 | 6,073 | 4,685 | 2,949 |
+  | 1 GiB (default with 4 GiB or less) | 5,246 | 3,925 | 3,028 | 1,906 |
 
   A larger frame is shown only when its file is short enough for the sum
   above.

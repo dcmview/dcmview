@@ -42,7 +42,8 @@ pub enum DecodeWork {
     /// One thumbnail: the decode and render, the redaction boxes, the
     /// resampling and the JPEG.
     Thumbnail,
-    /// One presentation layer: an RGBA image of the frame's size and its PNG.
+    /// One presentation layer: an RGBA image of the frame's size while it
+    /// is encoded as a PNG.
     PresentationLayer,
     /// The copy of a raw frame in which redaction boxes are filled for one
     /// response.
@@ -119,9 +120,9 @@ pub enum DecodeWork {
 /// | `work` | Bytes |
 /// |---|---|
 /// | [`DecodeWork::RawFrame`] | `decode` |
-/// | [`DecodeWork::DisplayFrame`] | `decode + V + 3 * D + `[`DISPLAY_BASE_BYTES`] |
+/// | [`DecodeWork::DisplayFrame`] | `decode + V + 6 * D + `[`DISPLAY_BASE_BYTES`] |
 /// | [`DecodeWork::Thumbnail`] | `decode + V + D + `[`THUMBNAIL_BASE_BYTES`] |
-/// | [`DecodeWork::PresentationLayer`] | `9 * P + `[`DISPLAY_BASE_BYTES`] |
+/// | [`DecodeWork::PresentationLayer`] | `24 * P + `[`DISPLAY_BASE_BYTES`] |
 /// | [`DecodeWork::RawRedaction`] | `F` |
 /// | [`DecodeWork::ValueLegend`] | `decode + 8 * P` |
 /// | [`DecodeWork::SegmentationOverlay`] | `decode + 24 * T + `[`DISPLAY_BASE_BYTES`] |
@@ -138,17 +139,25 @@ pub enum DecodeWork {
 /// - A raster's `decode` is the limit `decode_raster_frame` is held to for
 ///   every file, hostile ones included, so the reservation is never less
 ///   than what the decode holds (`tests/raster_cost` measures both).
-/// - `3 * D` is the display buffer, its PNG (never larger than the buffer
-///   beside a fixed overhead) and one more buffer while redaction boxes are
-///   painted on the decoded PNG. The steps after the decode run while the
-///   raw frame may still be held, which `decode` already counts.
+/// - `6 * D` is the display buffer while it is encoded, reckoned as an
+///   overlay image is below: the buffer, the stream it compresses to in a
+///   buffer that has grown to at most twice its length, and the PNG that
+///   stream is copied into, held twice over while it grows. A frame that
+///   does not compress is the bound, and `tests/raster_cost` measures it.
+///   Redaction boxes are painted on a decoded copy of the PNG, which is
+///   given up before the copy is encoded, so painting them holds no more.
+///   The steps after the decode run while the raw frame may still be held,
+///   which `decode` already counts.
 /// - `V` is for samples of 32 or 64 bits, which have no lookup table: the
 ///   frame is converted to 64-bit values, rescaled and sorted for its
 ///   percentiles, each in an array of its own, three arrays of eight bytes
 ///   a sample, with a quarter more beside. Samples of 16 bits or fewer are
 ///   windowed through a table and need none of it.
-/// - `9 * P` is the layer's four bytes a pixel, a PNG no larger than it, and
-///   one byte a pixel for the shutter's visibility.
+/// - `24 * P` is a presentation layer, an image of four bytes a pixel,
+///   while it is encoded, by the same reckoning. A shutter that hides every
+///   other pixel makes a layer that does not compress. The byte a pixel
+///   that marks what a shutter hides is given up before the layer is
+///   encoded.
 /// - `8 * P` is one frame as real-world values, eight bytes a pixel. A
 ///   legend holds one frame's values at a time, beside the raw frame they
 ///   were read from, which `decode` counts.
@@ -213,14 +222,14 @@ pub fn decode_estimate(file: &FileEntry, work: DecodeWork) -> u64 {
         DecodeWork::RawFrame => decode,
         DecodeWork::DisplayFrame => decode
             .saturating_add(wide)
-            .saturating_add(display.saturating_mul(3))
+            .saturating_add(display.saturating_mul(6))
             .saturating_add(DISPLAY_BASE_BYTES),
         DecodeWork::Thumbnail => decode
             .saturating_add(wide)
             .saturating_add(display)
             .saturating_add(THUMBNAIL_BASE_BYTES),
         DecodeWork::PresentationLayer => {
-            pixels.saturating_mul(9).saturating_add(DISPLAY_BASE_BYTES)
+            pixels.saturating_mul(24).saturating_add(DISPLAY_BASE_BYTES)
         }
         DecodeWork::RawRedaction => frame,
         DecodeWork::ValueLegend => decode.saturating_add(pixels.saturating_mul(8)),
