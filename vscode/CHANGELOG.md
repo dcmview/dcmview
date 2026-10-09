@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.4.1 - 2026-10-09
+
+- The bundled viewer refuses a compressed DICOM frame whose pixel data
+  declares a different image than the file's header, instead of decoding it
+  at the size the pixel data declares. Before, a small file could make the
+  viewer hold gigabytes of memory for one frame. The file stays listed and
+  its other frames display; see the main changelog.
+
 ## 0.4.0 - 2026-10-08
 
 - The bundled viewer now requires an access token on every API request. The
