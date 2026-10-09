@@ -221,11 +221,12 @@ pub(super) async fn semantic_context_for(
         return Ok(context);
     }
     let object = source.clone();
+    let file_set = files.len();
     let mut context =
         task::spawn_blocking(move || crate::semantic::semantic_context(&object, &files))
             .await
             .map_err(|error| anyhow::anyhow!("semantic context task failed: {error}"))??;
-    overlays::add_overlay_legend(state, &source, &mut context).await?;
+    overlays::add_overlay_legend(state, &source, file_set, &mut context).await?;
     let context = Arc::new(context);
     state.cache_semantic_context(key, context.clone());
     Ok(context)
