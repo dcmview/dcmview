@@ -570,6 +570,20 @@ impl Planter {
         text
     }
 
+    /// The bytes of a string found nowhere else, for an array of numbers
+    /// to spell. What is recorded as planted is the list a tree shows those
+    /// numbers as.
+    fn spelled(&mut self, place: &'static str) -> Vec<u8> {
+        let text = format!("{}{:02}qz", self.prefix, self.planted.len());
+        let shown = text
+            .bytes()
+            .map(|byte| format!("{byte}.0"))
+            .collect::<Vec<_>>()
+            .join(",");
+        self.given(place, &shown);
+        text.into_bytes()
+    }
+
     /// Records `text`, which the caller writes itself, as planted.
     fn given(&mut self, place: &'static str, text: &str) {
         self.planted.push(Planted {
@@ -585,11 +599,19 @@ impl Planter {
         // A layout tag a masked session lists, written as text: digits and
         // punctuation, as a date of birth or a telephone number is.
         self.given("a date written as text under a layout tag", "1961-07-23");
+        // A layout tag a masked session lists for a few numbers, holding
+        // text spelled as the numbers of a longer array.
+        let spelled = self
+            .spelled("text spelled as numbers under MinSampleValue")
+            .into_iter()
+            .map(u16::from)
+            .collect();
         vec![
             (269, V::ascii(&self.text("DocumentName", true))),
             (270, V::ascii(&self.text("ImageDescription", true))),
             (271, V::ascii(&self.text("Make", true))),
             (272, V::ascii(&self.text("Model", true))),
+            (280, V::Short(spelled)),
             (285, V::ascii(&self.text("PageName", true))),
             (305, V::ascii(&self.text("Software", true))),
             (306, V::ascii("1987:06:05 04:03:02")),
@@ -656,7 +678,15 @@ impl Planter {
 
     /// An EXIF block with every directory.
     fn exif_block(&mut self) -> Vec<u8> {
-        let ifd0 = self.image_entries();
+        let mut ifd0 = self.image_entries();
+        // The same under a tag that lists where image data lies: an EXIF
+        // block has no strips, so this one is free to hold anything.
+        let spelled = self
+            .spelled("text spelled as numbers under StripOffsets")
+            .into_iter()
+            .map(u32::from)
+            .collect();
+        ifd0.push((273, V::Long(spelled)));
         let exif = self.exif_entries();
         let gps = self.gps_entries();
         let interop = vec![(1, V::ascii(&self.text("InteroperabilityIndex", true)))];

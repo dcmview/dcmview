@@ -1158,7 +1158,14 @@ the same component (`docs/design/image-formats.md` section 8).
   (`masking/raster.rs`): a value is kept only when its place is listed and
   it is a number, a list of numbers or number-shaped text, and of a
   directory entry text only when the entry's type is a rational (a file can
-  write any tag as text, and a date is digits too). Listed are the
+  write any tag as text, and a date is digits too). A listed directory
+  entry is also held to the most numbers its field has: one for a size or
+  a scalar field, the fixed count of a field such as `PageNumber` or
+  `PrimaryChromaticities`, four for a field with a number for each sample;
+  a value with more is masked whole, since a file can write any tag as an
+  array that spells text one character code at a time. Strip and tile
+  offsets and byte counts are shown only when there is one, as in a page
+  stored in one strip; a colour map is never shown. Listed are the
   `File` leaves except the extension, the notes, the container's layout
   fields (`PNG:IHDR`, `pHYs`, `gAMA`, `cHRM`, `sRGB`, `sBIT`, `acTL`; JFIF
   version and density, the frame header, the Adobe version and transform;

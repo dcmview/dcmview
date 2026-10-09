@@ -675,8 +675,15 @@ A session started with `--mask` reports `masked: true` in `/health` and
   and the frame header; the WebP headers and loop count), a profile's `Size`
   and `Version`, and of directory entries the layout ones (sizes, sample
   layout, compression, strips and tiles, resolution, orientation, colour
-  space, pixel dimensions, and the pointers to other directories). Every
-  other value is `[masked]`: unknown tags, all text of the file, GPS, dates
+  space, pixel dimensions, and the pointers to other directories). A
+  listed directory entry is shown only when it holds no more numbers than
+  its field has: one for a size or a scalar field, the field's fixed count
+  otherwise (two for `PageNumber`, six for `PrimaryChromaticities`), at
+  most four for a field with a number for each sample, and one for strip
+  and tile offsets and byte counts. A longer value is `[masked]` whole,
+  whatever its type, so an array of numbers cannot spell text. Every
+  other value is `[masked]`: unknown tags, colour maps, all text of the
+  file, GPS, dates
   and times (masked, not shifted), device, software and host names, serial
   numbers, owner, artist, copyright, description and comment fields, PNG
   text chunks, XMP, maker notes, thumbnail entries, profile names and

@@ -22,6 +22,18 @@
 //! when the entry's type is a rational: a file can write any tag number
 //! with a text type, and a date or a telephone number is digits and
 //! punctuation too.
+//!
+//! A listed directory entry must also be no longer than its field. A file
+//! can write any tag with any count, and an array of numbers can spell
+//! text one character code at a time, so each listed entry has the most
+//! numbers (or rationals) it may hold to be shown: one for a size or a
+//! scalar field, the field's own fixed count otherwise, and four for a
+//! field with a number for each sample. A value with more is masked whole.
+//! The offsets and byte counts of strips and tiles are shown only when
+//! there is one of them, which is all a page stored in one strip or tile
+//! has and no more than any scalar field shows; a longer one is a free
+//! array of whatever the file wrote. A colour map is such an array at any
+//! real length, so it is not listed.
 
 use super::{masked_value, MASKED};
 use crate::api::contracts::{TagNode, TagValue};
@@ -81,16 +93,56 @@ const LEAVES: &[(&str, &str, Shown)] = &[
 /// The leaves of a JPEG frame header (`JPEG:SOF0` to `JPEG:SOF15`).
 const FRAME_HEADER_LEAVES: &[&str] = &["Precision", "Height", "Width", "Components"];
 
+/// The most numbers a field with one for each sample may show: dcmview
+/// renders at most four bands.
+const PER_SAMPLE: usize = 4;
+
 /// The entries of an image directory (a TIFF page, `IFD0`, `IFD1`) a masked
-/// session shows: the layout of the samples and where they lie. Sorted.
-const IMAGE_ENTRIES: &[u16] = &[
-    254, 255, 256, 257, 258, 259, 262, 266, 273, 274, 277, 278, 279, 280, 281, 282, 283, 284, 296,
-    297, 317, 318, 319, 320, 322, 323, 324, 325, 338, 339, 529, 530, 531, 532, 34665, 34853,
+/// session shows: the layout of the samples and where they lie. Each is
+/// `(tag, the most numbers or rationals it may hold to be shown)`. Sorted.
+const IMAGE_ENTRIES: &[(u16, usize)] = &[
+    (254, 1),          // NewSubfileType
+    (255, 1),          // SubfileType
+    (256, 1),          // ImageWidth
+    (257, 1),          // ImageLength
+    (258, PER_SAMPLE), // BitsPerSample
+    (259, 1),          // Compression
+    (262, 1),          // PhotometricInterpretation
+    (266, 1),          // FillOrder
+    (273, 1),          // StripOffsets, of a page in one strip
+    (274, 1),          // Orientation
+    (277, 1),          // SamplesPerPixel
+    (278, 1),          // RowsPerStrip
+    (279, 1),          // StripByteCounts, of a page in one strip
+    (280, PER_SAMPLE), // MinSampleValue
+    (281, PER_SAMPLE), // MaxSampleValue
+    (282, 1),          // XResolution
+    (283, 1),          // YResolution
+    (284, 1),          // PlanarConfiguration
+    (296, 1),          // ResolutionUnit
+    (297, 2),          // PageNumber: the page and how many there are
+    (317, 1),          // Predictor
+    (318, 2),          // WhitePoint: x and y
+    (319, 6),          // PrimaryChromaticities: x and y of three primaries
+    (322, 1),          // TileWidth
+    (323, 1),          // TileLength
+    (324, 1),          // TileOffsets, of a page in one tile
+    (325, 1),          // TileByteCounts, of a page in one tile
+    (338, PER_SAMPLE), // ExtraSamples
+    (339, PER_SAMPLE), // SampleFormat
+    (529, 3),          // YCbCrCoefficients
+    (530, 2),          // YCbCrSubSampling: horizontal and vertical
+    (531, 1),          // YCbCrPositioning
+    (532, 6),          // ReferenceBlackWhite: a pair for each component
+    (34665, 1),        // the pointer to the EXIF directory
+    (34853, 1),        // the pointer to the GPS directory
 ];
 
-/// The entries of an EXIF directory a masked session shows: the colour
-/// space and the pixel dimensions. Exposure settings are not listed.
-const EXIF_ENTRIES: &[u16] = &[40961, 40962, 40963, 40965];
+/// The entries of an EXIF directory a masked session shows, as
+/// [`IMAGE_ENTRIES`]: the colour space, the pixel dimensions and the
+/// pointer to the interoperability directory. Exposure settings are not
+/// listed.
+const EXIF_ENTRIES: &[(u16, usize)] = &[(40961, 1), (40962, 1), (40963, 1), (40965, 1)];
 
 /// Masks a raster's metadata tree in place. Groups stay, with their names,
 /// which are dcmview's own; a leaf keeps its `tag`, `keyword` and `vr`,
@@ -120,7 +172,7 @@ fn is_group(node: &TagNode) -> bool {
 
 /// Masks the children of a group: its leaves by `entries` (`None` shows
 /// none), and the directories inside it by their own lists.
-fn mask_children(group: &mut TagNode, entries: Option<&[u16]>) {
+fn mask_children(group: &mut TagNode, entries: Option<&[(u16, usize)]>) {
     let TagValue::Sequence { items, .. } = &mut group.value else {
         return;
     };
@@ -141,7 +193,7 @@ fn mask_children(group: &mut TagNode, entries: Option<&[u16]>) {
 
 /// Masks a directory's entries by `entries`. Nothing lies deeper; a group
 /// found here is masked whole.
-fn mask_directory(directory: &mut TagNode, entries: &[u16]) {
+fn mask_directory(directory: &mut TagNode, entries: &[(u16, usize)]) {
     let TagValue::Sequence { items, .. } = &mut directory.value else {
         return;
     };
@@ -152,17 +204,34 @@ fn mask_directory(directory: &mut TagNode, entries: &[u16]) {
     }
 }
 
-fn entry_is_shown(node: &TagNode, entries: &[u16]) -> bool {
-    let number = node
+fn entry_is_shown(node: &TagNode, entries: &[(u16, usize)]) -> bool {
+    let most = node
         .tag
         .strip_prefix("0x")
         .filter(|digits| digits.len() == 4)
-        .and_then(|digits| u16::from_str_radix(digits, 16).ok());
+        .and_then(|digits| u16::from_str_radix(digits, 16).ok())
+        .and_then(|number| entries.binary_search_by_key(&number, |(tag, _)| *tag).ok())
+        .map(|index| entries[index].1);
     // Only a rational is text this module's reader composed from numbers.
     let composed = matches!(node.vr.as_str(), "RATIONAL" | "SRATIONAL");
-    number.is_some_and(|number| entries.binary_search(&number).is_ok())
+    most.is_some_and(|most| numbers_in(&node.value) <= most)
         && (composed || !matches!(node.value, TagValue::String { .. }))
         && looks_as_listed(&node.value, Shown::Numeric)
+}
+
+/// How many numbers, or rationals, a directory entry's value holds, as the
+/// file states it: what counts is the entry's count, not how many of its
+/// numbers the tree shows.
+fn numbers_in(value: &TagValue) -> usize {
+    match value {
+        TagValue::Number { .. } => 1,
+        TagValue::Numbers { value, total, .. } => total.unwrap_or(0).max(value.len()),
+        // Rationals, as the reader joins them; a cut list ends with `…`.
+        TagValue::String { value } if value.contains('…') => usize::MAX,
+        TagValue::String { value } => value.split(',').count(),
+        // A problem is fixed words, and the others are never shown.
+        TagValue::Error { .. } | TagValue::Binary { .. } | TagValue::Sequence { .. } => 0,
+    }
 }
 
 fn top_level_leaf_is_shown(node: &TagNode) -> bool {
@@ -199,7 +268,7 @@ mod tests {
     #[test]
     fn entry_lists_are_sorted_for_binary_search() {
         for list in [IMAGE_ENTRIES, EXIF_ENTRIES] {
-            assert!(list.windows(2).all(|pair| pair[0] < pair[1]));
+            assert!(list.windows(2).all(|pair| pair[0].0 < pair[1].0));
         }
     }
 }

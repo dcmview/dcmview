@@ -510,9 +510,9 @@ async fn a_masked_session_shows_no_text_of_a_raster_file() {
             "PNG:pHYs | PixelsPerUnitX |  | 2835",
             "PNG:pHYs | PixelsPerUnitY |  | 2835",
             "PNG:pHYs | Unit |  | 1",
-            "EXIF/IFD0/0x8769 | ExifIFD | LONG | 472",
-            "EXIF/IFD0/0x8825 | GPSIFD | LONG | 750",
-            "EXIF/Exif/0xA005 | InteropIFD | LONG | 902",
+            "EXIF/IFD0/0x8769 | ExifIFD | LONG | 574",
+            "EXIF/IFD0/0x8825 | GPSIFD | LONG | 852",
+            "EXIF/Exif/0xA005 | InteropIFD | LONG | 1004",
             "ICC | Size |  | 172",
             "ICC | Version |  | \"2.1.0\"",
         ]
@@ -528,6 +528,14 @@ async fn a_masked_session_shows_no_text_of_a_raster_file() {
         "EXIF/GPS/0x0002 | GPSLatitude | RATIONAL | \"[masked]\""
     ));
     assert!(has_row(&rows(&png), "File | Extension |  | \"[masked]\""));
+    // A listed tag shows no more numbers than its field holds: a longer
+    // array could spell anything.
+    for row in [
+        "EXIF/IFD0/0x0111 | StripOffsets | LONG | \"[masked]\"",
+        "EXIF/IFD0/0x0118 | MinSampleValue | SHORT | \"[masked]\"",
+    ] {
+        assert!(has_row(&rows(&png), row), "no row {row:?}");
+    }
 
     assert_eq!(
         shown(&tags(&masked, "planted.jpg").await),
@@ -544,9 +552,9 @@ async fn a_masked_session_shows_no_text_of_a_raster_file() {
             "JPEG:SOF0 | Height |  | 8",
             "JPEG:SOF0 | Width |  | 8",
             "JPEG:SOF0 | Components |  | 3",
-            "EXIF/IFD0/0x8769 | ExifIFD | LONG | 472",
-            "EXIF/IFD0/0x8825 | GPSIFD | LONG | 750",
-            "EXIF/Exif/0xA005 | InteropIFD | LONG | 902",
+            "EXIF/IFD0/0x8769 | ExifIFD | LONG | 574",
+            "EXIF/IFD0/0x8825 | GPSIFD | LONG | 852",
+            "EXIF/Exif/0xA005 | InteropIFD | LONG | 1004",
             "ICC | Size |  | 172",
             "ICC | Version |  | \"2.1.0\"",
         ]
@@ -579,9 +587,9 @@ async fn a_masked_session_shows_no_text_of_a_raster_file() {
             ]),
             page(0),
             own(&[
-                "TIFF:page 0/0x8769 | ExifIFD | LONG | 880",
-                "TIFF:page 0/0x8825 | GPSIFD | LONG | 1158",
-                "TIFF:page 0/Exif/0xA005 | InteropIFD | LONG | 1310",
+                "TIFF:page 0/0x8769 | ExifIFD | LONG | 918",
+                "TIFF:page 0/0x8825 | GPSIFD | LONG | 1196",
+                "TIFF:page 0/Exif/0xA005 | InteropIFD | LONG | 1348",
             ]),
             page(1),
             own(&["ICC | Size |  | 172", "ICC | Version |  | \"2.1.0\""]),
@@ -598,9 +606,9 @@ async fn a_masked_session_shows_no_text_of_a_raster_file() {
             "WEBP:VP8X | Flags |  | 44",
             "WEBP:VP8X | CanvasWidth |  | 8",
             "WEBP:VP8X | CanvasHeight |  | 8",
-            "EXIF/IFD0/0x8769 | ExifIFD | LONG | 496",
-            "EXIF/IFD0/0x8825 | GPSIFD | LONG | 786",
-            "EXIF/Exif/0xA005 | InteropIFD | LONG | 938",
+            "EXIF/IFD0/0x8769 | ExifIFD | LONG | 604",
+            "EXIF/IFD0/0x8825 | GPSIFD | LONG | 894",
+            "EXIF/Exif/0xA005 | InteropIFD | LONG | 1046",
             "ICC | Size |  | 200",
             "ICC | Version |  | \"4.3.0\"",
         ]
