@@ -1867,6 +1867,39 @@ mod tests {
     }
 
     #[test]
+    fn files_that_differ_take_content_keys_under_an_unreadable_first_file() {
+        // Two files of the group that are both asked about and hold
+        // different bytes cannot both be the first file's image, so the
+        // group splits without the first file: each of the two has the
+        // `b3:` key it would have in any session, and the first file, which
+        // has no digest, has no key.
+        let mut table = Table::new();
+        for path in ["/a", "/b", "/c"] {
+            table.register(file(UID, 10, path));
+        }
+        let outcome = |index: usize| match index {
+            0 => Err(KeyFailure::Unreadable),
+            1 => Ok(digest(1)),
+            _ => Ok(digest(2)),
+        };
+        let (reliance, _, _) = rely(&mut table, 1, &outcome);
+        assert_eq!(reliance, Reliance::Failed(KeyFailure::Unreadable));
+        assert!((0..3).all(|index| !table.settled(index)));
+
+        let (reliance, _, _) = rely(&mut table, 2, &outcome);
+        assert!(matches!(reliance, Reliance::Final(_)), "{reliance:?}");
+        assert_eq!(
+            keys(&table),
+            vec![(None, None), (key(&b3(1)), None), (key(&b3(2)), None)]
+        );
+        assert!(!table.settled(0) && table.settled(1) && table.settled(2));
+        let (reliance, _, _) = rely(&mut table, 1, &outcome);
+        assert!(matches!(reliance, Reliance::Final(_)), "{reliance:?}");
+        let (reliance, _, _) = rely(&mut table, 0, &outcome);
+        assert_eq!(reliance, Reliance::Failed(KeyFailure::Unreadable));
+    }
+
+    #[test]
     fn settled_keys_do_not_depend_on_the_order_of_the_files_after_the_first() {
         // Three files under one UID and one size, one of which cannot be
         // read. For every registration order in which the unreadable file

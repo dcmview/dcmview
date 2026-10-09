@@ -1131,7 +1131,11 @@ rest of the group is not read for that request. When the first file with
 the UID cannot be hashed there is nothing to compare with, so nothing is
 split and nothing is relied on: `ensure_key` on any file of the group
 answers `Unavailable` with the first file's failure, no key shown changes,
-and the next request tries the first file again. A file other than the
+and the next request tries the first file again. Two other files of the
+group whose own digests differ still split it (`KeyTable::check_group`
+compares a digest with the first one the group learned, whichever file it
+came from): they have the `b3:` keys they would have in any session, and
+the first file has none until it is read. A file other than the
 first that cannot be hashed costs only its own key (it loses the shared
 key when the group is relied on), so which file was found first decides
 what one unreadable file withholds, and nothing else about the keys.

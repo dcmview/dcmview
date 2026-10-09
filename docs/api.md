@@ -201,9 +201,13 @@ UID key remains, except that a failed digest removes it. If they agree,
 every other file with that UID is read, whichever of them the caller asked
 about, and the UID key is settled when all agree. If the first file with
 the UID cannot be read, there is nothing to compare the others with: no
-file with that UID gets a settled key while that lasts, a request that
-needs one fails with the first file's `key_error`, and the keys shown stay
-as they were. Each such request tries the first file again.
+file gets the UID key settled while that lasts, a request that needs a key
+fails with the first file's `key_error`, and the keys shown stay as they
+were. Each such request tries the first file again. The one exception is
+two other files of the group that were both asked about and differ from
+each other: they cannot both be the first file's image, so the group takes
+content keys as it would have with the first file read, and the first file
+has `file_key: null` until it can be read.
 
 A settled key is final: every `b3:` key, and a `sop:` key once it has been
 returned for a write or an export. It stays the file's key for the rest of
