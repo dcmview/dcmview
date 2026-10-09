@@ -946,7 +946,9 @@ default suite.
 - An overlay and a legend reserve their estimate once, under one permit,
   and hold no more heap than that; requests for the same one share a
   computation; one over the budget answers 422 and one nobody waits for is
-  not started.
+  not started. A refused overlay is drawn when it is asked for again with
+  room; a legend's value range and a value overlay are kept for one file
+  set, and an overlay for the frames it was drawn from and on.
 
 **Test policy:**
 
