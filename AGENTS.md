@@ -132,10 +132,7 @@ would remove behavior, raise it as a question instead of acting.
   in `docs/design/image-formats.md`.
 - **The decode memory budget is not a process limit.** Beside it are the
   frame caches, response bodies while they are sent, and the resampling and
-  encoding of segmentation and value overlays. A DICOM decoder is not held
-  to its catalog entry the way the raster decoder is: an encapsulated
-  codestream that declares a larger image than its data set is decoded at
-  the size it declares, whatever was reserved.
+  encoding of segmentation and value overlays.
 - **Some TIFF layouts the design lists are not decoded.** JPEG-compressed
   and 1-bit TIFF are reported as `raster.unsupported_compression` and
   `raster.unsupported_sample_format`: the linked `tiff` crate decodes the
@@ -419,6 +416,8 @@ dcmview/
 |   |-- raster_cost/    what a raster decode may read and allocate, and what
 |   |                   each request holds against what it reserved, on a
 |   |                   counting allocator (its own test binary)
+|   |-- codestream_cost/  what a compressed DICOM frame may cost before it is
+|   |                   known to match its header (its own test binary)
 |   |-- windowing-cases.json  windowing oracle shared with rawWindowing.test.ts
 |   `-- fixtures/       Small generated DICOM fixtures
 |-- scripts/check.py    Canonical local and CI check profiles
@@ -595,6 +594,31 @@ valid Extended or Basic Offset Table it seeks to the frame's first item;
 without one it steps over item headers and reads only each fragment's end to
 find a JPEG end marker (RLE is one fragment per frame). No frame-offset index
 is cached between requests.
+
+**Compressed frames**
+
+- A compressed frame is handed to a codec library only after
+  `pixels::codestream::checked` has accepted it for the catalog entry. The
+  libraries size buffers and loops from what the codestream declares; the
+  entry holds what the data set declares; nothing else makes them agree.
+  `docs/architecture.md`, "Compressed Frames Are Held To The Header", is
+  normative.
+- The accept table in the documentation of `codestream::agrees` is the whole
+  rule. Add a row there, and to
+  `tests/codestream_cost` and `tests/integration/codestream_agreement.rs`,
+  before a decoder starts trusting another number a frame declares. Do not
+  compare what honest files legitimately vary: colour transform, resolution
+  levels, chroma subsampling, restart intervals, point transform, Bits
+  Stored, sign.
+- A new encapsulated transfer syntax gets a `CodestreamKind` and a header
+  reader with fixed bounds, or a decoder with a memory limit derived from
+  the entry, before it gets a row in the codec table.
+- `codestream::declared` never panics and allocates nothing sized by the
+  frame. Its bounds are constants in `pixels/codestream.rs`; a change to one
+  is a change to the contract and to the tests that pin it.
+- A decoder that sizes everything from the entry (RLE Lossless, native
+  pixel data) needs no check; keep it that way rather than reading a size
+  from the pixel data.
 
 **Raster files**
 
@@ -989,6 +1013,11 @@ default suite.
 - A raster's raw frame holds the samples its file was written with, for
   every supported layout; its display frame shows them windowed once,
   inverted once for WhiteIsZero and with alpha flattened.
+- A compressed frame whose codestream declares another image than its
+  header (size, components, depth, or an absurd tile, packet or scan
+  structure) is a decode error at every endpoint that decodes it, costs no
+  more heap to refuse than its own bytes, and leaves its file listed and its
+  other frames decoding; honest codestreams from other encoders decode.
 - Decoding a raster frame reads no more than its entry's budget and holds no
   more heap than its entry's limit, for hostile and damaged files too, and
   never panics.

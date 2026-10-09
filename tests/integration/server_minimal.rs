@@ -14,11 +14,9 @@ async fn exposes_files_info_and_frame_endpoints_with_cache_headers() {
     let frame = support::grayscale_jpeg_fragment_16x16(42);
     support::write_encapsulated_dicom(&path, "1.2.840.10008.1.2.4.50", vec![frame.clone()]);
 
-    let app = server::router(support::app_state(vec![support::file_entry(
-        path,
-        "1.2.840.10008.1.2.4.50",
-        1,
-    )]));
+    let mut entry = support::file_entry(path, "1.2.840.10008.1.2.4.50", 1);
+    entry.bits_allocated = 8;
+    let app = server::router(support::app_state(vec![entry]));
     let test_server = TestServer::new(app);
 
     let files_response = test_server.get("/api/files").await;
