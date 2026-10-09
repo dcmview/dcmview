@@ -617,15 +617,25 @@ async fn a_write_settles_the_files_key_and_fails_without_one() {
     assert_eq!(export.text().lines().count(), 2, "{}", export.text());
 }
 
-/// The rows of an `--annotations` CSV become records file by file; a file
-/// without a key loses its rows and the others load.
+/// The rows of an `--annotations` CSV become records file by file: a file
+/// without a key loses its rows, a file saved through the endpoint while
+/// the CSV was loading keeps what was saved, and the others load as the CSV
+/// wrote them.
 #[tokio::test]
-async fn csv_rows_of_a_file_without_a_key_are_dropped_and_the_rest_load() {
+async fn csv_rows_load_as_written_except_for_files_without_a_key_or_already_edited() {
     let dir = tempdir().expect("temp dir");
     let mut gone = entry(dir.path(), "gone.dcm", "");
     gone.sop_instance_uid = String::new();
-    let registry = FileRegistry::from_files(vec![entry(dir.path(), "a.dcm", "1.2.3.1"), gone]);
+    let registry = FileRegistry::from_files(vec![
+        entry(dir.path(), "a.dcm", "1.2.3.1"),
+        gone,
+        entry(dir.path(), "edited.dcm", "1.2.3.3"),
+    ]);
     let store = AnnotationStore::loading();
+    let client = Client::new(TestServer::new(server::router(AppState::new(
+        registry.clone(),
+        store.clone(),
+    ))));
     // Rows as a CSV wrote them: past the image edge, and a frame list out
     // of order. They are held as loaded.
     let rows = |coords: [u32; 4]| EmbedRoiAnnotations {
@@ -634,10 +644,18 @@ async fn csv_rows_of_a_file_without_a_key_are_dropped_and_the_rest_load() {
         roi_frames: vec![vec![2, 0, 0]],
     };
 
+    assert_eq!(
+        client.put_rois(2, json!([[9, 9, 10, 10]]), json!([])).await,
+        StatusCode::OK
+    );
     let report = server::annotations::import_embed_rows(
         &registry,
         &store,
-        HashMap::from([(0, rows([500, 600, 700, 800])), (1, rows([1, 2, 3, 4]))]),
+        HashMap::from([
+            (0, rows([500, 600, 700, 800])),
+            (1, rows([1, 2, 3, 4])),
+            (2, rows([5, 6, 7, 8])),
+        ]),
     )
     .await
     .expect("import");
@@ -647,14 +665,12 @@ async fn csv_rows_of_a_file_without_a_key_are_dropped_and_the_rest_load() {
             report.files_without_key,
             report.files_edited
         ),
-        (1, 1, 0)
+        (1, 1, 1)
     );
 
-    let client = Client::new(TestServer::new(server::router(AppState::new(
-        registry, store,
-    ))));
     assert_eq!(client.rois(0).await, rows([500, 600, 700, 800]));
     assert_eq!(client.rois(1).await.num_roi, 0);
+    assert_eq!(client.rois(2).await.roi_coords, [[9, 9, 10, 10]]);
     let export = client
         .server
         .get("/api/annotations/export.csv")
@@ -663,8 +679,9 @@ async fn csv_rows_of_a_file_without_a_key_are_dropped_and_the_rest_load() {
     assert_eq!(
         export,
         format!(
-            "anon_dicom_path,num_ROI,ROI_coords,ROI_frames\n{},1,\"[[500,600,700,800]]\",\"[[2,0,0]]\"\n",
-            dir.path().join("a.dcm").display()
+            "anon_dicom_path,num_ROI,ROI_coords,ROI_frames\n{},1,\"[[500,600,700,800]]\",\"[[2,0,0]]\"\n{},1,\"[[9,9,10,10]]\",[]\n",
+            dir.path().join("a.dcm").display(),
+            dir.path().join("edited.dcm").display()
         )
     );
 }
