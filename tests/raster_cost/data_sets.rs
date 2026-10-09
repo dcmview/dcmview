@@ -102,6 +102,8 @@ struct CatalogCase {
     heap: u64,
     /// An element the object must hold with its whole value.
     keeps: Option<(Tag, usize)>,
+    /// An element the object must not hold.
+    omits: Option<Tag>,
 }
 
 impl CatalogCase {
@@ -115,6 +117,7 @@ impl CatalogCase {
             bytes,
             heap: READ_HEAP,
             keeps: None,
+            omits: None,
         }
     }
 
@@ -124,17 +127,28 @@ impl CatalogCase {
     }
 }
 
-/// `count` empty elements with a tag each, in private groups.
-fn empty_elements(count: u32) -> Vec<u8> {
+/// `count` elements of `vr` holding `value`, with a tag each, in private
+/// groups.
+pub(super) fn elements_of(count: u32, vr: &str, value: &[u8]) -> Vec<u8> {
     (0..count)
         .flat_map(|index| {
             let tag = Tag(
                 0x0011 + 2 * (index / 0x1000) as u16,
                 0x1000 + (index % 0x1000) as u16,
             );
-            element(tag, "LO", &[])
+            element(tag, vr, value)
         })
         .collect()
+}
+
+/// `count` empty elements with a tag each, in private groups.
+fn empty_elements(count: u32) -> Vec<u8> {
+    elements_of(count, "LO", &[])
+}
+
+/// A string of nothing but separators: one empty value for every byte.
+pub(super) fn separators() -> Vec<u8> {
+    vec![b'\\'; 65_534]
 }
 
 fn catalog_cases() -> Vec<CatalogCase> {
@@ -155,6 +169,7 @@ fn catalog_cases() -> Vec<CatalogCase> {
     let items_in_budget = (elements_in_budget / 3) as usize;
     let item = element(PRIVATE_BLOB, "LO", &[]);
     let tag = Tag(0x0002, 0x0102);
+    let limit = DATA_SET_VALUE_MAX_BYTES as usize;
 
     let mut overlay = small(
         "overlay data",
@@ -272,6 +287,27 @@ fn catalog_cases() -> Vec<CatalogCase> {
         )
         .costing(64 * KIB, READ_HEAP),
         overlay,
+        // The longest value kept, and the shortest one that is not.
+        {
+            let mut case = before(
+                "a value at the limit",
+                element(PRIVATE_BLOB, "OB", &vec![0; limit]),
+                Image,
+            );
+            case.heap = READ_HEAP + 3 * limit as u64;
+            case.keeps = Some((PRIVATE_BLOB, limit));
+            case
+        },
+        {
+            let mut case = before(
+                "a value over the limit",
+                element(PRIVATE_BLOB, "OB", &vec![0; limit + 2]),
+                Image,
+            )
+            .costing(64 * KIB, READ_HEAP);
+            case.omits = Some(PRIVATE_BLOB);
+            case
+        },
         // Nesting has a fixed depth.
         {
             let case = before(
@@ -302,6 +338,35 @@ fn catalog_cases() -> Vec<CatalogCase> {
         // A deflated data set is read within its budget, in bytes inflated
         // and in what is built from them.
         deflated("a deflated image", Vec::new(), Image),
+        // The budget counts the bytes of every value, kept ones included.
+        {
+            let case = deflated(
+                "deflated, kept values within the budget",
+                elements_of(30, "OB", &vec![0; limit]),
+                Image,
+            );
+            let bytes = case.bytes;
+            case.costing(bytes, budget)
+        },
+        {
+            let case = deflated(
+                "deflated, kept values past the budget",
+                elements_of(70, "OB", &vec![0; limit]),
+                Refused,
+            );
+            let bytes = case.bytes;
+            case.costing(bytes, budget + limit as u64)
+        },
+        // A string is charged for every value it splits into.
+        {
+            let case = deflated(
+                "deflated, strings of nothing but separators",
+                elements_of(256, "LO", &separators()),
+                Refused,
+            );
+            let bytes = case.bytes;
+            case.costing(bytes, budget)
+        },
         deflated(
             "deflated, a bulk value within the budget",
             element(PRIVATE_BLOB, "OB", &vec![0; budget as usize / 2]),
@@ -405,6 +470,13 @@ fn a_catalog_read_holds_what_it_read_and_never_what_a_file_declares() {
     for case in &cases {
         let (outcome, cost) = measured(&case.file, read_for_catalog, |read| {
             let read = read?;
+            if let Some(tag) = case.omits {
+                assert!(
+                    read.object.get(tag).is_none(),
+                    "{}: the value is not kept",
+                    case.name
+                );
+            }
             if let Some((tag, length)) = case.keeps {
                 let kept = read
                     .object

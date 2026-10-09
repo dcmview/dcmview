@@ -104,7 +104,8 @@ written that way:
 - sequences nest more than 64 deep;
 - a Deflated Explicit VR Little Endian data set needs more than 64 MiB to
   read up to its pixel data, counting the bytes it inflates and 512 bytes
-  for each element (1,024 for each sequence item) before the pixel data.
+  for each element (1,024 for each sequence item, 96 for each further value
+  of a multi-valued text element) before the pixel data.
 
 Large values before the pixel data are not a reason: discovery passes over
 any value longer than 1 MiB without reading it, and the file is listed.

@@ -1035,7 +1035,7 @@ numbers or the file's real length, never a length the file declares:
 |---|---|---|
 | A value is read only when it fits | the bytes the file has left | No value is allocated at a length the file does not hold. Checked for every element of the file meta group before the group is parsed, too. |
 | `DATA_SET_VALUE_MAX_BYTES` | 1 MiB | No longer value is read. The one exception is Overlay Data (60xx,3000), which the catalog entry keeps. |
-| `DATA_SET_INFLATED_BUDGET_BYTES` | 64 MiB | What one read of a Deflated Explicit VR Little Endian data set may spend: every byte it inflates, kept or discarded, plus `DATA_SET_INFLATED_ELEMENT_CHARGE_BYTES` (512) for each element it builds and twice that for each item. |
+| `DATA_SET_INFLATED_BUDGET_BYTES` | 64 MiB | What one read of a Deflated Explicit VR Little Endian data set may spend: every byte it inflates, kept or discarded, plus `DATA_SET_INFLATED_ELEMENT_CHARGE_BYTES` (512) for each element it builds, twice that for each item, and `DATA_SET_INFLATED_VALUE_CHARGE_BYTES` (96) for each value of a multi-valued string after its first. A string is read only when the budget would cover it at one value a byte. |
 | `DATA_SET_MAX_DEPTH` | 64 | How deep sequences nest. |
 
 A value that is not read is passed over by seeking, so it costs neither
@@ -1060,18 +1060,27 @@ and it reads no value the tree shows by its length: Pixel Data, every bulk
 binary value representation (`shown_by_length`) and any value over
 `DATA_SET_VALUE_MAX_BYTES`. Each of those is listed, empty, at its declared
 length; encapsulated Pixel Data is listed at the length of its fragments,
-which are stepped over one item header at a time. So `/tags` and
-`/tags/select` cost the same for a file of any size, whichever element is
-selected, and take no decode permit. A value the read would keep that runs
-past the end of the file fails the read, as does a data set nested past the
-limit. A data set that ends, or runs out of inflated budget, inside a value
-that is being passed over ends there: that element is listed and nothing
-after it is. The tree of a deflated data set whose pixel data inflates past
-the budget therefore ends with its pixel element.
+which are stepped over one item header at a time. So the cost of `/tags`
+and `/tags/select` does not grow with pixel data or bulk values, whichever
+element is selected, and they take no decode permit. A value the read
+would keep that runs past the end of the file fails the read. The tree
+ends early, without failing, in these cases:
 
-What a read holds is proportional to the bytes it read: the values it kept,
-each backed by its bytes in the file, and one in-memory element per element
-read. A read of a deflated data set holds no more than its budget.
+- a data set that ends, or runs out of inflated budget, inside a value that
+  is being passed over ends there: that element is listed and nothing after
+  it is. The tree of a deflated data set whose pixel data inflates past the
+  budget therefore ends with its pixel element;
+- sequences nested past the limit end the tree at the sequence that is too
+  deep, which is listed without items; the top-level element it is in
+  shows an error value that says so (`TagDataSet::too_deep`);
+- behind the pixel data, a top-level element whose tag is lower than the
+  pixel elements' ends the tree: tags ascend, so it is not an element of
+  the data set but bytes after it, such as zero padding.
+
+What a read holds is bounded by what the file supplies: the values it kept,
+each backed by its bytes in the file, and the in-memory elements and values
+built from the bytes it read. That is not a fixed budget. Only a read of a
+deflated data set has one, and holds no more than it.
 
 ### Raster Image Files
 

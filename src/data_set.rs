@@ -22,28 +22,36 @@
 //!   [`DATA_SET_INFLATED_BUDGET_BYTES`]**: every inflated byte counts, kept
 //!   or discarded, and so do
 //!   [`DATA_SET_INFLATED_ELEMENT_CHARGE_BYTES`] for every element the read
-//!   builds and twice that for every item, because a few bytes of a deflate
-//!   stream can inflate to thousands of elements.
+//!   builds, twice that for every item, and
+//!   [`DATA_SET_INFLATED_VALUE_CHARGE_BYTES`] for every value of a
+//!   multi-valued string after its first, because a few bytes of a deflate
+//!   stream can inflate to thousands of elements or of values. A string is
+//!   read only when the budget would cover it if every byte of it were a
+//!   value.
 //! - **Sequences nest up to [`DATA_SET_MAX_DEPTH`] deep.**
 //! - **Pixel data is never read.** The catalog read ends at the header of
 //!   the top-level pixel element; the tag read passes over every pixel
 //!   element and fragment.
 //!
-//! What a read holds is therefore proportional to the bytes it read from
-//! the file, never to a number the file declares: the values kept (each
-//! backed by its bytes in the file) and one in-memory element per element
-//! read, which for a data set of nothing but empty elements and items is
-//! many times its size, as in any DICOM object model. A read of a deflated
-//! data set holds no more than its budget. `tests/raster_cost/data_sets.rs`
-//! counts the reads, the bytes and the heap at the source and the
-//! allocator.
+//! What a read holds is therefore bounded by what the file supplies, never
+//! by a number the file declares: the values kept (each backed by its bytes
+//! in the file) and the in-memory elements and values built from the bytes
+//! read. That is not a fixed budget: an object model holds more than the
+//! bytes it was built from. Only a read of a deflated data set has one, and
+//! holds no more than it. `tests/raster_cost/data_sets.rs` counts the
+//! reads, the bytes and the heap at the source and the allocator.
 //!
 //! The catalog read refuses a file that breaks a limit before its pixel
 //! element: discovery lists it as `dicom_parse_failed`. The tag read fails
 //! the same way for a value it would keep, and otherwise shows what the
 //! limits let it reach: an element it does not read is listed by its
-//! declared length, and a data set that ends, or runs out of inflated
-//! budget, inside a value it is passing over ends there.
+//! declared length; a data set that ends, or runs out of inflated budget,
+//! inside a value it is passing over ends there; and so does one whose
+//! sequences nest past the limit, at the sequence that does
+//! ([`TagDataSet::too_deep`]). Behind the pixel data, an element whose tag
+//! is lower than the pixel elements' is not an element of the data set
+//! (tags ascend): the tag read ends there, so padding after a data set is
+//! not listed.
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use dicom_core::header::{DataElementHeader, Length};
@@ -76,6 +84,11 @@ pub const DATA_SET_INFLATED_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
 /// budget, beside its bytes; an item is charged twice this. Each is more
 /// than the element or the item holds in memory.
 pub const DATA_SET_INFLATED_ELEMENT_CHARGE_BYTES: u64 = 512;
+
+/// What each value of a multi-valued string read from a deflated data set
+/// is charged against the budget after the first, beside its bytes: more
+/// than a value holds in memory, with the list it is kept in.
+pub const DATA_SET_INFLATED_VALUE_CHARGE_BYTES: u64 = 96;
 
 /// How deep sequences may nest: an element of the data set is at depth 0,
 /// an element of an item of a top-level sequence at depth 1.
@@ -148,6 +161,8 @@ pub fn read_for_catalog<R: Read + Seek>(
         },
         list_passed_over: false,
         ends_inside_passed_over: false,
+        ends_past_depth: false,
+        ends_at_descent: false,
     };
     let walked = walk_data_set(source, start, file_length, transfer_syntax, &plan).ok()?;
     let reached_pixel_region = walked
@@ -193,6 +208,10 @@ pub struct TagDataSet {
     /// The bytes of the top-level encapsulated Pixel Data's fragments,
     /// which an element's length cannot hold past 4 GiB.
     pub pixel_fragment_bytes: Option<u64>,
+    /// The top-level element in which sequences nest past
+    /// [`DATA_SET_MAX_DEPTH`]. The object ends inside it, at the sequence
+    /// that is too deep, which is listed without items.
+    pub too_deep: Option<Tag>,
 }
 
 /// Reads what the tag endpoints show of a Part 10 file's data set.
@@ -217,12 +236,15 @@ pub fn read_for_tags<R: Read + Seek>(
         },
         list_passed_over: true,
         ends_inside_passed_over: true,
+        ends_past_depth: true,
+        ends_at_descent: true,
     };
     let walked = walk_data_set(source, start, file_length, transfer_syntax, &plan)?;
     walked.end?;
     Ok(TagDataSet {
         object: walked.object,
         pixel_fragment_bytes: walked.fragment_bytes,
+        too_deep: walked.too_deep,
     })
 }
 
@@ -303,6 +325,13 @@ struct Plan {
     /// Whether a data set that ends inside a value being passed over ends
     /// there. Otherwise that is an error.
     ends_inside_passed_over: bool,
+    /// Whether a sequence nested past the limit ends the walk, listed
+    /// without items. Otherwise that is an error.
+    ends_past_depth: bool,
+    /// Whether the data set ends at a top-level element behind the pixel
+    /// data whose tag is lower than Float Pixel Data: bytes after the data
+    /// set, such as zero padding, parse as such an element.
+    ends_at_descent: bool,
 }
 
 /// How a walk ended.
@@ -323,6 +352,7 @@ struct Walked {
     last_top_level: Option<Tag>,
     odd_item_length: bool,
     fragment_bytes: Option<u64>,
+    too_deep: Option<Tag>,
 }
 
 /// Walks the data set that follows the file meta group, from the offset
@@ -383,6 +413,7 @@ fn walk<D: StatefulDecode>(source: Bounded<D>, plan: &Plan) -> Walked {
         last_top_level: None,
         odd_item_length: false,
         fragment_bytes: None,
+        too_deep: None,
     };
     // Elements go straight into the object: collecting them first would hold
     // every one twice.
@@ -403,6 +434,7 @@ fn walk<D: StatefulDecode>(source: Bounded<D>, plan: &Plan) -> Walked {
         last_top_level: walk.last_top_level,
         odd_item_length: walk.odd_item_length,
         fragment_bytes: walk.fragment_bytes,
+        too_deep: walk.too_deep,
     }
 }
 
@@ -426,6 +458,7 @@ struct Walk<'p, D: StatefulDecode> {
     last_top_level: Option<Tag>,
     odd_item_length: bool,
     fragment_bytes: Option<u64>,
+    too_deep: Option<Tag>,
 }
 
 impl<D: StatefulDecode> Walk<'_, D> {
@@ -471,17 +504,29 @@ impl<D: StatefulDecode> Walk<'_, D> {
             _ => bail!("unexpected token in a data set"),
         };
         if depth == 0 {
+            let behind_pixels = self
+                .last_top_level
+                .is_some_and(|tag| tag >= tags::FLOAT_PIXEL_DATA);
+            if self.plan.ends_at_descent && behind_pixels && header.tag < tags::FLOAT_PIXEL_DATA {
+                return Ok(None);
+            }
             self.last_top_level = Some(header.tag);
             if (self.plan.stop_at)(&header) {
                 return Ok(Some(Step::Stop(header)));
             }
         }
         let top = top.unwrap_or(header.tag);
-        let (element, whole) = if header.vr == VR::SQ {
+        let (element, whole) = if header.vr == VR::SQ && depth >= DATA_SET_MAX_DEPTH {
             ensure!(
-                depth < DATA_SET_MAX_DEPTH,
+                self.plan.ends_past_depth,
                 "sequences nest deeper than {DATA_SET_MAX_DEPTH}"
             );
+            self.too_deep = Some(top);
+            let empty = Value::Sequence(DataSetSequence::new(Vec::new(), header.len));
+            return Ok(Some(Step::CutShort(Some(element_of(
+                header, header.len, empty,
+            )))));
+        } else if header.vr == VR::SQ {
             let (items, whole) = self.items(depth + 1, top)?;
             let sequence = Value::Sequence(DataSetSequence::new(items, header.len));
             (Some(element_of(header, header.len, sequence)), whole)
@@ -508,9 +553,27 @@ impl<D: StatefulDecode> Walk<'_, D> {
                     u64::from(header.len.0) <= decoder.remaining(),
                     "a value runs past the end of the data set"
                 );
+                // A string is split at every separator, and each value
+                // holds far more than its bytes: under a budget it is read
+                // only if the budget covers it at one value a byte.
+                let charged = decoder.meter.is_some() && splits_into_values(header.vr);
+                ensure!(
+                    !charged
+                        || (u64::from(header.len.0) + 1)
+                            .saturating_mul(DATA_SET_INFLATED_VALUE_CHARGE_BYTES)
+                            <= decoder.remaining(),
+                    "a string could hold more values than the inflated budget has left"
+                );
                 let value = decoder
                     .read_value_preserved(&header)
                     .map_err(|_| anyhow!("unreadable element value"))?;
+                if let (true, Some(meter)) = (charged, &decoder.meter) {
+                    meter.spent.fetch_add(
+                        u64::from(value.multiplicity()).saturating_sub(1)
+                            * DATA_SET_INFLATED_VALUE_CHARGE_BYTES,
+                        Ordering::Relaxed,
+                    );
+                }
                 (
                     Some(element_of(header, header.len, Value::Primitive(value))),
                     true,
@@ -625,6 +688,27 @@ impl<D: StatefulDecode> Walk<'_, D> {
             }
         }
     }
+}
+
+/// Whether the parser reads a value of this representation as one string
+/// for each backslash-separated value.
+fn splits_into_values(vr: VR) -> bool {
+    matches!(
+        vr,
+        VR::AE
+            | VR::AS
+            | VR::CS
+            | VR::DA
+            | VR::DS
+            | VR::DT
+            | VR::IS
+            | VR::LO
+            | VR::PN
+            | VR::SH
+            | VR::TM
+            | VR::UC
+            | VR::UI
+    )
 }
 
 fn element_of(

@@ -1,5 +1,5 @@
 use crate::api::contracts::{TagNode, TagValue};
-use crate::data_set::{read_for_tags, shown_by_length, TagDataSet, TagExtent};
+use crate::data_set::{read_for_tags, shown_by_length, TagDataSet, TagExtent, DATA_SET_MAX_DEPTH};
 use anyhow::{anyhow, bail, Context, Result};
 use dicom_core::dictionary::{DataDictionary, DataDictionaryEntry};
 use dicom_core::header::HasLength;
@@ -34,6 +34,9 @@ pub(crate) fn build_tag_tree(path: &Path) -> Result<Vec<TagNode>> {
     if let Some(node) = nodes.iter_mut().find(|node| node.tag == PIXEL_DATA_TAG) {
         show_fragment_bytes(node, &data_set);
     }
+    if let Some(node) = too_deep_node(&mut nodes, &data_set) {
+        node.value = too_deep_value();
+    }
     Ok(nodes)
 }
 
@@ -46,6 +49,21 @@ fn show_fragment_bytes(node: &mut TagNode, data_set: &TagDataSet) {
         node.value = TagValue::Binary {
             length: usize::try_from(bytes).unwrap_or(usize::MAX),
         };
+    }
+}
+
+/// The node of the top-level element in which sequences nest past the
+/// limit, where the tree ends.
+fn too_deep_node<'a>(nodes: &'a mut [TagNode], data_set: &TagDataSet) -> Option<&'a mut TagNode> {
+    let tag = data_set.too_deep?;
+    let tag = format!("({:04X},{:04X})", tag.0, tag.1);
+    nodes.iter_mut().rfind(|node| node.tag == tag)
+}
+
+/// What the element the tree ends in shows instead of its items.
+fn too_deep_value() -> TagValue {
+    TagValue::Error {
+        message: format!("sequences nest deeper than {DATA_SET_MAX_DEPTH}; the tree ends here"),
     }
 }
 
@@ -87,6 +105,9 @@ pub(crate) fn build_selected_tag(
         .map_err(TagSelectError::Invalid)?;
     if steps.len() == 1 && node.tag == PIXEL_DATA_TAG {
         show_fragment_bytes(&mut node, &data_set);
+    }
+    if steps.len() == 1 && too_deep_node(std::slice::from_mut(&mut node), &data_set).is_some() {
+        node.value = too_deep_value();
     }
     Ok(node)
 }

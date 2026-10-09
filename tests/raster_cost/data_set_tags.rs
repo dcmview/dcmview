@@ -8,7 +8,9 @@ use super::data_set_files::{
     part10, pixel_data, CONTENT_SEQUENCE, DEFLATED_LE, EXPLICIT_LE, JPEG_BASELINE, KIB, MIB,
     PRIVATE_BLOB,
 };
-use super::data_sets::{discover, measured, report, BULK, DECLARED, INFLATER_HEAP, READ_HEAP};
+use super::data_sets::{
+    discover, elements_of, measured, report, separators, BULK, DECLARED, INFLATER_HEAP, READ_HEAP,
+};
 use super::heap::CountedRuntime;
 use dcmview::annotations::AnnotationStore;
 use dcmview::data_set::{
@@ -110,6 +112,47 @@ fn tag_cases() -> Vec<TagCase> {
             TRAILER,
             true,
         ),
+        // Bytes after the data set are not elements of it.
+        case(
+            "padding after the data set",
+            large_image(
+                &[],
+                pixel_data(&samples),
+                &[trailer.clone(), vec![0; 37]].concat(),
+            ),
+            vec![(TRAILER, text("TRAILER"))],
+            TRAILER,
+            true,
+        ),
+        // Sequences nested past the limit end the tree where they are.
+        TagCase {
+            heap: 4 * READ_HEAP,
+            ..case(
+                "sequences nested without end behind the pixel data",
+                large_image(
+                    &[],
+                    pixel_data(&[1, 2, 3, 4]),
+                    &nested(Tag(0x7FE1, 0x1010), 100_000, &[], false),
+                ),
+                vec![(PIXEL_DATA, binary(8))],
+                "(7FE1,1010)",
+                true,
+            )
+        },
+        TagCase {
+            heap: 4 * READ_HEAP,
+            ..case(
+                "sequences nested without end before the pixel data",
+                image(
+                    EXPLICIT_LE,
+                    &nested(CONTENT_SEQUENCE, 100_000, &[], false),
+                    &[],
+                ),
+                Vec::new(),
+                "(0040,A730)",
+                false,
+            )
+        },
         // A value over the limit is shown by its length, like a bulk value.
         case(
             "a bulk value and long text",
@@ -222,6 +265,12 @@ fn a_tag_read_holds_no_value_it_shows_by_its_length() {
             )
         });
         let last = tree.last().expect("a data set with elements");
+        assert_ne!(
+            tree.first(),
+            Some(&Tag(0, 0)),
+            "{}: bytes after the data set are listed",
+            case.name
+        );
         assert_eq!(
             format!("({:04X},{:04X})", last.0, last.1),
             case.last,
@@ -243,19 +292,29 @@ fn a_tag_read_holds_no_value_it_shows_by_its_length() {
             case.heap
         );
     }
-    // A data set nested past the limit has no tree.
-    let deep = image(
-        EXPLICIT_LE,
-        &nested(CONTENT_SEQUENCE, 100_000, &[], false),
-        &[],
-    );
-    let (failed, cost) = measured(
-        &deep,
-        |source, length| read_for_tags(source, length, TagExtent::Whole),
-        |read| read.is_err(),
-    );
-    assert!(failed, "sequences nested without end");
-    assert!(cost.heap <= READ_HEAP, "{} bytes of heap held", cost.heap);
+    // A deflated data set whose strings split into more values than its
+    // budget covers has no tree, whichever extent is read, and the read
+    // that says so holds no more than the budget.
+    let splitting = image(DEFLATED_LE, &elements_of(256, "LO", &separators()), &[]);
+    for extent in [TagExtent::BeforePixelData, TagExtent::Whole] {
+        let (failed, cost) = measured(
+            &splitting,
+            |source, length| read_for_tags(source, length, extent),
+            |read| read.is_err(),
+        );
+        report(|| {
+            format!(
+                "tags     strings of separators, {extent:?}: {} held",
+                cost.heap
+            )
+        });
+        assert!(failed, "{extent:?}: strings of nothing but separators");
+        assert!(
+            cost.heap <= DATA_SET_INFLATED_BUDGET_BYTES,
+            "{extent:?}: {} bytes of heap held",
+            cost.heap
+        );
+    }
 
     let listed: Vec<_> = cases.iter().filter(|case| case.listed).collect();
     let files: Vec<_> = listed
@@ -296,6 +355,22 @@ fn a_tag_read_holds_no_value_it_shows_by_its_length() {
     };
     for (index, case) in listed.iter().enumerate() {
         let tree = ask(format!("/api/file/{index}/tags"), case.heap);
+        let last = tree.as_array().and_then(|nodes| nodes.last());
+        assert_eq!(
+            last.map(|node| &node["tag"]),
+            Some(&Value::from(case.last)),
+            "{}: where the served tree ends",
+            case.name
+        );
+        if case.name.starts_with("sequences nested") {
+            let ends = ask(
+                format!("/api/file/{index}/tags/select?path={}", case.last),
+                case.heap,
+            );
+            for node in [last.expect("a node"), &ends] {
+                assert_eq!(node["value"]["type"], "error", "{}: {node}", case.name);
+            }
+        }
         for (tag, value) in &case.shows {
             let shown = node(&tree, tag).map(|node| &node["value"]);
             assert_eq!(shown, Some(value), "{}: {tag} in the tree", case.name);

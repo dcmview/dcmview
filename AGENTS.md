@@ -683,6 +683,12 @@ is cached between requests.
   fixed bound on what is read, and never read pixel data for a tag request.
 - The limits are counted, not timed: tests count bytes at the source and
   heap at the allocator.
+- A read of a deflated data set holds no more than its budget. Anything
+  the read builds that holds more than the bytes it came from (an element,
+  an item, each value of a split string) is charged to the budget before
+  or as it is built; a new such structure gets a charge and a row in
+  `tests/raster_cost/data_sets.rs`. A read by seeking has no budget: say
+  only that it is bounded by what the file supplies.
 
 **Raster files**
 
@@ -1123,9 +1129,10 @@ default suite.
   hold, reads no value the catalog has no use for, nests sequences to a
   fixed depth and reads a deflated data set within a fixed budget; a file
   past a limit is skipped as `dicom_parse_failed`.
-- The tag endpoints hold no more than the tree for a DICOM file of any size:
-  pixel data, bulk values and values over 1 MiB are shown by their declared
-  length and never read, whichever element is selected.
+- The tag endpoints never read pixel data, bulk values or values over
+  1 MiB, whichever element is selected: those are shown by their declared
+  length. A tree ends, with status 200, at a value that runs past the file,
+  at sequences nested past the limit and at bytes after the data set.
 - A failed decode is answered in the viewer's own words: two files damaged
   in different ways get the same body from the frame, raw, thumbnail and
   overlay endpoints, a masked session logs only that answer, and an unmasked

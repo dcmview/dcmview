@@ -676,20 +676,24 @@ numeric arrays and sequences may carry `truncated` and `total`, and a value
 that fails to serialize becomes `{"type": "error", "message": "..."}` without
 failing the response.
 
-Neither endpoint reads a value it reports by its length, so both cost the
-same for a file of any size. Reported as `{"type": "binary", "length": N}`,
+Neither endpoint reads a value it reports by its length, so their cost does
+not grow with pixel data or bulk values. Reported as `{"type": "binary", "length": N}`,
 with the length the element declares, are Pixel Data, every value of a bulk
 binary representation (OB, OW, OD, OF, OL, UN) and any other value longer
 than 1 MiB, whatever its representation; encapsulated Pixel Data reports the
-bytes of its fragments. A tree ends early in two cases, without an error:
+bytes of its fragments. A tree ends early in these cases, with status `200`:
 when the data set ends inside a value that is not read (a truncated file),
-that element is the last one listed; and the tree of a Deflated Explicit VR
+that element is the last one listed; the tree of a Deflated Explicit VR
 Little Endian data set is read within 64 MiB of inflated data, so when its
 pixel data is larger than that, elements behind the pixel data are not
-listed. Both endpoints answer `500` for a file that cannot be read within
-the limits discovery applies (see
-[troubleshooting](troubleshooting.md#files-are-reported-as-skipped)), which
-discovery would not have listed.
+listed; and when sequences nest more than 64 deep, the tree ends at that
+sequence and the top-level element it is in has the value
+`{"type": "error", "message": "..."}`. Bytes after the data set, such as
+zero padding, are not listed. Both endpoints answer `500` when a value they
+would read runs past the end of the file, or when a deflated data set
+cannot be read within its budget before its pixel data (see
+[troubleshooting](troubleshooting.md#files-are-reported-as-skipped)); a
+file can be in that state when it changed after discovery listed it.
 
 `/tags/select?path=...` reads one element directly from the file, without the
 preview's depth and item caps. `path` alternates tags and zero-based item
