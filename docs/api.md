@@ -548,7 +548,9 @@ volume is ineligible or the displayed frame lies in another Frame of
 Reference or lacks geometry. Segmentation and value overlays also follow
 [decode admission](#decode-admission): `503 decode_busy` with `Retry-After: 1`
 or `422 decode_memory_exceeded`, neither cached nor changing `support_state`.
-Wait and repeat a 503; do not repeat a 422 in the same session.
+Wait and repeat a 503; do not repeat a 422 in the same session. An overlay
+whose frames cannot be decoded, or that fails while it is encoded, answers
+`500 pixel_decode_failed`.
 
 `wsi-context` positions one tile of a Whole Slide Microscopy object in its Total
 Pixel Matrix without stitching. It answers `400` for other objects.

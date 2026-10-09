@@ -118,6 +118,9 @@ diagnostic viewer.
   arrive while it is being drawn now wait for that one drawing and report
   `X-Cache: HIT`, and requests for the semantic context of the same RT Dose
   or Parametric Map share one pass over its frames for the legend.
+- A segmentation, RT Dose or Parametric Map overlay that fails while it is
+  encoded now answers `500 pixel_decode_failed`, as one whose frames cannot
+  be decoded does, instead of `500 internal_error`.
 
 ### Fixed
 
