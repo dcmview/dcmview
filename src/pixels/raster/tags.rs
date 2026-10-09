@@ -21,7 +21,6 @@
 
 mod names;
 
-use self::names::{ifd_tag_keyword, ifd_type_name, ifd_type_size, IfdKind};
 use super::reader::Reader;
 use super::RasterSource;
 use crate::api::contracts::{FileFormat, TagNode, TagValue};
@@ -413,14 +412,14 @@ fn read_format(_format: FileFormat, _reader: &mut Reader<'_>, _length: u64, _sin
     // build has no unused item before the reader exists. It goes when the
     // body is written.
     let _ = (
-        ifd_tag_keyword,
-        ifd_type_name,
-        ifd_type_size,
+        names::ifd_tag_keyword,
+        names::ifd_type_name,
+        names::ifd_type_size,
         [
-            IfdKind::Image,
-            IfdKind::Exif,
-            IfdKind::Gps,
-            IfdKind::Interop,
+            names::IfdKind::Image,
+            names::IfdKind::Exif,
+            names::IfdKind::Gps,
+            names::IfdKind::Interop,
         ],
         [
             TextEncoding::Utf8,
