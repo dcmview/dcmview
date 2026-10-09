@@ -1021,6 +1021,12 @@ struct Hostile {
     past_reading: bool,
     /// Text the file holds where no value may come from.
     hides: Option<&'static str>,
+    /// The most bytes reading it may be handed, where a fixed cap on one
+    /// value or one profile is what decides that.
+    most_bytes: Option<u64>,
+    /// The most heap reading it may hold at once, where a fixed cap on
+    /// what a stream inflates to is what decides that.
+    most_heap: Option<u64>,
 }
 
 impl Hostile {
@@ -1031,6 +1037,16 @@ impl Hostile {
 
     fn hiding(mut self, text: &'static str) -> Self {
         self.hides = Some(text);
+        self
+    }
+
+    fn reading_at_most(mut self, bytes: u64) -> Self {
+        self.most_bytes = Some(bytes);
+        self
+    }
+
+    fn holding_at_most(mut self, heap: u64) -> Self {
+        self.most_heap = Some(heap);
         self
     }
 }
@@ -1050,6 +1066,8 @@ fn hostile(
         note,
         past_reading: false,
         hides: None,
+        most_bytes: None,
+        most_heap: None,
     }
 }
 
@@ -1278,13 +1296,17 @@ fn hostile_directories() -> Vec<Hostile> {
     let wordy = |tag: u16| (tag, V::Ascii(vec![b'w'; 1024 * 1024]));
     let mut loud = page();
     loud.extend([wordy(269), wordy(271), wordy(272)]);
-    cases.push(hostile(
-        "megabytes of text in a page's tags",
-        FileFormat::Tiff,
-        tiff_of(loud).bytes,
-        WIDTH_ROW,
-        None,
-    ));
+    // Of each value 4,096 bytes are read to show it, and the directory.
+    cases.push(
+        hostile(
+            "megabytes of text in a page's tags",
+            FileFormat::Tiff,
+            tiff_of(loud).bytes,
+            WIDTH_ROW,
+            None,
+        )
+        .reading_at_most(3 * 4096 + 512),
+    );
 
     // As large as a tree gets: a thousand entries of as many numbers as
     // one value shows.
@@ -1324,6 +1346,21 @@ fn hostile_directories() -> Vec<Hostile> {
         WIDTH_ROW,
         damaged,
     ));
+    // A count that wraps to no bytes at all when multiplied by its type's
+    // size is a problem, not a value of no numbers.
+    cases.push(hostile(
+        "a BigTIFF count that wraps to zero bytes",
+        FileFormat::Tiff,
+        big_tiff(
+            &[
+                (256, 4, 1, field(&2_u32.to_le_bytes())),
+                (270, 12, 1 << 61, field(&[])),
+            ],
+            0,
+        ),
+        "TIFF:page 0/0x010E | ImageDescription | DOUBLE | !",
+        damaged,
+    ));
     patch(&mut big, 16, &u64::MAX.to_le_bytes());
     cases.push(hostile(
         "a BigTIFF directory of 2^64 - 1 entries",
@@ -1352,6 +1389,21 @@ fn hostile_directories() -> Vec<Hostile> {
         )
         .hiding("OOOO"),
     );
+
+    // A maker note is a length whatever type the file gives it: as bytes
+    // it would otherwise be numbers.
+    let noted = tiff_block(&Block {
+        ifd0: vec![(271, V::ascii("sound make"))],
+        exif: Some(vec![(37500, V::Byte(b"maker secret".to_vec()))]),
+        ..Block::default()
+    });
+    cases.push(hostile(
+        "a maker note written as bytes",
+        FileFormat::Jpeg,
+        jpeg_with_segments(&[jpeg_exif(&noted.bytes)]),
+        "EXIF/Exif/0x927C | MakerNote | BYTE | <12 bytes>",
+        None,
+    ));
     cases
 }
 
@@ -1379,16 +1431,48 @@ fn hostile_containers() -> Vec<Hostile> {
     itxt.extend_from_slice(&zeros);
     let mut profile = b"bomb\0\0".to_vec();
     profile.extend_from_slice(&zeros);
+    // Text is inflated only as far as one value is read, 4,096 bytes: with
+    // the read buffer, the inflater and what is read of the chunk, that is
+    // under 124 KiB.
+    cases.push(
+        hostile(
+            "compressed text that inflates to 64 MiB",
+            FileFormat::Png,
+            png(vec![png_chunk(b"zTXt", &bomb), png_chunk(b"iTXt", &itxt)]),
+            PNG_ROW,
+            None,
+        )
+        .holding_at_most(124 * 1024),
+    );
+    // A profile is inflated to 64 KiB: with the read buffer, the chunk
+    // and the inflater that is under 256 KiB.
+    cases.push(
+        hostile(
+            "compressed chunks that inflate to 64 MiB",
+            FileFormat::Png,
+            png(vec![
+                png_chunk(b"zTXt", &bomb),
+                png_chunk(b"iTXt", &itxt),
+                png_chunk(b"iCCP", &profile),
+            ]),
+            PNG_ROW,
+            Some(Note::Damaged(Part::Icc)),
+        )
+        .holding_at_most(256 * 1024),
+    );
+    // Compressed text whose stream ends before its end marker.
+    let stream = files::zlib(&super::bounds::noise(1000));
+    let mut cut = b"k\0\0".to_vec();
+    cut.extend_from_slice(&stream[..stream.len() / 2]);
     cases.push(hostile(
-        "compressed chunks that inflate to 64 MiB",
+        "compressed text whose stream is cut short",
         FileFormat::Png,
         png(vec![
-            png_chunk(b"zTXt", &bomb),
-            png_chunk(b"iTXt", &itxt),
-            png_chunk(b"iCCP", &profile),
+            png_chunk(b"zTXt", &cut),
+            png_text(b"k", b"sound text"),
         ]),
-        PNG_ROW,
-        Some(Note::Damaged(Part::Icc)),
+        "PNG:tEXt | Text |  | \"k: sound text\"",
+        Some(Note::Damaged(Part::Text)),
     ));
     // A real profile of 3 MiB whose description lies at its end.
     let mut far = icc_with_description(b"mntr", "far away");
@@ -1405,6 +1489,41 @@ fn hostile_containers() -> Vec<Hostile> {
         png(vec![png_profile(b"far", &far)]),
         "ICC | Size |  | 3145752",
         Some(Note::Limit(Limit::Inflate)),
+    ));
+    // The same profile as it is: its first 64 KiB are read, and the
+    // chunk headers of the file.
+    cases.push(
+        hostile(
+            "a stored profile whose description lies megabytes in",
+            FileFormat::Webp,
+            webp_with(Some(&far), None, None, &[]),
+            "ICC | Size |  | 3145752",
+            Some(Note::Limit(Limit::Inflate)),
+        )
+        .reading_at_most(64 * 1024 + 512),
+    );
+
+    // The walk ends at IEND, and begins with IHDR or says so.
+    let mut ended = png(vec![]);
+    ended.extend(png_text(b"k", b"after the end"));
+    cases.push(
+        hostile(
+            "a text chunk after IEND",
+            FileFormat::Png,
+            ended,
+            PNG_ROW,
+            None,
+        )
+        .hiding("after the end"),
+    );
+    let mut headless = png(vec![]);
+    headless.splice(8..8, png_text(b"k", b"sound text"));
+    cases.push(hostile(
+        "a PNG whose first chunk is not IHDR",
+        FileFormat::Png,
+        headless,
+        "PNG:tEXt | Text |  | \"k: sound text\"",
+        container,
     ));
 
     // Megabytes of text, and thousands of chunks.
@@ -1551,6 +1670,56 @@ fn hostile_containers() -> Vec<Hostile> {
         None,
     ));
 
+    // The profile is the segment numbered 1, wherever it comes, and the
+    // frame header is not a Huffman table that comes before it.
+    cases.push(
+        hostile(
+            "a JPEG profile whose second part comes first",
+            FileFormat::Jpeg,
+            jpeg_with_segments(&[
+                jpeg_profile(2, 2, &icc_with_description(b"mntr", "second part")),
+                jpeg_profile(1, 2, &icc_with_description(b"mntr", "first part")),
+            ]),
+            "ICC | Description |  | \"first part\"",
+            None,
+        )
+        .hiding("second part"),
+    );
+    cases.push(
+        hostile(
+            "a JPEG with a Huffman table before its frame header",
+            FileFormat::Jpeg,
+            jpeg_with_segments(&[jpeg_segment(0xc4, &[0; 17])]),
+            "JPEG:SOF0 | Precision |  | 8",
+            None,
+        )
+        .hiding("JPEG:SOF4"),
+    );
+
+    // WebP: two EXIF chunks, of which the first is the file's.
+    let exif_of = |make: &str| {
+        tiff_block(&Block {
+            ifd0: vec![(271, V::ascii(make))],
+            ..Block::default()
+        })
+        .bytes
+    };
+    cases.push(
+        hostile(
+            "a WebP with two EXIF chunks",
+            FileFormat::Webp,
+            webp_with(
+                None,
+                Some(&exif_of("first make")),
+                None,
+                &riff_chunk(b"EXIF", &exif_of("second make")),
+            ),
+            "EXIF/IFD0/0x010F | Make | ASCII | \"first make\"",
+            None,
+        )
+        .hiding("second make"),
+    );
+
     // WebP: a chunk longer than the file, and more chunks than are walked.
     let mut chunks = vp8x(0, (8, 8));
     chunks.extend(riff_chunk(b"XMP ", b"sound packet"));
@@ -1593,6 +1762,8 @@ fn a_hostile_file_costs_what_any_file_costs_and_still_shows_what_is_sound() {
             note,
             past_reading,
             hides,
+            most_bytes,
+            most_heap,
         } = case;
         let read = read_source(format, source);
         assert_within_limits(context, &read);
@@ -1621,6 +1792,20 @@ fn a_hostile_file_costs_what_any_file_costs_and_still_shows_what_is_sound() {
             assert!(
                 !read.rows.iter().any(|row| row.contains(hidden)),
                 "{context}: {hidden:?} is shown"
+            );
+        }
+        if let Some(most) = most_bytes {
+            assert!(
+                read.bytes <= most,
+                "{context}: {} bytes read, at most {most} expected",
+                read.bytes
+            );
+        }
+        if let Some(most) = most_heap {
+            assert!(
+                read.heap <= most,
+                "{context}: {} bytes of heap held, at most {most} expected",
+                read.heap
             );
         }
     }
