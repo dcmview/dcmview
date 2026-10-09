@@ -71,7 +71,10 @@ impl AppState {
             tag_cache: Arc::new(Mutex::new(LruCache::new(TAG_CACHE_MAX_FILES))),
             semantic_cache: Arc::new(Mutex::new(LruCache::new(SEMANTIC_CACHE_MAX_FILES))),
             value_mapping_cache: Arc::new(Mutex::new(LruCache::new(VALUE_MAPPING_CACHE_MAX_FILES))),
-            overlay_cache: pixels::new_overlay_cache(),
+            overlay_cache: Arc::new(Mutex::new(OverlayCache::with_scheduler(
+                cache_budget.overlay_bytes,
+                decode_scheduler.clone(),
+            ))),
             thumbnail_cache: Arc::new(Mutex::new(ThumbnailCache::with_scheduler(
                 cache_budget.thumbnail_bytes,
                 decode_scheduler.clone(),
