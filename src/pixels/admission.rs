@@ -91,9 +91,9 @@ pub enum DecodeWork {
 /// S = P * samples_per_pixel                            samples
 /// B = max(1, ceil(bits_allocated / 8))                 bytes a raw sample is served in
 /// F = S * B                                            the raw frame
-/// D = P       when samples_per_pixel < 3               the display buffer
-///     3 * P   when samples_per_pixel >= 3 and B == 1
+/// D = 3 * P   when samples_per_pixel >= 3 and B == 1    the display buffer
 ///     6 * P   when samples_per_pixel >= 3 and B >= 2
+///     P       otherwise
 /// V = 32 * S  when B >= 4                              windowing wide samples
 ///     0       otherwise
 /// ```
@@ -120,9 +120,9 @@ pub enum DecodeWork {
 /// | `work` | Bytes |
 /// |---|---|
 /// | [`DecodeWork::RawFrame`] | `decode` |
-/// | [`DecodeWork::DisplayFrame`] | `decode + V + 6 * D + `[`DISPLAY_BASE_BYTES`] |
+/// | [`DecodeWork::DisplayFrame`] | `V + max(decode, F + 7 * D) + `[`DISPLAY_BASE_BYTES`] |
 /// | [`DecodeWork::Thumbnail`] | `decode + V + D + `[`THUMBNAIL_BASE_BYTES`] |
-/// | [`DecodeWork::PresentationLayer`] | `24 * P + `[`DISPLAY_BASE_BYTES`] |
+/// | [`DecodeWork::PresentationLayer`] | `25 * P + `[`DISPLAY_BASE_BYTES`] |
 /// | [`DecodeWork::RawRedaction`] | `F` |
 /// | [`DecodeWork::ValueLegend`] | `decode + 8 * P` |
 /// | [`DecodeWork::SegmentationOverlay`] | `decode + 24 * T + `[`DISPLAY_BASE_BYTES`] |
@@ -139,23 +139,25 @@ pub enum DecodeWork {
 /// - A raster's `decode` is the limit `decode_raster_frame` is held to for
 ///   every file, hostile ones included, so the reservation is never less
 ///   than what the decode holds (`tests/raster_cost` measures both).
-/// - `6 * D` is the display buffer while it is encoded, reckoned as an
-///   overlay image is below: the buffer, the stream it compresses to in a
-///   buffer that has grown to at most twice its length, and the PNG that
-///   stream is copied into, held twice over while it grows. A frame that
-///   does not compress is the bound, and `tests/raster_cost` measures it.
+/// - A display frame has two stages, and reserves the larger. The decode
+///   is over, and what it held given back, before the frame is encoded;
+///   only the raw frame (`F`) may still be held then. `7 * D` is the
+///   display buffer while it is encoded: the buffer, the attempt to
+///   compress it, which for an image that does not compress is up to one
+///   and a half times the buffer in a buffer grown to at most twice that,
+///   and the stored copy written in its place, held twice over while it
+///   grows. `tests/raster_cost` measures such frames against it.
 ///   Redaction boxes are painted on a decoded copy of the PNG, which is
 ///   given up before the copy is encoded, so painting them holds no more.
-///   The steps after the decode run while the raw frame may still be held,
-///   which `decode` already counts.
 /// - `V` is for samples of 32 or 64 bits, which have no lookup table: the
 ///   frame is converted to 64-bit values, rescaled and sorted for its
 ///   percentiles, each in an array of its own, three arrays of eight bytes
 ///   a sample, with a quarter more beside. Samples of 16 bits or fewer are
 ///   windowed through a table and need none of it.
-/// - `24 * P` is a presentation layer, an image of four bytes a pixel,
-///   while it is encoded, by the same reckoning. A shutter that hides every
-///   other pixel makes a layer that does not compress. The byte a pixel
+/// - `25 * P` is a presentation layer, an image of four bytes a pixel,
+///   while it is encoded: a shutter that hides every other pixel makes a
+///   layer that does not compress, and such a layer measures just over 24
+///   bytes a pixel at the sizes where it holds the most. The byte a pixel
 ///   that marks what a shutter hides is given up before the layer is
 ///   encoded.
 /// - `8 * P` is one frame as real-world values, eight bytes a pixel. A
@@ -186,12 +188,10 @@ pub fn decode_estimate(file: &FileEntry, work: DecodeWork) -> u64 {
     let bytes_per_sample = u64::from(file.bits_allocated).saturating_add(7) / 8;
     let bytes_per_sample = bytes_per_sample.max(1);
     let frame = samples.saturating_mul(bytes_per_sample);
-    let display = pixels.saturating_mul(if file.samples_per_pixel < 3 {
-        1
-    } else if bytes_per_sample == 1 {
-        3
-    } else {
-        6
+    let display = pixels.saturating_mul(match (file.samples_per_pixel, bytes_per_sample) {
+        (3.., 1) => 3,
+        (3.., _) => 6,
+        _ => 1,
     });
     let wide = if bytes_per_sample >= 4 {
         samples.saturating_mul(32)
@@ -221,15 +221,15 @@ pub fn decode_estimate(file: &FileEntry, work: DecodeWork) -> u64 {
     match work {
         DecodeWork::RawFrame => decode,
         DecodeWork::DisplayFrame => decode
+            .max(frame.saturating_add(display.saturating_mul(7)))
             .saturating_add(wide)
-            .saturating_add(display.saturating_mul(6))
             .saturating_add(DISPLAY_BASE_BYTES),
         DecodeWork::Thumbnail => decode
             .saturating_add(wide)
             .saturating_add(display)
             .saturating_add(THUMBNAIL_BASE_BYTES),
         DecodeWork::PresentationLayer => {
-            pixels.saturating_mul(24).saturating_add(DISPLAY_BASE_BYTES)
+            pixels.saturating_mul(25).saturating_add(DISPLAY_BASE_BYTES)
         }
         DecodeWork::RawRedaction => frame,
         DecodeWork::ValueLegend => decode.saturating_add(pixels.saturating_mul(8)),

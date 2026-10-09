@@ -132,12 +132,18 @@ diagnostic viewer.
 - A segmentation, RT Dose or Parametric Map overlay that fails while it is
   encoded now answers `500 pixel_decode_failed`, as one whose frames cannot
   be decoded does, instead of `500 internal_error`.
-- A display frame now reserves six times its display buffer of the decode
-  memory budget instead of three, and a presentation layer 24 bytes a pixel
-  instead of 9. The largest frame a given `--decode-memory` shows is
-  therefore smaller: with 4 GiB, a square 8-bit gray image file of up to
-  11,940 pixels a side whatever its length, where it was 12,636. The tables
-  in `docs/configuration.md` give the new sizes.
+- A display frame now reserves the larger of its decode and its encoding
+  (its raw frame and seven times its display buffer) of the decode memory
+  budget, where it reserved the decode and three display buffers. An image
+  file reserves less than before: with 4 GiB, a square 8-bit gray one is
+  shown up to 13,470 pixels a side whatever its length, where it was
+  12,636. An uncompressed or RLE 8-bit DICOM frame reserves more: 8 bytes
+  a pixel for gray where it was 6, and 24 for colour where it was 18. The
+  tables in `docs/configuration.md` give the new sizes.
+- A presentation layer (a frame's shutter and overlay graphics) reserves 25
+  bytes a pixel where it reserved 9. A frame of more than 6,550 pixels a
+  side with a 1 GiB budget, or 13,105 with 4 GiB, can be shown while its
+  layer is refused, and is then shown without those graphics.
 
 ### Fixed
 

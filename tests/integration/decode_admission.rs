@@ -616,9 +616,12 @@ fn the_estimate_is_the_documented_formula_of_the_catalog_entry() {
         let decode = 16 * MIB + decode;
         let expected = [
             (DecodeWork::RawFrame, decode),
-            (DecodeWork::DisplayFrame, decode + wide + 6 * display + MIB),
+            (
+                DecodeWork::DisplayFrame,
+                wide + decode.max(frame + 7 * display) + MIB,
+            ),
             (DecodeWork::Thumbnail, decode + wide + display + 8 * MIB),
-            (DecodeWork::PresentationLayer, 24 * p + MIB),
+            (DecodeWork::PresentationLayer, 25 * p + MIB),
             (DecodeWork::RawRedaction, frame),
         ];
         for (work, bytes) in expected {
@@ -629,6 +632,15 @@ fn the_estimate_is_the_documented_formula_of_the_catalog_entry() {
             );
         }
     }
+
+    // A frame large enough that encoding it, not decoding it, is the larger
+    // stage: F + 7 D.
+    let mut large = entry(EXPLICIT_LE, 1, 8);
+    (large.rows, large.columns) = (10_000, 10_000);
+    assert_eq!(
+        pixels::decode_estimate(&large, DecodeWork::DisplayFrame),
+        8 * 100_000_000 + MIB
+    );
 
     // An entry nothing vouches for cannot overflow the sums.
     let mut vast = entry(EXPLICIT_LE, u32::MAX, 64);
@@ -667,9 +679,12 @@ async fn a_raster_reserves_its_decode_limit_at_the_length_it_was_listed_with() {
         std::fs::write(&entry.path, [0; 16]).expect("shrink the file");
         let expected = [
             (DecodeWork::RawFrame, decode),
-            (DecodeWork::DisplayFrame, decode + 6 * 3 * p + MIB),
+            (
+                DecodeWork::DisplayFrame,
+                decode.max(frame + 7 * 3 * p) + MIB,
+            ),
             (DecodeWork::Thumbnail, decode + 3 * p + 8 * MIB),
-            (DecodeWork::PresentationLayer, 24 * p + MIB),
+            (DecodeWork::PresentationLayer, 25 * p + MIB),
             (DecodeWork::RawRedaction, frame),
         ];
         for (work, bytes) in expected {

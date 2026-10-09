@@ -215,6 +215,32 @@ async fn ask(entry: Arc<FileEntry>, path: Path, scheduler: Arc<DecodeScheduler>)
     }
 }
 
+/// What a display frame of `entry`, for which `reserved` bytes were
+/// reserved, may hold for the frame itself: the larger of its decode stage
+/// with `fixed`, the part of a decode's estimate that does not grow with
+/// the frame, left out, and of its encoding stage, which has no such part
+/// and is never more than was reserved.
+fn display_frame_part(entry: &FileEntry, fixed: u64, reserved: u64) -> u64 {
+    let pixels = u64::from(entry.rows) * u64::from(entry.columns);
+    let bytes = u64::from(entry.bits_allocated).div_ceil(8).max(1);
+    let frame = pixels * u64::from(entry.samples_per_pixel) * bytes;
+    let display = pixels
+        * match (entry.samples_per_pixel, bytes) {
+            (3.., 1) => 3,
+            (3.., _) => 6,
+            _ => 1,
+        };
+    let wide = if bytes >= 4 {
+        32 * pixels * u64::from(entry.samples_per_pixel)
+    } else {
+        0
+    };
+    let decode = pixels::decode_estimate(entry, DecodeWork::RawFrame).saturating_sub(fixed);
+    let beside = wide + pixels::DISPLAY_BASE_BYTES;
+    let encoding = (frame + 7 * display).min(reserved.saturating_sub(beside));
+    beside + decode.max(encoding)
+}
+
 /// Runs every path for `entry` and holds each to its reservation. Returns
 /// how many paths served a frame.
 ///
@@ -246,11 +272,27 @@ fn assert_reservations_cover(
             );
         }
         // The layer is drawn without a decode, so its estimate has no
-        // such part.
+        // such part, and a display frame's has it only in its decode
+        // stage.
         let growing = match path {
             Path::PresentationLayer => reserved,
+            Path::Display
+            | Path::DisplayFullDynamic
+            | Path::DisplayWindowed
+            | Path::DisplayRedacted
+            | Path::Preview
+                if reserved > 0 =>
+            {
+                display_frame_part(&entry, fixed, reserved)
+            }
             _ => reserved.saturating_sub(fixed),
         };
+        if std::env::var_os("RASTER_COST_REPORT").is_some() {
+            eprintln!(
+                "  {name} {path:?}: {:.3} of the frame's part",
+                heap as f64 / (growing + REQUEST_OVERHEAD) as f64
+            );
+        }
         assert!(
             heap <= growing + REQUEST_OVERHEAD,
             "{name} {path:?}: {heap} bytes of heap held with {reserved} reserved, \
@@ -668,10 +710,13 @@ fn a_deflated_data_set_costs_what_it_supplies() {
                 "{name} {path:?} reserves its documented estimate"
             );
             assert!(reserved >= 3 * frame, "{name} {path:?}");
-            let may_hold = if *complete {
-                reserved - pixels::DICOM_DECODE_BASE_BYTES + REQUEST_OVERHEAD
-            } else {
+            let may_hold = if !*complete {
                 REQUEST_OVERHEAD
+            } else if reserved == pixels::decode_estimate(&entry, DecodeWork::DisplayFrame) {
+                display_frame_part(&entry, pixels::DICOM_DECODE_BASE_BYTES, reserved)
+                    + REQUEST_OVERHEAD
+            } else {
+                reserved - pixels::DICOM_DECODE_BASE_BYTES + REQUEST_OVERHEAD
             };
             assert!(
                 heap <= may_hold,
@@ -744,6 +789,10 @@ pub(super) fn striped_shutter(side: u16) -> Vec<DataElement<InMemDicomObject>> {
     ]
 }
 
+/// What painting redaction boxes may hold beside what encoding the frame
+/// held: the boxes and the PNG decoder's own state. A fixed 64 KiB.
+const REDACTION_OVERHEAD: u64 = 64 * 1024;
+
 /// Display frames and a presentation layer whose images do not compress.
 ///
 /// An image is encoded through buffers that grow by doubling, and one that
@@ -789,7 +838,39 @@ fn an_image_that_does_not_compress_holds_no_more_heap_than_it_reserved() {
             pixels::DICOM_DECODE_BASE_BYTES,
         );
         assert_eq!(served, Path::ALL.len(), "{name}");
+
+        // Redaction boxes are painted on a decoded copy of the frame's
+        // PNG, and the PNG is given up before the copy is encoded: a
+        // frame with boxes holds no more than the same frame without.
+        let held = |path: Path| {
+            let entry = Arc::new(scan.entry(name).clone());
+            runtime.peak_during(ask(entry, path, roomy_scheduler())).1
+        };
+        let (plain, boxed) = (held(Path::Display), held(Path::DisplayRedacted));
+        assert!(
+            boxed <= plain + REDACTION_OVERHEAD,
+            "{name}: {boxed} bytes of heap held with redaction boxes, {plain} without"
+        );
     }
+
+    // A layer at the side where it held the most for its pixels among the
+    // sides measured up to 5,000: 24.15 bytes a pixel at 4,780.
+    let image = Native::gray(4780, 8).with(striped_shutter(4780));
+    let large = [("layer-4780.dcm", image.file(vec![0; image.frame_bytes()]))];
+    let scan = listed(&plain, &large);
+    let entry = Arc::new(scan.entry("layer-4780.dcm").clone());
+    let (served, heap) = runtime.peak_during(ask(
+        entry.clone(),
+        Path::PresentationLayer,
+        roomy_scheduler(),
+    ));
+    let reserved = Path::PresentationLayer.reserves(&entry);
+    assert!(served);
+    assert!(
+        heap <= reserved,
+        "a layer of 4,780 pixels a side: {heap} bytes of heap held with {reserved} reserved"
+    );
+    assert!(heap >= 24 * 4780 * 4780, "only {heap} bytes held");
 }
 
 /// What many requests at once may hold beside the budget, whatever their
