@@ -586,9 +586,16 @@ text value shows at most 1,024 characters and then `…`, and a tree at most
 128 KiB of text; a numeric value shows at most 64 numbers and states its
 `total`; a directory shows its first 256 entries. Text is decoded (invalid
 bytes become U+FFFD), trailing NULs and white space are dropped, tabs and
-line ends become spaces, and every other control character and every
-bidirectional or invisible formatting character is written as `\u{..}`
-with its code point in hex.
+line ends become spaces, and these are written as `\u{..}` with the code
+point in hex: every other control character (U+0000 to U+001F, U+007F to
+U+009F), the line and paragraph separators (U+2028, U+2029), every format
+character (Unicode general category Cf, which holds the soft hyphen, the
+zero-width and bidirectional characters, the byte order mark and the tag
+characters), and every other code point Unicode makes ignorable by default
+(the variation selectors U+180B to U+180F, U+FE00 to U+FE0F and U+E0100 to
+U+E01EF, the combining grapheme joiner, the Hangul fillers, and the rest of
+U+E0000 to U+E0FFF). A variation selector or a joiner inside an emoji
+sequence is therefore shown escaped too.
 
 `/tags/select?path=...` returns one node of this tree; nothing more is read
 from the file. `path` is steps separated by `/`, at most three. A step is a

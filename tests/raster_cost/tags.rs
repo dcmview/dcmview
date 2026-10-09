@@ -762,6 +762,58 @@ fn text_of_a_file_is_decoded_escaped_and_cut_before_it_is_shown() {
     for (bytes, shown) in cases {
         assert_eq!(utf8(bytes), shown, "{:?}", String::from_utf8_lossy(bytes));
     }
+    // Every range of code points a value never shows as themselves: the
+    // controls, the line and paragraph separators, the format characters
+    // (general category Cf) and the rest of what is ignorable by default
+    // (Unicode 15.1). Both ends of a range are escaped, and the code point
+    // on either side of it is shown as it is.
+    const ESCAPED: [(u32, u32); 27] = [
+        (0x0000, 0x001f),
+        (0x007f, 0x009f),
+        (0x00ad, 0x00ad),
+        (0x034f, 0x034f),
+        (0x0600, 0x0605),
+        (0x061c, 0x061c),
+        (0x06dd, 0x06dd),
+        (0x070f, 0x070f),
+        (0x0890, 0x0891),
+        (0x08e2, 0x08e2),
+        (0x115f, 0x1160),
+        (0x17b4, 0x17b5),
+        (0x180b, 0x180f),
+        (0x200b, 0x200f),
+        (0x2028, 0x202e),
+        (0x2060, 0x206f),
+        (0x3164, 0x3164),
+        (0xfe00, 0xfe0f),
+        (0xfeff, 0xfeff),
+        (0xffa0, 0xffa0),
+        (0xfff0, 0xfffb),
+        (0x110bd, 0x110bd),
+        (0x110cd, 0x110cd),
+        (0x13430, 0x1343f),
+        (0x1bca0, 0x1bca3),
+        (0x1d173, 0x1d17a),
+        (0xe0000, 0xe0fff),
+    ];
+    let between = |code: u32| {
+        let character = char::from_u32(code).expect("a character");
+        (
+            format!("a{character}b"),
+            utf8(format!("a{character}b").as_bytes()),
+        )
+    };
+    for (first, last) in ESCAPED {
+        for code in [first, last] {
+            let (_, shown) = between(code);
+            assert_eq!(shown, format!("a\\u{{{code:x}}}b"), "U+{code:04X}");
+        }
+        for code in [first.checked_sub(1), Some(last + 1)].into_iter().flatten() {
+            let (written, shown) = between(code);
+            assert_eq!(shown, written, "U+{code:04X} is not escaped");
+        }
+    }
+
     // Compressed text that is empty is empty text: its stream ends having
     // produced nothing, which is not damage.
     assert_eq!(shown_png_text(png_compressed_text(b"k", b"")), "");

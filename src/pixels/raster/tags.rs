@@ -368,12 +368,17 @@ impl fmt::Display for RasterTagNote {
 /// Text reaches a node only through [`TagSink`], which decodes it (bytes
 /// that are not valid in the encoding become U+FFFD), drops trailing NULs
 /// and white space, shows a tab, line feed or carriage return as one
-/// space, and writes every other control character (U+0000 to U+001F,
-/// U+007F to U+009F), every bidirectional and invisible formatting
-/// character (U+200B to U+200F, U+2028 to U+202E, U+2060 to U+2069, U+FEFF,
-/// U+FFF9 to U+FFFB) as `\u{..}` with its code point in lower-case hex. So
-/// an escape sequence in a value is visible text and cannot act on a
-/// terminal or reorder what is shown, and a NUL inside a value is `\u{0}`.
+/// space, and writes as `\u{..}`, with its code point in lower-case hex,
+/// every other control character (U+0000 to U+001F, U+007F to U+009F), the
+/// line and paragraph separators (U+2028, U+2029), every format character
+/// (Unicode general category Cf: the soft hyphen, the zero-width and
+/// directional characters, the byte order mark, the tag characters and the
+/// rest) and every other code point Unicode makes ignorable by default (the
+/// variation selectors, the combining grapheme joiner, the Hangul fillers,
+/// all of U+E0000 to U+E0FFF); the ranges are the table `ESCAPED`. So an
+/// escape sequence in a value is visible text and cannot act on a terminal
+/// or reorder what is shown, nothing in a value is invisible, and a NUL
+/// inside a value is `\u{0}`.
 /// A number that is not finite is a problem, not a value.
 pub fn read_raster_tags(
     format: FileFormat,
@@ -845,19 +850,84 @@ fn complete_utf8_prefix(bytes: &[u8]) -> usize {
     bytes.len()
 }
 
+/// The code points a value never shows as themselves, as inclusive ranges
+/// in ascending order: each is written as `\u{..}` (a tab, line feed or
+/// carriage return as a space). These are the characters that act on a
+/// terminal, reorder what is shown or take no room in it:
+///
+/// - the controls (general category Cc), U+0000 to U+001F and U+007F to
+///   U+009F;
+/// - the line and paragraph separators (Zl, Zp), U+2028 and U+2029;
+/// - every format character (Cf);
+/// - every code point with the property `Default_Ignorable_Code_Point`,
+///   which adds the variation selectors (U+180B to U+180F, U+FE00 to
+///   U+FE0F, U+E0100 to U+E01EF), the combining grapheme joiner, the
+///   Hangul fillers, the Khmer inherent vowels and all of U+E0000 to
+///   U+E0FFF, assigned or not.
+///
+/// Source: Unicode 15.1, `extracted/DerivedGeneralCategory.txt` for Cc, Zl,
+/// Zp and Cf and `DerivedCoreProperties.txt` for
+/// `Default_Ignorable_Code_Point`. Ranges that touch are written as one.
+const ESCAPED: &[(u32, u32)] = &[
+    (0x0000, 0x001F),   // Cc
+    (0x007F, 0x009F),   // Cc
+    (0x00AD, 0x00AD),   // Cf: soft hyphen
+    (0x034F, 0x034F),   // ignorable: combining grapheme joiner
+    (0x0600, 0x0605),   // Cf: Arabic number signs
+    (0x061C, 0x061C),   // Cf: Arabic letter mark
+    (0x06DD, 0x06DD),   // Cf: Arabic end of ayah
+    (0x070F, 0x070F),   // Cf: Syriac abbreviation mark
+    (0x0890, 0x0891),   // Cf: Arabic pound and piastre marks above
+    (0x08E2, 0x08E2),   // Cf: Arabic disputed end of ayah
+    (0x115F, 0x1160),   // ignorable: Hangul fillers
+    (0x17B4, 0x17B5),   // ignorable: Khmer inherent vowels
+    (0x180B, 0x180F),   // Mongolian variation selectors and vowel separator
+    (0x200B, 0x200F),   // Cf: zero-width characters and directional marks
+    (0x2028, 0x202E),   // Zl, Zp, and Cf: directional embeddings and overrides
+    (0x2060, 0x206F),   // Cf and ignorable: joiners, isolates, deprecated formats
+    (0x3164, 0x3164),   // ignorable: Hangul filler
+    (0xFE00, 0xFE0F),   // variation selectors
+    (0xFEFF, 0xFEFF),   // Cf: zero-width no-break space
+    (0xFFA0, 0xFFA0),   // ignorable: halfwidth Hangul filler
+    (0xFFF0, 0xFFFB),   // ignorable, and Cf: interlinear annotation
+    (0x110BD, 0x110BD), // Cf: Kaithi number sign
+    (0x110CD, 0x110CD), // Cf: Kaithi number sign above
+    (0x13430, 0x1343F), // Cf: Egyptian hieroglyph format controls
+    (0x1BCA0, 0x1BCA3), // Cf: shorthand format controls
+    (0x1D173, 0x1D17A), // Cf: musical symbol format controls
+    (0xE0000, 0xE0FFF), // tags, variation selectors supplement, ignorable
+];
+
+// The table is searched by bisection: its ranges must ascend and not touch.
+const _: () = {
+    let mut index = 0;
+    while index < ESCAPED.len() {
+        assert!(ESCAPED[index].0 <= ESCAPED[index].1);
+        assert!(index == 0 || ESCAPED[index - 1].1 + 1 < ESCAPED[index].0);
+        index += 1;
+    }
+};
+
 /// Appends `character` as a value shows it; see "Values are shown safely".
 fn escape_into(character: char, out: &mut String) {
+    use std::cmp::Ordering;
     use std::fmt::Write;
+    let code = u32::from(character);
+    let escaped = ESCAPED
+        .binary_search_by(|&(first, last)| {
+            if last < code {
+                Ordering::Less
+            } else if first > code {
+                Ordering::Greater
+            } else {
+                Ordering::Equal
+            }
+        })
+        .is_ok();
     match character {
         '\t' | '\n' | '\r' => out.push(' '),
-        '\u{0}'..='\u{1f}'
-        | '\u{7f}'..='\u{9f}'
-        | '\u{200b}'..='\u{200f}'
-        | '\u{2028}'..='\u{202e}'
-        | '\u{2060}'..='\u{2069}'
-        | '\u{feff}'
-        | '\u{fff9}'..='\u{fffb}' => {
-            let _ = write!(out, "\\u{{{:x}}}", u32::from(character));
+        _ if escaped => {
+            let _ = write!(out, "\\u{{{code:x}}}");
         }
         _ => out.push(character),
     }

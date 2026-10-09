@@ -1139,9 +1139,12 @@ the same component (`docs/design/image-formats.md` section 8).
 - **A file's bytes reach only values, and only escaped.** `tag`, `keyword`
   and `vr` are dcmview's own names. `TagSink` decodes every text value
   (invalid bytes become U+FFFD), trims trailing NULs and white space, turns
-  tabs and line ends into spaces, and writes every other control character
-  and every bidirectional or invisible formatting character as `\u{..}`,
-  so an escape sequence in a comment is visible text.
+  tabs and line ends into spaces, and writes as `\u{..}` every other
+  control character, the line and paragraph separators, every format
+  character (general category Cf) and every other code point that is
+  ignorable by default, variation selectors and the tag block included
+  (one table, `ESCAPED`), so an escape sequence in a comment is visible
+  text and nothing in a value is invisible.
 - **No decode permit.** A metadata read decodes no pixels and is bounded by
   the numbers above, so it runs on a blocking thread beside the decode
   scheduler, not through it. The tag cache keeps the tree as the session
