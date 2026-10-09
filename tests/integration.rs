@@ -19,6 +19,8 @@ mod integration {
     mod raster_decode;
     mod raster_discovery;
     mod raster_files;
+    mod raster_tag_files;
+    mod raster_tags;
     mod redactions;
     mod remote_fixtures;
     mod semantic_context;
