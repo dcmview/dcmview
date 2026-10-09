@@ -1,5 +1,7 @@
 mod integration {
     mod access_token;
+    mod annotation_ops;
+    mod annotation_store;
     mod annotations_endpoint;
     mod api_contract;
     mod codec_contract;
