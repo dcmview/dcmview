@@ -63,6 +63,8 @@ impl Directories {
             w.damaged(part);
             return None;
         }
+        // A backstop no file reaches: the page limit times a page's four
+        // directories equals this cap, and an EXIF block has at most five.
         if self.visited.len() == RASTER_TAGS_MAX_IFDS {
             w.sink
                 .note(RasterTagNote::Limit(RasterTagLimit::Directories));

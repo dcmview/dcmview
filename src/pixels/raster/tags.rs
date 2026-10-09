@@ -271,7 +271,9 @@ impl fmt::Display for RasterTagNote {
 ///   read for those and no further, and a larger count is noted as that
 ///   limit. The link to the next directory lies after all the entries the
 ///   directory declares. At most [`RASTER_TAGS_MAX_PAGES`] TIFF
-///   pages and [`RASTER_TAGS_MAX_IFDS`] directories are read. A directory
+///   pages and [`RASTER_TAGS_MAX_IFDS`] directories are read. The second
+///   limit is a backstop: the page limit and the few pointers followed
+///   keep every file within it, so no file gets its note. A directory
 ///   reached twice, by any path, is not read again, so a chain or pointer
 ///   that loops ends there with a `Damaged` note. The only pointers
 ///   followed are a TIFF's page chain, and from an image directory tags
