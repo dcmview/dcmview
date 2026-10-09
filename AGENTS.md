@@ -1134,10 +1134,10 @@ default suite.
   1 MiB, whichever element is selected: those are shown by their declared
   length. A tree ends, with status 200, at a value that runs past the file,
   at sequences nested past the limit and at bytes after the data set.
-- A failed decode is answered in the viewer's own words: two files damaged
-  in different ways get the same body from the frame, raw, thumbnail and
-  overlay endpoints, a masked session logs only that answer, and an unmasked
-  one adds the cause at debug level.
+- A failed decode or metadata read is answered in the viewer's own words:
+  two files damaged in different ways get the same body, numbers aside,
+  from every endpoint that reads a file, a masked session logs only that
+  answer, and an unmasked one adds the cause at debug level.
 - Decoding a raster frame reads no more than its entry's budget and holds no
   more heap than its entry's limit, for hostile and damaged files too, and
   never panics.
