@@ -51,7 +51,8 @@ application module:
 | Local startup | `src/startup/` | `LocalViewerOptions`, `LocalViewerOutcome`, and `DiscoveryHandle`. |
 | HTTP wire model | `src/api/contracts.rs` | Plain `endpoints` table, media types, header names, wire structs (query names are `FrameQuery`/`TagQuery` fields), and error envelope. |
 | Launch and startup contract | `crates/dcmview-protocol` | `StartupEvent` (the `--startup-json` line), `launch_url`, `STARTUP_PROTOCOL`, the token fragment parameter and the token environment variable. Re-exported by `src/api/contracts.rs`. Fields are only added. |
-| Annotation model | `crates/dcmview-annotation` | The model's types and wire format, `validate` on each of them, `FileKey` and `KEY_RULES`, `Op` and `OpEnvelope`, the size bounds in `limits`, and the generated TypeScript and JSON Schema. The root package takes `FileKey` and `KEY_RULES` from it (`src/keys.rs`) and nothing else: `src/annotations.rs` is the EMBED store behind the annotation endpoints. |
+| Annotation model | `crates/dcmview-annotation` | The model's types and wire format, `validate` on each of them, `FileKey` and `KEY_RULES`, `Op` and `OpEnvelope`, the size bounds in `limits`, and the generated TypeScript and JSON Schema. The root package takes `FileKey` and `KEY_RULES` from it (`src/keys.rs`), and its annotation store holds the model's records and applies its operations. |
+| Annotation store | `src/annotations.rs`, `src/annotations/`, `src/server/annotations.rs` | `AnnotationBackend` (`snapshot`, `apply`, `export`, `revision`) and its in-memory implementation `MemoryBackend`: records by id under settled file keys, one transaction per operation envelope. `AnnotationStore` is what a session holds: the backend and the state of the `--annotations` import. `annotations/embed.rs` is the EMBED compatibility view as pure functions, and `annotations.rs` the EMBED CSV reader. `server/annotations.rs` joins the store to the registry for every door: it settles keys, translates the keys a masked session shows, and serves the EMBED endpoints and the operation endpoint. See [Annotation Store](#annotation-store). |
 | File keys | `src/keys/` | `KeyTable`: which key each loaded file has and whether it is settled, as a plain data structure with no I/O that holds no string per file. `FileHasher`: one file's BLAKE3 digest in bounded slices. See [File Keys And The Catalog Cursor](#file-keys-and-the-catalog-cursor). |
 | HTTP runtime | `src/server/` | Listener/runtime, route registration, handlers, state, registry, activity tracking, tags, and embedded assets. `server/catalog.rs` holds the registry with its key table and catalog revisions; `server/catalog/keys.rs` holds background hashing and what a session shows for a key. |
 | Pixel service | `src/pixels/` | Typed display, raw and thumbnail requests, cache behavior, transfer-syntax classification, decoding, the render seam (`render.rs` `DisplayBuffer`), decode classes (`schedule.rs`), and `PixelError`. `raster.rs` decodes PNG, JPEG, TIFF and WebP frames within fixed read and memory limits and renders them; `raster/tags.rs` reads their metadata tree through the same reader, within limits of its own and without reading pixels. |
@@ -62,7 +63,7 @@ application module:
 | Semantic context | `src/semantic.rs` | Conservative SEG, Parametric Map, and RT Dose metadata interpretation layered beside unchanged pixel preview. |
 | Presentation states | `src/presentation_state.rs` | PIXEL-unit graphic and text annotations of softcopy presentation states, and which image frames each annotation item applies to. |
 | Display masking | `src/masking.rs` | `Masker`: the per-process keyed replacements of a `--mask` session (patient pseudonym, date shift, UID hash) and the tag rules, with the PS3.15 Table E.1-1 attribute list in `masking/profile.rs`, and the allowlist for raster metadata in `masking/raster.rs`. The registry holds it and masks the catalog as files register; handlers mask tag trees, semantic context and UID fields of other responses. |
-| Redaction boxes | `src/redactions.rs`, `src/pixels/redaction.rs` | `RedactionStore`: per-file boxes and their revision, in memory. The pixel service paints them into display PNGs and thumbnails (revision in the display and thumbnail cache keys), fills them in raw frame copies, and the presentation layer paints them too. |
+| Redaction boxes | `src/redactions.rs`, `src/pixels/redaction.rs` | `RedactionStore`: per-file boxes and their revision, in memory, by file index. A store of its own: it shares the ROI wire shape and its validation with the EMBED endpoints and nothing with the annotation store. The pixel service paints them into display PNGs and thumbnails (revision in the display and thumbnail cache keys), fills them in raw frame copies, and the presentation layer paints them too. |
 | WSI tile context | `src/wsi.rs` | Bounded positioning of one selected WSI tile without stitching or Total Pixel Matrix reconstruction. |
 | Attribute readers | `src/dicom_values.rs` | Lenient string, number, and sequence readers shared by discovery, references, semantic context, and WSI context. |
 | File discovery | `src/loader/` | `discovery.rs` progressive events, cancellation, and reports; `entry.rs` format detection from content and DICOM `FileEntry` construction; `format.rs` the `--formats` selection and raster signatures; `raster.rs` header-only inspection of PNG, JPEG, TIFF and WebP into a `FileEntry`; `metadata.rs` geometry, LUT, overlay, and shutter extraction; `filter.rs` `--filter` predicates. |
@@ -87,7 +88,7 @@ flowchart TD
     startup --> discovery["startup/discovery.rs<br/>owned discovery task"]
     discovery --> loader["loader/<br/>spawn_blocking and Rayon"]
     discovery --> registry["server/catalog.rs<br/>FileRegistry"]
-    discovery --> annotations["annotations.rs<br/>in-memory ROI store"]
+    discovery --> annotations["annotations/<br/>in-memory annotation store"]
     bind --> runtime["BoundServer::serve"]
     runtime --> router["server/api/<br/>routes, handlers, state"]
     router --> pixels["pixels/<br/>display and raw services"]
@@ -1500,8 +1501,9 @@ It holds no state and applies no operation; a store does that. It does not
 touch the filesystem, the network or the environment, and every function
 gives the same result for the same arguments except `new_id`, which reads
 the system clock and the operating system's random number generator. The
-root package takes `FileKey` and `KEY_RULES` from this crate and nothing
-else. The design it implements is
+root package takes `FileKey` and `KEY_RULES` from this crate for the catalog,
+and the rest of the model for its annotation store
+([Annotation Store](#annotation-store)). The design it implements is
 `docs/design/annotation-model.md`.
 
 | Module | Holds |
@@ -1597,6 +1599,160 @@ either is stale. The crate's tests make the same comparison, so the `core`
 profile catches drift; the frontend type check compiles the generated
 TypeScript.
 
+## Annotation Store
+
+A session's annotations are records of the annotation model, held by a store
+and changed only by the model's operations
+(`docs/design/annotation-model.md` 7.3, 7.4, 9; `docs/design/seams.md` 8, 9).
+The EMBED-style endpoints and the `--annotations` CSV are a view of the same
+records and read and write the bytes they always did.
+
+```mermaid
+flowchart LR
+    ops["POST /api/annotations/ops<br/>one OpEnvelope"] --> service
+    embed["GET, PUT /api/file/{index}/annotations<br/>GET /api/annotations/export.csv"] --> service
+    csv["--annotations CSV<br/>annotations.rs reader"] --> service
+    service["server/annotations.rs<br/>settle keys, translate shown keys"] --> registry["FileRegistry<br/>ensure_key, key_status"]
+    service --> view["annotations/embed.rs<br/>ROI rows as records and back"]
+    service --> backend["AnnotationBackend<br/>MemoryBackend"]
+```
+
+### The Backend
+
+`AnnotationBackend` is what a store does, whatever holds the records:
+`snapshot` (the current records of some files), `apply` (operation
+envelopes, one result each), `export` (everything, as a `Document`) and
+`revision`. `MemoryBackend` is the only implementation: records in server
+memory for the session, nothing written anywhere. A backend addresses a file
+by its `FileKey` alone and never sees an index, a path or the registry; the
+caller says which keys exist and how large each file is.
+
+One envelope is one transaction:
+
+- **All or nothing.** An envelope changes everything it names or nothing. A
+  `Batch` is one envelope: its operations apply in order, each seeing the
+  ones before it, and the first that is refused refuses the whole batch and
+  leaves the store as it was.
+- **One result.** `ok` lists the new revision of every record and layer the
+  envelope changed. `conflict` holds what the refused operation should have
+  been based on. `invalid` holds the violations, with paths from the
+  envelope (`/op/ops/3/base_rev`).
+- **Idempotent by `op_id`.** An envelope whose `op_id` was applied before
+  returns the first result and changes nothing; the store remembers the
+  last 65,536 applied envelopes (`REMEMBERED_OPS`). A refused envelope is
+  not remembered: it changed nothing, and sending it again judges it again.
+- **Ordered.** The envelopes of one call apply in the order given, each its
+  own transaction; a refusal does not stop the ones after it. Two
+  transactions never interleave and no reader sees one half applied.
+
+Revisions come in two kinds. A record's or layer's `rev` is 1 when it is
+created, whatever the payload said, and rises by one with every operation
+that changes it, delete and restore included; an operation's `base_rev` must
+equal it. The store's own revision is the number of envelopes it has
+applied: it starts at 0 and is unchanged by a refusal and by a repeated
+`op_id`, so two reads at one revision saw the same records.
+
+The store writes `created_by`, `created_at`, `modified_by` and `modified_at`
+itself, with the session's author (`user:<USER>`, else `user:local`) and its
+own clock; what a payload says, and the envelope's `actor` and `ts`, are
+advisory. A deleted record is kept with its id and revision, out of every
+snapshot, export and view, so a stale operation is a conflict and an id is
+never used twice; a restore brings back what the store kept, in its old
+place in creation order. A label that loses its value is kept the same way.
+Snapshots and the document list records in creation order.
+
+What the store checks beyond the model's `OpEnvelope::validate` (that the
+target exists and is at `base_rev`, that ids are new, that a layer exists
+and is empty before it goes, that the record a patch or a tile change leaves
+is still valid) is the table in the documentation of `MemoryBackend`. Every
+session starts with one layer, `default` ("Annotations"), which cannot be
+deleted. A session has no label schema yet, so the implicit one applies: one
+class, `roi`, and no label fields.
+
+### Keys
+
+Records hold settled file keys and nothing else
+([File Keys And The Catalog Cursor](#file-keys-and-the-catalog-cursor)).
+`server/annotations.rs` is the one place a request meets the store, and it
+keeps three rules for every door:
+
+- **A write settles the key first.** Before anything is written for a file,
+  `FileRegistry::ensure_key` settles its key, which may hash the file and
+  the files that share its UID; the write waits for that. A file that
+  cannot be given a key (its bytes, or those of the first file loaded with
+  its UID, cannot be read or have changed) is not written to: the request
+  answers `422 file_key_unavailable` and nothing changes.
+- **A read never hashes.** A file whose key is not settled has no record,
+  because no write got through for it, so a read answers "none" at once
+  from `FileRegistry::key_status`.
+- **Keys cross the wire in the session's form.** A key from a client is
+  resolved with `FileRegistry::file_for_shown_key` and a key sent back is
+  written with `FileRegistry::shown_key_of`. A masked session therefore
+  takes and gives keys built from masked UIDs, and a real UID names
+  nothing; the records still hold real keys. A key that was replaced since
+  the client learned it names the file `file_for_shown_key` gives, and the
+  operation is applied under that file's settled key.
+
+An operation that names a key no loaded file has is refused before the
+store sees it: `invalid`, `unknown_file`.
+
+### The EMBED Compatibility View
+
+`GET` and `PUT /api/file/{index}/annotations`,
+`GET /api/annotations/export.csv` and `--annotations` keep their shapes,
+statuses, messages and bytes. `tests/fixtures/embed-goldens/` freezes the
+bytes, and `tests/integration/embed_goldens.rs` compares them through the
+real binary.
+
+- **A ROI is a rectangle record.** `[ymin, xmin, ymax, xmax]` is the
+  rectangle `x0 = xmin`, `y0 = ymin`, `x1 = xmax`, `y1 = ymax` of class
+  `roi` in the default layer, every number as written. A row whose
+  `ROI_frames` is `[]` gives each ROI every frame; otherwise each ROI keeps
+  its list as written, order and repeats included, and an empty list for
+  one ROI stays empty.
+- **A file's view** is the live rectangle records under the file's settled
+  key, in creation order: `num_roi`, their rectangles (one off the pixel
+  grid rounded outward), and `roi_frames` empty when every record covers
+  every frame, else one list per record. Other geometries are not in it.
+  Rows the mapping read come back unchanged.
+- **Byte-identical files keep their own rows.** Such files share a key and
+  so a set of records. A record that an EMBED write made for one file (a
+  CSV row, a `PUT`) is bound to that file's index and shows in that file's
+  view alone; a record made by any other operation shows in the view of
+  every file with the key. Each path is exported as its own row.
+- **`PUT` is a diff, checked by the endpoint's own rule.** The list is
+  accepted or refused whole by `canonicalize_annotations`, exactly as
+  before, and by nothing else. The view's records are then matched to the
+  list by position and changed by one transaction: an update for each
+  position that differs, a delete for each record past the end, a create
+  for each ROI past the end. A record that does not change keeps its id and
+  revision, and saving what is shown is no transaction at all.
+- **The import holds rows as loaded.** After discovery the CSV is read all
+  or nothing as before; its rows then become records file by file, authored
+  `import:embed`, with nothing clamped, reordered or rounded: a box past
+  the image edge, with no area or with its corners out of order is held
+  and exported as written. Rows of a file that cannot be given a key are
+  dropped with a warning and the rest load. EMBED reads wait for the import;
+  writes do not, and a file the EMBED endpoint wrote to while the CSV was
+  loading keeps what was written.
+
+EMBED writes go through the store with `Checking::AsLoaded`: the store's own
+checks apply and the model's `validate` does not, because the EMBED rule
+admits values the model's would refuse. Every other write is
+`Checking::Strict`.
+
+The export hashes nothing and writes one row per loaded file whose view
+shows a ROI, in the registry's file order, with the path as discovery
+recorded it.
+
+### Redaction Boxes Are Not In It
+
+`RedactionStore` keeps its boxes by file index with a revision of its own.
+It shares the ROI wire shape and `canonicalize_annotations` with the EMBED
+endpoints and nothing with the annotation store: a box has no file key, is
+changed by no operation, and is in no snapshot, document or export
+(`docs/design/annotation-model.md`, re-baseline amendment of 2026-10-05).
+
 ## Lifecycle And Discovery Ownership
 
 Local startup follows a strict order:
@@ -1617,8 +1773,10 @@ The loader sends one event per inspected candidate through a bounded channel.
 The discovery task drains that channel while awaiting the loader, updates
 `FileRegistry` (files, counts, and the bounded discovery ledger), and marks the
 scan complete on every exit path, including a panic. It then streams the annotation CSV once on a cancellable
-blocking worker, matching only loaded absolute path keys and committing valid
-rows atomically without overwriting viewer edits. Annotation failures remain in
+blocking worker, matching only loaded absolute path keys, and turns the rows
+of a CSV that read whole into records file by file
+(`server::annotations::import_embed_rows`), settling each file's key first
+and without overwriting viewer edits. Annotation failures remain in
 the annotation store and do not terminate image viewing. Scan and no-files
 failures produce typed outcomes and cancel the server's shutdown token.
 Normal server exit during incomplete discovery or annotation loading requests
@@ -1834,7 +1992,18 @@ installation and VS Code Electron integration can also use network/cache state;
 - `tests/fixtures/embed-goldens/` freezes the EMBED-style ROI CSV bytes: each
   hand-written input is loaded by the real binary with `--annotations` over
   copies of committed fixtures, and the export must equal the expected file
-  byte for byte, with rows in any order (Unix only).
+  byte for byte, with rows in any order (Unix only). The cases go through
+  the annotation store, so they are also what holds the EMBED compatibility
+  view to the bytes it had before.
+- `tests/integration/annotation_ops.rs` drives the store through
+  `POST /api/annotations/ops` and the EMBED endpoints together: an envelope
+  applied whole or not at all, revisions and stale operations, a repeated
+  `op_id`, the EMBED view of records made by operations, byte-identical
+  files, files whose key is hashed for the write or cannot be had, the
+  model's size limits, and a masked session's keys.
+  `tests/integration/annotation_store.rs` covers through `AnnotationBackend`
+  what no endpoint of a session without a label schema reaches: labels,
+  layers, mask tiles, snapshots and the document.
 - Python unit tests isolate subprocess policy; `python-integration` adds the real
   binary. VS Code compile and Electron integration remain separate layers.
 - `scripts/compatibility/run.py --corpus-root` checks the real binary against
@@ -1958,6 +2127,21 @@ Not current correctness blockers:
 - A catalog entry that changes after it was registered takes a new revision;
   nothing else moves the cursor.
 - Keep redaction boxes out of the annotation model.
+- Annotation records hold settled file keys only. Every write path awaits
+  `FileRegistry::ensure_key` in `server/annotations.rs` before it reaches the
+  store, and no read path does. Do not write a record under a key read from
+  the catalog or from `X-File-Key`.
+- Nothing but `server/annotations.rs` joins the annotation store to the
+  registry, and the store stays free of indexes, paths and masking. A key
+  leaves the process only through `FileRegistry::shown_key_of`.
+- A change to the annotation store is one transaction of
+  `MemoryBackend::transact`: do not add a second way to change a record. A
+  refused transaction is undone from what it changed, never by copying the
+  store.
+- The EMBED endpoints and the CSV export are released behaviour. A change
+  to `annotations/embed.rs`, `canonicalize_annotations` or the CSV reader
+  that moves a byte needs the owner's sign-off and the golden changed in the
+  same commit (`tests/fixtures/embed-goldens/README.md`).
 - Add endpoint fetches through `frontend/src/api.ts`.
 - Use generated synthetic fixtures for integration coverage; never commit PHI.
 - Run the narrow profile while iterating, then the profile required by the

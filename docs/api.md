@@ -117,6 +117,7 @@ and redirects the bare prefix to its trailing-slash form.
 | PUT | `/file/{index}/redactions` | Replaces one file's redaction boxes with a JSON `EmbedRoiAnnotations` body and returns the canonical result. |
 | PUT | `/file/{index}/redactions/series` | `RedactionSeriesResponse`: copies the file's redaction boxes to every file of its series with the same rows and columns, and lists those files. Takes no body. |
 | GET | `/annotations/export.csv` | `text/csv; charset=utf-8` with `Content-Disposition: attachment; filename="dcmview-annotations.csv"`. |
+| POST | `/annotations/ops` | `AnnotationOpResponse`: applies one annotation operation. The body is one `OpEnvelope` as JSON, at most 16 MiB. Also answers `409` and `422` with the same body shape; see [Annotation operations](#annotation-operations). |
 
 Every success status is `200`.
 
@@ -744,6 +745,96 @@ Annotations are EMBED-style rectangles held in memory:
 current in-memory store; source DICOM and CSV files are never modified. See
 [annotations](annotations.md) for the CSV format.
 
+These endpoints are a view of the annotation store, which holds records of
+the annotation model (`frontend/src/generated/annotation-types.ts`,
+`crates/dcmview-annotation/schema/`). A ROI is a rectangle record of class
+`roi`; a rectangle made through
+[annotation operations](#annotation-operations) shows here too, rounded
+outward to whole pixels, and other geometries do not. A `PUT` changes only
+the records that differ from the list it sends, matched by position.
+
+A record is stored under its file's key, so the first `PUT` for a file whose
+catalog entry shows `"file_key": null`, or shares its `sop_instance_uid` with
+another file, waits while the file is hashed. When the file cannot be given
+a key (`key_error` in its catalog entry), `PUT` answers
+`422 file_key_unavailable` and nothing is saved; `GET` then shows no ROI for
+it and the export has no row for it. With `--annotations`, the rows of such
+a file are not loaded, and a warning on stderr counts them.
+
+### Annotation operations
+
+`POST /api/annotations/ops` applies one operation of the annotation model.
+The body is one envelope:
+
+```json
+{ "op_id": "0199c0de-0000-7000-8000-0000000003e8", "actor": "user:alice",
+  "ts": "2026-09-29T21:06:02.004Z",
+  "op": { "type": "create_annotation", "annotation": {
+    "id": "0199c0de-0000-7000-8000-000000000032",
+    "file": "sop:1.2.826.0.1.3680043.8.498.1", "frames": "all",
+    "layer": "default", "class": "roi",
+    "geometry": { "type": "rect", "x0": 340, "y0": 120, "x1": 430, "y1": 220 },
+    "attributes": {}, "extensions": {}, "rev": 1,
+    "created_by": "user:alice", "created_at": "2026-09-29T21:04:11.120Z",
+    "modified_by": "user:alice", "modified_at": "2026-09-29T21:04:11.120Z" } } }
+```
+
+`op` is one of `create_annotation`, `update_annotation`,
+`delete_annotation`, `restore_annotation`, `mask_tiles`, `set_label`,
+`create_layer`, `update_layer`, `delete_layer` and `batch`. Ids are UUIDv7,
+made by the client. The body is read whatever its `Content-Type`.
+
+| Status | Body | Meaning |
+|---|---|---|
+| `200` | `{ "result": { "status": "ok", "revs": [{ "id", "rev" }] }, "revision" }` | Applied. `revs` holds the new revision of every record and layer the envelope changed. |
+| `409` | the same with `"status": "conflict"` and `current`, plus `code: "annotation_conflict"` and `error` | The operation's `base_rev` is not its target's revision. `current` is the record or layer as it is (`kind`: `annotation`, `label`, `layer`), or `deleted` with its revision, or `missing`. |
+| `422` | the same with `"status": "invalid"` and `violations`, plus `code: "annotation_invalid"` and `error` | A rule was broken. Each violation has a stable `code`, a JSON Pointer `path` from the envelope, and a `detail` for a person. |
+| `422` | `{ "code": "file_key_unavailable", "error" }` | A file the envelope names has no key and cannot be given one. |
+| `400` | `{ "code": "invalid_json", "error" }` | The body is not an envelope. |
+| `413` | `{ "code": "payload_too_large", "error" }` | The body is longer than 16 MiB (16,777,216 bytes). |
+
+- **One envelope is one transaction.** It is applied whole or not at all.
+  The operations of a `batch` (1 to 10,000, none a batch) apply in order,
+  each seeing the ones before it, and the first that is refused refuses
+  them all. With `409` and `422` nothing changed.
+- **A retry is safe.** An envelope whose `op_id` was applied before answers
+  `200` with the first result and changes nothing. The viewer remembers the
+  last 65,536 applied envelopes. A refused envelope is judged again when it
+  is sent again.
+- **Revisions.** A record or layer starts at `rev` 1, whatever the payload
+  says, and each operation that changes it adds one, delete and restore
+  included. An operation's `base_rev` must be the target's `rev`. `revision`
+  in the answer is the store's own: the number of envelopes applied so far,
+  unchanged by a refusal and by a repeated `op_id`.
+- **The viewer stamps records.** `created_by`, `created_at`, `modified_by`
+  and `modified_at` are written by the viewer (`user:<USER>` of the
+  process, its clock); the values in a payload, and `actor` and `ts`, are
+  advisory.
+- **Coordinates** are stored quantized to 1/1000 pixel and must lie in
+  `[0, columns]` by `[0, rows]` of the file.
+- **Deleted records keep their id.** A delete leaves the id and its
+  revision behind: `restore_annotation` brings the record back as it was,
+  and a `create_annotation` under that id is `invalid` (`duplicate_id`).
+  A label whose value is cleared (`"after": null`) keeps its id and
+  revision the same way.
+- **Layers.** Every session has the layer `default` ("Annotations"), which
+  cannot be deleted. A layer is deleted only when it holds no annotation
+  and no label with a value; a `batch` can delete the records and the layer
+  together.
+- **File keys.** A file is named by the key its catalog entry shows
+  ([File keys](#file-keys)). The first operation for a file whose key is not
+  settled waits while the file is hashed. A key no loaded file has is
+  `invalid` with `unknown_file`. A key that was replaced (`rekeys` in the
+  catalog) still names its file, and the operation is applied under the
+  file's current key. In a masked session keys are built from masked UIDs
+  in both directions.
+- **No label schema yet.** A session has one class, `roi`, which allows
+  every geometry type, and no label fields, so every `set_label` is
+  `invalid` with `unknown_field`.
+
+Annotations are held in memory and are gone when the viewer exits. Redaction
+boxes are not annotations: no operation reads or changes them.
+
 ## Redaction Boxes
 
 Redaction boxes are rectangles of a file's frames that are withheld, drawn by
@@ -841,9 +932,10 @@ Branch on `code`; `error` is diagnostic text and may change.
 | `403` | `masked` (content a `--mask` session withholds) |
 | `404` | `not_found`, `route_not_found`, `asset_not_found`, `no_pixel_data`, `frame_out_of_range`, `overlay_not_covering_frame` |
 | `405` | `method_not_allowed` |
-| `413` | `invalid_json` (a JSON body over 2 MiB, about 200,000 ROIs in one annotation edit) |
+| `409` | `annotation_conflict` (an annotation operation based on an older revision; the body is an `AnnotationOpResponse`) |
+| `413` | `invalid_json` (a JSON body over 2 MiB, about 200,000 ROIs in one annotation edit), `payload_too_large` (an annotation operation over 16 MiB) |
 | `415` | `invalid_json` (missing `Content-Type: application/json`) |
-| `422` | `invalid_json` (valid JSON of the wrong shape), `unsupported_transfer_syntax`, `unsupported_pixel_layout` (display frames for any layout the catalog marks unsupported; raw frames for invalid geometry or numeric precision), `semantic_mapping_unavailable`, `decode_memory_exceeded` (decode estimate exceeds the budget or thumbnail share; increase `--decode-memory`) |
+| `422` | `invalid_json` (valid JSON of the wrong shape), `unsupported_transfer_syntax`, `unsupported_pixel_layout` (display frames for any layout the catalog marks unsupported; raw frames for invalid geometry or numeric precision), `semantic_mapping_unavailable`, `decode_memory_exceeded` (decode estimate exceeds the budget or thumbnail share; increase `--decode-memory`), `annotation_invalid` (an annotation operation that breaks a rule; the body is an `AnnotationOpResponse`), `file_key_unavailable` (an annotation write for a file that cannot be given a key) |
 | `500` | `pixel_decode_failed`, `internal_error` |
 | `503` | `decode_busy` (decode queue full; `Retry-After: 1`) |
 
