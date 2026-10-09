@@ -2370,3 +2370,82 @@ async fn a_legend_range_is_kept_for_its_object_and_file_set() {
     })
     .await;
 }
+
+/// A refusal is the answer to the requests that shared it and to no later
+/// one. On one viewer, an overlay refused because the viewer was busy is
+/// drawn when it is asked for again with room, and kept from then on; and
+/// after an overlay that can never fit its budget is refused, one that fits
+/// is drawn and kept, while the first is refused as before.
+#[tokio::test]
+async fn a_refused_overlay_is_not_kept_as_its_answer() {
+    finishes(async {
+        let entries = overlay_fixtures().await;
+        let overlays = overlay_requests(&entries);
+        let contexts = [DOSE, MAP].map(|object| format!("/api/file/{object}/semantic-context"));
+        // What each overlay is, from a viewer that refuses nothing.
+        let undisturbed = serve(entries.clone(), &default_scheduler(1));
+        let mut bodies = Vec::new();
+        for (path, _) in &overlays {
+            let response = undisturbed.get(path).await;
+            assert_eq!(response.status_code(), 200, "{path}: {}", response.text());
+            assert!(!response.as_bytes().is_empty(), "{path}");
+            bodies.push(response.as_bytes().clone());
+        }
+        async fn drawn_then_kept(server: &TestServer, path: &str, body: &[u8]) {
+            for cache in ["MISS", "HIT"] {
+                let response = server.get(path).await;
+                assert_eq!(response.status_code(), 200, "{path}: {}", response.text());
+                assert_eq!(response.header("x-cache"), cache, "{path}");
+                assert_eq!(response.as_bytes().as_ref(), body, "{path}");
+            }
+        }
+
+        // Busy. The legends are found first, so the overlay's own work is
+        // what is refused.
+        let scheduler = nothing_waits();
+        let server = serve(entries.clone(), &scheduler);
+        for path in &contexts {
+            legend_of(&server, path).await;
+        }
+        for ((path, _), body) in overlays.iter().zip(&bodies) {
+            let held = granted(&scheduler, Interactive, HELD_BYTES).await;
+            assert_busy(&server, path).await;
+            drop(held);
+            drawn_then_kept(&server, path, body).await;
+        }
+        idle(&scheduler).await;
+
+        // Over the budget. The overlay that reserves least fits every
+        // budget here, and so do the legends.
+        let (least, (fits, _)) = overlays
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, (_, estimate))| *estimate)
+            .expect("overlays");
+        let mut refused = 0;
+        for (path, estimate) in &overlays {
+            if *estimate == overlays[least].1 {
+                continue;
+            }
+            refused += 1;
+            let scheduler = DecodeScheduler::with_limits(2, limits(estimate - 1, 8, 8));
+            let server = serve(entries.clone(), &scheduler);
+            for round in 0..2 {
+                let response = server.get(path).await;
+                assert_eq!(response.status_code(), 422, "{path}: {}", response.text());
+                assert_eq!(
+                    response.json::<Value>()["code"],
+                    "decode_memory_exceeded",
+                    "{path}, round {round}"
+                );
+                assert!(response.maybe_header("x-cache").is_none(), "{path}");
+                if round == 0 {
+                    drawn_then_kept(&server, fits, &bodies[least]).await;
+                }
+            }
+            idle(&scheduler).await;
+        }
+        assert!(refused >= 4, "only {refused} overlays were over a budget");
+    })
+    .await;
+}
