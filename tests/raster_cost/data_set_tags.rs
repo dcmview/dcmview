@@ -9,7 +9,8 @@ use super::data_set_files::{
     PRIVATE_BLOB,
 };
 use super::data_sets::{
-    discover, elements_of, measured, report, separators, BULK, DECLARED, INFLATER_HEAP, READ_HEAP,
+    deflated_values, discover, measured, report, BULK, DECLARED, DEFLATED_HEAP, INFLATER_HEAP,
+    READ_HEAP,
 };
 use super::heap::CountedRuntime;
 use dcmview::annotations::AnnotationStore;
@@ -72,6 +73,30 @@ fn tag_cases() -> Vec<TagCase> {
             .concat(),
         )
     };
+    // Bytes after the data set are not elements of it, however many there
+    // are and whatever the data set ends with.
+    let padded = |name, bytes: usize, pixels: bool| TagCase {
+        name,
+        file: part10(
+            EXPLICIT_LE,
+            &[
+                identity("2.25.4000"),
+                image_module(2, 2),
+                if pixels {
+                    [pixel_data(&[1, 2, 3, 4]), trailer.clone()].concat()
+                } else {
+                    Vec::new()
+                },
+                vec![0; bytes],
+            ]
+            .concat(),
+        ),
+        shows: Vec::new(),
+        last: if pixels { TRAILER } else { "(0028,0103)" },
+        bytes: 64 * KIB,
+        heap: READ_HEAP,
+        listed: false,
+    };
     let case = |name, file, shows, last, listed| TagCase {
         name,
         file,
@@ -82,6 +107,14 @@ fn tag_cases() -> Vec<TagCase> {
         listed,
     };
     vec![
+        padded("4 bytes of padding behind the pixel data", 4, true),
+        padded("6 bytes of padding behind the pixel data", 6, true),
+        padded("8 bytes of padding behind the pixel data", 8, true),
+        padded("37 bytes of padding behind the pixel data", 37, true),
+        padded("4 bytes of padding and no pixel data", 4, false),
+        padded("6 bytes of padding and no pixel data", 6, false),
+        padded("8 bytes of padding and no pixel data", 8, false),
+        padded("37 bytes of padding and no pixel data", 37, false),
         // Pixel data and what follows it are described from headers.
         case(
             "native pixel data and a trailing element",
@@ -112,16 +145,16 @@ fn tag_cases() -> Vec<TagCase> {
             TRAILER,
             true,
         ),
-        // Bytes after the data set are not elements of it.
+        // A well-formed element is listed wherever it stands.
         case(
-            "padding after the data set",
+            "an element of a lower tag behind the pixel data",
             large_image(
                 &[],
-                pixel_data(&samples),
-                &[trailer.clone(), vec![0; 37]].concat(),
+                pixel_data(&[1, 2, 3, 4]),
+                &element(Tag(0x0009, 0x1012), "LO", b"BEHIND"),
             ),
-            vec![(TRAILER, text("TRAILER"))],
-            TRAILER,
+            vec![(PIXEL_DATA, binary(8))],
+            PIXEL_DATA,
             true,
         ),
         // Sequences nested past the limit end the tree where they are.
@@ -265,6 +298,9 @@ fn a_tag_read_holds_no_value_it_shows_by_its_length() {
             )
         });
         let last = tree.last().expect("a data set with elements");
+        if case.name.starts_with("an element of a lower tag") {
+            assert!(tree.contains(&Tag(0x0009, 0x1012)), "{}", case.name);
+        }
         assert_ne!(
             tree.first(),
             Some(&Tag(0, 0)),
@@ -292,28 +328,26 @@ fn a_tag_read_holds_no_value_it_shows_by_its_length() {
             case.heap
         );
     }
-    // A deflated data set whose strings split into more values than its
-    // budget covers has no tree, whichever extent is read, and the read
-    // that says so holds no more than the budget.
-    let splitting = image(DEFLATED_LE, &elements_of(256, "LO", &separators()), &[]);
-    for extent in [TagExtent::BeforePixelData, TagExtent::Whole] {
-        let (failed, cost) = measured(
-            &splitting,
-            |source, length| read_for_tags(source, length, extent),
-            |read| read.is_err(),
-        );
-        report(|| {
-            format!(
-                "tags     strings of separators, {extent:?}: {} held",
+    // A deflated data set whose values would hold more than its budget
+    // has no tree, whichever extent is read; an honest one that looks like
+    // it has; and neither read holds more than the budget allows.
+    for values in deflated_values() {
+        let file = image(DEFLATED_LE, &values.elements, &[]);
+        for extent in [TagExtent::BeforePixelData, TagExtent::Whole] {
+            let (shown, cost) = measured(
+                &file,
+                |source, length| read_for_tags(source, length, extent),
+                |read| read.is_ok(),
+            );
+            let context = format!("{}, {extent:?}", values.name);
+            report(|| format!("tags     {context:<60} {:>9} held", cost.heap));
+            assert_eq!(shown, values.shown, "{context}");
+            assert!(
+                cost.heap <= DEFLATED_HEAP,
+                "{context}: {} bytes of heap held, at most {DEFLATED_HEAP}",
                 cost.heap
-            )
-        });
-        assert!(failed, "{extent:?}: strings of nothing but separators");
-        assert!(
-            cost.heap <= DATA_SET_INFLATED_BUDGET_BYTES,
-            "{extent:?}: {} bytes of heap held",
-            cost.heap
-        );
+            );
+        }
     }
 
     let listed: Vec<_> = cases.iter().filter(|case| case.listed).collect();

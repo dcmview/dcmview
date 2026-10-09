@@ -19,8 +19,8 @@ use super::data_set_files::{
 use super::heap;
 use super::raster_files::CountedFile;
 use dcmview::data_set::{
-    read_for_catalog, DATA_SET_INFLATED_BUDGET_BYTES, DATA_SET_INFLATED_ELEMENT_CHARGE_BYTES,
-    DATA_SET_MAX_DEPTH, DATA_SET_VALUE_MAX_BYTES,
+    read_for_catalog, DATA_SET_CATALOG_MAX_VALUES, DATA_SET_INFLATED_BUDGET_BYTES,
+    DATA_SET_INFLATED_ELEMENT_CHARGE_BYTES, DATA_SET_MAX_DEPTH, DATA_SET_VALUE_MAX_BYTES,
 };
 use dcmview::loader::{self, DiscoverOptions, DiscoveryReason, FormatSelection};
 use dcmview::types::FileEntry;
@@ -146,9 +146,96 @@ fn empty_elements(count: u32) -> Vec<u8> {
     elements_of(count, "LO", &[])
 }
 
-/// A string of nothing but separators: one empty value for every byte.
-pub(super) fn separators() -> Vec<u8> {
-    vec![b'\\'; 65_534]
+/// What a read of a deflated data set may hold: its budget, the two
+/// buffers a value passes through on its way in, and what any read holds.
+pub(super) const DEFLATED_HEAP: u64 = DATA_SET_INFLATED_BUDGET_BYTES
+    + 2 * DATA_SET_VALUE_MAX_BYTES as u64
+    + READ_HEAP
+    + INFLATER_HEAP;
+
+/// A deflated data set whose values hold more, once read, than their
+/// bytes, or look as if they might.
+pub(super) struct DeflatedValues {
+    pub(super) name: String,
+    /// The elements, which go before the image module.
+    pub(super) elements: Vec<u8>,
+    /// Whether the catalog read accepts the file.
+    pub(super) listed: bool,
+    /// Whether the tag read has a tree for it.
+    pub(super) shown: bool,
+}
+
+/// Files that would hold many times the budget if a value were charged its
+/// bytes alone, which no read may accept without passing those values
+/// over, and honest files that look like them, which every read accepts.
+pub(super) fn deflated_values() -> Vec<DeflatedValues> {
+    let limit = DATA_SET_VALUE_MAX_BYTES as usize;
+    let case = |name: &str, elements: Vec<u8>, listed, shown| DeflatedValues {
+        name: format!("deflated, {name}"),
+        elements,
+        listed,
+        shown,
+    };
+    let mut cases = vec![
+        // The most values the catalog keeps of one string, in many strings.
+        case(
+            "strings split into values",
+            elements_of(
+                4_000,
+                "LO",
+                &vec![b'\\'; DATA_SET_CATALOG_MAX_VALUES as usize - 1],
+            ),
+            false,
+            false,
+        ),
+        // More values than the catalog keeps: it passes them over.
+        case(
+            "strings of nothing but separators",
+            elements_of(256, "LO", &vec![b'\\'; 65_534]),
+            true,
+            false,
+        ),
+        case(
+            "lists of tags",
+            elements_of(1_500, "AT", &vec![0; 65_532]),
+            false,
+            false,
+        ),
+        // Honest values of the same kinds.
+        case(
+            "one long plain string",
+            element(PRIVATE_BLOB, "UC", &vec![b'a'; limit]),
+            true,
+            true,
+        ),
+        case(
+            "long lists of numbers",
+            elements_of(80, "DS", &b"123.4567\\".repeat(7_281)),
+            true,
+            true,
+        ),
+    ];
+    // Text of bytes that decode to more than themselves, with and without
+    // a character set that says how.
+    for character_set in [None, Some("ISO_IR 166"), Some("ISO_IR 13"), Some("GB18030")] {
+        let declared = character_set.map_or(Vec::new(), |name| {
+            element(tags::SPECIFIC_CHARACTER_SET, "CS", name.as_bytes())
+        });
+        let name = character_set.unwrap_or("no character set");
+        for (vr, length, count) in [("UT", limit, 20), ("LO", 65_534, 1_500)] {
+            cases.push(case(
+                &format!("{vr} text of high bytes in {name}"),
+                [
+                    declared.clone(),
+                    elements_of(count, vr, &vec![0xa1; length]),
+                ]
+                .concat(),
+                false,
+                false,
+            ));
+        }
+    }
+    cases
 }
 
 fn catalog_cases() -> Vec<CatalogCase> {
@@ -189,7 +276,7 @@ fn catalog_cases() -> Vec<CatalogCase> {
     overlay.heap = READ_HEAP + 3 * BULK as u64;
     overlay.keeps = Some((OVERLAY_DATA, BULK));
 
-    vec![
+    let mut cases = vec![
         before("an honest image", Vec::new(), Image),
         // A value the file does not hold is never allocated.
         before(
@@ -357,16 +444,6 @@ fn catalog_cases() -> Vec<CatalogCase> {
             let bytes = case.bytes;
             case.costing(bytes, budget + limit as u64)
         },
-        // A string is charged for every value it splits into.
-        {
-            let case = deflated(
-                "deflated, strings of nothing but separators",
-                elements_of(256, "LO", &separators()),
-                Refused,
-            );
-            let bytes = case.bytes;
-            case.costing(bytes, budget)
-        },
         deflated(
             "deflated, a bulk value within the budget",
             element(PRIVATE_BLOB, "OB", &vec![0; budget as usize / 2]),
@@ -408,7 +485,15 @@ fn catalog_cases() -> Vec<CatalogCase> {
             let bytes = case.bytes;
             case.costing(bytes, budget)
         },
-    ]
+    ];
+    cases.extend(deflated_values().into_iter().map(|values| {
+        let name: &'static str = Box::leak(values.name.into_boxed_str());
+        let expected = if values.listed { Image } else { Refused };
+        let case = deflated(name, values.elements, expected);
+        let bytes = case.bytes;
+        case.costing(bytes, DEFLATED_HEAP)
+    }));
+    cases
 }
 
 /// Runs the production loader over `files` and returns the entries it
