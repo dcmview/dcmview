@@ -180,6 +180,7 @@ impl ThumbnailSource {
 pub enum ApiMethod {
     Get,
     Put,
+    Post,
 }
 
 impl ApiMethod {
@@ -187,6 +188,7 @@ impl ApiMethod {
         match self {
             Self::Get => "GET",
             Self::Put => "PUT",
+            Self::Post => "POST",
         }
     }
 }
@@ -422,6 +424,11 @@ pub mod endpoints {
         CSV_MEDIA_TYPE,
         ResponseHeaders::Export,
     );
+    /// One annotation operation: the body is one `OpEnvelope` of the
+    /// annotation model as JSON, at most [`super::ANNOTATION_OP_MAX_BYTES`]
+    /// long, and the answer is an `AnnotationOpResponse`. See that type for
+    /// the statuses.
+    pub const ANNOTATION_OPS: Endpoint = json("annotationOps", ApiMethod::Post, "/annotations/ops");
 
     /// The endpoints that decode or render pixels under the decode memory
     /// budget (`pixels::DecodeScheduler`). Each may answer
@@ -472,6 +479,7 @@ pub mod endpoints {
         FILE_REDACTIONS_UPDATE,
         FILE_REDACTIONS_APPLY_TO_SERIES,
         ANNOTATIONS_EXPORT,
+        ANNOTATION_OPS,
     ];
 }
 
@@ -1430,6 +1438,23 @@ pub enum ApiErrorCode {
     DecodeMemoryExceeded,
     /// Content a masked session (`--mask`) withholds.
     Masked,
+    /// An annotation operation was based on a revision its target has left.
+    /// Status 409, on `endpoints::ANNOTATION_OPS` only, in an
+    /// [`AnnotationOpResponse`] whose `result` holds the current state.
+    /// Nothing was applied.
+    AnnotationConflict,
+    /// An annotation operation broke a rule of the annotation model or of
+    /// the store. Status 422, on `endpoints::ANNOTATION_OPS` only, in an
+    /// [`AnnotationOpResponse`] whose `result` lists the violations.
+    /// Nothing was applied.
+    AnnotationInvalid,
+    /// An annotation write named a file that has no key and cannot be given
+    /// one: its bytes, or those of the first file loaded with its SOP
+    /// Instance UID, could not be read or have changed since discovery
+    /// (`FileSummary::key_error`). Status 422. Nothing was written.
+    FileKeyUnavailable,
+    /// A request body longer than its endpoint reads. Status 413.
+    PayloadTooLarge,
     /// The request lacks the session's bearer token. Status 401 with
     /// `WWW-Authenticate:` [`UNAUTHORIZED_CHALLENGE`]. Answered for every
     /// path under [`API_PREFIX`], declared or not, before routing.
@@ -1441,6 +1466,47 @@ pub enum ApiErrorCode {
 pub struct ErrorResponse {
     pub code: ApiErrorCode,
     pub error: String,
+}
+
+/// The longest body `endpoints::ANNOTATION_OPS` reads, in bytes: the
+/// annotation model's bound on one operation envelope, 16,777,216.
+pub const ANNOTATION_OP_MAX_BYTES: usize = dcmview_annotation::limits::MAX_ENVELOPE_BYTES;
+
+/// The answer to one annotation operation (`endpoints::ANNOTATION_OPS`).
+///
+/// | Status | `result.status` | `code` | Meaning |
+/// |---|---|---|---|
+/// | 200 | `ok` | absent | Applied, or applied earlier under the same `op_id`: `result.revs` holds the new revision of every record and layer it changed. |
+/// | 409 | `conflict` | `annotation_conflict` | `result.current` is what the operation should have been based on. |
+/// | 422 | `invalid` | `annotation_invalid` | `result.violations` says which rules were broken. |
+///
+/// An envelope is applied whole or not at all, a `batch` included, so with
+/// 409 and 422 nothing changed. The two refusals are also error envelopes:
+/// they carry `code` and `error` as an `ErrorResponse` does.
+///
+/// Any other failure is a plain `ErrorResponse`: 400 `invalid_json` for a
+/// body that is not an envelope, 413 `payload_too_large`, 422
+/// `file_key_unavailable`.
+///
+/// Every file key in the request and in `result` is in the form this
+/// session sends keys (`FileSummary::file_key`): a masked session reads and
+/// writes keys built from masked UIDs.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct AnnotationOpResponse {
+    /// The annotation model's `ApplyResult`
+    /// (`frontend/src/generated/annotation-types.ts`).
+    #[ts(type = "ApplyResult")]
+    pub result: dcmview_annotation::ApplyResult,
+    /// The store's revision after this request: the number of envelopes it
+    /// has applied. It rises by one for each envelope that changed
+    /// something, and is unchanged by a refusal and by a repeated `op_id`.
+    pub revision: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub code: Option<ApiErrorCode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]

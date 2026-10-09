@@ -390,6 +390,24 @@ pub const NEEDS_LINKED_SOURCE: [Endpoint; 6] = [
     endpoints::FILE_GRAPHIC_ANNOTATIONS,
 ];
 
+/// An annotation operation that any session applies, any number of times:
+/// it creates a layer under an id of its own, and names no file.
+pub fn new_layer_envelope() -> serde_json::Value {
+    serde_json::json!({
+        "op_id": dcmview_annotation::new_id(),
+        "actor": "user:test",
+        "ts": "2026-10-09T00:00:00.000Z",
+        "op": {
+            "type": "create_layer",
+            "layer": {
+                "id": format!("layer-{}", dcmview_annotation::new_id().simple()),
+                "name": "Second reader",
+                "kind": "user",
+            },
+        },
+    })
+}
+
 /// A well-formed request for `endpoint` with its declared method, for the
 /// file at `index`, frame 0.
 pub fn endpoint_request(server: &TestServer, endpoint: &Endpoint, index: &str) -> TestRequest {
@@ -405,5 +423,6 @@ pub fn endpoint_request(server: &TestServer, endpoint: &Endpoint, index: &str) -
     match endpoint.method {
         ApiMethod::Get => server.get(&path),
         ApiMethod::Put => server.put(&path).json(&EmbedRoiAnnotations::empty()),
+        ApiMethod::Post => server.post(&path).json(&new_layer_envelope()),
     }
 }
