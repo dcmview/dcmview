@@ -1131,8 +1131,10 @@ the same component (`docs/design/image-formats.md` section 8).
   directory reached twice never read again, 4,096 bytes read of one value,
   a compressed chunk inflated to 64 KiB at most, the first 64 KiB of a
   profile, and offsets checked against the file's real length (an EXIF
-  block's against the block). Image data is stepped over by seeking and
-  never read; a JPEG is walked to its first scan. One read holds at most
+  block's against the block). Image data is stepped over by seeking; a
+  JPEG is walked to its first scan, and the 36 bytes read at each of its
+  markers take in, at the start of that scan, the scan header and the
+  first entropy-coded bytes, which are not looked at. One read holds at most
   2 MiB of heap. Reading never fails and never panics: damage and limits
   become notes (`RasterTagNote`), which are fixed words and never hold a
   byte of the file, and the rest of the tree is still shown.

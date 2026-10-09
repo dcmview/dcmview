@@ -252,13 +252,20 @@ impl fmt::Display for RasterTagNote {
 ///   that would pass it is not issued.
 /// - **Reads.** At most [`RASTER_TAGS_MAX_READS`] issued to `source`. A read
 ///   past it is refused before it reaches `source`.
-/// - **Pixels are never read.** A PNG's `IDAT` payloads, a JPEG's
-///   entropy-coded data, a WebP's image chunks and a TIFF's strips and tiles
-///   are stepped over by seeking, which costs nothing: only chunk and
-///   segment headers, directories and the values shown are read. A walk
-///   names the bytes it needs (`Reader::read_span`) where a whole buffer of
-///   read-ahead would fetch image data instead. A JPEG is walked to its
-///   first start-of-scan marker and no further.
+/// - **Image data is stepped over.** A PNG's `IDAT` payloads, a WebP's
+///   image chunks and a TIFF's strips and tiles are stepped over by
+///   seeking, which costs nothing: only chunk headers, directories and the
+///   values shown are read. A walk names the bytes it needs
+///   (`Reader::read_span`) where a whole buffer of read-ahead would fetch
+///   image data instead. A JPEG is walked to its first start-of-scan
+///   marker and no further, and at each marker 36 bytes are read (fewer at
+///   the end of the file): the marker, the segment's length and the 32
+///   bytes after them, where an application segment's identifier lies. So
+///   the first 32 bytes of every segment before the scan are read, and at
+///   the start-of-scan marker the 34 bytes after it, which are the scan
+///   header and the first bytes of entropy-coded data; those are read and
+///   not looked at. Nothing more of a scan is read, and no pixel is
+///   decoded.
 /// - **Nodes.** At most [`RASTER_TAGS_MAX_NODES`], at most
 ///   [`RASTER_TAGS_MAX_DEPTH`] deep.
 /// - **Text.** One value shows at most [`RASTER_TAG_TEXT_MAX_CHARS`]

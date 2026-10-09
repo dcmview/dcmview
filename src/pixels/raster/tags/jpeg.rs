@@ -14,8 +14,12 @@ pub(super) fn read(w: &mut Walk<'_, '_>) {
     let mut offset = 2;
     let (mut jfif, mut adobe, mut frame) = (false, false, false);
     while offset < w.length && !w.stopped() {
-        // One small lookahead per marker, including the identifiers needed
-        // to decide whether an application segment is metadata we show.
+        // One read of 36 bytes per marker (fewer at the end of the file):
+        // the marker, the segment's length and its first 32 bytes, enough
+        // for the identifier that says whether an application segment is
+        // metadata we show. It is read before the marker is known, so at
+        // the start-of-scan marker it takes in the scan header and the
+        // first entropy-coded bytes after it, which are not looked at.
         let Some(head) = w.read(offset, (w.length - offset).min(36), part) else {
             return;
         };
