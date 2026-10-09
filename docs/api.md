@@ -197,6 +197,14 @@ of its own; so does a file of the group that could not be read when the key
 was settled. The key an entry or `X-File-Key` shows is the key as it
 stands and may not be settled yet.
 
+A `file_key: null` does not always mean a digest is on its way. When the
+first file that carries the UID cannot be read after its key was returned,
+a copy found afterwards has been read but cannot be compared: its entry
+shows `file_key: null` with no `key_error` of its own while `keys_hashing`
+is 0, and stays so for the rest of the session unless a later key request
+reads the first file. The `key_error` is on the first file's entry, which
+keeps its key.
+
 `key_error`, when present, is `unreadable` or `changed`. `changed` means the
 file is not the one discovery saw: its length or its modification time
 differs, or it changed while it was read. A file rewritten with other bytes
