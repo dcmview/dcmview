@@ -13,6 +13,15 @@ use ts_rs::TS;
 /// 12). Any change to the syntax [`FileKey::parse`] accepts, or to how a key
 /// is derived from a file, raises it, because stored records are addressed by
 /// key.
+///
+/// How a key is derived includes how the SOP Instance UID is read from the
+/// file, since two programs that read it differently build different keys
+/// for one file. Under rules 1 it is the data set's (0008,0018), as text:
+/// the first value when a backslash separates several, without the NUL or
+/// spaces that pad it and without surrounding white space, and otherwise
+/// exactly as written. That value is the `uid` of `sop:<uid>` when
+/// [`FileKey::is_sop_uid`] accepts it; a file whose value it refuses, or
+/// that has none, is keyed by content.
 pub const KEY_RULES: u32 = 1;
 
 /// A string that is not a well-formed value of the type it was parsed as.
@@ -72,9 +81,7 @@ impl FileKey {
             return Err(invalid("file key"));
         }
         let valid = if let Some(uid) = text.strip_prefix("sop:") {
-            !uid.is_empty()
-                && uid.len() <= crate::limits::MAX_SOP_UID_BYTES
-                && uid.bytes().all(id_byte)
+            Self::is_sop_uid(uid)
         } else if let Some(digest) = text.strip_prefix("b3:") {
             digest.len() == 64
                 && digest
@@ -88,6 +95,15 @@ impl FileKey {
         } else {
             Err(invalid("file key"))
         }
+    }
+
+    /// Whether `sop:<uid>` is a file key: `uid` is 1 to 128 bytes
+    /// ([`crate::limits::MAX_SOP_UID_BYTES`]), each an ASCII letter, a
+    /// digit, `.`, `-` or `_`. True exactly when [`FileKey::sop`] succeeds,
+    /// and it builds nothing, so code that only has to know whether a file
+    /// gets a UID key (once per file of a scan) does not pay for the string.
+    pub fn is_sop_uid(uid: &str) -> bool {
+        !uid.is_empty() && uid.len() <= crate::limits::MAX_SOP_UID_BYTES && uid.bytes().all(id_byte)
     }
 
     /// The key `sop:<uid>` for a SOP Instance UID. Fails exactly when

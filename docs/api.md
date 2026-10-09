@@ -27,8 +27,8 @@ Keep the listener on loopback and use SSH forwarding for remote work: plain
 HTTP does not encrypt bearer headers or DICOM data.
 
 For scripts, start with `dcmview --no-browser --startup-json ./study_dir`.
-Its `server_started` JSON line provides `base_url`, `token`, and `protocol`,
-along with the launch `url`. In another shell, paste that JSON line when
+Its `server_started` JSON line provides `base_url`, `token`, `protocol`, and
+`key_rules` (the file-key rules version), along with the launch `url`. In another shell, paste that JSON line when
 `read` waits, then request the API (requires `jq` and `curl`):
 
 ```bash
@@ -91,14 +91,14 @@ and redirects the bare prefix to its trailing-slash form.
 | Method | Path | Success response |
 |---|---|---|
 | GET | `/health` | `HealthResponse`: `status: "ok"`, viewer name/version/build identity, `file_count`, `server_start_ms`, `masked`. |
-| GET | `/files` | `FilesResponse`: file summaries plus scan progress. |
+| GET | `/files` | `FilesResponse`: file summaries plus scan progress. Query: `since`, `limit`. |
 | GET | `/series` | `SeriesCatalogResponse`: logical series and ordered frame stacks. |
 | GET | `/file/{index}/info` | `FrameInfo` for one file. |
 | GET | `/file/{index}/references` | `ReferenceCatalogResponse`: declared DICOM relationships and their local matches. |
 | GET | `/file/{index}/semantic-context` | `SemanticContextResponse`: SEG, Parametric Map, RT Dose, or softcopy presentation state context, or `not_applicable`. |
-| GET | `/file/{index}/frame/{frame}` | Display frame as `image/png`, with `X-Cache` and, for linearly windowed frames, `X-Frame-Window-Center`/`X-Frame-Window-Width`. Query: `wc`, `ww`, `mode`, `unit`, `preview`. |
+| GET | `/file/{index}/frame/{frame}` | Display frame as `image/png`, with `X-Cache`, `X-File-Key` when resolved, and, for linearly windowed frames, `X-Frame-Window-Center`/`X-Frame-Window-Width`. Query: `wc`, `ww`, `mode`, `unit`, `preview`. |
 | GET | `/file/{index}/frame/{frame}/thumbnail` | Small `image/jpeg` preview, with `X-Cache`, `X-Thumbnail-Source` and `Cache-Control: no-store`. Query: `size`, `window_mode`. |
-| GET | `/file/{index}/frame/{frame}/raw` | Decoded samples as `application/octet-stream`, with `X-Cache` and `X-Frame-*` metadata headers. |
+| GET | `/file/{index}/frame/{frame}/raw` | Decoded samples as `application/octet-stream`, with `X-Cache`, `X-File-Key` when resolved, and `X-Frame-*` metadata headers. |
 | GET | `/file/{index}/frame/{frame}/raw/pixel?row=&column=` | One pixel of the raw frame as a 1x1 raw frame: its stored samples in color-by-pixel order (planar and subsampled YBR_FULL_422 resolved), with the same headers. `400` outside the frame. |
 | GET | `/file/{index}/frame/{frame}/presentation-layer` | The display shutter fill and overlay graphics of a grayscale display frame as an RGBA `image/png` of the frame's size, opaque gray where drawn and transparent elsewhere (fully transparent without a shutter or overlay), with `X-Cache`. |
 | GET | `/file/{index}/frame/{frame}/segmentation-overlay` | Transparent source-sized SEG mask as `image/png`, with `X-Cache`. |
@@ -162,6 +162,116 @@ now let a client reproduce every one, so it is always `true` and
 grayscale display frames carry a display shutter or overlay graphics; neither
 depends on the window, so `presentation-layer` drawn over a frame windowed in
 the browser gives exactly the display frame for that window.
+
+### File keys
+
+Every file has a session-scoped identity independent of its discovery index.
+`file_key` has three states:
+
+| Value | Meaning |
+|---|---|
+| Left out | The key is `sop:` followed by the entry's `sop_instance_uid`. Ordinary DICOM entries need no extra member. |
+| `null` | No key is available yet; the file needs a whole-file digest. |
+| A string | The file's explicit key. |
+
+Keys are at most 132 bytes: `sop:<uid>` has a body of 1–128 ASCII letters,
+digits, `.`, `-` or `_`, taken as written; `b3:<digest>` has the full BLAKE3
+digest of the stored file bytes, as 64 lowercase hex characters. A masked
+session builds `sop:` keys from masked UIDs and accepts only that shown form;
+`b3:` keys are sent unchanged.
+
+A `sop:` key is built from the data set's SOP Instance UID (0008,0018), not
+from the Media Storage SOP Instance UID of the file meta. Discovery reads it
+as text and takes the first value when the element holds several separated
+by a backslash, without the NUL or spaces that pad the value and without
+surrounding white space. What is left is used as written, with no case
+folding and no other normalisation, when it is 1 to 128 of the characters
+above; a missing element, an empty value and any other value give the file a
+`b3:` key. Tooling that computes keys for the same files has to read the UID
+the same way to arrive at the same key: this reading is part of the rules
+`key_rules` versions.
+
+`alias_of`, when present, is the index of the first entry that held the same
+key. Files with the same UID and length provisionally share a key; their
+bytes are compared only when a caller needs a settled key. The file asked
+about and the first file with the UID are read first. If they differ, each
+file of the group takes its content key: the two that were read at once,
+the others when they are viewed or asked about, and until then an existing
+UID key remains, except that a failed digest removes it. If they agree,
+every other file with that UID is read, whichever of them the caller asked
+about, and the UID key is settled when all agree. If the first file with
+the UID cannot be read, there is nothing to compare the others with: no
+file gets the UID key settled while that lasts, a request that needs a key
+fails with the first file's `key_error`, and the keys shown stay as they
+were. Each such request tries the first file again. The one exception is
+two other files of the group that were both asked about and differ from
+each other: they cannot both be the first file's image, so the group takes
+content keys as it would have with the first file read, and the first file
+has `file_key: null` until it can be read.
+
+A settled key is final: every `b3:` key, and a `sop:` key once it has been
+returned for a write or an export. It stays the file's key for the rest of
+the session and is never replaced. A file with the same UID that is found
+afterwards has `file_key: null` until it has been compared with the first
+file that carries the UID, and then shares the key or takes a content key
+of its own; so does a file of the group that could not be read when the key
+was settled. The key an entry or `X-File-Key` shows is the key as it
+stands and may not be settled yet.
+
+A `file_key: null` does not always mean a digest is on its way. When the
+first file that carries the UID cannot be read after its key was returned,
+a copy found afterwards has been read but cannot be compared: its entry
+shows `file_key: null` with no `key_error` of its own while `keys_hashing`
+is 0, and stays so for the rest of the session unless a later key request
+reads the first file. The `key_error` is on the first file's entry, which
+keeps its key.
+
+`key_error`, when present, is `unreadable` or `changed`. `changed` means the
+file is not the one discovery saw: its length or its modification time
+differs, or it changed while it was read. A file rewritten with other bytes
+of the same length is recognised by its modification time alone. A later
+explicit key request retries a failed digest.
+
+Discovery performs no reads for keys. A file needing a digest starts hashing
+in the background after its first successful display or raw frame, or when a
+caller explicitly requests its settled key. That holds for an image file as
+for a DICOM file without a usable UID: its frames decode like any other, the
+first one served starts its hashing, and later ones carry its key. Thumbnails, pixel probes and
+frames that fail do not start hashing and carry no `X-File-Key`.
+Display and raw frame responses include `X-File-Key` once a key is available;
+the frame response never waits for hashing. The current viewer needs no change.
+
+### Catalog revisions
+
+`revision` starts at 0 and rises once for every inserted entry or change to
+its `file_key`, `alias_of` or `key_error`. A plain `/api/files` request returns
+all entries in index order. `since=<revision>` returns entries inserted or
+updated after that revision, each as it stands now, least recently changed
+first. `limit=<count>` caps the page; with `limit` alone, `since` defaults to
+0. A zero limit returns `400 invalid_query`.
+
+`more: true` means entries remain, and the returned `revision` is the cursor
+for the next page. Otherwise it is the current catalog revision. An entry
+updated during paging can appear again; replace the client's entry at that
+index. A `since` greater than the current catalog revision returns
+`reset: true` and starts from 0, so the client can rebuild its catalog.
+Otherwise `reset` is false. `keys_hashing` counts queued files plus the file
+currently being hashed. Key changes can arrive after `scan_complete`.
+
+One response is one moment of the catalog: its entries, `scan_complete`,
+the counters, `discovery` and `keys_hashing` are read together. A response
+with `scan_complete: true` lists every file the scan found, and a file that
+is queued for hashing when the entries are read is counted.
+
+`rekeys` contains replacements after the requested cursor and through the
+returned revision, oldest first. Each has `revision`, `index`, `old_key` and
+`new_key`; a file replaces its key at most once, a `sop:` key by a `b3:`
+key, and never once the key has been settled. The replacement takes the
+revision of its changed entry. A plain request includes all replacements.
+An old key continues to name its first holder for the rest of the session,
+which can be another file than `index`: apply a replacement to what is held
+for the file `index`, not to everything held under `old_key`.
+Existing clients may keep requesting the full catalog without a cursor.
 
 ### Raster image summaries
 
@@ -725,7 +835,12 @@ Branch on `code`; `error` is diagnostic text and may change.
 | `503` | `decode_busy` (decode queue full; `Retry-After: 1`) |
 
 A failed decode affects only that request; the server keeps running, and logs
-the failure (with the request) to stderr. A file deleted or moved after
+the failure (with the request) to stderr. A compressed frame whose pixel data
+declares a different image than the file's header (another size, component
+count or sample depth, or a tile, packet or scan structure beyond the fixed
+limits) is such a failure: `500 pixel_decode_failed` with "pixel data
+disagrees with the header" in the message, on every endpoint that decodes
+the frame. The file stays listed and its other frames decode. A file deleted or moved after
 discovery answers `404 not_found` naming its path.
 
 JSON, CSV and the viewer's scripts and styles are gzip-compressed for clients

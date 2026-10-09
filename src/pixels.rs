@@ -1,5 +1,6 @@
 mod admission;
 mod cache;
+pub mod codestream;
 mod color;
 mod colorwash;
 mod deflated_frame;

@@ -153,8 +153,7 @@ async fn scan(
 fn record_event(event: loader::DiscoveryEvent, registry: &FileRegistry) {
     match event {
         loader::DiscoveryEvent::Selected { file, record } => {
-            registry.record_discovery(record);
-            registry.insert(*file);
+            registry.record_selected(*file, record);
         }
         loader::DiscoveryEvent::SkippedInput(record)
         | loader::DiscoveryEvent::FilteredInput(record) => registry.record_discovery(record),

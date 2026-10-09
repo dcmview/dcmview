@@ -21,13 +21,17 @@ diagnostic viewer.
 
 ### Added
 
+- Catalog entries carry stable session file keys through `file_key`,
+  `alias_of` and `key_error`. `GET /api/files` accepts `since` and `limit`
+  and reports `revision`, `reset`, `more`, `keys_hashing` and `rekeys`.
+  Display and raw frames carry `X-File-Key` when available, and the startup
+  JSON line reports `key_rules`. Existing clients need no change.
 - Raster metadata in the Metadata panel and `/tags`: PNG, JPEG, TIFF and
   WebP container fields, EXIF and TIFF directories with GPS, text chunks,
   comments, XMP and ICC profile descriptions. `/tags/select` accepts paths
   such as `EXIF/GPS/0x0002`. Values are escaped and limited, and TIFF trees
   show the first 16 pages. In a `--mask` session only values describing the
   pixel grid are shown; dates are masked, not shifted.
-
 - `--decode-memory BYTES` sets a separate budget for decodes in progress,
   with a 256 MiB minimum. Without it the budget is a quarter of the
   machine's physical memory, from 1 GiB to 4 GiB (4 GiB on Windows and
@@ -121,6 +125,28 @@ diagnostic viewer.
 - `--cache-budget BYTES` now also covers the thumbnail cache, and its default
   total is 768 MiB instead of 704 MiB: 256, 384, 64 and 64 MiB for the
   display, raw, overlay and thumbnail caches respectively.
+
+### Fixed
+
+- A compressed DICOM frame whose pixel data declares a different image than
+  the file's header is now refused instead of being decoded at the size the
+  pixel data declares. Before, a small file could make the viewer hold
+  gigabytes of memory for one frame, and a JPEG frame larger than its header
+  ended in an internal error. This affected 0.4.0 and earlier, for JPEG,
+  JPEG-LS, JPEG 2000 and JPEG XL frames and for Deflated Image Frame
+  Compression. Such a frame now answers `500 pixel_decode_failed` with
+  "pixel data disagrees with the header"; the file stays listed and its
+  other frames display. Compared are rows, columns, samples per pixel and
+  the sample depth against Bits Allocated, and the frame's tile, packet and
+  scan structure against fixed limits (4,096 tiles, 100 scans). Files that
+  differ from their header only in Bits Stored, sign, colour transform,
+  resolution levels or chroma subsampling display as before.
+- A JPEG 2000 frame stored as a JP2 file is decoded from its codestream
+  alone: a palette or channel definition in the file's other boxes is no
+  longer applied.
+- A JPEG XL frame with an alpha channel, floating-point samples, more bits
+  than Bits Allocated, or an animation is refused; so is an 8-bit JPEG frame
+  under a 16-bit header, which was displayed as noise.
 
 ## 0.4.0 - 2026-10-08
 

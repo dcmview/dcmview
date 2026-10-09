@@ -290,6 +290,14 @@ class CheckRunner:
 			env=env,
 		)
 
+	def timing(self) -> None:
+		"""Time startup and discovery of this checkout against the released baseline."""
+		self.build_frontend()
+		run(
+			"Time startup and discovery against the released baseline",
+			[self.python, "scripts/startup_timing.py", "run", "--enforce"],
+		)
+
 	def remote_wheel(self) -> Path:
 		"""The manylinux wheel the remote profiles test: named, or built here."""
 		wheel = os.environ.get("DCMVIEW_REMOTE_WHEEL")
@@ -442,6 +450,7 @@ def parse_args() -> argparse.Namespace:
 			"smoke",
 			"compatibility-artifact",
 			"corpus",
+			"timing",
 			"core",
 			"e2e",
 			"external",
@@ -482,6 +491,7 @@ def main() -> int:
 		"smoke": runner.smoke,
 		"compatibility-artifact": runner.compatibility_artifact,
 		"corpus": runner.prepared_corpus,
+		"timing": runner.timing,
 		"core": runner.core,
 		"e2e": runner.e2e,
 		"external": runner.external,

@@ -47,6 +47,13 @@ remote-fixtures = ["dep:dicom-test-files"]
 [dependencies]
 # Launch and startup contract, re-exported by src/api/contracts.rs
 dcmview-protocol = { path = "crates/dcmview-protocol" }
+# File keys (`FileKey`, `KEY_RULES`); the rest of the model is not used here
+dcmview-annotation = { path = "crates/dcmview-annotation" }
+# Whole-file digests behind `b3:` file keys (docs/design/annotation-model.md
+# 1.3). CC0-1.0 OR Apache-2.0. `std` only: no memory mapping and no rayon,
+# because a file is hashed in bounded slices on the blocking pool. The crate
+# builds its SIMD code with `cc`, the compiler the JPEG-LS decoder needs.
+blake3 = { version = "1.8", default-features = false, features = ["std"] }
 
 # DICOM
 dicom-object = "0.10.0"
@@ -81,6 +88,10 @@ png = "0.17"
 tiff = "0.9"
 flate2 = "1.1"
 jpeg2k = { version = "0.10", default-features = false, features = ["openjp2"] }
+# The JPEG XL decoder dicom-pixeldata already links, named so that frames are
+# decoded under its allocation limit (docs/architecture.md, "Compressed
+# Frames Are Held To The Header").
+jxl-oxide = { version = "0.12.6", default-features = false }
 
 # CLI
 clap = { version = "4", features = ["derive"] }

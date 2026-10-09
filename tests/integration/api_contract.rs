@@ -57,7 +57,12 @@ async fn json_endpoints_match_frontend_contract_shapes() {
             "discovery",
             "files",
             "filtered",
+            "keys_hashing",
             "masked",
+            "more",
+            "rekeys",
+            "reset",
+            "revision",
             "scan_complete",
             "scanned",
             "server_start_ms",
@@ -65,6 +70,8 @@ async fn json_endpoints_match_frontend_contract_shapes() {
         ],
     );
     let file = &files["files"].as_array().expect("files array")[0];
+    // A DICOM file with its own UID carries no key member at all: its key
+    // is `sop:` plus `sop_instance_uid`.
     assert_object_keys(
         file,
         &[

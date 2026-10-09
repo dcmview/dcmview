@@ -442,6 +442,27 @@ fn a_document_that_breaks_one_rule_reports_it() {
             Code(BadFileRef),
         ),
         (
+            "b3 key whose own digest is another",
+            vec![Set(
+                "/files/2/digest",
+                json!(format!("b3:{}", "1".repeat(64))),
+            )],
+            Code(BadFileRef),
+        ),
+        (
+            "b3 key beside a digest of another kind",
+            vec![Set(
+                "/files/2/digest",
+                json!(format!("sha256:{}", "a".repeat(64))),
+            )],
+            Valid,
+        ),
+        (
+            "b3 key without a digest",
+            vec![Set("/files/2/digest", json!(null))],
+            Valid,
+        ),
+        (
             "digest in uppercase",
             vec![Set(
                 "/files/2/digest",

@@ -216,8 +216,14 @@ pub(super) fn inspect_raster(
     _check_active: &dyn Fn() -> Result<()>,
 ) -> Result<EntryInspection> {
     let mut file = File::open(_path)?;
-    let len = file.metadata()?.len();
-    inspect_raster_source(_path, &mut file, len, _format, _check_active)
+    let metadata = file.metadata()?;
+    let mut inspection =
+        inspect_raster_source(_path, &mut file, metadata.len(), _format, _check_active)?;
+    if let EntryInspection::Selected(entry) = &mut inspection {
+        // From the same `stat` as the length, on the opened file.
+        entry.modified = metadata.modified().ok();
+    }
+    Ok(inspection)
 }
 
 /// The most bytes header inspection obtains from one file. A TIFF at the
@@ -327,6 +333,8 @@ pub(super) fn inspect_raster_source(
     let mut entry = FileEntry {
         index: 0,
         path: _path.to_path_buf(),
+        size_bytes: _length,
+        modified: None,
         format: _format,
         label: super::build_label("", "", "", &file_name),
         patient_id: String::new(),
