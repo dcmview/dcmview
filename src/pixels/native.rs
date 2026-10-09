@@ -16,6 +16,7 @@ use std::sync::Arc;
 use tokio::task;
 
 use super::color::color_samples_to_rgb8;
+use super::error::Stated;
 use super::header::open_header;
 use super::icc::select_icc_profile;
 use super::native_layout::{native_pixel_element_tag, NativeByteOrder, NativeFrameLayout};
@@ -235,7 +236,7 @@ fn read_native_frame(file: &FileEntry, frame: u32) -> Result<NativeFrameSource<'
     // supported release hosts are little-endian, matching the raw API.
     let bytes = object
         .get(native_pixel_element_tag(native_pixel_data_kind(file)))
-        .context("missing native pixel data element")?
+        .context(Stated::new("missing native pixel data element"))?
         .to_bytes()
         .context("pixel bytes unavailable")?
         .into_owned();
@@ -310,7 +311,7 @@ fn read_deflated_frame_bytes(
                 _ => {}
             }
         }
-        available.context("missing native pixel data element")?
+        available.context(Stated::new("missing native pixel data element"))?
     };
     if end > available {
         return Err(anyhow!(
@@ -390,7 +391,7 @@ fn read_native_frame_bytes(
             _ => {}
         }
     }
-    Err(anyhow!("missing native pixel data element"))
+    Err(Stated::error("missing native pixel data element"))
 }
 
 fn native_pixel_data_kind(file: &FileEntry) -> NativePixelDataKind {

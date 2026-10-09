@@ -292,19 +292,11 @@ async fn a_failed_decode_is_answered_in_the_viewers_words_whatever_the_file_hold
         idat[end - 4..].copy_from_slice(&checksum.to_be_bytes());
         png_from_chunks((4, 4), 8, 0, false, &[idat])
     };
-    // A 4 x 4 16-bit image holding `samples` of its 16 samples.
-    let short_native = |samples: usize| {
+    // A 4 x 4 16-bit image holding four of its 16 samples, each `value`.
+    let short_native = |value: u16| {
         let dir = tempdir().expect("temp dir");
         let path = dir.path().join("short.dcm");
-        support::write_uncompressed_u16_dicom(
-            &path,
-            EXPLICIT_LE,
-            4,
-            4,
-            vec![1; samples],
-            None,
-            None,
-        );
+        support::write_uncompressed_u16_dicom(&path, EXPLICIT_LE, 4, 4, vec![value; 4], None, None);
         std::fs::read(&path).expect("read file")
     };
     let cut = |bytes: u64| {
@@ -318,6 +310,34 @@ async fn a_failed_decode_is_answered_in_the_viewers_words_whatever_the_file_hold
         }
     };
     let untouched = |_: &Path| {};
+    // Every file of the directory cut to `bytes`, inside its data set.
+    let cut_all = |bytes: u64| {
+        move |dir: &Path| {
+            for entry in std::fs::read_dir(dir).expect("list files") {
+                let file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(entry.expect("entry").path())
+                    .expect("open file");
+                file.set_len(bytes).expect("cut file");
+            }
+        }
+    };
+    let metadata_files = || {
+        vec![
+            ("0-state.dcm", fixture("golden-gsps-conforming.dcm")),
+            ("1-image.dcm", fixture("golden-gsps-target-u8.dcm")),
+            ("2-slide.dcm", fixture("golden-masking-wsi-label.dcm")),
+        ]
+    };
+    let metadata = vec![
+        "/api/file/1/frame/0/value-mapping".to_string(),
+        "/api/file/1/frame/0/graphic-annotations?state=0".to_string(),
+        "/api/file/1/references".to_string(),
+        "/api/file/1/semantic-context".to_string(),
+        "/api/file/2/frame/0/wsi-context".to_string(),
+        "/api/file/1/tags".to_string(),
+        "/api/file/1/tags/select?path=(0008,0018)".to_string(),
+    ];
     let frames = |index: usize| {
         ["", "/raw", "/thumbnail"]
             .map(|endpoint| format!("/api/file/{index}/frame/0{endpoint}"))
@@ -356,8 +376,8 @@ async fn a_failed_decode_is_answered_in_the_viewers_words_whatever_the_file_hold
         (
             "native pixel data shorter than a frame",
             [
-                (vec![("a.dcm", short_native(4))], Box::new(untouched)),
-                (vec![("a.dcm", short_native(6))], Box::new(untouched)),
+                (vec![("a.dcm", short_native(1))], Box::new(untouched)),
+                (vec![("a.dcm", short_native(2))], Box::new(untouched)),
             ],
             frames(0),
             &[],
@@ -371,6 +391,15 @@ async fn a_failed_decode_is_answered_in_the_viewers_words_whatever_the_file_hold
             overlays,
             &[],
         ),
+        (
+            "files cut inside their data sets after they were listed",
+            [
+                (metadata_files(), Box::new(cut_all(407))),
+                (metadata_files(), Box::new(cut_all(423))),
+            ],
+            metadata,
+            &[],
+        ),
     ];
     for (row, (name, [first, second], requests, planted)) in rows.into_iter().enumerate() {
         let probe = |label: &str| format!("{row}-{label}");
@@ -381,9 +410,17 @@ async fn a_failed_decode_is_answered_in_the_viewers_words_whatever_the_file_hold
             let (answer, other, masked) = (&unmasked[index], &other[index], &masked[index]);
             let context = format!("{name}, {request}");
             assert!(answer.status >= 400, "{context}: {}", answer.body);
+            // A reason the viewer states may carry numbers it computed, so
+            // the answers are compared without their digits.
+            let words = |body: &Value| {
+                body.to_string()
+                    .chars()
+                    .filter(|character| !character.is_ascii_digit())
+                    .collect::<String>()
+            };
             assert_eq!(
-                (answer.status, &answer.body),
-                (other.status, &other.body),
+                (answer.status, words(&answer.body)),
+                (other.status, words(&other.body)),
                 "{context}: the answer depends on how the file is damaged"
             );
             assert_eq!(

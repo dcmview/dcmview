@@ -133,17 +133,21 @@ diagnostic viewer.
   1 MiB as `{"type": "binary", "length": N}`, as they report binary values,
   instead of a preview of it. A tag tree that reaches the end of a truncated
   file inside a value it does not read now ends with that element instead
-  of failing, and the tree of a Deflated Explicit VR Little Endian file
+  of failing, the tree of a Deflated Explicit VR Little Endian file
   whose pixel data inflates to more than 64 MiB ends with its pixel
-  element.
+  element, and a tree whose sequences nest more than 64 deep ends there
+  with an error value.
 
 - The `error` text of a failed decode is now `frame decode failed` or
   `raw frame decode failed`, with a reason only where the viewer states one
-  itself ("pixel data disagrees with the header" and its numbers, a raster
-  file that changed since it was listed). The decoder's own message moved
+  itself ("pixel data disagrees with the header" and its numbers, native
+  pixel data shorter than its frames, a truncated fragment, a raster file
+  that changed since it was listed). The decoder's own message moved
   to the log at debug level (`RUST_LOG=dcmview=debug`), and for PNG, JPEG,
-  TIFF and WebP files the log names the kind of failure instead. Overlay
-  endpoints answer `500 internal_error` with a fixed sentence in the same
+  TIFF and WebP files the log names the kind of failure instead. The
+  overlay endpoints and the endpoints that read a file's metadata (tags,
+  references, semantic context, value mapping, graphic annotations, slide
+  context) answer `500 internal_error` with a fixed sentence in the same
   cases. `code` values are unchanged.
 
 - `--cache-budget BYTES` now also covers the thumbnail cache, and its default
@@ -167,8 +171,8 @@ diagnostic viewer.
   not be read now reports `key_error: "uncompared"`. Before, its entry
   showed `file_key: null` with no error and `keys_hashing` 0, which a
   client could not tell from a file still waiting for its hash.
-- Error responses of the frame, raw frame, thumbnail and overlay endpoints
-  no longer repeat a decoding library's message. Before, such a message
+- Error responses of the endpoints that read a file no longer repeat a
+  decoding or parsing library's message. Before, such a message
   could carry a few bytes of the file into the response and the log,
   including in a `--mask` session.
 - `/tags` and `/tags/select` no longer read pixel data or bulk values.

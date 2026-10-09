@@ -543,8 +543,9 @@ requires an existing `frontend/dist/index.html`.
   wording and numbers the viewer computed, nothing read from the file as
   text); pass any other cause to `ApiError::failed` or leave it in the
   chain, where only the debug log of an unmasked session sees it. Do not
-  format a cause chain into an `ApiError` message or a `warn!` line in the
-  frame, raw, thumbnail or overlay endpoints.
+  format a cause chain into an `ApiError` message or a `warn!` line in any
+  endpoint that reads a file: the metadata endpoints answer through
+  `ApiError::failed` too.
 - Unsupported transfer syntax returns HTTP 422 JSON and must never panic.
 - Missing pixel data returns 404 for frame endpoints.
 - A frame whose decode needs more than the decode memory budget returns HTTP

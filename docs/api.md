@@ -877,7 +877,11 @@ followed by a reason only where the viewer states one in fixed words and
 numbers, as it does for the cases below. It never repeats what a decoding
 library said of the file, because such a message can quote the file; the
 frame, raw frame, raw pixel, thumbnail and overlay endpoints answer the same
-for any two files that fail at the same step. `unsupported_transfer_syntax`
+for any two files that fail at the same step, apart from numbers the viewer
+computed. The endpoints that read a file's metadata (`/tags`,
+`/tags/select`, `/references`, `/semantic-context`, `/value-mapping`,
+`/graphic-annotations` and `/wsi-context`) answer `500 internal_error` with
+one fixed sentence each when the file cannot be read. `unsupported_transfer_syntax`
 names the UID only when it is written as a UID is. The library's account is
 written to the log at debug level (`RUST_LOG=dcmview=debug`), with the
 request, except in a `--mask` session, which logs nothing a file holds; for

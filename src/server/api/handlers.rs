@@ -182,8 +182,13 @@ pub(super) async fn references(
     let source_path = source.path.clone();
     let edges = task::spawn_blocking(move || references::extract_reference_edges(&source_path))
         .await
-        .map_err(|error| ApiError::internal(format!("reference extraction task failed: {error}")))?
-        .map_err(|error| error::gone_or(&source.path, ApiError::internal(error.to_string())))?;
+        .map_err(|error| ApiError::failed("the file's references could not be read", error))?
+        .map_err(|error| {
+            error::gone_or(
+                &source.path,
+                ApiError::failed("the file's references could not be read", error),
+            )
+        })?;
     let candidates = state
         .registry()
         .files_snapshot()
@@ -283,8 +288,21 @@ pub(super) async fn graphic_annotations(
         crate::presentation_state::graphic_annotations(&presentation_state, &target, frame)
     })
     .await
-    .map_err(|error| ApiError::internal(format!("graphic annotation task failed: {error}")))?
-    .map_err(|failure| error::gone_or(&path, ApiError::internal(format!("{failure:#}"))))?;
+    .map_err(|error| {
+        ApiError::failed(
+            "the presentation state's annotations could not be read",
+            error,
+        )
+    })?
+    .map_err(|failure| {
+        error::gone_or(
+            &path,
+            ApiError::failed(
+                "the presentation state's annotations could not be read",
+                failure,
+            ),
+        )
+    })?;
     if let Some(masker) = state.registry().masker() {
         masker.graphic_annotations(&mut annotations);
     }
@@ -299,9 +317,12 @@ pub(super) async fn value_mapping(
     let file = registered_file(&state, index, "file")?;
     crate::pixels::PixelError::ensure_frame(frame, file.frame_count).map_err(error::pixel_error)?;
     let path = file.path.clone();
-    let mappings = value_mappings_for(&state, file)
-        .await
-        .map_err(|failure| error::gone_or(&path, ApiError::internal(format!("{failure:#}"))))?;
+    let mappings = value_mappings_for(&state, file).await.map_err(|failure| {
+        error::gone_or(
+            &path,
+            ApiError::failed("the frame's value mappings could not be read", failure),
+        )
+    })?;
     uid_masked_json(&state, mappings.frame(index, frame))
 }
 
@@ -345,8 +366,8 @@ pub(super) async fn wsi_context(
     let files = state.registry().files_snapshot();
     let context = task::spawn_blocking(move || crate::wsi::frame_context(&source, frame, &files))
         .await
-        .map_err(|error| ApiError::internal(format!("WSI context task failed: {error}")))?
-        .map_err(|error| ApiError::internal(error.to_string()))?;
+        .map_err(|error| ApiError::failed("the slide context could not be read", error))?
+        .map_err(|error| ApiError::failed("the slide context could not be read", error))?;
     uid_masked_json(&state, context)
 }
 
@@ -779,11 +800,11 @@ pub(super) async fn tags(
     let path = file.path.clone();
     let mut nodes = tokio::task::spawn_blocking(move || tags::build_tag_tree(&path))
         .await
-        .map_err(|error| ApiError::internal(format!("tag serialization task failed: {error}")))?
+        .map_err(|error| ApiError::failed("the file's tags could not be read", error))?
         .map_err(|failure| {
             error::gone_or(
                 &file.path,
-                ApiError::internal(format!("tag serialization failed: {failure}")),
+                ApiError::failed("the file's tags could not be read", format!("{failure:#}")),
             )
         })?;
 
@@ -853,12 +874,13 @@ pub(super) async fn select_tag(
         tags::build_selected_tag(&path, &selector, offset, limit)
     })
     .await
-    .map_err(|error| ApiError::internal(format!("tag selection task failed: {error}")))?
+    .map_err(|error| ApiError::failed("the file's tags could not be read", error))?
     .map_err(|error| match error {
         tags::TagSelectError::Invalid(_) => ApiError::bad_request(error.to_string()),
-        tags::TagSelectError::Read(_) => {
-            error::gone_or(&file.path, ApiError::internal(error.to_string()))
-        }
+        tags::TagSelectError::Read(_) => error::gone_or(
+            &file.path,
+            ApiError::failed("the file's tags could not be read", &error),
+        ),
     })?;
     if let Some(masker) = state.registry().masker() {
         masker.selected_tag(&file, &query.path, &mut node);

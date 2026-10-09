@@ -27,7 +27,17 @@ impl Stated {
 /// What a decode error says in a response: its context and the reason the
 /// viewer stated, if it stated one.
 fn decode_text(context: &str, source: &anyhow::Error) -> String {
-    match source.downcast_ref::<Stated>() {
+    // A native layout error is the viewer's own too: fixed wording and
+    // numbers computed from the entry and the length of the pixel data.
+    let stated = source
+        .downcast_ref::<Stated>()
+        .map(ToString::to_string)
+        .or_else(|| {
+            source
+                .downcast_ref::<super::native_layout::NativeLayoutError>()
+                .map(ToString::to_string)
+        });
+    match stated {
         Some(stated) => format!("{context}: {stated}"),
         None => context.to_string(),
     }
@@ -147,8 +157,10 @@ impl PixelError {
                 let text = anyhow::anyhow!("{source:#}");
                 Self::Decode {
                     context,
-                    source: match source.downcast_ref::<Stated>() {
-                        Some(stated) => text.context(stated.clone()),
+                    // What the error says is carried over as its stated
+                    // reason, so each request that shared it says the same.
+                    source: match self.to_string().strip_prefix(&format!("{context}: ")) {
+                        Some(stated) => text.context(Stated::new(stated)),
                         None => text,
                     },
                 }
