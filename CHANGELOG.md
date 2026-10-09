@@ -21,6 +21,11 @@ diagnostic viewer.
 
 ### Added
 
+- Catalog entries carry stable session file keys through `file_key`,
+  `alias_of` and `key_error`. `GET /api/files` accepts `since` and `limit`
+  and reports `revision`, `reset`, `more`, `keys_hashing` and `rekeys`.
+  Display and raw frames carry `X-File-Key` when available, and the startup
+  JSON line reports `key_rules`. Existing clients need no change.
 - `--decode-memory BYTES` sets a separate budget for decodes in progress,
   with a 256 MiB minimum. Without it the budget is a quarter of the
   machine's physical memory, from 1 GiB to 4 GiB (4 GiB on Windows and

@@ -93,6 +93,11 @@ export function filesResponse(files: FileSummary[]): FilesResponse {
 		scanned: files.length,
 		skipped: 0,
 		filtered: 0,
+		revision: files.length,
+		reset: false,
+		more: false,
+		keys_hashing: 0,
+		rekeys: [],
 	};
 }
 

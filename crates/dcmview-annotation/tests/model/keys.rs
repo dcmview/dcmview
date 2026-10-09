@@ -85,6 +85,27 @@ fn a_file_key_has_exactly_two_forms() {
     assert!(FileKey::sop(&"1".repeat(128)).is_ok());
     assert!(FileKey::sop(&"1".repeat(129)).is_err());
     assert!(FileKey::sop("1.2 3").is_err());
+    // Asking whether a UID can be a key agrees with building the key.
+    for uid in [
+        "1.2.3",
+        "anon-0001_A.b",
+        "",
+        " 1.2.3",
+        "1.2.3 ",
+        "1.2 3",
+        "1.2/3",
+        "1.2\\3",
+        "1.2\u{e9}",
+        "sop:1.2.3",
+        &"1".repeat(128),
+        &"1".repeat(129),
+    ] {
+        assert_eq!(
+            FileKey::is_sop_uid(uid),
+            FileKey::sop(uid).is_ok(),
+            "{uid:?}"
+        );
+    }
 
     let mut digest = [0_u8; 32];
     for (index, byte) in digest.iter_mut().enumerate() {

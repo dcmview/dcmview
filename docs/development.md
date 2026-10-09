@@ -40,6 +40,7 @@ python scripts/check.py external
 | `core` | Frontend checks/build, Rust format and Clippy, deterministic fixture regeneration that must leave the current fixture tree unchanged, the default-feature, non-ignored locked Rust suite, Python unit tests, and VS Code compilation. |
 | `e2e` | `core`, then a real debug-binary build, Python wrapper binary integration, debug-binary HTTP smoke, and VS Code Electron integration. |
 | `external` | Only the feature-gated ignored remote-fixture integration tests after building frontend assets. It is separate from `e2e`. |
+| `timing` | Startup and discovery timing of this checkout against the released baseline. Opt-in and local; see [Startup And Discovery Timing](#startup-and-discovery-timing). |
 
 Pass `--install` when npm dependencies should be installed from their lockfiles.
 Without it, the profiles reuse existing `node_modules`. CI runs focused
@@ -183,11 +184,153 @@ The [architecture and test model](architecture.md) is normative. In brief:
 - `crates/dcmview-protocol` owns the launch and startup contract (the
   `--startup-json` line); `api/contracts.rs` re-exports it.
 - `crates/dcmview-annotation` owns the neutral annotation model, its
-  validation and its operations. The root package does not depend on it.
+  validation and its operations. The root package takes file keys from it
+  (`src/keys/`) and nothing else.
 - `server/` separates runtime, lifecycle, catalog, API, tags, and embedded web
   assets. `pixels/` separates service, codecs, caches, windowing, and rendering.
 - `App.svelte` composes `FileNavigator`, `OpenImageTabs`, the viewer controls,
   viewport, frame slider, tag panel, and status bar.
+
+## Startup And Discovery Timing
+
+File identity must not slow startup or discovery
+(`docs/design/annotation-model.md` 1.7). `scripts/startup_timing.py` is the
+check. It is opt-in and local: no profile that CI runs calls it, because a
+shared runner's timing is not a gate.
+
+```bash
+# This checkout against the released baseline, v0.4.0
+python scripts/startup_timing.py run
+
+# Exit 1 when a gated metric is past the threshold
+python scripts/startup_timing.py run --enforce
+
+# Two binaries you already have; one profile; more runs
+python scripts/startup_timing.py run --baseline A --candidate B --profile cohort --runs 15
+
+# Report against another commit than the merge base, or against none
+python scripts/startup_timing.py run --base-ref REF
+python scripts/startup_timing.py run --no-base
+
+# The same through the check runner
+python scripts/check.py timing
+```
+
+**Binaries.** The candidate is a release build of the working tree as it is
+on disk, copied to `target/timing/candidate/`, or `--candidate PATH`, or
+`--candidate-ref REF`. The baseline is a release build of the tag `v0.4.0`,
+or `--baseline PATH`, or `--baseline-ref REF`. A third binary is timed
+beside them and only reported: the commit this checkout left the main branch
+at (`git merge-base HEAD origin/main`, else `main`), or `--base-ref REF`, or
+`--base PATH`; `--no-base` leaves it out, and so does a checkout that is on
+the main branch. A ref is built from `git archive` into
+`target/timing/refs/<commit>-rustc-<version>-<compiler commit>/`, so no
+branch is switched and no worktree is made. It is kept by commit and by
+compiler, so it is built once per toolchain and a baseline built by another
+compiler is never compared with a candidate built by this one. Every
+build reuses this checkout's built `frontend/dist` with
+`DCMVIEW_SKIP_FRONTEND_BUILD=1` (the embedded page plays no part in what is
+timed) and compiles into one shared `target/timing/build/`, so the
+dependencies are built once and the checkout's own `target/release` is not
+used. Nothing under `target/` is committed. `DCMVIEW_TIMING_DIR` moves the
+whole directory. The binaries and the shared build directory take about
+0.7 GB. Run the script from the checkout it times and let it build there:
+pointing another checkout's `CARGO_TARGET_DIR` at this `target/` mixes two
+source trees in one build directory.
+
+**Inputs.** Synthetic folders written on first use under
+`target/timing/inputs/` (about 0.6 GB), with no real data and no download:
+
+| Profile | Files |
+|---|---|
+| `small` | 16 DICOM files in one folder |
+| `study` | 2,000 DICOM files, one study of 8 series |
+| `tree` | 20,000 DICOM files, 100 patients in nested folders |
+| `cohort` | 100,000 DICOM files, 500 patients in nested folders |
+| `duplicated` | 5,000 DICOM files and a byte-identical copy of the whole tree |
+| `collision` | 5,000 DICOM files and, for each, a second file with the same SOP Instance UID and another length |
+| `no-uid` | 10,000 DICOM files without a SOP Instance UID |
+| `masked` | the folder of `tree`, served with `--mask` |
+| `images` | 5,000 PNG files in 20 folders |
+
+`duplicated`, `collision` and `no-uid` are the folders where file keys do
+more than record a UID: every file is an alias, every UID is contested, or
+no file has a key until it is hashed. `masked` is the session that builds
+every key from a masked UID.
+
+Each DICOM file is a small CT image with a header of ordinary size;
+discovery reads a file only up to its pixel data, so the header is what is
+timed. A profile is compared only when both binaries list the same number
+of files from it: `v0.4.0` reads no raster images, so `images` is skipped
+against it and is useful between two builds that do.
+
+**A binary that cannot serve.** A profile is skipped in that one case: the
+baseline answers, lists none of the profile's files, and the candidate
+serves it. Nothing else is a skip:
+
+| What happened | Printed | Exit status |
+|---|---|---|
+| The candidate cannot serve a profile (it exits, never answers, or lists none of the files) | `FAILED`, with the process's exit status and the last lines of its standard error | 1, with or without `--enforce` |
+| The baseline cannot serve a profile for any reason but listing none of its files | `NOT COMPARED`, with the same evidence | 2 |
+| A process dies during the timed runs | its exit status and standard error; the profile's timed runs are made once more, and a second death is one of the two rows above | as above |
+| No local port can be assigned (`Can't assign requested address`: other work holds the machine's ports) | that, in plain words; nothing is compared | 2 |
+
+Status 2 says the comparison could not be made, not that the candidate is
+slower: run it again. A merge base that cannot serve is left out of the
+report and changes no status.
+
+**What is timed**, from just before the process is spawned with
+`--no-browser --no-token --startup-json --port 0`:
+
+| Metric | Ends at | Gated |
+|---|---|---|
+| first response | the first `200` from `/api/health`, requested as soon as the `server_started` line names the port | yes |
+| first file | the first health response that counts a file, polled every 0.2 ms on one open connection | yes |
+| scan complete | the `scan_complete` line | yes |
+| catalog listing | one `GET /api/files` after the scan, with its size in bytes | no, reported |
+| resident memory | the process's resident set (`ps`) when the scan is complete, before the listing, as the median of the runs; not on Windows | no, reported |
+
+"First file" is a short interval measured by asking, so its resolution is
+the polling interval plus one round trip, about a third of a millisecond.
+Each poll opened a connection and slept a millisecond before; that was a
+tenth of the 10 ms it measures on `study`, and the metric swung by more
+than 15% between repeats of one binary. The polling ends with the first
+file, so it does not weigh on the scan.
+
+Each binary gets one discarded warm-up run per profile, then the binaries
+alternate for 9 timed runs each, so drift in the machine's load falls on
+all of them.
+
+**The merge base.** The gate compares with the release, and a branch
+carries everything merged since the release as well as its own change. The
+second table of each profile gives the same metrics against the merge
+base, which is the change alone. It is reported and never gated: it says
+whether a result against the release is this change or earlier work.
+
+**The gate.** The best (fastest) run of each binary is compared, because
+other work on the machine only ever adds time: the fastest run repeats to
+within a few percent where the median does not. For each profile, first
+response, first file and scan complete each pass when
+
+```text
+candidate best of 9 <= v0.4.0 best of 9 x 1.05 + 3 ms
+```
+
+This is the gate the owner set on 2026-10-08 for the rule that file
+identity must not slow startup or discovery. Changing the percentage, the
+floor, the number of runs, the baseline or the gated metrics is the owner's
+decision, not a fix for a failing run.
+
+The 3 ms floor covers the metrics that take a few milliseconds, where
+scheduling jitter is a large fraction. Both numbers are
+`THRESHOLD_PERCENT` and `THRESHOLD_FLOOR_MS` at the top of the script. The
+percentage is set by what the instrument can tell apart: the same binary
+timed against itself differs by up to about 3% between two best-of-9 sets
+on a machine that is doing other work. A failure that two further runs do
+not repeat is noise; one that repeats is a regression to fix, not a
+threshold to raise. A metric that passes but is more than 2% slower in
+repeated runs is reported with the change, since it is a cost even when it
+is under the gate.
 
 ## Cache Budgets
 

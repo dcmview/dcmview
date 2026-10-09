@@ -20,7 +20,7 @@ repository may depend on without the viewer:
 | Package | Path | Holds | Depends on |
 |---|---|---|---|
 | `dcmview` | `.` | The viewer binary and library. | Everything, including the members. |
-| `dcmview-protocol` | `crates/dcmview-protocol` | The launch and startup contract: `StartupEvent`, `launch_url`, `STARTUP_PROTOCOL`, `TOKEN_FRAGMENT_PARAM`, `TOKEN_ENV_VAR`, and the test that pins the startup line. | `serde` only. No axum, tokio or DICOM crates. |
+| `dcmview-protocol` | `crates/dcmview-protocol` | The launch and startup contract: `StartupEvent` (with the `key_rules` number the viewer reports in it), `launch_url`, `STARTUP_PROTOCOL`, `TOKEN_FRAGMENT_PARAM`, `TOKEN_ENV_VAR`, and the test that pins the startup line. | `serde` only. No axum, tokio or DICOM crates. |
 | `dcmview-annotation` | `crates/dcmview-annotation` | The neutral annotation model: file keys, file references, geometry, frame scopes, the label schema, labels, layers, annotations, the document, operations, and the validation of all of them. See [Annotation Model](#annotation-model). | `serde`, `serde_json`, `thiserror`, `uuid`, `ts-rs`, `schemars`. No axum, tokio, DICOM or pixel-pipeline crates; no filesystem or network access. |
 
 Rules for the workspace:
@@ -51,8 +51,9 @@ application module:
 | Local startup | `src/startup/` | `LocalViewerOptions`, `LocalViewerOutcome`, and `DiscoveryHandle`. |
 | HTTP wire model | `src/api/contracts.rs` | Plain `endpoints` table, media types, header names, wire structs (query names are `FrameQuery`/`TagQuery` fields), and error envelope. |
 | Launch and startup contract | `crates/dcmview-protocol` | `StartupEvent` (the `--startup-json` line), `launch_url`, `STARTUP_PROTOCOL`, the token fragment parameter and the token environment variable. Re-exported by `src/api/contracts.rs`. Fields are only added. |
-| Annotation model | `crates/dcmview-annotation` | The model's types and wire format, `validate` on each of them, `FileKey` and `KEY_RULES`, `Op` and `OpEnvelope`, the size bounds in `limits`, and the generated TypeScript and JSON Schema. The root package does not depend on it: `src/annotations.rs` is the EMBED store behind the annotation endpoints. |
-| HTTP runtime | `src/server/` | Listener/runtime, route registration, handlers, state, registry, activity tracking, tags, and embedded assets. |
+| Annotation model | `crates/dcmview-annotation` | The model's types and wire format, `validate` on each of them, `FileKey` and `KEY_RULES`, `Op` and `OpEnvelope`, the size bounds in `limits`, and the generated TypeScript and JSON Schema. The root package takes `FileKey` and `KEY_RULES` from it (`src/keys.rs`) and nothing else: `src/annotations.rs` is the EMBED store behind the annotation endpoints. |
+| File keys | `src/keys/` | `KeyTable`: which key each loaded file has and whether it is settled, as a plain data structure with no I/O that holds no string per file. `FileHasher`: one file's BLAKE3 digest in bounded slices. See [File Keys And The Catalog Cursor](#file-keys-and-the-catalog-cursor). |
+| HTTP runtime | `src/server/` | Listener/runtime, route registration, handlers, state, registry, activity tracking, tags, and embedded assets. `server/catalog.rs` holds the registry with its key table and catalog revisions; `server/catalog/keys.rs` holds background hashing and what a session shows for a key. |
 | Pixel service | `src/pixels/` | Typed display, raw and thumbnail requests, cache behavior, transfer-syntax classification, decoding, the render seam (`render.rs` `DisplayBuffer`), decode classes (`schedule.rs`), and `PixelError`. `raster.rs` decodes PNG, JPEG, TIFF and WebP frames within fixed read and memory limits and renders them. |
 | Patient geometry | `src/geometry.rs` | Normalized per-frame position, orientation, pixel spacing, coplanarity checks, and target-to-source pixel transforms. |
 | Plane stacks | `src/plane_stack.rs` | RT Dose grids and Parametric Map frames as parallel planes; coverage and bracketing-plane sampling of a displayed frame. |
@@ -437,7 +438,10 @@ Fields are only added, and the crate's own test pins the exact shapes.
   in the memory-only discovery ledger and each file's SOP Class, coarse object
   kind, and explicit `renderable`, `metadata_only`, or `unsupported` state with
   a stable reason when applicable. Exact scan totals remain separate. These
-  states describe viewer capability, not DICOM conformance.
+  states describe viewer capability, not DICOM conformance. Each entry also
+  carries its file key state, and `since` and `limit` page through the
+  entries that changed after a catalog revision (see "File Keys And The
+  Catalog Cursor").
 - `/api/series` builds an ephemeral server-owned catalog grouped strictly by
   Study and Series UID. Its typed stacks map virtual positions to source file
   and frame, prefer patient-geometry ordering for classic slices, surface
@@ -1148,6 +1152,196 @@ the file, for a raster that has one.
   crate does not unpack it), palette, CMYK and gray-with-alpha TIFF, and
   planar colour. Animated PNG and WebP show their first frame only.
 
+## File Keys And The Catalog Cursor
+
+Every loaded file has a stable key, the string annotations and anything that
+leaves the process address a file by (`docs/design/annotation-model.md` 1.3,
+1.7, 1.8). The file index stays what the viewer's own routes use; it is
+discovery order and means nothing outside one process. The key syntax and
+the rule version `KEY_RULES` belong to `crates/dcmview-annotation`, so a hub
+computes the same keys with the same code. Which key a file has is decided
+by `keys::KeyTable` (`src/keys/table.rs`), whose documentation is normative.
+In short:
+
+| File | Key |
+|---|---|
+| DICOM with a usable SOP Instance UID (1 to 128 characters of `A-Z a-z 0-9 . - _`) that nothing contradicts | `sop:<uid>` |
+| Another loaded file with the same UID and the same length | The same `sop:<uid>`, provisionally: their bytes have not been compared |
+| Files with one UID that are known to differ (their lengths differ, or their digests do) before any key of theirs was relied on | `b3:<digest>` each, so byte-identical copies among them still share a key |
+| Raster, DICOM without a UID, or with a UID that is not usable | `b3:<digest>` |
+
+`<digest>` is the BLAKE3 digest of the file's bytes exactly as stored, as 64
+lowercase hex characters. The UID is the data set's SOP Instance UID as
+discovery reads it: the first value, without its padding and surrounding
+white space, and otherwise as written (`docs/api.md`, "File keys"). That
+reading is part of the rules `KEY_RULES` versions, since other tooling has to
+read the same UID to compute the same key.
+
+**A key that is shown and a key that is relied on.** The catalog and the
+frame header show a file's key as it stands, and that key can still change:
+`sop:<uid>` shared by UID and length is unchecked, and a file found later
+can contradict it. A key is *settled* when it can no longer change: every
+`b3:` key, and `sop:<uid>` once `KeyTable::rely_on` has returned it. Only
+`FileRegistry::ensure_key` settles a key, and only a settled key goes into
+a record or an export. To settle `sop:<uid>` for a file whose UID other
+loaded files of the same length carry, every one of those files is hashed
+first (`docs/design/annotation-model.md` 1.7: verified "before the first
+annotation write on either file"), so two files with one settled key hold
+the same bytes, whatever order they were found or asked about in. The file
+asked about and the group's first file are hashed before the others: when
+those two differ the group is split, the file has its `b3:` key, and the
+rest of the group is not read for that request. When the first file with
+the UID cannot be hashed there is nothing to compare with, so nothing is
+split and nothing is relied on: `ensure_key` on any file of the group
+answers `Unavailable` with the first file's failure, no key shown changes,
+and the next request tries the first file again. Two other files of the
+group whose own digests differ still split it (`KeyTable::check_group`
+compares a digest with the first one the group learned, whichever file it
+came from): they have the `b3:` keys they would have in any session, and
+the first file has none until it is read. A file other than the
+first that cannot be hashed costs only its own key (it loses the shared
+key when the group is relied on), so which file was found first decides
+what one unreadable file withholds, and nothing else about the keys.
+
+**After a key was relied on.** `sop:<uid>` then names the bytes of the first
+file with that UID for the rest of the session, and nothing replaces it. A
+file with the UID that is found afterwards has no key until it has been
+compared with that first file; it then shares the key, or takes a `b3:` key
+of its own if it differs. A file of the group that could not be read when
+the key was settled loses the provisional key it showed and is treated the
+same way. Keys are session-scoped: the same folder opened again, or found
+in another order while a key is asked for, can give a file another key, and
+anything stored is matched on reload through its `FileRef` evidence, not by
+key alone.
+
+A key is replaced by another (`sop:` by `b3:`, once) only for a file whose
+group was shown to differ before any key of it was relied on.
+
+### Discovery Adds No Read
+
+Discovery never hashes. A file's length comes from the `stat` discovery
+already makes (`FileEntry::size_bytes`), as does its modification time
+(`FileEntry::modified`), and the path that tells one file reached twice from
+two files is the one the discovery record already resolved
+(`FileRegistry::record_selected`). Registering a file is a constant number
+of hash-map operations under the registry lock it already took. A file that
+needs its bytes read for a key is registered without a key.
+
+The key table copies nothing out of a file. It is given the registry's own
+entry (`KeyedFile`, implemented by `Keyed` in `server/catalog/keys.rs`) and
+keeps clones of that handle in its vectors and maps, so a file whose UID and
+path are its own costs about a hundred bytes there whatever their length,
+and no allocation. A `sop:` key is not stored as text: it is `sop:` plus the
+UID the entry already holds, and it is written out where it is sent.
+`tests/key_table_memory.rs` holds the bound with a counting allocator, and
+the timing script reports resident memory after the scan.
+
+The rule is measured, not assumed: `scripts/startup_timing.py` times first
+response, first file and scan completion against the released baseline on
+synthetic folders (`docs/development.md`, "Startup And Discovery Timing").
+A change to discovery, to `FileRegistry::insert` or to the catalog listing
+is run through it before it merges.
+
+### When A File Is Hashed
+
+A whole-file digest costs a full read, so it is computed only when a key
+needs it and somebody has a use for the key:
+
+- **After a frame of the file is served.** The first display or raw frame
+  response for a file without a key queues its digest
+  (`FileRegistry::frame_sent`), for a raster as for a DICOM file without a
+  usable UID: both are served by the same two handlers. Thumbnails do not
+  count: scrolling a gallery never reads a folder of images a second time.
+- **On request.** `FileRegistry::ensure_key` returns a file's key once it is
+  settled, hashing first what that takes: nothing for a DICOM file whose UID
+  no other loaded file has; the file itself for one without a key; and, for
+  a file whose UID other files of the same length carry, that file and the
+  first file with the UID, then every other one of those files if the two
+  agree, whichever of them is asked about. That last case costs the bytes
+  of the group's files, each read once, and is paid only when a key of the
+  group is relied on: a dataset that holds a copy of every file is not read
+  twice for being opened. A folder whose files all carry one UID and one
+  length and differ costs two reads for a key; its other files are hashed
+  as they are viewed or asked about.
+- **For a file found after its UID's key was relied on,** when a frame of it
+  is served: the file and, if it was never hashed, the first file with the
+  UID, since the late file has no key until the two are compared.
+
+The catalog hashes one file at a time, in slices of at most 8 MiB
+(`keys::KEY_HASH_SLICE_BYTES`) on the blocking pool. Each slice holds a
+`Background` decode permit and gives it back before the next, so a viewer's
+decode never waits behind more than one slice. Digests asked for through
+`ensure_key` go ahead of those queued by viewing. `FileHasher` opens the
+path once, without waiting (`O_NONBLOCK` on Unix, so a FIFO in a file's
+place cannot hold a pool thread), and checks the opened file, not the path:
+a file whose length or modification time is not what discovery's `stat`
+saw, that changes while it is read, or that cannot be read gets no digest
+and its entry reports `key_error`; at most one byte past the discovered
+length is ever read. Length and modification time are all that tie the
+bytes to the file discovery saw, so a file rewritten at the same length
+with its modification time set back is hashed as what it now holds, and a
+file that was only touched is refused for the rest of the session.
+Hashing needs a Tokio runtime to start; a registry filled outside one keeps
+its queue until a call arrives inside one. A worker that panics on a file
+records that file as unreadable and goes on with the rest of the queue, so
+a fault cannot leave `ensure_key` waiting. A worker whose runtime goes away
+puts the file it held back at the front of the queue with no failure, and
+the next call inside a runtime starts a worker again; an `ensure_key` that
+was waiting on a queued file is woken by that and starts one itself, so it
+does not depend on another request arriving. A digest that becomes
+wanted is queued before the registry lock is released, so a catalog page
+never shows a file waiting for its key beside a `keys_hashing` that leaves
+it out. `FileRegistry::stop_key_work` ends hashing at shutdown.
+
+### What A Client Sees
+
+- `FileSummary.file_key` is left out when it is `sop:` plus the entry's own
+  `sop_instance_uid` (an ordinary DICOM file adds no bytes to the catalog),
+  `null` while the file has no key, and the key otherwise. `alias_of` names
+  the first file that holds the same key. `key_error` is `unreadable` or
+  `changed`. What an entry shows is the key as it stands, settled or not.
+- Display and raw frame responses carry `X-File-Key` whenever the file has a
+  key, so a viewer showing a file whose key was pending learns it from the
+  next frame.
+- A replaced key is one `FileRekey` (`index`, `old_key`, `new_key`,
+  `revision`) in `FilesResponse.rekeys`, delivered with the changed entry. A
+  file's key is replaced at most once, and never after `ensure_key` returned
+  it. The old key keeps naming the first file that held it
+  (`FileRegistry::file_for_shown_key`), which may be another file than
+  `index`: a replacement is applied to what is held for that file, not to
+  everything held under the old key.
+- The `--startup-json` line reports `key_rules`.
+
+A file key built from a SOP Instance UID is an identifier. A masked session
+builds it from the masked UID everywhere a key is sent (`shown_key` in
+`server/catalog/keys.rs` is the one place that decides), accepts it back in
+that form only, and keeps the real key inside the process. A `b3:` key holds
+no header value and is sent unchanged.
+
+### The Catalog Cursor
+
+Entries are not append-only: a key resolves, an alias is found, a key is
+replaced. The catalog therefore has a revision. It starts at 0, and every
+entry added and every entry whose `file_key`, `alias_of` or `key_error`
+changes takes the next revision as its own, so no two entries share one.
+
+`GET /api/files` with neither `since` nor `limit` lists every entry in index
+order, as it always has. With `since=<revision>` it lists the entries whose
+revision is higher, least recently changed first, each as it is now; `limit`
+caps the page, `more` says the list was cut and `revision` is where to
+resume. An entry that changes while a client pages is listed again later, so
+applying pages by `index` ends with the current catalog. A `since` above the
+catalog's revision comes from another process and is answered from the start
+with `reset: true`. A poll from the current revision costs the same whatever
+the size of the catalog.
+
+A response is one moment of the registry. `FileRegistry::files_page` reads
+the entries, the scan state and counters, the discovery records and the
+hashing count under one hold of the registry lock, and the handler reads
+nothing else for the response. A response that says `scan_complete` therefore
+lists every file the scan found, which matters because the page stops
+polling when it sees that member.
+
 ## Annotation Model
 
 `crates/dcmview-annotation` is the one definition of what an annotation is.
@@ -1156,7 +1350,8 @@ It holds no state and applies no operation; a store does that. It does not
 touch the filesystem, the network or the environment, and every function
 gives the same result for the same arguments except `new_id`, which reads
 the system clock and the operating system's random number generator. The
-root package does not depend on this crate. The design it implements is
+root package takes `FileKey` and `KEY_RULES` from this crate and nothing
+else. The design it implements is
 `docs/design/annotation-model.md`.
 
 | Module | Holds |
@@ -1264,8 +1459,9 @@ Local startup follows a strict order:
    on Unix, Ctrl+C and Ctrl+Break on Windows) before printing the URL, then
    serve until a stop signal, external failure notification, or idle timeout.
    The VS Code bridge client uses the same listeners.
-6. Request discovery cancellation and await the discovery task, which includes
-   the loader's `spawn_blocking`/Rayon work, before returning.
+6. Stop background key hashing (`FileRegistry::stop_key_work`), request
+   discovery cancellation and await the discovery task, which includes the
+   loader's `spawn_blocking`/Rayon work, before returning.
 
 The loader sends one event per inspected candidate through a bounded channel.
 The discovery task drains that channel while awaiting the loader, updates
@@ -1347,6 +1543,7 @@ The supported development baselines are Rust 1.88+, Node.js 20.19+, and Python
 | `e2e` | Process or integration changes | `core`, then a real debug binary, Python wrapper binary integration, debug-binary HTTP smoke, and VS Code Electron integration, which opens a fixture through the extension's custom editor and terminal shim against the debug binary. |
 | `compatibility-artifact` | Stored current corpus integration | Builds only the dcmview binary, verifies an explicitly supplied producer container (`DCMVIEW_COMPAT_CORPUS_ROOT`), and runs `scripts/compatibility/run.py` against every verified DICOM payload. It never checks out or builds the generator and fails when no container is supplied. It is run locally only; no CI workflow runs it. |
 | `corpus` | Stored generated corpus, unit and integration level | Builds frontend assets and runs every ignored lib and integration test except the remote-fixture ones, with `DCMVIEW_PREPARED_CORPUS` set from `--corpus PATH` or the environment. Those tests read cases from a local dicom-test-suite corpus, either one flat `all` corpus or per-profile `core`/`extended`/`extended-deflate` roots; the ICC test's JPEG XL and JPEG 2000 re-encodings run only when their per-profile roots exist. It fails before building when the corpus is unset or not a directory, never generates one, and no CI workflow runs it. |
+| `timing` | Startup and discovery timing against the released baseline | Builds frontend assets, then runs `scripts/startup_timing.py run --enforce`: release builds of the working tree and of the tag `v0.4.0` (built once from `git archive` and kept under `target/timing/`), timed on synthetic folders it writes, failing when the candidate's best run is past the baseline's by more than 5% plus 3 ms. Local only: it is in no aggregate profile and no CI workflow runs it. See `docs/development.md`, "Startup And Discovery Timing". |
 | `external` | Opt-in upstream DICOM compatibility | Builds frontend assets and runs only ignored integration tests behind `remote-fixtures`; those tests may download or populate the `dicom-test-files` cache. It is separate from `e2e`. |
 | `remote-ssh` | Remote-server workflow | Copies a manylinux wheel (`DCMVIEW_REMOTE_WHEEL`, else one built with `scripts/build_linux_wheel.sh`) into a throwaway SSH server container built from `tests/remote/Dockerfile` (Ubuntu 22.04 by default, `DCMVIEW_REMOTE_BASE_IMAGE` overrides), then reaches it only with the real `ssh` client. `python/tests/remote_ssh_integration.py` launches the bundled binary, the console scripts, `python -m dcmview_py` and `view(block=False)` over SSH; forwards what the printed hint names, over TCP and `--unix-socket`; checks that the page shell is public and the API needs the token; checks in headless Chromium that the forwarded `#token=` link paints a frame; and checks that Ctrl+C, `--timeout` and a dropped interactive session stop the server. Needs Docker, `ssh` and Python Playwright with Chromium (`--install` installs Playwright). CI runs it on the wheel the packaging job built, and `release.yml` runs it on the tagged wheel before publishing. |
 | `vscode-remote-ssh` | VS Code Remote-SSH workflow | Uses the same container and wheel as `remote-ssh`, plus a linux-x64 VSIX (`DCMVIEW_REMOTE_VSIX`, else one packaged around the wheel's binary with the release scripts). `tests/remote/vscode_remote_ssh.mjs` downloads VS Code (`DCMVIEW_VSCODE_REMOTE_VERSION`, default `stable`) and the Marketplace Remote-SSH extension into throwaway directories and connects once so the VS Code Server installs; the VSIX then goes in with that server's CLI. Playwright's Electron driver then opens the fixture in the custom editor and runs `dcmview` and the wheel's `dcmview-py` in remote integrated terminals. Each flow passes only when the viewer frame inside the webview, loaded through VS Code's port forward with its `#token=`, paints. After all editors close, no dcmview may be left on the remote. Needs Node, a display (`xvfb-run`), and network access for VS Code, Remote-SSH and the VS Code Server. `release.yml` runs it on the tagged wheel and linux-x64 VSIX before publishing. |
@@ -1369,6 +1566,20 @@ installation and VS Code Electron integration can also use network/cache state;
 - Discovery lifecycle tests drive the real loader over copies of committed
   fixtures for completion, cancellation, annotation failure, no-files, and
   all-filtered cases.
+- File key tests are in four places. `src/keys/table.rs` tables the key
+  rules with no filesystem, each group shape in every registration order.
+  `src/keys/hash.rs` hashes real temporary files, including ones that change
+  under it or are swapped for a FIFO at the moment they are opened.
+  `tests/key_table_memory.rs` is its own binary with a counting allocator
+  and bounds what the table holds per file. `tests/integration/file_keys.rs`
+  runs the real loader into a registry and reads the catalog, the cursor,
+  the frame header and key replacement as a client does; it bounds hashing
+  by `FileRegistry::key_stats` (files, bytes and slices read), never by
+  elapsed time, takes a `DecodeScheduler` of its own to hold the permits
+  hashing waits for, and waits on the registry's change signal instead of
+  sleeping. Two seams exist for what no outside call can arrange: the
+  registry's `after_page` hook (the catalog handler's one-read rule) and the
+  worker fault of `server/catalog/keys.rs` (a worker that panics).
 - `BoundServer::bind` is separate from `serve`, so bind ordering and occupied
   ports are deterministic.
 - `server::router(AppState)` supports in-process `axum-test` coverage for the
@@ -1484,8 +1695,10 @@ installation and VS Code Electron integration can also use network/cache state;
   window/level, WSI positioning, cine, windowing, viewport transforms,
   file switching, and recovery after request errors.
 - `python/tests/test_check_profiles.py` locks the documented
-  `quick`/`core`/`e2e` composition and the exact independent `external` and
-  `corpus` commands without launching toolchains.
+  `quick`/`core`/`e2e` composition and the exact independent `external`,
+  `corpus` and `timing` commands without launching toolchains.
+  `python/tests/test_startup_timing.py` pins the timing threshold's
+  arithmetic and that binaries listing different files are not compared.
 
 ### Intentionally External Coverage
 
@@ -1509,6 +1722,9 @@ installation and VS Code Electron integration can also use network/cache state;
   against `pixels::INTERACTIVE_LATENCY_TARGET` over files it generates. Run
   it in a release build (`cargo test --release --test integration
   thumbnail_timing -- --ignored --nocapture`). The `corpus` profile skips it.
+- `scripts/startup_timing.py` (the `timing` profile) is the instrument for
+  startup and discovery time. It compares two release binaries, so it is
+  run on one quiet machine and not in CI.
 
 ## Extension Points
 
@@ -1517,8 +1733,10 @@ Not current correctness blockers:
 1. If local startup is ever exposed as an abortable library API, introduce an
    explicit supervisor/reaper contract for hard task abortion; the binary's
    current result-based lifecycle already joins its work.
-2. Add opt-in performance benchmarks before enforcing startup, first-frame, or
-   cache-memory thresholds in CI.
+2. Startup and discovery timing is an opt-in local check
+   (`scripts/startup_timing.py`); add first-frame and cache-memory benchmarks
+   before enforcing thresholds for them, and do not gate CI on a shared
+   runner's timing.
 3. Keep external upstream fixtures opt-in unless their availability and cache
    behavior become deterministic enough for normal CI.
 4. A new raster format is a `FileFormat` variant, a signature in
@@ -1562,8 +1780,20 @@ Not current correctness blockers:
   dependencies, and only add fields to its types.
 - Keep `crates/dcmview-annotation` a pure model: no viewer, server, DICOM or
   pixel-pipeline dependency, no filesystem or network access, no state. Raise
-  `KEY_RULES` with any change to file-key syntax or derivation. Do not lower
-  a bound in `limits`.
+  `KEY_RULES` with any change to file-key syntax or derivation, which
+  includes the rules of `keys::KeyTable`. Do not lower a bound in `limits`.
+- Discovery never reads a file for its key, and no request path waits for a
+  digest except `FileRegistry::ensure_key`. Hash only through `FileHasher`,
+  one slice per `Background` permit.
+- A key is written into a record or an export only as `ensure_key` returned
+  it. The key an entry or a frame header shows may be provisional.
+- The key table holds no copy of a UID or a path and builds no key string
+  per file; keep `tests/key_table_memory.rs` passing without raising its
+  bound.
+- Every place a file key leaves the process sends `shown_key`'s form, so a
+  masked session never sends a real UID inside a key.
+- A catalog entry that changes after it was registered takes a new revision;
+  nothing else moves the cursor.
 - Keep redaction boxes out of the annotation model.
 - Add endpoint fetches through `frontend/src/api.ts`.
 - Use generated synthetic fixtures for integration coverage; never commit PHI.
