@@ -13,6 +13,7 @@ pub mod annotations;
 pub mod api;
 mod dicom_values;
 pub mod geometry;
+pub mod keys;
 pub mod loader;
 pub mod masking;
 pub mod object_kind;

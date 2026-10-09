@@ -2,6 +2,7 @@ use crate::api::contracts::{
     FileSummary, FrameRefSummary, SeriesCatalogResponse, SeriesStackSummary, SeriesSummary,
     SeriesWarningSummary,
 };
+use crate::keys::{KeyChanges, KeyRef, KeyTable};
 use crate::loader::{DiscoveryDisposition, DiscoveryRecord};
 use crate::masking::Masker;
 use crate::series::{
@@ -11,9 +12,14 @@ use crate::series::{
 use crate::types::FileEntry;
 use bytes::Bytes;
 use dicom_dictionary_std::uids;
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use tokio::sync::{futures::Notified, Notify};
+
+mod keys;
+
+pub use keys::{FilesPage, KeyError, KeyStats};
 
 pub const DISCOVERY_RESPONSE_MAX_RECORDS: usize = 256;
 
@@ -27,6 +33,12 @@ pub struct FileRegistry {
     catalog: Arc<Mutex<Option<(usize, bool, Bytes)>>>,
     /// Present in a masked session: the catalog is masked as it is built.
     masker: Option<Arc<Masker>>,
+    hashing: Arc<keys::Hashing>,
+    /// Called by [`FileRegistry::files_page`] once it has let go of the
+    /// registry, so a test can change the registry at exactly the point
+    /// where a second read would see something newer than the page.
+    #[cfg(test)]
+    after_page: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 /// Files and scan counters share one lock so every status read is a
@@ -42,6 +54,14 @@ struct FileRegistryInner {
     skipped: usize,
     filtered: usize,
     scan_complete: bool,
+    keys: KeyTable<keys::Keyed>,
+    revision: u64,
+    entry_revisions: Vec<u64>,
+    by_revision: BTreeMap<u64, usize>,
+    rekeys: BTreeMap<u64, crate::api::contracts::FileRekey>,
+    /// In a masked session: the first file behind each masked SOP Instance
+    /// UID a `sop:` key is built from.
+    shown_uids: keys::ShownUids,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -60,6 +80,9 @@ impl FileRegistry {
             notify: Arc::new(Notify::new()),
             catalog: Arc::new(Mutex::new(None)),
             masker: None,
+            hashing: Arc::new(keys::Hashing::default()),
+            #[cfg(test)]
+            after_page: None,
         }
     }
 
@@ -69,6 +92,14 @@ impl FileRegistry {
             masker: Some(masker),
             ..Self::new()
         }
+    }
+
+    /// Runs `after_page` each time [`FileRegistry::files_page`] has read its
+    /// page and released the registry.
+    #[cfg(test)]
+    pub(crate) fn with_after_page(mut self, after_page: Arc<dyn Fn() + Send + Sync>) -> Self {
+        self.after_page = Some(after_page);
+        self
     }
 
     pub fn masker(&self) -> Option<&Arc<Masker>> {
@@ -93,7 +124,32 @@ impl FileRegistry {
         registry
     }
 
-    pub fn insert(&self, mut file: FileEntry) -> usize {
+    /// Registers a file discovery selected, with its discovery record. The
+    /// record's path is the one discovery resolved, which is what tells two
+    /// entries of one file (a symbolic link and its target, or a path named
+    /// twice) from two files.
+    pub fn record_selected(&self, file: FileEntry, mut record: DiscoveryRecord) -> usize {
+        // A selected record is only counted, so its path can move on.
+        let resolved = std::mem::take(&mut record.path);
+        self.record_discovery(record);
+        self.insert_identified(file, resolved)
+    }
+
+    /// Registers a file whose own path identifies it. Discovery registers
+    /// through [`FileRegistry::record_selected`], which knows the resolved
+    /// path.
+    pub fn insert(&self, file: FileEntry) -> usize {
+        let path = file.path.clone();
+        self.insert_identified(file, path)
+    }
+
+    /// Registers `file`, whose key identity is its SOP Instance UID, its
+    /// `size_bytes` and `resolved` (`crate::keys::KeyedFile`).
+    ///
+    /// The key table is given the entry itself (`keys::Keyed`), so it holds
+    /// no copy of the UID or of the path; `resolved` is kept only when it
+    /// differs from the entry's own path.
+    fn insert_identified(&self, mut file: FileEntry, resolved: PathBuf) -> usize {
         let mut inner = self.write();
         let index = inner.files.len();
         file.index = index;
@@ -101,9 +157,24 @@ impl FileRegistry {
             Some(masker) => masker.summary(&file),
             None => FileSummary::from(&file),
         };
-        inner.files.push(Arc::new(file));
+        let file = Arc::new(file);
+        let changes = inner
+            .keys
+            .register(keys::Keyed::new(file.clone(), resolved));
+        let keyed_by_uid = crate::keys::FileKey::is_sop_uid(&file.sop_instance_uid);
+        inner.files.push(file);
         inner.summaries.push(summary);
+        if self.masker.is_some() && keyed_by_uid {
+            // The summary already holds the masked UID: it is not computed
+            // again, and no second copy of it is kept.
+            let inner = &mut *inner;
+            inner.shown_uids.insert(index, &inner.summaries);
+        }
+        inner.entry_revisions.push(0);
+        self.apply_key_changes(&mut inner, &changes);
+        self.queue_keys(changes.wanted, false);
         drop(inner);
+        self.hashing.changed.notify_waiters();
         self.notify.notify_waiters();
         index
     }
@@ -146,6 +217,119 @@ impl FileRegistry {
 
     pub fn summaries_snapshot(&self) -> Vec<FileSummary> {
         self.read().summaries.clone()
+    }
+
+    /// One answer to `GET /api/files`: the catalog entries by the contract on
+    /// `FilesResponse` and `FilesQuery`, with the scan state, the discovery
+    /// records and the hashing count that go with them.
+    ///
+    /// Everything in the page is read under one hold of the registry lock,
+    /// so the page is one moment of the registry: a page that says the scan
+    /// is complete lists every file the scan found, and a file that is
+    /// queued for hashing when the page is read is counted in
+    /// `keys_hashing`. A file whose digest became wanted is queued before
+    /// the registry is let go of (`FileRegistry::queue_keys`), so no page
+    /// shows a file waiting for its key beside a count that leaves it out. A handler builds its response from this value alone
+    /// and reads nothing else of the registry for it; two reads can be of
+    /// two moments, and a client stops polling on `scan_complete`.
+    ///
+    /// The catalog's revision starts at 0. Each entry added, and each entry
+    /// whose `file_key`, `alias_of` or `key_error` changes, takes the next
+    /// revision as its own, in ascending index order when one event changes
+    /// several, so no two entries share a revision and a page can end
+    /// after any entry.
+    ///
+    /// - `since` and `limit` both absent: every entry in index order, with
+    ///   the catalog's revision.
+    /// - Otherwise the entries whose revision is above `since` (0 when
+    ///   absent), in ascending revision order, at most `limit`. When entries
+    ///   remain, `more` is `true` and `revision` is the revision of the last
+    ///   entry returned; otherwise `revision` is the catalog's.
+    /// - `since` above the catalog's revision: `reset` is `true` and the
+    ///   request is answered as if `since` were 0.
+    /// - `rekeys`: the logged replacements whose revision is above `since`
+    ///   (as answered) and at most the returned `revision`, oldest first.
+    ///
+    /// Finding where a page starts must not walk the entries before it: a
+    /// client that polls with the current revision costs the same whether
+    /// the catalog holds ten files or a million.
+    pub fn files_page(&self, since: Option<u64>, limit: Option<usize>) -> FilesPage {
+        let page = {
+            let inner = self.read();
+            // Counted while the registry is held: the hashing queue's lock
+            // may be taken under the registry's, never the other way round.
+            let keys_hashing = self.hashing_count();
+            let reset = since.is_some_and(|since| since > inner.revision);
+            let after = if reset { 0 } else { since.unwrap_or(0) };
+            let mut revision = inner.revision;
+            let mut more = false;
+            let files = if since.is_none() && limit.is_none() {
+                inner.summaries.clone()
+            } else {
+                use std::ops::Bound::{Excluded, Unbounded};
+                let mut entries = inner.by_revision.range((Excluded(after), Unbounded));
+                let mut files = Vec::new();
+                let mut last = after;
+                for (&at, &index) in entries.by_ref().take(limit.unwrap_or(usize::MAX)) {
+                    files.push(inner.summaries[index].clone());
+                    last = at;
+                }
+                more = entries.next().is_some();
+                if more {
+                    revision = last;
+                }
+                files
+            };
+            let rekeys = if after < revision {
+                use std::ops::Bound::{Excluded, Included};
+                inner
+                    .rekeys
+                    .range((Excluded(after), Included(revision)))
+                    .map(|(_, rekey)| rekey.clone())
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            FilesPage {
+                files,
+                revision,
+                reset,
+                more,
+                keys_hashing,
+                rekeys,
+                status: inner.status(),
+                discovery: inner.discovery_records(),
+            }
+        };
+        #[cfg(test)]
+        if let Some(after_page) = &self.after_page {
+            after_page();
+        }
+        page
+    }
+
+    fn apply_key_changes(&self, inner: &mut FileRegistryInner, changes: &KeyChanges) {
+        for &index in &changes.updated {
+            inner.by_revision.remove(&inner.entry_revisions[index]);
+            inner.revision += 1;
+            inner.entry_revisions[index] = inner.revision;
+            inner.by_revision.insert(inner.revision, index);
+            if let Some(view) = inner.keys.view(index) {
+                keys::show_key_state(&mut inner.summaries[index], view, self.masker.as_deref());
+            }
+        }
+        for rekey in &changes.rekeys {
+            let revision = inner.entry_revisions[rekey.index];
+            inner.rekeys.insert(
+                revision,
+                crate::api::contracts::FileRekey {
+                    revision,
+                    index: rekey.index,
+                    old_key: keys::shown_key(KeyRef::from(&rekey.old_key), self.masker.as_deref()),
+                    new_key: keys::shown_key(KeyRef::from(&rekey.new_key), self.masker.as_deref()),
+                },
+            );
+        }
     }
 
     /// The series catalog, serialized as its API response.
@@ -212,20 +396,36 @@ impl FileRegistry {
 
     /// The most recent skipped and filtered records, sorted by path.
     pub fn discovery_response_snapshot(&self) -> Vec<DiscoveryRecord> {
-        let mut records = Vec::from(self.read().recent_discovery.clone());
-        records.sort();
-        records
+        self.read().discovery_records()
     }
 
     pub fn status(&self) -> RegistryStatus {
+        self.read().status()
+    }
+
+    /// The file at `index`, or how many files are registered when there is
+    /// none, read together so the count is the one the lookup failed against.
+    pub fn get_or_count(&self, index: usize) -> Result<Arc<FileEntry>, usize> {
         let inner = self.read();
+        inner.files.get(index).cloned().ok_or(inner.files.len())
+    }
+}
+
+impl FileRegistryInner {
+    fn status(&self) -> RegistryStatus {
         RegistryStatus {
-            file_count: inner.files.len(),
-            scanned: inner.scanned,
-            skipped: inner.skipped,
-            filtered: inner.filtered,
-            scan_complete: inner.scan_complete,
+            file_count: self.files.len(),
+            scanned: self.scanned,
+            skipped: self.skipped,
+            filtered: self.filtered,
+            scan_complete: self.scan_complete,
         }
+    }
+
+    fn discovery_records(&self) -> Vec<DiscoveryRecord> {
+        let mut records = Vec::from(self.recent_discovery.clone());
+        records.sort();
+        records
     }
 }
 

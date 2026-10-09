@@ -121,6 +121,7 @@ pub(crate) async fn run_local_viewer(options: LocalViewerOptions) -> Result<Loca
         dcmview::signals::stop_on_stdin_eof(shutdown.clone())
             .context("failed to watch parent stdin pipe")?;
     }
+    let key_registry = registry.clone();
     let discovery = DiscoveryHandle::spawn(DiscoveryInputs {
         input_paths: options.input_paths,
         recursive: options.recursive,
@@ -134,6 +135,7 @@ pub(crate) async fn run_local_viewer(options: LocalViewerOptions) -> Result<Loca
     });
 
     let server_result = bound.serve(config, state).await;
+    key_registry.stop_key_work();
     let discovery_outcome = discovery.cancel_and_wait().await;
     server_result?;
 

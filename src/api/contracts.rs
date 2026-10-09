@@ -39,6 +39,14 @@ pub use dcmview_protocol::{
 /// parent asks for it; a standalone viewer's own polling does not send it.
 pub const BACKGROUND_REQUEST_HEADER: &str = "X-Dcmview-Background";
 
+/// The file's key (`FileSummary::file_key`, written in full) on a display
+/// frame and a raw frame response. Sent whenever the file has a
+/// key when the response is built and absent while it has none, so a viewer
+/// showing a file whose key was pending learns the key from the next frame
+/// it loads, without waiting for a catalog poll. A masked session sends the
+/// key as its catalog shows it.
+pub const FILE_KEY_HEADER: &str = "X-File-Key";
+
 /// Seconds a client is told to wait, in the standard `Retry-After` header,
 /// before repeating a request answered `503 decode_busy`. A fixed number: a
 /// decode has no deadline to derive a better one from.
@@ -525,6 +533,91 @@ pub struct FileSummary {
     pub pixel_aspect_ratio: Option<f64>,
     pub transfer_syntax_uid: String,
     pub default_window: Option<WindowPreset>,
+    /// The file's stable key (`docs/design/annotation-model.md` 1.3):
+    /// `sop:<SOP Instance UID>` or `b3:<64 lowercase hex>`, the BLAKE3 digest
+    /// of the file's bytes.
+    ///
+    /// - Left out when the key is `sop:` followed by this entry's
+    ///   `sop_instance_uid`, which is the case for a DICOM file whose UID no
+    ///   other loaded file is known to contradict. A reader rebuilds it.
+    /// - `null` while the file has no key: a raster, a DICOM file without a
+    ///   usable UID, or one whose UID another loaded file with different
+    ///   bytes also carries, until its bytes have been hashed. Hashing starts
+    ///   once a frame of the file has been served. `key_error` says when it
+    ///   failed.
+    /// - Otherwise the key in full.
+    ///
+    /// A key is at most 132 bytes. This is the key as it stands, which may
+    /// not be settled: a `sop:` key is replaced, once, by a `b3:` key when
+    /// the file turns out to share its UID with different bytes, and
+    /// `rekeys` in [`FilesResponse`] reports each replacement. A `b3:` key,
+    /// and a `sop:` key the server has returned for a write or an export,
+    /// never change. A file found after the key of its UID was settled has
+    /// `null` here until it has been compared with the first file that
+    /// carries the UID. In a masked session a `sop:` key is built from the
+    /// masked UID, so the rule for leaving it out is unchanged and no real
+    /// UID is sent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub file_key: Option<Option<String>>,
+    /// The `index` of the first loaded file that holds the same key, when
+    /// that is another file: the two are one image under two paths and share
+    /// annotations. Left out otherwise. Two DICOM files with one UID and one
+    /// size are aliases without their bytes having been compared; comparing
+    /// them, which happens before a key of theirs is written down, may give
+    /// both a `b3:` key instead.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub alias_of: Option<usize>,
+    /// Why the file's bytes could not be hashed for its key. Left out when
+    /// hashing has not failed. A file with `file_key: null` and an error
+    /// stays without a key until hashing is asked for again and succeeds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub key_error: Option<FileKeyError>,
+}
+
+/// Why a whole-file digest could not be computed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum FileKeyError {
+    /// The file could not be opened or read.
+    Unreadable,
+    /// The file is not the one discovery saw: its length differs, or it
+    /// changed while it was being read.
+    Changed,
+}
+
+/// One file's key replaced by another (`docs/design/annotation-model.md`
+/// 1.7). A client applies it in one step to everything it holds under
+/// `old_key` for the file `index`: records, queued operations, history and
+/// selection. For the rest of the session the server accepts `old_key` as
+/// naming the first file that held it, which can be another file than
+/// `index`, so what is held under `old_key` for other files stays. A key
+/// the server has returned for a write or an export is never replaced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+pub struct FileRekey {
+    /// The catalog revision at which the key changed.
+    pub revision: u64,
+    pub index: usize,
+    /// The key the file had, in full.
+    pub old_key: String,
+    /// The key the file has now, in full.
+    pub new_key: String,
+}
+
+/// Query of `GET /api/files`.
+#[derive(Debug, Clone, Default, Deserialize, TS)]
+#[ts(optional_fields)]
+pub struct FilesQuery {
+    /// A `revision` from an earlier response. The response then lists only
+    /// the entries added or changed after it. Absent or 0 lists every entry.
+    /// A value above the catalog's current revision is answered with every
+    /// entry and `reset: true`.
+    pub since: Option<u64>,
+    /// The most entries to return, at least 1. Absent returns all of them.
+    /// 0 is `400 invalid_query`.
+    pub limit: Option<u32>,
 }
 
 /// The container format of a discovered file, detected from its content
@@ -659,6 +752,12 @@ pub struct RasterSummary {
 
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct FilesResponse {
+    /// With neither `since` nor `limit`, every entry in index order.
+    /// Otherwise the entries added or changed after `since` (after 0 when it
+    /// is absent), least recently changed first, each as it is now and each
+    /// once, and at most `limit` of them. An entry that changes while a
+    /// client pages through the list is listed again on a later page, so
+    /// applying every page by `index` ends with the current catalog.
     pub files: Vec<FileSummary>,
     pub discovery: Vec<DiscoveryResult>,
     pub server_start_ms: u64,
@@ -668,6 +767,26 @@ pub struct FilesResponse {
     pub scanned: usize,
     pub skipped: usize,
     pub filtered: usize,
+    /// The catalog revision this response is complete up to: pass it as
+    /// `since` to receive what changed afterwards. It starts at 0 and rises
+    /// by one for every entry added and every entry whose `file_key`,
+    /// `alias_of` or `key_error` changes. When `more` is `true` it is the
+    /// revision of the last entry listed, not the catalog's latest.
+    pub revision: u64,
+    /// `true` when `since` was above the catalog's revision, which means it
+    /// came from another process: the client drops the entries it holds and
+    /// takes this response, which then lists from the start, as the catalog.
+    pub reset: bool,
+    /// `true` when `limit` cut the list short: ask again with
+    /// `since=<revision>` for the rest.
+    pub more: bool,
+    /// Files whose bytes are being hashed for a key now, or are queued for
+    /// it. A client that shows pending keys polls while this is above zero.
+    pub keys_hashing: usize,
+    /// The key replacements after `since` and up to `revision`, oldest
+    /// first. A file's key is replaced at most once, so the list never holds
+    /// more entries than there are files.
+    pub rekeys: Vec<FileRekey>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]

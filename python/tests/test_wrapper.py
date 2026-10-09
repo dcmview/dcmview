@@ -41,7 +41,7 @@ class WrapperTests(unittest.TestCase):
 			("older binary", {"url": base_url}, base_url, None, None),
 			("new with token", {
 				"url": base_url + "/#token=Xy_test", "base_url": base_url,
-				"token": "Xy_test", "protocol": 1,
+				"token": "Xy_test", "protocol": 1, "key_rules": 1,
 			}, base_url + "/#token=Xy_test", "Xy_test", base_url),
 			("new without token", {
 				"url": base_url, "base_url": base_url, "token": None, "protocol": 1,

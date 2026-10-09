@@ -246,6 +246,16 @@ impl RasterMetadata {
 pub struct FileEntry {
     pub index: usize,
     pub path: PathBuf,
+    /// The file's length in bytes when discovery opened it. Two files with
+    /// one SOP Instance UID and different lengths cannot be the same bytes,
+    /// and a whole-file digest is refused when the length has changed.
+    pub size_bytes: u64,
+    /// The file's modification time from the same `stat` as `size_bytes`.
+    /// A whole-file digest is refused when it has changed, which is how a
+    /// file rewritten with other bytes of the same length is told from the
+    /// one discovery saw. `None` when the platform reports none, and for an
+    /// entry that was not read from a file.
+    pub modified: Option<std::time::SystemTime>,
     /// The container format, from the file's content. For a raster the DICOM
     /// identity strings, `sop_class_uid` and `transfer_syntax_uid` are empty.
     pub format: FileFormat,
@@ -421,6 +431,11 @@ impl From<&FileEntry> for FileSummary {
                 .effective_pixel_aspect_ratio(),
             transfer_syntax_uid: value.transfer_syntax_uid.clone(),
             default_window: value.default_window,
+            // The catalog fills these from its key table; an entry on its
+            // own has the key its UID implies.
+            file_key: None,
+            alias_of: None,
+            key_error: None,
         }
     }
 }

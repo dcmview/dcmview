@@ -105,6 +105,18 @@ class CheckProfileCompositionTests(unittest.TestCase):
 			],
 		)
 
+	def test_timing_enforces_the_startup_threshold_and_is_in_no_aggregate(self) -> None:
+		runner = RecordingRunner()
+		with mock.patch.object(check, "run") as run:
+			runner.timing()
+		_label, command = run.call_args.args
+		self.assertEqual(command[1:], ["scripts/startup_timing.py", "run", "--enforce"])
+		# A timing gate on a shared runner would fail on noise: no profile CI runs includes it.
+		for profile in (runner.quick, runner.core, runner.e2e):
+			with mock.patch.object(runner, "timing") as timing, mock.patch.object(check, "run"):
+				profile()
+			timing.assert_not_called()
+
 	def test_compatibility_artifact_runs_the_local_container(self) -> None:
 		runner = RecordingRunner()
 		with (

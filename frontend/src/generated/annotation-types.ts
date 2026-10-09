@@ -228,8 +228,10 @@ export type FileKind = "dicom" | "raster";
  * `exif_orientation`, when present, is 1 to 8; `path` is 1 to 4,096 bytes
  * ([`crate::limits::MAX_PATH_BYTES`]) and the UIDs, patient id, format and
  * external id at most 256 bytes ([`crate::limits::MAX_NAME_BYTES`])
- * (`too_long`); a `sop:` key names this file's `sop_instance_uid`; a spacing
- * is finite and positive.
+ * (`too_long`); a `sop:` key names this file's `sop_instance_uid`; a `b3:`
+ * key and a `b3:` `digest` are the same string, since both are the BLAKE3
+ * digest of the file's bytes (a `sha256:` digest, or none, contradicts
+ * nothing); a spacing is finite and positive.
  */
 export type FileRef = { key: FileKey, kind: FileKind, sop_instance_uid: string | null, sop_class_uid: string | null, study_instance_uid: string | null, series_instance_uid: string | null, patient_id: string | null, path: string, size_bytes: number, digest: string | null, rows: number, columns: number, frames: number, space: Space, 
 /**

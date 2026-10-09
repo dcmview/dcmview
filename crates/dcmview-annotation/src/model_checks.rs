@@ -692,6 +692,14 @@ impl Checks {
                 &format!("{path}/digest"),
                 "The file digest must be a full lowercase digest with a known scheme.",
             )?;
+            if file.key.scheme() == KeyScheme::Blake3 && digest.starts_with("b3:") {
+                self.require(
+                    digest == file.key.as_str(),
+                    BadFileRef,
+                    &format!("{path}/digest"),
+                    "A BLAKE3 file key must equal its BLAKE3 digest.",
+                )?;
+            }
         }
         if let Some(orientation) = file.space.exif_orientation {
             self.require(
