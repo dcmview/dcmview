@@ -140,8 +140,20 @@ that removes the duplicate, for example `tiffcp in.tif out.tif`.
 
 ### Image files now appear beside DICOM
 
-PNG, JPEG, TIFF, and WebP images are displayed beside DICOM by default. Run
-`dcmview --formats dicom ./mixed_dir` to restore the DICOM-only directory list. An explicitly named image file still loads.
+PNG, JPEG, TIFF, and WebP images are displayed beside DICOM by default.
+Their Metadata panel shows container fields, EXIF and TIFF directories,
+text, XMP and ICC profile descriptions. Run
+`dcmview --formats dicom ./mixed_dir` to restore the DICOM-only directory
+list. An explicitly named image file still loads.
+
+### A Note row appears in an image's Metadata panel
+
+"Damaged or cut short" means that part of the metadata could not be read
+completely, for example because its bytes are missing or a directory points
+outside its block. "More metadata than is shown" means a fixed limit on
+reading or displaying metadata was reached. TIFF trees show at most the
+first 16 pages. In either case, the rest of the tree that could be read is
+still shown.
 
 ### An image is listed as unsupported
 

@@ -47,12 +47,21 @@ pub use colorwash::{
 pub use error::{PixelError, PixelResult};
 pub(crate) use header::open_header;
 pub(crate) use native_layout::{NativeByteOrder, NativeFrameLayout};
+pub(crate) use raster::raster_tag_nodes;
 pub use raster::{
     decode_raster_frame, raster_decode_heap_limit, raster_frame_bytes, raster_read_budget,
     RasterFrame, RasterSource, RASTER_DECODE_HEAP_BASE_BYTES, RASTER_ICC_MAX_BYTES,
     RASTER_JPEG_MAX_SCANS, RASTER_READ_BUDGET_BASE_BYTES, RASTER_READ_BUDGET_PER_DECODED_BYTE,
     RASTER_READ_BUFFER_BYTES, RASTER_TIFF_MAX_CHUNKS, RASTER_TIFF_MAX_TAGS,
     RASTER_TIFF_TILE_MARGIN,
+};
+pub use raster::{
+    read_raster_tags, RasterTagLimit, RasterTagNote, RasterTagPart, RasterTagTree,
+    RASTER_TAGS_HEAP_LIMIT_BYTES, RASTER_TAGS_ICC_HEAD_BYTES, RASTER_TAGS_INFLATE_MAX_BYTES,
+    RASTER_TAGS_MAX_DEPTH, RASTER_TAGS_MAX_IFDS, RASTER_TAGS_MAX_IFD_ENTRIES,
+    RASTER_TAGS_MAX_NODES, RASTER_TAGS_MAX_PAGES, RASTER_TAGS_MAX_READS,
+    RASTER_TAGS_MAX_TEXT_BYTES, RASTER_TAGS_READ_BUDGET_BYTES, RASTER_TAG_NUMBERS_MAX,
+    RASTER_TAG_TEXT_MAX_CHARS, RASTER_TAG_VALUE_MAX_BYTES,
 };
 pub use redaction::Redaction;
 pub(crate) use render::encode_presentation_layer_png;

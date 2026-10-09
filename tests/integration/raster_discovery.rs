@@ -8,8 +8,8 @@
 //! files were written with, never values a decoder returned.
 //!
 //! What the frames of these files hold is in `raster_decode.rs`, and what
-//! decoding one may cost in `raster_bounds.rs`. Listing raster metadata as
-//! tags is later work.
+//! decoding one may cost in `tests/raster_cost`. Their metadata trees are in
+//! `raster_tags.rs`.
 
 use super::{raster_files, support};
 use axum_test::TestServer;
@@ -1150,7 +1150,8 @@ async fn every_endpoint_answers_for_a_decodable_raster() {
         (&endpoints::FILE_RAW_PIXEL, 200, "application/octet-stream"),
         (&endpoints::FILE_THUMBNAIL, 200, "image/jpeg"),
         (&endpoints::FILE_PRESENTATION_LAYER, 200, "image/png"),
-        // No metadata tree yet: an empty one, and nothing to select from.
+        // The metadata tree, and a selection that names a DICOM element,
+        // which no raster tree has (`raster_tags.rs` selects what it has).
         (&endpoints::FILE_TAGS, 200, "application/json"),
         (&endpoints::FILE_TAG_SELECT, 400, ""),
         (&endpoints::FILE_ANNOTATIONS_GET, 200, "application/json"),
@@ -1234,8 +1235,23 @@ async fn every_endpoint_answers_for_a_decodable_raster() {
     let pixel = get(&endpoints::FILE_RAW_PIXEL).await;
     assert_eq!(pixel.as_bytes().as_ref(), [0x40, 0x40]);
 
-    let tags = get(&endpoints::FILE_TAGS).await;
-    assert_eq!(tags.json::<Value>(), json!([]));
+    // The tree starts with what the catalog knows of the file.
+    let tags: Value = get(&endpoints::FILE_TAGS).await.json();
+    assert_eq!(
+        tags[0],
+        json!({
+            "tag": "File",
+            "vr": "",
+            "keyword": "Format",
+            "value": { "type": "string", "value": "png" },
+        })
+    );
+    assert!(
+        tags.as_array().is_some_and(|nodes| nodes
+            .iter()
+            .any(|node| node["tag"] == "PNG:IHDR" && node["keyword"] == "Width")),
+        "{tags}"
+    );
 
     // What a raster has for good: no references, no semantic context, and
     // stored values that are their own modality values.

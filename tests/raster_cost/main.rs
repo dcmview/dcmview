@@ -25,7 +25,10 @@ mod overlays;
 mod raster_cases;
 #[path = "../integration/raster_files.rs"]
 mod raster_files;
+#[path = "../integration/raster_tag_files.rs"]
+mod raster_tag_files;
 mod scale;
+mod tags;
 
 /// Every test of this binary runs on the counting allocator
 /// (`heap::peak_during`).

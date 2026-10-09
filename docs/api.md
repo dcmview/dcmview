@@ -343,8 +343,8 @@ For a raster file index, the following responses require no DICOM parsing:
 | Endpoint suffix under `/api/file/{index}` | Raster response |
 |---|---|
 | `/frame/{frame}`, `/frame/{frame}/thumbnail`, `/frame/{frame}/raw`, `/frame/{frame}/raw/pixel`, `/frame/{frame}/presentation-layer` | As for DICOM for a renderable raster. A refused raster returns `422 unsupported_pixel_layout` naming its reason, without opening the file; a damaged file that cannot decode returns `500` in the shared JSON error envelope. A renderable file may answer `422 decode_memory_exceeded` or `503 decode_busy`; neither is cached or changes `support_state`. Follow the [decode admission retry rules](#decode-admission). Missing pixels and out-of-range frames are checked first; the latter is `404 frame_out_of_range`. |
-| `/tags` | `200` with `[]`. |
-| `/tags/select` | `400 bad_request`: tag selection is not available for image files. |
+| `/tags` | `200` with the file's metadata tree; see [Raster metadata](#raster-metadata). A file that is damaged, or that holds more than is shown, still answers `200`, with `Note` leaves. `404` when the file is gone. |
+| `/tags/select` | One node of that tree by its path; `400 bad_request` for a path that names nothing. |
 | `/references` | `200` with `source_file_index`, empty `source_sop_instance_uid`, and `references: []`. Rasters are never reference targets. |
 | `/semantic-context` | `200`, `context.kind: "not_applicable"` with a reason, `default_mode: "pixel_preview"`, and `pixel_preview_preserves_stored_values: true`. |
 | `/frame/{frame}/value-mapping` | `200` identity: `stored_value_type` is `integer`, `float32`, or `float64`; `modality` has slope 1, intercept 0, `rescale_type: null`, `lut: null`; `real_world: []`, `voi_lut: null`. Frame range is checked first. |
@@ -677,6 +677,60 @@ preview's depth and item caps. `path` alternates tags and zero-based item
 indices, such as `(0008,2218)/69/(0008,0100)`. For a sequence, `offset`
 (default 0) and `limit` (default 64, at most 256) page its items.
 
+### Raster metadata
+
+For a raster image file `/tags` returns the file's metadata in the same
+`TagNode` shape. A node is a leaf, or a group: a `sequence` value with one
+item, the group's children, and an empty `vr` (a DICOM sequence has `SQ`).
+`tag`, `keyword` and `vr` are names dcmview chooses and never hold bytes of
+the file. The tree is one per file, in this order:
+
+| Nodes | What they are |
+|---|---|
+| `File` leaves | From the catalog entry: `Format`, `Size` (bytes), `Extension` (lower case, when the name has a short alphanumeric one), `Pages`, `Frames`, and for a TIFF with pages that are not frames `ExcludedPages` and one `ExcludedPage` (`page 3: width`) for each the catalog lists. |
+| Container leaves | `tag` names the source, `keyword` the field. PNG: `PNG:IHDR` (`Width`, `Height`, `BitDepth`, `ColorType`, `Compression`, `Filter`, `Interlace`), `PNG:pHYs` (`PixelsPerUnitX`, `PixelsPerUnitY`, `Unit`), `PNG:gAMA` `Gamma`, `PNG:cHRM` `Chromaticities`, `PNG:sRGB` `RenderingIntent`, `PNG:sBIT` `SignificantBits`, `PNG:tIME` `Time`, `PNG:acTL` (`Frames`, `Plays`), `PNG:iCCP` `ProfileName`, and `PNG:tEXt`, `PNG:zTXt`, `PNG:iTXt` `Text` (`keyword: text`), each text chunk a leaf. JPEG, up to its first scan: `JPEG:JFIF` (`Version`, `Units`, `XDensity`, `YDensity`), `JPEG:Adobe` (`Version`, `Transform`), `JPEG:COM` `Comment` for each comment, `JPEG:SOFn` (`Precision`, `Height`, `Width`, `Components`). WebP: `WEBP:VP8X` (`Flags`, `CanvasWidth`, `CanvasHeight`) or `WEBP:VP8` / `WEBP:VP8L` (`Width`, `Height`), and `WEBP:ANIM` `LoopCount`. Numbers are the stored integers. |
+| `TIFF:page N` groups | One for each of a TIFF's first 16 pages: its entries in file order, then `Exif`, `GPS` and `Interop` groups for the directories the page points to. |
+| `EXIF` group | The EXIF block of a PNG, JPEG or WebP: groups `IFD0`, `Exif`, `GPS`, `Interop`, `IFD1`, each present when the block has it. |
+| `XMP` leaf | `Packet`: the start of a JPEG's or WebP's XMP packet, as text. |
+| `ICC` leaves | `Size`, `Version`, `Class`, `ColorSpace` and `Description` of the embedded profile. |
+| `Note` leaves | One sentence each: a note discovery made, a name whose extension belongs to another format, an animation of which the first frame is shown, a part that is damaged, a limit that was reached. Fixed words and numbers. |
+
+A directory entry (in a page or an EXIF directory) has its tag number as
+`tag` (`0x010F`), the tag's name as `keyword` (`Unknown` when dcmview has
+none) and its TIFF type as `vr` (`ASCII`, `SHORT`, `RATIONAL`, ...). Its value
+is a `string` for text, a `number` or `numbers` for integer and float types,
+a `string` of `numerator/denominator` pairs for rationals, `binary` with its
+length for `UNDEFINED` data (a maker note, a thumbnail, IPTC and Photoshop
+blocks are never parsed), and `error` for a value that lies outside the file,
+has an unknown type or is not a finite number.
+
+Limits, the same for every file: at most 1,024 nodes, three levels deep; a
+text value shows at most 1,024 characters and then `…`, and a tree at most
+128 KiB of text; a numeric value shows at most 64 numbers and states its
+`total`; a directory shows its first 256 entries. Text is decoded (invalid
+bytes become U+FFFD), trailing NULs and white space are dropped, tabs and
+line ends become spaces, and these are written as `\u{..}` with the code
+point in hex: every other control character (U+0000 to U+001F, U+007F to
+U+009F), the line and paragraph separators (U+2028, U+2029), every format
+character (Unicode general category Cf, which holds the soft hyphen, the
+zero-width and bidirectional characters, the byte order mark and the tag
+characters), and every other code point Unicode makes ignorable by default
+(the variation selectors U+180B to U+180D, U+180F, U+FE00 to U+FE0F and
+U+E0100 to U+E01EF, the combining grapheme joiner, the Hangul fillers, and
+the rest of U+E0000 to U+E0FFF; U+180E, the Mongolian vowel separator, is a
+format character). A variation selector or a joiner inside an emoji
+sequence is therefore shown escaped too.
+
+`/tags/select?path=...` returns one node of this tree; nothing more is read
+from the file. `path` is steps separated by `/`, at most three. A step is a
+node's `tag`, optionally `.` and its `keyword`, optionally `[n]` for the
+`n`-th node (from zero) of that level that matches; without `[n]`, the
+first. Examples: `PNG:IHDR.Width`, `PNG:tEXt[2]`, `EXIF/GPS/0x0002`,
+`TIFF:page 1/0x0100`. A group is returned with its children, and `offset`
+and `limit` page its one item as they page a sequence's; a leaf takes no
+`offset`. A path longer than 256 bytes, a step that matches nothing, a step
+through a leaf and a `limit` outside 1 to 256 are `400 bad_request`.
+
 ## Annotations
 
 Annotations are EMBED-style rectangles held in memory:
@@ -738,6 +792,30 @@ A session started with `--mask` reports `masked: true` in `/health` and
 - A presentation state's `content_creator_name` is `[masked]`, its
   `presentation_creation_date` is shifted, and its text objects are withheld
   and counted in `skipped.masked_text`.
+- A raster image file's metadata tree keeps its shape and shows only listed
+  values that describe the pixel grid and its encoding: the `File` leaves
+  except `Extension`, the notes, the container's layout fields (`PNG:IHDR`,
+  `pHYs`, `gAMA`, `cHRM`, `sRGB`, `sBIT`, `acTL`; `JPEG:JFIF`, `JPEG:Adobe`
+  and the frame header; the WebP headers and loop count), a profile's `Size`
+  and `Version`, and of directory entries the layout ones (sizes, sample
+  layout, compression, strips and tiles, resolution, orientation, colour
+  space, pixel dimensions, and the pointers to other directories). Of a
+  directory a masked tree shows one value for each listed field and
+  nothing else: the first entry of that tag, when it has a type the field
+  is defined with and no more numbers than the field holds (one for a
+  size, a scalar field, and strip and tile offsets and byte counts; the
+  field's fixed count otherwise; at most four where there is a number for
+  each sample). A repeated, longer or differently typed entry is
+  `[masked]` whole. The values shown are still numbers the file chose:
+  masking is a display aid for honest files, not a guarantee against a
+  file built to carry something in them. Every other value is `[masked]`:
+  unknown tags, colour maps, all text of the file, GPS, dates and times
+  (masked, not shifted), device, software and host names, serial
+  numbers, owner, artist, copyright, description and comment fields, PNG
+  text chunks, XMP, maker notes, thumbnail entries, profile names and
+  descriptions, document and page names, and exposure settings.
+  `/tags/select` selects from the masked tree. A raster's catalog entry and
+  the errors of these endpoints hold no text of the file.
 - Slide label and overview images (Image Type value 3 `LABEL` or `OVERVIEW`)
   report `support_state: unsupported` with `support_reason:
   masked_label_image`, and their frame endpoints answer `403` `masked`.

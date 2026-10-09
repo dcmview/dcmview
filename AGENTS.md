@@ -60,7 +60,11 @@ would remove behavior, raise it as a question instead of acting.
   the file stores (low-bit values unscaled, WhiteIsZero un-inverted, alpha
   unassociated), gray is windowed and colour is not, and a frame of up to
   268,435,456 pixels is decoded whole. A raster the viewer does not decode
-  is listed with a `raster.*` reason.
+  is listed with a `raster.*` reason. The Metadata panel shows a raster's
+  metadata as a tree in the tag tree's shape: the container's fields, EXIF
+  and TIFF directories with their GPS and interoperability directories, PNG
+  text chunks, comments, XMP and the ICC profile's description
+  (`docs/design/image-formats.md` section 8).
 - **Decode memory budget** - every decode, render and frame-sized copy
   reserves an estimate of the memory it will hold, from the catalog entry,
   before it starts, and the decodes running at once never have more
@@ -119,7 +123,12 @@ would remove behavior, raise it as a question instead of acting.
   purpose: Study and Series Description, patient characteristics, and real
   folder and file names in the directory tree (under a "Not masked" note;
   tabs follow the tree). Presentation state text and slide label and
-  overview frames are withheld.
+  overview frames are withheld. A raster image file's metadata is masked by
+  an allowlist (owner decision, 2026-10-05: `--mask` covers rasters): the
+  tree keeps its shape and the values that describe the pixel grid, and
+  everything else shows `[masked]`, which covers every unknown tag, all text
+  of the file, GPS, dates and times, device and software names and serial
+  numbers, XMP and maker notes.
 - **Redaction boxes** - rectangles drawn with the Redact tool over burned-in
   text, per file, covering every frame unless scoped, in server memory for
   the session and never exported. The server applies them in both frame
@@ -130,9 +139,11 @@ would remove behavior, raise it as a question instead of acting.
 
 **Known gaps (intended work, not settled scope):**
 
-- **Raster images have no metadata tree.** A raster's tag tree is empty.
-  The metadata tree (which must honour `--mask`) is the planned follow-up
-  in `docs/design/image-formats.md`.
+- **Raster metadata is shown in part.** Of a TIFF the first 16 pages have
+  their tags shown; maker notes, IPTC and Photoshop blocks and embedded
+  thumbnails are shown by their length only; XMP is shown as the start of
+  its text, not parsed; `SubIFDs` are not followed. Dates in a raster's
+  metadata are masked in a masked session, not shifted.
 - **The decode memory budget is not a process limit.** Beside it are the
   frame caches and response bodies while they are sent.
 - **Some TIFF layouts the design lists are not decoded.** JPEG-compressed
@@ -415,9 +426,10 @@ dcmview/
 |-- tests/
 |   |-- integration.rs  Integration test module root
 |   |-- integration/    Axum and pixel-path integration tests
-|   |-- raster_cost/    what a raster decode may read and allocate, and what
-|   |                   each request holds against what it reserved, on a
-|   |                   counting allocator (its own test binary)
+|   |-- raster_cost/    what a raster decode and a raster metadata read may
+|   |                   read and allocate, and what each request holds
+|   |                   against what it reserved, on a counting allocator
+|   |                   (its own test binary)
 |   |-- codestream_cost/  what a compressed DICOM frame may cost before it is
 |   |                   known to match its header (its own test binary)
 |   |-- windowing-cases.json  windowing oracle shared with rawWindowing.test.ts
@@ -661,6 +673,25 @@ is cached between requests.
 - What a raster's raw frame holds is the file's stored samples; undo what a
   decoder changes (scaling, inversion, premultiplication) in the decoder
   arm, so display, readout and annotations all see one meaning.
+- `pixels/raster/tags.rs` `read_raster_tags` is the only code that reads a
+  raster file's metadata, and its doc comment is the contract: the tree's
+  layout and every limit, as fixed numbers. The limits are held outside the
+  format readers: bytes and reads by the reader and the counting source
+  around it, nodes, depth and text by `TagSink`. Keep them there. A format
+  reader checks every offset against the file's real length (an EXIF
+  block's against the block) and every count against a constant before it
+  reads or loops by it, follows only the pointers the contract names, and
+  never reads a directory twice.
+- A raster metadata node's `tag`, `keyword` and `vr` are names from the
+  code, never bytes of the file, and text reaches a value only through
+  `TagSink`, which decodes and escapes it. Do not build a node any other
+  way, and do not put a file's text in a note, an error or a log line.
+- Metadata reads step over image data by seeking and name the bytes they
+  need (`Reader::read_span`); they never decode pixels and take no decode
+  permit. The only reads that reach into image data are a JPEG walk's: it
+  reads 36 bytes at each marker, so the read at the start-of-scan marker,
+  and the read at a segment just before it that is shorter than those
+  bytes, take in the first bytes of the scan.
 
 **Masking and redaction**
 
@@ -672,6 +703,17 @@ is cached between requests.
   identifier appears in a response.
 - Masked values are computed from the process's random keys; never persist
   them or derive them from anything stable across runs.
+- Raster metadata is masked by the allowlist in `masking/raster.rs`: a value
+  is shown only when its place is listed and it is number-shaped, text
+  of a directory entry only for a rational type, and a directory entry
+  only when it is the first of its tag in its directory and has a type
+  and a count listed with that tag. That is a display aid for honest
+  files, not a guarantee against a file built to carry something in the
+  numbers shown. A new node is masked
+  until it is listed there, and only what describes the pixel grid or its
+  encoding is listed. `tests/integration/raster_tags.rs`
+  plants a string in every place a raster can hold text and fails when a
+  masked session returns one; a new text-bearing place gets a string there.
 - Redaction boxes are applied where frames leave the pixel service
   (`load_redacted_frame`, `load_redacted_raw_frame`, `load_thumbnail`, the
   presentation layer). A new endpoint that returns source pixels must apply
@@ -1051,6 +1093,13 @@ default suite.
   not started. A refused overlay is drawn when it is asked for again with
   room; a legend's value range and a value overlay are kept for one file
   set, and an overlay for the frames it was drawn from and on.
+- A raster's metadata tree shows the values its file was written with, for
+  each format; text is escaped and cut; reading it costs at most its fixed
+  bytes, reads, nodes and heap for hostile and damaged files too, never
+  reads image data and never fails.
+- A masked session returns none of the strings planted in every text-bearing
+  place of a raster of each format, from any endpoint, and an unmasked one
+  shows them.
 
 **Test policy:**
 
