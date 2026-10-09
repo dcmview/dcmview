@@ -126,6 +126,8 @@ diagnostic viewer.
   total is 768 MiB instead of 704 MiB: 256, 384, 64 and 64 MiB for the
   display, raw, overlay and thumbnail caches respectively.
 
+## 0.4.1 - 2026-10-09
+
 ### Fixed
 
 - A compressed DICOM frame whose pixel data declares a different image than
