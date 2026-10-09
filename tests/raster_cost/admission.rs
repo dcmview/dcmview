@@ -412,7 +412,7 @@ fn native_dicom(side: u16, bits: u16, samples: Vec<u8>) -> Vec<u8> {
 
 /// What a native single-frame DICOM image of `side` x `side` pixels says
 /// about itself.
-struct Native {
+pub(super) struct Native {
     side: u16,
     bits: u16,
     samples_per_pixel: u16,
@@ -422,7 +422,7 @@ struct Native {
 }
 
 impl Native {
-    fn gray(side: u16, bits: u16) -> Self {
+    pub(super) fn gray(side: u16, bits: u16) -> Self {
         Self {
             side,
             bits,
@@ -447,13 +447,16 @@ impl Native {
         }
     }
 
-    fn with(mut self, more: impl IntoIterator<Item = DataElement<InMemDicomObject>>) -> Self {
+    pub(super) fn with(
+        mut self,
+        more: impl IntoIterator<Item = DataElement<InMemDicomObject>>,
+    ) -> Self {
         self.more.extend(more);
         self
     }
 
     /// The bytes of one frame.
-    fn frame_bytes(&self) -> usize {
+    pub(super) fn frame_bytes(&self) -> usize {
         usize::from(self.side)
             * usize::from(self.side)
             * usize::from(self.samples_per_pixel)
@@ -461,7 +464,7 @@ impl Native {
     }
 
     /// The file, holding `samples` as its pixel data.
-    fn file(&self, samples: Vec<u8>) -> Vec<u8> {
+    pub(super) fn file(&self, samples: Vec<u8>) -> Vec<u8> {
         let Self { side, bits, .. } = *self;
         let unsigned = |value: u16| PrimitiveValue::from(value);
         let uid = format!("2.25.{}{bits}{side}", self.samples_per_pixel);
@@ -683,7 +686,7 @@ fn a_deflated_data_set_costs_what_it_supplies() {
 /// that hides every other pixel of a row, filled with mid gray: the layer
 /// then alternates between a transparent pixel and an opaque gray one, and
 /// every sample differs from its neighbor.
-fn striped_shutter(side: u16) -> Vec<DataElement<InMemDicomObject>> {
+pub(super) fn striped_shutter(side: u16) -> Vec<DataElement<InMemDicomObject>> {
     const GROUP: u16 = 0x6000;
     let unsigned = |value: u16| PrimitiveValue::from(value);
     let words = (usize::from(side) * usize::from(side)).div_ceil(16);

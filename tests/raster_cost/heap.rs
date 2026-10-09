@@ -96,6 +96,13 @@ pub fn peak_during<T>(call: impl FnOnce() -> T) -> (T, u64) {
     (result, (peak - start).max(0) as u64)
 }
 
+/// What the calling thread has allocated less what it has freed, so far.
+/// Memory another thread allocated and this one frees lowers it: the
+/// difference across a `drop` is what the drop gave back.
+pub fn held() -> i64 {
+    HELD.with(Cell::get)
+}
+
 /// A runtime whose threads (its workers and its blocking pool) are counted
 /// together, so the heap of work the pixel service spreads over tasks and
 /// blocking threads can be measured whole, apart from whatever other tests

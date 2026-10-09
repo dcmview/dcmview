@@ -1662,6 +1662,12 @@ join guarantees after hard task abortion.
   the defaults (256, 384, 64 and 64 MiB), and `AppState::with_cache_budget` builds
   the caches from it before the router exists. Tag, semantic and value
   mapping caches are bounded by entry count and are not part of the budget.
+  A cache bills an entry the length of its body, and a body holds exactly
+  that: the pixel service passes every result through
+  `FrameBody::compact` before it is cloned for the cache and the requests,
+  which gives back the spare room of the buffer it was encoded in.
+  `AppState::cached_bytes` reports what each cache bills, and
+  `tests/raster_cost/caches.rs` compares it with the heap the entries hold.
 - `--exit-with-parent` (hidden) treats end of file on stdin as a stop signal
   and shuts down gracefully, so a child does not outlive a parent that died
   without signalling it. It only works when the parent passes a pipe and
