@@ -1919,6 +1919,57 @@ fn files_queued_when_the_workers_runtime_goes_away_are_still_hashed() {
     }
 }
 
+/// A key request that waits on a file whose worker went away with its
+/// runtime is the only caller left to hash it. It is woken when the worker
+/// gives the file back, and it has to start a worker itself: with no other
+/// request arriving, nothing else would, and the request would never end.
+#[test]
+fn a_waiting_key_request_restarts_a_worker_whose_runtime_went_away() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("a.dcm");
+    write_dicom(&path, None, 1, 8);
+    let scheduler = DecodeScheduler::new(1);
+    let registry = FileRegistry::new().with_decode_scheduler(scheduler.clone());
+    let runtime = || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+    };
+
+    let first = runtime();
+    let viewer = first.block_on(async {
+        scan(&registry, &path).await;
+        let viewer = scheduler.acquire(DecodeClass::Interactive).await;
+        registry.frame_sent(0);
+        // The worker takes the file and waits for a permit.
+        let_tasks_run().await;
+        viewer
+    });
+
+    runtime().block_on(async {
+        let waiter = registry.ensure_key(0);
+        tokio::pin!(waiter);
+        assert!(
+            futures::poll!(waiter.as_mut()).is_pending(),
+            "the request waits on the file the worker holds"
+        );
+        // The worker's runtime goes away while the request waits. A
+        // runtime cannot be dropped from inside another, hence the thread.
+        std::thread::spawn(move || drop(first))
+            .join()
+            .expect("drop the worker's runtime");
+        drop(viewer);
+        // A hang guard, not a measurement. Nothing but the waiting request
+        // touches the registry from here on.
+        let key = tokio::time::timeout(Duration::from_secs(30), waiter)
+            .await
+            .expect("the waiting request never restarted the worker");
+        assert_eq!(key.as_ref().map(FileKey::as_str), Ok(b3(&path).as_str()));
+    });
+    assert_eq!(registry.key_stats().files_hashed, 1);
+}
+
 /// A hub that computes keys with other tooling has to read the UID the way
 /// discovery does, or it builds another key for the same file. This is that
 /// reading: the data set's SOP Instance UID, its first value, without

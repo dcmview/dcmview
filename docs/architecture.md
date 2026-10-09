@@ -1082,7 +1082,9 @@ its queue until a call arrives inside one. A worker that panics on a file
 records that file as unreadable and goes on with the rest of the queue, so
 a fault cannot leave `ensure_key` waiting. A worker whose runtime goes away
 puts the file it held back at the front of the queue with no failure, and
-the next call inside a runtime starts a worker again. A digest that becomes
+the next call inside a runtime starts a worker again; an `ensure_key` that
+was waiting on a queued file is woken by that and starts one itself, so it
+does not depend on another request arriving. A digest that becomes
 wanted is queued before the registry lock is released, so a catalog page
 never shows a file waiting for its key beside a `keys_hashing` that leaves
 it out. `FileRegistry::stop_key_work` ends hashing at shutdown.

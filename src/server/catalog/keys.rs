@@ -312,7 +312,9 @@ impl FileRegistry {
     /// failed. Callers that wait on the same file share one attempt. When
     /// the attempts it asked for have an outcome it asks again what is
     /// required, since a file may have been registered meanwhile, and
-    /// returns when nothing new is.
+    /// returns when nothing new is. While it waits it keeps a worker
+    /// running: woken with a file still queued and no worker (the worker's
+    /// runtime went away), it starts one on its own runtime.
     ///
     /// A call costs one visit to each file of the group per round of
     /// attempts, not one per digest that arrives. Queueing `n` files costs
@@ -360,6 +362,13 @@ impl FileRegistry {
                 {
                     waiting.pop_front();
                 }
+            }
+            if !waiting.is_empty() {
+                // Still queued. The wake-up may have been the worker giving
+                // its file back as its runtime went away, and then nobody
+                // is hashing: this call is the next request from a live
+                // runtime, so it starts a worker if none runs.
+                self.queue_keys(Vec::new(), false);
             }
             if waiting.is_empty() {
                 let mut inner = self.write();
@@ -442,7 +451,9 @@ struct HashWork {
 /// before it ran out of work: its runtime shut down, or it was dropped
 /// before its first poll. The file it held goes back to the front of the
 /// queue, with no failure recorded: nothing went wrong with that file. The
-/// next request that queues from a live runtime starts a worker again.
+/// next request that queues from a live runtime starts a worker again, and
+/// so does a `FileRegistry::ensure_key` that was waiting on a queued file
+/// when it is woken here.
 ///
 /// This never spawns and never looks at whether the thread is panicking. A
 /// runtime is dropped on a panicking thread whenever a test fails, and a
