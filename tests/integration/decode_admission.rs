@@ -1864,24 +1864,38 @@ fn the_estimate_of_overlay_work_is_the_documented_formula() {
             );
         }
     }
-    // Both sides of the larger-of are met: a small displayed frame leaves
-    // the decode as the larger, a large one does not.
+    // Both sides of the larger-of are met. On the displayed frame above
+    // the decode is the larger for every layout, so those rows say nothing
+    // of what a displayed pixel costs. On one of 3000 x 5000 the displayed
+    // frame is the larger for every layout, and the numbers are written
+    // out with no larger-of: 32 bytes a pixel of it as an image, 12 as
+    // values, and a megabyte.
+    let large = 3000 * 5000;
+    for (syntax, bits, decode) in cases {
+        let entry = entry(syntax, bits);
+        let what = format!("{bits}-bit samples in {syntax} on a large frame");
+        for (encoding, each) in [(OverlayEncoding::Png, 32), (OverlayEncoding::Values, 12)] {
+            assert!(each * large + MIB > 16 * MIB + decode, "{what}");
+            for planes in [0, 1, 2, 4] {
+                let work = DecodeWork::ValueOverlay {
+                    target_rows: 3000,
+                    target_columns: 5000,
+                    planes,
+                    encoding,
+                };
+                assert_eq!(
+                    pixels::decode_estimate(&entry, work),
+                    8 * u64::from(planes) * p + each * large + MIB,
+                    "{what}, {planes} planes as {encoding:?}"
+                );
+            }
+        }
+    }
+    // And the decode side, written out the same way.
     let small = entry(EXPLICIT_LE, 16);
     assert_eq!(
         overlay(&small, 2, OverlayEncoding::Values),
         16 * p + 16 * MIB + 6 * p
-    );
-    assert_eq!(
-        pixels::decode_estimate(
-            &small,
-            DecodeWork::ValueOverlay {
-                target_rows: 3000,
-                target_columns: 5000,
-                planes: 2,
-                encoding: OverlayEncoding::Values,
-            },
-        ),
-        16 * p + 12 * 15_000_000 + MIB
     );
 
     // Neither an entry nor a displayed frame nothing vouches for can
