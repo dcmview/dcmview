@@ -10,6 +10,8 @@ diagnostic viewer.
 
 ## Unreleased
 
+## 0.4.1 - 2026-10-09
+
 ### Fixed
 
 - A compressed DICOM frame whose pixel data declares a different image than
