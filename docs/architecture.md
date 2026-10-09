@@ -990,11 +990,14 @@ annotation write on either file"), so two files with one settled key hold
 the same bytes, whatever order they were found or asked about in. The file
 asked about and the group's first file are hashed before the others: when
 those two differ the group is split, the file has its `b3:` key, and the
-rest of the group is not read for that request. When the
-first file with the UID cannot be hashed at that point, `sop:<uid>` would
-name bytes nobody can read: the group is split instead, each file that was
-read takes its `b3:` key, and the first file has no key and keeps its
-`key_error`.
+rest of the group is not read for that request. When the first file with
+the UID cannot be hashed there is nothing to compare with, so nothing is
+split and nothing is relied on: `ensure_key` on any file of the group
+answers `Unavailable` with the first file's failure, no key shown changes,
+and the next request tries the first file again. A file other than the
+first that cannot be hashed costs only its own key (it loses the shared
+key when the group is relied on), so which file was found first decides
+what one unreadable file withholds, and nothing else about the keys.
 
 **After a key was relied on.** `sop:<uid>` then names the bytes of the first
 file with that UID for the rest of the session, and nothing replaces it. A

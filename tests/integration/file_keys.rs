@@ -935,24 +935,15 @@ async fn a_file_found_after_a_key_was_returned_never_changes_that_key() {
 #[tokio::test]
 async fn a_file_that_cannot_be_read_fails_only_the_keys_that_depend_on_it() {
     const UID: &str = "1.2.826.0.1.3680043.10.518.1";
-    /// What asking for the key gives.
-    #[derive(Debug, Clone, Copy, PartialEq)]
-    enum Answer {
-        /// The key the copies share.
-        Shared,
-        /// No key: the file's own bytes cannot be read.
-        None,
-        /// The file's own content key: the first file, whose bytes the
-        /// shared key would name, cannot be read.
-        Content,
-    }
-    // (which file of three copies is gone, the file asked about, the answer)
-    for (gone, asked, answer) in [
-        (2_usize, 0_usize, Answer::Shared),
-        (1, 2, Answer::Shared),
-        (2, 2, Answer::None),
-        (0, 0, Answer::None),
-        (0, 1, Answer::Content),
+    // (which file of three copies is gone, the file asked about, whether
+    // its key can be had)
+    for (gone, asked, available) in [
+        (2_usize, 0_usize, true),
+        (1, 2, true),
+        (2, 2, false),
+        (0, 0, false),
+        (0, 1, false),
+        (0, 2, false),
     ] {
         let context = format!("file {gone} gone, file {asked} asked");
         let dir = tempfile::tempdir().expect("temp dir");
@@ -962,119 +953,73 @@ async fn a_file_that_cannot_be_read_fails_only_the_keys_that_depend_on_it() {
         write_dicom(&paths[0], Some(UID), 1, 8);
         fs::copy(&paths[0], &paths[1]).expect("copy");
         fs::copy(&paths[0], &paths[2]).expect("copy");
-        let content = b3(&paths[1]);
         let (server, registry) = serve(&paths).await;
         fs::remove_file(&paths[gone]).expect("remove a file");
 
         let key = registry.ensure_key(asked).await;
-        match answer {
-            Answer::Shared => {
-                assert_eq!(
-                    key.as_ref().map(FileKey::as_str),
-                    Ok(format!("sop:{UID}").as_str()),
-                    "{context}"
-                );
-                // The file that could not be read no longer shows the key
-                // the others were given: nothing says it is the same image.
-                let listed = catalog(&server, "").await;
-                for (index, entry) in entries(&listed).iter().enumerate() {
-                    let state = (shown(entry), entry.get("key_error").cloned());
-                    if index == gone {
-                        assert_eq!(
-                            state,
-                            (Shown::Pending, Some(Value::from("unreadable"))),
-                            "{context}: file {index}"
-                        );
-                    } else {
-                        assert_eq!(state, (Shown::Implied, None), "{context}: file {index}");
-                    }
+        if available {
+            assert_eq!(
+                key.as_ref().map(FileKey::as_str),
+                Ok(format!("sop:{UID}").as_str()),
+                "{context}"
+            );
+            // The file that could not be read no longer shows the key the
+            // others were given: nothing says it is the same image.
+            let listed = catalog(&server, "").await;
+            for (index, entry) in entries(&listed).iter().enumerate() {
+                let state = (shown(entry), entry.get("key_error").cloned());
+                if index == gone {
+                    assert_eq!(
+                        state,
+                        (Shown::Pending, Some(Value::from("unreadable"))),
+                        "{context}: file {index}"
+                    );
+                } else {
+                    assert_eq!(state, (Shown::Implied, None), "{context}: file {index}");
                 }
-                assert_eq!(
-                    registry.ensure_key(gone).await,
-                    Err(KeyError::Unavailable(KeyFailure::Unreadable)),
-                    "{context}"
-                );
-                assert_eq!(registry.ensure_key(asked).await, key, "{context}");
             }
-            Answer::None => {
-                // Its own bytes cannot be read: no key, and nothing shown
-                // changes but the failure.
+            assert_eq!(
+                registry.ensure_key(gone).await,
+                Err(KeyError::Unavailable(KeyFailure::Unreadable)),
+                "{context}"
+            );
+            assert_eq!(registry.ensure_key(asked).await, key, "{context}");
+        } else {
+            // Its own bytes, or those of the first file its key would name,
+            // cannot be read: no key, and nothing shown changes but the
+            // failure.
+            assert_eq!(
+                key,
+                Err(KeyError::Unavailable(KeyFailure::Unreadable)),
+                "{context}"
+            );
+            let listed = catalog(&server, "").await;
+            for (index, entry) in entries(&listed).iter().enumerate() {
+                assert_eq!(shown(entry), Shown::Implied, "{context}: file {index}");
                 assert_eq!(
-                    key,
-                    Err(KeyError::Unavailable(KeyFailure::Unreadable)),
-                    "{context}"
+                    entry.get("key_error").is_some(),
+                    index == gone,
+                    "{context}: file {index}"
                 );
+            }
+            assert_eq!(listed["rekeys"], serde_json::json!([]), "{context}");
+            if gone == 0 {
+                // Without the first file there is nothing to compare any
+                // file of the group with: none of them has a key to give,
+                // whichever is asked about and however often, and no key
+                // shown is replaced by a content key.
+                for index in [2, 1, 0, asked] {
+                    assert_eq!(
+                        registry.ensure_key(index).await,
+                        Err(KeyError::Unavailable(KeyFailure::Unreadable)),
+                        "{context}: file {index}"
+                    );
+                }
                 let listed = catalog(&server, "").await;
                 for (index, entry) in entries(&listed).iter().enumerate() {
                     assert_eq!(shown(entry), Shown::Implied, "{context}: file {index}");
-                    assert_eq!(
-                        entry.get("key_error").is_some(),
-                        index == gone,
-                        "{context}: file {index}"
-                    );
                 }
-            }
-            Answer::Content => {
-                // The first file is gone, so no file can be said to hold
-                // its bytes: the files that can be read are keyed by their
-                // own, and the first file has no key.
-                assert_eq!(
-                    key.as_ref().map(FileKey::as_str),
-                    Ok(content.as_str()),
-                    "{context}"
-                );
-                for index in 1..paths.len() {
-                    assert_eq!(
-                        registry
-                            .ensure_key(index)
-                            .await
-                            .as_ref()
-                            .map(FileKey::as_str),
-                        Ok(content.as_str()),
-                        "{context}: file {index}"
-                    );
-                }
-                assert_eq!(
-                    registry.ensure_key(gone).await,
-                    Err(KeyError::Unavailable(KeyFailure::Unreadable)),
-                    "{context}"
-                );
-                let listed = catalog(&server, "").await;
-                let states = entries(&listed)
-                    .iter()
-                    .map(|entry| {
-                        (
-                            shown(entry),
-                            alias_of(entry),
-                            entry.get("key_error").cloned(),
-                        )
-                    })
-                    .collect::<Vec<_>>();
-                assert_eq!(
-                    states,
-                    vec![
-                        (Shown::Pending, None, Some(Value::from("unreadable"))),
-                        (Shown::Key(content.clone()), None, None),
-                        (Shown::Key(content.clone()), Some(1), None),
-                    ],
-                    "{context}"
-                );
-                // Each replaced key reached the client once, and the old
-                // key still names the file it named.
-                let rekeys = listed["rekeys"].as_array().expect("rekeys");
-                assert_eq!(
-                    rekeys
-                        .iter()
-                        .map(|rekey| rekey["index"].as_u64())
-                        .collect::<Vec<_>>(),
-                    vec![Some(1), Some(2)],
-                    "{context}"
-                );
-                assert_eq!(
-                    registry.file_for_shown_key(&format!("sop:{UID}")),
-                    Some(0),
-                    "{context}"
-                );
+                assert_eq!(listed["rekeys"], serde_json::json!([]), "{context}");
             }
         }
     }

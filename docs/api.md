@@ -182,10 +182,11 @@ file of the group takes its content key: the two that were read at once,
 the others when they are viewed or asked about, and until then an existing
 UID key remains, except that a failed digest removes it. If they agree,
 every other file with that UID is read, whichever of them the caller asked
-about, and the UID key is settled when all agree. If the first file with the UID cannot
-be read when a settled key is first asked for, the UID key would name bytes
-nobody can read, so it is given up: each file that can be read takes its
-content key, and the first file has `file_key: null` and a `key_error`.
+about, and the UID key is settled when all agree. If the first file with
+the UID cannot be read, there is nothing to compare the others with: no
+file with that UID gets a settled key while that lasts, a request that
+needs one fails with the first file's `key_error`, and the keys shown stay
+as they were. Each such request tries the first file again.
 
 A settled key is final: every `b3:` key, and a `sop:` key once it has been
 returned for a write or an export. It stays the file's key for the rest of

@@ -323,16 +323,12 @@ impl FileRegistry {
     /// the queue.
     ///
     /// Errors: [`KeyError::NotFound`]; [`KeyError::Unavailable`] when the
-    /// file's own digest could not be computed, with that failure, and for
-    /// a file found after a key of its UID was returned also when the first
-    /// file's could not; [`KeyError::Stopped`]. Another file of the group
-    /// that cannot be read does not fail the call. When it is the group's
-    /// first file, and no key of the group was returned yet, the group
-    /// gives up its shared key: this file and every other file of it that
-    /// was read get their own `b3:` keys, and the first file has none.
-    /// When it is any other file, that file loses the shared key instead
-    /// (`KeyTable` rule 4). Cancel safe: dropping the future leaves the
-    /// queued work to finish in the background.
+    /// file's own digest or its group's first file's digest could not be
+    /// computed, with that failure (another file of the group that cannot
+    /// be read does not fail the call: that file loses the shared key
+    /// instead, `KeyTable` rule 4); [`KeyError::Stopped`]. Cancel safe:
+    /// dropping the future leaves the queued work to finish in the
+    /// background.
     pub async fn ensure_key(&self, index: usize) -> Result<FileKey, KeyError> {
         let mut asked = HashSet::new();
         let mut waiting = VecDeque::new();
@@ -376,7 +372,6 @@ impl FileRegistry {
                 if needed.is_empty() {
                     let (reliance, changes) = inner.keys.rely_on(index);
                     self.apply_key_changes(&mut inner, &changes);
-                    self.queue_keys(changes.wanted, false);
                     drop(inner);
                     if !changes.updated.is_empty() {
                         self.notify.notify_waiters();
@@ -832,6 +827,68 @@ mod tests {
         };
         assert_eq!(key(0), (None, Some(KeyFailure::Unreadable)));
         assert_eq!(key(1), (Some(second_key), None));
+    }
+
+    /// A worker fault on the first of two copies is a failed digest of the
+    /// group's first file like any other: the copy asked about has no key
+    /// to give, and neither file's key is replaced by a content key. Asked
+    /// again, the first file is hashed and the shared key settles as if
+    /// nothing had gone wrong.
+    #[tokio::test]
+    async fn a_worker_fault_on_a_first_file_splits_nothing_and_a_retry_settles() {
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/golden-image-no-pixels.dcm");
+        let dir = tempfile::tempdir().expect("temp dir");
+        let registry = FileRegistry::new();
+        for name in ["first.dcm", "copy.dcm"] {
+            let path = dir.path().join(name);
+            std::fs::copy(&fixture, &path).expect("copy fixture");
+            registry.insert(crate::loader::test_entry(&path));
+        }
+        let shared = registry
+            .key_status(0)
+            .and_then(|status| status.key)
+            .expect("the provisional key");
+        assert_eq!(shared.scheme(), crate::keys::KeyScheme::Sop);
+        registry.hashing.fail_at(0);
+        let decided = |index: usize| {
+            let registry = registry.clone();
+            async move {
+                // A hang guard, not a measurement.
+                tokio::time::timeout(Duration::from_secs(30), registry.ensure_key(index))
+                    .await
+                    .unwrap_or_else(|_| panic!("the key of file {index} is never decided"))
+            }
+        };
+
+        assert_eq!(
+            decided(1).await,
+            Err(KeyError::Unavailable(KeyFailure::Unreadable)),
+            "the copy's key waits for the first file"
+        );
+        for index in 0..2 {
+            let status = registry.key_status(index).expect("registered");
+            assert_eq!(
+                (status.key.as_ref(), status.settled),
+                (Some(&shared), false),
+                "file {index} keeps the key it showed"
+            );
+        }
+        let page = registry.files_page(None, None);
+        assert!(page.rekeys.is_empty(), "no key was replaced");
+        assert_eq!(page.keys_hashing, 0);
+
+        assert_eq!(decided(1).await.as_ref(), Ok(&shared));
+        assert_eq!(decided(0).await.as_ref(), Ok(&shared));
+        for index in 0..2 {
+            let status = registry.key_status(index).expect("registered");
+            assert_eq!(
+                (status.key.as_ref(), status.failure, status.settled),
+                (Some(&shared), None, true),
+                "file {index}"
+            );
+        }
+        assert!(registry.files_page(None, None).rekeys.is_empty());
     }
 
     /// A test that fails drops its runtime while its thread unwinds, and
