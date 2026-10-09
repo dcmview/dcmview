@@ -57,11 +57,7 @@ pub(crate) fn build_selected_tag(
     offset: usize,
     limit: usize,
 ) -> std::result::Result<TagNode, TagSelectError> {
-    if limit == 0 || limit > TAG_SELECT_MAX_LIMIT {
-        return Err(TagSelectError::Invalid(anyhow!(
-            "tag page limit must be between 1 and {TAG_SELECT_MAX_LIMIT}"
-        )));
-    }
+    check_page_limit(limit)?;
     let steps = parse_tag_selector(selector).map_err(TagSelectError::Invalid)?;
     let selects_pixel_or_later =
         matches!(steps.first(), Some(TagPathStep::Tag(tag)) if *tag >= FIRST_PIXEL_ELEMENT);
@@ -74,6 +70,122 @@ pub(crate) fn build_selected_tag(
     let text_codec = declared_text_codec(&object);
     select_from_object(&object, &steps, offset, limit, text_codec.as_ref())
         .map_err(TagSelectError::Invalid)
+}
+
+fn check_page_limit(limit: usize) -> std::result::Result<(), TagSelectError> {
+    if limit == 0 || limit > TAG_SELECT_MAX_LIMIT {
+        return Err(TagSelectError::Invalid(anyhow!(
+            "tag page limit must be between 1 and {TAG_SELECT_MAX_LIMIT}"
+        )));
+    }
+    Ok(())
+}
+
+/// The longest selector a raster's metadata tree is searched for.
+const RASTER_SELECTOR_MAX_BYTES: usize = 256;
+
+/// Selects one node of a raster image file's metadata tree, `nodes`, which
+/// is the tree `/tags` answers with (masked, in a masked session): nothing
+/// is read from the file, and what is selected is what the tree shows.
+///
+/// `selector` names a node by the path to it: steps separated by `/`, at
+/// most `pixels::RASTER_TAGS_MAX_DEPTH` of them and at most 256 bytes in
+/// all. A step is a node's `tag`, optionally followed by `.` and its
+/// `keyword`, optionally followed by `[n]`: the `n`-th node, from zero,
+/// among those of that level that match; without it, the first. So
+/// `PNG:IHDR.Width`, `PNG:tEXt[2]`, `EXIF/GPS/0x0002` and
+/// `TIFF:page 1/0x0100`. Every step but the last must name a group.
+///
+/// A group is returned with its children, and `offset` and `limit` page its
+/// items as they page a DICOM sequence's (a group has one item). A leaf
+/// takes no `offset`.
+///
+/// Every failure is `TagSelectError::Invalid` (the request names nothing
+/// that exists): a malformed selector, a step that matches no node, a step
+/// through a leaf, a limit outside 1 to 256.
+pub(crate) fn select_raster_node(
+    nodes: &[TagNode],
+    selector: &str,
+    offset: usize,
+    limit: usize,
+) -> std::result::Result<TagNode, TagSelectError> {
+    check_page_limit(limit)?;
+    select_raster_step(nodes, selector, offset, limit).map_err(TagSelectError::Invalid)
+}
+
+fn select_raster_step(
+    nodes: &[TagNode],
+    selector: &str,
+    offset: usize,
+    limit: usize,
+) -> Result<TagNode> {
+    if selector.len() > RASTER_SELECTOR_MAX_BYTES {
+        bail!("metadata path is longer than {RASTER_SELECTOR_MAX_BYTES} bytes");
+    }
+    let steps = selector
+        .split('/')
+        .map(str::trim)
+        .filter(|step| !step.is_empty())
+        .collect::<Vec<_>>();
+    if steps.is_empty() || steps.len() > crate::pixels::RASTER_TAGS_MAX_DEPTH {
+        bail!(
+            "metadata path must have 1 to {} steps",
+            crate::pixels::RASTER_TAGS_MAX_DEPTH
+        );
+    }
+    let mut level = nodes;
+    for (index, step) in steps.iter().enumerate() {
+        let (name, nth) = match step.strip_suffix(']').map(|step| step.rsplit_once('[')) {
+            Some(Some((name, nth))) => (
+                name,
+                nth.parse::<usize>()
+                    .map_err(|_| anyhow!("invalid index in metadata path step `{step}`"))?,
+            ),
+            Some(None) => bail!("invalid metadata path step `{step}`"),
+            None => (*step, 0),
+        };
+        let (tag, keyword) = match name.split_once('.') {
+            Some((tag, keyword)) => (tag, Some(keyword)),
+            None => (name, None),
+        };
+        let node = level
+            .iter()
+            .filter(|node| node.tag == tag && keyword.is_none_or(|keyword| node.keyword == keyword))
+            .nth(nth)
+            .ok_or_else(|| anyhow!("metadata path step `{step}` not found"))?;
+        let last = index + 1 == steps.len();
+        match &node.value {
+            TagValue::Sequence { items, .. } if last => {
+                let total = items.len();
+                let items = items
+                    .iter()
+                    .skip(offset)
+                    .take(limit)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let truncated = offset > 0 || offset.saturating_add(items.len()) < total;
+                return Ok(TagNode {
+                    value: TagValue::Sequence {
+                        items,
+                        truncated,
+                        total: truncated.then_some(total),
+                    },
+                    ..node.clone()
+                });
+            }
+            TagValue::Sequence { items, .. } => {
+                level = items.first().map_or(&[][..], Vec::as_slice);
+            }
+            _ if last => {
+                if offset != 0 {
+                    bail!("tag page offset applies only to sequence values");
+                }
+                return Ok(node.clone());
+            }
+            _ => bail!("metadata path step `{step}` is not a group"),
+        }
+    }
+    unreachable!("the last step returns")
 }
 
 fn open_full(path: &Path) -> Result<InMemDicomObject<StandardDataDictionary>> {

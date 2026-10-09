@@ -23,6 +23,8 @@ pub(super) struct Reader<'a> {
     /// Ranges of the file that are read whole and once, sorted by start
     /// ([`Reader::read_spans`]).
     spans: Vec<Range<u64>>,
+    /// Whether a read was refused because the budget is spent.
+    refused: bool,
 }
 
 impl<'a> Reader<'a> {
@@ -37,7 +39,14 @@ impl<'a> Reader<'a> {
             remaining: budget,
             served: 0,
             spans: Vec::new(),
+            refused: false,
         }
+    }
+
+    /// Whether the budget ran out: a read was refused, not merely the last
+    /// byte of it used.
+    pub(super) fn refused(&self) -> bool {
+        self.refused
     }
 
     /// Names the ranges of the file a decoder is about to read from start to
@@ -52,6 +61,16 @@ impl<'a> Reader<'a> {
         self.spans = spans;
     }
 
+    /// [`Reader::read_spans`] of one range: a read that begins in `span`
+    /// asks for no more than the rest of it. For a reader that takes a few
+    /// bytes here and there between data it must not fetch.
+    pub(super) fn read_span(&mut self, span: Range<u64>) {
+        self.spans.clear();
+        if span.start < span.end {
+            self.spans.push(span);
+        }
+    }
+
     /// The most a read at `position` may ask for: to the end of the span
     /// that holds it, or a whole buffer.
     fn read_ahead(&self, position: u64) -> u64 {
@@ -62,7 +81,8 @@ impl<'a> Reader<'a> {
         }
     }
 
-    fn exhausted() -> io::Error {
+    fn exhausted(&mut self) -> io::Error {
+        self.refused = true;
         io::Error::other("raster read budget exhausted")
     }
 }
@@ -79,7 +99,7 @@ impl BufRead for Reader<'_> {
                 .min(self.read_ahead(self.position))
                 .min(self.remaining) as usize;
             if count == 0 {
-                return Err(Self::exhausted());
+                return Err(self.exhausted());
             }
             self.source.seek(SeekFrom::Start(self.position))?;
             self.buffered = self.source.read(&mut self.buffer[..count])?;
@@ -93,7 +113,7 @@ impl BufRead for Reader<'_> {
             // Bytes handed out before: only as many as the budget still
             // covers, and `consume` charges them.
             if self.remaining == 0 {
-                return Err(Self::exhausted());
+                return Err(self.exhausted());
             }
             let again = (self.served - self.position).min(self.remaining) as usize;
             return Ok(&self.buffer[from..from + again]);
