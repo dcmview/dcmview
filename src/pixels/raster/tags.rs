@@ -19,9 +19,11 @@
 //! [`read_raster_tags`] is the seam and its doc comment is the contract.
 //! `src/masking.rs` decides what of the tree a masked session shows.
 
+mod jpeg;
 mod names;
 mod png;
 mod walk;
+mod webp;
 
 use super::reader::Reader;
 use super::RasterSource;
@@ -420,8 +422,29 @@ pub fn read_raster_tags(
 /// true.
 fn read_format(format: FileFormat, reader: &mut Reader<'_>, length: u64, sink: &mut TagSink) {
     let mut walk = walk::Walk::new(reader, length, sink);
-    if format == FileFormat::Png {
-        png::read(&mut walk);
+    match format {
+        FileFormat::Png => png::read(&mut walk),
+        FileFormat::Jpeg => jpeg::read(&mut walk),
+        FileFormat::Webp => webp::read(&mut walk),
+        _ => {}
+    }
+    if let Some(block) = walk.xmp {
+        if let Some(bytes) = walk.read(
+            block.offset,
+            block.length.min(RASTER_TAG_VALUE_MAX_BYTES),
+            RasterTagPart::Xmp,
+        ) {
+            walk.sink.leaf(
+                TagName::Fixed("XMP"),
+                "Packet",
+                "",
+                TagData::Text {
+                    bytes: &bytes,
+                    encoding: TextEncoding::Utf8,
+                    more: block.length > RASTER_TAG_VALUE_MAX_BYTES,
+                },
+            );
+        }
     }
 }
 
