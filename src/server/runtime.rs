@@ -136,6 +136,7 @@ impl BoundServer {
 
         let activity = state.activity().clone();
         let registry = state.registry().clone();
+        let decode_scheduler = state.decode_scheduler();
         let app = router(state);
         let mut browser_task = BrowserTask::new(
             startup_event
@@ -153,6 +154,15 @@ impl BoundServer {
             config.shutdown.clone(),
             async move { stop_signals.recv().await },
         );
+        // The graceful shutdown below waits for every request in flight.
+        // One that is waiting for decode capacity would be decoded first,
+        // behind everything queued before it, so the wait had no bound:
+        // waiting requests are refused instead (`503 decode_busy`), and
+        // the server waits only for the decodes that are running.
+        let shutdown = async move {
+            shutdown.await;
+            decode_scheduler.refuse_waiting();
+        };
 
         if config.startup_json {
             crate::status_line!(

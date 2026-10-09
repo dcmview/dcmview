@@ -150,6 +150,8 @@ pub enum PixelSupportReason {
     RasterJpegUnsupportedProcess,
     /// A raster with more pixels in a frame than the viewer decodes.
     RasterTooLarge,
+    /// A PNG, JPEG or WebP file longer than a decode of it may read.
+    RasterFileTooLarge,
 }
 
 impl PixelSupportReason {
@@ -174,6 +176,7 @@ impl PixelSupportReason {
             Self::RasterUnsupportedCompression => "raster.unsupported_compression",
             Self::RasterJpegUnsupportedProcess => "raster.jpeg_unsupported_process",
             Self::RasterTooLarge => "raster.too_large",
+            Self::RasterFileTooLarge => "raster.file_too_large",
         }
     }
 }
@@ -239,6 +242,7 @@ pub fn classify_pixel_support(file: &FileEntry) -> PixelSupport {
                 RasterUnsupported::Compression => PixelSupportReason::RasterUnsupportedCompression,
                 RasterUnsupported::JpegProcess => PixelSupportReason::RasterJpegUnsupportedProcess,
                 RasterUnsupported::TooLarge => PixelSupportReason::RasterTooLarge,
+                RasterUnsupported::FileLength => PixelSupportReason::RasterFileTooLarge,
             }),
         };
     }

@@ -1,4 +1,6 @@
-use crate::api::contracts::{ApiErrorCode, ErrorResponse, UNAUTHORIZED_CHALLENGE};
+use crate::api::contracts::{
+    ApiErrorCode, ErrorResponse, DECODE_BUSY_RETRY_AFTER_SECONDS, UNAUTHORIZED_CHALLENGE,
+};
 use crate::pixels::{self, PixelError};
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::http::{header, HeaderValue, StatusCode};
@@ -157,11 +159,31 @@ pub(super) fn pixel_error(error: PixelError) -> ApiError {
             ApiErrorCode::UnsupportedPixelLayout,
             error.to_string(),
         ),
+        pixels::PixelError::DecodeBusy => ApiError::coded(
+            StatusCode::SERVICE_UNAVAILABLE,
+            ApiErrorCode::DecodeBusy,
+            error.to_string(),
+        ),
+        pixels::PixelError::DecodeMemoryExceeded { .. } => ApiError::coded(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            ApiErrorCode::DecodeMemoryExceeded,
+            error.to_string(),
+        ),
         pixels::PixelError::Decode { .. } => ApiError::coded(
             StatusCode::INTERNAL_SERVER_ERROR,
             ApiErrorCode::PixelDecodeFailed,
             error.to_string(),
         ),
+    }
+}
+
+/// A semantic context that could not be built: the busy answer when a
+/// frame its legend needs was refused for that reason, else a server error.
+pub(super) fn context_failure(failure: anyhow::Error) -> ApiError {
+    match failure.downcast::<PixelError>() {
+        Ok(busy @ PixelError::DecodeBusy) => pixel_error(busy),
+        Ok(other) => ApiError::internal(other.to_string()),
+        Err(failure) => ApiError::internal(format!("{failure:#}")),
     }
 }
 
@@ -193,9 +215,8 @@ pub(super) struct ServerErrorMessage(pub(super) String);
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let logged = self
-            .status
-            .is_server_error()
+        // A busy answer is the budget working, not a fault to report.
+        let logged = (self.status.is_server_error() && self.code != ApiErrorCode::DecodeBusy)
             .then(|| ServerErrorMessage(self.message.clone()));
         let mut response = (
             self.status,
@@ -211,9 +232,36 @@ impl IntoResponse for ApiError {
                 HeaderValue::from_static(UNAUTHORIZED_CHALLENGE),
             );
         }
+        if self.code == ApiErrorCode::DecodeBusy {
+            response.headers_mut().insert(
+                header::RETRY_AFTER,
+                HeaderValue::from(DECODE_BUSY_RETRY_AFTER_SECONDS),
+            );
+        }
         if let Some(message) = logged {
             response.extensions_mut().insert(message);
         }
         response
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The request log reports the responses that carry a
+    /// `ServerErrorMessage`. A busy answer is the decode memory budget at
+    /// work, not a fault, and carries none; a decode that failed does.
+    #[test]
+    fn a_busy_answer_is_not_reported_as_a_server_error() {
+        let reported = |error: PixelError| {
+            let response = pixel_error(error).into_response();
+            assert!(response.status().is_server_error());
+            response.extensions().get::<ServerErrorMessage>().is_some()
+        };
+        assert!(!reported(PixelError::DecodeBusy));
+        assert!(reported(PixelError::frame_decode(anyhow::anyhow!(
+            "corrupt"
+        ))));
     }
 }

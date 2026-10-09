@@ -215,7 +215,7 @@ pub(super) async fn semantic_context(
     let path = source.path.clone();
     let context = semantic_context_for(&state, source.clone(), files)
         .await
-        .map_err(|failure| error::gone_or(&path, ApiError::internal(format!("{failure:#}"))))?;
+        .map_err(|failure| error::gone_or(&path, error::context_failure(failure)))?;
     let mut context = SemanticContextResponse::clone(&context);
     if let Some(masker) = state.registry().masker() {
         masker.semantic_context(&source, &mut context);
@@ -225,6 +225,11 @@ pub(super) async fn semantic_context(
 
 /// The source's semantic context against `files`, built at most once per
 /// file set and kept in a small LRU.
+///
+/// The legend of an RT Dose or Parametric Map decodes its frames. When one
+/// is refused because the viewer is busy, the error is that
+/// `PixelError::DecodeBusy` and nothing is kept, so the next request builds
+/// the context again; `error::context_failure` reports it.
 pub(super) async fn semantic_context_for(
     state: &AppState,
     source: Arc<FileEntry>,
@@ -249,7 +254,7 @@ pub(super) async fn semantic_context_for(
         task::spawn_blocking(move || crate::semantic::semantic_context(&object, &files))
             .await
             .map_err(|error| anyhow::anyhow!("semantic context task failed: {error}"))??;
-    overlays::add_overlay_legend(state, &source, &mut context).await;
+    overlays::add_overlay_legend(state, &source, &mut context).await?;
     let context = Arc::new(context);
     state.cache_semantic_context(key, context.clone());
     Ok(context)

@@ -151,6 +151,8 @@ use std::path::Path;
 ///   - `JpegProcess`: a frame header other than `SOF0`, `SOF1` or `SOF2`, or
 ///     a sample precision other than 8.
 ///   - `TooLarge`: more than `RASTER_MAX_FRAME_PIXELS` pixels in a frame.
+///   - `FileLength` (PNG, JPEG, WebP): a file longer than
+///     `pixels::raster_read_budget` of its entry, which no decode reads.
 ///
 ///   `RasterHeaderInvalid` is for a header that cannot be described at all:
 ///   no dimensions, a depth that is not 1, 2, 4, 8, 16, 32 or 64, samples of
@@ -295,6 +297,7 @@ pub(super) fn inspect_raster_source(
         }
     };
     let mut raster = header.metadata;
+    raster.file_length = _length;
     if raster.unsupported.is_none()
         && u64::from(header.width) * u64::from(header.height) > RASTER_MAX_FRAME_PIXELS
     {
@@ -327,7 +330,7 @@ pub(super) fn inspect_raster_source(
             _ => NativePixelDataKind::Integer,
         });
     let file_name = _path.file_name().unwrap_or_default().to_string_lossy();
-    Ok(EntryInspection::Selected(Box::new(FileEntry {
+    let mut entry = FileEntry {
         index: 0,
         path: _path.to_path_buf(),
         size_bytes: _length,
@@ -364,7 +367,19 @@ pub(super) fn inspect_raster_source(
         rescale_intercept: 0.0,
         default_window: default_window(&raster, header.sample_range),
         raster: Some(Box::new(raster)),
-    })))
+    };
+    // The read budget is a property of the entry, so it is compared with
+    // the length once the entry exists. A TIFF is read a page at a time and
+    // may be any length.
+    if _format != FileFormat::Tiff {
+        let budget = crate::pixels::raster_read_budget(&entry);
+        if let (Some(budget), Some(raster)) = (budget, entry.raster.as_mut()) {
+            if raster.unsupported.is_none() && _length > budget {
+                raster.unsupported = Some(RasterUnsupported::FileLength);
+            }
+        }
+    }
+    Ok(EntryInspection::Selected(Box::new(entry)))
 }
 
 /// The default window of a gray raster
@@ -434,6 +449,7 @@ impl Header {
                 has_icc: false,
                 pages_total: 1,
                 frame_pages: vec![0],
+                file_length: 0,
                 frame_offsets: Vec::new(),
                 excluded_pages: Vec::new(),
                 excluded_pages_total: 0,

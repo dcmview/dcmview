@@ -290,6 +290,73 @@ async fn graceful_shutdown_drains_an_in_flight_request() {
     await_exit(task).await;
 }
 
+/// Requests that are waiting for decode capacity when the server is told to
+/// stop are answered `503 decode_busy` at once, so shutdown waits only for
+/// decodes that are running and not for everything queued behind them.
+#[tokio::test]
+async fn shutdown_refuses_the_requests_waiting_for_decode_capacity() {
+    use dcmview::pixels::{DecodeClass, DecodeLimits, DecodeScheduler};
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let scheduler = DecodeScheduler::with_limits(1, DecodeLimits::DEFAULT);
+    let state = support::every_endpoint_state(dir.path()).with_decode_scheduler(scheduler.clone());
+    let shutdown = CancellationToken::new();
+    let (url, task) = spawn_server(server_config(shutdown.clone(), None), state).await;
+
+    // The one permit is held, as by a decode that is running: every request
+    // below waits behind it.
+    let running = scheduler
+        .admit(DecodeClass::Interactive, 0)
+        .await
+        .expect("the permit");
+    let paths = [
+        "/api/file/0/frame/0",
+        "/api/file/0/frame/0?wc=10&ww=20",
+        "/api/file/0/frame/0?preview=true&wc=30&ww=40",
+        "/api/file/0/frame/0/raw",
+        "/api/file/0/frame/0/presentation-layer",
+        "/api/file/0/frame/0/thumbnail",
+    ];
+    let client = reqwest::Client::new();
+    let requests: Vec<_> = paths
+        .iter()
+        .map(|path| tokio::spawn(client.get(format!("{url}{path}")).send()))
+        .collect();
+    tokio::time::timeout(
+        Duration::from_secs(3),
+        scheduler.load_when(|load| load.waiting_interactive == 5 && load.waiting_background == 1),
+    )
+    .await
+    .expect("the requests wait for the permit");
+
+    shutdown.cancel();
+    for (path, request) in paths.iter().zip(requests) {
+        let response = tokio::time::timeout(Duration::from_secs(3), request)
+            .await
+            .unwrap_or_else(|_| panic!("{path} was still waiting after shutdown"))
+            .expect("request task")
+            .expect("response");
+        assert_eq!(response.status().as_u16(), 503, "{path}");
+        assert_eq!(
+            response
+                .headers()
+                .get("retry-after")
+                .and_then(|value| value.to_str().ok()),
+            Some("1"),
+            "{path}"
+        );
+        let body: serde_json::Value = response.json().await.expect("error envelope");
+        assert_eq!(body["code"], "decode_busy", "{path}");
+    }
+
+    // The server is done although the decode that was running is not.
+    await_exit(task).await;
+    let load = scheduler.load();
+    assert_eq!((load.running, load.waiting_interactive), (1, 0));
+    assert_eq!(load.waiting_background, 0);
+    drop(running);
+}
+
 #[tokio::test]
 async fn startup_json_timeout_cli_exits_naturally() {
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

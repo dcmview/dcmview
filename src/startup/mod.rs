@@ -1,11 +1,12 @@
 mod discovery;
+mod memory;
 
 use anyhow::{Context, Result};
 use dcmview::annotations::{AnnotationSource, AnnotationStore};
 use dcmview::api::contracts::TOKEN_ENV_VAR;
 use dcmview::loader;
 use dcmview::masking::Masker;
-use dcmview::pixels::CacheBudget;
+use dcmview::pixels::{CacheBudget, DecodeLimits};
 use dcmview::server::{AccessToken, AppState, BoundServer, FileRegistry, ServerConfig};
 use discovery::{DiscoveryHandle, DiscoveryInputs, DiscoveryOutcome};
 use std::path::PathBuf;
@@ -26,6 +27,9 @@ pub(crate) struct LocalViewerOptions {
     pub(crate) unix_socket: Option<PathBuf>,
     pub(crate) timeout_seconds: Option<u64>,
     pub(crate) cache_budget: Option<CacheBudget>,
+    /// `--decode-memory`; the default for this machine when the flag is
+    /// absent ([`memory::decode_limits`]).
+    pub(crate) decode_limits: Option<DecodeLimits>,
     pub(crate) exit_with_parent: bool,
     pub(crate) open_browser: bool,
     pub(crate) startup_json: bool,
@@ -86,7 +90,9 @@ pub(crate) async fn run_local_viewer(options: LocalViewerOptions) -> Result<Loca
     } else {
         AnnotationStore::empty()
     };
-    let mut state = AppState::new(registry.clone(), annotation_store.clone());
+    let (decode_limits, decode_memory_source) = memory::decode_limits(options.decode_limits);
+    let mut state =
+        AppState::new(registry.clone(), annotation_store.clone()).with_decode_limits(decode_limits);
     if let Some(budget) = options.cache_budget {
         state = state.with_cache_budget(budget);
     }
@@ -107,6 +113,10 @@ pub(crate) async fn run_local_viewer(options: LocalViewerOptions) -> Result<Loca
     let bound = BoundServer::bind(&config)
         .await
         .map_err(|error| friendly_bind_error(error, config.port))?;
+    eprintln!(
+        "dcmview: decode memory {} ({decode_memory_source})",
+        memory::byte_size(decode_limits.memory_bytes)
+    );
     if options.exit_with_parent {
         dcmview::signals::stop_on_stdin_eof(shutdown.clone())
             .context("failed to watch parent stdin pipe")?;
@@ -167,6 +177,7 @@ mod tests {
             unix_socket: None,
             timeout_seconds: Some(0),
             cache_budget: None,
+            decode_limits: Some(DecodeLimits::DEFAULT),
             exit_with_parent: false,
             open_browser: false,
             startup_json: false,

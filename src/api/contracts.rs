@@ -47,6 +47,11 @@ pub const BACKGROUND_REQUEST_HEADER: &str = "X-Dcmview-Background";
 /// key as its catalog shows it.
 pub const FILE_KEY_HEADER: &str = "X-File-Key";
 
+/// Seconds a client is told to wait, in the standard `Retry-After` header,
+/// before repeating a request answered `503 decode_busy`. A fixed number: a
+/// decode has no deadline to derive a better one from.
+pub const DECODE_BUSY_RETRY_AFTER_SECONDS: u32 = 1;
+
 pub const CACHE_HEADER: &str = "X-Cache";
 pub const CACHE_HIT: &str = "HIT";
 pub const CACHE_MISS: &str = "MISS";
@@ -417,6 +422,27 @@ pub mod endpoints {
         CSV_MEDIA_TYPE,
         ResponseHeaders::Export,
     );
+
+    /// The endpoints that decode or render pixels under the decode memory
+    /// budget (`pixels::DecodeScheduler`). Each may answer
+    /// `503 decode_busy` with `Retry-After` when the budget is in use and
+    /// its queue is full. Each but the semantic context, which reports a
+    /// frame it cannot decode in the overlay's eligibility, may answer
+    /// `422 decode_memory_exceeded` for a frame whose decode needs more
+    /// than the budget. No other endpoint answers either.
+    pub const DECODING: &[Endpoint] = &[
+        FILE_SEMANTIC_CONTEXT,
+        FILE_FRAME,
+        FILE_RAW_FRAME,
+        FILE_RAW_PIXEL,
+        FILE_THUMBNAIL,
+        FILE_PRESENTATION_LAYER,
+        FILE_SEGMENTATION_OVERLAY,
+        FILE_DOSE_OVERLAY,
+        FILE_DOSE_OVERLAY_VALUES,
+        FILE_PARAMETRIC_MAP_OVERLAY,
+        FILE_PARAMETRIC_MAP_OVERLAY_VALUES,
+    ];
 
     pub const ALL: &[Endpoint] = &[
         HEALTH,
@@ -1390,6 +1416,18 @@ pub enum ApiErrorCode {
     /// A value overlay's planes do not reach the requested frame.
     OverlayNotCoveringFrame,
     PixelDecodeFailed,
+    /// The decode needs more memory than is free and too many requests are
+    /// already waiting for it. Status 503 with `Retry-After:`
+    /// [`DECODE_BUSY_RETRY_AFTER_SECONDS`]; the same request succeeds once
+    /// running decodes finish. Only the endpoints of
+    /// [`endpoints::DECODING`] answer it.
+    DecodeBusy,
+    /// The decode needs more memory than the whole decode memory budget
+    /// (`--decode-memory`), or, for a thumbnail, than the share of it
+    /// thumbnails may use. Status 422; repeating the request cannot succeed
+    /// in this session. The file is not unsupported: a larger budget decodes
+    /// it. Only the endpoints of [`endpoints::DECODING`] answer it.
+    DecodeMemoryExceeded,
     /// Content a masked session (`--mask`) withholds.
     Masked,
     /// The request lacks the session's bearer token. Status 401 with
