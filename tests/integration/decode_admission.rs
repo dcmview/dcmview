@@ -2069,20 +2069,30 @@ async fn identical_overlay_requests_share_one_computation() {
         let load = idle(&scheduler).await;
         assert_eq!(load.peak_reserved_bytes, legend, "one legend served them");
 
-        // Overlays. The context is kept, so each request goes straight to
-        // its overlay: given their turn (the test's runtime has one
-        // thread), all of them have asked for it before it is admitted.
+        // Overlays. Everything an overlay request does before its overlay
+        // is kept by now (the contexts, their legends and the objects'
+        // value mappings), so the first poll of a request takes it to its
+        // overlay, where it waits. The requests are not tasks: each is
+        // polled here, once, while the only permit is held, and the first
+        // shows what one poll does, since its overlay is then waiting to be
+        // admitted. Whenever the others' work runs after that, a request
+        // that did not share the first one's computation is turned away by
+        // the queue or draws an overlay of its own, and reports it.
+        let warm = TestServer::new(server::router(state.clone()));
+        for (path, _) in &overlays {
+            let response = warm.get(path).await;
+            assert_eq!(response.status_code(), 200, "{path}: {}", response.text());
+        }
         for (path, estimate) in &overlays {
             let scheduler = room_for_one();
-            let server = Arc::new(TestServer::new(server::router(
+            let server = TestServer::new(server::router(
                 state.clone().with_decode_scheduler(scheduler.clone()),
-            )));
+            ));
             let held = granted(&scheduler, Interactive, 0).await;
-            let requests: Vec<_> = (0..REQUESTS)
+            let mut requests: Vec<_> = (0..REQUESTS)
                 .map(|_| {
-                    let (server, path) = (server.clone(), path.clone());
-                    tokio::spawn(async move {
-                        let response = server.get(&path).await;
+                    Box::pin(async {
+                        let response = server.get(path).await;
                         (
                             response.status_code(),
                             response
@@ -2092,18 +2102,18 @@ async fn identical_overlay_requests_share_one_computation() {
                     })
                 })
                 .collect();
-            waiting(&scheduler, 1, 0).await;
-            for _ in 0..8 {
-                tokio::task::yield_now().await;
+            for (asked, request) in requests.iter_mut().enumerate() {
+                assert!(poll!(request).is_pending(), "{path}");
+                if asked == 0 {
+                    waiting(&scheduler, 1, 0).await;
+                }
             }
             assert_eq!(scheduler.load().waiting_interactive, 1, "{path}");
             drop(held);
 
             let mut computed = 0;
             for request in requests {
-                let (status, cache) = eventually("a response", request)
-                    .await
-                    .expect("request task");
+                let (status, cache) = eventually("a response", request).await;
                 assert_eq!(status, 200, "{path}");
                 match cache.as_deref() {
                     Some("MISS") => computed += 1,
