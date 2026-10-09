@@ -641,9 +641,10 @@ is cached between requests.
 - Masked values are computed from the process's random keys; never persist
   them or derive them from anything stable across runs.
 - Raster metadata is masked by the allowlist in `masking/raster.rs`: a value
-  is shown only when its place is listed and it is number-shaped. A new
-  node is masked until it is listed there, and only what describes the
-  pixel grid or its encoding is listed. `tests/integration/raster_tags.rs`
+  is shown only when its place is listed and it is number-shaped, and text
+  of a directory entry only for a rational type. A new node is masked
+  until it is listed there, and only what describes the pixel grid or its
+  encoding is listed. `tests/integration/raster_tags.rs`
   plants a string in every place a raster can hold text and fails when a
   masked session returns one; a new text-bearing place gets a string there.
 - Redaction boxes are applied where frames leave the pixel service

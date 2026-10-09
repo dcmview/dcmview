@@ -18,7 +18,10 @@
 //! is a number, a list of numbers, a problem stated in fixed words, or text
 //! made of digits and number punctuation (a rational, a version). So a
 //! reader that put text of the file where a number belongs would still not
-//! get it past a masked session.
+//! get it past a masked session. Of a directory entry, text is kept only
+//! when the entry's type is a rational: a file can write any tag number
+//! with a text type, and a date or a telephone number is digits and
+//! punctuation too.
 
 use super::{masked_value, MASKED};
 use crate::api::contracts::{TagNode, TagValue};
@@ -155,7 +158,10 @@ fn entry_is_shown(node: &TagNode, entries: &[u16]) -> bool {
         .strip_prefix("0x")
         .filter(|digits| digits.len() == 4)
         .and_then(|digits| u16::from_str_radix(digits, 16).ok());
+    // Only a rational is text this module's reader composed from numbers.
+    let composed = matches!(node.vr.as_str(), "RATIONAL" | "SRATIONAL");
     number.is_some_and(|number| entries.binary_search(&number).is_ok())
+        && (composed || !matches!(node.value, TagValue::String { .. }))
         && looks_as_listed(&node.value, Shown::Numeric)
 }
 

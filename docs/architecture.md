@@ -1153,7 +1153,9 @@ the same component (`docs/design/image-formats.md` section 8).
   what the tree shows, masked or not. A path that names nothing is `400`.
 - **Masked sessions** show a raster's tree through an allowlist
   (`masking/raster.rs`): a value is kept only when its place is listed and
-  it is a number, a list of numbers or number-shaped text. Listed are the
+  it is a number, a list of numbers or number-shaped text, and of a
+  directory entry text only when the entry's type is a rational (a file can
+  write any tag as text, and a date is digits too). Listed are the
   `File` leaves except the extension, the notes, the container's layout
   fields (`PNG:IHDR`, `pHYs`, `gAMA`, `cHRM`, `sRGB`, `sBIT`, `acTL`; JFIF
   version and density, the frame header, the Adobe version and transform;

@@ -582,6 +582,9 @@ impl Planter {
     /// The entries of an image directory that say who, with what and when.
     fn image_entries(&mut self) -> Dir {
         self.given("DateTime", "1987:06:05 04:03:02");
+        // A layout tag a masked session lists, written as text: digits and
+        // punctuation, as a date of birth or a telephone number is.
+        self.given("a date written as text under a layout tag", "1961-07-23");
         vec![
             (269, V::ascii(&self.text("DocumentName", true))),
             (270, V::ascii(&self.text("ImageDescription", true))),
@@ -592,6 +595,7 @@ impl Planter {
             (306, V::ascii("1987:06:05 04:03:02")),
             (315, V::ascii(&self.text("Artist", true))),
             (316, V::ascii(&self.text("HostComputer", true))),
+            (318, V::ascii("1961-07-23")),
             (33432, V::ascii(&self.text("Copyright", true))),
             (
                 33723,
