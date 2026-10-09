@@ -2587,3 +2587,69 @@ async fn an_overlay_reserves_for_its_object_and_for_the_displayed_frame() {
     })
     .await;
 }
+
+/// An overlay is kept for the frame it was drawn on and the frame it was
+/// drawn from: a value overlay on another frame of the displayed file, and
+/// another frame of a SEG on its own source frame, are drawn again and not
+/// served from the first one's entry.
+#[tokio::test]
+async fn an_overlay_of_another_frame_is_drawn_again() {
+    finishes(async {
+        let dir = tempdir().expect("temp dir");
+        let entries = listed(&[
+            fixture("golden-rtdose-u16-grid.dcm"),
+            // The slice on the dose's first plane, as a file of two frames.
+            resized(
+                dir.path(),
+                "two-frames.dcm",
+                "golden-rtdose-ct-source-z0.dcm",
+                (10, 10),
+                Some(2),
+            ),
+            fixture("golden-seg-binary.dcm"),
+            fixture("golden-seg-binary-source.dcm"),
+        ])
+        .await;
+        assert_eq!(entries[1].frame_count, 2);
+        // (an overlay, the same overlay of another frame)
+        let cases = [
+            (
+                "/api/file/1/frame/0/dose-overlay?dose=0",
+                "/api/file/1/frame/1/dose-overlay?dose=0",
+            ),
+            (
+                "/api/file/1/frame/0/dose-overlay/values?dose=0",
+                "/api/file/1/frame/1/dose-overlay/values?dose=0",
+            ),
+            (
+                "/api/file/2/frame/0/segmentation-overlay",
+                "/api/file/2/frame/1/segmentation-overlay",
+            ),
+        ];
+        let scheduler = nothing_waits();
+        let server = serve(entries, &scheduler);
+        legend_of(&server, "/api/file/0/semantic-context").await;
+        let answer = |path: &'static str| {
+            let server = server.clone();
+            async move {
+                let response = server.get(path).await;
+                assert_eq!(response.status_code(), 200, "{path}: {}", response.text());
+                response.header("x-cache")
+            }
+        };
+        for (first, other) in cases {
+            assert_eq!(answer(first).await, "MISS", "{first}");
+            // With the budget held, only what is kept is served.
+            let held = granted(&scheduler, Interactive, HELD_BYTES).await;
+            assert_eq!(answer(first).await, "HIT", "{first}");
+            assert_busy(&server, other).await;
+            drop(held);
+            assert_eq!(answer(other).await, "MISS", "{other}");
+            for path in [first, other] {
+                assert_eq!(answer(path).await, "HIT", "{path}");
+            }
+        }
+        idle(&scheduler).await;
+    })
+    .await;
+}
