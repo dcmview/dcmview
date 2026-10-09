@@ -682,6 +682,38 @@ fn a_deflated_data_set_costs_what_it_supplies() {
     }
 }
 
+/// A deflated frame's buffer grows by doubling, so a frame four times as
+/// large is read in a few allocations more, not in four times as many: a
+/// buffer that grew by a fixed step would be moved once for every step.
+#[test]
+fn a_deflated_frame_is_read_in_a_number_of_allocations_that_does_not_grow_with_it() {
+    let plain = tokio::runtime::Runtime::new().expect("runtime");
+    let whole = |side: u16| {
+        let image = Native::gray(side, 16).in_syntax(uids::DEFLATED_EXPLICIT_VR_LITTLE_ENDIAN);
+        image.file(vec![0x5a; image.frame_bytes()])
+    };
+    let files = [("small.dcm", whole(2048)), ("large.dcm", whole(4096))];
+    let scan = listed(&plain, &files);
+    let runtime = CountedRuntime::new();
+    let requests = |name: &str| {
+        let entry = Arc::new(scan.entry(name).clone());
+        // Whatever a first request of a runtime sets up is not the frame.
+        runtime.requests_during(ask(entry.clone(), Path::Raw, roomy_scheduler()));
+        let (served, made) = runtime.requests_during(ask(entry, Path::Raw, roomy_scheduler()));
+        assert!(served, "{name}");
+        made
+    };
+    let (small, large) = (requests("small.dcm"), requests("large.dcm"));
+    if std::env::var_os("RASTER_COST_REPORT").is_some() {
+        eprintln!("allocations: {small} for 8 MiB, {large} for 32 MiB");
+    }
+    // Two doublings more, and room for what a runtime does on its own.
+    assert!(
+        large <= small + 32,
+        "{large} allocations for a frame of 32 MiB, {small} for one of 8 MiB"
+    );
+}
+
 /// A bitmap display shutter over a whole image of `side` x `side` pixels
 /// that hides every other pixel of a row, filled with mid gray: the layer
 /// then alternates between a transparent pixel and an opaque gray one, and
