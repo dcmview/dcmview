@@ -32,8 +32,10 @@ use std::sync::Arc;
 const REQUEST_OVERHEAD: u64 = MIB;
 
 /// Rows and columns of every object and displayed frame measured here. At
-/// this size the PNG of an image that does not compress is held at its
-/// worst: just past a doubling of the buffers it is written through.
+/// this size the PNG of an image of opaque pixels that do not compress is
+/// held at its worst: just past a doubling of the buffers it is written
+/// through. `WORST_SIDE` is that size for an image with transparent pixels
+/// among them.
 const SIDE: u16 = 1344;
 const PIXELS: u64 = SIDE as u64 * SIDE as u64;
 
@@ -53,13 +55,23 @@ const NO_CACHES: CacheBudget = CacheBudget {
 /// `pixel_data`, and whatever else `edit` changes. Its geometry is kept: a
 /// larger grid of the same spacing from the same origin.
 fn enlarged(name: &str, pixel_data: Vec<u8>, edit: impl FnOnce(&mut InMemDicomObject)) -> Vec<u8> {
+    enlarged_to(SIDE, name, pixel_data, edit)
+}
+
+/// [`enlarged`] to `side` rows and columns.
+fn enlarged_to(
+    side: u16,
+    name: &str,
+    pixel_data: Vec<u8>,
+    edit: impl FnOnce(&mut InMemDicomObject),
+) -> Vec<u8> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
         .join(name);
     let mut object = dicom_object::open_file(path).expect("open fixture");
     let vr = object.element(tags::PIXEL_DATA).expect("pixel data").vr();
     for tag in [tags::ROWS, tags::COLUMNS] {
-        object.put(DataElement::new(tag, VR::US, PrimitiveValue::from(SIDE)));
+        object.put(DataElement::new(tag, VR::US, PrimitiveValue::from(side)));
     }
     object.put(DataElement::new(
         tags::PIXEL_DATA,
@@ -205,7 +217,11 @@ struct Listed {
 
 impl Listed {
     fn new() -> Self {
-        let files = files();
+        Self::of(files(), SIDE)
+    }
+
+    /// The entries of `files`, each of `side` rows and columns.
+    fn of(files: Vec<(&'static str, Vec<u8>)>, side: u16) -> Self {
         let borrowed: Vec<(&str, &[u8])> = files
             .iter()
             .map(|(name, bytes)| (*name, bytes.as_slice()))
@@ -220,7 +236,7 @@ impl Listed {
                 let entry = scan.entry(name).clone();
                 assert_eq!(
                     (entry.rows, entry.columns),
-                    (u32::from(SIDE), u32::from(SIDE)),
+                    (u32::from(side), u32::from(side)),
                     "{name}"
                 );
                 entry
@@ -346,25 +362,42 @@ fn roomy_scheduler() -> Arc<DecodeScheduler> {
 /// `path`, and returns the heap the request held and the most the scheduler
 /// reserved for it. Panics unless the answer is 200.
 fn measured(runtime: &CountedRuntime, state: &AppState, path: &str) -> (u64, u64) {
+    let (heap, reserved, _) = measured_response(runtime, state, path);
+    (heap, reserved)
+}
+
+/// [`measured`], with the length of the response's body.
+fn measured_response(runtime: &CountedRuntime, state: &AppState, path: &str) -> (u64, u64, usize) {
     let scheduler = roomy_scheduler();
     let state = state.clone().with_decode_scheduler(scheduler.clone());
-    let (status, heap) = runtime.peak_during(async {
+    let ((status, text, length), heap) = runtime.peak_during(async {
         let server = axum_test::TestServer::new(server::router(state));
         let response = server.get(path).await;
-        (response.status_code(), response.text())
+        let status = response.status_code();
+        let text = if status == 200 {
+            String::new()
+        } else {
+            response.text()
+        };
+        (status, text, response.as_bytes().len())
     });
-    assert_eq!(status.0, 200, "{path}: {}", status.1);
+    assert_eq!(status, 200, "{path}: {text}");
     let load = runtime
         .peak_during(scheduler.load_when(|load| load.running == 0))
         .0;
-    (heap, load.peak_reserved_bytes)
+    (heap, load.peak_reserved_bytes, length)
 }
 
 fn report(name: &str, heap: u64, reserved: u64) {
+    report_of(name, PIXELS, heap, reserved);
+}
+
+/// [`report`] for frames of `pixels` pixels.
+fn report_of(name: &str, pixels: u64, heap: u64, reserved: u64) {
     if std::env::var_os("RASTER_COST_REPORT").is_some() {
         eprintln!(
-            "{name}: heap {heap} ({:.2} bytes a pixel), reserved {reserved} ({:.2} of it)",
-            heap as f64 / PIXELS as f64,
+            "{name}: heap {heap} ({:.2} bytes a pixel), reserved {reserved} ({:.3} of it)",
+            heap as f64 / pixels as f64,
             heap as f64 / reserved.max(1) as f64,
         );
     }
@@ -438,6 +471,84 @@ fn overlay_and_legend_work_holds_no_more_heap_than_it_reserved() {
         // least its image or its planes.
         assert!(heap >= 12 * PIXELS, "{}: only {heap} bytes", request.name);
     }
+}
+
+/// Rows and columns at which an image that does not compress at all is held
+/// at its worst: four bytes a pixel are then just past a doubling of the
+/// buffers the image is written through.
+const WORST_SIDE: u16 = 1026;
+
+/// The image of a value overlay at the worst input known for it: every
+/// other pixel of a row transparent. In an image of opaque pixels the alpha
+/// samples are all alike and compress to nothing; between a colored pixel
+/// and a transparent one every sample differs from its neighbor, so the
+/// encoded image is as long as the pixels it encodes, and at `WORST_SIDE`
+/// each buffer it passes through has just doubled. That is the image the
+/// estimate's 24 bytes a displayed pixel are for, and the overlay holds no
+/// more than it reserved, with nothing allowed beside the reservation.
+#[test]
+fn an_overlay_image_that_does_not_compress_at_all_holds_no_more_heap_than_it_reserved() {
+    let side = u64::from(WORST_SIDE);
+    let pixels = side * side;
+    // A dose whose every other sample of a row is zero, which a dose's
+    // legend leaves transparent, and whose other samples are not.
+    let mut dose = noise((pixels * 3 * 2) as usize);
+    for (index, sample) in dose.chunks_exact_mut(2).enumerate() {
+        if (index as u64 % pixels % side).is_multiple_of(2) {
+            sample.fill(0);
+        } else {
+            sample[0] |= 1;
+        }
+    }
+    let slice = noise((pixels * 2) as usize);
+    let listed = Listed::of(
+        vec![
+            (
+                "dose.dcm",
+                enlarged_to(WORST_SIDE, "golden-rtdose-u16-grid.dcm", dose, |_| {}),
+            ),
+            (
+                "dose-on-plane.dcm",
+                enlarged_to(WORST_SIDE, "golden-rtdose-ct-source-z0.dcm", slice, |_| {}),
+            ),
+        ],
+        WORST_SIDE,
+    );
+    let work = DecodeWork::ValueOverlay {
+        target_rows: u32::from(WORST_SIDE),
+        target_columns: u32::from(WORST_SIDE),
+        planes: 1,
+        encoding: OverlayEncoding::Png,
+    };
+    let estimate = pixels::decode_estimate(listed.entry("dose.dcm"), work);
+    // The displayed frame is what is reserved for, not the decode: the
+    // plane, the resampled values and the image.
+    assert_eq!(estimate, (8 + 8 + 24) * pixels + MIB);
+
+    let runtime = CountedRuntime::new();
+    let state = listed.state();
+    measured(&runtime, &state, &context_path(&listed, "dose.dcm"));
+    let path = format!(
+        "/api/file/{}/frame/0/dose-overlay?dose={}",
+        listed.index("dose-on-plane.dcm"),
+        listed.index("dose.dcm")
+    );
+    let (heap, reserved, length) = measured_response(&runtime, &state, &path);
+    report_of(
+        "an image that does not compress at all",
+        pixels,
+        heap,
+        reserved,
+    );
+    assert_eq!(reserved, estimate);
+    assert!(
+        length as u64 >= 4 * pixels,
+        "the image compressed to {length} bytes"
+    );
+    assert!(
+        heap <= reserved,
+        "{heap} bytes of heap held with {reserved} reserved"
+    );
 }
 
 /// What many requests at once may hold beside the budget, whatever their
