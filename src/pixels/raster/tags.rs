@@ -20,6 +20,8 @@
 //! `src/masking.rs` decides what of the tree a masked session shows.
 
 mod names;
+mod png;
+mod walk;
 
 use super::reader::Reader;
 use super::RasterSource;
@@ -416,83 +418,11 @@ pub fn read_raster_tags(
 /// there, at once, and notes nothing, since [`read_raster_tags`] notes the
 /// limit or the failure itself. The same when [`TagSink::refused`] turns
 /// true.
-fn read_format(_format: FileFormat, _reader: &mut Reader<'_>, _length: u64, _sink: &mut TagSink) {
-    // Scaffolding: this names everything a reader is given, so that the
-    // build has no unused item before the reader exists. It goes when the
-    // body is written.
-    let _ = (
-        names::ifd_tag_keyword,
-        names::ifd_type_name,
-        names::ifd_type_size,
-        [
-            names::IfdKind::Image,
-            names::IfdKind::Exif,
-            names::IfdKind::Gps,
-            names::IfdKind::Interop,
-        ],
-        [
-            TextEncoding::Utf8,
-            TextEncoding::Latin1,
-            TextEncoding::Utf16Le,
-            TextEncoding::Utf16Be,
-        ],
-        [
-            TagName::Fixed(""),
-            TagName::Entry(0),
-            TagName::Page(0),
-            TagName::FrameHeader(0),
-        ],
-        [
-            TagProblem::OutsideFile,
-            TagProblem::UnknownType,
-            TagProblem::Unreadable,
-        ],
-        [
-            TagData::Text {
-                bytes: &[],
-                encoding: TextEncoding::Utf8,
-                more: false,
-            },
-            TagData::LabelledText {
-                label: &[],
-                bytes: &[],
-                encoding: TextEncoding::Utf8,
-                more: false,
-            },
-            TagData::Composed(String::new()),
-            TagData::Number(0.0),
-            TagData::Numbers {
-                values: &[],
-                total: 0,
-            },
-            TagData::Rationals {
-                values: &[],
-                total: 0,
-            },
-            TagData::Binary { length: 0 },
-            TagData::Problem(TagProblem::Unreadable),
-        ],
-        TagSink::leaf,
-        TagSink::open,
-        TagSink::close,
-        TagSink::refused,
-        Reader::read_span,
-        Reader::refused,
-        [
-            RasterTagPart::Container,
-            RasterTagPart::Exif,
-            RasterTagPart::Icc,
-            RasterTagPart::Xmp,
-            RasterTagPart::Text,
-        ],
-        [
-            RasterTagLimit::Entries,
-            RasterTagLimit::Directories,
-            RasterTagLimit::Pages,
-            RasterTagLimit::Inflate,
-        ],
-    );
-    todo!("FMT3: read the metadata tree of a raster file")
+fn read_format(format: FileFormat, reader: &mut Reader<'_>, length: u64, sink: &mut TagSink) {
+    let mut walk = walk::Walk::new(reader, length, sink);
+    if format == FileFormat::Png {
+        png::read(&mut walk);
+    }
 }
 
 /// A source that refuses reads past [`RASTER_TAGS_MAX_READS`].
