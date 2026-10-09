@@ -19,6 +19,7 @@
 //! [`read_raster_tags`] is the seam and its doc comment is the contract.
 //! `src/masking.rs` decides what of the tree a masked session shows.
 
+mod directories;
 mod jpeg;
 mod names;
 mod png;
@@ -426,7 +427,11 @@ fn read_format(format: FileFormat, reader: &mut Reader<'_>, length: u64, sink: &
         FileFormat::Png => png::read(&mut walk),
         FileFormat::Jpeg => jpeg::read(&mut walk),
         FileFormat::Webp => webp::read(&mut walk),
-        _ => {}
+        FileFormat::Tiff => directories::tiff(&mut walk),
+        FileFormat::Dicom => {}
+    }
+    if let Some(block) = walk.exif {
+        directories::exif(&mut walk, block);
     }
     if let Some(block) = walk.xmp {
         if let Some(bytes) = walk.read(
