@@ -1164,6 +1164,8 @@ async fn every_endpoint_answers_for_a_decodable_raster() {
             "application/json",
         ),
         (&endpoints::ANNOTATIONS_EXPORT, 200, "text/csv"),
+        // An operation that names no file is applied whatever is loaded.
+        (&endpoints::ANNOTATION_OPS, 200, "application/json"),
     ];
     assert_eq!(
         expected.len(),
