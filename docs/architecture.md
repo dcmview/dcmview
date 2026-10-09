@@ -437,6 +437,18 @@ Fields are only added, and the crate's own test pins the exact shapes.
   `{"code":"stable_machine_code","error":"human-readable detail"}`. Codes are
   owned by `ApiErrorCode` in the canonical Rust contract; messages may add
   context without changing automation behavior.
+- A decode error's message is the viewer's own wording. `PixelError::Decode`
+  renders as its context and the outermost `pixels::Stated` reason of its
+  cause chain (fixed wording and numbers the viewer computed), and as its
+  context alone when the chain states none: the rest of the chain can be a
+  decoding library's text, which can quote the file. That text is
+  `PixelError::detail`; `server/api/error.rs` keeps it off the response
+  (`ApiError::failed` does the same for the overlay endpoints' other
+  causes), and the request logger writes it at debug level, escaped, only
+  when the session is not masked. `pixels/raster.rs` `decoder_failure`
+  reduces a PNG, JPEG, TIFF or WebP library's error to its kind before it
+  enters a chain, so a raster's cause holds no library text at any level.
+  The warning logged for a server error is the response's message.
 - `/api/health` exposes the package version plus build target and profile so
   compatibility evidence can identify the tested viewer build.
 - `/api/files` exposes a response-bounded view of the 256 most recent entries
@@ -2000,6 +2012,10 @@ Not current correctness blockers:
   one, and never derive an estimate from what the file declares.
 - No codec library is handed a compressed frame before
   `pixels::codestream::checked` has accepted it for the catalog entry.
+- A response of the frame, raw, thumbnail and overlay endpoints never
+  carries a library's error text or bytes of a file: a reason reaches a
+  decode error's message only as a `pixels::Stated`, and a masked session
+  logs nothing else either.
 - Discovery reads a DICOM data set only through `data_set::read_for_catalog`
   and the tag endpoints only through `data_set::read_for_tags`.
   Nothing there is sized from a length the file declares before that length

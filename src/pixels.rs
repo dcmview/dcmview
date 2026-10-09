@@ -44,7 +44,7 @@ pub use colorwash::{
     colormap, encode_colorwash_png, raw_frame_values, ColorScale, ColorwashRequest, COLORMAP_NAME,
     COLORMAP_STOPS,
 };
-pub use error::{PixelError, PixelResult};
+pub use error::{PixelError, PixelResult, Stated};
 pub(crate) use header::open_header;
 pub(crate) use native_layout::{NativeByteOrder, NativeFrameLayout};
 pub(crate) use raster::raster_tag_nodes;

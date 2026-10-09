@@ -863,7 +863,18 @@ Branch on `code`; `error` is diagnostic text and may change.
 | `503` | `decode_busy` (decode queue full; `Retry-After: 1`) |
 
 A failed decode affects only that request; the server keeps running, and logs
-the failure (with the request) to stderr. A compressed frame whose pixel data
+the failure (with the request) to stderr. The `error` of a failed decode is
+the viewer's own wording: `frame decode failed` or `raw frame decode failed`,
+followed by a reason only where the viewer states one in fixed words and
+numbers, as it does for the cases below. It never repeats what a decoding
+library said of the file, because such a message can quote the file; the
+frame, raw frame, raw pixel, thumbnail and overlay endpoints answer the same
+for any two files that fail at the same step. `unsupported_transfer_syntax`
+names the UID only when it is written as a UID is. The library's account is
+written to the log at debug level (`RUST_LOG=dcmview=debug`), with the
+request, except in a `--mask` session, which logs nothing a file holds; for
+PNG, JPEG, TIFF and WebP files the log names the kind of failure and not the
+library's text. A compressed frame whose pixel data
 declares a different image than the file's header (another size, component
 count or sample depth, or a tile, packet or scan structure beyond the fixed
 limits) is such a failure: `500 pixel_decode_failed` with "pixel data

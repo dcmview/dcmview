@@ -18,7 +18,10 @@ use tower_http::compression::{CompressionLayer, CompressionLevel};
 use tower_http::cors::CorsLayer;
 
 pub(crate) fn router(state: AppState) -> Router {
-    let activity = state.activity().clone();
+    let request_log = RequestLog {
+        activity: state.activity().clone(),
+        masked: state.registry().masker().is_some(),
+    };
     let instance = HeaderValue::from_str(&state.server_start_ms().to_string())
         .expect("integer server identity");
     // Methods here must match `endpoints::ALL`; tests/integration/api_contract.rs
@@ -113,7 +116,7 @@ pub(crate) fn router(state: AppState) -> Router {
         .fallback(error::page_not_found_handler)
         .method_not_allowed_fallback(error::method_not_allowed_handler)
         .layer(middleware::from_fn_with_state(
-            activity,
+            request_log,
             track_request_activity,
         ))
         .layer(middleware::from_fn_with_state(instance, identify_server))
@@ -143,8 +146,16 @@ fn compression() -> CompressionLayer<impl Predicate> {
         )
 }
 
+/// What the request logger needs of the viewer.
+#[derive(Clone)]
+struct RequestLog {
+    activity: RequestActivity,
+    /// A `--mask` session logs nothing a file holds.
+    masked: bool,
+}
+
 async fn track_request_activity(
-    State(activity): State<RequestActivity>,
+    State(RequestLog { activity, masked }): State<RequestLog>,
     request: Request,
     next: Next,
 ) -> Response {
@@ -161,6 +172,11 @@ async fn track_request_activity(
     let response = next.run(request).await;
     if let Some(error::ServerErrorMessage(message)) = response.extensions().get() {
         tracing::warn!(%method, %uri, status = response.status().as_u16(), "{message}");
+    }
+    // The cause is a library's or a parser's text and may quote the file:
+    // debug level, escaped, and never in a masked session.
+    if let (false, Some(error::ServerErrorDetail(detail))) = (masked, response.extensions().get()) {
+        tracing::debug!(%method, %uri, "cause: {}", detail.escape_debug());
     }
     response
 }

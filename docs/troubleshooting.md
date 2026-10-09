@@ -210,6 +210,13 @@ is built in a way the viewer refuses to follow:
   the file changed; reopen the folder (start dcmview on it again) to
   inspect the file at its new length.
 
+The response and the warning on stderr say `frame decode failed`, with a
+reason only where the viewer states one itself; they do not repeat the
+decoder's own message. To see what kind of failure the decoder reported,
+start the viewer with `RUST_LOG=dcmview=debug` and ask for the frame again:
+the cause follows the warning as a `cause:` line. A `--mask` session does
+not log it.
+
 Re-encode a copy with an ordinary tool (`tiffcp`, ImageMagick, `cwebp`); a
 file such tools cannot read is damaged.
 
@@ -326,7 +333,8 @@ waiting for decode capacity.
 ### Image frame returns unsupported transfer syntax
 
 Symptom: the viewer cannot display a file and the API returns
-`422 {"code": "unsupported_transfer_syntax", "error": "unsupported transfer syntax: ..."}`.
+`422 {"code": "unsupported_transfer_syntax", "error": "unsupported transfer syntax: ..."}`
+(the UID follows only when the file writes it as a UID).
 
 Likely cause: the file uses a transfer syntax that `dcmview` intentionally does
 not decode yet. JPEG-LS Lossless (`.80`) grayscale and JPEG XL Lossless (`.110`)

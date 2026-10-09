@@ -522,7 +522,10 @@ pub(super) async fn frame(
         let mappings = value_mappings_for(&state, file.clone())
             .await
             .map_err(|failure| {
-                error::gone_or(&source, ApiError::internal(format!("{failure:#}")))
+                error::gone_or(
+                    &source,
+                    ApiError::failed("the frame's value mappings could not be read", failure),
+                )
             })?;
         let preferred = mappings.real_world(frame).next();
         window = match preferred.filter(|map| map.unit_label == unit) {

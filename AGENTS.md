@@ -536,7 +536,15 @@ requires an existing `frontend/dist/index.html`.
 - Convert `PixelError` through `server/api/error.rs`; all API errors must use
   the shared JSON `ErrorResponse` envelope.
 - Path, query, and JSON extractor rejections must also use the JSON envelope.
-- Frame decode errors return HTTP 500 JSON and the server continues.
+- Frame decode errors return HTTP 500 JSON and the server continues. Their
+  message is the context and the reason the viewer stated, never the cause
+  chain: `{error:#}` of a decode failure can be a library's text quoting
+  the file. State a reason worth showing with `pixels::Stated` (fixed
+  wording and numbers the viewer computed, nothing read from the file as
+  text); pass any other cause to `ApiError::failed` or leave it in the
+  chain, where only the debug log of an unmasked session sees it. Do not
+  format a cause chain into an `ApiError` message or a `warn!` line in the
+  frame, raw, thumbnail or overlay endpoints.
 - Unsupported transfer syntax returns HTTP 422 JSON and must never panic.
 - Missing pixel data returns 404 for frame endpoints.
 - A frame whose decode needs more than the decode memory budget returns HTTP
@@ -1108,6 +1116,10 @@ default suite.
 - The tag endpoints hold no more than the tree for a DICOM file of any size:
   pixel data, bulk values and values over 1 MiB are shown by their declared
   length and never read, whichever element is selected.
+- A failed decode is answered in the viewer's own words: two files damaged
+  in different ways get the same body from the frame, raw, thumbnail and
+  overlay endpoints, a masked session logs only that answer, and an unmasked
+  one adds the cause at debug level.
 - Decoding a raster frame reads no more than its entry's budget and holds no
   more heap than its entry's limit, for hostile and damaged files too, and
   never panics.

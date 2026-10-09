@@ -137,6 +137,15 @@ diagnostic viewer.
   whose pixel data inflates to more than 64 MiB ends with its pixel
   element.
 
+- The `error` text of a failed decode is now `frame decode failed` or
+  `raw frame decode failed`, with a reason only where the viewer states one
+  itself ("pixel data disagrees with the header" and its numbers, a raster
+  file that changed since it was listed). The decoder's own message moved
+  to the log at debug level (`RUST_LOG=dcmview=debug`), and for PNG, JPEG,
+  TIFF and WebP files the log names the kind of failure instead. Overlay
+  endpoints answer `500 internal_error` with a fixed sentence in the same
+  cases. `code` values are unchanged.
+
 - `--cache-budget BYTES` now also covers the thumbnail cache, and its default
   total is 768 MiB instead of 704 MiB: 256, 384, 64 and 64 MiB for the
   display, raw, overlay and thumbnail caches respectively.
@@ -154,6 +163,10 @@ diagnostic viewer.
   declares. Before, a file whose header declared more data than the file
   held could make the viewer allocate that much memory while scanning a
   folder.
+- Error responses of the frame, raw frame, thumbnail and overlay endpoints
+  no longer repeat a decoding library's message. Before, such a message
+  could carry a few bytes of the file into the response and the log,
+  including in a `--mask` session.
 - `/tags` and `/tags/select` no longer read pixel data or bulk values.
   Before, selecting an element at or behind the pixel data read the whole
   file into memory outside the decode memory budget, and a tag tree read
