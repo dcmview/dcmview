@@ -26,21 +26,30 @@
 //!   is written with `FileRegistry::shown_key_of`, so a masked session
 //!   neither accepts nor sends a key that holds a real UID. Records hold
 //!   real keys.
-//! - **An operation names its file by that file's settled key, or is not
-//!   applied.** A key in the catalog may be provisional: shared by files
-//!   that have one UID and one size and have not been compared, of which
-//!   `file_for_shown_key` can name only the first. An operation under such
-//!   a key could land on a file it was not drawn on, so the key a client
-//!   sent must be the settled key of the file it resolves to; anything
-//!   else is [`AnnotationError::KeyReplaced`] and the client sends the
-//!   operation again under the key the catalog then shows for its file
+//! - **An operation is recorded on the file it was drawn on, or on none.**
+//!   A key in the catalog may be provisional: shared by files that have
+//!   one UID and one size and have not been compared, of which
+//!   `file_for_shown_key` can name only the first. A key alone therefore
+//!   cannot say which of them an operation is for, and nothing the server
+//!   does after the fact can find out. So the request says it: beside the
+//!   envelope, and outside the annotation model, it may carry the catalog
+//!   index of the file the operation was drawn on (the viewer's page
+//!   always knows it, and the EMBED endpoints address a file the same
+//!   way). Then that file's key is settled, and every key in the envelope
+//!   must be it, else [`AnnotationError::KeyReplaced`]; settling has by
+//!   then given that file its own key in the catalog, whatever happened to
+//!   the others that shared the old one, so one look at the catalog gives
+//!   the key the operation goes through under. A request without an index
+//!   is refused with [`AnnotationError::KeyAmbiguous`] when it names a
+//!   `sop:` key whose UID more than one loaded file carries; any other key
+//!   it names must still be the settled key of the file it resolves to
 //!   (`docs/design/annotation-model.md` 1.7: records "stay with the file
 //!   they were drawn on").
 
 use super::{FileRegistry, KeyError};
 use crate::annotations::{
     canonicalize_annotations,
-    embed::{replacement_ops, rois_of, rows_as_creates, write_embed_csv},
+    embed::{replacement_ops, rows_as_creates, write_embed_csv},
     memory::{now, Checking, ViewCheck, Write},
     AnnotationBackend, AnnotationIndexMap, AnnotationStore, EmbedRoiAnnotations,
     EMBED_IMPORT_AUTHOR,
@@ -48,8 +57,8 @@ use crate::annotations::{
 use crate::api::contracts::FileKeyError;
 use crate::types::FileEntry;
 use dcmview_annotation::{
-    new_id, ApplyResult, Author, Current, FileKey, ImageSize, LabelTarget, Op, OpEnvelope,
-    Violation, ViolationCode,
+    new_id, ApplyResult, Author, Current, FileKey, ImageSize, KeyScheme, LabelTarget, Op,
+    OpEnvelope, Violation, ViolationCode,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -67,8 +76,23 @@ pub enum AnnotationError {
     /// The file has no key and cannot be given one, so nothing may be
     /// written for it (`FileRegistry::ensure_key` answered
     /// `KeyError::Unavailable`).
-    #[error("file {index} has no key, so no annotation can be saved for it: {}", match .reason { FileKeyError::Unreadable => "it could not be read", FileKeyError::Changed => "it changed after it was loaded" })]
-    KeyUnavailable { index: usize, reason: FileKeyError },
+    ///
+    /// `group` says the file itself is not the one at fault: its key is
+    /// `sop:<uid>`, which names the bytes of the first file loaded with
+    /// that UID, and it is that file that could not be read or has
+    /// changed. A file that is readable and unchanged is then still
+    /// without a key.
+    #[error("file {index} has no key, so no annotation can be saved for it: {} {}", if *.group { "the first file loaded with its SOP Instance UID, which its key is checked against," } else { "it" }, match .reason { FileKeyError::Unreadable => "could not be read", FileKeyError::Changed => "changed after it was loaded" })]
+    KeyUnavailable {
+        index: usize,
+        reason: FileKeyError,
+        group: bool,
+    },
+    /// An operation without a file index named a file by a `sop:` key
+    /// whose UID more than one loaded file carries. Nothing was settled or
+    /// applied.
+    #[error("the file key {sent} is carried by more than one loaded file: say which file the operation is for (the `file` query)")]
+    KeyAmbiguous { sent: String },
     /// An operation named a file by a key that is not the settled key of
     /// the file it resolves to: the key was provisional and the files that
     /// shared it turned out to differ, or it was replaced since the client
@@ -242,6 +266,7 @@ pub async fn replace_embed_rois(
                     checking: Checking::AsLoaded,
                     author,
                     embed_slot: Some(index),
+                    import: false,
                     view: Some(ViewCheck {
                         key: &key,
                         slot: index,
@@ -279,6 +304,14 @@ pub async fn replace_embed_rois(
 /// A file's view is read as in [`embed_rois`], so the export hashes
 /// nothing: a file whose key is not settled is written from its staged
 /// rows, and has no row when it has none.
+///
+/// The export is one read: the staged rows are read under the import's
+/// lock (`AnnotationStore::with_staged`), which is held to the end, and
+/// the records of every settled file in one call of
+/// `MemoryBackend::embed_rois`, so no row of the CSV shows a write that
+/// another row of the same CSV does not. While the store holds no
+/// annotation at all, every view is its file's staged rows and no key is
+/// looked at.
 pub async fn export_embed_csv(
     registry: &FileRegistry,
     store: &AnnotationStore,
@@ -287,14 +320,37 @@ pub async fn export_embed_csv(
         .wait_until_ready()
         .await
         .map_err(|error| AnnotationError::ImportFailed(error.to_string()))?;
-    let mut rows = Vec::new();
-    for file in registry.files_snapshot() {
-        let rois = file_rois(registry, store, &file)?;
-        if rois.num_roi > 0 {
-            rows.push((file.path.to_string_lossy().into_owned(), rois));
-        }
-    }
-    write_embed_csv(&rows).map_err(store_error)
+    let files = registry.files_snapshot();
+    let backend = store.backend();
+    store
+        .with_staged(|staged| {
+            // With no annotation in the store every view is the file's
+            // staged rows, whatever its key: no key is looked at.
+            let records = !backend.holds_no_annotation().map_err(store_error)?;
+            let mut views = Vec::new();
+            // For each file, its place in `views` when its view is records.
+            let mut plan = Vec::with_capacity(files.len());
+            for file in &files {
+                let key = records.then(|| settled_key(registry, file.index)).flatten();
+                plan.push(key.is_some().then_some(views.len()));
+                if let Some(key) = key {
+                    if let Some(rows) = staged.remove(&file.index) {
+                        make_records(store, file, &key, &rows)?;
+                    }
+                    views.push((key, file.index, file.frame_count));
+                }
+            }
+            let shown = backend.embed_rois(&views).map_err(store_error)?;
+            let rows = files.iter().zip(&plan).filter_map(|(file, place)| {
+                let rois = match place {
+                    Some(place) => &shown[*place],
+                    None => staged.get(&file.index)?,
+                };
+                (rois.num_roi > 0).then(|| (file.path.to_string_lossy(), rois))
+            });
+            write_embed_csv(rows).map_err(store_error)
+        })
+        .map_err(store_error)?
 }
 
 /// Ends the store's import with the rows an EMBED CSV matched to loaded
@@ -326,7 +382,8 @@ pub fn import_embed_rows(
 }
 
 /// `POST /api/annotations/ops`: one operation envelope, as one transaction
-/// of the store (`AnnotationBackend`).
+/// of the store (`AnnotationBackend`). `file` is the catalog index of the
+/// file the operation was drawn on, when the request gave one.
 ///
 /// 1. **Keys in.** Every file key the envelope holds is one the session
 ///    sent: an annotation's or snapshot's `file`, the `file` of
@@ -336,32 +393,34 @@ pub fn import_embed_rows(
 ///    any names no file, the envelope is refused here, before any key is
 ///    settled and without reaching the store: `Invalid` with one
 ///    `unknown_file` violation whose `path` is empty.
-/// 2. **Settling.** Each file named is settled with
-///    `FileRegistry::ensure_key`, in the order the keys first appear. This
-///    is where a write waits while a file is hashed. A file without a key
-///    fails the whole request with [`AnnotationError::KeyUnavailable`]
-///    (or [`AnnotationError::Stopped`]) and nothing is applied.
-/// 3. **The key must be the file's own.** For each key, the settled key of
-///    the file it resolved to, written with `FileRegistry::shown_key_of`,
-///    must be the text the client sent. When one is not, the whole request
-///    fails with [`AnnotationError::KeyReplaced`] naming the first such key
-///    as it was sent, and nothing is applied. This is checked for every
-///    key after every file is settled and before anything else: a key that
-///    several files showed while they had not been compared, and a key that
-///    was replaced since, never reach a record.
-/// 4. Rows still staged for a file the envelope names are made records
+/// 2. **Which file.** With `file`, that file is the one every key is held
+///    to ([`AnnotationError::NotFound`] when no file has the index).
+///    Without it, each key is held to the file it resolved to, and a `sop:`
+///    key whose UID more than one loaded file carries
+///    (`FileRegistry::shares_uid`) fails the request with
+///    [`AnnotationError::KeyAmbiguous`] before anything is read.
+/// 3. **Settling.** Each file is settled with `FileRegistry::ensure_key`.
+///    This is where a write waits while a file is hashed. A file without a
+///    key fails the whole request with
+///    [`AnnotationError::KeyUnavailable`] (or [`AnnotationError::Stopped`])
+///    and nothing is applied.
+/// 4. **The key must be the file's own.** For each key, the settled key of
+///    its file, written with `FileRegistry::shown_key_of`, must be the text
+///    the client sent. When one is not, the whole request fails with
+///    [`AnnotationError::KeyReplaced`] naming the first such key as it was
+///    sent, and nothing is applied. With `file`, the catalog shows that
+///    file's settled key from this moment on.
+/// 5. Rows still staged for a file the envelope names are made records
 ///    first, as in [`embed_rois`], so the operation meets them as records.
-/// 5. The envelope is applied, with every key replaced by the settled one,
+/// 6. The envelope is applied, with every key replaced by the settled one,
 ///    as one `MemoryBackend::transact` with `Checking::Strict`, the store's
-///    author, no EMBED slot and no view check (which is what
-///    `AnnotationBackend::apply` does for one envelope), and `files`
-///    answering each settled key with that file's columns, rows and frame
-///    count.
-/// 6. **Keys out.** Every file key in the result (the record of a
+///    author, no EMBED slot and no view check, and `files` answering each
+///    settled key with that file's columns, rows and frame count.
+/// 7. **Keys out.** Every file key in the result (the record of a
 ///    `Conflict`: an annotation's `file`, a label's `file` or `frame`
 ///    target) is rewritten with `FileRegistry::shown_key_of`.
 ///
-/// `revision` in the outcome is `Transacted::revision` of step 5, and the
+/// `revision` in the outcome is `Transacted::revision` of step 6, and the
 /// store's revision when the request was refused in step 1.
 ///
 /// It does not wait for the `--annotations` import. A patient, study or
@@ -371,6 +430,7 @@ pub async fn apply_op(
     registry: &FileRegistry,
     store: &AnnotationStore,
     envelope: OpEnvelope,
+    file: Option<usize>,
 ) -> Result<OpOutcome, AnnotationError> {
     let mut envelope = envelope;
     let mut keys = Vec::new();
@@ -396,36 +456,46 @@ pub async fn apply_op(
                 revision: store.backend().revision().map_err(store_error)?,
             });
         };
-        resolved.push((key, index));
+        // The file the request names is the one meant, whatever file the
+        // key alone would resolve to.
+        resolved.push((key, file.unwrap_or(index)));
+    }
+    if let Some(index) = file {
+        registry
+            .get(index)
+            .ok_or(AnnotationError::NotFound(index))?;
+    } else if let Some((sent, _)) = resolved
+        .iter()
+        .find(|(key, index)| key.scheme() == KeyScheme::Sop && registry.shares_uid(*index))
+    {
+        return Err(AnnotationError::KeyAmbiguous {
+            sent: sent.as_str().to_string(),
+        });
     }
     let mut settled = HashMap::new();
-    let mut replacements = HashMap::new();
     let mut sizes = BTreeMap::new();
-    for (shown, index) in &resolved {
-        let key = if let Some(key) = settled.get(index) {
-            key
-        } else {
+    for (_, index) in &resolved {
+        if !settled.contains_key(index) {
             let key = settle_key(registry, *index).await?;
             let file = registry
                 .get(*index)
                 .ok_or(AnnotationError::NotFound(*index))?;
             sizes.insert(key.clone(), image_size(&file));
-            settled.entry(*index).or_insert(key)
-        };
-        replacements.insert(shown.clone(), key.clone());
+            settled.insert(*index, (key, file));
+        }
     }
+    let mut replacements = HashMap::new();
     for (sent, index) in &resolved {
-        if registry.shown_key_of(&settled[index]) != sent.as_str() {
+        let (key, _) = &settled[index];
+        if registry.shown_key_of(key) != sent.as_str() {
             return Err(AnnotationError::KeyReplaced {
                 sent: sent.as_str().to_string(),
             });
         }
+        replacements.insert(sent.clone(), key.clone());
     }
-    for (_, index) in &resolved {
-        let file = registry
-            .get(*index)
-            .ok_or(AnnotationError::NotFound(*index))?;
-        store_staged_rows(store, &file, &settled[index])?;
+    for (key, file) in settled.values() {
+        store_staged_rows(store, file, key)?;
     }
     visit_op_keys(&mut envelope.op, &mut |key| {
         *key = replacements.get(key).cloned().ok_or_else(|| {
@@ -442,6 +512,7 @@ pub async fn apply_op(
                 checking: Checking::Strict,
                 author: &store.backend().config().author,
                 embed_slot: None,
+                import: false,
                 view: None,
             },
         )
@@ -470,6 +541,10 @@ async fn settle_key(registry: &FileRegistry, index: usize) -> Result<FileKey, An
             KeyError::Unavailable(failure) => AnnotationError::KeyUnavailable {
                 index,
                 reason: failure.into(),
+                // No failure of its own on record: the group's first file's.
+                group: registry
+                    .key_status(index)
+                    .is_some_and(|status| status.failure.is_none()),
             },
             KeyError::Stopped => AnnotationError::Stopped,
         })
@@ -483,69 +558,84 @@ fn image_size(file: &FileEntry) -> ImageSize {
     }
 }
 
+/// The file's key when it is settled.
+fn settled_key(registry: &FileRegistry, index: usize) -> Option<FileKey> {
+    registry
+        .key_status(index)
+        .filter(|status| status.settled)
+        .and_then(|status| status.key)
+}
+
 fn file_rois(
     registry: &FileRegistry,
     store: &AnnotationStore,
     file: &FileEntry,
 ) -> Result<EmbedRoiAnnotations, AnnotationError> {
-    if let Some(status) = registry.key_status(file.index) {
-        if status.settled {
-            if let Some(key) = status.key {
-                store_staged_rows(store, file, &key)?;
-                let records = store
-                    .backend()
-                    .embed_records(&key, file.index)
-                    .map_err(store_error)?;
-                return Ok(rois_of(&records, file.frame_count));
-            }
-        }
-    }
-    Ok(store
-        .staged_rows(file.index)
+    let Some(key) = settled_key(registry, file.index) else {
+        return Ok(store
+            .staged_rows(file.index)
+            .map_err(store_error)?
+            .unwrap_or_else(EmbedRoiAnnotations::empty));
+    };
+    store_staged_rows(store, file, &key)?;
+    store
+        .backend()
+        .embed_rois(&[(key, file.index, file.frame_count)])
         .map_err(store_error)?
-        .unwrap_or_else(EmbedRoiAnnotations::empty))
+        .pop()
+        .ok_or_else(|| AnnotationError::Store("The store returned no view.".to_string()))
 }
 
+/// Makes the rows still staged for `file` records under its settled key.
 fn store_staged_rows(
     store: &AnnotationStore,
     file: &FileEntry,
     key: &FileKey,
 ) -> Result<(), AnnotationError> {
-    let result = store
-        .take_staged(file.index, |rows| {
-            let author = Author::parse(EMBED_IMPORT_AUTHOR).map_err(store_error)?;
-            let stamp = now();
-            let backend = store.backend();
-            let envelope = OpEnvelope {
-                op_id: new_id(),
-                actor: author.clone(),
-                ts: stamp.clone(),
-                op: Op::Batch {
-                    ops: rows_as_creates(&rows, key, backend.default_layer(), &author, &stamp),
-                },
-            };
-            let sizes = BTreeMap::from([(key.clone(), image_size(file))]);
-            let transacted = backend
-                .transact(
-                    &envelope,
-                    &sizes,
-                    Write {
-                        checking: Checking::AsLoaded,
-                        author: &author,
-                        embed_slot: Some(file.index),
-                        view: None,
-                    },
-                )
-                .map_err(store_error)?;
-            match transacted.result {
-                ApplyResult::Ok { .. } => Ok(()),
-                refused => Err(AnnotationError::Store(format!(
-                    "The staged EMBED rows were refused: {refused:?}"
-                ))),
-            }
-        })
+    store
+        .take_staged(file.index, |rows| make_records(store, file, key, &rows))
+        .map_err(store_error)?
+        .unwrap_or(Ok(()))
+}
+
+/// One transaction that makes import rows of `file` records.
+fn make_records(
+    store: &AnnotationStore,
+    file: &FileEntry,
+    key: &FileKey,
+    rows: &EmbedRoiAnnotations,
+) -> Result<(), AnnotationError> {
+    let author = Author::parse(EMBED_IMPORT_AUTHOR).map_err(store_error)?;
+    let stamp = now();
+    let backend = store.backend();
+    let envelope = OpEnvelope {
+        op_id: new_id(),
+        actor: author.clone(),
+        ts: stamp.clone(),
+        op: Op::Batch {
+            ops: rows_as_creates(rows, key, backend.default_layer(), &author, &stamp),
+        },
+    };
+    let sizes = BTreeMap::from([(key.clone(), image_size(file))]);
+    let transacted = backend
+        .transact(
+            &envelope,
+            &sizes,
+            Write {
+                checking: Checking::AsLoaded,
+                author: &author,
+                embed_slot: Some(file.index),
+                import: true,
+                view: None,
+            },
+        )
         .map_err(store_error)?;
-    result.unwrap_or(Ok(()))
+    match transacted.result {
+        ApplyResult::Ok { .. } => Ok(()),
+        refused => Err(AnnotationError::Store(format!(
+            "The staged EMBED rows were refused: {refused:?}"
+        ))),
+    }
 }
 
 fn visit_target_key(
@@ -655,6 +745,69 @@ mod tests {
             embed_rois(&registry, &store, 0).await.expect("view"),
             rois([1, 1, 2, 2]),
             "the ROI of the save in between must not remain beside it"
+        );
+    }
+    /// The view a save was worked out from is its records at their
+    /// revisions, not only which records: a record another client changed
+    /// in between, and which the save would not have touched, is put back
+    /// to what the save says.
+    #[tokio::test]
+    async fn a_save_notices_a_record_that_changed_under_it() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/golden-uncompressed-u16-multiframe.dcm");
+        let registry = FileRegistry::from_files(vec![crate::loader::test_entry(&fixture)]);
+        let session: Arc<OnceLock<(FileRegistry, AnnotationStore)>> = Arc::default();
+        let (inside, interleaved) = (session.clone(), Arc::new(AtomicBool::new(false)));
+        let ran = interleaved.clone();
+        let store = AnnotationStore::with_backend(MemoryBackend::new(MemoryConfig {
+            author: Author::parse("user:test").expect("author"),
+            schema: None,
+        }))
+        .with_before_embed_write(Arc::new(move || {
+            // Once, and only during the save under test.
+            let Some((registry, store)) = inside.get() else {
+                return;
+            };
+            if ran.swap(true, Ordering::SeqCst) {
+                return;
+            }
+            // An operation moves the first ROI: same records, one new rev.
+            let key = registry.key_status(0).and_then(|status| status.key).expect("key");
+            let record = &store.backend().embed_records(&key, 0).expect("view")[0];
+            let moved = serde_json::json!({
+                "op_id": new_id(), "actor": "user:test", "ts": "2026-10-09T08:00:00.000Z",
+                "op": {
+                    "type": "update_annotation", "id": record.id, "file": key,
+                    "base_rev": record.meta.rev,
+                    "before": { "geometry": { "type": "rect", "x0": 0, "y0": 0, "x1": 1, "y1": 1 } },
+                    "after": { "geometry": { "type": "rect", "x0": 2, "y0": 2, "x1": 3, "y1": 3 } },
+                },
+            });
+            let envelope = serde_json::from_value(moved).expect("envelope");
+            let outcome = futures::executor::block_on(apply_op(registry, store, envelope, None))
+                .expect("the operation in between");
+            assert!(matches!(outcome.result, ApplyResult::Ok { .. }), "{outcome:?}");
+        }));
+        let two = |second: [u32; 4]| EmbedRoiAnnotations {
+            num_roi: 2,
+            roi_coords: vec![[0, 0, 1, 1], second],
+            roi_frames: Vec::new(),
+        };
+        replace_embed_rois(&registry, &store, 0, two([1, 1, 2, 2]))
+            .await
+            .expect("two ROIs");
+        assert!(session.set((registry.clone(), store.clone())).is_ok());
+
+        // The save keeps the first ROI as it was and changes the second.
+        let saved = replace_embed_rois(&registry, &store, 0, two([1, 1, 3, 3]))
+            .await
+            .expect("the save");
+
+        assert!(interleaved.load(Ordering::SeqCst));
+        assert_eq!(
+            embed_rois(&registry, &store, 0).await.expect("view"),
+            saved,
+            "the view is what the save answered, the moved ROI included"
         );
     }
 }

@@ -227,6 +227,14 @@ impl FileRegistry {
         self.read().keys.status(index)
     }
 
+    /// Whether another loaded file carries this file's SOP Instance UID
+    /// (`KeyTable::shares_uid`), so that a `sop:` key built from it names
+    /// more than one file. An operation under such a key has to say which
+    /// file it was drawn on.
+    pub fn shares_uid(&self, index: usize) -> bool {
+        self.read().keys.shares_uid(index)
+    }
+
     /// The file's key as this session sends it (see `shown_key`), or `None`
     /// while it has none. This is the value of `X-File-Key` and, written in
     /// full, of the entry's `file_key`.

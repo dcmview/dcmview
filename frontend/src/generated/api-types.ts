@@ -70,6 +70,21 @@ export const THUMBNAIL_SIZE_BUCKETS = [128, 256, 512, 1024] as const;
 export const THUMBNAIL_DEFAULT_SIZE = 256;
 
 /**
+ * The query of `endpoints::ANNOTATION_OPS`.
+ *
+ * `file` is the catalog index of the file the operation was drawn on. It
+ * stands beside the envelope and is no part of the annotation model: the
+ * envelope names a file by key, and a key this viewer shows may be shared
+ * by several loaded files (one SOP Instance UID) until they are compared.
+ * With `file`, every file key in the envelope must be the settled key of
+ * that one file, or the request is `409 file_key_replaced`; an operation
+ * can then not be recorded on another file than the one it names. The
+ * viewer's page always sends it. Without it, a `sop:` key whose UID more
+ * than one loaded file carries is `409 file_key_ambiguous`.
+ */
+export type AnnotationOpQuery = { file?: number, };
+
+/**
  * The answer to one annotation operation (`endpoints::ANNOTATION_OPS`).
  *
  * | Status | `result.status` | `code` | Meaning |
@@ -84,7 +99,8 @@ export const THUMBNAIL_DEFAULT_SIZE = 256;
  *
  * Any other failure is a plain `ErrorResponse`: 400 `invalid_json` for a
  * body that is not an envelope, 413 `payload_too_large`, 422
- * `file_key_unavailable`, 409 `file_key_replaced`.
+ * `file_key_unavailable`, 409 `file_key_replaced`, 409
+ * `file_key_ambiguous`.
  *
  * Every file key in the request and in `result` is in the form this
  * session sends keys (`FileSummary::file_key`): a masked session reads and
@@ -103,7 +119,7 @@ result: ApplyResult,
  */
 revision: number, code?: ApiErrorCode, error?: string, };
 
-export type ApiErrorCode = "invalid_path" | "invalid_query" | "invalid_json" | "bad_request" | "not_found" | "route_not_found" | "asset_not_found" | "method_not_allowed" | "no_pixel_data" | "frame_out_of_range" | "invalid_window" | "unsupported_transfer_syntax" | "unsupported_pixel_layout" | "semantic_mapping_unavailable" | "overlay_not_covering_frame" | "pixel_decode_failed" | "decode_busy" | "decode_memory_exceeded" | "masked" | "annotation_conflict" | "annotation_invalid" | "file_key_unavailable" | "file_key_replaced" | "payload_too_large" | "unauthorized" | "internal_error";
+export type ApiErrorCode = "invalid_path" | "invalid_query" | "invalid_json" | "bad_request" | "not_found" | "route_not_found" | "asset_not_found" | "method_not_allowed" | "no_pixel_data" | "frame_out_of_range" | "invalid_window" | "unsupported_transfer_syntax" | "unsupported_pixel_layout" | "semantic_mapping_unavailable" | "overlay_not_covering_frame" | "pixel_decode_failed" | "decode_busy" | "decode_memory_exceeded" | "masked" | "annotation_conflict" | "annotation_invalid" | "file_key_unavailable" | "file_key_replaced" | "file_key_ambiguous" | "payload_too_large" | "unauthorized" | "internal_error";
 
 export type CodedConceptSummary = { value: string, scheme: string, meaning: string, };
 

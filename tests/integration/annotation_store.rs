@@ -5,7 +5,7 @@
 
 use dcmview::annotations::{
     AnnotationBackend, MemoryBackend, MemoryConfig, DEFAULT_LAYER_ID, DEFAULT_LAYER_NAME,
-    REMEMBERED_OPS, REMEMBERED_REVS,
+    DELETED_BYTES, REMEMBERED_OPS, REMEMBERED_REVS,
 };
 use dcmview_annotation::{
     ApplyResult, Author, Current, FileKey, Geometry, ImageSize, LabelSchema, OpEnvelope,
@@ -43,6 +43,12 @@ impl Store {
             "applies_to": ["file", "series"],
         }]))
         .expect("field");
+        schema.classes.push(
+            serde_json::from_value(
+                json!({ "id": "landmark", "name": "Landmark", "geometry": ["point"] }),
+            )
+            .expect("class"),
+        );
         let size = ImageSize {
             columns: 120,
             rows: 100,
@@ -679,36 +685,207 @@ fn remembered_results_are_bounded_and_a_forgotten_envelope_is_judged_again() {
     assert_eq!(apply(&store, &second), touched, "the next oldest stays");
     assert_eq!(store.revision(), REMEMBERED_OPS as u64 + 1);
 
-    // By what they hold: batches whose results list 10,000 revisions each.
+    // By what they hold: results that list exactly as many revisions as
+    // may be remembered, and then one more.
     let mut store = Store::new();
-    let batches = REMEMBERED_REVS / 10_000 + 1;
-    let envelopes: Vec<OpEnvelope> = (0..batches)
-        .map(|number| {
-            let ops: Vec<Value> = (0..10_000)
-                .map(|n| {
-                    label(
-                        (number * 10_000 + n) as u32,
-                        None,
-                        json!({ "series": format!("{number}.{n}") }),
-                        DEFAULT_LAYER_ID,
-                        json!("good"),
-                    )
-                })
-                .collect();
-            store.envelope(json!({ "type": "batch", "ops": ops }))
-        })
+    let mut next = 0_u32;
+    let mut labels = |store: &mut Store, count: usize| {
+        let ops: Vec<Value> = (0..count)
+            .map(|_| {
+                next += 1;
+                label(
+                    next,
+                    None,
+                    json!({ "series": format!("1.2.{next}") }),
+                    DEFAULT_LAYER_ID,
+                    json!("good"),
+                )
+            })
+            .collect();
+        store.envelope(json!({ "type": "batch", "ops": ops }))
+    };
+    let mut envelopes: Vec<OpEnvelope> = (0..REMEMBERED_REVS / 10_000)
+        .map(|_| labels(&mut store, 10_000))
         .collect();
+    envelopes.push(labels(&mut store, REMEMBERED_REVS % 10_000));
     let results: Vec<ApplyResult> = envelopes
         .iter()
         .map(|envelope| apply(&store, envelope))
         .collect();
-    assert!(results
+    let held: usize = results
         .iter()
-        .all(|result| matches!(result, ApplyResult::Ok { revs } if revs.len() == 10_000)));
+        .map(|result| match result {
+            ApplyResult::Ok { revs } => revs.len(),
+            other => panic!("refused: {other:?}"),
+        })
+        .sum();
+    assert_eq!(held, REMEMBERED_REVS);
+    assert_eq!(apply(&store, &envelopes[0]), results[0], "all of it fits");
+    let one_more = labels(&mut store, 1);
+    assert!(matches!(apply(&store, &one_more), ApplyResult::Ok { .. }));
     assert!(
         forgotten(apply(&store, &envelopes[0])),
         "the oldest batch no longer fits and is judged again"
     );
     assert_eq!(apply(&store, &envelopes[1]), results[1]);
-    assert_eq!(store.revision(), batches as u64);
+    assert_eq!(store.revision(), envelopes.len() as u64 + 1);
+}
+
+/// What the store holds, live or deleted, was valid when it was last
+/// written: a batch cannot leave a record invalid and hide it by deleting
+/// it, to have a restore bring it back; and every record a batch changed
+/// is judged, not only the first.
+#[test]
+fn a_batch_cannot_leave_an_invalid_record_behind_a_delete() {
+    let mut store = Store::new();
+    let mask = annotation(
+        1,
+        FIRST,
+        DEFAULT_LAYER_ID,
+        json!({ "type": "mask", "encoding": "tiles-v1", "tile": 64, "depth": 1,
+                "frames": { "0": { "0,0": "AAAA" } } }),
+        json!({ "set": [0] }),
+    );
+    store.applied(create(mask));
+    store.applied(create(rect(2, FIRST, DEFAULT_LAYER_ID)));
+    store.applied(create(rect(3, FIRST, DEFAULT_LAYER_ID)));
+    let delete_mask = |base_rev: u64| {
+        json!({ "type": "delete_annotation", "id": id(1), "base_rev": base_rev,
+                "snapshot": rect(1, FIRST, DEFAULT_LAYER_ID) })
+    };
+    let erase = json!({ "type": "mask_tiles", "id": id(1), "file": FIRST, "base_rev": 1, "frame": 0,
+        "tiles": [{ "tx": 0, "ty": 0, "before": "AAAA", "after": null }] });
+    let every_frame = json!({ "type": "update_annotation", "id": id(1), "file": FIRST, "base_rev": 1,
+        "before": { "frames": { "set": [0] } }, "after": { "frames": "all" } });
+
+    assert_eq!(
+        store.refused(json!({ "type": "batch", "ops": [erase, delete_mask(2)] })),
+        ViolationCode::MaskEmpty
+    );
+    assert_eq!(
+        store.refused(json!({ "type": "batch", "ops": [every_frame, delete_mask(2)] })),
+        ViolationCode::MaskFramesMismatch
+    );
+    // Nothing of either was applied: the mask is live at its first revision.
+    let records = store.backend.snapshot(&[key(FIRST)]).expect("snapshot");
+    assert_eq!(records.annotations[0].meta.rev, 1);
+    assert_eq!(store.revision(), 3);
+
+    // The second record a batch changes is judged like the first.
+    let touch = |record: u32, class: &str| {
+        json!({ "type": "update_annotation", "id": id(record), "file": FIRST, "base_rev": 1,
+                "before": { "class": "roi" }, "after": { "class": class } })
+    };
+    assert_eq!(
+        store.refused(json!({ "type": "batch", "ops": [touch(2, "roi"), touch(3, "landmark")] })),
+        ViolationCode::GeometryNotAllowed
+    );
+    assert_eq!(store.revision(), 3);
+}
+
+/// A layer knows what it holds, through moves between layers and through
+/// refused batches, so that it is deleted exactly when it is empty.
+#[test]
+fn a_layer_counts_its_records_through_moves_and_refusals() {
+    let mut store = Store::new();
+    let layer = |layer_id: &str| json!({ "type": "create_layer", "layer": { "id": layer_id, "name": "Layer", "kind": "user" } });
+    let delete_layer = |layer_id: &str| {
+        json!({ "type": "delete_layer", "id": layer_id, "base_rev": 1,
+                "snapshot": { "id": layer_id, "name": "Layer", "kind": "user" } })
+    };
+    let move_to = |base_rev: u64, from: &str, to: &str| {
+        json!({ "type": "update_annotation", "id": id(1), "file": FIRST, "base_rev": base_rev,
+                "before": { "layer": from }, "after": { "layer": to } })
+    };
+    store.applied(layer("a"));
+    store.applied(layer("b"));
+
+    // A batch that put a record and a label into `a` and was then refused
+    // leaves `a` empty.
+    assert_eq!(
+        store.refused(json!({ "type": "batch", "ops": [
+            create(rect(1, FIRST, "a")),
+            label(10, None, json!({ "file": FIRST }), "a", json!("good")),
+            create(rect(1, FIRST, "a")),
+        ] })),
+        ViolationCode::DuplicateId
+    );
+    store.applied(delete_layer("a"));
+
+    // A record moved out of a layer no longer holds it, and holds the
+    // layer it moved into.
+    store.applied(create(rect(1, FIRST, "b")));
+    assert_eq!(store.refused(delete_layer("b")), ViolationCode::BadLayer);
+    store.applied(layer("c"));
+    store.applied(move_to(1, "b", "c"));
+    assert_eq!(store.refused(delete_layer("c")), ViolationCode::BadLayer);
+    store.applied(delete_layer("b"));
+    // Moved out and the layer deleted, in a batch that is then refused:
+    // `c` is there and still holds the record.
+    assert_eq!(
+        store.refused(json!({ "type": "batch", "ops": [
+            move_to(2, "c", DEFAULT_LAYER_ID),
+            delete_layer("c"),
+            layer("c"),
+        ] })),
+        ViolationCode::DuplicateId
+    );
+    assert_eq!(store.refused(delete_layer("c")), ViolationCode::BadLayer);
+}
+
+/// An annotation and a label may have the same id; a result lists both.
+#[test]
+fn a_result_keeps_an_annotation_and_a_label_with_one_id_apart() {
+    let mut store = Store::new();
+    let revs = store.applied(json!({ "type": "batch", "ops": [
+        create(rect(1, FIRST, DEFAULT_LAYER_ID)),
+        label(1, None, json!({ "file": FIRST }), DEFAULT_LAYER_ID, json!("good")),
+        label(1, Some(1), json!({ "file": FIRST }), DEFAULT_LAYER_ID, json!("bad")),
+    ] }));
+    assert_eq!(revs, [(id(1), 1), (id(1), 2)]);
+}
+
+/// Deleted annotations are kept whole for a restore only up to a number
+/// of bytes, oldest dropped first. One that was dropped keeps its id, so
+/// the id is never used again, and a restore of it finds nothing.
+#[test]
+fn deleted_annotations_are_kept_whole_up_to_a_bound() {
+    let mut store = Store::new();
+    // Each record is a little under four mebibytes: sixteen fit the bound
+    // and the seventeenth passes it.
+    const EACH: usize = 4 * 1024 * 1024 - 4_096;
+    let count = (DELETED_BYTES / EACH + 1) as u32;
+    let restore = |record: u32| {
+        json!({ "type": "restore_annotation", "id": id(record), "base_rev": 2,
+                "snapshot": rect(record, FIRST, DEFAULT_LAYER_ID) })
+    };
+    for record in 1..=count {
+        let mut large = rect(record, FIRST, DEFAULT_LAYER_ID);
+        large["extensions"] = json!({ "test": "x".repeat(EACH) });
+        store.applied(create(large));
+        store.applied(delete(record, 1));
+    }
+
+    // The oldest was dropped: nothing to restore, and its id stays taken.
+    assert!(matches!(
+        store.conflict(restore(1)),
+        Current::Missing { .. }
+    ));
+    assert_eq!(
+        store.refused(create(rect(1, FIRST, DEFAULT_LAYER_ID))),
+        ViolationCode::DuplicateId
+    );
+    assert!(matches!(
+        store.conflict(delete(1, 2)),
+        Current::Deleted { rev: 2, .. }
+    ));
+    // The others come back as they were deleted.
+    assert_eq!(store.applied(restore(2)), [(id(2), 3)]);
+    assert_eq!(store.applied(restore(count)), [(id(count), 3)]);
+    let restored = store.backend.snapshot(&[key(FIRST)]).expect("snapshot");
+    assert_eq!(restored.annotations.len(), 2);
+    assert!(restored
+        .annotations
+        .iter()
+        .all(|record| record.extensions["test"].as_str().map(str::len) == Some(EACH)));
 }

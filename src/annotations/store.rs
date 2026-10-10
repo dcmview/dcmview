@@ -262,6 +262,22 @@ impl AnnotationStore {
         Ok(import.staged.remove(&index).map(with))
     }
 
+    /// Runs `with` on every file's staged rows at once, under the import's
+    /// lock: what an export reads, so that the rows it writes for one file
+    /// and for the next were staged at the same moment. `with` may take
+    /// rows out (to make them records) and must not wait for anything or
+    /// call back into this store's import state.
+    pub(crate) fn with_staged<T>(
+        &self,
+        with: impl FnOnce(&mut HashMap<usize, EmbedRoiAnnotations>) -> T,
+    ) -> Result<T> {
+        let mut import = self
+            .import
+            .lock()
+            .map_err(|_| anyhow!("annotations store lock poisoned"))?;
+        Ok(with(&mut import.staged))
+    }
+
     /// Called by a save through the EMBED endpoint after it has read the
     /// file's view and before it writes. It does nothing; a test hangs a
     /// competing write on it ([`AnnotationStore::with_before_embed_write`]).

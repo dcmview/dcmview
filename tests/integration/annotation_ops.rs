@@ -78,13 +78,32 @@ impl Client {
     }
 
     async fn send(&mut self, op: Value) -> (StatusCode, Value) {
+        self.post(OPS, op).await
+    }
+
+    /// Sends `op` as drawn on the file at `index` of the catalog.
+    async fn send_for(&mut self, index: usize, op: Value) -> (StatusCode, Value) {
+        self.post(&format!("{OPS}?file={index}"), op).await
+    }
+
+    async fn post(&mut self, path: &str, op: Value) -> (StatusCode, Value) {
         self.next_op += 1;
         let response = self
             .server
-            .post(OPS)
+            .post(path)
             .json(&envelope(self.next_op, op))
             .await;
         (response.status_code(), response.json())
+    }
+
+    /// The key the catalog shows for the file at `index`.
+    async fn catalog_key(&self, index: usize) -> String {
+        let catalog: Value = self.server.get("/api/files").await.json();
+        let entry = &catalog["files"][index];
+        match entry["file_key"].as_str() {
+            Some(key) => key.to_string(),
+            None => format!("sop:{}", entry["sop_instance_uid"].as_str().expect("UID")),
+        }
     }
 
     /// Sends `op` and expects it applied; returns its `revs` as pairs.
@@ -530,9 +549,16 @@ async fn files_with_the_same_bytes_keep_the_rows_written_for_each() {
         client.put_rois(1, json!([[5, 6, 7, 8]]), json!([])).await,
         StatusCode::OK
     );
-    client
-        .applied(create(1, "sop:1.2.3.7", [9.0, 9.0, 12.0, 12.0]))
+    // Several files carry the UID, so the operation says which it is for.
+    let (status, body) = client
+        .send(create(1, "sop:1.2.3.7", [9.0, 9.0, 12.0, 12.0]))
         .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "file_key_ambiguous");
+    let (status, body) = client
+        .send_for(0, create(1, "sop:1.2.3.7", [9.0, 9.0, 12.0, 12.0]))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 
     assert_eq!(
         client.rois(0).await.roi_coords,
@@ -624,7 +650,7 @@ async fn a_write_settles_the_files_key_and_fails_without_one() {
     // An operation under the key the catalog shows for such a file fails
     // the same way; one under a key no file has is an invalid operation.
     let (status, body) = client
-        .send(create(2, "sop:1.2.3.9", [5.0, 5.0, 9.0, 9.0]))
+        .send_for(3, create(2, "sop:1.2.3.9", [5.0, 5.0, 9.0, 9.0]))
         .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert_eq!(body["code"], "file_key_unavailable");
@@ -753,67 +779,202 @@ async fn csv_rows_are_shown_as_written_without_a_file_being_read() {
     assert_eq!(client.rois(0).await.roi_coords, [[5, 5, 9, 9]]);
 }
 
-/// An operation is recorded on the file it names or on none. A key that
-/// several files show while they have not been compared, and a key that
-/// was replaced, name no single file: the operation is refused and goes
-/// through under the key the catalog then shows for the file.
+/// Files with one UID, one size and different bytes, each showing
+/// `sop:<uid>` until they are compared, written under `dir`.
+fn differing_files(dir: &Path, count: u8) -> Vec<FileEntry> {
+    (0..count)
+        .map(|n| {
+            let path = dir.join(format!("{n}.dcm"));
+            std::fs::write(&path, [n + 1; 64]).expect("write file");
+            let mut file = support::file_entry(path, "1.2.840.10008.1.2.4.50", 1);
+            file.sop_instance_uid = "1.2.3.8".to_string();
+            file
+        })
+        .collect()
+}
+
+/// An operation is recorded on the file it was drawn on or on none. A key
+/// that several files show names no single file, so the operation says
+/// which file it is for; when the key is then not that file's own, it is
+/// refused, and one look at the catalog gives the key that goes through,
+/// however many files shared the old one.
 #[tokio::test]
-async fn an_operation_under_a_key_that_is_not_one_files_own_is_refused() {
+async fn an_operation_lands_on_the_file_it_names_or_on_none() {
+    let shared = "sop:1.2.3.8";
+    for count in [2_u8, 3, 5] {
+        let dir = tempdir().expect("temp dir");
+        let registry = FileRegistry::from_files(differing_files(dir.path(), count));
+        let mut client = Client::new(TestServer::new(server::router(
+            support::app_state_with_registry(registry.clone()),
+        )));
+
+        // Without a file the key names several: refused before a byte of
+        // any of them is read.
+        let (status, body) = client.send(create(1, shared, [1.0, 1.0, 5.0, 5.0])).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{count} files: {body}");
+        assert_eq!(body["code"], "file_key_ambiguous");
+        assert!(body.get("result").is_none(), "{body}");
+        assert_eq!(registry.key_stats().files_hashed, 0);
+
+        // Last file first: the ones before it are not settled by the way.
+        for index in (0..usize::from(count)).rev() {
+            let record = 10 + index as u32;
+            let corners = [1.0, 1.0, 5.0 + index as f64, 5.0];
+            let (status, body) = client
+                .send_for(index, create(record, shared, corners))
+                .await;
+            assert_eq!(
+                status,
+                StatusCode::CONFLICT,
+                "file {index} of {count}: {body}"
+            );
+            assert_eq!(body["code"], "file_key_replaced");
+            assert!(body.get("result").is_none(), "{body}");
+            assert_eq!(client.rois(index).await.num_roi, 0);
+
+            // The refusal settled this file: the catalog shows its own key,
+            // and the same operation under it is applied, on this file.
+            let own = client.catalog_key(index).await;
+            assert!(own.starts_with("b3:"), "file {index} of {count}: {own}");
+            let (status, body) = client.send_for(index, create(record, &own, corners)).await;
+            assert_eq!(status, StatusCode::OK, "file {index} of {count}: {body}");
+            // The replaced key stays refused.
+            let (status, body) = client
+                .send_for(index, move_to(record, shared, 1, corners))
+                .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{body}");
+            assert_eq!(body["code"], "file_key_replaced");
+        }
+        for index in 0..usize::from(count) {
+            assert_eq!(
+                client.rois(index).await.roi_coords,
+                [[1, 1, 5, 5 + index as u32]],
+                "file {index} of {count} holds its own rectangle and no other"
+            );
+        }
+    }
+}
+
+/// One of two files that share a key can no longer be read. An operation
+/// for the unreadable one is refused; it never appears on the other,
+/// whichever of them was loaded first.
+#[tokio::test]
+async fn an_operation_for_an_unreadable_file_does_not_land_on_its_twin() {
+    let shared = "sop:1.2.3.8";
+    for gone in [0_usize, 1] {
+        let dir = tempdir().expect("temp dir");
+        let files = differing_files(dir.path(), 2);
+        std::fs::remove_file(&files[gone].path).expect("remove file");
+        let mut client = Client::new(serve(files));
+        let readable = 1 - gone;
+
+        let (status, body) = client
+            .send_for(gone, create(1, shared, [1.0, 1.0, 5.0, 5.0]))
+            .await;
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "gone {gone}: {body}"
+        );
+        assert_eq!(body["code"], "file_key_unavailable");
+        assert_eq!(client.rois(0).await.num_roi, 0, "gone {gone}");
+        assert_eq!(client.rois(1).await.num_roi, 0, "gone {gone}");
+        // A client that does not say which file it means gets nowhere.
+        let (status, body) = client.send(create(1, shared, [1.0, 1.0, 5.0, 5.0])).await;
+        assert_eq!(status, StatusCode::CONFLICT, "gone {gone}: {body}");
+        assert_eq!(body["code"], "file_key_ambiguous");
+
+        let saved = client
+            .server
+            .put(&format!("/api/file/{readable}/annotations"))
+            .json(&json!({ "num_roi": 1, "roi_coords": [[1, 2, 3, 4]], "roi_frames": [] }))
+            .await;
+        if gone == 0 {
+            // The key both show names the first file's bytes, which are
+            // gone: the readable file has no key either, and is told why.
+            assert_eq!(saved.status_code(), StatusCode::UNPROCESSABLE_ENTITY);
+            let body: Value = saved.json();
+            assert_eq!(body["code"], "file_key_unavailable");
+            assert!(
+                body["error"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("first file")),
+                "the readable file is not the one blamed: {body}"
+            );
+        } else {
+            // An unreadable later file costs only its own key.
+            saved.assert_status_ok();
+            assert_eq!(client.rois(readable).await.roi_coords, [[1, 2, 3, 4]]);
+            assert_eq!(client.rois(gone).await.num_roi, 0);
+        }
+    }
+}
+
+/// Byte-identical files share their records, and each keeps its own CSV
+/// rows first in its view, whenever those became records: a rectangle
+/// drawn on one copy does not get in front of the other copy's rows.
+#[tokio::test]
+async fn csv_rows_of_a_copy_stay_first_in_its_view() {
     let dir = tempdir().expect("temp dir");
-    // Two files with one UID and one size and different bytes: each shows
-    // `sop:<uid>` until they are compared.
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/golden-jpeg-baseline-single-frame.dcm");
     let mut files = Vec::new();
-    for (name, bytes) in [("first.dcm", [1_u8; 64]), ("second.dcm", [2_u8; 64])] {
+    for name in ["first.dcm", "copy.dcm"] {
         let path = dir.path().join(name);
-        std::fs::write(&path, bytes).expect("write file");
+        std::fs::copy(&fixture, &path).expect("copy fixture");
         let mut file = support::file_entry(path, "1.2.840.10008.1.2.4.50", 1);
-        file.sop_instance_uid = "1.2.3.8".to_string();
+        file.sop_instance_uid = "1.2.3.7".to_string();
         files.push(file);
     }
-    let mut client = Client::new(serve(files));
-    let shared = "sop:1.2.3.8";
-
-    let (status, body) = client.send(create(1, shared, [1.0, 1.0, 5.0, 5.0])).await;
-    assert_eq!(status, StatusCode::CONFLICT, "{body}");
-    assert_eq!(body["code"], "file_key_replaced");
-    assert!(body["error"].is_string());
-    assert!(body.get("result").is_none(), "{body}");
-    assert_eq!(client.rois(0).await.num_roi, 0);
-    assert_eq!(client.rois(1).await.num_roi, 0);
-    assert_eq!(client.revision().await, 0);
-
-    // Settling compared the two files, and the catalog shows each its own
-    // key now.
-    let catalog: Value = client.server.get("/api/files").await.json();
-    let own_key = |index: usize| {
-        catalog["files"][index]["file_key"]
-            .as_str()
-            .unwrap_or_else(|| panic!("file {index} has a key of its own: {catalog}"))
-            .to_string()
+    let registry = FileRegistry::from_files(files);
+    let store = AnnotationStore::loading();
+    let mut client = Client::new(TestServer::new(server::router(AppState::new(
+        registry.clone(),
+        store.clone(),
+    ))));
+    let rows = |coords: [u32; 4]| EmbedRoiAnnotations {
+        num_roi: 1,
+        roi_coords: vec![coords],
+        roi_frames: vec![],
     };
-    let (first, second) = (own_key(0), own_key(1));
-    assert!(first.starts_with("b3:") && second.starts_with("b3:") && first != second);
+    server::annotations::import_embed_rows(
+        &registry,
+        &store,
+        HashMap::from([(0, rows([1, 2, 3, 4])), (1, rows([5, 6, 7, 8]))]),
+    )
+    .expect("import");
 
-    // Under the second file's key the same operation lands on the second
-    // file, and nowhere else.
-    client
-        .applied(create(1, &second, [1.0, 1.0, 5.0, 5.0]))
+    // Drawn on the first copy; settling its key compares both files, and
+    // only the first copy's rows are made records by the operation.
+    let (status, body) = client
+        .send_for(0, create(1, "sop:1.2.3.7", [9.0, 9.0, 12.0, 12.0]))
         .await;
-    assert_eq!(client.rois(0).await.num_roi, 0);
-    assert_eq!(client.rois(1).await.roi_coords, [[1, 1, 5, 5]]);
+    assert_eq!(status, StatusCode::OK, "{body}");
 
-    // The replaced key stays refused, for a new record and for the one
-    // that now exists.
-    for op in [
-        create(2, shared, [1.0, 1.0, 5.0, 5.0]),
-        move_to(1, shared, 1, [2.0, 2.0, 5.0, 5.0]),
-    ] {
-        let (status, body) = client.send(op).await;
-        assert_eq!(status, StatusCode::CONFLICT, "{body}");
-        assert_eq!(body["code"], "file_key_replaced");
-    }
-    assert_eq!(client.rois(1).await.roi_coords, [[1, 1, 5, 5]]);
-    assert_eq!(client.revision().await, 1);
+    assert_eq!(
+        client.rois(1).await.roi_coords,
+        [[5, 6, 7, 8], [9, 9, 12, 12]],
+        "the copy's CSV row first, then the shared rectangle"
+    );
+    assert_eq!(
+        client.rois(0).await.roi_coords,
+        [[1, 2, 3, 4], [9, 9, 12, 12]]
+    );
+    let export = client
+        .server
+        .get("/api/annotations/export.csv")
+        .await
+        .text();
+    assert_eq!(
+        export,
+        format!(
+            "anon_dicom_path,num_ROI,ROI_coords,ROI_frames\n\
+             {},2,\"[[1,2,3,4],[9,9,12,12]]\",[]\n\
+             {},2,\"[[5,6,7,8],[9,9,12,12]]\",[]\n",
+            dir.path().join("first.dcm").display(),
+            dir.path().join("copy.dcm").display(),
+        )
+    );
 }
 
 /// The body of an operation is bounded by the annotation model's own

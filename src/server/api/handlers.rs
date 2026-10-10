@@ -3,8 +3,8 @@ use super::overlays;
 use super::state::AppState;
 use crate::api::contracts::RedactionSeriesResponse;
 use crate::api::contracts::{
-    AnnotationOpResponse, ApiErrorCode, DiscoveryResult, EmbedRoiAnnotations, FileSummary,
-    FilesQuery, FilesResponse, FrameInfo, FrameQuery, GraphicAnnotationsQuery,
+    AnnotationOpQuery, AnnotationOpResponse, ApiErrorCode, DiscoveryResult, EmbedRoiAnnotations,
+    FileSummary, FilesQuery, FilesResponse, FrameInfo, FrameQuery, GraphicAnnotationsQuery,
     GraphicAnnotationsResponse, HealthResponse, PixelQuery, ReferenceCatalogResponse,
     SemanticContextResponse, TagNode, TagQuery, ThumbnailQuery, ViewerIdentity, CACHE_HEADER,
     CACHE_HIT, CACHE_MISS, CSV_MEDIA_TYPE, DISPLAY_FRAME_HEADER_WINDOW_APPLIED,
@@ -387,8 +387,10 @@ pub(super) async fn update_annotations(
 /// `Content-Type`.
 pub(super) async fn annotation_ops(
     State(state): State<AppState>,
+    query: Result<Query<AnnotationOpQuery>, QueryRejection>,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Response, ApiError> {
+    let Query(query) = query.map_err(error::query_rejection)?;
     let body = body.map_err(error::body_rejection)?;
     let envelope = std::str::from_utf8(&body)
         .map_err(|error| EnvelopeError::Malformed(error.to_string()))
@@ -399,9 +401,10 @@ pub(super) async fn annotation_ops(
                 "the body is not an annotation operation envelope: {reason}"
             )),
         })?;
-    let outcome = annotations::apply_op(state.registry(), state.annotations(), envelope)
-        .await
-        .map_err(error::annotation_error)?;
+    let outcome =
+        annotations::apply_op(state.registry(), state.annotations(), envelope, query.file)
+            .await
+            .map_err(error::annotation_error)?;
     let (status, code, error) = match &outcome.result {
         ApplyResult::Ok { .. } => (StatusCode::OK, None, None),
         ApplyResult::Conflict { .. } => (

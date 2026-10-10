@@ -173,6 +173,11 @@ pub(super) fn annotation_error(error: AnnotationError) -> ApiError {
             ApiErrorCode::FileKeyUnavailable,
             message,
         ),
+        AnnotationError::KeyAmbiguous { .. } => ApiError::coded(
+            StatusCode::CONFLICT,
+            ApiErrorCode::FileKeyAmbiguous,
+            message,
+        ),
         AnnotationError::KeyReplaced { .. } => {
             ApiError::coded(StatusCode::CONFLICT, ApiErrorCode::FileKeyReplaced, message)
         }

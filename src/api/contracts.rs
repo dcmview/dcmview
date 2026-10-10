@@ -424,8 +424,8 @@ pub mod endpoints {
         CSV_MEDIA_TYPE,
         ResponseHeaders::Export,
     );
-    /// One annotation operation: the body is one `OpEnvelope` of the
-    /// annotation model as JSON, at most [`super::ANNOTATION_OP_MAX_BYTES`]
+    /// One annotation operation; query `AnnotationOpQuery`. The body is one
+    /// `OpEnvelope` of the annotation model as JSON, at most [`super::ANNOTATION_OP_MAX_BYTES`]
     /// long, and the answer is an `AnnotationOpResponse`. See that type for
     /// the statuses.
     pub const ANNOTATION_OPS: Endpoint = json("annotationOps", ApiMethod::Post, "/annotations/ops");
@@ -1460,6 +1460,11 @@ pub enum ApiErrorCode {
     /// shows the file's key, and the same operation under that key is
     /// applied.
     FileKeyReplaced,
+    /// An annotation operation named a file by a `sop:` key that more than
+    /// one loaded file carries the UID of, without saying which file it
+    /// was drawn on (`AnnotationOpQuery::file`). Status 409, a plain
+    /// `ErrorResponse`. Nothing was applied.
+    FileKeyAmbiguous,
     /// A request body longer than its endpoint reads. Status 413.
     PayloadTooLarge,
     /// The request lacks the session's bearer token. Status 401 with
@@ -1473,6 +1478,23 @@ pub enum ApiErrorCode {
 pub struct ErrorResponse {
     pub code: ApiErrorCode,
     pub error: String,
+}
+
+/// The query of `endpoints::ANNOTATION_OPS`.
+///
+/// `file` is the catalog index of the file the operation was drawn on. It
+/// stands beside the envelope and is no part of the annotation model: the
+/// envelope names a file by key, and a key this viewer shows may be shared
+/// by several loaded files (one SOP Instance UID) until they are compared.
+/// With `file`, every file key in the envelope must be the settled key of
+/// that one file, or the request is `409 file_key_replaced`; an operation
+/// can then not be recorded on another file than the one it names. The
+/// viewer's page always sends it. Without it, a `sop:` key whose UID more
+/// than one loaded file carries is `409 file_key_ambiguous`.
+#[derive(Debug, Clone, Default, Deserialize, TS)]
+#[ts(optional_fields)]
+pub struct AnnotationOpQuery {
+    pub file: Option<usize>,
 }
 
 /// The longest body `endpoints::ANNOTATION_OPS` reads, in bytes: the
@@ -1493,7 +1515,8 @@ pub const ANNOTATION_OP_MAX_BYTES: usize = dcmview_annotation::limits::MAX_ENVEL
 ///
 /// Any other failure is a plain `ErrorResponse`: 400 `invalid_json` for a
 /// body that is not an envelope, 413 `payload_too_large`, 422
-/// `file_key_unavailable`, 409 `file_key_replaced`.
+/// `file_key_unavailable`, 409 `file_key_replaced`, 409
+/// `file_key_ambiguous`.
 ///
 /// Every file key in the request and in `result` is in the form this
 /// session sends keys (`FileSummary::file_key`): a masked session reads and

@@ -146,6 +146,127 @@ fn a_batch_holds_each_record_it_changes_once() {
     assert!(peak <= allowed, "an applied batch held {peak} bytes");
 }
 
+/// The same holds for a layer: many small operations on one large layer
+/// hold the layer once more, applied or refused.
+#[test]
+fn a_batch_holds_each_layer_it_changes_once() {
+    const LAYER_BYTES: u64 = 2 * 1024 * 1024;
+    const OPS: u64 = 1_600;
+    let backend = MemoryBackend::new(MemoryConfig {
+        author: Author::parse("user:test").expect("author"),
+        schema: None,
+    });
+    let files: BTreeMap<FileKey, ImageSize> = BTreeMap::new();
+    // A member this version does not know is kept with the layer.
+    let layer = json!({ "id": "large", "name": "Large", "kind": "user",
+                        "notes": "x".repeat(LAYER_BYTES as usize) });
+    let applied = backend
+        .apply(
+            vec![envelope(
+                1,
+                json!({ "type": "create_layer", "layer": layer }),
+            )],
+            &files,
+        )
+        .expect("store");
+    assert!(
+        matches!(applied[0], ApplyResult::Ok { .. }),
+        "{:?}",
+        applied[0]
+    );
+
+    let renames = |stale_last: bool| -> Value {
+        let ops: Vec<Value> = (0..OPS)
+            .map(|n| {
+                let base_rev = if stale_last && n == OPS - 1 { 0 } else { 1 + n };
+                json!({
+                    "type": "update_layer", "id": "large", "base_rev": base_rev,
+                    "before": { "name": "Large" }, "after": { "name": format!("Large {n}") },
+                })
+            })
+            .collect();
+        json!({ "type": "batch", "ops": ops })
+    };
+    let allowed = 4 * LAYER_BYTES;
+    assert!(allowed < OPS * LAYER_BYTES / 100);
+
+    let refused = envelope(2, renames(true));
+    let (results, peak) = heap::peak_during(|| backend.apply(vec![refused], &files));
+    assert!(matches!(
+        results.expect("store")[0],
+        ApplyResult::Conflict { .. }
+    ));
+    assert!(peak <= allowed, "a refused batch held {peak} bytes");
+    assert_eq!(
+        backend.snapshot(&[]).expect("snapshot").layers[1].name,
+        "Large"
+    );
+
+    let good = envelope(3, renames(false));
+    let (results, peak) = heap::peak_during(|| backend.apply(vec![good], &files));
+    assert!(
+        matches!(&results.expect("store")[0], ApplyResult::Ok { revs } if revs.len() == 1 && revs[0].rev == OPS + 1)
+    );
+    assert!(peak <= allowed, "an applied batch held {peak} bytes");
+}
+
+/// And for a label, whose largest part is a text value.
+#[test]
+fn a_batch_holds_each_label_it_changes_once() {
+    const VALUE_BYTES: usize = 60_000;
+    const OPS: u64 = 10_000;
+    let mut schema = dcmview_annotation::LabelSchema::implicit();
+    schema.fields = serde_json::from_value(json!([{
+        "id": "note", "name": "Note", "type": "text", "applies_to": ["series"],
+    }]))
+    .expect("field");
+    let backend = MemoryBackend::new(MemoryConfig {
+        author: Author::parse("user:test").expect("author"),
+        schema: Some(schema),
+    });
+    let files: BTreeMap<FileKey, ImageSize> = BTreeMap::new();
+    let set = |base_rev: Option<u64>, after: Value| {
+        json!({ "type": "set_label", "id": id(1), "base_rev": base_rev,
+                "target": { "series": "1.2.3" }, "field": "note", "layer": DEFAULT_LAYER_ID,
+                "before": null, "after": after })
+    };
+    let applied = backend
+        .apply(
+            vec![envelope(1, set(None, json!("x".repeat(VALUE_BYTES))))],
+            &files,
+        )
+        .expect("store");
+    assert!(
+        matches!(applied[0], ApplyResult::Ok { .. }),
+        "{:?}",
+        applied[0]
+    );
+
+    // Cleared ten thousand times over (a cleared label keeps its record),
+    // and the last operation stale: the label is put back from one copy.
+    let ops: Vec<Value> = (0..OPS)
+        .map(|n| {
+            let base_rev = if n == OPS - 1 { 0 } else { 1 + n };
+            set(Some(base_rev), Value::Null)
+        })
+        .collect();
+    let refused = envelope(2, json!({ "type": "batch", "ops": ops }));
+    let (results, peak) = heap::peak_during(|| backend.apply(vec![refused], &files));
+    assert!(matches!(
+        results.expect("store")[0],
+        ApplyResult::Conflict { .. }
+    ));
+    // A copy for each operation would be megabytes; the bound is the
+    // value twice over and the batch's own bookkeeping.
+    assert!(
+        peak <= 2 * VALUE_BYTES as u64 + 1024 * 1024,
+        "held {peak} bytes"
+    );
+    let document = backend.export().expect("document");
+    assert_eq!(document.labels.len(), 1);
+    assert_eq!(document.labels[0].meta.rev, 1);
+}
+
 /// The rows of an `--annotations` CSV are kept as rows until something
 /// needs them as records: a ROI costs its coordinates and its frame list,
 /// within 256 bytes, not a record.

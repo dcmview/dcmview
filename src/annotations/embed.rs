@@ -38,6 +38,15 @@
 //!
 //! Rows the mapping read come back from it unchanged, which is what keeps
 //! the export byte for byte what it was.
+//!
+//! # The order of a view
+//!
+//! A file's view lists the rows the `--annotations` import read for that
+//! file first, in the CSV's order, and then every other record in creation
+//! order (`MemoryBackend::embed_records`). The import's rows may become
+//! records long after other records were made, for example when a
+//! rectangle is drawn on a byte-identical copy of the file; they still
+//! stand first, because the CSV was read before anything was drawn.
 
 use crate::api::contracts::EmbedRoiAnnotations;
 use anyhow::Result;
@@ -45,12 +54,16 @@ use dcmview_annotation::{
     new_id, Annotation, Author, FileKey, FrameScope, Geometry, LayerId, Op, Patch, RecordMeta,
     Timestamp, IMPLICIT_CLASS_ID,
 };
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 /// What the EMBED endpoints show for `records`, the view of one file in
 /// view order, by the rules in the module documentation. `frame_count` is
 /// the file's.
-pub(crate) fn rois_of(records: &[Annotation], frame_count: u32) -> EmbedRoiAnnotations {
+pub(crate) fn rois_of<'a>(
+    records: impl IntoIterator<Item = &'a Annotation>,
+    frame_count: u32,
+) -> EmbedRoiAnnotations {
     let mut roi_coords = Vec::new();
     let mut scopes = Vec::new();
     for record in records {
@@ -191,15 +204,17 @@ pub(crate) fn replacement_ops(
 /// `csv::Writer` with its default settings (a field is quoted only when it
 /// needs to be, and records end with a line feed). A row is written as
 /// given, one with no ROI included; the caller leaves those out.
-pub(crate) fn write_embed_csv(rows: &[(String, EmbedRoiAnnotations)]) -> Result<String> {
+pub(crate) fn write_embed_csv<'a>(
+    rows: impl IntoIterator<Item = (Cow<'a, str>, &'a EmbedRoiAnnotations)>,
+) -> Result<String> {
     let mut writer = csv::Writer::from_writer(Vec::new());
     writer.write_record(["anon_dicom_path", "num_ROI", "ROI_coords", "ROI_frames"])?;
     for (path, rois) in rows {
         writer.write_record([
-            path.clone(),
-            rois.num_roi.to_string(),
-            serde_json::to_string(&rois.roi_coords)?,
-            serde_json::to_string(&rois.roi_frames)?,
+            path.as_ref(),
+            &rois.num_roi.to_string(),
+            &serde_json::to_string(&rois.roi_coords)?,
+            &serde_json::to_string(&rois.roi_frames)?,
         ])?;
     }
     Ok(String::from_utf8(writer.into_inner()?)?)
