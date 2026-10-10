@@ -148,10 +148,7 @@ pub(crate) fn replacement_ops(
             after.geometry = Some(rectangle(*coords));
         }
         let frames = scope_at(wanted, i);
-        let same_frames = (shown.roi_frames.is_empty() && wanted.roi_frames.is_empty())
-            || matches!((shown.roi_frames.get(i), wanted.roi_frames.get(i)), (Some(a), Some(b)) if a == b)
-            || frames == record.frames;
-        if !same_frames {
+        if frames != record.frames {
             before.frames = Some(record.frames.clone());
             after.frames = Some(frames);
         }
