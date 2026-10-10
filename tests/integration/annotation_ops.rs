@@ -379,7 +379,7 @@ async fn the_embed_endpoints_are_a_view_of_the_same_records() {
     // A rectangle off the pixel grid is shown rounded outward; a point is
     // not a ROI.
     client
-        .applied(create(1, key, [10.5, 20.25, 30.5, 40.0]))
+        .applied(create(1, key, [10.5, 20.25, 30.5, 40.25]))
         .await;
     let mut point = rect(2, key, [0.0, 0.0, 0.0, 0.0]);
     point["geometry"] = json!({ "type": "point", "x": 5.5, "y": 5.5 });
@@ -390,7 +390,7 @@ async fn the_embed_endpoints_are_a_view_of_the_same_records() {
         client.rois(0).await,
         EmbedRoiAnnotations {
             num_roi: 1,
-            roi_coords: vec![[20, 10, 40, 31]],
+            roi_coords: vec![[20, 10, 41, 31]],
             roi_frames: vec![],
         }
     );
@@ -399,7 +399,7 @@ async fn the_embed_endpoints_are_a_view_of_the_same_records() {
     assert_eq!(
         export.text(),
         format!(
-            "anon_dicom_path,num_ROI,ROI_coords,ROI_frames\n{},1,\"[[20,10,40,31]]\",[]\n",
+            "anon_dicom_path,num_ROI,ROI_coords,ROI_frames\n{},1,\"[[20,10,41,31]]\",[]\n",
             path.display()
         )
     );
@@ -408,7 +408,7 @@ async fn the_embed_endpoints_are_a_view_of_the_same_records() {
     let before = client.revision().await;
     assert_eq!(
         client
-            .put_rois(0, json!([[20, 10, 40, 31]]), json!([]))
+            .put_rois(0, json!([[20, 10, 41, 31]]), json!([]))
             .await,
         StatusCode::OK
     );
@@ -420,7 +420,7 @@ async fn the_embed_endpoints_are_a_view_of_the_same_records() {
         client
             .put_rois(
                 0,
-                json!([[20, 10, 40, 31], [1, 2, 3, 4]]),
+                json!([[20, 10, 41, 31], [1, 2, 3, 4]]),
                 json!([[0], [3, 1, 1]])
             )
             .await,
@@ -444,7 +444,7 @@ async fn the_embed_endpoints_are_a_view_of_the_same_records() {
     // the image refuses the whole save.
     assert_eq!(
         client
-            .put_rois(0, json!([[20, 10, 40, 31], [1, 2, 3, 4]]), json!([[0], []]))
+            .put_rois(0, json!([[20, 10, 41, 31], [1, 2, 3, 4]]), json!([[0], []]))
             .await,
         StatusCode::OK
     );
@@ -456,7 +456,7 @@ async fn the_embed_endpoints_are_a_view_of_the_same_records() {
         client
             .put_rois(
                 0,
-                json!([[20, 10, 40, 31], [1, 2, 3, 121]]),
+                json!([[20, 10, 41, 31], [1, 2, 3, 121]]),
                 json!([[0], []])
             )
             .await,
@@ -464,8 +464,33 @@ async fn the_embed_endpoints_are_a_view_of_the_same_records() {
     );
     assert_eq!(
         client.rois(0).await.roi_coords,
-        [[20, 10, 40, 31], [1, 2, 3, 4]]
+        [[20, 10, 41, 31], [1, 2, 3, 4]]
     );
+
+    // What a save answers is what the next read shows, also when the view
+    // held a record for every frame beside one for some: the record an
+    // operation made covers every frame, the view lists them, and a save
+    // that keeps it and drops the other names them.
+    assert_eq!(
+        client.put_rois(0, json!([]), json!([])).await,
+        StatusCode::OK
+    );
+    client
+        .applied(create(3, key, [50.0, 50.0, 60.0, 60.0]))
+        .await;
+    let mut some_frames = rect(4, key, [1.0, 1.0, 2.0, 2.0]);
+    some_frames["frames"] = json!({ "set": [1] });
+    client
+        .applied(json!({ "type": "create_annotation", "annotation": some_frames }))
+        .await;
+    assert_eq!(client.rois(0).await.roi_frames, [vec![0, 1, 2, 3], vec![1]]);
+    let saved = client
+        .server
+        .put("/api/file/0/annotations")
+        .json(&json!({ "num_roi": 1, "roi_coords": [[50, 50, 60, 60]], "roi_frames": [[0, 1, 2, 3]] }))
+        .await;
+    saved.assert_status_ok();
+    assert_eq!(client.rois(0).await, saved.json::<EmbedRoiAnnotations>());
 
     // Fewer ROIs delete the records past the end; the point is untouched.
     assert_eq!(
@@ -617,22 +642,27 @@ async fn a_write_settles_the_files_key_and_fails_without_one() {
     assert_eq!(export.text().lines().count(), 2, "{}", export.text());
 }
 
-/// The rows of an `--annotations` CSV become records file by file: a file
-/// without a key loses its rows, a file saved through the endpoint while
-/// the CSV was loading keeps what was saved, and the others load as the CSV
-/// wrote them.
+/// The rows of an `--annotations` CSV are shown and exported as the CSV
+/// wrote them without one file being read for it, whatever the file: a
+/// read of annotations costs what it did before records had keys. They
+/// become records when an operation needs them, and a save through the
+/// endpoint replaces them.
 #[tokio::test]
-async fn csv_rows_load_as_written_except_for_files_without_a_key_or_already_edited() {
+async fn csv_rows_are_shown_as_written_without_a_file_being_read() {
     let dir = tempdir().expect("temp dir");
+    // 1: no usable UID and no bytes to hash, so it can never have a key.
     let mut gone = entry(dir.path(), "gone.dcm", "");
     gone.sop_instance_uid = String::new();
+    // 3 and 4: one UID and one size, so a key of theirs needs both read.
     let registry = FileRegistry::from_files(vec![
         entry(dir.path(), "a.dcm", "1.2.3.1"),
         gone,
         entry(dir.path(), "edited.dcm", "1.2.3.3"),
+        entry(dir.path(), "shared-first.dcm", "1.2.3.9"),
+        entry(dir.path(), "shared-second.dcm", "1.2.3.9"),
     ]);
     let store = AnnotationStore::loading();
-    let client = Client::new(TestServer::new(server::router(AppState::new(
+    let mut client = Client::new(TestServer::new(server::router(AppState::new(
         registry.clone(),
         store.clone(),
     ))));
@@ -644,6 +674,7 @@ async fn csv_rows_load_as_written_except_for_files_without_a_key_or_already_edit
         roi_frames: vec![vec![2, 0, 0]],
     };
 
+    // Saved while the CSV is still loading: the save wins.
     assert_eq!(
         client.put_rois(2, json!([[9, 9, 10, 10]]), json!([])).await,
         StatusCode::OK
@@ -655,22 +686,19 @@ async fn csv_rows_load_as_written_except_for_files_without_a_key_or_already_edit
             (0, rows([500, 600, 700, 800])),
             (1, rows([1, 2, 3, 4])),
             (2, rows([5, 6, 7, 8])),
+            (3, rows([11, 12, 13, 14])),
+            (4, rows([21, 22, 23, 24])),
         ]),
     )
-    .await
     .expect("import");
-    assert_eq!(
-        (
-            report.files_loaded,
-            report.files_without_key,
-            report.files_edited
-        ),
-        (1, 1, 1)
-    );
+    assert_eq!((report.files_loaded, report.files_edited), (4, 1));
 
     assert_eq!(client.rois(0).await, rows([500, 600, 700, 800]));
-    assert_eq!(client.rois(1).await.num_roi, 0);
+    assert_eq!(client.rois(1).await, rows([1, 2, 3, 4]));
     assert_eq!(client.rois(2).await.roi_coords, [[9, 9, 10, 10]]);
+    assert_eq!(client.rois(3).await, rows([11, 12, 13, 14]));
+    assert_eq!(client.rois(4).await, rows([21, 22, 23, 24]));
+    let path = |name: &str| dir.path().join(name).display().to_string();
     let export = client
         .server
         .get("/api/annotations/export.csv")
@@ -679,11 +707,113 @@ async fn csv_rows_load_as_written_except_for_files_without_a_key_or_already_edit
     assert_eq!(
         export,
         format!(
-            "anon_dicom_path,num_ROI,ROI_coords,ROI_frames\n{},1,\"[[500,600,700,800]]\",\"[[2,0,0]]\"\n{},1,\"[[9,9,10,10]]\",[]\n",
-            dir.path().join("a.dcm").display(),
-            dir.path().join("edited.dcm").display()
+            "anon_dicom_path,num_ROI,ROI_coords,ROI_frames\n\
+             {},1,\"[[500,600,700,800]]\",\"[[2,0,0]]\"\n\
+             {},1,\"[[1,2,3,4]]\",\"[[2,0,0]]\"\n\
+             {},1,\"[[9,9,10,10]]\",[]\n\
+             {},1,\"[[11,12,13,14]]\",\"[[2,0,0]]\"\n\
+             {},1,\"[[21,22,23,24]]\",\"[[2,0,0]]\"\n",
+            path("a.dcm"),
+            path("gone.dcm"),
+            path("edited.dcm"),
+            path("shared-first.dcm"),
+            path("shared-second.dcm"),
         )
     );
+    // The import, five reads and an export: no file was opened for a key.
+    let stats = registry.key_stats();
+    assert_eq!((stats.files_hashed, stats.bytes_hashed), (0, 0));
+
+    // A file that cannot have a key keeps showing its rows; only a save
+    // for it is refused, and the refusal changes nothing.
+    assert_eq!(
+        client.put_rois(1, json!([[1, 2, 3, 5]]), json!([])).await,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(client.rois(1).await, rows([1, 2, 3, 4]));
+
+    // An operation on a file with rows from the CSV meets them as records:
+    // the view then holds the CSV's rows first and the new rectangle after.
+    client
+        .applied(create(1, "sop:1.2.3.1", [5.0, 5.0, 9.0, 9.0]))
+        .await;
+    assert_eq!(
+        client.rois(0).await,
+        EmbedRoiAnnotations {
+            num_roi: 2,
+            roi_coords: vec![[500, 600, 700, 800], [5, 5, 9, 9]],
+            roi_frames: vec![vec![2, 0, 0], vec![0, 1, 2, 3]],
+        }
+    );
+    // A save replaces the CSV's rows of its file whole.
+    assert_eq!(
+        client.put_rois(0, json!([[5, 5, 9, 9]]), json!([])).await,
+        StatusCode::OK
+    );
+    assert_eq!(client.rois(0).await.roi_coords, [[5, 5, 9, 9]]);
+}
+
+/// An operation is recorded on the file it names or on none. A key that
+/// several files show while they have not been compared, and a key that
+/// was replaced, name no single file: the operation is refused and goes
+/// through under the key the catalog then shows for the file.
+#[tokio::test]
+async fn an_operation_under_a_key_that_is_not_one_files_own_is_refused() {
+    let dir = tempdir().expect("temp dir");
+    // Two files with one UID and one size and different bytes: each shows
+    // `sop:<uid>` until they are compared.
+    let mut files = Vec::new();
+    for (name, bytes) in [("first.dcm", [1_u8; 64]), ("second.dcm", [2_u8; 64])] {
+        let path = dir.path().join(name);
+        std::fs::write(&path, bytes).expect("write file");
+        let mut file = support::file_entry(path, "1.2.840.10008.1.2.4.50", 1);
+        file.sop_instance_uid = "1.2.3.8".to_string();
+        files.push(file);
+    }
+    let mut client = Client::new(serve(files));
+    let shared = "sop:1.2.3.8";
+
+    let (status, body) = client.send(create(1, shared, [1.0, 1.0, 5.0, 5.0])).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "file_key_replaced");
+    assert!(body["error"].is_string());
+    assert!(body.get("result").is_none(), "{body}");
+    assert_eq!(client.rois(0).await.num_roi, 0);
+    assert_eq!(client.rois(1).await.num_roi, 0);
+    assert_eq!(client.revision().await, 0);
+
+    // Settling compared the two files, and the catalog shows each its own
+    // key now.
+    let catalog: Value = client.server.get("/api/files").await.json();
+    let own_key = |index: usize| {
+        catalog["files"][index]["file_key"]
+            .as_str()
+            .unwrap_or_else(|| panic!("file {index} has a key of its own: {catalog}"))
+            .to_string()
+    };
+    let (first, second) = (own_key(0), own_key(1));
+    assert!(first.starts_with("b3:") && second.starts_with("b3:") && first != second);
+
+    // Under the second file's key the same operation lands on the second
+    // file, and nowhere else.
+    client
+        .applied(create(1, &second, [1.0, 1.0, 5.0, 5.0]))
+        .await;
+    assert_eq!(client.rois(0).await.num_roi, 0);
+    assert_eq!(client.rois(1).await.roi_coords, [[1, 1, 5, 5]]);
+
+    // The replaced key stays refused, for a new record and for the one
+    // that now exists.
+    for op in [
+        create(2, shared, [1.0, 1.0, 5.0, 5.0]),
+        move_to(1, shared, 1, [2.0, 2.0, 5.0, 5.0]),
+    ] {
+        let (status, body) = client.send(op).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["code"], "file_key_replaced");
+    }
+    assert_eq!(client.rois(1).await.roi_coords, [[1, 1, 5, 5]]);
+    assert_eq!(client.revision().await, 1);
 }
 
 /// The body of an operation is bounded by the annotation model's own

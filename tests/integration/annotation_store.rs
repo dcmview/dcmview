@@ -5,10 +5,11 @@
 
 use dcmview::annotations::{
     AnnotationBackend, MemoryBackend, MemoryConfig, DEFAULT_LAYER_ID, DEFAULT_LAYER_NAME,
+    REMEMBERED_OPS, REMEMBERED_REVS,
 };
 use dcmview_annotation::{
-    ApplyResult, Author, Current, FileKey, ImageSize, LabelSchema, OpEnvelope, ViolationCode,
-    FORMAT, VERSION,
+    ApplyResult, Author, Current, FileKey, Geometry, ImageSize, LabelSchema, OpEnvelope,
+    ViolationCode, FORMAT, VERSION,
 };
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -513,4 +514,201 @@ fn mask_tiles_change_one_frame_and_the_annotations_frames_follow() {
         store.conflict(tiles(1, FIRST, 2, 2, paint())),
         Current::Annotation { record } if record.meta.rev == 3
     ));
+}
+
+/// A cleared label does not hold its layer, so the layer can be deleted;
+/// the label cannot then get a value back in a layer that no longer exists.
+#[test]
+fn a_cleared_label_cannot_regain_its_value_in_a_deleted_layer() {
+    let mut store = Store::new();
+    store.applied(json!({ "type": "create_layer",
+        "layer": { "id": "second", "name": "Second", "kind": "user" } }));
+    let in_second = |base_rev: Option<u64>, after: Value| {
+        label(20, base_rev, json!({ "file": SECOND }), "second", after)
+    };
+    store.applied(in_second(None, json!("good")));
+    store.applied(in_second(Some(1), Value::Null));
+    store.applied(
+        json!({ "type": "delete_layer", "id": "second", "base_rev": 1,
+        "snapshot": { "id": "second", "name": "Second", "kind": "user" } }),
+    );
+
+    assert_eq!(
+        store.refused(in_second(Some(2), json!("bad"))),
+        ViolationCode::UnknownLayer
+    );
+    // Clearing it again is not a write into the layer.
+    assert_eq!(
+        store.applied(in_second(Some(2), Value::Null)),
+        [(id(20), 3)]
+    );
+    let document = store.backend.export().expect("document");
+    assert!(document.labels.is_empty() && document.layers.len() == 1);
+}
+
+/// What a strict write stores is on the model's grid, and a refused
+/// envelope leaves nothing behind: not a record, not a place in a file's
+/// list, not a revision.
+#[test]
+fn a_stored_geometry_is_quantized_and_a_refusal_leaves_no_trace() {
+    let mut store = Store::new();
+    let off_grid = annotation(
+        1,
+        FIRST,
+        DEFAULT_LAYER_ID,
+        json!({ "type": "rect", "x0": 10.00049, "y0": 20.0004, "x1": 30.0006, "y1": 40 }),
+        json!("all"),
+    );
+    store.applied(create(off_grid));
+    let stored = store.backend.snapshot(&[key(FIRST)]).expect("snapshot");
+    assert_eq!(
+        stored.annotations[0].geometry,
+        Geometry::Rect {
+            x0: 10.0,
+            y0: 20.0,
+            x1: 30.001,
+            y1: 40.0
+        }
+    );
+    let exported = store.backend.export().expect("document");
+    assert_eq!(
+        exported.annotations[0].geometry,
+        stored.annotations[0].geometry
+    );
+
+    // The batch creates a record on a file that has none, then fails.
+    let refused = store.refused(json!({ "type": "batch", "ops": [
+        create(rect(2, SECOND, DEFAULT_LAYER_ID)),
+        create(rect(1, SECOND, DEFAULT_LAYER_ID)),
+    ] }));
+    assert_eq!(refused, ViolationCode::DuplicateId);
+    assert_eq!(store.revision(), 1);
+    let second = |store: &Store| {
+        store
+            .backend
+            .snapshot(&[key(SECOND)])
+            .expect("snapshot")
+            .annotations
+            .into_iter()
+            .map(|record| record.id.to_string())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(second(&store), Vec::<String>::new());
+    store.applied(create(rect(3, SECOND, DEFAULT_LAYER_ID)));
+    assert_eq!(second(&store), [id(3)]);
+    store.applied(create(rect(2, SECOND, DEFAULT_LAYER_ID)));
+    assert_eq!(second(&store), [id(3), id(2)]);
+}
+
+/// A result lists every record and layer once, also when a layer's id is
+/// the text of a record's; and a session holds at most 4,096 layers.
+#[test]
+fn a_result_keeps_records_and_layers_apart_and_layers_are_bounded() {
+    let mut store = Store::new();
+    let layer = |layer_id: &str| json!({ "type": "create_layer", "layer": { "id": layer_id, "name": "Layer", "kind": "user" } });
+    let revs = store.applied(json!({ "type": "batch", "ops": [
+        layer(&id(1)),
+        create(rect(1, FIRST, &id(1))),
+    ] }));
+    assert_eq!(revs, [(id(1), 1), (id(1), 1)]);
+
+    // The default layer and the one above make two; 4,094 more fill the
+    // session, in one envelope.
+    let fill: Vec<Value> = (0..4_094).map(|n| layer(&format!("layer-{n}"))).collect();
+    assert_eq!(
+        store.applied(json!({ "type": "batch", "ops": fill })).len(),
+        4_094
+    );
+    assert_eq!(
+        store.refused(layer("one-too-many")),
+        ViolationCode::TooManyItems
+    );
+    // A deleted layer makes room for another.
+    store.applied(
+        json!({ "type": "delete_layer", "id": "layer-0", "base_rev": 1,
+        "snapshot": { "id": "layer-0", "name": "Layer", "kind": "user" } }),
+    );
+    store.applied(layer("one-more"));
+    assert_eq!(
+        store.backend.snapshot(&[]).expect("snapshot").layers.len(),
+        4_096
+    );
+}
+
+/// The store remembers the results of recent envelopes, bounded by their
+/// number and by what they hold, and an envelope it has forgotten is
+/// judged again: refused, never applied a second time.
+#[test]
+fn remembered_results_are_bounded_and_a_forgotten_envelope_is_judged_again() {
+    let apply = |store: &Store, envelope: &OpEnvelope| {
+        store
+            .backend
+            .apply(vec![envelope.clone()], &store.files)
+            .expect("store")
+            .pop()
+            .expect("one result")
+    };
+    let forgotten = |result: ApplyResult| matches!(result, ApplyResult::Invalid { ref violations } if violations[0].code == ViolationCode::DuplicateId);
+
+    // By number: one more envelope than the store remembers.
+    let mut store = Store::new();
+    let touch = |base_rev: u64| {
+        json!({
+            "type": "update_annotation", "id": id(1), "file": FIRST, "base_rev": base_rev,
+            "before": { "class": "roi" }, "after": { "class": "roi" },
+        })
+    };
+    let first = store.envelope(create(rect(1, FIRST, DEFAULT_LAYER_ID)));
+    let second = store.envelope(touch(1));
+    let rest: Vec<OpEnvelope> = (2..REMEMBERED_OPS as u64)
+        .map(|base_rev| store.envelope(touch(base_rev)))
+        .collect();
+    let created = apply(&store, &first);
+    let touched = apply(&store, &second);
+    for result in store.backend.apply(rest, &store.files).expect("store") {
+        assert!(matches!(result, ApplyResult::Ok { .. }), "{result:?}");
+    }
+    // Exactly as many as are remembered: the oldest is still answered.
+    assert_eq!(store.revision(), REMEMBERED_OPS as u64);
+    assert_eq!(apply(&store, &first), created);
+    let last = store.envelope(touch(REMEMBERED_OPS as u64));
+    assert!(matches!(apply(&store, &last), ApplyResult::Ok { .. }));
+    // One more, and the oldest is an envelope the store has not seen: the
+    // create is refused as a duplicate, not applied again.
+    assert!(forgotten(apply(&store, &first)));
+    assert_eq!(apply(&store, &second), touched, "the next oldest stays");
+    assert_eq!(store.revision(), REMEMBERED_OPS as u64 + 1);
+
+    // By what they hold: batches whose results list 10,000 revisions each.
+    let mut store = Store::new();
+    let batches = REMEMBERED_REVS / 10_000 + 1;
+    let envelopes: Vec<OpEnvelope> = (0..batches)
+        .map(|number| {
+            let ops: Vec<Value> = (0..10_000)
+                .map(|n| {
+                    label(
+                        (number * 10_000 + n) as u32,
+                        None,
+                        json!({ "series": format!("{number}.{n}") }),
+                        DEFAULT_LAYER_ID,
+                        json!("good"),
+                    )
+                })
+                .collect();
+            store.envelope(json!({ "type": "batch", "ops": ops }))
+        })
+        .collect();
+    let results: Vec<ApplyResult> = envelopes
+        .iter()
+        .map(|envelope| apply(&store, envelope))
+        .collect();
+    assert!(results
+        .iter()
+        .all(|result| matches!(result, ApplyResult::Ok { revs } if revs.len() == 10_000)));
+    assert!(
+        forgotten(apply(&store, &envelopes[0])),
+        "the oldest batch no longer fits and is judged again"
+    );
+    assert_eq!(apply(&store, &envelopes[1]), results[1]);
+    assert_eq!(store.revision(), batches as u64);
 }

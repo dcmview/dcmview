@@ -17,6 +17,7 @@
 
 mod admission;
 mod agreement;
+mod annotations;
 mod bounds;
 mod heap;
 mod layout;
