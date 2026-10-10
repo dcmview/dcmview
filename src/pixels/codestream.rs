@@ -959,20 +959,15 @@ pub(crate) fn header_agrees(file: &FileEntry, object: &DefaultDicomObject) -> Re
     Ok(())
 }
 
-/// The most bytes the JPEG XL decoder may allocate for one frame of `file`:
-/// [`JXL_DECODE_BASE_BYTES`] plus [`JXL_DECODE_BYTES_PER_SAMPLE`] for each
+/// The limit the JPEG XL decoder's allocation tracker is given for one
+/// frame of `file`: [`JXL_DECODE_BASE_BYTES`] plus [`JXL_DECODE_BYTES_PER_SAMPLE`] for each
 /// of the frame's `rows * columns * samples_per_pixel` samples, saturating.
 ///
 /// A lossless frame decodes in about five bytes a sample at 8 bits and
-/// eleven at 16, so an honest frame is far inside this; a frame whose own
-/// frame header, extra channels or reference frames ask for more than the
-/// entry's image is stopped by it. Two things the decoder would read
-/// outside this limit never reach it: an embedded colour profile
-/// ([`checked`] refuses the frame) and the boxes of the box container
-/// ([`decode_jpeg_xl`] hands over the codestream alone). What is left
-/// outside the limit is bounded by the frame's own length: the decoder's
-/// buffer of the encoded bytes it has not yet parsed, and the one buffer a
-/// codestream split across boxes is joined in.
+/// eleven at 16, so an honest frame is far inside this. The limit bounds
+/// what the decoder accounts for with its tracker. Beside it, the decoder
+/// is handed only the codestream ([`decode_jpeg_xl`]), and a frame with an
+/// embedded colour profile is refused ([`checked`]).
 pub fn jxl_decode_limit(file: &FileEntry) -> u64 {
     u64::from(file.rows)
         .saturating_mul(u64::from(file.columns))

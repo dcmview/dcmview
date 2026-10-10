@@ -158,14 +158,14 @@ diagnostic viewer.
 - An RT Dose or Parametric Map overlay drawn before more files were loaded
   is drawn again afterwards instead of being served from the cache, so its
   colors follow the legend of the files now loaded.
-- A JPEG XL frame is now decoded within the memory limit its header gives
-  it whatever else the frame holds. Before, two parts of a frame were read
-  outside that limit: an embedded colour profile, which was read before the
-  frame was checked, and the metadata and JPEG reconstruction boxes of a
-  frame in the box container, which were decompressed and kept. The viewer
-  used neither. A frame with an embedded profile is now refused (see
-  Changed), and a frame in the box container is decoded from its codestream
-  alone; its pixels are unchanged.
+- A JPEG XL frame is decoded with the decoder's own allocation limit set
+  from the file's header, and two parts of a frame that were read outside
+  that limit no longer reach the decoder: an embedded colour profile, which
+  was read before the frame was checked, and the metadata and JPEG
+  reconstruction boxes of a frame in the box container, which were
+  decompressed and kept. The viewer used neither. A frame with an embedded
+  profile is now refused (see Changed), and a frame in the box container is
+  decoded from its codestream alone; its pixels are unchanged.
 
 ## 0.4.1 - 2026-10-09
 

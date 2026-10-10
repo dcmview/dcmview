@@ -996,9 +996,8 @@ Three more rules close the same gap where there is no header to compare:
   alone, the contents of the frame's `jxlc` box or of its `jxlp` boxes
   joined in one buffer no longer than the frame, so it never sees a
   container. A recompressed JPEG file decodes to the same pixels without
-  its reconstruction data. What remains outside the tracker is bounded by
-  the frame's own length: the decoder's buffer of encoded bytes it has not
-  parsed yet, and that one joined buffer.
+  its reconstruction data. The limit bounds what the decoder accounts for
+  with its tracker.
 - **Deflated Image Frame.** `codestream::inflate_frame` reads the frame's
   packed size plus one byte out of the inflater and no more; a frame that
   inflates to anything else is refused.
