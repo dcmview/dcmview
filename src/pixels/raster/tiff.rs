@@ -256,7 +256,7 @@ pub(super) fn decode(
     decode_page(file, frame, reader, length, expected, budget).map_err(|error| {
         match error.downcast::<PixelError>() {
             Ok(error) => error,
-            Err(error) => PixelError::frame_decode(error),
+            Err(error) => super::decoder_failure(error),
         }
     })
 }

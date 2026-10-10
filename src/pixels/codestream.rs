@@ -37,6 +37,7 @@ use dicom_dictionary_std::tags;
 use dicom_object::DefaultDicomObject;
 use std::ops::Range;
 
+use super::error::Stated;
 use super::syntax::{codec_for_syntax, Codec};
 
 /// Part of the message of every decode error raised because a frame's
@@ -801,10 +802,15 @@ fn precision_fits(precision: u32, allocated: u32) -> Result<()> {
 /// Every decoder calls this (directly or through
 /// `pixeldata_frame::decode_object`) before a codec library sees the frame.
 pub(crate) fn checked(file: &FileEntry, kind: CodestreamKind, frame: &[u8]) -> Result<Declared> {
+    // The header reader's own reason may be a library's, so it stays below
+    // the stated one; `agrees` writes rule names and numbers only.
     let declared = declared(kind, frame).map_err(|error| {
-        anyhow!("{CODESTREAM_MISMATCH}: its own header cannot be read: {error:#}")
+        error.context(Stated::new(format!(
+            "{CODESTREAM_MISMATCH}: its own header cannot be read"
+        )))
     })?;
-    agrees(file, &declared).map_err(|error| anyhow!("{CODESTREAM_MISMATCH}: {error:#}"))?;
+    agrees(file, &declared)
+        .map_err(|error| Stated::error(format!("{CODESTREAM_MISMATCH}: {error:#}")))?;
     Ok(declared)
 }
 
@@ -968,10 +974,10 @@ pub(crate) fn inflate_frame(fragment: &[u8], expected: usize) -> Result<Vec<u8>>
         .take(limit)
         .read_to_end(&mut output)?;
     if output.len() != expected {
-        return Err(anyhow!(
+        return Err(Stated::error(format!(
             "{CODESTREAM_MISMATCH}: inflated frame holds {} bytes, expected {expected}",
             output.len()
-        ));
+        )));
     }
     Ok(output)
 }

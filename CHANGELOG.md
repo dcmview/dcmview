@@ -136,6 +136,38 @@ diagnostic viewer.
   not delay the ones it still wants. A decode that has started still
   finishes and is cached.
 
+- Discovery reads a DICOM file's header within fixed limits. It passes over
+  any value longer than 1 MiB before the pixel data without reading it
+  (Overlay Data excepted), so large private or bulk elements no longer cost
+  scan time or memory. A multi-valued text element of more than 65,536
+  values is passed over in the same way, so a catalog field read from one
+  is empty. A file whose sequences nest more than 64 deep, or
+  whose Deflated Explicit VR Little Endian data set needs more than 64 MiB
+  to read up to its pixel data, is skipped as `dicom_parse_failed`.
+
+- `/tags` and `/tags/select` report a text or numeric value longer than
+  1 MiB as `{"type": "binary", "length": N}`, as they report binary values,
+  instead of a preview of it. A tag tree that reaches the end of a truncated
+  file inside a value it does not read now ends with that element instead
+  of failing, the tree of a Deflated Explicit VR Little Endian file
+  whose pixel data inflates to more than 64 MiB ends with its pixel
+  element, and a tree whose sequences nest more than 64 deep ends there
+  with an error value. A tree that ends before its data set ends with a
+  `Note` leaf that says why. In a deflated file, text longer than 4,096
+  bytes that is not plain ASCII is shown from its first 4,096 bytes.
+
+- The `error` text of a failed decode is now `frame decode failed` or
+  `raw frame decode failed`, with a reason only where the viewer states one
+  itself ("pixel data disagrees with the header" and its numbers, native
+  pixel data shorter than its frames, a truncated fragment, a raster file
+  that changed since it was listed). The decoder's own message moved
+  to the log at debug level (`RUST_LOG=dcmview=debug`), and for PNG, JPEG,
+  TIFF and WebP files the log names the kind of failure instead. The
+  overlay endpoints and the endpoints that read a file's metadata (tags,
+  references, semantic context, value mapping, graphic annotations, slide
+  context) answer `500 internal_error` with a fixed sentence in the same
+  cases. `code` values are unchanged.
+
 - `--cache-budget BYTES` now also covers the thumbnail cache, and its default
   total is 768 MiB instead of 704 MiB: 256, 384, 64 and 64 MiB for the
   display, raw, overlay and thumbnail caches respectively.
@@ -146,9 +178,37 @@ diagnostic viewer.
 - A segmentation, RT Dose or Parametric Map overlay that fails while it is
   encoded now answers `500 pixel_decode_failed`, as one whose frames cannot
   be decoded does, instead of `500 internal_error`.
+- A display frame now reserves the larger of its decode and its encoding
+  (its raw frame and seven times its display buffer) of the decode memory
+  budget, where it reserved the decode and three display buffers. An image
+  file reserves less than before: with 4 GiB, a square 8-bit gray one is
+  shown up to 13,470 pixels a side whatever its length, where it was
+  12,636. An uncompressed or RLE 8-bit DICOM frame reserves more: 8 bytes
+  a pixel for gray where it was 6, and 24 for colour where it was 18. The
+  tables in `docs/configuration.md` give the new sizes.
+- A presentation layer (a frame's shutter and overlay graphics) reserves 25
+  bytes a pixel where it reserved 9. A frame of more than 6,550 pixels a
+  side with a 1 GiB budget, or 13,105 with 4 GiB, can be shown while its
+  layer is refused, and is then shown without those graphics.
 
 ### Fixed
 
+- Discovery no longer sizes what it reads from the lengths a DICOM file
+  declares. Before, a file whose header declared more data than the file
+  held could make the viewer allocate that much memory while scanning a
+  folder.
+- A file that has no key because the first loaded file with its UID could
+  not be read now reports `key_error: "uncompared"`. Before, its entry
+  showed `file_key: null` with no error and `keys_hashing` 0, which a
+  client could not tell from a file still waiting for its hash.
+- Error responses of the endpoints that read a file no longer repeat a
+  decoding or parsing library's message. Before, such a message
+  could carry a few bytes of the file into the response and the log,
+  including in a `--mask` session.
+- `/tags` and `/tags/select` no longer read pixel data or bulk values.
+  Before, selecting an element at or behind the pixel data read the whole
+  file into memory outside the decode memory budget, and a tag tree read
+  every value before the pixel data at its declared length.
 - Segmentation, RT Dose and Parametric Map overlays and the legend of an RT
   Dose or Parametric Map are now reserved against the decode memory budget
   as whole pieces of work: the frames they decode, the values they are
@@ -162,6 +222,19 @@ diagnostic viewer.
 - An RT Dose or Parametric Map overlay drawn before more files were loaded
   is drawn again afterwards instead of being served from the cache, so its
   colors follow the legend of the files now loaded.
+- A frame of a Deflated Explicit VR Little Endian file is read into a
+  buffer that grows as its data inflates. Before, a file whose data ended
+  early still had memory set aside for the whole frame its header states.
+- Display frames and presentation layers reserve the decode memory an image
+  that does not compress takes while it is encoded. Before, encoding such
+  an image could hold more memory than had been reserved for it.
+- A PALETTE COLOR frame reserves decode memory for the RGB image it is
+  displayed as. Before, it reserved as a gray frame and could hold more
+  than that.
+- Cached display frames, thumbnails, presentation layers and overlays hold
+  exactly the bytes `--cache-budget` counts for them. Before, a cached
+  image could hold up to twice its length, so the caches could hold more
+  than the budget.
 
 ## 0.4.1 - 2026-10-09
 

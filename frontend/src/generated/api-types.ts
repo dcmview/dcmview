@@ -147,9 +147,10 @@ export type ErrorResponse = { code: ApiErrorCode, error: string, };
 export type FileFormat = "dicom" | "png" | "jpeg" | "tiff" | "webp";
 
 /**
- * Why a whole-file digest could not be computed.
+ * Why a file has no key: its digest could not be computed, or could not
+ * be compared with the digest its key depends on.
  */
-export type FileKeyError = "unreadable" | "changed";
+export type FileKeyError = "unreadable" | "changed" | "uncompared";
 
 /**
  * One file's key replaced by another (`docs/design/annotation-model.md`
@@ -257,9 +258,12 @@ file_key?: string | null,
  */
 alias_of?: number, 
 /**
- * Why the file's bytes could not be hashed for its key. Left out when
- * hashing has not failed. A file with `file_key: null` and an error
- * stays without a key until hashing is asked for again and succeeds.
+ * Why the file's bytes could not be hashed for its key, or, for
+ * `uncompared`, why they could not be compared with the first file of
+ * its UID. Left out when hashing has not failed. A file with
+ * `file_key: null` and an error stays without a key until hashing is
+ * asked for again and succeeds; one with `file_key: null` and no error
+ * is waiting to be hashed or is being hashed.
  */
 key_error?: FileKeyError, };
 

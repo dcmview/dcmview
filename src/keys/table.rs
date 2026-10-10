@@ -127,6 +127,10 @@ pub struct KeyView<'a> {
     pub key: Option<KeyRef<'a>>,
     pub alias_of: Option<usize>,
     pub failure: Option<KeyFailure>,
+    /// The file has no key because it awaits its comparison with the first
+    /// file of its group (rule 4) and a failure is recorded for the first
+    /// file. Never set together with `failure` or a key.
+    pub uncompared: bool,
 }
 
 /// One file's key as it stands.
@@ -204,7 +208,9 @@ pub enum Reliance {
 ///    - any other file, which is one that has not been compared with the
 ///      first file yet: no key. A file that had the provisional `sop:<uid>`
 ///      and no digest when the group became relied on loses it at that
-///      moment.
+///      moment. While a failure is recorded for the first file and none for
+///      the file itself, the file is *uncompared* ([`KeyView::uncompared`]):
+///      no digest of its own can give it a key until the first file is read.
 ///
 /// Under rules 1 to 3 the keys do not depend on registration order, nor on
 /// which digests could be computed: a group has `sop:` keys exactly while
@@ -298,6 +304,7 @@ const SPLIT: u16 = 16;
 const RELIED: u16 = 32;
 const UNREADABLE: u16 = 64;
 const CHANGED: u16 = 128;
+const UNCOMPARED: u16 = 256;
 const FAILURE: u16 = UNREADABLE | CHANGED;
 
 #[derive(Clone, Copy)]
@@ -695,15 +702,17 @@ impl<F: KeyedFile + Clone> KeyTable<F> {
             affected.push(index);
             if outcome.is_ok() {
                 self.check_group(index, &mut affected);
-                let group = self.entries[index].group;
-                if group != NONE
-                    && groups.insert(group)
-                    && self.entries[group as usize].flags & RELIED != 0
-                    && self.entries[group as usize].file == file
-                {
-                    if let Some(group) = self.groups.get(&group) {
-                        affected.extend_from_slice(&group.members);
-                    }
+            }
+            // Whatever the outcome for the first file of a group that is
+            // relied on, it changes what the files waiting for it show.
+            let group = self.entries[index].group;
+            if group != NONE
+                && groups.insert(group)
+                && self.entries[group as usize].flags & RELIED != 0
+                && self.entries[group as usize].file == file
+            {
+                if let Some(group) = self.groups.get(&group) {
+                    affected.extend_from_slice(&group.members);
                 }
             }
             member = self.entries[index].next;
@@ -726,6 +735,7 @@ impl<F: KeyedFile + Clone> KeyTable<F> {
             },
             alias_of: (entry.alias_of != NONE).then_some(entry.alias_of as usize),
             failure: self.failure(index),
+            uncompared: entry.flags & UNCOMPARED != 0,
         })
     }
 
@@ -866,14 +876,15 @@ impl<F: KeyedFile + Clone> KeyTable<F> {
         affected.sort_unstable();
         affected.dedup();
         let mut changes = KeyChanges::default();
+        // The failure recorded for a file, counting the outcome being
+        // recorded now, which no entry's flags hold yet.
+        let recorded = |table: &Self, file: u32| match outcome.filter(|(of, _)| *of == file) {
+            Some((_, failure)) => failure,
+            None => table.failure(file as usize),
+        };
         for index in affected {
             let old = self.entries[index];
-            let failure = if let Some((_, failure)) = outcome.filter(|(file, _)| *file == old.file)
-            {
-                failure
-            } else {
-                self.failure(old.file as usize)
-            };
+            let failure = recorded(self, old.file);
             let digest = self.digest(index);
             let key = if old.group == NONE {
                 if digest.is_some() {
@@ -923,7 +934,19 @@ impl<F: KeyedFile + Clone> KeyTable<F> {
                 Some(KeyFailure::Changed) => CHANGED,
                 None => 0,
             };
-            if old.flags & (SOP | CONTENT | FAILURE) != key | failure || old.alias_of != alias {
+            // Without a key or a failure of its own, waiting for a first
+            // file that could not be read.
+            let uncompared = if key == 0
+                && failure == 0
+                && self.awaiting_comparison(index)
+                && recorded(self, self.entries[old.group as usize].file).is_some()
+            {
+                UNCOMPARED
+            } else {
+                0
+            };
+            let shown = SOP | CONTENT | FAILURE | UNCOMPARED;
+            if old.flags & shown != key | failure | uncompared || old.alias_of != alias {
                 if old.flags & SOP != 0 && key == CONTENT {
                     if let Ok(old_key) = FileKey::sop(self.files[index].sop_instance_uid()) {
                         changes.rekeys.push(Rekey {
@@ -934,7 +957,7 @@ impl<F: KeyedFile + Clone> KeyTable<F> {
                     }
                 }
                 let entry = &mut self.entries[index];
-                entry.flags = (entry.flags & !(SOP | CONTENT | FAILURE)) | key | failure;
+                entry.flags = (entry.flags & !shown) | key | failure | uncompared;
                 entry.alias_of = alias;
                 changes.updated.push(index);
             }

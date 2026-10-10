@@ -59,7 +59,9 @@ pub(super) async fn segmentation_overlay(
         SegmentationOverlayError::Unavailable(_) => {
             ApiError::semantic_mapping_unavailable(error.to_string())
         }
-        SegmentationOverlayError::Metadata(_) => ApiError::internal(error.to_string()),
+        SegmentationOverlayError::Metadata(cause) => {
+            ApiError::failed("the segmentation's metadata could not be read", cause)
+        }
     })?;
     let target = files
         .iter()
@@ -160,7 +162,7 @@ pub(super) async fn presentation_layer(
     })
     .await
     .map_err(error::pixel_error)?
-    .map_err(|error| ApiError::internal(format!("{error:#}")))?;
+    .map_err(|error| ApiError::failed("the presentation layer could not be drawn", error))?;
     if cacheable {
         state.cache_overlay(key, png.clone());
     }
@@ -285,7 +287,9 @@ async fn value_overlay(
     }
     let mappings = value_mappings_for(state, overlay.clone())
         .await
-        .map_err(|error| ApiError::internal(format!("{error:#}")))?;
+        .map_err(|error| {
+            ApiError::failed("the overlay's value mappings could not be read", error)
+        })?;
     let plane_frames = sample.frames();
     let work = DecodeWork::ValueOverlay {
         target_rows: target.rows,

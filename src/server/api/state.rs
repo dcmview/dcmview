@@ -151,6 +151,23 @@ impl AppState {
         )));
     }
 
+    /// What the display, raw, overlay and thumbnail caches bill the entries
+    /// they hold at this moment, each in the field of the budget that
+    /// bounds it. A cache whose lock is poisoned reports 0.
+    pub fn cached_bytes(&self) -> pixels::CacheBudget {
+        fn billed<K: std::hash::Hash + Eq, V: pixels::FrameBody>(
+            cache: &Mutex<pixels::BudgetedLru<K, V>>,
+        ) -> usize {
+            cache.lock().map_or(0, |cache| cache.billed_bytes())
+        }
+        pixels::CacheBudget {
+            frame_bytes: billed(&self.pixel_cache),
+            raw_bytes: billed(&self.raw_cache),
+            overlay_bytes: billed(&self.overlay_cache),
+            thumbnail_bytes: billed(&self.thumbnail_cache),
+        }
+    }
+
     /// The scheduler that admits this state's decodes.
     pub fn decode_scheduler(&self) -> Arc<DecodeScheduler> {
         self.decode_scheduler.clone()

@@ -12,7 +12,11 @@ use axum::Json;
 pub(super) struct ApiError {
     status: StatusCode,
     code: ApiErrorCode,
+    /// The response's `error`: the viewer's own wording.
     message: String,
+    /// What a library or a parser said of the file, which may quote it.
+    /// Never sent; logged at debug level outside a masked session.
+    detail: Option<String>,
 }
 
 impl ApiError {
@@ -21,6 +25,7 @@ impl ApiError {
             status,
             code,
             message: message.into(),
+            detail: None,
         }
     }
 
@@ -29,6 +34,7 @@ impl ApiError {
             status: StatusCode::BAD_REQUEST,
             code: ApiErrorCode::BadRequest,
             message: message.into(),
+            detail: None,
         }
     }
 
@@ -42,6 +48,7 @@ impl ApiError {
             status: StatusCode::NOT_FOUND,
             code: ApiErrorCode::NotFound,
             message: message.into(),
+            detail: None,
         }
     }
 
@@ -50,6 +57,7 @@ impl ApiError {
             status: StatusCode::METHOD_NOT_ALLOWED,
             code: ApiErrorCode::MethodNotAllowed,
             message: message.into(),
+            detail: None,
         }
     }
 
@@ -89,6 +97,17 @@ impl ApiError {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             code: ApiErrorCode::InternalError,
             message: message.into(),
+            detail: None,
+        }
+    }
+
+    /// A failure whose cause is a library's or a parser's own text: the
+    /// response says `message`, in the viewer's fixed wording, and the
+    /// cause goes to the debug log.
+    pub(super) fn failed(message: &'static str, cause: impl std::fmt::Display) -> Self {
+        Self {
+            detail: Some(format!("{message}: {cause:#}")),
+            ..Self::internal(message)
         }
     }
 
@@ -97,6 +116,7 @@ impl ApiError {
             status: StatusCode::UNPROCESSABLE_ENTITY,
             code: ApiErrorCode::SemanticMappingUnavailable,
             message: message.into(),
+            detail: None,
         }
     }
 
@@ -105,6 +125,7 @@ impl ApiError {
             status: StatusCode::NOT_FOUND,
             code: ApiErrorCode::OverlayNotCoveringFrame,
             message: message.into(),
+            detail: None,
         }
     }
 
@@ -113,6 +134,7 @@ impl ApiError {
             status,
             code,
             message: message.into(),
+            detail: None,
         }
     }
 }
@@ -224,11 +246,14 @@ pub(super) fn pixel_error(error: PixelError) -> ApiError {
             ApiErrorCode::DecodeMemoryExceeded,
             error.to_string(),
         ),
-        pixels::PixelError::Decode { .. } => ApiError::coded(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            ApiErrorCode::PixelDecodeFailed,
-            error.to_string(),
-        ),
+        pixels::PixelError::Decode { .. } => ApiError {
+            detail: error.detail(),
+            ..ApiError::coded(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ApiErrorCode::PixelDecodeFailed,
+                error.to_string(),
+            )
+        },
     }
 }
 
@@ -237,8 +262,11 @@ pub(super) fn pixel_error(error: PixelError) -> ApiError {
 pub(super) fn context_failure(failure: anyhow::Error) -> ApiError {
     match failure.downcast::<PixelError>() {
         Ok(busy @ PixelError::DecodeBusy) => pixel_error(busy),
-        Ok(other) => ApiError::internal(other.to_string()),
-        Err(failure) => ApiError::internal(format!("{failure:#}")),
+        Ok(other) => ApiError {
+            detail: other.detail(),
+            ..ApiError::internal(other.to_string())
+        },
+        Err(failure) => ApiError::failed("the semantic context could not be read", failure),
     }
 }
 
@@ -268,6 +296,12 @@ pub(super) async fn method_not_allowed_handler() -> ApiError {
 #[derive(Clone)]
 pub(super) struct ServerErrorMessage(pub(super) String);
 
+/// What a library or a parser said of the file behind a server error, kept
+/// on the response for the request logger. It may quote the file, so it is
+/// never sent and a masked session does not log it.
+#[derive(Clone)]
+pub(super) struct ServerErrorDetail(pub(super) String);
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         // A busy answer is the budget working, not a fault to report.
@@ -295,6 +329,9 @@ impl IntoResponse for ApiError {
         }
         if let Some(message) = logged {
             response.extensions_mut().insert(message);
+            if let Some(detail) = self.detail {
+                response.extensions_mut().insert(ServerErrorDetail(detail));
+            }
         }
         response
     }

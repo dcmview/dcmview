@@ -34,17 +34,17 @@ pub use admission::{
     decode_estimate, DecodeWork, DICOM_DECODE_BASE_BYTES, DISPLAY_BASE_BYTES, THUMBNAIL_BASE_BYTES,
 };
 pub use cache::{
-    new_cache, new_overlay_cache, new_raw_cache, new_thumbnail_cache, parse_byte_size, CacheBudget,
-    FrameCache, OverlayCache, RawFrameCache, ThumbnailCache, ValueRange, ValueRangeCache,
-    FRAME_CACHE_MAX_BYTES, OVERLAY_CACHE_MAX_BYTES, RAW_CACHE_MAX_BYTES, THUMBNAIL_CACHE_MAX_BYTES,
-    VALUE_RANGE_CACHE_MAX_BYTES,
+    new_cache, new_overlay_cache, new_raw_cache, new_thumbnail_cache, parse_byte_size, BudgetedLru,
+    CacheBudget, FrameBody, FrameCache, OverlayCache, RawFrameCache, ThumbnailCache, ValueRange,
+    ValueRangeCache, FRAME_CACHE_MAX_BYTES, OVERLAY_CACHE_MAX_BYTES, RAW_CACHE_MAX_BYTES,
+    THUMBNAIL_CACHE_MAX_BYTES, VALUE_RANGE_CACHE_MAX_BYTES,
 };
 pub(crate) use color::cielab_to_srgb8;
 pub use colorwash::{
     colormap, encode_colorwash_png, raw_frame_values, ColorScale, ColorwashRequest, COLORMAP_NAME,
     COLORMAP_STOPS,
 };
-pub use error::{PixelError, PixelResult};
+pub use error::{PixelError, PixelResult, Stated};
 pub(crate) use header::open_header;
 pub(crate) use native_layout::{NativeByteOrder, NativeFrameLayout};
 pub(crate) use raster::raster_tag_nodes;

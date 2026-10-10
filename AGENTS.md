@@ -374,6 +374,8 @@ dcmview/
 |   |                    thumbnails, decode classes and admission, windowing,
 |   |                    shutters, overlay colorwash
 |   |-- server/          API, catalog, lifecycle, runtime, tags, web assets
+|   |-- data_set.rs      the bounded reads of a DICOM data set for the catalog
+|   |                    and the tag endpoints
 |   |-- dicom_values.rs  shared lenient attribute readers
 |   |-- object_kind.rs   SOP class to object-kind classification
 |   |-- geometry.rs      patient geometry and frame-to-frame transforms
@@ -437,10 +439,10 @@ dcmview/
 |-- tests/
 |   |-- integration.rs  Integration test module root
 |   |-- integration/    Axum and pixel-path integration tests
-|   |-- raster_cost/    what a raster decode and a raster metadata read may
-|   |                   read and allocate, and what each request holds
-|   |                   against what it reserved, on a counting allocator
-|   |                   (its own test binary)
+|   |-- raster_cost/    what a raster decode, a raster metadata read and a
+|   |                   DICOM data set read may read and allocate, and what
+|   |                   each request holds against what it reserved, on a
+|   |                   counting allocator (its own test binary)
 |   |-- codestream_cost/  what a compressed DICOM frame may cost before it is
 |   |                   known to match its header (its own test binary)
 |   |-- windowing-cases.json  windowing oracle shared with rawWindowing.test.ts
@@ -545,7 +547,18 @@ requires an existing `frontend/dist/index.html`.
 - Convert `PixelError` through `server/api/error.rs`; all API errors must use
   the shared JSON `ErrorResponse` envelope.
 - Path, query, and JSON extractor rejections must also use the JSON envelope.
-- Frame decode errors return HTTP 500 JSON and the server continues.
+- Frame decode errors return HTTP 500 JSON and the server continues. Their
+  message is the context and the reason the viewer stated, never the cause
+  chain: `{error:#}` of a decode failure can be a library's text quoting
+  the file. State a reason worth showing with `pixels::Stated` (fixed
+  wording and numbers the viewer computed, nothing read from the file as
+  text); pass any other cause to `ApiError::failed` or leave it in the
+  chain, where only the debug log of an unmasked session sees it. A log
+  line that reports why a file could not be read writes the cause with
+  `masking::logged_cause`, never with `{error}` or `{error:#}`. Do not
+  format a cause chain into an `ApiError` message or a `warn!` line in any
+  endpoint that reads a file: the metadata endpoints answer through
+  `ApiError::failed` too.
 - Unsupported transfer syntax returns HTTP 422 JSON and must never panic.
 - Missing pixel data returns 404 for frame endpoints.
 - A frame whose decode needs more than the decode memory budget returns HTTP
@@ -562,13 +575,18 @@ requires an existing `frontend/dist/index.html`.
   values come directly from UI/query/DICOM inputs.
 - Display cache entries are budgeted by `FRAME_CACHE_MAX_BYTES`; raw cache
   entries are budgeted by `RAW_CACHE_MAX_BYTES`.
+- A cache bills a body its length, so a cached body holds no more than its
+  length. Whatever is to be cached goes through `FrameBody::compact` once,
+  before it is cloned (`pixels/service.rs` does it for every decode it
+  caches); a body cached any other way is shrunk where it is made. A new
+  kind of cached body gets a row in `tests/raster_cost/caches.rs`.
 - The raw cache is the display path's decoded tier for grayscale integer
   frames (`pixels/service.rs` `raw_samples_for_display`); a new display
   decoder's integer layout must be mirrored in `display_integer_layout`.
 - Tag trees are cached per file index in a bounded LRU behind private
-  `AppState` methods. Tag reads parse only up to pixel data and describe the
-  pixel element from its header, seeking past its value (a deflated data set
-  is inflated through it into a sink); pixel values are never kept.
+  `AppState` methods. Tag reads go through `data_set::read_for_tags`, which
+  reads no pixel value, no bulk binary value and no value over
+  `DATA_SET_VALUE_MAX_BYTES`, and lists each at its declared length.
 
 **Decode admission**
 
@@ -605,6 +623,9 @@ requires an existing `frontend/dist/index.html`.
   The work must hold no more than it stated.
 - Tests of admission read `DecodeScheduler::load` and wait with
   `load_when`; they do not sleep or time anything.
+- A request that waits on the scheduler creates its `Notified` before it
+  reads the state it waits on. Do not move the check in front of it:
+  `schedule.rs` has the test that catches a change made in between.
 
 **Windowing**
 
@@ -656,6 +677,47 @@ is cached between requests.
 - A decoder that sizes everything from the entry (RLE Lossless, native
   pixel data) needs no check; keep it that way rather than reading a size
   from the pixel data.
+- A buffer filled from an inflated stream grows with the bytes that have
+  arrived, up to the size the entry gives. Do not allocate it whole from
+  the entry or from a length an element declares: neither says how much
+  the stream holds.
+
+**DICOM data sets**
+
+- `src/data_set.rs` is the only code that reads a DICOM data set for the
+  catalog (`read_for_catalog`) and for the tag endpoints (`read_for_tags`),
+  and the module's doc comment is the contract for what those reads may
+  cost: no value is read that the file does not hold or that
+  is longer than `DATA_SET_VALUE_MAX_BYTES` (Overlay Data excepted), a
+  deflated data set is read within `DATA_SET_INFLATED_BUDGET_BYTES`, and
+  sequences nest to `DATA_SET_MAX_DEPTH`. `docs/architecture.md`, "DICOM
+  Data Set Reads", is normative.
+- Do not open a file with `dicom_object::open_file`, `OpenFileOptions` or
+  `DataSetReader` in discovery or for a tag endpoint: they allocate every
+  value at its declared length. Read through the lazy tokens and decide per header, as the module
+  does.
+- A new catalog field that needs a value longer than
+  `DATA_SET_VALUE_MAX_BYTES` is an exception named in the module's `keep`
+  rule beside Overlay Data, with a row in `tests/raster_cost/data_sets.rs`.
+  The meta group is checked header by header before `FileMetaTable` parses
+  it; keep that check in front of any new meta read.
+- A tag endpoint shows a value it did not read by its length
+  (`TagValue::Binary`). Do not read a value to show more of it without a
+  fixed bound on what is read, and never read pixel data for a tag request.
+- The limits are counted, not timed: tests count bytes at the source and
+  heap at the allocator.
+- A read of a deflated data set holds no more of the data set than its
+  budget and `DATA_SET_INFLATED_OVERSHOOT_BYTES` (the file meta group is
+  outside the budget, bounded by the bytes the file supplies for it), by
+  construction: do not predict what
+  a library allocates. Text and lists of tags are built in `data_set.rs`
+  from their bytes, a list is sized and checked against the budget before
+  it is filled, a value is charged what it holds once it is built, and a
+  decoder is never handed more than `DATA_SET_INFLATED_TEXT_PIECE_BYTES`.
+  Anything else the read builds that holds more than the bytes it came
+  from (an element, an item) has a fixed charge; a new such structure gets a charge and a row in
+  `tests/raster_cost/data_sets.rs`. A read by seeking has no budget: say
+  only that it is bounded by what the file supplies.
 
 **Raster files**
 
@@ -756,6 +818,10 @@ is cached between requests.
 - A member of `FileSummary` that can change after the file is registered
   must give the entry a new catalog revision, or clients that poll with
   `since` never see the change.
+- An entry with `file_key: null` and no `key_error` promises a digest. A
+  state in which a file has no key and nothing is queued for it must show a
+  `key_error` (`uncompared` is the one for a file that waits on another
+  file's failed digest).
 - A change to which key a file gets, or to how a key is written, raises
   `KEY_RULES`.
 - Code that needs a key for a write or an export awaits `ensure_key`; it
@@ -1149,6 +1215,9 @@ default suite.
 - Paging `/api/files` with `since` and `limit` ends with the current catalog
   while files are added and keys change; a cursor from another process is
   answered with `reset`.
+- A file that waits to be compared with a first file that cannot be read
+  shows `key_error: uncompared`, reaches a client that polls with `since`,
+  and gets its key once the first file is read.
 - A masked session sends file keys built from masked UIDs only.
 - A thumbnail is the default display frame shrunk, within JPEG tolerance; it
   is blanked under a redaction box, a cache `MISS` after the boxes change,
@@ -1167,6 +1236,20 @@ default suite.
   structure) is a decode error at every endpoint that decodes it, costs no
   more heap to refuse than its own bytes, and leaves its file listed and its
   other frames decoding; honest codestreams from other encoders decode.
+- Reading a DICOM file for the catalog allocates no value the file does not
+  hold, reads no value the catalog has no use for, nests sequences to a
+  fixed depth and reads a deflated data set within a fixed budget; a file
+  past a limit is skipped as `dicom_parse_failed`.
+- The tag endpoints never read pixel data, bulk values or values over
+  1 MiB, whichever element is selected: those are shown by their declared
+  length. A tree that ends before its data set (a value that runs past the
+  file, sequences nested past the limit, bytes that are not an element)
+  answers 200 and ends with a `Note` leaf; zero padding after a whole data
+  set is not noted.
+- A failed decode or metadata read is answered in the viewer's own words:
+  two files damaged in different ways get the same body, numbers aside,
+  from every endpoint that reads a file, a masked session logs only that
+  answer, and an unmasked one adds the cause at debug level.
 - Decoding a raster frame reads no more than its entry's budget and holds no
   more heap than its entry's limit, for hostile and damaged files too, and
   never panics.

@@ -121,8 +121,26 @@ impl Default for Masker {
     }
 }
 
+/// Set once a masked session exists in the process. The mode is fixed for
+/// a viewer, and a log line cannot ask which viewer it belongs to.
+static MASKED_SESSION: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The cause of a failure as a log line may show it: a library's or a
+/// parser's text, which can quote the file it was reading. Escaped, and
+/// left out altogether once the process has a masked session, which logs
+/// nothing a file holds. Every log call that formats an error from reading
+/// a file goes through this.
+pub fn logged_cause(cause: &dyn std::fmt::Display) -> String {
+    if MASKED_SESSION.load(std::sync::atomic::Ordering::Relaxed) {
+        "not logged in a masked session".to_string()
+    } else {
+        format!("{cause:#}").escape_debug().to_string()
+    }
+}
+
 impl Masker {
     pub fn new() -> Self {
+        MASKED_SESSION.store(true, std::sync::atomic::Ordering::Relaxed);
         Self {
             keys: RandomState::new(),
             patients: Mutex::new(HashMap::new()),

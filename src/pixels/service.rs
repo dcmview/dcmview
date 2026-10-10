@@ -550,7 +550,7 @@ async fn redacted(
     if boxes.is_empty() {
         return Ok(display);
     }
-    display.png = tokio::task::spawn_blocking(move || redact_png(&display.png, &boxes))
+    display.png = tokio::task::spawn_blocking(move || redact_png(display.png, &boxes))
         .await
         .context("redaction task failed")
         .and_then(|result| result)
@@ -935,7 +935,7 @@ where
             .map(|value| (value, false))
             .map_err(|error| error.duplicate()),
         Err(decode) => {
-            let value = decode.await?;
+            let value = decode.await?.compact();
             if let Ok(mut lock) = cache.lock() {
                 lock.insert(key, value.clone());
             }
@@ -1012,7 +1012,11 @@ where
                         Err(PixelError::frame_decode(anyhow::anyhow!(
                             "decode task panicked"
                         )))
-                    });
+                    })
+                    // Before it is cloned for the cache and the requests,
+                    // and while the permit still covers the buffer it was
+                    // built in.
+                    .map(FrameBody::compact);
                 drop(permit);
                 result
             }

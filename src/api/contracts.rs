@@ -577,15 +577,19 @@ pub struct FileSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub alias_of: Option<usize>,
-    /// Why the file's bytes could not be hashed for its key. Left out when
-    /// hashing has not failed. A file with `file_key: null` and an error
-    /// stays without a key until hashing is asked for again and succeeds.
+    /// Why the file's bytes could not be hashed for its key, or, for
+    /// `uncompared`, why they could not be compared with the first file of
+    /// its UID. Left out when hashing has not failed. A file with
+    /// `file_key: null` and an error stays without a key until hashing is
+    /// asked for again and succeeds; one with `file_key: null` and no error
+    /// is waiting to be hashed or is being hashed.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub key_error: Option<FileKeyError>,
 }
 
-/// Why a whole-file digest could not be computed.
+/// Why a file has no key: its digest could not be computed, or could not
+/// be compared with the digest its key depends on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum FileKeyError {
@@ -594,6 +598,12 @@ pub enum FileKeyError {
     /// The file is not the one discovery saw: its length differs, or it
     /// changed while it was being read.
     Changed,
+    /// Nothing is wrong with this file. It carries the UID of a file loaded
+    /// before it whose key was already settled, so it has a key only once
+    /// its bytes have been compared with that first file's, and the first
+    /// file could not be hashed (its own entry says why). The file stays
+    /// without a key until a key request reads the first file.
+    Uncompared,
 }
 
 /// One file's key replaced by another (`docs/design/annotation-model.md`

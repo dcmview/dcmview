@@ -82,7 +82,7 @@ pub enum AnnotationError {
     /// that UID, and it is that file that could not be read or has
     /// changed. A file that is readable and unchanged is then still
     /// without a key.
-    #[error("file {index} has no key, so no annotation can be saved for it: {} {}", if *.group { "the first file loaded with its SOP Instance UID, which its key is checked against," } else { "it" }, match .reason { FileKeyError::Unreadable => "could not be read", FileKeyError::Changed => "changed after it was loaded" })]
+    #[error("file {index} has no key, so no annotation can be saved for it: {} {}", if *.group { "the first file loaded with its SOP Instance UID, which its key is checked against," } else { "it" }, match .reason { FileKeyError::Unreadable => "could not be read", FileKeyError::Changed => "changed after it was loaded", FileKeyError::Uncompared => "could not be compared" })]
     KeyUnavailable {
         index: usize,
         reason: FileKeyError,
