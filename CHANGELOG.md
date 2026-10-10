@@ -31,8 +31,10 @@ diagnostic viewer.
   through an operation also appears in them. Saving annotations for a file
   that cannot be read for its key now answers `422 file_key_unavailable`;
   reading and exporting them, and `--annotations`, read no file and are
-  unchanged for such a file. An operation under a file key that is not one
-  file's settled key answers `409 file_key_replaced`.
+  unchanged for such a file. An operation says which file it is for with
+  `?file=<index>`; under a key that is not that file's settled key it
+  answers `409 file_key_replaced`, and without an index under a key several
+  files carry, `409 file_key_ambiguous`.
 - Catalog entries carry stable session file keys through `file_key`,
   `alias_of` and `key_error`. `GET /api/files` accepts `since` and `limit`
   and reports `revision`, `reset`, `more`, `keys_hashing` and `rekeys`.

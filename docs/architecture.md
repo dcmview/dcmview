@@ -1665,9 +1665,10 @@ advisory. A deleted record is kept with its id and revision, out of every
 snapshot, export and view, so a stale operation is a conflict and an id is
 never used twice; a restore brings back what the store kept, in its old
 place in creation order. A label that loses its value is kept the same way,
-and gets a value back only while its layer exists. Deleted records are kept
-whole and are not bounded apart from live ones: each entered through an
-applied envelope, and a session bounds neither.
+and gets a value back only while its layer exists. Deleted annotations are
+kept whole, for a restore, up to 64 MiB together (`DELETED_BYTES`, counted
+as JSON); past that the oldest keep only their id and revision, and a
+restore of one of those answers `missing` while its id stays taken.
 Snapshots and the document list records in creation order.
 
 What the store checks beyond the model's `OpEnvelope::validate` (that the
@@ -1681,24 +1682,30 @@ label schema yet, so the implicit one applies: one class, `roi`, and no
 label fields.
 
 **Cost.** A transaction costs time and memory in proportion to its envelope
-plus the records it names, each counted once however many of its operations
-name it, and never in proportion to the store. A record is copied at most
-once per transaction, when it is first changed, so that a refusal can put it
-back; later operations change it in place. A record that operations updated
-is validated once, in the state the envelope leaves it, after the last
-operation, and a failure there refuses the envelope with the path of the
-last operation that changed the record. A layer knows how many records it
-holds. The store's lock is held for one transaction at a time, so another
-request waits for at most the work of one envelope, which is bounded at
-16 MiB and 10,000 operations. `tests/raster_cost/annotations.rs` counts the
-heap a batch on a large record holds.
+plus the things it names, each counted once however many of its operations
+name it, and never in proportion to the store. That holds for annotations,
+labels and layers alike: each is copied at most once per transaction, when
+it is first changed, so that a refusal can put it back, and later operations
+change it in place. An annotation that operations updated is validated once,
+in the state the envelope leaves it, after the last operation, deleted or
+not (a deleted record can be restored, so it must be valid too); a failure
+there refuses the envelope with the path of the last operation that changed
+the record. A layer knows how many records it holds. The store's lock is
+held for one transaction at a time, so another request waits for at most the
+work of one envelope, which is bounded at 16 MiB and 10,000 operations.
+`tests/raster_cost/annotations.rs` counts the heap a batch on a large
+annotation, layer and label holds.
+
+A record costs about a kilobyte: an imported ROI that became a record holds
+its file key, layer, class, author and two timestamps as text of its own,
+beside the rectangle. Rows that stay staged cost what they did as rows.
 
 ### Keys
 
 Records hold settled file keys and nothing else
 ([File Keys And The Catalog Cursor](#file-keys-and-the-catalog-cursor)).
 `server/annotations.rs` is the one place a request meets the store, and it
-keeps four rules for every door:
+keeps these rules for every door:
 
 - **A write settles the key first.** Before anything is written for a file,
   `FileRegistry::ensure_key` settles its key, which may hash the file and
@@ -1716,17 +1723,27 @@ keeps four rules for every door:
   written with `FileRegistry::shown_key_of`. A masked session therefore
   takes and gives keys built from masked UIDs, and a real UID names
   nothing; the records still hold real keys.
-- **An operation names its file by that file's settled key, or is not
-  applied.** A key the catalog shows may be provisional: files with one UID
-  and one size share it until they are compared, and
-  `file_for_shown_key` can name only the first of them. So after settling,
-  the key a client sent must be the settled key of the file it resolved
-  to. When it is not (the files that shared it differ, or it was replaced
-  since the client learned it) the request answers `409 file_key_replaced`
-  and nothing is applied; settling has by then made the catalog show each
-  compared file its own key, and the operation goes through under that. An
-  operation is therefore recorded on the file it was drawn on or on none
+- **An operation is recorded on the file it was drawn on, or on none.** A
+  key the catalog shows may be provisional: files with one UID and one size
+  share it until they are compared, and `file_for_shown_key` can name only
+  the first of them. A key alone cannot say which file an operation is
+  for. So a request may carry, beside the envelope and outside the
+  annotation model, the catalog index of the file it was drawn on
+  (`?file=`; the viewer's page always sends it, as the EMBED endpoints
+  address a file by index). That file's key is settled and every key in
+  the envelope must be it, else `409 file_key_replaced` with nothing
+  applied; settling has by then given that file its own key in the
+  catalog, however many files shared the old one, so one look at the
+  catalog gives the key the operation goes through under. A request
+  without an index that names a `sop:` key whose UID more than one loaded
+  file carries is `409 file_key_ambiguous`, before anything is read
   (`docs/design/annotation-model.md` 1.7).
+- **A shared key names the first file's bytes.** `sop:<uid>` is checked
+  against the first file loaded with that UID. When that file can no
+  longer be read or has changed, no file of the group has a key, the
+  readable ones included, and the `422 file_key_unavailable` they get says
+  that it is the first file that failed. An unreadable later file costs
+  only its own key.
 
 An operation that names a key no loaded file has is refused before the
 store sees it: `invalid`, `unknown_file`.
@@ -1746,7 +1763,8 @@ real binary.
   its list as written, order and repeats included, and an empty list for
   one ROI stays empty.
 - **A file's view** is the live rectangle records under the file's settled
-  key, in creation order: `num_roi`, their rectangles (one off the pixel
+  key, the rows the import read for the file first and then every other
+  record in creation order: `num_roi`, their rectangles (one off the pixel
   grid rounded outward), and `roi_frames` empty when every record covers
   every frame, else one list per record. Other geometries are not in it.
   Rows the mapping read come back unchanged.
@@ -1792,7 +1810,8 @@ admits values the model's would refuse. Every other write is
 
 The export hashes nothing and writes one row per loaded file whose view
 shows a ROI, in the registry's file order, with the path as discovery
-recorded it. `tests/raster_cost/annotations.rs` holds the import to its
+recorded it. It is one read of the staged rows and of the records, so no
+row shows a write another row of the same export does not. `tests/raster_cost/annotations.rs` holds the import to its
 bytes per ROI.
 
 ### Redaction Boxes Are Not In It
@@ -2056,7 +2075,7 @@ installation and VS Code Electron integration can also use network/cache state;
   `tests/integration/annotation_store.rs` covers through `AnnotationBackend`
   what no endpoint of a session without a label schema reaches: labels,
   layers, mask tiles, snapshots and the document, what is remembered and
-  forgotten, and what a refusal leaves behind. A unit test in
+  forgotten, what a refusal leaves behind, and what a delete may hide. A unit test in
   `server/annotations.rs` puts a second save between a save's read and its
   write. `tests/raster_cost/annotations.rs` counts, at the allocator, what
   a batch on a large record and an import hold.

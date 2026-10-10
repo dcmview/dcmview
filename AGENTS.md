@@ -789,14 +789,24 @@ is cached between requests.
   settled has no record, and its CSV rows are staged in `AnnotationStore`
   and shown from there. Do not call `ensure_key` on a read path or for a
   row nobody wrote to.
-- An operation is applied only under the settled key of the one file it
-  names: after settling, the key the client sent must be that file's
-  (`409 file_key_replaced` otherwise). Never apply an operation to "the
-  file a key resolves to" without that check; a provisional key is shared.
-- A transaction costs its envelope plus the records it names, each once:
-  copy a record at most once per transaction (first change), change it in
-  place after that, validate it once at the end, and keep counts instead
-  of scanning the store. `tests/raster_cost/annotations.rs` counts it.
+- An operation is recorded on the file it was drawn on or on none. A key
+  alone cannot say which of several files with one UID is meant, so the
+  operation endpoint takes the file's catalog index beside the envelope
+  (`?file=`): every key must then be that file's settled key
+  (`409 file_key_replaced`), and without an index a `sop:` key several
+  files carry is `409 file_key_ambiguous`. Never apply an operation to
+  "the file a key resolves to" for a key that is shared. A new door that
+  writes for a file takes an index or a key that cannot be shared.
+- A transaction costs its envelope plus the things it names, each once,
+  for every kind of thing it can change (annotations, labels, layers and
+  whatever joins them): copy one at most once per transaction (first
+  change), change it in place after that, validate a changed annotation
+  once at the end (deleted or not), and keep counts instead of scanning
+  the store. `tests/raster_cost/annotations.rs` counts it; a new kind of
+  record gets a case there.
+- What the store keeps beyond live records is bounded by a constant:
+  remembered results (`REMEMBERED_OPS`, `REMEMBERED_REVS`), deleted
+  annotations kept whole (`DELETED_BYTES`).
 - The EMBED `PUT` writes with a `ViewCheck` of the view it read, so it
   replaces a file's ROIs whole. A new write that is worked out from a read
   carries a check the store makes under its own lock.
