@@ -161,9 +161,9 @@ fn record_event(event: loader::DiscoveryEvent, registry: &FileRegistry) {
     }
 }
 
-/// Reads the annotation CSV against the files discovery found, then turns
-/// its rows into records. The read is all or nothing; a failure of either
-/// step leaves the store failed and the viewer serving.
+/// Reads the annotation CSV against the files discovery found, then stages
+/// its rows in the annotation store. The read is all or nothing; a failure
+/// leaves the store failed and the viewer serving. No file is read for it.
 async fn load_annotations(
     source: AnnotationSource,
     registry: FileRegistry,
@@ -184,21 +184,10 @@ async fn load_annotations(
 
     match result {
         Ok(Ok((rows, report))) => {
-            match annotations::import_embed_rows(&registry, &store, rows).await {
-                Ok(imported) => {
-                    if imported.files_without_key > 0 {
-                        eprintln!(
-                            "dcmview: warning — annotation rows of {} file(s) were not loaded: the files could not be read for their key",
-                            imported.files_without_key
-                        );
-                    }
-                }
-                Err(error) => {
-                    if !cancellation.is_cancelled() {
-                        eprintln!("dcmview: warning — failed to commit annotations: {error}");
-                    }
-                    return;
-                }
+            if let Err(error) = annotations::import_embed_rows(&registry, &store, rows) {
+                eprintln!("dcmview: warning — failed to commit annotations: {error}");
+                let _ = store.fail_loading(error.to_string());
+                return;
             }
             if report.unmatched_rows > 0 {
                 eprintln!(

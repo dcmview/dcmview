@@ -201,7 +201,6 @@ pub async fn app_state_with_embed_rows(
     let registry = FileRegistry::from_files(files);
     let store = AnnotationStore::loading();
     dcmview::server::annotations::import_embed_rows(&registry, &store, rows)
-        .await
         .expect("import EMBED rows");
     AppState::new(registry, store)
 }

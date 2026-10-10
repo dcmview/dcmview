@@ -14,28 +14,41 @@
 //!   annotation write on either file"). The write waits for that. A file
 //!   that cannot be given a key is not written to:
 //!   [`AnnotationError::KeyUnavailable`].
-//! - **Reads never hash.** A file whose key is not settled has no record,
-//!   because no write got through for it, so a read answers "none" at once
-//!   from `FileRegistry::key_status`.
+//! - **Reads never hash, and neither does the import.** A file whose key
+//!   is not settled has no record, because no write got through for it, so
+//!   a read answers at once from `FileRegistry::key_status` and from the
+//!   rows the import staged (`AnnotationStore`, "Staged rows"). No read
+//!   and no import calls `ensure_key`: what the EMBED endpoints show and
+//!   export costs what it cost before the store held records, whatever the
+//!   size of the files.
 //! - **Keys cross the wire in the session's form.** A key from a client is
 //!   resolved with `FileRegistry::file_for_shown_key`, and a key sent back
 //!   is written with `FileRegistry::shown_key_of`, so a masked session
 //!   neither accepts nor sends a key that holds a real UID. Records hold
 //!   real keys.
+//! - **An operation names its file by that file's settled key, or is not
+//!   applied.** A key in the catalog may be provisional: shared by files
+//!   that have one UID and one size and have not been compared, of which
+//!   `file_for_shown_key` can name only the first. An operation under such
+//!   a key could land on a file it was not drawn on, so the key a client
+//!   sent must be the settled key of the file it resolves to; anything
+//!   else is [`AnnotationError::KeyReplaced`] and the client sends the
+//!   operation again under the key the catalog then shows for its file
+//!   (`docs/design/annotation-model.md` 1.7: records "stay with the file
+//!   they were drawn on").
 
 use super::{FileRegistry, KeyError};
 use crate::annotations::{
     canonicalize_annotations,
-    embed::{replacement_ops, rois_of, rows_as_creates, write_embed_csv},
+    embed::{replacement_ops, rois_of, write_embed_csv},
     memory::{now, Checking, Write},
     AnnotationBackend, AnnotationIndexMap, AnnotationStore, EmbedRoiAnnotations,
-    EMBED_IMPORT_AUTHOR,
 };
 use crate::api::contracts::FileKeyError;
 use crate::types::FileEntry;
 use dcmview_annotation::{
-    new_id, ApplyResult, Author, Current, FileKey, ImageSize, LabelTarget, Op, OpEnvelope,
-    Violation, ViolationCode,
+    new_id, ApplyResult, Current, FileKey, ImageSize, LabelTarget, Op, OpEnvelope, Violation,
+    ViolationCode,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -55,6 +68,13 @@ pub enum AnnotationError {
     /// `KeyError::Unavailable`).
     #[error("file {index} has no key, so no annotation can be saved for it: {}", match .reason { FileKeyError::Unreadable => "it could not be read", FileKeyError::Changed => "it changed after it was loaded" })]
     KeyUnavailable { index: usize, reason: FileKeyError },
+    /// An operation named a file by a key that is not the settled key of
+    /// the file it resolves to: the key was provisional and the files that
+    /// shared it turned out to differ, or it was replaced since the client
+    /// learned it. Nothing was applied. Settling has by now made the
+    /// catalog show the current key of the files that were compared.
+    #[error("the file key {sent} is no longer the key of one file: read the file's key from the catalog and send the operation again")]
+    KeyReplaced { sent: String },
     /// The `--annotations` import failed earlier; the message is the
     /// import's own.
     #[error("{0}")]
@@ -73,18 +93,17 @@ pub struct OpOutcome {
     /// The store's result, with every file key in it written the way the
     /// session sends keys.
     pub result: ApplyResult,
-    /// The store's revision after the envelope.
+    /// The store's revision as the envelope's transaction left it
+    /// (`Transacted::revision`), not one read afterwards: two applied
+    /// envelopes never report the same revision.
     pub revision: u64,
 }
 
 /// What an EMBED import did with its rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct EmbedImportReport {
-    /// Files whose rows are now records.
+    /// Files whose rows are now staged for the EMBED view.
     pub files_loaded: usize,
-    /// Files whose rows were dropped because the file has no key and could
-    /// not be given one.
-    pub files_without_key: usize,
     /// Files whose rows were dropped because the EMBED endpoint had already
     /// replaced that file's ROIs.
     pub files_edited: usize,
@@ -94,13 +113,28 @@ pub struct EmbedImportReport {
 ///
 /// Waits for the `--annotations` import ([`AnnotationStore::wait_until_ready`];
 /// a failed import is [`AnnotationError::ImportFailed`] with its message).
-/// Then, without waiting for anything else: for a file whose key is settled
-/// (`FileRegistry::key_status`), `rois_of` the records
-/// `MemoryBackend::embed_records` gives for that key and this index; for
-/// any other file, no ROI (`EmbedRoiAnnotations::empty`).
+/// Then, without waiting for anything else, the file's view:
+///
+/// 1. The file's key is not settled (`FileRegistry::key_status`): the rows
+///    staged for it ([`AnnotationStore::staged_rows`]) exactly as they are,
+///    or no ROI (`EmbedRoiAnnotations::empty`) when it has none. No record
+///    exists under a key that is not settled.
+/// 2. The file's key is settled: first, rows still staged for it are made
+///    records ([`AnnotationStore::take_staged`]: one transaction of
+///    `rows_as_creates` as one `Batch`, through `MemoryBackend::transact`
+///    with `Checking::AsLoaded`, the author [`EMBED_IMPORT_AUTHOR`], this
+///    index as the EMBED slot and no view check). Then `rois_of` the
+///    records `MemoryBackend::embed_records` gives for that key and this
+///    index.
+///
+/// The same view is what [`export_embed_csv`] writes for the file. Rows
+/// the mapping read come back from it unchanged, so the two cases show the
+/// same ROIs for the same rows.
 ///
 /// It never starts or waits for hashing. Rectangles made through the
 /// operation endpoint are in the view; other geometries are not.
+///
+/// [`EMBED_IMPORT_AUTHOR`]: crate::annotations::EMBED_IMPORT_AUTHOR
 pub async fn embed_rois(
     registry: &FileRegistry,
     store: &AnnotationStore,
@@ -135,17 +169,28 @@ pub async fn embed_rois(
 ///    [`AnnotationError::KeyUnavailable`] or [`AnnotationError::Stopped`],
 ///    with nothing written.
 /// 3. The file is marked as edited ([`AnnotationStore::mark_edited`]), so a
-///    running import drops its rows for it.
-/// 4. One transaction: `replacement_ops` from the view's records
-///    (`MemoryBackend::embed_records`) to the canonical list, as one
+///    running import drops its rows for it, and rows already staged for it
+///    are dropped ([`AnnotationStore::take_staged`]): the save replaces
+///    them.
+/// 4. One transaction against the view it read. The view's records are
+///    read (`MemoryBackend::embed_records`);
+///    [`AnnotationStore::before_embed_write`] is called; then
+///    `replacement_ops` from those records to the canonical list go, as one
 ///    `Batch` under a new `op_id`, through `MemoryBackend::transact` with
-///    `Checking::AsLoaded`, the store's own author and this index as the
-///    EMBED slot. No operation means no transaction: saving what is already
-///    shown changes no record and no revision. A `Conflict` means another
-///    write got in between reading the view and writing; read the view
-///    again and retry, up to 16 times, then [`AnnotationError::Store`].
+///    `Checking::AsLoaded`, the store's own author, this index as the EMBED
+///    slot, and a `ViewCheck` of this key, this index and those records.
+///    The check is what makes the save whole: when another write changed
+///    the view in between, the transaction is a `Conflict` and nothing of
+///    it is applied; the view is read again and the step repeated, up to 16
+///    times, then [`AnnotationError::Store`]. Of two saves of one file the
+///    one whose transaction is applied last decides everything the view
+///    shows; ROIs of the other never remain beside it.
 ///
-/// The answer is the canonical list of step 1.
+///    No operation means no transaction: saving what is already shown
+///    changes no record and no revision.
+///
+/// The answer is the canonical list of step 1, and a read of the view
+/// right after the save shows exactly that list.
 ///
 /// It does not wait for the `--annotations` import: an edit made while the
 /// CSV is loading wins over the CSV's rows for that file.
@@ -162,6 +207,7 @@ pub async fn replace_embed_rois(
         .map_err(|error| AnnotationError::Rejected(error.to_string()))?;
     let key = settle_key(registry, index).await?;
     store.mark_edited(index).map_err(store_error)?;
+    store.take_staged(index, drop).map_err(store_error)?;
     let backend = store.backend();
     let author = &backend.config().author;
     let sizes = BTreeMap::from([(key.clone(), image_size(&file))]);
@@ -194,9 +240,11 @@ pub async fn replace_embed_rois(
                     checking: Checking::AsLoaded,
                     author,
                     embed_slot: Some(index),
+                    view: None,
                 },
             )
             .map_err(store_error)?
+            .result
         {
             ApplyResult::Ok { .. } => return Ok(wanted),
             ApplyResult::Conflict { .. } => continue,
@@ -223,7 +271,8 @@ pub async fn replace_embed_rois(
 /// records; `tests/fixtures/embed-goldens/` freezes them.
 ///
 /// A file's view is read as in [`embed_rois`], so the export hashes
-/// nothing: a file without a settled key has no row.
+/// nothing: a file whose key is not settled is written from its staged
+/// rows, and has no row when it has none.
 pub async fn export_embed_csv(
     registry: &FileRegistry,
     store: &AnnotationStore,
@@ -242,98 +291,32 @@ pub async fn export_embed_csv(
     write_embed_csv(&rows).map_err(store_error)
 }
 
-/// Turns the rows an EMBED CSV matched to loaded files into records, and
-/// ends the store's import.
+/// Ends the store's import with the rows an EMBED CSV matched to loaded
+/// files: stages them ([`AnnotationStore::stage_rows`]) and lets the EMBED
+/// reads through.
 ///
-/// For each file of `rows`, in ascending index order:
-///
-/// 1. Its key is settled (`FileRegistry::ensure_key`), which may hash it.
-///    A file that cannot be given a key
-///    ([`AnnotationError::KeyUnavailable`]) has its rows dropped and is
-///    counted in `files_without_key`; the import goes on.
-/// 2. Under [`AnnotationStore::load_unless_edited`]: one transaction of
-///    `rows_as_creates` as one `Batch`, through `MemoryBackend::transact`
-///    with `Checking::AsLoaded`, the author [`EMBED_IMPORT_AUTHOR`] and the
-///    file's index as the EMBED slot. The rows are stored exactly as the
-///    CSV wrote them: nothing is validated against the image, clamped,
-///    reordered or rounded here. A file the EMBED endpoint has already
-///    written to is counted in `files_edited` and gets none of its rows. A
-///    file with no ROI gets no transaction and is not counted.
-///
-/// Then [`AnnotationStore::finish_loading`]. When the viewer is stopping
-/// ([`AnnotationError::Stopped`]) or the store refuses a transaction, the
-/// import is ended with [`AnnotationStore::fail_loading`] and that error is
-/// returned; rows already stored stay.
-///
-/// [`EMBED_IMPORT_AUTHOR`]: crate::annotations::EMBED_IMPORT_AUTHOR
-pub async fn import_embed_rows(
+/// It reads no file, settles no key and makes no record, so it costs what
+/// keeping the rows costs and does not depend on the size of the files.
+/// The rows are kept exactly as the CSV wrote them: nothing is validated
+/// against the image, clamped, reordered or rounded. A file the EMBED
+/// endpoint has already written to is counted in `files_edited` and gets
+/// none of its rows; a file with no ROI, and an index no file has, are
+/// left out and not counted.
+pub fn import_embed_rows(
     registry: &FileRegistry,
     store: &AnnotationStore,
     rows: AnnotationIndexMap,
 ) -> Result<EmbedImportReport, AnnotationError> {
-    let outcome = async {
-        let mut rows: Vec<_> = rows.into_iter().collect();
-        rows.sort_unstable_by_key(|(index, _)| *index);
-        let mut report = EmbedImportReport::default();
-        let author = Author::parse(EMBED_IMPORT_AUTHOR).map_err(store_error)?;
-        let backend = store.backend();
-        for (index, rois) in rows {
-            let Some(file) = registry.get(index) else {
-                continue;
-            };
-            if rois.roi_coords.is_empty() {
-                continue;
-            }
-            let key = match settle_key(registry, index).await {
-                Ok(key) => key,
-                Err(AnnotationError::KeyUnavailable { .. }) => {
-                    report.files_without_key += 1;
-                    continue;
-                }
-                Err(error) => return Err(error),
-            };
-            let stamp = now();
-            let ops = rows_as_creates(&rois, &key, backend.default_layer(), &author, &stamp);
-            let envelope = OpEnvelope {
-                op_id: new_id(),
-                actor: author.clone(),
-                ts: stamp,
-                op: Op::Batch { ops },
-            };
-            let sizes = BTreeMap::from([(key, image_size(&file))]);
-            let result = store
-                .load_unless_edited(index, || {
-                    backend.transact(
-                        &envelope,
-                        &sizes,
-                        Write {
-                            checking: Checking::AsLoaded,
-                            author: &author,
-                            embed_slot: Some(index),
-                        },
-                    )
-                })
-                .map_err(store_error)?;
-            match result {
-                None => report.files_edited += 1,
-                Some(result) => match result.map_err(store_error)? {
-                    ApplyResult::Ok { .. } => report.files_loaded += 1,
-                    refused => {
-                        return Err(AnnotationError::Store(format!(
-                            "The EMBED import was refused: {refused:?}"
-                        )))
-                    }
-                },
-            }
-        }
-        store.finish_loading().map_err(store_error)?;
-        Ok(report)
-    }
-    .await;
-    if let Err(error) = &outcome {
-        store.fail_loading(error.to_string()).map_err(store_error)?;
-    }
-    outcome
+    let files = registry.status().file_count;
+    let rows = rows
+        .into_iter()
+        .filter(|(index, _)| *index < files)
+        .collect();
+    let (files_loaded, files_edited) = store.stage_rows(rows).map_err(store_error)?;
+    Ok(EmbedImportReport {
+        files_loaded,
+        files_edited,
+    })
 }
 
 /// `POST /api/annotations/ops`: one operation envelope, as one transaction
@@ -352,15 +335,28 @@ pub async fn import_embed_rows(
 ///    is where a write waits while a file is hashed. A file without a key
 ///    fails the whole request with [`AnnotationError::KeyUnavailable`]
 ///    (or [`AnnotationError::Stopped`]) and nothing is applied.
-/// 3. The envelope is applied with every key replaced by the settled one
-///    (`AnnotationBackend::apply`, one envelope), and `files` answering
-///    each settled key with that file's columns, rows and frame count. A
-///    key that was replaced since the client learned it is thereby taken
-///    as addressed to the file it names now
-///    (`docs/design/annotation-model.md` 1.7).
-/// 4. **Keys out.** Every file key in the result (the record of a
+/// 3. **The key must be the file's own.** For each key, the settled key of
+///    the file it resolved to, written with `FileRegistry::shown_key_of`,
+///    must be the text the client sent. When one is not, the whole request
+///    fails with [`AnnotationError::KeyReplaced`] naming the first such key
+///    as it was sent, and nothing is applied. This is checked for every
+///    key after every file is settled and before anything else: a key that
+///    several files showed while they had not been compared, and a key that
+///    was replaced since, never reach a record.
+/// 4. Rows still staged for a file the envelope names are made records
+///    first, as in [`embed_rois`], so the operation meets them as records.
+/// 5. The envelope is applied, with every key replaced by the settled one,
+///    as one `MemoryBackend::transact` with `Checking::Strict`, the store's
+///    author, no EMBED slot and no view check (which is what
+///    `AnnotationBackend::apply` does for one envelope), and `files`
+///    answering each settled key with that file's columns, rows and frame
+///    count.
+/// 6. **Keys out.** Every file key in the result (the record of a
 ///    `Conflict`: an annotation's `file`, a label's `file` or `frame`
 ///    target) is rewritten with `FileRegistry::shown_key_of`.
+///
+/// `revision` in the outcome is `Transacted::revision` of step 5, and the
+/// store's revision when the request was refused in step 1.
 ///
 /// It does not wait for the `--annotations` import. A patient, study or
 /// series id of the `missing:<file key>` form is text of the client's and
@@ -467,6 +463,9 @@ fn file_rois(
     store: &AnnotationStore,
     file: &FileEntry,
 ) -> Result<EmbedRoiAnnotations, AnnotationError> {
+    if let Some(rows) = store.staged_rows(file.index).map_err(store_error)? {
+        return Ok(rows);
+    }
     if let Some(status) = registry.key_status(file.index) {
         if status.settled {
             if let Some(key) = status.key {
@@ -528,5 +527,66 @@ fn visit_result_keys(
             current: Current::Label { record },
         } => visit_target_key(&mut record.target, visit),
         _ => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::annotations::{MemoryBackend, MemoryConfig};
+    use dcmview_annotation::Author;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, OnceLock};
+
+    fn rois(coords: [u32; 4]) -> EmbedRoiAnnotations {
+        EmbedRoiAnnotations {
+            num_roi: 1,
+            roi_coords: vec![coords],
+            roi_frames: Vec::new(),
+        }
+    }
+
+    /// A save is "replace this file's ROIs": of two saves of one file the
+    /// one applied last decides the whole view. Here a second save gets in
+    /// at the one point where it could do harm, after the first has read
+    /// the view (empty) and before it writes. The first save must notice,
+    /// read again and replace what the second left.
+    #[tokio::test]
+    async fn of_two_saves_of_one_file_the_one_applied_last_decides_the_whole_view() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/golden-uncompressed-u16-multiframe.dcm");
+        let registry = FileRegistry::from_files(vec![crate::loader::test_entry(&fixture)]);
+        let session: Arc<OnceLock<(FileRegistry, AnnotationStore)>> = Arc::default();
+        let (inside, interleaved) = (session.clone(), Arc::new(AtomicBool::new(false)));
+        let ran = interleaved.clone();
+        let store = AnnotationStore::with_backend(MemoryBackend::new(MemoryConfig {
+            author: Author::parse("user:test").expect("author"),
+            schema: None,
+        }))
+        .with_before_embed_write(Arc::new(move || {
+            // Once: the save made here reaches this point too.
+            if ran.swap(true, Ordering::SeqCst) {
+                return;
+            }
+            let (registry, store) = inside.get().expect("session");
+            futures::executor::block_on(replace_embed_rois(registry, store, 0, rois([0, 0, 1, 1])))
+                .expect("the save in between");
+        }));
+        assert!(session.set((registry.clone(), store.clone())).is_ok());
+
+        let saved = replace_embed_rois(&registry, &store, 0, rois([1, 1, 2, 2]))
+            .await
+            .expect("the first save");
+
+        assert!(
+            interleaved.load(Ordering::SeqCst),
+            "a save reads the view, then calls before_embed_write, then writes"
+        );
+        assert_eq!(saved, rois([1, 1, 2, 2]));
+        assert_eq!(
+            embed_rois(&registry, &store, 0).await.expect("view"),
+            rois([1, 1, 2, 2]),
+            "the ROI of the save in between must not remain beside it"
+        );
     }
 }

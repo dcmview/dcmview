@@ -26,6 +26,13 @@ pub const DEFAULT_LAYER_NAME: &str = "Annotations";
 /// operation as far as the store can tell.
 pub const REMEMBERED_OPS: usize = 65_536;
 
+/// How many revision entries the remembered results may hold between them:
+/// 262,144. A result remembers one entry for each record and layer its
+/// envelope changed, up to 10,000 for a batch, so the count of results
+/// alone does not bound what they hold; this does, at a few tens of
+/// mebibytes. See [`MemoryBackend`], "What is remembered".
+pub const REMEMBERED_REVS: usize = 262_144;
+
 /// What a session fixes for its in-memory store.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MemoryConfig {
@@ -63,6 +70,41 @@ pub(crate) struct Write<'a> {
     /// The file index the annotations this write creates are bound to in
     /// the EMBED view ([`MemoryBackend::embed_records`]), or `None`.
     pub embed_slot: Option<usize>,
+    /// What an EMBED view must still show for the write to go ahead, or
+    /// `None` for a write that depends on no view.
+    #[expect(dead_code, reason = "not called yet")]
+    pub view: Option<ViewCheck<'a>>,
+}
+
+/// The EMBED view a write was planned against. A transaction with one is
+/// refused, before anything else is looked at and with nothing changed,
+/// unless [`MemoryBackend::embed_records`] for `key` and `slot` would, at
+/// that moment and under the same lock as the write, give records with
+/// exactly the ids and revisions of `records`, in the same order. The
+/// refusal is `Conflict` with `Current::Missing` whose `id` is the key's
+/// text.
+///
+/// This is what makes "read the view, work out the operations, write" one
+/// step: a second writer that got in between changed a revision or the
+/// list, and the first is told to read again. Without it, two saves of one
+/// file that each add a ROI to the same empty view would both go through.
+#[derive(Debug, Clone, Copy)]
+#[expect(dead_code, reason = "not called yet")]
+pub(crate) struct ViewCheck<'a> {
+    pub key: &'a FileKey,
+    pub slot: usize,
+    pub records: &'a [Annotation],
+}
+
+/// What [`MemoryBackend::transact`] came to.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Transacted {
+    pub result: ApplyResult,
+    /// The store's revision as this transaction left it, read under the
+    /// lock the transaction held: the revision it produced when it was
+    /// applied, the revision it found when it was refused or was a repeated
+    /// `op_id`. Two applied transactions never report the same one.
+    pub revision: u64,
 }
 
 /// The current instant as the model writes one.
@@ -78,30 +120,32 @@ pub(crate) fn now() -> Timestamp {
 ///
 /// It keeps current state only: the records and layers that exist, the
 /// ones that were deleted (so that a revision check still has something to
-/// compare with), and the result of each of the last [`REMEMBERED_OPS`]
-/// applied envelopes. It keeps no log of operations.
+/// compare with), and the results of recently applied envelopes. It keeps
+/// no log of operations.
 ///
 /// The contract of a transaction, of ordering and of revisions is
 /// [`AnnotationBackend`]'s. This type adds what the store itself checks.
 ///
 /// # What the store checks
 ///
-/// A transaction first looks its `op_id` up; then, for a
+/// A transaction first looks its `op_id` up; then checks the view it was
+/// planned against, when the write names one ([`ViewCheck`]); then, for a
 /// [`Checking::Strict`] write, validates the envelope with
 /// `OpEnvelope::validate` against the files it was given and the schema in
 /// force (`Invalid` with what that reports); then applies the operation, or
-/// each operation of a `Batch` in order, by this table. `Conflict` and
-/// `Invalid` refuse the whole envelope.
+/// each operation of a `Batch` in order, by this table; then validates the
+/// records it changed ("When a changed record is validated"). `Conflict`
+/// and `Invalid` refuse the whole envelope.
 ///
 /// | Operation | Refused when | Effect |
 /// |---|---|---|
 /// | `create_annotation` | the id exists, live or deleted: `Invalid` `duplicate_id` at `annotation/id`. The layer does not exist or is deleted: `Invalid` `unknown_layer` at `annotation/layer`. | The record is stored with `rev` 1 and this write's stamps; its `derived_from`, `score`, `extensions` and unknown members are kept. |
-/// | `update_annotation` | see "The target of an operation"; `file` is not the record's file: `Conflict` with the record. A layer `after` names does not exist: `Invalid` `unknown_layer` at `after/layer`. The record with `after` applied fails `Annotation::validate`: `Invalid` with its violations. | `after` is applied (`Patch::apply_to`); `rev` rises by one. |
+/// | `update_annotation` | see "The target of an operation"; `file` is not the record's file: `Conflict` with the record. A layer `after` names does not exist: `Invalid` `unknown_layer` at `after/layer`. | `after` is applied (`Patch::apply_to`); `rev` rises by one. |
 /// | `delete_annotation` | see "The target of an operation". | The record is kept as deleted: it leaves every snapshot, export and EMBED view, and `rev` rises by one. |
 /// | `restore_annotation` | no record has the id: `Conflict` `missing`. The record is live: `Conflict` with it. `base_rev` is not the deleted record's `rev`: `Conflict` `deleted` with that `rev`. Its layer is deleted: `Invalid` `unknown_layer` at `snapshot/layer`. | The record is live again as it was when it was deleted, in its old place in creation order, with `rev` one higher. The store restores what it kept; of `snapshot` it reads only the id. |
-/// | `mask_tiles` | as `update_annotation`; the record's geometry is not a mask: `Invalid` `geometry_not_allowed` at `id`. The record with the tiles changed fails `Annotation::validate` (a mask left without a tile is `mask_empty`). | Each tile with `after` is set and each with `after: null` removed, in the frame the operation names; a frame left without a tile is removed; the record's `frames` becomes the set of frames that hold tiles; `rev` rises by one. |
+/// | `mask_tiles` | as `update_annotation`; the record's geometry is not a mask: `Invalid` `geometry_not_allowed` at `id`. | Each tile with `after` is set and each with `after: null` removed, in the frame the operation names; a frame left without a tile is removed; the record's `frames` becomes the set of frames that hold tiles; `rev` rises by one. |
 /// | `set_label`, `base_rev: null` | the id exists: `Invalid` `duplicate_id` at `id`. `after` is `null`: `Invalid` `empty_patch` at `after`. The layer does not exist: `Invalid` `unknown_layer` at `layer`. A label, with or without a value, already exists for this target, field, layer and author: `Invalid` `duplicate_label` at `id`. | The label is stored with `rev` 1. |
-/// | `set_label`, `base_rev` given | no label has the id: `Conflict` `missing`. `base_rev` is not its `rev`, or the target, field or layer is not the label's: `Conflict` with the label, or `deleted` with its `rev` when it has no value. | `after` becomes the value, or the label loses its value (`after: null`) and leaves snapshots and exports while keeping its id and `rev`; `rev` rises by one. |
+/// | `set_label`, `base_rev` given | no label has the id: `Conflict` `missing`. `base_rev` is not its `rev`, or the target, field or layer is not the label's: `Conflict` with the label, or `deleted` with its `rev` when it has no value. `after` is a value and the label's layer is deleted: `Invalid` `unknown_layer` at `layer`. | `after` becomes the value, or the label loses its value (`after: null`) and leaves snapshots and exports while keeping its id and `rev`; `rev` rises by one. |
 /// | `create_layer` | the id exists, live or deleted: `Invalid` `duplicate_id` at `layer/id`. 4,096 layers exist that are not deleted (`limits::MAX_SCHEMA_ITEMS`): `Invalid` `too_many_items` at `layer`. | The layer is stored with `rev` 1. |
 /// | `update_layer` | see "The target of an operation". The layer with `after` applied fails `Layer::validate`. | `after` is applied (`LayerPatch::apply_to`); `rev` rises by one. |
 /// | `delete_layer` | see "The target of an operation". The layer is the default layer, or holds a live annotation or a label with a value, after the operations before this one in the same batch: `Invalid` `bad_layer` at `id`. | The layer is kept as deleted; `rev` rises by one. |
@@ -109,6 +153,9 @@ pub(crate) fn now() -> Timestamp {
 /// A path in this table is relative to the operation: `/op/annotation/id`
 /// for an envelope that is that operation, `/op/ops/2/annotation/id` for
 /// the third operation of a batch.
+///
+/// A layer's `readonly` is not enforced: it is advisory in this store, and
+/// a write into a read-only layer goes through.
 ///
 /// ## The target of an operation
 ///
@@ -120,19 +167,77 @@ pub(crate) fn now() -> Timestamp {
 /// `before`, and the `snapshot` of a delete, are never compared with the
 /// stored state: `base_rev` is the check.
 ///
+/// ## When a changed record is validated
+///
+/// An annotation that the operations of a [`Checking::Strict`] transaction
+/// updated or changed the tiles of is run through `Annotation::validate`
+/// once, when the envelope's last operation has been applied, in the state
+/// the envelope leaves it, however many of the operations changed it. A
+/// record that was deleted by then is not validated. When one fails, the
+/// envelope is refused as `Invalid` with that record's violations, each
+/// path prefixed with the path of the last operation that changed the
+/// record; the records are looked at in the order they were first changed
+/// and the first that fails is the one reported. (A mask left without a
+/// tile is `mask_empty`.)
+///
+/// So an operation's own shape is judged where it stands (the envelope's
+/// validation, and the table above), and what it leaves of a record is
+/// judged once for the whole envelope. A batch may pass through a state no
+/// single operation could leave. Validating after each operation would
+/// make a batch of `n` operations on one large record cost `n` times the
+/// record.
+///
 /// ## What a strict write does to a geometry
 ///
 /// A geometry that a [`Checking::Strict`] write creates or patches is stored
 /// quantized (`Geometry::quantized`). A [`Checking::AsLoaded`] write stores
 /// every value as given.
 ///
+/// ## Revisions in a result
+///
+/// `revs` has one entry for each annotation, label and layer the envelope
+/// changed, in the order each was first changed, with its final `rev`. An
+/// annotation or label and a layer whose ids happen to be the same text
+/// are two entries.
+///
+/// # What is remembered
+///
+/// - **Results.** The `Ok` result of an applied envelope is remembered
+///   under its `op_id`, most recent first, while both bounds hold: at most
+///   [`REMEMBERED_OPS`] results, and at most [`REMEMBERED_REVS`] revision
+///   entries in all of them together. The oldest are forgotten until both
+///   hold; the newest is always kept, whatever its size. An `op_id` that
+///   was forgotten is an envelope the store has not seen: it is judged
+///   again against the records as they are, which for an operation that
+///   was applied means a refusal (its `base_rev` has passed, or its id
+///   exists), never a second application.
+/// - **Deleted records.** A deleted annotation is kept whole, a label that
+///   lost its value keeps its record, and a deleted layer keeps its: a
+///   restore brings back what was deleted, and an id is never used twice.
+///   They are not bounded apart from the live records: each got into the
+///   store through an applied envelope, and nothing in a session bounds
+///   how many of those there are, deleted or not.
+///
 /// # Cost
 ///
-/// A transaction costs time and memory in proportion to the envelope and to
-/// the records it names, not to the size of the store: a refused envelope
-/// is undone from what it changed, never by copying the store. The one
-/// exception is `delete_layer`, which may visit every record to learn that
-/// the layer is empty.
+/// A transaction costs time and memory in proportion to the envelope plus
+/// the records it names, each record counted once however many of the
+/// envelope's operations name it, and never in proportion to the store:
+///
+/// - A record is copied at most once per transaction: when it is first
+///   changed, so that a refusal can put it back. Later operations of the
+///   same envelope change it where it is. A refused envelope is undone from
+///   those copies, never by copying the store.
+/// - A changed record is validated once ("When a changed record is
+///   validated").
+/// - `delete_layer` learns that a layer is empty from a count kept for
+///   each layer, not by visiting the records.
+///
+/// The store's lock is held for one transaction at a time and for nothing
+/// else that takes long, so another request waits for at most one
+/// envelope's work. With an envelope bounded at 16 MiB and 10,000
+/// operations and the cost above, that is the time to read the envelope
+/// and its records once.
 pub struct MemoryBackend {
     config: MemoryConfig,
     default_layer: LayerId,
@@ -220,10 +325,13 @@ impl MemoryBackend {
         envelope: &OpEnvelope,
         files: &dyn FileSizes,
         write: Write<'_>,
-    ) -> Result<ApplyResult, BackendError> {
+    ) -> Result<Transacted, BackendError> {
         let mut state = self.state.lock().map_err(lock_error)?;
         if let Some(result) = state.remembered.get(&envelope.op_id) {
-            return Ok(result.clone());
+            return Ok(Transacted {
+                result: result.clone(),
+                revision: state.revision,
+            });
         }
         let implicit;
         let schema = match &self.config.schema {
@@ -236,8 +344,11 @@ impl MemoryBackend {
         let context = Context { files, schema };
         if write.checking == Checking::Strict {
             if let Err(invalid) = envelope.validate(&context) {
-                return Ok(ApplyResult::Invalid {
-                    violations: invalid.violations,
+                return Ok(Transacted {
+                    result: ApplyResult::Invalid {
+                        violations: invalid.violations,
+                    },
+                    revision: state.revision,
                 });
             }
         }
@@ -260,7 +371,10 @@ impl MemoryBackend {
         };
         if let Err(refusal) = outcome {
             transaction.rollback();
-            return Ok(refusal);
+            return Ok(Transacted {
+                result: refusal,
+                revision: state.revision,
+            });
         }
         let result = ApplyResult::Ok {
             revs: transaction.revs,
@@ -273,7 +387,10 @@ impl MemoryBackend {
                 state.remembered.remove(&oldest);
             }
         }
-        Ok(result)
+        Ok(Transacted {
+            result,
+            revision: state.revision,
+        })
     }
 
     /// The records the EMBED view of one file shows, in creation order: the
@@ -366,8 +483,10 @@ impl AnnotationBackend for MemoryBackend {
                         checking: Checking::Strict,
                         author: &self.config.author,
                         embed_slot: None,
+                        view: None,
                     },
                 )
+                .map(|transacted| transacted.result)
             })
             .collect()
     }

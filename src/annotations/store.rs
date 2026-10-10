@@ -2,9 +2,10 @@
 //! `--annotations` import.
 
 use super::memory::{MemoryBackend, MemoryConfig};
+use super::{AnnotationIndexMap, EmbedRoiAnnotations};
 use anyhow::{anyhow, Result};
 use dcmview_annotation::Author;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
 
@@ -38,23 +39,57 @@ struct EmbedImport {
     /// The files whose ROIs the EMBED endpoint has replaced. The import
     /// leaves them alone.
     edited: HashSet<usize>,
+    /// The rows the import read that are not records yet, by file index, as
+    /// the CSV wrote them.
+    staged: HashMap<usize, EmbedRoiAnnotations>,
 }
 
 /// A session's annotations: its backend, and where the `--annotations`
 /// import stands. Cheap to clone; clones share everything.
 ///
-/// The import runs in the background after discovery. Until it has
+/// # The import
+///
+/// The CSV is read in the background after discovery. Until that has
 /// finished, a read through the EMBED endpoints waits
 /// ([`AnnotationStore::wait_until_ready`]) while writes go ahead; a file
 /// the EMBED endpoint wrote to meanwhile keeps what was written and the
 /// import's rows for it are dropped. An import that fails leaves the store
 /// failed for the session: the EMBED reads and the export answer with its
 /// message, and viewing goes on.
+///
+/// # Staged rows
+///
+/// The rows the import read are not made records at once. A record holds
+/// its file's settled key, settling a key may mean reading the whole file
+/// and every file that shares its UID, and an import must not cost a read
+/// of the dataset before the first ROI can be shown. So the rows are
+/// *staged*: kept here by file index, exactly as the CSV wrote them, at
+/// the cost they had before the store held records (a ROI is its four
+/// coordinates and its frame list, not a record).
+///
+/// A file's staged rows are what its EMBED view shows and what the CSV
+/// export writes for it, from the moment the import ends and with no file
+/// read. They become records ([`AnnotationStore::take_staged`]) the first
+/// time something needs them as records and the file's key is settled:
+/// a read of the file's view once its key is settled, or an operation that
+/// names the file. A save through the EMBED endpoint replaces them, so it
+/// drops them instead. A file whose key is never settled keeps its rows
+/// staged for the session, and a file that cannot be given a key shows and
+/// exports its rows like any other.
+///
+/// Staged rows are in no snapshot and in no exported document: those hold
+/// records. Whoever exports a document settles and takes the staged rows
+/// first.
 #[derive(Clone)]
 pub struct AnnotationStore {
     backend: Arc<MemoryBackend>,
     import: Arc<Mutex<EmbedImport>>,
     ready: Arc<Notify>,
+    /// Run by [`AnnotationStore::before_embed_write`], so a test can make a
+    /// second write at exactly the point between a save's read of the view
+    /// and its write.
+    #[cfg(test)]
+    before_embed_write: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl AnnotationStore {
@@ -64,8 +99,11 @@ impl AnnotationStore {
             import: Arc::new(Mutex::new(EmbedImport {
                 state,
                 edited: HashSet::new(),
+                staged: HashMap::new(),
             })),
             ready: Arc::new(Notify::new()),
+            #[cfg(test)]
+            before_embed_write: None,
         }
     }
 
@@ -81,7 +119,7 @@ impl AnnotationStore {
     }
 
     /// The same store while an `--annotations` import is still to come:
-    /// it stays loading until [`AnnotationStore::finish_loading`] or
+    /// it stays loading until [`AnnotationStore::stage_rows`] or
     /// [`AnnotationStore::fail_loading`].
     pub fn loading() -> Self {
         Self::new(Self::session_backend(), LoadState::Loading)
@@ -157,26 +195,89 @@ impl AnnotationStore {
         Ok(())
     }
 
-    /// Runs `load`, which writes the import's rows of file `index` to the
-    /// backend, unless the EMBED endpoint has replaced that file's ROIs;
-    /// `None` when it has. The check and the write are one step as far as
-    /// [`AnnotationStore::mark_edited`] is concerned: an edit is either
-    /// seen here, or made after the rows are in and so replaces them.
+    /// Ends the import with `rows`, the rows the CSV matched to loaded
+    /// files: stages them and lets readers through. A file the EMBED
+    /// endpoint has already written to gets none of its rows, and a file
+    /// with no ROI is not staged. Returns how many files were staged and
+    /// how many were left out as edited.
     ///
-    /// `load` runs under the import's lock. It must not wait for anything
-    /// and must not call back into this store's import state.
-    pub(crate) fn load_unless_edited<T>(
-        &self,
-        index: usize,
-        load: impl FnOnce() -> T,
-    ) -> Result<Option<T>> {
-        let import = self
+    /// Nothing is read, hashed or validated: the cost is that of keeping
+    /// the rows. A store that already failed stays failed and stages
+    /// nothing.
+    pub(crate) fn stage_rows(&self, rows: AnnotationIndexMap) -> Result<(usize, usize)> {
+        let mut import = self
             .import
             .lock()
             .map_err(|_| anyhow!("annotations store lock poisoned"))?;
-        if import.edited.contains(&index) {
-            return Ok(None);
+        let (mut staged, mut edited) = (0, 0);
+        if import.state == LoadState::Loading {
+            for (index, rois) in rows {
+                if rois.roi_coords.is_empty() {
+                    continue;
+                }
+                if import.edited.contains(&index) {
+                    edited += 1;
+                } else {
+                    import.staged.insert(index, rois);
+                    staged += 1;
+                }
+            }
+            import.state = LoadState::Ready;
         }
-        Ok(Some(load()))
+        drop(import);
+        self.ready.notify_waiters();
+        Ok((staged, edited))
+    }
+
+    /// The rows staged for file `index`, as the CSV wrote them, or `None`
+    /// when the file has none (it never had, or they were taken).
+    pub(crate) fn staged_rows(&self, index: usize) -> Result<Option<EmbedRoiAnnotations>> {
+        Ok(self
+            .import
+            .lock()
+            .map_err(|_| anyhow!("annotations store lock poisoned"))?
+            .staged
+            .get(&index)
+            .cloned())
+    }
+
+    /// Takes the rows staged for file `index` and hands them to `with`,
+    /// which makes them records (or, for a save that replaces them, drops
+    /// them); `None` when the file has none. The rows are gone from the
+    /// stage whatever `with` returns.
+    ///
+    /// `with` runs under the import's lock, so two requests never take the
+    /// same rows and a reader never sees a file with its rows neither
+    /// staged nor stored. It must not wait for anything and must not call
+    /// back into this store's import state.
+    pub(crate) fn take_staged<T>(
+        &self,
+        index: usize,
+        with: impl FnOnce(EmbedRoiAnnotations) -> T,
+    ) -> Result<Option<T>> {
+        let mut import = self
+            .import
+            .lock()
+            .map_err(|_| anyhow!("annotations store lock poisoned"))?;
+        Ok(import.staged.remove(&index).map(with))
+    }
+
+    /// Called by a save through the EMBED endpoint after it has read the
+    /// file's view and before it writes. It does nothing; a test hangs a
+    /// competing write on it ([`AnnotationStore::with_before_embed_write`]).
+    #[expect(dead_code, reason = "not called yet")]
+    pub(crate) fn before_embed_write(&self) {
+        #[cfg(test)]
+        if let Some(hook) = &self.before_embed_write {
+            hook();
+        }
+    }
+
+    /// Runs `hook` each time a save through the EMBED endpoint has read
+    /// the view it will replace and is about to write.
+    #[cfg(test)]
+    pub(crate) fn with_before_embed_write(mut self, hook: Arc<dyn Fn() + Send + Sync>) -> Self {
+        self.before_embed_write = Some(hook);
+        self
     }
 }

@@ -173,6 +173,9 @@ pub(super) fn annotation_error(error: AnnotationError) -> ApiError {
             ApiErrorCode::FileKeyUnavailable,
             message,
         ),
+        AnnotationError::KeyReplaced { .. } => {
+            ApiError::coded(StatusCode::CONFLICT, ApiErrorCode::FileKeyReplaced, message)
+        }
         AnnotationError::ImportFailed(_) | AnnotationError::Stopped | AnnotationError::Store(_) => {
             ApiError::internal(message)
         }

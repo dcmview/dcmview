@@ -84,7 +84,7 @@ export const THUMBNAIL_DEFAULT_SIZE = 256;
  *
  * Any other failure is a plain `ErrorResponse`: 400 `invalid_json` for a
  * body that is not an envelope, 413 `payload_too_large`, 422
- * `file_key_unavailable`.
+ * `file_key_unavailable`, 409 `file_key_replaced`.
  *
  * Every file key in the request and in `result` is in the form this
  * session sends keys (`FileSummary::file_key`): a masked session reads and
@@ -97,13 +97,13 @@ export type AnnotationOpResponse = {
  */
 result: ApplyResult, 
 /**
- * The store's revision after this request: the number of envelopes it
- * has applied. It rises by one for each envelope that changed
+ * The store's revision as this request left it: the number of
+ * envelopes it has applied. It rises by one for each envelope that changed
  * something, and is unchanged by a refusal and by a repeated `op_id`.
  */
 revision: number, code?: ApiErrorCode, error?: string, };
 
-export type ApiErrorCode = "invalid_path" | "invalid_query" | "invalid_json" | "bad_request" | "not_found" | "route_not_found" | "asset_not_found" | "method_not_allowed" | "no_pixel_data" | "frame_out_of_range" | "invalid_window" | "unsupported_transfer_syntax" | "unsupported_pixel_layout" | "semantic_mapping_unavailable" | "overlay_not_covering_frame" | "pixel_decode_failed" | "decode_busy" | "decode_memory_exceeded" | "masked" | "annotation_conflict" | "annotation_invalid" | "file_key_unavailable" | "payload_too_large" | "unauthorized" | "internal_error";
+export type ApiErrorCode = "invalid_path" | "invalid_query" | "invalid_json" | "bad_request" | "not_found" | "route_not_found" | "asset_not_found" | "method_not_allowed" | "no_pixel_data" | "frame_out_of_range" | "invalid_window" | "unsupported_transfer_syntax" | "unsupported_pixel_layout" | "semantic_mapping_unavailable" | "overlay_not_covering_frame" | "pixel_decode_failed" | "decode_busy" | "decode_memory_exceeded" | "masked" | "annotation_conflict" | "annotation_invalid" | "file_key_unavailable" | "file_key_replaced" | "payload_too_large" | "unauthorized" | "internal_error";
 
 export type CodedConceptSummary = { value: string, scheme: string, meaning: string, };
 

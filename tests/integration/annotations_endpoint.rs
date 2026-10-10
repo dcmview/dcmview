@@ -111,7 +111,6 @@ async fn health_and_annotation_edits_remain_available_while_csv_is_loading() {
             },
         )]),
     )
-    .await
     .expect("complete CSV loading");
 
     let response = test_server.get("/api/file/0/annotations").await;

@@ -89,6 +89,7 @@ pub(crate) fn rois_of(records: &[Annotation], frame_count: u32) -> EmbedRoiAnnot
 ///
 /// `rows` is taken as it is: `num_roi` is not read, and a ROI is made for
 /// each entry of `roi_coords`.
+#[expect(dead_code, reason = "not called yet")]
 pub(crate) fn rows_as_creates(
     rows: &EmbedRoiAnnotations,
     file: &FileKey,
@@ -111,13 +112,16 @@ pub(crate) fn rows_as_creates(
 /// ids. With `shown = rois_of(current, frame_count)`:
 ///
 /// 1. For each position both have, in order: nothing when
-///    `shown.roi_coords[i] == wanted.roi_coords[i]` and the frames agree;
+///    `shown.roi_coords[i] == wanted.roi_coords[i]` and the frame scope
+///    `wanted` gives ROI `i` ("A ROI as a record") is the record's own;
 ///    otherwise one `UpdateAnnotation` of that record, with its `file`,
 ///    its `rev` as `base_rev`, and `before` and `after` holding `geometry`
-///    when the coordinates differ and `frames` when the frames do. The
-///    frames agree when both lists are empty, or both hold a list for `i`
-///    and the lists are equal, or the scope `wanted` gives ROI `i` ("A ROI
-///    as a record") is the record's own.
+///    when the coordinates differ and `frames` when the scopes do.
+///
+///    The scopes are compared, not the lists shown, so that the view after
+///    the save shows exactly `wanted`: a record for every frame that the
+///    view listed frame by frame, because another record of the view named
+///    some, becomes a record for those frames when the save names them.
 /// 2. Then, for each record past the end of `wanted`, in order: one
 ///    `DeleteAnnotation` with its `rev` and the record as `snapshot`.
 /// 3. Then, for each ROI past the end of `current`, in order: one

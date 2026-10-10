@@ -63,10 +63,13 @@ pub struct Snapshot {
 /// - **Isolated.** No reader sees a transaction half applied, and two
 ///   transactions never interleave.
 /// - **Idempotent by `op_id`.** An envelope whose `op_id` was applied
-///   before returns the result of that first application and changes
-///   nothing, whatever else the envelope now holds. A refused envelope is
-///   not remembered: it changed nothing, so sending it again judges it
-///   again.
+///   before, and whose result the store still remembers, returns the
+///   result of that first application and changes nothing, whatever else
+///   the envelope now holds. A refused envelope is not remembered: it
+///   changed nothing, so sending it again judges it again. A store may
+///   forget old results within stated bounds; a forgotten envelope is
+///   judged again too, which for one that was applied ends in a refusal
+///   and never in a second application.
 ///
 /// # Order
 ///

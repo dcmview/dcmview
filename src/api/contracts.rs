@@ -1453,6 +1453,13 @@ pub enum ApiErrorCode {
     /// Instance UID, could not be read or have changed since discovery
     /// (`FileSummary::key_error`). Status 422. Nothing was written.
     FileKeyUnavailable,
+    /// An annotation operation named a file by a key that is not the
+    /// settled key of one file: files that shared the key turned out to
+    /// differ, or the key was replaced (`FilesResponse::rekeys`). Status
+    /// 409, a plain `ErrorResponse`. Nothing was applied; the catalog now
+    /// shows the file's key, and the same operation under that key is
+    /// applied.
+    FileKeyReplaced,
     /// A request body longer than its endpoint reads. Status 413.
     PayloadTooLarge,
     /// The request lacks the session's bearer token. Status 401 with
@@ -1486,7 +1493,7 @@ pub const ANNOTATION_OP_MAX_BYTES: usize = dcmview_annotation::limits::MAX_ENVEL
 ///
 /// Any other failure is a plain `ErrorResponse`: 400 `invalid_json` for a
 /// body that is not an envelope, 413 `payload_too_large`, 422
-/// `file_key_unavailable`.
+/// `file_key_unavailable`, 409 `file_key_replaced`.
 ///
 /// Every file key in the request and in `result` is in the form this
 /// session sends keys (`FileSummary::file_key`): a masked session reads and
@@ -1497,8 +1504,8 @@ pub struct AnnotationOpResponse {
     /// (`frontend/src/generated/annotation-types.ts`).
     #[ts(type = "ApplyResult")]
     pub result: dcmview_annotation::ApplyResult,
-    /// The store's revision after this request: the number of envelopes it
-    /// has applied. It rises by one for each envelope that changed
+    /// The store's revision as this request left it: the number of
+    /// envelopes it has applied. It rises by one for each envelope that changed
     /// something, and is unchanged by a refusal and by a repeated `op_id`.
     pub revision: u64,
     #[serde(skip_serializing_if = "Option::is_none")]

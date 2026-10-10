@@ -31,6 +31,7 @@ pub use crate::api::contracts::EmbedRoiAnnotations;
 pub use backend::{AnnotationBackend, BackendError, Snapshot};
 pub use memory::{
     MemoryBackend, MemoryConfig, DEFAULT_LAYER_ID, DEFAULT_LAYER_NAME, REMEMBERED_OPS,
+    REMEMBERED_REVS,
 };
 pub use store::{session_author, AnnotationStore, EMBED_IMPORT_AUTHOR};
 
