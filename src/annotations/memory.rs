@@ -72,7 +72,6 @@ pub(crate) struct Write<'a> {
     pub embed_slot: Option<usize>,
     /// What an EMBED view must still show for the write to go ahead, or
     /// `None` for a write that depends on no view.
-    #[expect(dead_code, reason = "not called yet")]
     pub view: Option<ViewCheck<'a>>,
 }
 
@@ -89,7 +88,6 @@ pub(crate) struct Write<'a> {
 /// list, and the first is told to read again. Without it, two saves of one
 /// file that each add a ROI to the same empty view would both go through.
 #[derive(Debug, Clone, Copy)]
-#[expect(dead_code, reason = "not called yet")]
 pub(crate) struct ViewCheck<'a> {
     pub key: &'a FileKey,
     pub slot: usize,
@@ -333,6 +331,20 @@ impl MemoryBackend {
                 revision: state.revision,
             });
         }
+        if let Some(view) = write.view {
+            if !embed_view(&state, view.key, view.slot)
+                .map(|record| (record.id, record.meta.rev))
+                .eq(view
+                    .records
+                    .iter()
+                    .map(|record| (record.id, record.meta.rev)))
+            {
+                return Ok(Transacted {
+                    result: missing(view.key.as_str()),
+                    revision: state.revision,
+                });
+            }
+        }
         let implicit;
         let schema = match &self.config.schema {
             Some(schema) => schema,
@@ -410,20 +422,27 @@ impl MemoryBackend {
         slot: usize,
     ) -> Result<Vec<Annotation>, BackendError> {
         let state = self.state.lock().map_err(lock_error)?;
-        Ok(state
-            .files
-            .get(key)
-            .into_iter()
-            .flatten()
-            .map(|&place| &state.annotations[place])
-            .filter(|entry| {
-                !entry.deleted
-                    && matches!(entry.record.geometry, Geometry::Rect { .. })
-                    && (entry.embed_slot.is_none() || entry.embed_slot == Some(slot))
-            })
-            .map(|entry| entry.record.clone())
-            .collect())
+        Ok(embed_view(&state, key, slot).cloned().collect())
     }
+}
+
+fn embed_view<'a>(
+    state: &'a State,
+    key: &FileKey,
+    slot: usize,
+) -> impl Iterator<Item = &'a Annotation> {
+    state
+        .files
+        .get(key)
+        .into_iter()
+        .flatten()
+        .map(|&place| &state.annotations[place])
+        .filter(move |entry| {
+            !entry.deleted
+                && matches!(entry.record.geometry, Geometry::Rect { .. })
+                && (entry.embed_slot.is_none() || entry.embed_slot == Some(slot))
+        })
+        .map(|entry| &entry.record)
 }
 
 impl AnnotationBackend for MemoryBackend {
@@ -600,6 +619,12 @@ enum Undo {
     CreatedLabel,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum RevisionKind {
+    Record,
+    Layer,
+}
+
 struct Transaction<'a> {
     state: &'a mut State,
     context: Context<'a>,
@@ -608,16 +633,16 @@ struct Transaction<'a> {
     default_layer: &'a LayerId,
     undo: Vec<Undo>,
     revs: Vec<RevEntry>,
-    rev_places: HashMap<String, usize>,
+    rev_places: HashMap<(RevisionKind, String), usize>,
 }
 
 impl Transaction<'_> {
-    fn changed(&mut self, id: impl ToString, rev: u64) {
+    fn changed(&mut self, kind: RevisionKind, id: impl ToString, rev: u64) {
         let id = id.to_string();
-        if let Some(&place) = self.rev_places.get(&id) {
+        if let Some(&place) = self.rev_places.get(&(kind, id.clone())) {
             self.revs[place].rev = rev;
         } else {
-            self.rev_places.insert(id.clone(), self.revs.len());
+            self.rev_places.insert((kind, id.clone()), self.revs.len());
             self.revs.push(RevEntry { id, rev });
         }
     }
@@ -692,7 +717,7 @@ impl Transaction<'_> {
 
     fn replace_annotation(&mut self, place: usize, mut entry: AnnotationEntry) {
         self.stamp_change(&mut entry.record.meta);
-        self.changed(entry.record.id, entry.record.meta.rev);
+        self.changed(RevisionKind::Record, entry.record.id, entry.record.meta.rev);
         let old = std::mem::replace(&mut self.state.annotations[place], entry);
         self.undo.push(Undo::Annotation(place, Box::new(old)));
     }
@@ -720,7 +745,7 @@ impl Transaction<'_> {
                     .entry(record.file.clone())
                     .or_default()
                     .push(place);
-                self.changed(record.id, record.meta.rev);
+                self.changed(RevisionKind::Record, record.id, record.meta.rev);
                 self.state.annotations.push(AnnotationEntry {
                     record,
                     deleted: false,
@@ -835,13 +860,16 @@ impl Transaction<'_> {
                             })
                         });
                     }
+                    if after.is_some() {
+                        self.require_layer(layer, &format!("{path}/layer"))?;
+                    }
                     let mut entry = old.clone();
                     entry.cleared = after.is_none();
                     if let Some(value) = after {
                         entry.record.value = value.clone();
                     }
                     self.stamp_change(&mut entry.record.meta);
-                    self.changed(id, entry.record.meta.rev);
+                    self.changed(RevisionKind::Record, id, entry.record.meta.rev);
                     let old = std::mem::replace(&mut self.state.labels[place], entry);
                     self.undo.push(Undo::Label(place, Box::new(old)));
                 } else {
@@ -897,7 +925,7 @@ impl Transaction<'_> {
                         record,
                         cleared: false,
                     });
-                    self.changed(id, 1);
+                    self.changed(RevisionKind::Record, id, 1);
                     self.undo.push(Undo::CreatedLabel);
                 }
             }
@@ -918,7 +946,7 @@ impl Transaction<'_> {
                 }
                 let mut record = layer.clone();
                 record.rev = 1;
-                self.changed(&record.id, 1);
+                self.changed(RevisionKind::Layer, &record.id, 1);
                 self.state
                     .layer_ids
                     .insert(record.id.clone(), self.state.layers.len());
@@ -945,7 +973,7 @@ impl Transaction<'_> {
                         .map_err(|error| prefixed(error, path))?;
                 }
                 entry.record.rev += 1;
-                self.changed(id, entry.record.rev);
+                self.changed(RevisionKind::Layer, id, entry.record.rev);
                 let old = std::mem::replace(&mut self.state.layers[place], entry);
                 self.undo.push(Undo::Layer(place, Box::new(old)));
             }
@@ -972,7 +1000,7 @@ impl Transaction<'_> {
                 let mut entry = self.state.layers[place].clone();
                 entry.deleted = true;
                 entry.record.rev += 1;
-                self.changed(id, entry.record.rev);
+                self.changed(RevisionKind::Layer, id, entry.record.rev);
                 let old = std::mem::replace(&mut self.state.layers[place], entry);
                 self.state.live_layers -= 1;
                 self.undo.push(Undo::Layer(place, Box::new(old)));
