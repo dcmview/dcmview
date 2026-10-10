@@ -7,7 +7,8 @@
 //! refused, counted at the allocator, with files a few hundred bytes long
 //! that declare images of millions of pixels. For JPEG XL they also state
 //! that a frame with an embedded colour profile is refused without the
-//! decoder being started.
+//! decoder being started, and what the decoder's allocation limit holds it
+//! to by itself.
 //!
 //! These tests are a test binary of their own because they replace the
 //! global allocator. For the same reason no test here decodes an honest
@@ -26,7 +27,7 @@ mod heap;
 use axum::http::StatusCode;
 use codestream_files::{self as files, hex, siz, Layout};
 use dcmview::pixels::codestream::{
-    agrees, declared, jxl_decode_limit, CodestreamKind, Declared, Structure,
+    agrees, declared, decode_jpeg_xl, jxl_decode_limit, CodestreamKind, Declared, Structure,
     CODESTREAM_MAX_HEADER_SEGMENTS, CODESTREAM_MISMATCH, J2K_MAX_TILES, J2K_MIN_PACKET_BUDGET,
     J2K_PIXELS_PER_PACKET, JP2_MAX_BOXES, JPEG_MAX_SCANS, JXL_EMBEDDED_PROFILE,
 };
@@ -1315,5 +1316,32 @@ fn a_jpeg_xl_frame_decodes_within_its_entry_s_allowance() {
     assert!(
         held <= allowance,
         "{held} bytes of heap held, the allowance is {allowance}"
+    );
+}
+
+/// What the allowance guards by itself: the decoder stops when it has
+/// allocated its entry's allowance, whatever the frame goes on to ask for.
+/// The image header check is left out here on purpose, so that an honest
+/// frame of a larger image stands in for a frame whose contents ask for
+/// more than its image header: decoded under the entry of a 16 x 16 image,
+/// a 2,048 x 2,048 frame is stopped at that entry's allowance, where its
+/// decode would hold four times as much.
+#[test]
+fn the_jpeg_xl_decoder_stops_at_its_entry_s_allowance() {
+    let _alone = heap::alone();
+    let runtime = runtime();
+    let small = entry(&runtime, files::JPEG_XL, Layout::gray8(16, 16));
+    let allowance = jxl_decode_limit(&small);
+    assert_eq!(allowance, 4 * MIB + 64 * 16 * 16);
+    let frame = hex(files::JXL_GRAY8_2048X2048);
+    let (decoded, held) = heap::peak_during(|| decode_jpeg_xl(&small, &frame));
+    let error = decoded.expect_err("the decoder runs out of its allowance");
+    report(|| format!("jxl 2048 x 2048 under 16 x 16: {held} bytes of heap, {error:#}"));
+    // What the decoder holds outside its tracker for a frame this small is
+    // far under the slack.
+    let limit = allowance + MIB;
+    assert!(
+        held <= limit,
+        "{held} bytes of heap held, the allowance is {allowance}: {error:#}"
     );
 }

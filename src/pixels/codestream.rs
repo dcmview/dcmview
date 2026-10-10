@@ -951,7 +951,11 @@ pub fn jxl_decode_limit(file: &FileEntry) -> u64 {
 /// is not the entry's columns, rows and samples per pixel; a
 /// `file.bits_allocated` other than 8 or 16; a short write. The output
 /// buffer is sized from the entry, never from the stream.
-pub(crate) fn decode_jpeg_xl(file: &FileEntry, frame: &[u8]) -> Result<Vec<u8>> {
+///
+/// Public so that `tests/codestream_cost` can count what the limit alone
+/// holds a frame to; the decoders reach it through
+/// `pixeldata_frame::decode_object`, after [`checked`].
+pub fn decode_jpeg_xl(file: &FileEntry, frame: &[u8]) -> Result<Vec<u8>> {
     if !matches!(file.bits_allocated, 8 | 16) {
         return Err(anyhow!(
             "JPEG XL output Bits Allocated is {}, expected 8 or 16",

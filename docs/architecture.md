@@ -1789,10 +1789,11 @@ installation and VS Code Electron integration can also use network/cache state;
   is refused. A JPEG XL frame that libjxl wrote with an embedded colour
   profile is refused at every endpoint in the first and under the same heap
   bound in the second, which also listens to what the decoder's crates log
-  to tell that the decoder was never started on it. Its counting allocator
-  counts every thread, because decoders run on blocking threads, so its
-  tests run one at a time; it decodes no honest JPEG 2000 frame, for the
-  reason given above.
+  to tell that the decoder was never started on it, and decodes a frame of
+  a larger image under a small entry to count what the allocation limit
+  alone holds the decoder to. Its counting allocator counts every thread,
+  because decoders run on blocking threads, so its tests run one at a time;
+  it decodes no honest JPEG 2000 frame, for the reason given above.
 - Decode admission tests (`tests/integration/decode_admission.rs`) hold the
   scheduler to its rules through its own account of itself
   (`DecodeScheduler::load` and `load_when`), never through time: the bytes
