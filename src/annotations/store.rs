@@ -265,7 +265,6 @@ impl AnnotationStore {
     /// Called by a save through the EMBED endpoint after it has read the
     /// file's view and before it writes. It does nothing; a test hangs a
     /// competing write on it ([`AnnotationStore::with_before_embed_write`]).
-    #[expect(dead_code, reason = "not called yet")]
     pub(crate) fn before_embed_write(&self) {
         #[cfg(test)]
         if let Some(hook) = &self.before_embed_write {

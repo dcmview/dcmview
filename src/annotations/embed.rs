@@ -89,7 +89,6 @@ pub(crate) fn rois_of(records: &[Annotation], frame_count: u32) -> EmbedRoiAnnot
 ///
 /// `rows` is taken as it is: `num_roi` is not read, and a ROI is made for
 /// each entry of `roi_coords`.
-#[expect(dead_code, reason = "not called yet")]
 pub(crate) fn rows_as_creates(
     rows: &EmbedRoiAnnotations,
     file: &FileKey,

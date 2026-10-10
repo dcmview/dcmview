@@ -40,15 +40,16 @@
 use super::{FileRegistry, KeyError};
 use crate::annotations::{
     canonicalize_annotations,
-    embed::{replacement_ops, rois_of, write_embed_csv},
-    memory::{now, Checking, Write},
+    embed::{replacement_ops, rois_of, rows_as_creates, write_embed_csv},
+    memory::{now, Checking, ViewCheck, Write},
     AnnotationBackend, AnnotationIndexMap, AnnotationStore, EmbedRoiAnnotations,
+    EMBED_IMPORT_AUTHOR,
 };
 use crate::api::contracts::FileKeyError;
 use crate::types::FileEntry;
 use dcmview_annotation::{
-    new_id, ApplyResult, Current, FileKey, ImageSize, LabelTarget, Op, OpEnvelope, Violation,
-    ViolationCode,
+    new_id, ApplyResult, Author, Current, FileKey, ImageSize, LabelTarget, Op, OpEnvelope,
+    Violation, ViolationCode,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -213,6 +214,7 @@ pub async fn replace_embed_rois(
     let sizes = BTreeMap::from([(key.clone(), image_size(&file))]);
     for _ in 0..16 {
         let current = backend.embed_records(&key, index).map_err(store_error)?;
+        store.before_embed_write();
         let stamp = now();
         let ops = replacement_ops(
             &current,
@@ -240,7 +242,11 @@ pub async fn replace_embed_rois(
                     checking: Checking::AsLoaded,
                     author,
                     embed_slot: Some(index),
-                    view: None,
+                    view: Some(ViewCheck {
+                        key: &key,
+                        slot: index,
+                        records: &current,
+                    }),
                 },
             )
             .map_err(store_error)?
@@ -395,18 +401,31 @@ pub async fn apply_op(
     let mut settled = HashMap::new();
     let mut replacements = HashMap::new();
     let mut sizes = BTreeMap::new();
-    for (shown, index) in resolved {
-        let key = if let Some(key) = settled.get(&index) {
+    for (shown, index) in &resolved {
+        let key = if let Some(key) = settled.get(index) {
             key
         } else {
-            let key = settle_key(registry, index).await?;
+            let key = settle_key(registry, *index).await?;
             let file = registry
-                .get(index)
-                .ok_or(AnnotationError::NotFound(index))?;
+                .get(*index)
+                .ok_or(AnnotationError::NotFound(*index))?;
             sizes.insert(key.clone(), image_size(&file));
-            settled.entry(index).or_insert(key)
+            settled.entry(*index).or_insert(key)
         };
-        replacements.insert(shown, key.clone());
+        replacements.insert(shown.clone(), key.clone());
+    }
+    for (sent, index) in &resolved {
+        if registry.shown_key_of(&settled[index]) != sent.as_str() {
+            return Err(AnnotationError::KeyReplaced {
+                sent: sent.as_str().to_string(),
+            });
+        }
+    }
+    for (_, index) in &resolved {
+        let file = registry
+            .get(*index)
+            .ok_or(AnnotationError::NotFound(*index))?;
+        store_staged_rows(store, &file, &settled[index])?;
     }
     visit_op_keys(&mut envelope.op, &mut |key| {
         *key = replacements.get(key).cloned().ok_or_else(|| {
@@ -414,21 +433,27 @@ pub async fn apply_op(
         })?;
         Ok(())
     })?;
-    let mut result = store
+    let transacted = store
         .backend()
-        .apply(vec![envelope], &sizes)
-        .map_err(store_error)?
-        .pop()
-        .ok_or_else(|| {
-            AnnotationError::Store("The store returned no operation result.".to_string())
-        })?;
+        .transact(
+            &envelope,
+            &sizes,
+            Write {
+                checking: Checking::Strict,
+                author: &store.backend().config().author,
+                embed_slot: None,
+                view: None,
+            },
+        )
+        .map_err(store_error)?;
+    let mut result = transacted.result;
     visit_result_keys(&mut result, &mut |key| {
         *key = FileKey::parse(&registry.shown_key_of(key)).map_err(store_error)?;
         Ok(())
     })?;
     Ok(OpOutcome {
         result,
-        revision: store.backend().revision().map_err(store_error)?,
+        revision: transacted.revision,
     })
 }
 
@@ -463,12 +488,10 @@ fn file_rois(
     store: &AnnotationStore,
     file: &FileEntry,
 ) -> Result<EmbedRoiAnnotations, AnnotationError> {
-    if let Some(rows) = store.staged_rows(file.index).map_err(store_error)? {
-        return Ok(rows);
-    }
     if let Some(status) = registry.key_status(file.index) {
         if status.settled {
             if let Some(key) = status.key {
+                store_staged_rows(store, file, &key)?;
                 let records = store
                     .backend()
                     .embed_records(&key, file.index)
@@ -477,7 +500,52 @@ fn file_rois(
             }
         }
     }
-    Ok(EmbedRoiAnnotations::empty())
+    Ok(store
+        .staged_rows(file.index)
+        .map_err(store_error)?
+        .unwrap_or_else(EmbedRoiAnnotations::empty))
+}
+
+fn store_staged_rows(
+    store: &AnnotationStore,
+    file: &FileEntry,
+    key: &FileKey,
+) -> Result<(), AnnotationError> {
+    let result = store
+        .take_staged(file.index, |rows| {
+            let author = Author::parse(EMBED_IMPORT_AUTHOR).map_err(store_error)?;
+            let stamp = now();
+            let backend = store.backend();
+            let envelope = OpEnvelope {
+                op_id: new_id(),
+                actor: author.clone(),
+                ts: stamp.clone(),
+                op: Op::Batch {
+                    ops: rows_as_creates(&rows, key, backend.default_layer(), &author, &stamp),
+                },
+            };
+            let sizes = BTreeMap::from([(key.clone(), image_size(file))]);
+            let transacted = backend
+                .transact(
+                    &envelope,
+                    &sizes,
+                    Write {
+                        checking: Checking::AsLoaded,
+                        author: &author,
+                        embed_slot: Some(file.index),
+                        view: None,
+                    },
+                )
+                .map_err(store_error)?;
+            match transacted.result {
+                ApplyResult::Ok { .. } => Ok(()),
+                refused => Err(AnnotationError::Store(format!(
+                    "The staged EMBED rows were refused: {refused:?}"
+                ))),
+            }
+        })
+        .map_err(store_error)?;
+    result.unwrap_or(Ok(()))
 }
 
 fn visit_target_key(
