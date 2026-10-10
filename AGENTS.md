@@ -808,7 +808,8 @@ is cached between requests.
   by `REMEMBERED_OPS` and `REMEMBERED_REVS`, deleted annotations kept
   whole by `DELETED_BYTES`. Everything else that was deleted keeps its id
   and revision and no content (a dropped annotation, a deleted layer, a
-  label without a value), within 2 KiB an id; the ids themselves are
+  label without a value): a dropped annotation or a deleted layer within
+  2 KiB an id, a label also its target; the ids themselves are
   bounded only by the envelopes a session applies. A new kind of record
   that can be deleted lets its content go the same way and gets a line in
   `what_is_kept_of_deleted_things_is_bounded`.

@@ -249,10 +249,12 @@ pub(crate) fn now() -> Timestamp {
 ///   class, attribute or extension. No operation brings a deleted layer
 ///   back, so it lets its name, color, source and unknown members go when
 ///   it is deleted. A label that loses its value lets the value go; the
-///   operation that sets it again brings the next one. Each such id costs
-///   the store a fixed amount, within 2,048 bytes with its place in the
-///   indexes (its file key, layer id, target and stamps are short and
-///   bounded by the model); `tests/raster_cost/annotations.rs` counts it.
+///   operation that sets it again brings the next one. The id of a dropped
+///   annotation or a deleted layer costs the store a fixed amount, within
+///   2,048 bytes with its place in the indexes (its file key, layer id and
+///   stamps are short and bounded by the model);
+///   `tests/raster_cost/annotations.rs` counts it. A label without a value
+///   also keeps its target, which can be longer.
 ///   The number of ids is bounded only by the envelopes a session applies,
 ///   as the live records are.
 ///

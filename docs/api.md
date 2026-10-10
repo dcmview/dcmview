@@ -866,7 +866,9 @@ made by the client. The body is read whatever its `Content-Type`.
   - an operation is recorded on that file or on none, and changes no
     record of another file: an update, a tile change, a delete or a
     restore whose record is on another file than the one it names is a
-    `409 annotation_conflict`.
+    `409 annotation_conflict`. Byte-identical copies are one file here:
+    they share one key, so a record of one copy can be changed through
+    the other.
 
   Without `file`, a `sop:` key whose UID more than one loaded file carries
   is `409 file_key_ambiguous`; any other key must be the settled key of the

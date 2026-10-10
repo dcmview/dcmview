@@ -1670,8 +1670,9 @@ kept whole, for a restore, up to 64 MiB together (`DELETED_BYTES`, counted
 as JSON); past that the oldest, in the order they were deleted, keep only
 their id and revision, and a restore of one of those answers `missing`
 while its id stays taken. A deleted layer and a label without a value keep
-no content either. What stays for an id that was used is within 2 KiB
-(`tests/raster_cost/annotations.rs` counts it), and the number of ids is
+no content either. What stays for the id of a dropped annotation or a
+deleted layer is within 2 KiB (`tests/raster_cost/annotations.rs` counts
+it); a label without a value also keeps its target. The number of ids is
 bounded only by the envelopes a session applies.
 Snapshots and the document list records in creation order.
 
@@ -1761,7 +1762,8 @@ keeps these rules for every door:
   `file` of their snapshot) and a record id; when the record is on
   another file the operation is a conflict and nothing changes. With
   `?file=`, the file named is that one file, so a request for one file
-  cannot change a record of another.
+  cannot change a record of another. Byte-identical copies share one key
+  and count as one file in this.
 
 An operation that names a key no loaded file has is refused before the
 store sees it: `invalid`, `unknown_file`.
@@ -1831,7 +1833,8 @@ shows a ROI, in the registry's file order, with the path as discovery
 recorded it. It is one read: the staged rows under the import's lock, and
 the records with the store held still while every file's key state and
 view are read, so no row shows a write another row of the same export
-does not. A write waits for at most one export. `tests/raster_cost/annotations.rs` holds the import to its
+does not. A write waits only while an export is reading.
+`tests/raster_cost/annotations.rs` holds the import to its
 bytes per ROI.
 
 ### Redaction Boxes Are Not In It

@@ -81,8 +81,8 @@ export const THUMBNAIL_DEFAULT_SIZE = 256;
  * operation changes must be on the file the operation names, for every
  * kind of operation (`409 annotation_conflict` otherwise), so a request
  * for one file neither records anything on another nor changes a record
- * of another. The
- * viewer's page always sends it. Without it, a `sop:` key whose UID more
+ * of another. Byte-identical copies share one key and count as one file
+ * in this. The viewer's page always sends it. Without it, a `sop:` key whose UID more
  * than one loaded file carries is `409 file_key_ambiguous`.
  */
 export type AnnotationOpQuery = { file?: number, };
