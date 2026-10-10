@@ -1,12 +1,70 @@
 use thiserror::Error;
 
+/// A reason for a failed decode in dcmview's own words, for a response
+/// body: fixed wording, and numbers the viewer computed or the catalog entry
+/// holds. Never text of the file, and never the text of a library's error:
+/// a decoder's message can quote bytes of the file it refused.
+///
+/// A decode error shows the outermost `Stated` of its cause chain and
+/// nothing else of it ([`PixelError::Decode`]). Put one in the chain with
+/// [`Stated::error`], or over a library's error with
+/// `anyhow::Context::context`.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("{0}")]
+pub struct Stated(String);
+
+impl Stated {
+    pub(crate) fn new(reason: impl Into<String>) -> Self {
+        Self(reason.into())
+    }
+
+    /// An error that is this reason.
+    pub(crate) fn error(reason: impl Into<String>) -> anyhow::Error {
+        anyhow::Error::new(Self::new(reason))
+    }
+}
+
+/// What a decode error says in a response: its context and the reason the
+/// viewer stated, if it stated one.
+fn decode_text(context: &str, source: &anyhow::Error) -> String {
+    // A native layout error is the viewer's own too: fixed wording and
+    // numbers computed from the entry and the length of the pixel data.
+    let stated = source
+        .downcast_ref::<Stated>()
+        .map(ToString::to_string)
+        .or_else(|| {
+            source
+                .downcast_ref::<super::native_layout::NativeLayoutError>()
+                .map(ToString::to_string)
+        });
+    match stated {
+        Some(stated) => format!("{context}: {stated}"),
+        None => context.to_string(),
+    }
+}
+
+/// A transfer syntax UID as a response may show it: only when it is written
+/// as a UID is, since the text comes from the file.
+fn shown_uid(uid: &str) -> String {
+    let shaped = !uid.is_empty()
+        && uid.len() <= 64
+        && uid
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte == b'.');
+    if shaped {
+        format!(": {uid}")
+    } else {
+        String::new()
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum PixelError {
     #[error("file {file_index} has no pixel data")]
     NoPixelData { file_index: usize },
     #[error("frame {frame} is out of range: the file has {frame_count} frame(s)")]
     FrameOutOfRange { frame: u32, frame_count: u32 },
-    #[error("unsupported transfer syntax: {0}")]
+    #[error("unsupported transfer syntax{}", shown_uid(.0))]
     UnsupportedTransferSyntax(String),
     #[error("unsupported pixel layout: {0}")]
     UnsupportedLayout(String),
@@ -31,9 +89,11 @@ pub enum PixelError {
         limit_bytes: u64,
         background: bool,
     },
-    /// Rendered with the source's whole cause chain: the decoder's own
-    /// reason is what the viewer shows.
-    #[error("{context}: {source:#}")]
+    /// Rendered as its context and the reason the viewer [`Stated`], if
+    /// any: this text goes into response bodies and the warning log. The
+    /// rest of the cause chain, which may be a library's text, is
+    /// [`PixelError::detail`].
+    #[error("{}", decode_text(.context, .source))]
     Decode {
         context: &'static str,
         #[source]
@@ -58,8 +118,19 @@ impl PixelError {
         }
     }
 
+    /// The whole cause chain of a decode error, for the debug log of a
+    /// session that may log what a library says of a file. `None` for the
+    /// other variants, whose text is complete.
+    pub fn detail(&self) -> Option<String> {
+        match self {
+            Self::Decode { context, source } => Some(format!("{context}: {source:#}")),
+            _ => None,
+        }
+    }
+
     /// An equivalent error for each request that shared one decode: same
-    /// variant (and so the same HTTP status), with the source as text.
+    /// variant (and so the same HTTP status), with the source as text under
+    /// the reason it stated.
     pub(crate) fn duplicate(&self) -> Self {
         match self {
             Self::NoPixelData { file_index } => Self::NoPixelData {
@@ -82,10 +153,18 @@ impl PixelError {
                 limit_bytes: *limit_bytes,
                 background: *background,
             },
-            Self::Decode { context, source } => Self::Decode {
-                context,
-                source: anyhow::anyhow!("{source:#}"),
-            },
+            Self::Decode { context, source } => {
+                let text = anyhow::anyhow!("{source:#}");
+                Self::Decode {
+                    context,
+                    // What the error says is carried over as its stated
+                    // reason, so each request that shared it says the same.
+                    source: match self.to_string().strip_prefix(&format!("{context}: ")) {
+                        Some(stated) => text.context(Stated::new(stated)),
+                        None => text,
+                    },
+                }
+            }
         }
     }
 

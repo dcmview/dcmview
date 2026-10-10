@@ -11,6 +11,7 @@ use dicom_parser::dataset::LazyDataToken;
 use dicom_parser::StatefulDecode;
 use dicom_transfer_syntax_registry::TransferSyntaxRegistry;
 
+use super::error::Stated;
 use super::header::open_header;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
@@ -305,9 +306,9 @@ fn checked_fragment_end(
 ) -> Result<usize> {
     let remaining = file_length
         .checked_sub(reader.stream_position()?)
-        .context("encapsulated fragment is truncated")?;
+        .context(Stated::new("encapsulated fragment is truncated"))?;
     if u64::try_from(length)? > remaining {
-        return Err(anyhow!("encapsulated fragment is truncated"));
+        return Err(Stated::error("encapsulated fragment is truncated"));
     }
     start
         .checked_add(length)
@@ -350,7 +351,7 @@ fn read_frame_at_offset(
         frame_data.resize(fragment_end, 0);
         reader
             .read_exact(&mut frame_data[fragment_start..])
-            .context("encapsulated fragment is truncated")?;
+            .context(Stated::new("encapsulated fragment is truncated"))?;
         item_offset = item_offset
             .checked_add(8)
             .and_then(|offset| offset.checked_add(u64::from(length)))
@@ -396,7 +397,7 @@ fn read_frame_without_offsets(
             frame_data.resize(fragment_end, 0);
             reader
                 .read_exact(&mut frame_data[fragment_start..])
-                .context("encapsulated fragment is truncated")?;
+                .context(Stated::new("encapsulated fragment is truncated"))?;
             one_fragment_per_frame || compressed_frame_ends_here(&frame_data[fragment_start..])
         } else if one_fragment_per_frame {
             reader.seek_relative(i64::try_from(length)?)?;
@@ -408,7 +409,7 @@ fn read_frame_without_offsets(
             let mut last = [0_u8; 3];
             reader
                 .read_exact(&mut last[..tail])
-                .context("encapsulated fragment is truncated")?;
+                .context(Stated::new("encapsulated fragment is truncated"))?;
             compressed_frame_ends_here(&last[..tail])
         };
         if frame_complete {

@@ -18,7 +18,7 @@ mod reader;
 mod tags;
 mod tiff;
 
-use super::error::{PixelError, PixelResult};
+use super::error::{PixelError, PixelResult, Stated};
 use super::render::{DisplayBuffer, DisplayPng};
 use crate::api::contracts::{RawFrameMetadata, WindowMode};
 use crate::types::{FileEntry, RASTER_MAX_FRAME_PIXELS};
@@ -395,29 +395,29 @@ pub fn decode_raster_frame(
     let budget = raster_read_budget(file).expect("checked frame size");
     let listed = file.raster.as_ref().map_or(0, |raster| raster.file_length);
     if length > listed {
-        return Err(PixelError::frame_decode(anyhow::anyhow!(
+        return Err(PixelError::frame_decode(Stated::error(
             "the file has changed since it was listed (it is longer now); \
-             reopen the folder to view it"
+             reopen the folder to view it",
         )));
     }
     if file.format != crate::api::contracts::FileFormat::Tiff && length > budget {
-        return Err(PixelError::frame_decode(anyhow::anyhow!(
-            "raster length exceeds read budget"
+        return Err(PixelError::frame_decode(Stated::error(
+            "raster length exceeds read budget",
         )));
     }
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut reader = reader::Reader::new(source, length, budget);
         let decoded = decode_format(file, frame, &mut reader, length, expected, budget)?;
         if decoded.bytes.len() as u64 != expected {
-            return Err(PixelError::frame_decode(anyhow::anyhow!(
-                "raster sample count differs from catalog"
+            return Err(PixelError::frame_decode(Stated::error(
+                "raster sample count differs from catalog",
             )));
         }
         Ok(decoded)
     }))
     .unwrap_or_else(|_| {
-        Err(PixelError::frame_decode(anyhow::anyhow!(
-            "raster decoder panicked"
+        Err(PixelError::frame_decode(Stated::error(
+            "raster decoder panicked",
         )))
     })
 }
@@ -559,10 +559,10 @@ fn decode_format(
 ) -> PixelResult<RasterFrame> {
     match _file.format {
         crate::api::contracts::FileFormat::Png => {
-            png::decode(_file, _reader, _length).map_err(PixelError::frame_decode)
+            png::decode(_file, _reader, _length).map_err(decoder_failure)
         }
         crate::api::contracts::FileFormat::Jpeg | crate::api::contracts::FileFormat::Webp => {
-            image::decode(_file, _reader, _length, _expected).map_err(PixelError::frame_decode)
+            image::decode(_file, _reader, _length, _expected).map_err(decoder_failure)
         }
         crate::api::contracts::FileFormat::Tiff => {
             tiff::decode(_file, _frame, _reader, _length, _expected, _budget)
@@ -571,6 +571,65 @@ fn decode_format(
             "raster codec not implemented"
         ))),
     }
+}
+
+/// A raster decoder's failure without the text of the library that reported
+/// it. A decoder's message can quote the file it refused (a PNG chunk's
+/// type and checksum, for example), so of a library's error only its kind
+/// is kept, under whatever the viewer said above it.
+fn decoder_failure(error: anyhow::Error) -> PixelError {
+    let mut own = Vec::new();
+    for layer in error.chain() {
+        if let Some(kind) = library_failure(layer) {
+            own.push(kind);
+            return PixelError::frame_decode(anyhow::anyhow!("{}", own.join(": ")));
+        }
+        own.push(layer.to_string());
+    }
+    PixelError::frame_decode(error)
+}
+
+/// What kind of failure a decoding library's error is, in the viewer's
+/// words. `None` for an error that is not one of theirs.
+#[allow(unreachable_patterns)]
+fn library_failure(error: &(dyn std::error::Error + 'static)) -> Option<String> {
+    use ::image::ImageError;
+    use ::png::DecodingError;
+    use ::tiff::TiffError;
+
+    let unread =
+        |error: &std::io::Error| format!("the file could not be read ({:?})", error.kind());
+    if let Some(error) = error.downcast_ref::<DecodingError>() {
+        return Some(match error {
+            DecodingError::IoError(error) => unread(error),
+            DecodingError::Format(_) => "the PNG decoder found the file malformed".to_string(),
+            DecodingError::LimitsExceeded => "the PNG decoder's limits were exceeded".to_string(),
+            _ => "the PNG decoder refused the file".to_string(),
+        });
+    }
+    if let Some(error) = error.downcast_ref::<ImageError>() {
+        return Some(match error {
+            ImageError::IoError(error) => unread(error),
+            ImageError::Decoding(_) => "the image decoder found the file malformed".to_string(),
+            ImageError::Limits(_) => "the image decoder's limits were exceeded".to_string(),
+            ImageError::Unsupported(_) => {
+                "the image decoder does not support what the file holds".to_string()
+            }
+            _ => "the image decoder refused the file".to_string(),
+        });
+    }
+    if let Some(error) = error.downcast_ref::<TiffError>() {
+        return Some(match error {
+            TiffError::IoError(error) => unread(error),
+            TiffError::FormatError(_) => "the TIFF decoder found the file malformed".to_string(),
+            TiffError::UnsupportedError(_) => {
+                "the TIFF decoder does not support what the file holds".to_string()
+            }
+            TiffError::LimitsExceeded => "the TIFF decoder's limits were exceeded".to_string(),
+            _ => "the TIFF decoder refused the file".to_string(),
+        });
+    }
+    error.downcast_ref::<std::io::Error>().map(unread)
 }
 
 /// Profiles describe the output channels, not merely the file's source color.

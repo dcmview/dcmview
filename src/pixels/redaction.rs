@@ -42,8 +42,13 @@ pub(super) fn clipped(
 
 /// A display PNG with the boxes painted opaque black, re-encoded with its
 /// color type and ICC profile.
-pub(super) fn redact_png(png: &Bytes, boxes: &[[u32; 4]]) -> Result<Bytes> {
-    let mut decoder = PngDecoder::new(Cursor::new(png)).context("redaction could not read PNG")?;
+///
+/// The PNG is taken, not borrowed: it is given up once its pixels are
+/// decoded, so painting boxes holds the decoded image and one encode of it,
+/// never the first PNG beside the second.
+pub(super) fn redact_png(png: Bytes, boxes: &[[u32; 4]]) -> Result<Bytes> {
+    let mut decoder =
+        PngDecoder::new(Cursor::new(&png[..])).context("redaction could not read PNG")?;
     let icc_profile = decoder.icc_profile().ok().flatten();
     let (columns, rows) = decoder.dimensions();
     let color = decoder.color_type();
@@ -51,6 +56,7 @@ pub(super) fn redact_png(png: &Bytes, boxes: &[[u32; 4]]) -> Result<Bytes> {
     decoder
         .read_image(&mut pixels)
         .context("redaction could not decode PNG")?;
+    drop(png);
 
     let pixel_size = color.bytes_per_pixel() as usize;
     let alpha_size = if color.has_alpha() {
@@ -293,11 +299,11 @@ mod tests {
     #[test]
     fn display_png_boxes_are_black_and_the_rest_is_untouched() {
         let gray = png(&[9; 12], 4, 3, ExtendedColorType::L8);
-        let redacted = redact_png(&gray, &[[0, 1, 2, 3]]).expect("redact gray");
+        let redacted = redact_png(gray.clone(), &[[0, 1, 2, 3]]).expect("redact gray");
         assert_eq!(decoded(&redacted), [9, 0, 0, 9, 9, 0, 0, 9, 9, 9, 9, 9]);
 
         let rgba = png(&[7; 16], 2, 2, ExtendedColorType::Rgba8);
-        let redacted = redact_png(&rgba, &[[1, 0, 2, 1]]).expect("redact RGBA");
+        let redacted = redact_png(rgba.clone(), &[[1, 0, 2, 1]]).expect("redact RGBA");
         assert_eq!(
             decoded(&redacted),
             [7, 7, 7, 7, 7, 7, 7, 7, 0, 0, 0, 255, 7, 7, 7, 7]
@@ -307,7 +313,7 @@ mod tests {
     #[test]
     fn boxes_reaching_past_the_image_are_clipped() {
         let gray = png(&[9; 4], 2, 2, ExtendedColorType::L8);
-        let redacted = redact_png(&gray, &[[1, 1, 50, 50]]).expect("redact gray");
+        let redacted = redact_png(gray.clone(), &[[1, 1, 50, 50]]).expect("redact gray");
         assert_eq!(decoded(&redacted), [9, 9, 9, 0]);
     }
 

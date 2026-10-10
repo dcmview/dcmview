@@ -16,9 +16,12 @@ use std::sync::Arc;
 use tokio::task;
 
 use super::color::color_samples_to_rgb8;
+use super::error::Stated;
 use super::header::open_header;
 use super::icc::select_icc_profile;
-use super::native_layout::{native_pixel_element_tag, NativeByteOrder, NativeFrameLayout};
+use super::native_layout::{
+    native_pixel_element_tag, NativeByteOrder, NativeFrameLayout, NativeLayoutError,
+};
 use super::palette::palette_indices_to_rgb8;
 use super::render::{
     render_windowed_luminance, DisplayBuffer, DisplayPng, LuminanceRenderOptions, StoredSamples,
@@ -235,7 +238,7 @@ fn read_native_frame(file: &FileEntry, frame: u32) -> Result<NativeFrameSource<'
     // supported release hosts are little-endian, matching the raw API.
     let bytes = object
         .get(native_pixel_element_tag(native_pixel_data_kind(file)))
-        .context("missing native pixel data element")?
+        .context(Stated::new("missing native pixel data element"))?
         .to_bytes()
         .context("pixel bytes unavailable")?
         .into_owned();
@@ -263,7 +266,8 @@ fn frame_span(layout: NativeFrameLayout<'_>, frame: u32) -> Result<(usize, usize
 
 /// Returns the stored bytes of `frame` of a deflated data set: the inflated
 /// stream is parsed up to the top-level pixel element's header, the frames
-/// before `frame` are inflated and discarded, and only `frame` is kept.
+/// before `frame` are inflated and discarded, and only `frame` is kept, in
+/// a buffer that grows as the frame inflates ([`read_as_it_arrives`]).
 fn read_deflated_frame_bytes(
     file: &FileEntry,
     layout: NativeFrameLayout<'_>,
@@ -310,18 +314,44 @@ fn read_deflated_frame_bytes(
                 _ => {}
             }
         }
-        available.context("missing native pixel data element")?
+        available.context(Stated::new("missing native pixel data element"))?
     };
     if end > available {
-        return Err(anyhow!(
-            "native pixel data frame {frame} extends beyond {available} source bytes"
-        ));
+        return Err(NativeLayoutError::FrameOutOfBounds { frame, available }.into());
     }
-    io::copy(&mut (&mut inflated).take(start as u64), &mut io::sink())?;
-    let mut bytes = vec![0; end - start];
-    inflated
-        .read_exact(&mut bytes)
-        .context("deflated pixel data is truncated")?;
+    let skipped = io::copy(&mut (&mut inflated).take(start as u64), &mut io::sink())?;
+    if skipped != start as u64 {
+        return Err(anyhow!("deflated pixel data is truncated"));
+    }
+    read_as_it_arrives(&mut inflated, end - start).context("deflated pixel data is truncated")
+}
+
+/// The first allocation [`read_as_it_arrives`] makes for a frame, and the
+/// least it grows by.
+const DEFLATED_FRAME_FIRST_BYTES: usize = 64 * 1024;
+
+/// Reads exactly `length` bytes of `source` into a buffer that grows with
+/// what has arrived: it starts at [`DEFLATED_FRAME_FIRST_BYTES`], doubles
+/// when it is full, and never exceeds `length`. A source that ends early is
+/// an error, and has cost no more than twice what it supplied (or the first
+/// allocation), whatever `length` is.
+///
+/// The length an element declares in a deflated data set says nothing about
+/// how much the stream inflates to, so a frame's buffer is not sized from
+/// it, nor from the entry alone, before the data is there.
+fn read_as_it_arrives(source: &mut impl Read, length: usize) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    while bytes.len() < length {
+        let step = (length - bytes.len()).min(bytes.len().max(DEFLATED_FRAME_FIRST_BYTES));
+        bytes.try_reserve_exact(step)?;
+        let read = source.by_ref().take(step as u64).read_to_end(&mut bytes)?;
+        if read != step {
+            return Err(anyhow!(
+                "the stream ended after {} of {length} bytes",
+                bytes.len()
+            ));
+        }
+    }
     Ok(bytes)
 }
 
@@ -367,9 +397,7 @@ fn read_native_frame_bytes(
                     .and_then(|length| usize::try_from(length).ok())
                     .context("native pixel data has undefined length")?;
                 if end > available {
-                    return Err(anyhow!(
-                        "native pixel data frame {frame} extends beyond {available} source bytes"
-                    ));
+                    return Err(NativeLayoutError::FrameOutOfBounds { frame, available }.into());
                 }
                 let value_start = decoder.position();
                 decoder.seek(value_start + start as u64)?;
@@ -390,7 +418,7 @@ fn read_native_frame_bytes(
             _ => {}
         }
     }
-    Err(anyhow!("missing native pixel data element"))
+    Err(Stated::error("missing native pixel data element"))
 }
 
 fn native_pixel_data_kind(file: &FileEntry) -> NativePixelDataKind {

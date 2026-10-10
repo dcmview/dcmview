@@ -12,7 +12,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::future::Future;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
 thread_local! {
     /// Bytes allocated minus bytes freed on this thread. Negative when the
@@ -27,6 +27,8 @@ thread_local! {
 struct Shared {
     held: AtomicI64,
     peak: AtomicI64,
+    /// Blocks asked for: allocations and reallocations.
+    requests: AtomicU64,
 }
 
 thread_local! {
@@ -36,6 +38,13 @@ thread_local! {
 }
 
 pub struct CountingAllocator;
+
+/// Counts one allocation or reallocation on a [`CountedRuntime`]'s thread.
+fn count_request() {
+    if let Ok(Some(shared)) = SHARED.try_with(Cell::get) {
+        shared.requests.fetch_add(1, Ordering::SeqCst);
+    }
+}
 
 fn charge(bytes: i64) {
     if let Ok(Some(shared)) = SHARED.try_with(Cell::get) {
@@ -57,6 +66,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let pointer = System.alloc(layout);
         if !pointer.is_null() {
+            count_request();
             charge(layout.size() as i64);
         }
         pointer
@@ -65,6 +75,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         let pointer = System.alloc_zeroed(layout);
         if !pointer.is_null() {
+            count_request();
             charge(layout.size() as i64);
         }
         pointer
@@ -78,6 +89,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
     unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         let grown = System.realloc(pointer, layout, new_size);
         if !grown.is_null() {
+            count_request();
             // Both blocks can exist while the contents move.
             charge(new_size as i64);
             charge(-(layout.size() as i64));
@@ -94,6 +106,13 @@ pub fn peak_during<T>(call: impl FnOnce() -> T) -> (T, u64) {
     let result = call();
     let peak = PEAK.with(Cell::get);
     (result, (peak - start).max(0) as u64)
+}
+
+/// What the calling thread has allocated less what it has freed, so far.
+/// Memory another thread allocated and this one frees lowers it: the
+/// difference across a `drop` is what the drop gave back.
+pub fn held() -> i64 {
+    HELD.with(Cell::get)
 }
 
 /// A runtime whose threads (its workers and its blocking pool) are counted
@@ -135,5 +154,18 @@ impl CountedRuntime {
         let peak = self.shared.peak.load(Ordering::SeqCst);
         SHARED.with(|slot| slot.set(outer));
         (result, (peak - start).max(0) as u64)
+    }
+
+    /// Runs `work` to completion on this runtime and returns its result
+    /// with the number of allocations and reallocations the runtime's
+    /// threads, and the calling thread while it drives them, made during
+    /// it.
+    pub fn requests_during<F: Future>(&self, work: F) -> (F::Output, u64) {
+        let outer = SHARED.with(|slot| slot.replace(Some(self.shared)));
+        let start = self.shared.requests.load(Ordering::SeqCst);
+        let result = self.runtime.block_on(work);
+        let made = self.shared.requests.load(Ordering::SeqCst) - start;
+        SHARED.with(|slot| slot.set(outer));
+        (result, made)
     }
 }

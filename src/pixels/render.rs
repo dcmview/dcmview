@@ -413,6 +413,9 @@ pub(crate) fn encode_presentation_layer_png(
     png_encoder(&mut encoded)
         .write_image(&layer, columns, rows, ExtendedColorType::Rgba8)
         .context("png encoding failed")?;
+    // The layer is cached as it is returned and billed its length, so it
+    // gives back the room the encoder's buffer grew by.
+    encoded.shrink_to_fit();
     Ok(Bytes::from(encoded))
 }
 

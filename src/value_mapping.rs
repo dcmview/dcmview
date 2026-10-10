@@ -216,7 +216,11 @@ fn instance_mappings(file: &FileEntry, rwvm: &FileEntry) -> Vec<InstanceMappings
     let object = match crate::pixels::open_header(&rwvm.path) {
         Ok(object) => object,
         Err(error) => {
-            tracing::debug!(path = %rwvm.path.display(), "RWVM instance unreadable: {error:#}");
+            tracing::debug!(
+                path = %rwvm.path.display(),
+                cause = %crate::masking::logged_cause(&error),
+                "RWVM instance unreadable"
+            );
             return Vec::new();
         }
     };

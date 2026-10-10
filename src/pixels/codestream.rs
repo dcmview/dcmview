@@ -44,6 +44,7 @@ use std::ops::Range;
 use jxl_bitstream::{Bitstream, ContainerParser, ParseEvent};
 use jxl_oxide_common::Bundle;
 
+use super::error::Stated;
 use super::syntax::{codec_for_syntax, Codec};
 
 /// Part of the message of every decode error raised because a frame's
@@ -909,13 +910,18 @@ fn embeds_profile(declared: &Declared) -> bool {
 /// [`JXL_EMBEDDED_PROFILE`] alone; every other error starts with
 /// [`CODESTREAM_MISMATCH`].
 pub(crate) fn checked(file: &FileEntry, kind: CodestreamKind, frame: &[u8]) -> Result<Declared> {
+    // The header reader's own reason may be a library's, so it stays below
+    // the stated one; `agrees` writes rule names and numbers only.
     let declared = declared(kind, frame).map_err(|error| {
-        anyhow!("{CODESTREAM_MISMATCH}: its own header cannot be read: {error:#}")
+        error.context(Stated::new(format!(
+            "{CODESTREAM_MISMATCH}: its own header cannot be read"
+        )))
     })?;
     if embeds_profile(&declared) {
-        return Err(anyhow!(JXL_EMBEDDED_PROFILE));
+        return Err(Stated::error(JXL_EMBEDDED_PROFILE));
     }
-    agrees(file, &declared).map_err(|error| anyhow!("{CODESTREAM_MISMATCH}: {error:#}"))?;
+    agrees(file, &declared)
+        .map_err(|error| Stated::error(format!("{CODESTREAM_MISMATCH}: {error:#}")))?;
     Ok(declared)
 }
 
@@ -1086,10 +1092,10 @@ pub(crate) fn inflate_frame(fragment: &[u8], expected: usize) -> Result<Vec<u8>>
         .take(limit)
         .read_to_end(&mut output)?;
     if output.len() != expected {
-        return Err(anyhow!(
+        return Err(Stated::error(format!(
             "{CODESTREAM_MISMATCH}: inflated frame holds {} bytes, expected {expected}",
             output.len()
-        ));
+        )));
     }
     Ok(output)
 }

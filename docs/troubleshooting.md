@@ -95,6 +95,25 @@ permissions and try opening that file directly:
 dcmview ./expected-file.dcm
 ```
 
+A DICOM file is skipped as `dicom_parse_failed` ("unparsable DICOM") when its
+header cannot be read within fixed limits, whatever the reason the file was
+written that way:
+
+- an element before the pixel data declares a value longer than the rest of
+  the file (a truncated or damaged file);
+- sequences nest more than 64 deep;
+- a Deflated Explicit VR Little Endian data set needs more than 64 MiB to
+  read up to its pixel data, counting the bytes it inflates and 512 bytes
+  for each element and 1,024 for each sequence item before the pixel data,
+  and for a text value that is kept what it holds in memory beyond its
+  bytes (24 bytes for each value of a multi-valued element, and whatever
+  its decoded text takes more than its bytes).
+
+Large values before the pixel data are not a reason: discovery passes over
+any value longer than 1 MiB without reading it, and the file is listed.
+Re-export a deflated file that is skipped with an uncompressed transfer
+syntax, for example `dcmconv +te in.dcm out.dcm`.
+
 If filters are in use, confirm that the field name and value match the file's
 metadata. DICOM fields and paths use case-insensitive substring matching;
 `format` matches a whole format name.
@@ -193,6 +212,13 @@ is built in a way the viewer refuses to follow:
 - a raster file that has grown since discovery listed it. The message says
   the file changed; reopen the folder (start dcmview on it again) to
   inspect the file at its new length.
+
+The response and the warning on stderr say `frame decode failed`, with a
+reason only where the viewer states one itself; they do not repeat the
+decoder's own message. To see what kind of failure the decoder reported,
+start the viewer with `RUST_LOG=dcmview=debug` and ask for the frame again:
+the cause follows the warning as a `cause:` line. A `--mask` session does
+not log it.
 
 Re-encode a copy with an ordinary tool (`tiffcp`, ImageMagick, `cwebp`); a
 file such tools cannot read is damaged.
@@ -310,7 +336,8 @@ waiting for decode capacity.
 ### Image frame returns unsupported transfer syntax
 
 Symptom: the viewer cannot display a file and the API returns
-`422 {"code": "unsupported_transfer_syntax", "error": "unsupported transfer syntax: ..."}`.
+`422 {"code": "unsupported_transfer_syntax", "error": "unsupported transfer syntax: ..."}`
+(the UID follows only when the file writes it as a UID).
 
 Likely cause: the file uses a transfer syntax that `dcmview` intentionally does
 not decode yet. JPEG-LS Lossless (`.80`) grayscale and JPEG XL Lossless (`.110`)

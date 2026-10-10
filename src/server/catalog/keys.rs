@@ -208,7 +208,10 @@ pub(super) fn show_key_state(
         Some(state.key.map(|key| shown_key(key, masker)))
     };
     summary.alias_of = state.alias_of;
-    summary.key_error = state.failure.map(FileKeyError::from);
+    summary.key_error = state
+        .failure
+        .map(FileKeyError::from)
+        .or(state.uncompared.then_some(FileKeyError::Uncompared));
 }
 
 impl FileRegistry {
