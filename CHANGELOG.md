@@ -148,6 +148,16 @@ diagnostic viewer.
 - An RT Dose or Parametric Map overlay drawn before more files were loaded
   is drawn again afterwards instead of being served from the cache, so its
   colors follow the legend of the files now loaded.
+- A JPEG XL frame that carries an embedded colour profile is now refused
+  with `500 pixel_decode_failed` and "JPEG XL frame carries an embedded
+  colour profile, which is not supported", from its image header alone. The
+  viewer takes colour from the DICOM data set and never used that profile,
+  but the decoder read it before the frame was checked, outside the memory
+  limit that every other part of a JPEG XL decode is held to. Files whose
+  JPEG XL frames embed a profile, as a lossless libjxl encode writes them
+  from a source that has one, displayed before and no longer do; encode
+  them again without the profile. The file stays listed and its frames
+  without a profile decode.
 
 ## 0.4.1 - 2026-10-09
 

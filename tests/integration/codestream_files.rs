@@ -944,6 +944,59 @@ pub const JXL_RGBA8: &str = "\
     aa46ab9465365ad540325a35b9e84ad56855a5f5b4aa31cec9aaaa63b6dd11105121052031\
 ";
 
+/// The samples of the JPEG XL frames below that were encoded from a known
+/// image: sample `channel` of the pixel at `row`, `column`.
+pub fn jxl_pattern(row: usize, column: usize, channel: usize) -> u8 {
+    ((column * 13 + row * 7 + channel * 50) % 256) as u8
+}
+
+/// 16 x 16, 8-bit gray, [`jxl_pattern`], lossless: `cjxl -d 0` (libjxl
+/// 0.11.2) of a PNG written by Pillow.
+pub const JXL_GRAY8_PATTERN: &str = "\
+    ff0a434050dc0808040100bc004b2824c64741c1142323762ac660dd18830b84a4c618ac033106233035f0ff\
+    af0034fb01447bfe1bc489ca72c00b1c\
+";
+
+/// 16 x 16, 8-bit RGB, [`jxl_pattern`], lossless: `cjxl -d 0` of a PNG
+/// written by Pillow with no colour profile.
+pub const JXL_RGB8_PATTERN: &str = "\
+    ff0a43402408040100c0014b18938e8383294646ac6d8cc12d19636c0c46899d8a31583bc6603806337500e7\
+    07fe77c1ff3ffcff83e63f90bee32ad0a3c3e99fb9bb4feeb683a36905e023ec837f7b0dfe6314f8ff001f00\
+    b8ae0f402e24f820951a7c101322bf06f4ffa3a7ffabc0817fed08fc29880fc03d7e00\
+";
+
+/// The image of [`JXL_RGB8_PATTERN`] with an embedded colour profile:
+/// `cjxl -d 0` of the same PNG written with `icc_profile` set to the sRGB
+/// profile Pillow builds (`ImageCms.createProfile("sRGB")`, 588 bytes). A
+/// lossless libjxl encode keeps the source's profile instead of describing
+/// the colour in the image header.
+pub const JXL_RGB8_WITH_PROFILE: &str = "\
+    ff0a4340086f0d0352681e80b7d7a1df2618e7904ef3b892367d6df3a566d96813b3b6c506a7cc2947d9f962\
+    d141419012de997563be3325567ba364b55a6d8d720059475b6704f88a73d7ac5871b04d0d8001ff1796567c\
+    cd60a9ebc42edbce4a1e0a058ad6a6b2d2b799eaf2db7d7fc9f8515dc8b68e6f81a3afb0b9b2a9a7a8745981\
+    b5b36581a6b2a5a5ac39f4de2be35395f436c652014efde6cf9ffc96277a1288df48fefce903e5cf1fbf2338\
+    da85061f6bdf86a0383a1c8d40491eb86e017a4b088a59205b06d80ccbf1e84c4d4de83c135c9ac13b8dc2ca\
+    cd5154d9960f0740a2ac20e50e3231214c3750a3f9b8c80108040100c0014b18938e8383294646ac6d8cc12d\
+    19636c0c46899d8a31583bc6603806337500e707fe77c1ff3ffcff83e63f90bee32ad0a3c3e99fb9bb4feeb6\
+    83a36905e023ec837f7b0dfe6314f8ff001f00b8ae0f402e24f820951a7c101322bf06f4ffa3a7ffabc0817f\
+    ed08fc29880fc03d7e00\
+";
+
+/// [`JXL_RGB8_WITH_PROFILE`] in the box container: the same encode with
+/// `--container=1`.
+pub const JXL_RGB8_WITH_PROFILE_CONTAINER: &str = "\
+    0000000c4a584c200d0a870a00000014667479706a786c20000000006a786c20000001726a786c63ff0a4340\
+    086f0d0352681e80b7d7a1df2618e7904ef3b892367d6df3a566d96813b3b6c506a7cc2947d9f962d1414190\
+    12de997563be3325567ba364b55a6d8d720059475b6704f88a73d7ac5871b04d0d8001ff1796567ccd60a9eb\
+    c42edbce4a1e0a058ad6a6b2d2b799eaf2db7d7fc9f8515dc8b68e6f81a3afb0b9b2a9a7a8745981b5b36581\
+    a6b2a5a5ac39f4de2be35395f436c652014efde6cf9ffc96277a1288df48fefce903e5cf1fbf2338da85061f\
+    6bdf86a0383a1c8d40491eb86e017a4b088a59205b06d80ccbf1e84c4d4de83c135c9ac13b8dc2cacd5154d9\
+    960f0740a2ac20e50e3231214c3750a3f9b8c80108040100c0014b18938e8383294646ac6d8cc12d19636c0c\
+    46899d8a31583bc6603806337500e707fe77c1ff3ffcff83e63f90bee32ad0a3c3e99fb9bb4feeb683a36905\
+    e023ec837f7b0dfe6314f8ff001f00b8ae0f402e24f820951a7c101322bf06f4ffa3a7ffabc0817fed08fc29\
+    880fc03d7e00\
+";
+
 /// 16 x 16, two frames of an animation.
 pub const JXL_ANIMATED: &str = "\
     ff0a43040158130810a0020000dc004b3841f53275fce0fb474141c12830eea2ffd8c91883b5638c8ec16c1e\

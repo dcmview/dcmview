@@ -642,6 +642,12 @@ is cached between requests.
 - `codestream::declared` never panics and allocates nothing sized by the
   frame. Its bounds are constants in `pixels/codestream.rs`; a change to one
   is a change to the contract and to the tests that pin it.
+- The JPEG XL image header is read by the decoder's header parser alone
+  (`jxl-image` over `jxl-bitstream`); the decoder (`jxl-oxide`) is not
+  started on a frame until `checked` has accepted it, and a frame with an
+  embedded colour profile is refused there, because the decoder reads that
+  profile outside its allocation limit. Do not initialise the decoder to
+  learn what a frame declares.
 - A decoder that sizes everything from the entry (RLE Lossless, native
   pixel data) needs no check; keep it that way rather than reading a size
   from the pixel data.

@@ -325,6 +325,23 @@ JPEG 2000 transfer syntax with your normal DICOM tooling, or file a
 compatibility issue with the transfer syntax UID and a fully de-identified or
 synthetic reproduction case. Do not attach protected DICOM data.
 
+### A JPEG XL frame is refused for its embedded colour profile
+
+Symptom: a JPEG XL frame does not display and the API answers
+`500 pixel_decode_failed` with "JPEG XL frame carries an embedded colour
+profile, which is not supported". The file's other frames, if they carry no
+profile, display.
+
+Cause: the frame's JPEG XL data holds an ICC profile of its own. `dcmview`
+takes colour from the DICOM data set (Photometric Interpretation and the ICC
+Profile attribute) and does not read a profile from inside a frame. A
+lossless encode with libjxl keeps the profile of the image it was given, so
+files converted from PNG, TIFF or JPEG sources that had one can hold it.
+
+Fix: encode the frame again without an embedded profile, from pixels that
+carry none, and describe the colour in the data set (the ICC Profile
+attribute) if it matters.
+
 ### Tags load but the image is missing
 
 Symptom: the file appears in the file list, but frame requests return 404 or

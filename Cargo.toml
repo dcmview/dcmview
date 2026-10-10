@@ -92,6 +92,11 @@ jpeg2k = { version = "0.10", default-features = false, features = ["openjp2"] }
 # decoded under its allocation limit (docs/architecture.md, "Compressed
 # Frames Are Held To The Header").
 jxl-oxide = { version = "0.12.6", default-features = false }
+# The parts of that decoder that read a JPEG XL image header and step over
+# the box container, named so that the header is read without the decoder:
+# `pixels::codestream` decides from it whether a frame is decoded at all.
+jxl-bitstream = "1.1.0"
+jxl-oxide-common = "1.0.0"
 
 # CLI
 clap = { version = "4", features = ["derive"] }
