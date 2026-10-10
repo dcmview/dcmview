@@ -1,37 +1,54 @@
+//! Annotations: the store behind the annotation endpoints, and the EMBED
+//! CSV the viewer reads with `--annotations` and writes on export.
+//!
+//! The model (what an annotation, a label, a layer and an operation are, and
+//! the rules each must meet) is the `dcmview-annotation` crate. This module
+//! holds state and applies operations to it
+//! (`docs/design/annotation-model.md` 7.3, 7.4):
+//!
+//! | Module | Holds |
+//! |---|---|
+//! | `backend` | [`AnnotationBackend`]: the three things a store does, whatever it is (memory here, a hub or a sidecar file later), and [`Snapshot`] |
+//! | `memory` | [`MemoryBackend`]: the default store. Records by id, in server memory for the session; one transaction per envelope |
+//! | `embed` | The EMBED compatibility view: ROI rows as rectangle records and back, the operations a replaced ROI list amounts to, and the CSV export |
+//! | `store` | [`AnnotationStore`]: what a session holds, the backend and the state of the `--annotations` import |
+//! | this file | The EMBED CSV reader ([`AnnotationSource`]) and the check a replaced ROI list must pass ([`canonicalize_annotations`]) |
+//!
+//! Nothing here knows the file registry: records are addressed by file key
+//! and the caller says which files exist and how large they are. Joining a
+//! request to the registry (settling a file's key, translating the keys a
+//! masked session shows) is `server::annotations`.
+//!
+//! Redaction boxes are not annotations and are not in this store
+//! (`crate::redactions`).
+
+mod backend;
+pub(crate) mod embed;
+pub(crate) mod memory;
+mod store;
+
 pub use crate::api::contracts::EmbedRoiAnnotations;
+pub use backend::{AnnotationBackend, BackendError, Snapshot};
+pub use memory::{
+    MemoryBackend, MemoryConfig, DEFAULT_LAYER_ID, DEFAULT_LAYER_NAME, DELETED_BYTES,
+    REMEMBERED_OPS, REMEMBERED_REVS,
+};
+pub use store::{session_author, AnnotationStore, EMBED_IMPORT_AUTHOR};
+
 use crate::types::FileEntry;
 use anyhow::{anyhow, bail, Context, Result};
 use csv::{ReaderBuilder, StringRecord};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::env;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, Mutex};
-use tokio::sync::Notify;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct PathKey(PathBuf);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum AnnotationLoadState {
-    Loading,
-    Ready,
-    Failed(String),
-}
-
+/// The ROI rows an EMBED CSV holds for the loaded files, by file index, as
+/// the CSV wrote them.
 pub type AnnotationIndexMap = HashMap<usize, EmbedRoiAnnotations>;
-
-#[derive(Debug, Clone)]
-pub struct AnnotationStore {
-    inner: Arc<Mutex<AnnotationStoreInner>>,
-    ready: Arc<Notify>,
-}
-
-#[derive(Debug, Clone)]
-struct AnnotationStoreInner {
-    annotations: AnnotationIndexMap,
-    user_edited: HashSet<usize>,
-    load_state: AnnotationLoadState,
-}
 
 #[derive(Debug, Clone)]
 pub struct AnnotationSource {
@@ -44,164 +61,6 @@ pub struct AnnotationSource {
 pub struct AnnotationLoadReport {
     pub matched_rows: usize,
     pub unmatched_rows: usize,
-}
-
-impl AnnotationStore {
-    pub fn new(annotations: AnnotationIndexMap) -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(AnnotationStoreInner {
-                annotations,
-                user_edited: HashSet::new(),
-                load_state: AnnotationLoadState::Ready,
-            })),
-            ready: Arc::new(Notify::new()),
-        }
-    }
-
-    pub fn empty() -> Self {
-        Self::new(HashMap::new())
-    }
-
-    pub fn loading() -> Self {
-        let store = Self::empty();
-        store
-            .inner
-            .lock()
-            .expect("annotations store lock poisoned")
-            .load_state = AnnotationLoadState::Loading;
-        store
-    }
-
-    pub async fn wait_until_ready(&self) -> Result<()> {
-        loop {
-            let notified = self.ready.notified();
-            let state = self
-                .inner
-                .lock()
-                .map_err(|_| anyhow!("annotations store lock poisoned"))?
-                .load_state
-                .clone();
-            match state {
-                AnnotationLoadState::Ready => return Ok(()),
-                AnnotationLoadState::Failed(message) => return Err(anyhow!(message)),
-                AnnotationLoadState::Loading => notified.await,
-            }
-        }
-    }
-
-    pub fn get(&self, file_index: usize) -> Result<EmbedRoiAnnotations> {
-        let annotations = self
-            .inner
-            .lock()
-            .map_err(|_| anyhow!("annotations store lock poisoned"))?;
-        Ok(annotations
-            .annotations
-            .get(&file_index)
-            .cloned()
-            .unwrap_or_else(EmbedRoiAnnotations::empty))
-    }
-
-    pub fn replace_all(&self, annotations: AnnotationIndexMap) -> Result<()> {
-        let mut store = self
-            .inner
-            .lock()
-            .map_err(|_| anyhow!("annotations store lock poisoned"))?;
-        store.annotations = annotations;
-        store.user_edited.clear();
-        store.load_state = AnnotationLoadState::Ready;
-        drop(store);
-        self.ready.notify_waiters();
-        Ok(())
-    }
-
-    pub fn commit_csv_if_unedited(&self, annotations: AnnotationIndexMap) -> Result<()> {
-        let mut store = self
-            .inner
-            .lock()
-            .map_err(|_| anyhow!("annotations store lock poisoned"))?;
-        for (file_index, annotations) in annotations {
-            if !store.user_edited.contains(&file_index) {
-                store.annotations.insert(file_index, annotations);
-            }
-        }
-        store.load_state = AnnotationLoadState::Ready;
-        drop(store);
-        self.ready.notify_waiters();
-        Ok(())
-    }
-
-    pub fn fail_loading(&self, error: impl Into<String>) -> Result<()> {
-        let mut store = self
-            .inner
-            .lock()
-            .map_err(|_| anyhow!("annotations store lock poisoned"))?;
-        store.load_state = AnnotationLoadState::Failed(error.into());
-        drop(store);
-        self.ready.notify_waiters();
-        Ok(())
-    }
-
-    pub fn insert_csv_if_unedited(
-        &self,
-        file_index: usize,
-        annotations: EmbedRoiAnnotations,
-    ) -> Result<()> {
-        let mut store = self
-            .inner
-            .lock()
-            .map_err(|_| anyhow!("annotations store lock poisoned"))?;
-        if !store.user_edited.contains(&file_index) {
-            store.annotations.insert(file_index, annotations);
-        }
-        Ok(())
-    }
-
-    pub fn replace_for_file(
-        &self,
-        file: &FileEntry,
-        annotations: EmbedRoiAnnotations,
-    ) -> Result<EmbedRoiAnnotations> {
-        let canonical =
-            canonicalize_annotations(annotations, file.rows, file.columns, file.frame_count)?;
-        let mut store = self
-            .inner
-            .lock()
-            .map_err(|_| anyhow!("annotations store lock poisoned"))?;
-        store.user_edited.insert(file.index);
-        if canonical.num_roi == 0 {
-            store.annotations.remove(&file.index);
-        } else {
-            store.annotations.insert(file.index, canonical.clone());
-        }
-        Ok(canonical)
-    }
-
-    pub fn export_embed_csv(&self, files: &[Arc<FileEntry>]) -> Result<String> {
-        let store = self
-            .inner
-            .lock()
-            .map_err(|_| anyhow!("annotations store lock poisoned"))?;
-        let mut writer = csv::Writer::from_writer(Vec::new());
-        writer.write_record(["anon_dicom_path", "num_ROI", "ROI_coords", "ROI_frames"])?;
-
-        for file in files {
-            let Some(annotations) = store.annotations.get(&file.index) else {
-                continue;
-            };
-            if annotations.num_roi == 0 {
-                continue;
-            }
-            writer.write_record([
-                file.path.to_string_lossy().into_owned(),
-                annotations.num_roi.to_string(),
-                serde_json::to_string(&annotations.roi_coords)?,
-                serde_json::to_string(&annotations.roi_frames)?,
-            ])?;
-        }
-
-        let bytes = writer.into_inner().map_err(|error| error.into_error())?;
-        String::from_utf8(bytes).context("annotations CSV export was not valid UTF-8")
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -579,11 +438,9 @@ mod tests {
     use std::sync::Arc;
 
     use super::{
-        canonicalize_annotations, load_annotations_for_files, AnnotationSource, AnnotationStore,
-        EmbedRoiAnnotations,
+        canonicalize_annotations, load_annotations_for_files, AnnotationSource, EmbedRoiAnnotations,
     };
     use crate::types::FileEntry;
-    use std::collections::HashMap;
     use std::fs;
     use std::path::{Path, PathBuf};
     use tempfile::tempdir;
@@ -950,56 +807,6 @@ mod tests {
         let error = canonicalize_annotations(annotations, 1, 1, 1).expect_err("bounds should fail");
 
         assert!(error.to_string().contains("exceeds image bounds"));
-    }
-
-    #[test]
-    fn exports_embed_csv_with_json_quoted_columns() {
-        let file = file_entry(0, PathBuf::from("/tmp/exported.dcm"), 3);
-        let store = AnnotationStore::new(HashMap::from([(
-            0,
-            EmbedRoiAnnotations {
-                num_roi: 1,
-                roi_coords: vec![[1, 2, 3, 4]],
-                roi_frames: vec![vec![1, 2]],
-            },
-        )]));
-
-        let csv = store.export_embed_csv(&[file]).expect("export csv");
-
-        assert!(csv.contains("anon_dicom_path,num_ROI,ROI_coords,ROI_frames"));
-        assert!(csv.contains("/tmp/exported.dcm,1,\"[[1,2,3,4]]\",\"[[1,2]]\""));
-    }
-
-    #[test]
-    fn csv_insert_does_not_overwrite_user_edit() {
-        let mut file = Arc::unwrap_or_clone(file_entry(0, PathBuf::from("/tmp/edited.dcm"), 3));
-        file.rows = 100;
-        file.columns = 100;
-        let store = AnnotationStore::empty();
-
-        let edited = store
-            .replace_for_file(
-                &file,
-                EmbedRoiAnnotations {
-                    num_roi: 1,
-                    roi_coords: vec![[1, 2, 3, 4]],
-                    roi_frames: vec![vec![0]],
-                },
-            )
-            .expect("edit annotations");
-
-        store
-            .insert_csv_if_unedited(
-                file.index,
-                EmbedRoiAnnotations {
-                    num_roi: 1,
-                    roi_coords: vec![[10, 20, 30, 40]],
-                    roi_frames: vec![vec![1]],
-                },
-            )
-            .expect("csv insert");
-
-        assert_eq!(store.get(file.index).expect("read annotations"), edited);
     }
 
     fn file_entry(index: usize, path: PathBuf, frame_count: u32) -> Arc<FileEntry> {

@@ -1,7 +1,7 @@
 use super::support;
 use axum_test::TestServer;
 use dcmview::annotations::{self, AnnotationStore, EmbedRoiAnnotations};
-use dcmview::server;
+use dcmview::server::{self, AppState, FileRegistry};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
@@ -15,17 +15,18 @@ async fn returns_annotations_for_matching_file_index() {
         "1.2.840.10008.1.2.4.50",
         10,
     );
-    let state = support::app_state_with_annotations(
+    let state = support::app_state_with_embed_rows(
         vec![entry],
-        AnnotationStore::new(HashMap::from([(
+        HashMap::from([(
             0,
             EmbedRoiAnnotations {
                 num_roi: 2,
                 roi_coords: vec![[11, 22, 33, 44], [55, 66, 77, 88]],
                 roi_frames: vec![vec![0, 1, 2], vec![3]],
             },
-        )])),
-    );
+        )]),
+    )
+    .await;
 
     let app = server::router(state);
     let test_server = TestServer::new(app);
@@ -83,7 +84,8 @@ async fn health_and_annotation_edits_remain_available_while_csv_is_loading() {
     entry.rows = 64;
     entry.columns = 64;
     let store = AnnotationStore::loading();
-    let state = support::app_state_with_annotations(vec![entry], store.clone());
+    let registry = FileRegistry::from_files(vec![entry]);
+    let state = AppState::new(registry.clone(), store.clone());
     let test_server = TestServer::new(server::router(state));
 
     test_server.get("/api/health").await.assert_status_ok();
@@ -97,16 +99,19 @@ async fn health_and_annotation_edits_remain_available_while_csv_is_loading() {
         .await
         .assert_status_ok();
 
-    store
-        .commit_csv_if_unedited(HashMap::from([(
+    server::annotations::import_embed_rows(
+        &registry,
+        &store,
+        HashMap::from([(
             0,
             EmbedRoiAnnotations {
                 num_roi: 1,
                 roi_coords: vec![[10, 20, 30, 40]],
                 roi_frames: vec![vec![0]],
             },
-        )]))
-        .expect("complete CSV loading");
+        )]),
+    )
+    .expect("complete CSV loading");
 
     let response = test_server.get("/api/file/0/annotations").await;
     response.assert_status_ok();
@@ -174,8 +179,7 @@ async fn serves_annotations_loaded_from_csv_for_matching_file() {
         "annotation_map is empty — CSV path did not match FileEntry path; path normalization may be broken"
     );
 
-    let state =
-        support::app_state_with_annotations(vec![entry], AnnotationStore::new(annotation_map));
+    let state = support::app_state_with_embed_rows(vec![entry], annotation_map).await;
 
     let app = server::router(state);
     let test_server = TestServer::new(app);

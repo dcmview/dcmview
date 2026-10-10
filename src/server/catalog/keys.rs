@@ -230,6 +230,14 @@ impl FileRegistry {
         self.read().keys.status(index)
     }
 
+    /// Whether another loaded file carries this file's SOP Instance UID
+    /// (`KeyTable::shares_uid`), so that a `sop:` key built from it names
+    /// more than one file. An operation under such a key has to say which
+    /// file it was drawn on.
+    pub fn shares_uid(&self, index: usize) -> bool {
+        self.read().keys.shares_uid(index)
+    }
+
     /// The file's key as this session sends it (see `shown_key`), or `None`
     /// while it has none. This is the value of `X-File-Key` and, written in
     /// full, of the entry's `file_key`.
@@ -239,6 +247,13 @@ impl FileRegistry {
             .view(index)?
             .key
             .map(|key| shown_key(key, self.masker.as_deref()))
+    }
+
+    /// A file key in the form this session sends it (see `shown_key`): the
+    /// text a client is given for a key a record holds. The inverse of
+    /// [`FileRegistry::file_for_shown_key`] for a key some file has.
+    pub fn shown_key_of(&self, key: &FileKey) -> String {
+        shown_key(KeyRef::from(key), self.masker.as_deref())
     }
 
     /// The file a key received from a client names: `key` is a key as this

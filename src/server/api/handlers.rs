@@ -3,15 +3,16 @@ use super::overlays;
 use super::state::AppState;
 use crate::api::contracts::RedactionSeriesResponse;
 use crate::api::contracts::{
-    DiscoveryResult, EmbedRoiAnnotations, FileSummary, FilesQuery, FilesResponse, FrameInfo,
-    FrameQuery, GraphicAnnotationsQuery, GraphicAnnotationsResponse, HealthResponse, PixelQuery,
-    ReferenceCatalogResponse, SemanticContextResponse, TagNode, TagQuery, ThumbnailQuery,
-    ViewerIdentity, CACHE_HEADER, CACHE_HIT, CACHE_MISS, CSV_MEDIA_TYPE,
-    DISPLAY_FRAME_HEADER_WINDOW_APPLIED, DISPLAY_FRAME_HEADER_WINDOW_CENTER,
-    DISPLAY_FRAME_HEADER_WINDOW_WIDTH, EXPORT_CONTENT_DISPOSITION_HEADER,
-    EXPORT_CONTENT_DISPOSITION_VALUE, FILE_KEY_HEADER, JPEG_MEDIA_TYPE, OCTET_STREAM_MEDIA_TYPE,
-    RAW_FRAME_HEADER_BITS_ALLOCATED, RAW_FRAME_HEADER_COLUMNS, RAW_FRAME_HEADER_DEFAULT_WC,
-    RAW_FRAME_HEADER_DEFAULT_WW, RAW_FRAME_HEADER_PADDING_HIGH, RAW_FRAME_HEADER_PADDING_LOW,
+    AnnotationOpQuery, AnnotationOpResponse, ApiErrorCode, DiscoveryResult, EmbedRoiAnnotations,
+    FileSummary, FilesQuery, FilesResponse, FrameInfo, FrameQuery, GraphicAnnotationsQuery,
+    GraphicAnnotationsResponse, HealthResponse, PixelQuery, ReferenceCatalogResponse,
+    SemanticContextResponse, TagNode, TagQuery, ThumbnailQuery, ViewerIdentity, CACHE_HEADER,
+    CACHE_HIT, CACHE_MISS, CSV_MEDIA_TYPE, DISPLAY_FRAME_HEADER_WINDOW_APPLIED,
+    DISPLAY_FRAME_HEADER_WINDOW_CENTER, DISPLAY_FRAME_HEADER_WINDOW_WIDTH,
+    EXPORT_CONTENT_DISPOSITION_HEADER, EXPORT_CONTENT_DISPOSITION_VALUE, FILE_KEY_HEADER,
+    JPEG_MEDIA_TYPE, OCTET_STREAM_MEDIA_TYPE, RAW_FRAME_HEADER_BITS_ALLOCATED,
+    RAW_FRAME_HEADER_COLUMNS, RAW_FRAME_HEADER_DEFAULT_WC, RAW_FRAME_HEADER_DEFAULT_WW,
+    RAW_FRAME_HEADER_PADDING_HIGH, RAW_FRAME_HEADER_PADDING_LOW,
     RAW_FRAME_HEADER_PHOTOMETRIC_INTERPRETATION, RAW_FRAME_HEADER_PIXEL_REPRESENTATION,
     RAW_FRAME_HEADER_RESCALE_INTERCEPT, RAW_FRAME_HEADER_RESCALE_SLOPE, RAW_FRAME_HEADER_ROWS,
     RAW_FRAME_HEADER_SAMPLES_PER_PIXEL, THUMBNAIL_CACHE_CONTROL, THUMBNAIL_HEADER_SOURCE,
@@ -19,14 +20,17 @@ use crate::api::contracts::{
 };
 use crate::pixels::{self, FrameRequest, RawFrameRequest, ThumbnailRequest};
 use crate::references::{self, ReferenceCandidate};
+use crate::server::annotations;
 use crate::server::tags;
 use crate::types::{FileEntry, WindowMode, WindowRequest};
 use crate::value_mapping::FileValueMappings;
-use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
+use axum::extract::rejection::{BytesRejection, JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
-use axum::http::{header, HeaderMap, HeaderValue};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use bytes::Bytes;
+use dcmview_annotation::{ApplyResult, EnvelopeError, OpEnvelope};
 use std::sync::Arc;
 use tokio::task;
 
@@ -377,18 +381,10 @@ pub(super) async fn annotations(
 ) -> Result<Json<EmbedRoiAnnotations>, ApiError> {
     let Path(index) = path.map_err(error::path_rejection)?;
     registered_file(&state, index, "file")?;
-
-    state
-        .annotations()
-        .wait_until_ready()
+    annotations::embed_rois(state.registry(), state.annotations(), index)
         .await
-        .map_err(|error| ApiError::internal(error.to_string()))?;
-    let annotations = state
-        .annotations()
-        .get(index)
-        .map_err(|error| ApiError::internal(error.to_string()))?;
-
-    Ok(Json(annotations))
+        .map(Json)
+        .map_err(error::annotation_error)
 }
 
 pub(super) async fn update_annotations(
@@ -397,15 +393,65 @@ pub(super) async fn update_annotations(
     payload: Result<Json<EmbedRoiAnnotations>, JsonRejection>,
 ) -> Result<Json<EmbedRoiAnnotations>, ApiError> {
     let Path(index) = path.map_err(error::path_rejection)?;
-    let Json(annotations) = payload.map_err(error::json_rejection)?;
-    let file = registered_file(&state, index, "file")?;
+    let Json(rois) = payload.map_err(error::json_rejection)?;
+    registered_file(&state, index, "file")?;
+    annotations::replace_embed_rois(state.registry(), state.annotations(), index, rois)
+        .await
+        .map(Json)
+        .map_err(error::annotation_error)
+}
 
-    let canonical = state
-        .annotations()
-        .replace_for_file(&file, annotations)
-        .map_err(|error| ApiError::bad_request(error.to_string()))?;
-
-    Ok(Json(canonical))
+/// One annotation operation (`endpoints::ANNOTATION_OPS`). The body is read
+/// as bytes, so its bound is the annotation model's
+/// (`OpEnvelope::from_json_str`) and not the JSON extractor's, and a body
+/// that is not an envelope is the same `invalid_json` whatever its
+/// `Content-Type`.
+pub(super) async fn annotation_ops(
+    State(state): State<AppState>,
+    query: Result<Query<AnnotationOpQuery>, QueryRejection>,
+    body: Result<Bytes, BytesRejection>,
+) -> Result<Response, ApiError> {
+    let Query(query) = query.map_err(error::query_rejection)?;
+    let body = body.map_err(error::body_rejection)?;
+    let envelope = std::str::from_utf8(&body)
+        .map_err(|error| EnvelopeError::Malformed(error.to_string()))
+        .and_then(OpEnvelope::from_json_str)
+        .map_err(|error| match error {
+            EnvelopeError::TooLarge { .. } => ApiError::payload_too_large(),
+            EnvelopeError::Malformed(reason) => ApiError::invalid_json(format!(
+                "the body is not an annotation operation envelope: {reason}"
+            )),
+        })?;
+    let outcome =
+        annotations::apply_op(state.registry(), state.annotations(), envelope, query.file)
+            .await
+            .map_err(error::annotation_error)?;
+    let (status, code, error) = match &outcome.result {
+        ApplyResult::Ok { .. } => (StatusCode::OK, None, None),
+        ApplyResult::Conflict { .. } => (
+            StatusCode::CONFLICT,
+            Some(ApiErrorCode::AnnotationConflict),
+            Some("the operation was based on a revision its target has left".to_string()),
+        ),
+        ApplyResult::Invalid { violations } => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Some(ApiErrorCode::AnnotationInvalid),
+            Some(format!(
+                "the operation breaks {} rule(s) of the annotation model",
+                violations.len()
+            )),
+        ),
+    };
+    Ok((
+        status,
+        Json(AnnotationOpResponse {
+            result: outcome.result,
+            revision: outcome.revision,
+            code,
+            error,
+        }),
+    )
+        .into_response())
 }
 
 pub(super) async fn redactions(
@@ -493,16 +539,9 @@ fn frame_redaction(
 pub(super) async fn export_annotations(
     State(state): State<AppState>,
 ) -> Result<Response, ApiError> {
-    state
-        .annotations()
-        .wait_until_ready()
+    let csv = annotations::export_embed_csv(state.registry(), state.annotations())
         .await
-        .map_err(|error| ApiError::internal(error.to_string()))?;
-    let files = state.registry().files_snapshot();
-    let csv = state
-        .annotations()
-        .export_embed_csv(files.as_slice())
-        .map_err(|error| ApiError::internal(error.to_string()))?;
+        .map_err(error::annotation_error)?;
     let mut response = Response::new(axum::body::Body::from(csv));
     let headers = response.headers_mut();
     headers.insert(

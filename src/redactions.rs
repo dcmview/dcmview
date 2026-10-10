@@ -2,7 +2,7 @@
 //! shown (burned-in text), kept per file in memory for the session. They are
 //! never written anywhere; the frame endpoints apply them.
 
-use crate::annotations::AnnotationStore;
+use crate::annotations::canonicalize_annotations;
 use crate::api::contracts::EmbedRoiAnnotations;
 use crate::pixels::Redaction;
 use crate::types::FileEntry;
@@ -13,18 +13,33 @@ use std::sync::{Arc, Mutex};
 /// Boxes have the shape and validation of ROI annotations: `roi_coords` are
 /// `[row0, column0, row1, column1]`, and `roi_frames` is either empty (every
 /// box covers every frame) or lists each box's zero-based frames.
+///
+/// Redaction boxes are not annotations (`docs/design/annotation-model.md`,
+/// re-baseline amendment of 2026-10-05). This store shares nothing with the
+/// annotation store but the wire shape and its validation: the boxes are
+/// kept here by file index, have no file key, record or revision of the
+/// annotation model, are changed by no operation, and appear in no snapshot
+/// or export.
 #[derive(Debug, Clone)]
 pub struct RedactionStore {
-    boxes: AnnotationStore,
-    /// The revision of each file's boxes, drawn from one counter so a
-    /// revision is never reused; display frames are cached under it.
-    revisions: Arc<Mutex<Revisions>>,
+    /// Each file's boxes with their revision, under one lock: a frame is
+    /// never rendered from one file state and cached under the revision of
+    /// another.
+    files: Arc<Mutex<Files>>,
 }
 
 #[derive(Debug, Default)]
-struct Revisions {
+struct Files {
+    /// The last revision given out. Revisions are drawn from one counter,
+    /// so one is never reused; display frames are cached under them.
     latest: u64,
-    by_file: HashMap<usize, u64>,
+    by_file: HashMap<usize, FileBoxes>,
+}
+
+#[derive(Debug)]
+struct FileBoxes {
+    revision: u64,
+    boxes: EmbedRoiAnnotations,
 }
 
 impl Default for RedactionStore {
@@ -36,63 +51,73 @@ impl Default for RedactionStore {
 impl RedactionStore {
     pub fn new() -> Self {
         Self {
-            boxes: AnnotationStore::empty(),
-            revisions: Arc::new(Mutex::new(Revisions::default())),
+            files: Arc::new(Mutex::new(Files::default())),
         }
     }
 
     pub fn get(&self, file_index: usize) -> Result<EmbedRoiAnnotations> {
-        self.boxes.get(file_index)
+        let files = self
+            .files
+            .lock()
+            .map_err(|_| anyhow!("redaction store lock poisoned"))?;
+        Ok(files
+            .by_file
+            .get(&file_index)
+            .map_or_else(EmbedRoiAnnotations::empty, |file| file.boxes.clone()))
     }
 
     /// Replaces the file's boxes after validating them against its image
-    /// size and frame count; returns them in canonical form.
+    /// size and frame count; returns them in canonical form. An invalid
+    /// replacement changes neither the boxes nor their revision.
     pub fn replace_for_file(
         &self,
         file: &FileEntry,
         boxes: EmbedRoiAnnotations,
     ) -> Result<EmbedRoiAnnotations> {
-        // The boxes and their revision change together, under the lock a
-        // reader takes for both: a frame is never rendered from one file
-        // state and cached under the revision of another. An invalid
-        // replacement changes neither.
-        let mut revisions = self
-            .revisions
+        let canonical = canonicalize_annotations(boxes, file.rows, file.columns, file.frame_count)?;
+        let mut files = self
+            .files
             .lock()
             .map_err(|_| anyhow!("redaction store lock poisoned"))?;
-        let canonical = self.boxes.replace_for_file(file, boxes)?;
-        revisions.latest += 1;
-        let revision = revisions.latest;
-        revisions.by_file.insert(file.index, revision);
+        files.latest += 1;
+        let revision = files.latest;
+        files.by_file.insert(
+            file.index,
+            FileBoxes {
+                revision,
+                boxes: canonical.clone(),
+            },
+        );
         Ok(canonical)
     }
 
     /// The boxes that apply to one frame of a file.
     pub fn for_frame(&self, file_index: usize, frame: u32) -> Result<Redaction> {
-        // One lock for the revision and the boxes it names; see
-        // `replace_for_file`.
-        let revisions = self
-            .revisions
+        let files = self
+            .files
             .lock()
             .map_err(|_| anyhow!("redaction store lock poisoned"))?;
-        let Some(revision) = revisions.by_file.get(&file_index).copied() else {
+        let Some(stored) = files.by_file.get(&file_index) else {
             return Ok(Redaction::default());
         };
-        let stored = self.boxes.get(file_index)?;
-        drop(revisions);
         let boxes = stored
+            .boxes
             .roi_coords
             .iter()
             .enumerate()
             .filter(|(index, _)| {
                 stored
+                    .boxes
                     .roi_frames
                     .get(*index)
                     .is_none_or(|frames| frames.contains(&frame))
             })
             .map(|(_, coords)| *coords)
             .collect();
-        Ok(Redaction { revision, boxes })
+        Ok(Redaction {
+            revision: stored.revision,
+            boxes,
+        })
     }
 }
 

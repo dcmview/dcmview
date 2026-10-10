@@ -21,6 +21,20 @@ diagnostic viewer.
 
 ### Added
 
+- Annotations are held as records of the annotation model, and
+  `POST /api/annotations/ops` applies one operation envelope to them:
+  create, update, delete and restore an annotation, mask tiles, labels and
+  layers, or an atomic batch, with per-record revisions, `409` for a stale
+  operation and safe retries by `op_id`. The existing annotation endpoints
+  and the EMBED-style CSV import and export read and write the same store
+  and are unchanged; existing clients need no change. A rectangle made
+  through an operation also appears in them. Saving annotations for a file
+  that cannot be read for its key now answers `422 file_key_unavailable`;
+  reading and exporting them, and `--annotations`, read no file and are
+  unchanged for such a file. An operation says which file it is for with
+  `?file=<index>`; under a key that is not that file's settled key it
+  answers `409 file_key_replaced`, and without an index under a key several
+  files carry, `409 file_key_ambiguous`.
 - Catalog entries carry stable session file keys through `file_key`,
   `alias_of` and `key_error`. `GET /api/files` accepts `since` and `limit`
   and reports `revision`, `reset`, `more`, `keys_hashing` and `rekeys`.

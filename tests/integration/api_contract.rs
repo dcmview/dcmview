@@ -2,7 +2,7 @@ use super::support;
 use axum::http::{header, HeaderValue, StatusCode};
 use axum_test::{TestResponse, TestServer};
 use bytes::Bytes;
-use dcmview::annotations::{AnnotationStore, EmbedRoiAnnotations};
+use dcmview::annotations::EmbedRoiAnnotations;
 use dcmview::api::contracts::{
     endpoints, Endpoint, ResponseHeaders, CACHE_HEADER, CACHE_HIT, CACHE_MISS,
     DISPLAY_FRAME_HEADERS, EXPORT_CONTENT_DISPOSITION_HEADER, EXPORT_CONTENT_DISPOSITION_VALUE,
@@ -36,17 +36,18 @@ async fn json_endpoints_match_frontend_contract_shapes() {
         width: 3000.0,
     });
 
-    let state = support::app_state_with_annotations(
+    let state = support::app_state_with_embed_rows(
         vec![entry],
-        AnnotationStore::new(HashMap::from([(
+        HashMap::from([(
             0,
             EmbedRoiAnnotations {
                 num_roi: 1,
                 roi_coords: vec![[1, 2, 3, 4]],
                 roi_frames: vec![vec![0]],
             },
-        )])),
-    );
+        )]),
+    )
+    .await;
 
     let test_server = TestServer::new(server::router(state));
 
