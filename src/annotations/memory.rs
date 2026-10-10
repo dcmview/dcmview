@@ -288,6 +288,7 @@ impl MemoryBackend {
                 layers: vec![LayerEntry {
                     record: layer,
                     deleted: false,
+                    live_records: 0,
                 }],
                 live_layers: 1,
                 annotations: Vec::new(),
@@ -374,6 +375,7 @@ impl MemoryBackend {
             default_layer: &self.default_layer,
             undo: Vec::new(),
             saved_annotations: HashSet::new(),
+            saved_layer_counts: HashMap::new(),
             validations: Vec::new(),
             validation_places: HashMap::new(),
             revs: Vec::new(),
@@ -564,6 +566,7 @@ struct AnnotationEntry {
 struct LayerEntry {
     record: Layer,
     deleted: bool,
+    live_records: usize,
 }
 
 #[derive(Clone)]
@@ -646,6 +649,7 @@ struct Transaction<'a> {
     default_layer: &'a LayerId,
     undo: Vec<Undo>,
     saved_annotations: HashSet<usize>,
+    saved_layer_counts: HashMap<usize, usize>,
     validations: Vec<(usize, String)>,
     validation_places: HashMap<usize, usize>,
     revs: Vec<RevEntry>,
@@ -653,6 +657,16 @@ struct Transaction<'a> {
 }
 
 impl Transaction<'_> {
+    fn count_record(&mut self, layer: usize, live: bool) {
+        let count = &mut self.state.layers[layer].live_records;
+        self.saved_layer_counts.entry(layer).or_insert(*count);
+        if live {
+            *count += 1;
+        } else {
+            *count -= 1;
+        }
+    }
+
     fn changed(&mut self, kind: RevisionKind, id: impl ToString, rev: u64) {
         let id = id.to_string();
         if let Some(&place) = self.rev_places.get(&(kind, id.clone())) {
@@ -794,6 +808,7 @@ impl Transaction<'_> {
                     .or_default()
                     .push(place);
                 self.changed(RevisionKind::Record, record.id, record.meta.rev);
+                self.count_record(self.state.layer_ids[&record.layer], true);
                 self.state.annotations.push(AnnotationEntry {
                     record,
                     deleted: false,
@@ -820,6 +835,15 @@ impl Transaction<'_> {
                     self.require_layer(layer, &format!("{path}/after/layer"))?;
                 }
                 self.save_annotation(place);
+                if let Some(layer) = &after.layer {
+                    let old_layer =
+                        self.state.layer_ids[&self.state.annotations[place].record.layer];
+                    let new_layer = self.state.layer_ids[layer];
+                    if old_layer != new_layer {
+                        self.count_record(old_layer, false);
+                        self.count_record(new_layer, true);
+                    }
+                }
                 let record = &mut self.state.annotations[place].record;
                 after.apply_to(record);
                 if self.write.checking == Checking::Strict && after.geometry.is_some() {
@@ -836,6 +860,10 @@ impl Transaction<'_> {
                     self.require_layer(&entry.record.layer, &format!("{path}/snapshot/layer"))?;
                 }
                 self.save_annotation(place);
+                self.count_record(
+                    self.state.layer_ids[&self.state.annotations[place].record.layer],
+                    restore,
+                );
                 self.state.annotations[place].deleted = !restore;
                 self.annotation_changed(place, path, false);
             }
@@ -915,6 +943,9 @@ impl Transaction<'_> {
                     self.stamp_change(&mut entry.record.meta);
                     self.changed(RevisionKind::Record, id, entry.record.meta.rev);
                     let old = std::mem::replace(&mut self.state.labels[place], entry);
+                    if old.cleared != after.is_none() {
+                        self.count_record(self.state.layer_ids[layer], after.is_some());
+                    }
                     self.undo.push(Undo::Label(place, Box::new(old)));
                 } else {
                     if self.state.label_ids.contains_key(id) {
@@ -965,6 +996,7 @@ impl Transaction<'_> {
                     };
                     self.state.label_ids.insert(*id, self.state.labels.len());
                     self.state.label_targets.insert(key, *id);
+                    self.count_record(self.state.layer_ids[layer], true);
                     self.state.labels.push(LabelEntry {
                         record,
                         cleared: false,
@@ -997,6 +1029,7 @@ impl Transaction<'_> {
                 self.state.layers.push(LayerEntry {
                     record,
                     deleted: false,
+                    live_records: 0,
                 });
                 self.state.live_layers += 1;
                 self.undo.push(Undo::CreatedLayer);
@@ -1023,18 +1056,7 @@ impl Transaction<'_> {
             }
             Op::DeleteLayer { id, base_rev, .. } => {
                 let place = self.layer_target(id, *base_rev)?;
-                if id == self.default_layer
-                    || self
-                        .state
-                        .annotations
-                        .iter()
-                        .any(|entry| !entry.deleted && &entry.record.layer == id)
-                    || self
-                        .state
-                        .labels
-                        .iter()
-                        .any(|entry| !entry.cleared && &entry.record.layer == id)
-                {
+                if id == self.default_layer || self.state.layers[place].live_records != 0 {
                     return Err(invalid(
                         ViolationCode::BadLayer,
                         &format!("{path}/id"),
@@ -1093,6 +1115,13 @@ impl Transaction<'_> {
                         self.state.live_layers -= 1;
                     }
                 }
+            }
+        }
+        // Layer undo entries can hold intermediate counts. Restore the
+        // original counts after the records; newly created layers are gone.
+        for (place, count) in self.saved_layer_counts {
+            if let Some(layer) = self.state.layers.get_mut(place) {
+                layer.live_records = count;
             }
         }
     }
