@@ -342,6 +342,11 @@ Fix: encode the frame again without an embedded profile, from pixels that
 carry none, and describe the colour in the data set (the ICC Profile
 attribute) if it matters.
 
+A JPEG XL frame whose image header is longer than 64 KiB, which takes
+dozens of named extra channels, is refused too, with "pixel data disagrees
+with the header: its own header cannot be read"; encode it without the
+extra channels.
+
 ### Tags load but the image is missing
 
 Symptom: the file appears in the file list, but frame requests return 404 or

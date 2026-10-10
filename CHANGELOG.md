@@ -133,6 +133,16 @@ diagnostic viewer.
   encoded now answers `500 pixel_decode_failed`, as one whose frames cannot
   be decoded does, instead of `500 internal_error`.
 
+- A JPEG XL frame that carries an embedded colour profile is now refused
+  with `500 pixel_decode_failed` and "JPEG XL frame carries an embedded
+  colour profile, which is not supported". The viewer takes colour from the
+  DICOM data set and never used that profile. Files whose JPEG XL frames
+  embed one, as a lossless libjxl encode writes them from a source that has
+  one, displayed before and no longer do; encode them again without the
+  profile. The file stays listed and its frames without a profile decode.
+- A JPEG XL frame whose image header does not end within the first 64 KiB
+  of its codestream is refused as unreadable.
+
 ### Fixed
 
 - Segmentation, RT Dose and Parametric Map overlays and the legend of an RT
@@ -148,16 +158,14 @@ diagnostic viewer.
 - An RT Dose or Parametric Map overlay drawn before more files were loaded
   is drawn again afterwards instead of being served from the cache, so its
   colors follow the legend of the files now loaded.
-- A JPEG XL frame that carries an embedded colour profile is now refused
-  with `500 pixel_decode_failed` and "JPEG XL frame carries an embedded
-  colour profile, which is not supported", from its image header alone. The
-  viewer takes colour from the DICOM data set and never used that profile,
-  but the decoder read it before the frame was checked, outside the memory
-  limit that every other part of a JPEG XL decode is held to. Files whose
-  JPEG XL frames embed a profile, as a lossless libjxl encode writes them
-  from a source that has one, displayed before and no longer do; encode
-  them again without the profile. The file stays listed and its frames
-  without a profile decode.
+- A JPEG XL frame is now decoded within the memory limit its header gives
+  it whatever else the frame holds. Before, two parts of a frame were read
+  outside that limit: an embedded colour profile, which was read before the
+  frame was checked, and the metadata and JPEG reconstruction boxes of a
+  frame in the box container, which were decompressed and kept. The viewer
+  used neither. A frame with an embedded profile is now refused (see
+  Changed), and a frame in the box container is decoded from its codestream
+  alone; its pixels are unchanged.
 
 ## 0.4.1 - 2026-10-09
 
