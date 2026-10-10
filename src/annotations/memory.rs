@@ -371,6 +371,9 @@ impl MemoryBackend {
             stamp: now(),
             default_layer: &self.default_layer,
             undo: Vec::new(),
+            saved_annotations: HashSet::new(),
+            validations: Vec::new(),
+            validation_places: HashMap::new(),
             revs: Vec::new(),
             rev_places: HashMap::new(),
         };
@@ -381,6 +384,7 @@ impl MemoryBackend {
                 .try_for_each(|(i, op)| transaction.apply(op, &format!("/op/ops/{i}"))),
             op => transaction.apply(op, "/op"),
         };
+        let outcome = outcome.and_then(|()| transaction.validate_annotations());
         if let Err(refusal) = outcome {
             transaction.rollback();
             return Ok(Transacted {
@@ -632,6 +636,9 @@ struct Transaction<'a> {
     stamp: Timestamp,
     default_layer: &'a LayerId,
     undo: Vec<Undo>,
+    saved_annotations: HashSet<usize>,
+    validations: Vec<(usize, String)>,
+    validation_places: HashMap<usize, usize>,
     revs: Vec<RevEntry>,
     rev_places: HashMap<(RevisionKind, String), usize>,
 }
@@ -715,11 +722,43 @@ impl Transaction<'_> {
         Ok(place)
     }
 
-    fn replace_annotation(&mut self, place: usize, mut entry: AnnotationEntry) {
-        self.stamp_change(&mut entry.record.meta);
-        self.changed(RevisionKind::Record, entry.record.id, entry.record.meta.rev);
-        let old = std::mem::replace(&mut self.state.annotations[place], entry);
-        self.undo.push(Undo::Annotation(place, Box::new(old)));
+    fn save_annotation(&mut self, place: usize) {
+        if self.saved_annotations.insert(place) {
+            self.undo.push(Undo::Annotation(
+                place,
+                Box::new(self.state.annotations[place].clone()),
+            ));
+        }
+    }
+
+    fn annotation_changed(&mut self, place: usize, path: &str, validate: bool) {
+        let record = &mut self.state.annotations[place].record;
+        record.meta.rev += 1;
+        record.meta.modified_by = self.write.author.clone();
+        record.meta.modified_at = self.stamp.clone();
+        let (id, rev) = (record.id, record.meta.rev);
+        self.changed(RevisionKind::Record, id, rev);
+        if let Some(&position) = self.validation_places.get(&place) {
+            self.validations[position].1 = path.to_string();
+        } else if validate {
+            self.validation_places.insert(place, self.validations.len());
+            self.validations.push((place, path.to_string()));
+        }
+    }
+
+    fn validate_annotations(&self) -> Result<(), ApplyResult> {
+        if self.write.checking == Checking::Strict {
+            for (place, path) in &self.validations {
+                let entry = &self.state.annotations[*place];
+                if !entry.deleted {
+                    entry
+                        .record
+                        .validate(&self.context)
+                        .map_err(|error| prefixed(error, path))?;
+                }
+            }
+        }
+        Ok(())
     }
 
     fn apply(&mut self, op: &Op, path: &str) -> Result<(), ApplyResult> {
@@ -751,6 +790,7 @@ impl Transaction<'_> {
                     deleted: false,
                     embed_slot: self.write.embed_slot,
                 });
+                self.saved_annotations.insert(place);
                 self.undo.push(Undo::CreatedAnnotation);
             }
             Op::UpdateAnnotation {
@@ -761,37 +801,34 @@ impl Transaction<'_> {
                 ..
             } => {
                 let place = self.annotation_target(id, *base_rev, false)?;
-                let mut entry = self.state.annotations[place].clone();
+                let entry = &self.state.annotations[place];
                 if &entry.record.file != file {
                     return Err(conflict(Current::Annotation {
-                        record: Box::new(entry.record),
+                        record: Box::new(entry.record.clone()),
                     }));
                 }
                 if let Some(layer) = &after.layer {
                     self.require_layer(layer, &format!("{path}/after/layer"))?;
                 }
-                after.apply_to(&mut entry.record);
-                if self.write.checking == Checking::Strict {
-                    if after.geometry.is_some() {
-                        entry.record.geometry = entry.record.geometry.quantized();
-                    }
-                    entry
-                        .record
-                        .validate(&self.context)
-                        .map_err(|error| prefixed(error, path))?;
+                self.save_annotation(place);
+                let record = &mut self.state.annotations[place].record;
+                after.apply_to(record);
+                if self.write.checking == Checking::Strict && after.geometry.is_some() {
+                    record.geometry = record.geometry.quantized();
                 }
-                self.replace_annotation(place, entry);
+                self.annotation_changed(place, path, true);
             }
             Op::DeleteAnnotation { id, base_rev, .. }
             | Op::RestoreAnnotation { id, base_rev, .. } => {
                 let restore = matches!(op, Op::RestoreAnnotation { .. });
                 let place = self.annotation_target(id, *base_rev, restore)?;
-                let mut entry = self.state.annotations[place].clone();
+                let entry = &self.state.annotations[place];
                 if restore {
                     self.require_layer(&entry.record.layer, &format!("{path}/snapshot/layer"))?;
                 }
-                entry.deleted = !restore;
-                self.replace_annotation(place, entry);
+                self.save_annotation(place);
+                self.state.annotations[place].deleted = !restore;
+                self.annotation_changed(place, path, false);
             }
             Op::MaskTiles {
                 id,
@@ -801,39 +838,37 @@ impl Transaction<'_> {
                 tiles,
             } => {
                 let place = self.annotation_target(id, *base_rev, false)?;
-                let mut entry = self.state.annotations[place].clone();
+                let entry = &self.state.annotations[place];
                 if &entry.record.file != file {
                     return Err(conflict(Current::Annotation {
-                        record: Box::new(entry.record),
+                        record: Box::new(entry.record.clone()),
                     }));
                 }
-                let Geometry::Mask(mask) = &mut entry.record.geometry else {
+                if !matches!(entry.record.geometry, Geometry::Mask(_)) {
                     return Err(invalid(
                         ViolationCode::GeometryNotAllowed,
                         &format!("{path}/id"),
                         "The annotation is not a mask.",
                     ));
-                };
-                let frame = FrameIndex(*frame);
-                let mut map = mask.frames.remove(&frame).unwrap_or_default();
-                for tile in tiles {
-                    if let Some(payload) = &tile.after {
-                        map.insert(tile.coord(), payload.clone());
-                    } else {
-                        map.remove(&tile.coord());
+                }
+                self.save_annotation(place);
+                let entry = &mut self.state.annotations[place];
+                if let Geometry::Mask(mask) = &mut entry.record.geometry {
+                    let frame = FrameIndex(*frame);
+                    let mut map = mask.frames.remove(&frame).unwrap_or_default();
+                    for tile in tiles {
+                        if let Some(payload) = &tile.after {
+                            map.insert(tile.coord(), payload.clone());
+                        } else {
+                            map.remove(&tile.coord());
+                        }
                     }
+                    if !map.is_empty() {
+                        mask.frames.insert(frame, map);
+                    }
+                    entry.record.frames = mask.frame_scope();
                 }
-                if !map.is_empty() {
-                    mask.frames.insert(frame, map);
-                }
-                entry.record.frames = mask.frame_scope();
-                if self.write.checking == Checking::Strict {
-                    entry
-                        .record
-                        .validate(&self.context)
-                        .map_err(|error| prefixed(error, path))?;
-                }
-                self.replace_annotation(place, entry);
+                self.annotation_changed(place, path, true);
             }
             Op::SetLabel {
                 id,
