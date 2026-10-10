@@ -1319,6 +1319,83 @@ fn a_jpeg_xl_frame_decodes_within_its_entry_s_allowance() {
     );
 }
 
+/// A frame in the box container is decoded from its codestream alone: the
+/// decoder is not given the boxes beside it, which it would read and
+/// decompress outside its allowance. Frames libjxl wrote with metadata
+/// boxes, compressed and not, between the parts of a split codestream
+/// decode to the samples of the bare codestream, and the process holds no
+/// more than the entry's allowance while they do, although one of them
+/// holds a description that is longer than the allowance once decompressed.
+#[test]
+fn a_boxed_jpeg_xl_frame_is_decoded_from_its_codestream_alone() {
+    let _alone = heap::alone();
+    let runtime = runtime();
+    let dir = tempdir().expect("temp dir");
+    let gray = Layout::gray8(16, 16);
+    let color = Layout::color8(16, 16, "RGB");
+    let pattern: Vec<u8> = (0..16)
+        .flat_map(|row| (0..16).map(move |column| files::jxl_pattern(row, column, 0)))
+        .collect();
+    for (name, layout, frame, expected) in [
+        ("bare", gray, files::JXL_GRAY8_PATTERN, Some(&pattern)),
+        (
+            "one codestream box",
+            gray,
+            files::JXL_GRAY8_PATTERN_CONTAINER,
+            Some(&pattern),
+        ),
+        (
+            "compressed metadata boxes",
+            gray,
+            files::JXL_GRAY8_PATTERN_COMPRESSED_BOXES,
+            Some(&pattern),
+        ),
+        (
+            "metadata boxes",
+            gray,
+            files::JXL_GRAY8_PATTERN_BOXES,
+            Some(&pattern),
+        ),
+        (
+            "a long compressed description",
+            gray,
+            files::JXL_GRAY8_PATTERN_LONG_DESCRIPTION,
+            Some(&pattern),
+        ),
+        (
+            "a recompressed JPEG file",
+            color,
+            files::JXL_RGB8_RECOMPRESSED_JPEG,
+            None,
+        ),
+    ] {
+        let path = dir.path().join(format!("boxed-{}.dcm", name.len()));
+        files::write(&path, files::JPEG_XL, layout, &[hex(frame)]);
+        let listed = runtime.block_on(files::list(&[path]));
+        let allowance = jxl_decode_limit(&listed[0]);
+        let samples = 16 * 16 * usize::from(layout.samples);
+        let server = files::serve(listed);
+        let (response, held) = heap::peak_during(|| {
+            runtime.block_on(async { server.get("/api/file/0/frame/0/raw").await })
+        });
+        assert_eq!(
+            response.status_code(),
+            StatusCode::OK,
+            "{name}: {}",
+            response.text()
+        );
+        assert_eq!(response.as_bytes().len(), samples, "{name}");
+        if let Some(expected) = expected {
+            assert_eq!(response.as_bytes().as_ref(), expected.as_slice(), "{name}");
+        }
+        report(|| format!("jxl, {name}: {held} bytes of heap, allowance {allowance}"));
+        assert!(
+            held <= allowance,
+            "{name}: {held} bytes of heap held, the allowance is {allowance}"
+        );
+    }
+}
+
 /// What the allowance guards by itself: the decoder stops when it has
 /// allocated its entry's allowance, whatever the frame goes on to ask for.
 /// The image header check is left out here on purpose, so that an honest

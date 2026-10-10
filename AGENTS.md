@@ -647,7 +647,9 @@ is cached between requests.
   started on a frame until `checked` has accepted it, and a frame with an
   embedded colour profile is refused there, because the decoder reads that
   profile outside its allocation limit. Do not initialise the decoder to
-  learn what a frame declares.
+  learn what a frame declares, and give it the codestream alone
+  (`decode_jpeg_xl`), never a frame in the box container: it decompresses
+  and keeps the container's other boxes outside the limit.
 - A decoder that sizes everything from the entry (RLE Lossless, native
   pixel data) needs no check; keep it that way rather than reading a size
   from the pixel data.

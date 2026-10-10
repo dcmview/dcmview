@@ -216,6 +216,12 @@ fn honest() -> Vec<Case> {
             Layout::color8(16, 16, "RGB"),
             hex(files::JXL_RGB8_PATTERN),
         ),
+        case(
+            "jpeg xl, a recompressed jpeg file with its reconstruction box",
+            files::JPEG_XL,
+            Layout::color8(16, 16, "RGB"),
+            hex(files::JXL_RGB8_RECOMPRESSED_JPEG),
+        ),
     ]
 }
 
@@ -450,13 +456,31 @@ async fn jpeg_xl_frames_without_a_profile_decode_exactly() {
     for (name, layout, frame, channels) in [
         ("gray", Layout::gray8(16, 16), files::JXL_GRAY8_PATTERN, 1),
         (
+            "gray in the box container",
+            Layout::gray8(16, 16),
+            files::JXL_GRAY8_PATTERN_CONTAINER,
+            1,
+        ),
+        (
+            "gray with compressed metadata boxes",
+            Layout::gray8(16, 16),
+            files::JXL_GRAY8_PATTERN_COMPRESSED_BOXES,
+            1,
+        ),
+        (
+            "gray with metadata boxes",
+            Layout::gray8(16, 16),
+            files::JXL_GRAY8_PATTERN_BOXES,
+            1,
+        ),
+        (
             "colour",
             Layout::color8(16, 16, "RGB"),
             files::JXL_RGB8_PATTERN,
             3,
         ),
     ] {
-        let path = dir.path().join(format!("{name}.dcm"));
+        let path = dir.path().join(format!("exact-{}.dcm", name.len()));
         files::write(&path, files::JPEG_XL, layout, &[hex(frame)]);
         let server = files::serve(files::list(&[path]).await);
         let raw = server.get("/api/file/0/frame/0/raw").await;

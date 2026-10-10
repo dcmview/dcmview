@@ -38,6 +38,7 @@ use anyhow::{anyhow, Result};
 use dicom_core::Tag;
 use dicom_dictionary_std::tags;
 use dicom_object::DefaultDicomObject;
+use std::borrow::Cow;
 use std::ops::Range;
 
 use jxl_bitstream::{Bitstream, ContainerParser, ParseEvent};
@@ -729,6 +730,46 @@ fn jxl_codestream_start(frame: &[u8]) -> Result<Vec<u8>> {
     Ok(start)
 }
 
+/// The whole JPEG XL codestream in `frame`, which is all the decoder is
+/// given: the frame itself when it is a bare codestream, the contents of
+/// the one box that holds it, or the contents of its `jxlp` boxes joined in
+/// order, in a buffer reserved once at the frame's length. Found with the
+/// container parser that [`declared`] reads the image header through, so
+/// the header that was checked is the header that is decoded. Every other
+/// box is stepped over by its length and never read.
+fn jxl_codestream(frame: &[u8]) -> Result<Cow<'_, [u8]>> {
+    let mut first: Option<&[u8]> = None;
+    let mut joined = Vec::new();
+    let mut parser = ContainerParser::new();
+    for event in parser.feed_bytes(frame) {
+        let ParseEvent::Codestream(part) = event.map_err(|error| anyhow!("{error}"))? else {
+            continue;
+        };
+        if part.is_empty() {
+            continue;
+        }
+        match first {
+            None => first = Some(part),
+            Some(start) => {
+                if joined.is_empty() {
+                    joined.try_reserve_exact(frame.len())?;
+                    joined.extend_from_slice(start);
+                }
+                joined.extend_from_slice(part);
+            }
+        }
+    }
+    let codestream = if joined.is_empty() {
+        Cow::Borrowed(first.unwrap_or_default())
+    } else {
+        Cow::Owned(joined)
+    };
+    if !codestream.starts_with(&[0xFF, 0x0A]) {
+        return Err(anyhow!("JPEG XL frame holds no codestream"));
+    }
+    Ok(codestream)
+}
+
 /// Whether what a frame declares is what the entry says, so that decoding
 /// it costs what the entry's image costs.
 ///
@@ -925,9 +966,13 @@ pub(crate) fn header_agrees(file: &FileEntry, object: &DefaultDicomObject) -> Re
 /// A lossless frame decodes in about five bytes a sample at 8 bits and
 /// eleven at 16, so an honest frame is far inside this; a frame whose own
 /// frame header, extra channels or reference frames ask for more than the
-/// entry's image is stopped by it. A frame with an embedded colour
-/// profile, which the decoder would read outside this limit, never reaches
-/// the decoder: [`checked`] refuses it.
+/// entry's image is stopped by it. Two things the decoder would read
+/// outside this limit never reach it: an embedded colour profile
+/// ([`checked`] refuses the frame) and the boxes of the box container
+/// ([`decode_jpeg_xl`] hands over the codestream alone). What is left
+/// outside the limit is bounded by the frame's own length: the decoder's
+/// buffer of the encoded bytes it has not yet parsed, and the one buffer a
+/// codestream split across boxes is joined in.
 pub fn jxl_decode_limit(file: &FileEntry) -> u64 {
     u64::from(file.rows)
         .saturating_mul(u64::from(file.columns))
@@ -942,8 +987,11 @@ pub fn jxl_decode_limit(file: &FileEntry) -> u64 {
 ///
 /// The decoder (`jxl-oxide`) is built with an allocation tracker limited to
 /// [`jxl_decode_limit`] (`JxlImage::builder().alloc_tracker(
-/// AllocTracker::with_limit(..))`), reads the whole frame, and renders its
-/// first keyframe (`render_frame(0)`); the samples are taken from the
+/// AllocTracker::with_limit(..))`), reads the frame's codestream and
+/// nothing else of the frame (a frame in the box container is not handed
+/// over as it is: the decoder would read its metadata and JPEG
+/// reconstruction boxes, decompressing them, outside the limit), and
+/// renders its first keyframe (`render_frame(0)`); the samples are taken from the
 /// render's stream (`stream()`, then `write_to_buffer` into a `u8` or `u16`
 /// buffer of `channels * width * height` samples), as the data set adapter
 /// did before. Errors, never panics: the decoder's own errors (running out
@@ -966,7 +1014,7 @@ pub fn decode_jpeg_xl(file: &FileEntry, frame: &[u8]) -> Result<Vec<u8>> {
         .alloc_tracker(jxl_oxide::AllocTracker::with_limit(
             usize::try_from(jxl_decode_limit(file)).unwrap_or(usize::MAX),
         ))
-        .read(frame)
+        .read(&*jxl_codestream(frame)?)
         .map_err(|error| anyhow!("{error}"))?;
     let render = image.render_frame(0).map_err(|error| anyhow!("{error}"))?;
     let mut stream = render.stream();

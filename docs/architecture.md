@@ -970,7 +970,7 @@ entry's image costs whatever its own header declares.
 | JPEG Baseline, JPEG Lossless | The frame header (`SOFn`), after at most 1,024 marker segments, each stepped over by its length; then the scans are counted to the end of the frame | Rows, columns, components; precision against Bits Allocated by process (8 in 8 for the DCT processes; for lossless 8 in 8, any other precision in 16); at most 100 scans |
 | JPEG-LS | The frame header (`SOF55`), after at most 1,024 marker segments | Rows, columns, components; precision 2 to 8 in 8 bits allocated, 9 to 16 in 16 |
 | JPEG 2000 | `SIZ`, then every coding style (`COD`, `COC`) of the main header (at most 1,024 marker segments) and of each tile-part header; a JP2 file's boxes up to its codestream box (at most 64) | Rows, columns (from the image size and offset), components, all at full resolution and one depth; precision at most Bits Allocated; at most 4,096 tiles; at most 65,536 packets for a component of a tile, or one for every 64 pixels of the tile if that is more |
-| JPEG XL | The image header, read by the decoder's header parser from at most the first 64 KiB of the codestream, without starting the decoder; in the box container, the boxes up to those bytes (at most 64) | No embedded colour profile; rows, columns, channels (colour and alpha); integer samples of at most Bits Allocated; no animation |
+| JPEG XL | The image header, read by the decoder's header parser from at most the first 64 KiB of the codestream, without starting the decoder; in the box container, the boxes up to those bytes (at most 64). | No embedded colour profile; rows, columns, channels (colour and alpha); integer samples of at most Bits Allocated; no animation |
 
 What the table does not name is not compared: the colour transform, the
 number of resolution levels, chroma subsampling, restart intervals, a
@@ -988,10 +988,17 @@ Three more rules close the same gap where there is no header to compare:
   frame is decoded by `codestream::decode_jpeg_xl` with the decoder's
   allocation tracker limited to `codestream::jxl_decode_limit` (4 MiB plus 64
   bytes for each sample of the entry's frame), and the output buffer is
-  sized from the entry. The one thing the decoder reads outside that limit
-  is an embedded colour profile, and a frame that has one is refused before
-  the decoder starts, so the limit covers everything a decode allocates
-  from the frame.
+  sized from the entry. Two things the decoder would read outside that
+  limit never reach it. An embedded colour profile: a frame that has one is
+  refused before the decoder starts. The boxes of the box container
+  (metadata, compressed or not, and JPEG reconstruction data, which the
+  decoder decompresses and keeps): the decoder is given the codestream
+  alone, the contents of the frame's `jxlc` box or of its `jxlp` boxes
+  joined in one buffer no longer than the frame, so it never sees a
+  container. A recompressed JPEG file decodes to the same pixels without
+  its reconstruction data. What remains outside the tracker is bounded by
+  the frame's own length: the decoder's buffer of encoded bytes it has not
+  parsed yet, and that one joined buffer.
 - **Deflated Image Frame.** `codestream::inflate_frame` reads the frame's
   packed size plus one byte out of the inflater and no more; a frame that
   inflates to anything else is refused.
@@ -1791,7 +1798,9 @@ installation and VS Code Electron integration can also use network/cache state;
   bound in the second, which also listens to what the decoder's crates log
   to tell that the decoder was never started on it, and decodes a frame of
   a larger image under a small entry to count what the allocation limit
-  alone holds the decoder to. Its counting allocator counts every thread,
+  alone holds the decoder to. Frames libjxl wrote in the box container,
+  with metadata boxes and with JPEG reconstruction data, decode there
+  within their entry's allowance and to the samples of the bare codestream. Its counting allocator counts every thread,
   because decoders run on blocking threads, so its tests run one at a time;
   it decodes no honest JPEG 2000 frame, for the reason given above.
 - Decode admission tests (`tests/integration/decode_admission.rs`) hold the
