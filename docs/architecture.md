@@ -1638,9 +1638,13 @@ One envelope is one transaction:
   been based on. `invalid` holds the violations, with paths from the
   envelope (`/op/ops/3/base_rev`).
 - **Idempotent by `op_id`.** An envelope whose `op_id` was applied before
-  returns the first result and changes nothing; the store remembers the
-  last 65,536 applied envelopes (`REMEMBERED_OPS`). A refused envelope is
-  not remembered: it changed nothing, and sending it again judges it again.
+  returns the first result and changes nothing. The store remembers the
+  results of the most recent applied envelopes, at most 65,536 of them
+  (`REMEMBERED_OPS`) and at most 262,144 revision entries between them
+  (`REMEMBERED_REVS`), so what it remembers is bounded in bytes and not
+  only in number. An envelope it has forgotten, like one that was refused,
+  is judged again: for one that was applied that is a refusal (its
+  `base_rev` has passed, or its id exists), never a second application.
 - **Ordered.** The envelopes of one call apply in the order given, each its
   own transaction; a refusal does not stop the ones after it. Two
   transactions never interleave and no reader sees one half applied.
@@ -1650,7 +1654,9 @@ created, whatever the payload said, and rises by one with every operation
 that changes it, delete and restore included; an operation's `base_rev` must
 equal it. The store's own revision is the number of envelopes it has
 applied: it starts at 0 and is unchanged by a refusal and by a repeated
-`op_id`, so two reads at one revision saw the same records.
+`op_id`, so two reads at one revision saw the same records. An answer
+carries the revision its own transaction left, read under the store's lock,
+so two applied envelopes never report the same one.
 
 The store writes `created_by`, `created_at`, `modified_by` and `modified_at`
 itself, with the session's author (`user:<USER>`, else `user:local`) and its
@@ -1658,7 +1664,10 @@ own clock; what a payload says, and the envelope's `actor` and `ts`, are
 advisory. A deleted record is kept with its id and revision, out of every
 snapshot, export and view, so a stale operation is a conflict and an id is
 never used twice; a restore brings back what the store kept, in its old
-place in creation order. A label that loses its value is kept the same way.
+place in creation order. A label that loses its value is kept the same way,
+and gets a value back only while its layer exists. Deleted records are kept
+whole and are not bounded apart from live ones: each entered through an
+applied envelope, and a session bounds neither.
 Snapshots and the document list records in creation order.
 
 What the store checks beyond the model's `OpEnvelope::validate` (that the
@@ -1666,15 +1675,30 @@ target exists and is at `base_rev`, that ids are new, that a layer exists
 and is empty before it goes, that the record a patch or a tile change leaves
 is still valid) is the table in the documentation of `MemoryBackend`. Every
 session starts with one layer, `default` ("Annotations"), which cannot be
-deleted. A session has no label schema yet, so the implicit one applies: one
-class, `roi`, and no label fields.
+deleted, and holds at most 4,096 layers. A layer's `readonly` is advisory:
+the store does not refuse a write into a read-only layer. A session has no
+label schema yet, so the implicit one applies: one class, `roi`, and no
+label fields.
+
+**Cost.** A transaction costs time and memory in proportion to its envelope
+plus the records it names, each counted once however many of its operations
+name it, and never in proportion to the store. A record is copied at most
+once per transaction, when it is first changed, so that a refusal can put it
+back; later operations change it in place. A record that operations updated
+is validated once, in the state the envelope leaves it, after the last
+operation, and a failure there refuses the envelope with the path of the
+last operation that changed the record. A layer knows how many records it
+holds. The store's lock is held for one transaction at a time, so another
+request waits for at most the work of one envelope, which is bounded at
+16 MiB and 10,000 operations. `tests/raster_cost/annotations.rs` counts the
+heap a batch on a large record holds.
 
 ### Keys
 
 Records hold settled file keys and nothing else
 ([File Keys And The Catalog Cursor](#file-keys-and-the-catalog-cursor)).
 `server/annotations.rs` is the one place a request meets the store, and it
-keeps three rules for every door:
+keeps four rules for every door:
 
 - **A write settles the key first.** Before anything is written for a file,
   `FileRegistry::ensure_key` settles its key, which may hash the file and
@@ -1682,16 +1706,27 @@ keeps three rules for every door:
   cannot be given a key (its bytes, or those of the first file loaded with
   its UID, cannot be read or have changed) is not written to: the request
   answers `422 file_key_unavailable` and nothing changes.
-- **A read never hashes.** A file whose key is not settled has no record,
-  because no write got through for it, so a read answers "none" at once
-  from `FileRegistry::key_status`.
+- **A read never hashes, and neither does the import.** A file whose key
+  is not settled has no record, because no write got through for it, so a
+  read answers at once from `FileRegistry::key_status` and from the rows
+  the import staged. What the EMBED endpoints show and export costs what it
+  did before records had keys, whatever the size of the files.
 - **Keys cross the wire in the session's form.** A key from a client is
   resolved with `FileRegistry::file_for_shown_key` and a key sent back is
   written with `FileRegistry::shown_key_of`. A masked session therefore
   takes and gives keys built from masked UIDs, and a real UID names
-  nothing; the records still hold real keys. A key that was replaced since
-  the client learned it names the file `file_for_shown_key` gives, and the
-  operation is applied under that file's settled key.
+  nothing; the records still hold real keys.
+- **An operation names its file by that file's settled key, or is not
+  applied.** A key the catalog shows may be provisional: files with one UID
+  and one size share it until they are compared, and
+  `file_for_shown_key` can name only the first of them. So after settling,
+  the key a client sent must be the settled key of the file it resolved
+  to. When it is not (the files that shared it differ, or it was replaced
+  since the client learned it) the request answers `409 file_key_replaced`
+  and nothing is applied; settling has by then made the catalog show each
+  compared file its own key, and the operation goes through under that. An
+  operation is therefore recorded on the file it was drawn on or on none
+  (`docs/design/annotation-model.md` 1.7).
 
 An operation that names a key no loaded file has is refused before the
 store sees it: `invalid`, `unknown_file`.
@@ -1724,17 +1759,31 @@ real binary.
   accepted or refused whole by `canonicalize_annotations`, exactly as
   before, and by nothing else. The view's records are then matched to the
   list by position and changed by one transaction: an update for each
-  position that differs, a delete for each record past the end, a create
-  for each ROI past the end. A record that does not change keeps its id and
-  revision, and saving what is shown is no transaction at all.
-- **The import holds rows as loaded.** After discovery the CSV is read all
-  or nothing as before; its rows then become records file by file, authored
-  `import:embed`, with nothing clamped, reordered or rounded: a box past
-  the image edge, with no area or with its corners out of order is held
-  and exported as written. Rows of a file that cannot be given a key are
-  dropped with a warning and the rest load. EMBED reads wait for the import;
-  writes do not, and a file the EMBED endpoint wrote to while the CSV was
-  loading keeps what was written.
+  position whose rectangle or frame scope differs, a delete for each record
+  past the end, a create for each ROI past the end. A record that does not
+  change keeps its id and revision, and saving what is shown is no
+  transaction at all. A read right after a save shows exactly the list the
+  save answered.
+- **A `PUT` replaces the file's ROIs whole.** The transaction carries the
+  view it was worked out from (`ViewCheck`: the ids and revisions it read),
+  and the store refuses it, under the same lock as the write, when the view
+  is no longer that; the save then reads the view again. Of two saves of
+  one file, the one applied last decides everything the view shows, and
+  ROIs of the other never remain beside it.
+- **The import stages rows; it does not make records.** After discovery the
+  CSV is read all or nothing as before. Its rows are then kept by file
+  index exactly as written (a box past the image edge, with no area or with
+  its corners out of order included), at the cost they had before the store
+  held records: a staged ROI is its coordinates and its frame list, within
+  256 bytes, and no file is read. A file's staged rows are what its view
+  shows and what the export writes for it, including a file that cannot be
+  given a key. They become records, authored `import:embed`, the first time
+  the file's key is settled and something reads its view or an operation
+  names it; a `PUT` replaces them instead. Staged rows are in no snapshot
+  and no document: whoever exports a document settles and stores them
+  first. EMBED reads wait for the CSV to be read; writes do not, and a file
+  the EMBED endpoint wrote to while the CSV was loading keeps what was
+  written.
 
 EMBED writes go through the store with `Checking::AsLoaded`: the store's own
 checks apply and the model's `validate` does not, because the EMBED rule
@@ -1743,7 +1792,8 @@ admits values the model's would refuse. Every other write is
 
 The export hashes nothing and writes one row per loaded file whose view
 shows a ROI, in the registry's file order, with the path as discovery
-recorded it.
+recorded it. `tests/raster_cost/annotations.rs` holds the import to its
+bytes per ROI.
 
 ### Redaction Boxes Are Not In It
 
@@ -1773,10 +1823,10 @@ The loader sends one event per inspected candidate through a bounded channel.
 The discovery task drains that channel while awaiting the loader, updates
 `FileRegistry` (files, counts, and the bounded discovery ledger), and marks the
 scan complete on every exit path, including a panic. It then streams the annotation CSV once on a cancellable
-blocking worker, matching only loaded absolute path keys, and turns the rows
-of a CSV that read whole into records file by file
-(`server::annotations::import_embed_rows`), settling each file's key first
-and without overwriting viewer edits. Annotation failures remain in
+blocking worker, matching only loaded absolute path keys, and stages the rows
+of a CSV that read whole in the annotation store
+(`server::annotations::import_embed_rows`), reading no file for it and
+without overwriting viewer edits. Annotation failures remain in
 the annotation store and do not terminate image viewing. Scan and no-files
 failures produce typed outcomes and cancel the server's shutdown token.
 Normal server exit during incomplete discovery or annotation loading requests
@@ -1999,11 +2049,17 @@ installation and VS Code Electron integration can also use network/cache state;
   `POST /api/annotations/ops` and the EMBED endpoints together: an envelope
   applied whole or not at all, revisions and stale operations, a repeated
   `op_id`, the EMBED view of records made by operations, byte-identical
-  files, files whose key is hashed for the write or cannot be had, the
-  model's size limits, and a masked session's keys.
+  files, files whose key is hashed for the write or cannot be had, CSV rows
+  shown and exported without a file being read, an operation under a key
+  that is not one file's own, the model's size limits, and a masked
+  session's keys.
   `tests/integration/annotation_store.rs` covers through `AnnotationBackend`
   what no endpoint of a session without a label schema reaches: labels,
-  layers, mask tiles, snapshots and the document.
+  layers, mask tiles, snapshots and the document, what is remembered and
+  forgotten, and what a refusal leaves behind. A unit test in
+  `server/annotations.rs` puts a second save between a save's read and its
+  write. `tests/raster_cost/annotations.rs` counts, at the allocator, what
+  a batch on a large record and an import hold.
 - Python unit tests isolate subprocess policy; `python-integration` adds the real
   binary. VS Code compile and Electron integration remain separate layers.
 - `scripts/compatibility/run.py --corpus-root` checks the real binary against

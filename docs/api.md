@@ -753,13 +753,18 @@ the annotation model (`frontend/src/generated/annotation-types.ts`,
 outward to whole pixels, and other geometries do not. A `PUT` changes only
 the records that differ from the list it sends, matched by position.
 
+A `PUT` replaces the file's ROIs whole: of two saves of one file, the one
+applied last decides everything a `GET` then shows, which is exactly the
+list that save answered.
+
 A record is stored under its file's key, so the first `PUT` for a file whose
 catalog entry shows `"file_key": null`, or shares its `sop_instance_uid` with
 another file, waits while the file is hashed. When the file cannot be given
 a key (`key_error` in its catalog entry), `PUT` answers
-`422 file_key_unavailable` and nothing is saved; `GET` then shows no ROI for
-it and the export has no row for it. With `--annotations`, the rows of such
-a file are not loaded, and a warning on stderr counts them.
+`422 file_key_unavailable` and nothing is saved. Reading never waits for a
+file to be hashed, and neither does `--annotations`: the rows of a CSV are
+shown and exported as the CSV wrote them for every matched file, including
+one that cannot be given a key.
 
 ### Annotation operations
 
@@ -789,6 +794,7 @@ made by the client. The body is read whatever its `Content-Type`.
 | `200` | `{ "result": { "status": "ok", "revs": [{ "id", "rev" }] }, "revision" }` | Applied. `revs` holds the new revision of every record and layer the envelope changed. |
 | `409` | the same with `"status": "conflict"` and `current`, plus `code: "annotation_conflict"` and `error` | The operation's `base_rev` is not its target's revision. `current` is the record or layer as it is (`kind`: `annotation`, `label`, `layer`), or `deleted` with its revision, or `missing`. |
 | `422` | the same with `"status": "invalid"` and `violations`, plus `code: "annotation_invalid"` and `error` | A rule was broken. Each violation has a stable `code`, a JSON Pointer `path` from the envelope, and a `detail` for a person. |
+| `409` | `{ "code": "file_key_replaced", "error" }` | A key the envelope names is not the settled key of one file. Nothing was applied. Read the file's key from the catalog and send the operation again. |
 | `422` | `{ "code": "file_key_unavailable", "error" }` | A file the envelope names has no key and cannot be given one. |
 | `400` | `{ "code": "invalid_json", "error" }` | The body is not an envelope. |
 | `413` | `{ "code": "payload_too_large", "error" }` | The body is longer than 16 MiB (16,777,216 bytes). |
@@ -799,13 +805,21 @@ made by the client. The body is read whatever its `Content-Type`.
   them all. With `409` and `422` nothing changed.
 - **A retry is safe.** An envelope whose `op_id` was applied before answers
   `200` with the first result and changes nothing. The viewer remembers the
-  last 65,536 applied envelopes. A refused envelope is judged again when it
-  is sent again.
+  results of the most recent applied envelopes: at most 65,536, and at most
+  262,144 revision entries between them. An envelope it no longer
+  remembers is judged again like a new one, as a refused envelope is; for
+  one that was applied that means `409` or `422` (its `base_rev` has
+  passed, or its id exists), never a second application.
+- **A batch is judged as a whole.** Each operation's own shape is checked
+  where it stands. What a batch leaves of an annotation it updated is
+  validated once, after its last operation; a failure there names the last
+  operation that changed the record.
 - **Revisions.** A record or layer starts at `rev` 1, whatever the payload
   says, and each operation that changes it adds one, delete and restore
   included. An operation's `base_rev` must be the target's `rev`. `revision`
-  in the answer is the store's own: the number of envelopes applied so far,
-  unchanged by a refusal and by a repeated `op_id`.
+  in the answer is the store's own as this request left it: the number of
+  envelopes applied so far, unchanged by a refusal and by a repeated
+  `op_id`. No two applied envelopes answer the same one.
 - **The viewer stamps records.** `created_by`, `created_at`, `modified_by`
   and `modified_at` are written by the viewer (`user:<USER>` of the
   process, its clock); the values in a payload, and `actor` and `ts`, are
@@ -818,16 +832,23 @@ made by the client. The body is read whatever its `Content-Type`.
   A label whose value is cleared (`"after": null`) keeps its id and
   revision the same way.
 - **Layers.** Every session has the layer `default` ("Annotations"), which
-  cannot be deleted. A layer is deleted only when it holds no annotation
-  and no label with a value; a `batch` can delete the records and the layer
-  together.
+  cannot be deleted, and holds at most 4,096 layers. A layer is deleted
+  only when it holds no annotation and no label with a value; a `batch` can
+  delete the records and the layer together. A layer's `readonly` is
+  advisory in this release: the viewer does not refuse a write into a
+  read-only layer.
 - **File keys.** A file is named by the key its catalog entry shows
   ([File keys](#file-keys)). The first operation for a file whose key is not
   settled waits while the file is hashed. A key no loaded file has is
-  `invalid` with `unknown_file`. A key that was replaced (`rekeys` in the
-  catalog) still names its file, and the operation is applied under the
-  file's current key. In a masked session keys are built from masked UIDs
-  in both directions.
+  `invalid` with `unknown_file`. An operation is recorded on the file it
+  names or on none: when the key sent is not the settled key of one file,
+  the answer is `409 file_key_replaced` and nothing is applied. That
+  happens for a `sop:` key that several files with one UID and one size
+  showed and that turned out to hold different bytes, and for a key that
+  was replaced since (`rekeys` in the catalog). The refusal has compared
+  the files, so the catalog then shows each its own key; send the operation
+  again under the key of the file it was drawn on. In a masked session keys
+  are built from masked UIDs in both directions.
 - **No label schema yet.** A session has one class, `roi`, which allows
   every geometry type, and no label fields, so every `set_label` is
   `invalid` with `unknown_field`.
@@ -932,7 +953,7 @@ Branch on `code`; `error` is diagnostic text and may change.
 | `403` | `masked` (content a `--mask` session withholds) |
 | `404` | `not_found`, `route_not_found`, `asset_not_found`, `no_pixel_data`, `frame_out_of_range`, `overlay_not_covering_frame` |
 | `405` | `method_not_allowed` |
-| `409` | `annotation_conflict` (an annotation operation based on an older revision; the body is an `AnnotationOpResponse`) |
+| `409` | `annotation_conflict` (an annotation operation based on an older revision; the body is an `AnnotationOpResponse`), `file_key_replaced` (an annotation operation under a key that is not one file's settled key) |
 | `413` | `invalid_json` (a JSON body over 2 MiB, about 200,000 ROIs in one annotation edit), `payload_too_large` (an annotation operation over 16 MiB) |
 | `415` | `invalid_json` (missing `Content-Type: application/json`) |
 | `422` | `invalid_json` (valid JSON of the wrong shape), `unsupported_transfer_syntax`, `unsupported_pixel_layout` (display frames for any layout the catalog marks unsupported; raw frames for invalid geometry or numeric precision), `semantic_mapping_unavailable`, `decode_memory_exceeded` (decode estimate exceeds the budget or thumbnail share; increase `--decode-memory`), `annotation_invalid` (an annotation operation that breaks a rule; the body is an `AnnotationOpResponse`), `file_key_unavailable` (an annotation write for a file that cannot be given a key) |

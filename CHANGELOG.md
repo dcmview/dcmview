@@ -29,8 +29,10 @@ diagnostic viewer.
   and the EMBED-style CSV import and export read and write the same store
   and are unchanged; existing clients need no change. A rectangle made
   through an operation also appears in them. Saving annotations for a file
-  that cannot be read for its key now answers `422 file_key_unavailable`,
-  and `--annotations` rows for such a file are skipped with a warning.
+  that cannot be read for its key now answers `422 file_key_unavailable`;
+  reading and exporting them, and `--annotations`, read no file and are
+  unchanged for such a file. An operation under a file key that is not one
+  file's settled key answers `409 file_key_replaced`.
 - Catalog entries carry stable session file keys through `file_key`,
   `alias_of` and `key_error`. `GET /api/files` accepts `since` and `limit`
   and reports `revision`, `reset`, `more`, `keys_hashing` and `rekeys`.

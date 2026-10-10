@@ -785,7 +785,21 @@ is cached between requests.
 - A record holds a settled file key. Every write awaits
   `FileRegistry::ensure_key` first, in `server/annotations.rs`; a file
   without a key is not written to (`422 file_key_unavailable`). Reads never
-  hash: a file whose key is not settled has no record.
+  hash and neither does the `--annotations` import: a file whose key is not
+  settled has no record, and its CSV rows are staged in `AnnotationStore`
+  and shown from there. Do not call `ensure_key` on a read path or for a
+  row nobody wrote to.
+- An operation is applied only under the settled key of the one file it
+  names: after settling, the key the client sent must be that file's
+  (`409 file_key_replaced` otherwise). Never apply an operation to "the
+  file a key resolves to" without that check; a provisional key is shared.
+- A transaction costs its envelope plus the records it names, each once:
+  copy a record at most once per transaction (first change), change it in
+  place after that, validate it once at the end, and keep counts instead
+  of scanning the store. `tests/raster_cost/annotations.rs` counts it.
+- The EMBED `PUT` writes with a `ViewCheck` of the view it read, so it
+  replaces a file's ROIs whole. A new write that is worked out from a read
+  carries a check the store makes under its own lock.
 - The store knows no index, path or masking. Keys from a client are
   resolved with `FileRegistry::file_for_shown_key`, and keys sent back are
   written with `FileRegistry::shown_key_of`; a new annotation response that
@@ -1095,6 +1109,11 @@ default suite.
   each; a save for a file without a key hashes it first, or answers
   `422 file_key_unavailable` when it cannot have one; a masked session's
   operations take and give keys built from masked UIDs.
+- Of two saves of one file's ROIs the one applied last decides the whole
+  view; CSV rows are shown and exported without a file being read; an
+  operation under a key that is not one file's own is refused and lands on
+  no file; a batch holds each record it changes once; remembered results
+  are bounded by number and by size.
 - The annotation model's fixture document and one envelope per operation
   round-trip unchanged; a value that breaks one rule reports that rule's
   violation code; oversized and hostile input is an error, never a panic;
