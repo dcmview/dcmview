@@ -76,13 +76,41 @@ impl ValueRange {
 }
 
 /// A cached value whose memory cost is the length of its frame body.
+///
+/// A cache bills an entry [`FrameBody::body_len`] bytes, so an entry must
+/// hold no more than that. A body built in a buffer that grew keeps the
+/// buffer's spare room, which nothing counts: whatever is to be cached is
+/// passed through [`FrameBody::compact`] first, once, before it is cloned
+/// (the pixel service does it for every decode it caches).
 pub trait FrameBody: Clone {
+    /// The bytes a cache bills this value.
     fn body_len(&self) -> usize;
+
+    /// This value with its body in an allocation of exactly
+    /// [`FrameBody::body_len`] bytes. The contents are unchanged.
+    ///
+    /// A body nothing else refers to is shrunk where it is; one that is
+    /// shared is copied, and the copy is exact.
+    fn compact(self) -> Self;
+}
+
+/// `body` in an allocation of exactly its length.
+///
+/// `Bytes::from(Vec<u8>)` keeps the vector's whole capacity for as long as
+/// any clone lives, and `Bytes` cannot say how much that is.
+fn exact_bytes(body: Bytes) -> Bytes {
+    let mut bytes = Vec::from(body);
+    bytes.shrink_to_fit();
+    Bytes::from(bytes)
 }
 
 impl FrameBody for ValueRange {
     fn body_len(&self) -> usize {
         std::mem::size_of::<Self>()
+    }
+
+    fn compact(self) -> Self {
+        self
     }
 }
 
@@ -90,17 +118,30 @@ impl FrameBody for Bytes {
     fn body_len(&self) -> usize {
         self.len()
     }
+
+    fn compact(self) -> Self {
+        exact_bytes(self)
+    }
 }
 
 impl FrameBody for DisplayPng {
     fn body_len(&self) -> usize {
         self.png.len()
     }
+
+    fn compact(mut self) -> Self {
+        self.png = exact_bytes(self.png);
+        self
+    }
 }
 
 impl FrameBody for (Bytes, RawFrameMetadata) {
     fn body_len(&self) -> usize {
         self.0.len()
+    }
+
+    fn compact(self) -> Self {
+        (exact_bytes(self.0), self.1)
     }
 }
 
@@ -268,8 +309,17 @@ impl<K: Hash + Eq, V: FrameBody> BudgetedLru<K, V> {
         self.entries.get(key).cloned()
     }
 
+    /// The bytes the entries are billed between them: the sum of their
+    /// [`FrameBody::body_len`], never more than the budget.
+    pub fn billed_bytes(&self) -> usize {
+        self.bytes
+    }
+
     /// Inserts `value`, evicting least-recently-used entries until it fits the
     /// byte budget. A value larger than the whole budget is not cached.
+    ///
+    /// The value is billed its [`FrameBody::body_len`]; the caller has
+    /// passed it through [`FrameBody::compact`], so that is what it holds.
     pub(crate) fn insert(&mut self, key: K, value: V) {
         let incoming = value.body_len();
         if incoming > self.max_bytes {

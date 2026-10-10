@@ -263,7 +263,8 @@ fn frame_span(layout: NativeFrameLayout<'_>, frame: u32) -> Result<(usize, usize
 
 /// Returns the stored bytes of `frame` of a deflated data set: the inflated
 /// stream is parsed up to the top-level pixel element's header, the frames
-/// before `frame` are inflated and discarded, and only `frame` is kept.
+/// before `frame` are inflated and discarded, and only `frame` is kept, in
+/// a buffer that grows as the frame inflates ([`read_as_it_arrives`]).
 fn read_deflated_frame_bytes(
     file: &FileEntry,
     layout: NativeFrameLayout<'_>,
@@ -317,11 +318,39 @@ fn read_deflated_frame_bytes(
             "native pixel data frame {frame} extends beyond {available} source bytes"
         ));
     }
-    io::copy(&mut (&mut inflated).take(start as u64), &mut io::sink())?;
-    let mut bytes = vec![0; end - start];
-    inflated
-        .read_exact(&mut bytes)
-        .context("deflated pixel data is truncated")?;
+    let skipped = io::copy(&mut (&mut inflated).take(start as u64), &mut io::sink())?;
+    if skipped != start as u64 {
+        return Err(anyhow!("deflated pixel data is truncated"));
+    }
+    read_as_it_arrives(&mut inflated, end - start).context("deflated pixel data is truncated")
+}
+
+/// The first allocation [`read_as_it_arrives`] makes for a frame, and the
+/// least it grows by.
+const DEFLATED_FRAME_FIRST_BYTES: usize = 64 * 1024;
+
+/// Reads exactly `length` bytes of `source` into a buffer that grows with
+/// what has arrived: it starts at [`DEFLATED_FRAME_FIRST_BYTES`], doubles
+/// when it is full, and never exceeds `length`. A source that ends early is
+/// an error, and has cost no more than twice what it supplied (or the first
+/// allocation), whatever `length` is.
+///
+/// The length an element declares in a deflated data set says nothing about
+/// how much the stream inflates to, so a frame's buffer is not sized from
+/// it, nor from the entry alone, before the data is there.
+fn read_as_it_arrives(source: &mut impl Read, length: usize) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    while bytes.len() < length {
+        let step = (length - bytes.len()).min(bytes.len().max(DEFLATED_FRAME_FIRST_BYTES));
+        bytes.try_reserve_exact(step)?;
+        let read = source.by_ref().take(step as u64).read_to_end(&mut bytes)?;
+        if read != step {
+            return Err(anyhow!(
+                "the stream ended after {} of {length} bytes",
+                bytes.len()
+            ));
+        }
+    }
     Ok(bytes)
 }
 

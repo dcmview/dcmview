@@ -18,6 +18,7 @@
 mod admission;
 mod agreement;
 mod bounds;
+mod caches;
 mod heap;
 mod layout;
 mod overlays;
