@@ -413,7 +413,9 @@ impl DecodeScheduler {
     /// so is every request that cannot be granted at once. Nothing is taken
     /// from a decode that is running: its permit and bytes come back when
     /// it ends, and a request that fits beside what is still running is
-    /// granted as before. It cannot be undone.
+    /// granted as before. It cannot be undone: an embedder that keeps the
+    /// scheduler after its viewer has shut down keeps one that never makes
+    /// a request wait again, and builds a new scheduler for a new viewer.
     ///
     /// What is left to wait for is then only the decodes that already
     /// hold a permit. Requests in [`Self::acquire`], which cannot be
@@ -856,5 +858,127 @@ mod tests {
         let before = Instant::now();
         let _background = admit(Background, 10).await.expect("granted");
         assert_eq!(Instant::now() - before, ONE_CORE_IDLE_WINDOW);
+    }
+
+    /// A request that cannot be granted registers for the scheduler's next
+    /// change before it checks the state it is waiting on, so whatever
+    /// happens between that check and its wait still reaches it: the
+    /// release of the permit it waits for, and the refusal of a viewer that
+    /// is shutting down.
+    ///
+    /// The request is polled by hand on a thread of its own, with a waker
+    /// that counts, while this thread makes the change the moment the
+    /// scheduler's own account shows the request waiting. Once the change
+    /// has been made, every request that was registered has been woken, so
+    /// a request whose last poll came back pending without a wake-up since
+    /// it began is one that missed the change, and no clock is needed to
+    /// say so. Whether a round puts the change inside that gap is up to the
+    /// two threads, hence the rounds: a request that registers only after
+    /// its check is caught within a few hundred of them.
+    #[test]
+    fn a_waiting_request_misses_nothing_between_its_check_and_its_wait() {
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+        use std::task::{Context, Wake, Waker};
+
+        const ROUNDS: usize = 20_000;
+        const NOT_YET: usize = usize::MAX;
+        const GRANTED: usize = 1;
+        const REFUSED: usize = 2;
+
+        /// What the request's thread reports of it.
+        struct Request {
+            /// Wake-ups its waker has had.
+            wakes: AtomicUsize,
+            /// `wakes` when the last poll that came back pending began.
+            pending_since: AtomicUsize,
+            /// How it ended.
+            ended: AtomicUsize,
+        }
+        struct Counting(Arc<Request>, std::thread::Thread);
+        impl Wake for Counting {
+            fn wake(self: Arc<Self>) {
+                self.0.wakes.fetch_add(1, SeqCst);
+                self.1.unpark();
+            }
+        }
+
+        // (what happens while the request waits, how the request must end)
+        let release = |held: DecodePermit, _: &DecodeScheduler| drop(held);
+        let refuse = |held: DecodePermit, scheduler: &DecodeScheduler| {
+            scheduler.refuse_waiting();
+            drop(held);
+        };
+        type Change = fn(DecodePermit, &DecodeScheduler);
+        let rows: [(&str, Change, usize); 2] = [
+            ("the permit is released", release, GRANTED),
+            ("waiting is refused", refuse, REFUSED),
+        ];
+        for (name, change, expected) in rows {
+            for round in 0..ROUNDS {
+                let scheduler = DecodeScheduler::with_limits(
+                    1,
+                    DecodeLimits {
+                        memory_bytes: 100,
+                        interactive_queue: 8,
+                        background_queue: 8,
+                    },
+                );
+                let mut first = pin!(scheduler.admit(DecodeClass::Interactive, 10));
+                let Poll::Ready(Ok(held)) =
+                    first.as_mut().poll(&mut Context::from_waker(Waker::noop()))
+                else {
+                    panic!("{name}: an idle scheduler grants at once");
+                };
+                let request = Arc::new(Request {
+                    wakes: AtomicUsize::new(0),
+                    pending_since: AtomicUsize::new(NOT_YET),
+                    ended: AtomicUsize::new(0),
+                });
+                let waiter = std::thread::spawn({
+                    let (scheduler, request) = (scheduler.clone(), request.clone());
+                    move || {
+                        let waker = Waker::from(Arc::new(Counting(
+                            request.clone(),
+                            std::thread::current(),
+                        )));
+                        let mut context = Context::from_waker(&waker);
+                        let mut waiting = pin!(scheduler.admit(DecodeClass::Interactive, 10));
+                        loop {
+                            let wakes = request.wakes.load(SeqCst);
+                            if let Poll::Ready(outcome) = waiting.as_mut().poll(&mut context) {
+                                let ended = if outcome.is_ok() { GRANTED } else { REFUSED };
+                                request.ended.store(ended, SeqCst);
+                                return;
+                            }
+                            request.pending_since.store(wakes, SeqCst);
+                            while request.wakes.load(SeqCst) == wakes {
+                                std::thread::park();
+                            }
+                        }
+                    }
+                });
+                while scheduler.load().waiting_interactive == 0 {
+                    std::hint::spin_loop();
+                }
+                change(held, &scheduler);
+                // The change is made and has woken whoever was registered.
+                let ended = loop {
+                    let ended = request.ended.load(SeqCst);
+                    if ended != 0 {
+                        break ended;
+                    }
+                    let pending_since = request.pending_since.load(SeqCst);
+                    assert!(
+                        pending_since == NOT_YET || pending_since != request.wakes.load(SeqCst),
+                        "{name}, round {round}: the request waits for a change that was \
+                         made between its check and its wait: {:?}",
+                        scheduler.load()
+                    );
+                    std::hint::spin_loop();
+                };
+                assert_eq!(ended, expected, "{name}, round {round}");
+                waiter.join().expect("the request's thread");
+            }
+        }
     }
 }

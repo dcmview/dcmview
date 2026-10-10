@@ -167,6 +167,18 @@ grayscale display frames carry a display shutter or overlay graphics; neither
 depends on the window, so `presentation-layer` drawn over a frame windowed in
 the browser gives exactly the display frame for that window.
 
+A file summary is built from the file's data set before its pixel data,
+read within fixed limits. Two of them can leave a field empty in a file
+that is listed: a value longer than 1 MiB is not read (Overlay Data
+excepted), and neither is a multi-valued text element of more than 65,536
+values. In a Deflated Explicit VR Little Endian file, a text value longer
+than 4,096 bytes that is not plain ASCII is read as its first 4,096 bytes,
+less a character they cut. A summary field read from such an element is as
+it would be if the
+element were absent; a polygonal display shutter with that many vertex
+values is not applied, as one whose vertices cannot be read is not. An
+element of an Explicit VR file other than UC cannot hold that many values.
+
 ### File keys
 
 Every file has a session-scoped identity independent of its discovery index.
@@ -222,19 +234,23 @@ of its own; so does a file of the group that could not be read when the key
 was settled. The key an entry or `X-File-Key` shows is the key as it
 stands and may not be settled yet.
 
-A `file_key: null` does not always mean a digest is on its way. When the
-first file that carries the UID cannot be read after its key was returned,
-a copy found afterwards has been read but cannot be compared: its entry
-shows `file_key: null` with no `key_error` of its own while `keys_hashing`
-is 0, and stays so for the rest of the session unless a later key request
-reads the first file. The `key_error` is on the first file's entry, which
-keeps its key.
+A `file_key: null` without a `key_error` means a digest is on its way: the
+file is queued or being hashed, or will be once a frame of it is served.
+With a `key_error` it means no key is coming until a key request succeeds.
+When the first file that carries a UID cannot be read after its key was
+returned, a file with that UID found afterwards cannot be compared with it:
+its entry shows `file_key: null` with `key_error: "uncompared"`, and stays
+so until a later key request reads the first file. The first file's own
+entry keeps its key and carries the `unreadable` or `changed` that says why.
 
-`key_error`, when present, is `unreadable` or `changed`. `changed` means the
-file is not the one discovery saw: its length or its modification time
-differs, or it changed while it was read. A file rewritten with other bytes
-of the same length is recognised by its modification time alone. A later
-explicit key request retries a failed digest.
+`key_error`, when present, is `unreadable`, `changed` or `uncompared`.
+`changed` means the file is not the one discovery saw: its length or its
+modification time differs, or it changed while it was read. A file
+rewritten with other bytes of the same length is recognised by its
+modification time alone. `uncompared` says nothing is wrong with the file
+itself: it waits for the first file of its UID, as above. A later explicit
+key request retries a failed digest, the first file's included. Clients
+should treat a `key_error` value they do not know as "no key for now".
 
 Discovery performs no reads for keys. A file needing a digest starts hashing
 in the background after its first successful display or raw frame, or when a
@@ -672,6 +688,47 @@ numeric arrays and sequences may carry `truncated` and `total`, and a value
 that fails to serialize becomes `{"type": "error", "message": "..."}` without
 failing the response.
 
+Neither endpoint reads a value it reports by its length, so their cost does
+not grow with pixel data or bulk values. Reported as `{"type": "binary", "length": N}`,
+with the length the element declares, are Pixel Data, every value of a bulk
+binary representation (OB, OW, OD, OF, OL, UN) and any other value longer
+than 1 MiB, whatever its representation; encapsulated Pixel Data reports the
+bytes of its fragments. A tree that does not reach the end of its data set
+still answers `200`, and its last node is then a leaf with `tag` `"Note"`,
+empty `vr` and `keyword`, and a string that says why:
+
+- the data set ends inside a value that is not read (a truncated file):
+  that element is the last one listed;
+- a Deflated Explicit VR Little Endian data set is read within 64 MiB, so
+  when its pixel data inflates to more than is left of that, the pixel
+  element is the last one listed;
+- sequences nest more than 64 deep: the tree ends at that sequence, and the
+  top-level element it is in also has the value
+  `{"type": "error", "message": "..."}`;
+- what follows in the file is not a data element: an element header that
+  cannot be read (a file cut inside a header, a read or inflate error), or
+  an element with the tag (0000,0000).
+
+Zero padding after a data set is not such a case: when everything from
+there to the end of the file is zero, the tree is whole and has no note
+(up to 1 MiB of padding; in a deflated data set padding is noted as
+something that is not an element). One to three stray bytes at the very end
+of a file are ignored, and so is anything in a file behind the end of its
+deflate stream, which is never read: neither gets a note. An element that can be read is listed wherever it
+stands. `/tags/select` returns one node and carries no note.
+
+In a Deflated Explicit VR Little Endian file, a text value longer than
+4,096 bytes that is not plain ASCII is shown from its first 4,096 bytes,
+less a character they cut (for a multi-valued element, each value); the preview shows 256 characters
+of a value in any case.
+(`/tags/select` for a tag before the pixel data reads only up to the pixel
+data, so it does not find an element of that tag placed behind it.)
+Both endpoints answer `500` when a value they
+would read runs past the end of the file, or when a deflated data set
+cannot be read within its budget before its pixel data (see
+[troubleshooting](troubleshooting.md#files-are-reported-as-skipped)); a
+file can be in that state when it changed after discovery listed it.
+
 `/tags/select?path=...` reads one element directly from the file, without the
 preview's depth and item caps. `path` alternates tags and zero-based item
 indices, such as `(0008,2218)/69/(0008,0100)`. For a sequence, `offset`
@@ -848,7 +905,25 @@ Branch on `code`; `error` is diagnostic text and may change.
 | `503` | `decode_busy` (decode queue full; `Retry-After: 1`) |
 
 A failed decode affects only that request; the server keeps running, and logs
-the failure (with the request) to stderr. A compressed frame whose pixel data
+the failure (with the request) to stderr. The `error` of a failed decode is
+the viewer's own wording: `frame decode failed` or `raw frame decode failed`,
+followed by a reason only where the viewer states one in fixed words and
+numbers, as it does for the cases below. It never repeats what a decoding
+library said of the file, because such a message can quote the file; the
+frame, raw frame, raw pixel, thumbnail and overlay endpoints answer the same
+for any two files that fail at the same step, apart from numbers the viewer
+computed. The endpoints that read a file's metadata (`/tags`,
+`/tags/select`, `/references`, `/semantic-context`, `/value-mapping`,
+`/graphic-annotations` and `/wsi-context`) answer `500 internal_error` with
+one fixed sentence each when the file cannot be read. The reasons the viewer states include
+"pixel data disagrees with the header", "native pixel data frame N extends
+beyond M source bytes", "encapsulated fragment is truncated" and "missing
+native pixel data element". `unsupported_transfer_syntax`
+names the UID only when it is written as a UID is. The library's account is
+written to the log at debug level (`RUST_LOG=dcmview=debug`), with the
+request, except in a `--mask` session, which logs nothing a file holds; for
+PNG, JPEG, TIFF and WebP files the log names the kind of failure and not the
+library's text. A compressed frame whose pixel data
 declares a different image than the file's header (another size, component
 count or sample depth, or a tile, packet or scan structure beyond the fixed
 limits) is such a failure: `500 pixel_decode_failed` with "pixel data

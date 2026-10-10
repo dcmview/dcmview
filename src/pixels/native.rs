@@ -16,9 +16,12 @@ use std::sync::Arc;
 use tokio::task;
 
 use super::color::color_samples_to_rgb8;
+use super::error::Stated;
 use super::header::open_header;
 use super::icc::select_icc_profile;
-use super::native_layout::{native_pixel_element_tag, NativeByteOrder, NativeFrameLayout};
+use super::native_layout::{
+    native_pixel_element_tag, NativeByteOrder, NativeFrameLayout, NativeLayoutError,
+};
 use super::palette::palette_indices_to_rgb8;
 use super::render::{
     render_windowed_luminance, DisplayBuffer, DisplayPng, LuminanceRenderOptions, StoredSamples,
@@ -235,7 +238,7 @@ fn read_native_frame(file: &FileEntry, frame: u32) -> Result<NativeFrameSource<'
     // supported release hosts are little-endian, matching the raw API.
     let bytes = object
         .get(native_pixel_element_tag(native_pixel_data_kind(file)))
-        .context("missing native pixel data element")?
+        .context(Stated::new("missing native pixel data element"))?
         .to_bytes()
         .context("pixel bytes unavailable")?
         .into_owned();
@@ -311,12 +314,10 @@ fn read_deflated_frame_bytes(
                 _ => {}
             }
         }
-        available.context("missing native pixel data element")?
+        available.context(Stated::new("missing native pixel data element"))?
     };
     if end > available {
-        return Err(anyhow!(
-            "native pixel data frame {frame} extends beyond {available} source bytes"
-        ));
+        return Err(NativeLayoutError::FrameOutOfBounds { frame, available }.into());
     }
     let skipped = io::copy(&mut (&mut inflated).take(start as u64), &mut io::sink())?;
     if skipped != start as u64 {
@@ -396,9 +397,7 @@ fn read_native_frame_bytes(
                     .and_then(|length| usize::try_from(length).ok())
                     .context("native pixel data has undefined length")?;
                 if end > available {
-                    return Err(anyhow!(
-                        "native pixel data frame {frame} extends beyond {available} source bytes"
-                    ));
+                    return Err(NativeLayoutError::FrameOutOfBounds { frame, available }.into());
                 }
                 let value_start = decoder.position();
                 decoder.seek(value_start + start as u64)?;
@@ -419,7 +418,7 @@ fn read_native_frame_bytes(
             _ => {}
         }
     }
-    Err(anyhow!("missing native pixel data element"))
+    Err(Stated::error("missing native pixel data element"))
 }
 
 fn native_pixel_data_kind(file: &FileEntry) -> NativePixelDataKind {

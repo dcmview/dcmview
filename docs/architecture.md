@@ -64,6 +64,7 @@ application module:
 | Display masking | `src/masking.rs` | `Masker`: the per-process keyed replacements of a `--mask` session (patient pseudonym, date shift, UID hash) and the tag rules, with the PS3.15 Table E.1-1 attribute list in `masking/profile.rs`, and the allowlist for raster metadata in `masking/raster.rs`. The registry holds it and masks the catalog as files register; handlers mask tag trees, semantic context and UID fields of other responses. |
 | Redaction boxes | `src/redactions.rs`, `src/pixels/redaction.rs` | `RedactionStore`: per-file boxes and their revision, in memory. The pixel service paints them into display PNGs and thumbnails (revision in the display and thumbnail cache keys), fills them in raw frame copies, and the presentation layer paints them too. |
 | WSI tile context | `src/wsi.rs` | Bounded positioning of one selected WSI tile without stitching or Total Pixel Matrix reconstruction. |
+| Data set reads | `src/data_set.rs` | `read_for_catalog` and `read_for_tags`: the only reads of a DICOM data set for the catalog and the tag endpoints, and the limits on what they read and hold whatever a file declares. See [DICOM Data Set Reads](#dicom-data-set-reads). |
 | Attribute readers | `src/dicom_values.rs` | Lenient string, number, and sequence readers shared by discovery, references, semantic context, and WSI context. |
 | File discovery | `src/loader/` | `discovery.rs` progressive events, cancellation, and reports; `entry.rs` format detection from content and DICOM `FileEntry` construction; `format.rs` the `--formats` selection and raster signatures; `raster.rs` header-only inspection of PNG, JPEG, TIFF and WebP into a `FileEntry`; `metadata.rs` geometry, LUT, overlay, and shutter extraction; `filter.rs` `--filter` predicates. |
 | Frontend client | `frontend/src/api.ts` | Typed fetch wrappers over the generated endpoint paths and wire types. |
@@ -436,6 +437,21 @@ Fields are only added, and the crate's own test pins the exact shapes.
   `{"code":"stable_machine_code","error":"human-readable detail"}`. Codes are
   owned by `ApiErrorCode` in the canonical Rust contract; messages may add
   context without changing automation behavior.
+- A decode error's message is the viewer's own wording. `PixelError::Decode`
+  renders as its context and the outermost `pixels::Stated` reason of its
+  cause chain (fixed wording and numbers the viewer computed), and as its
+  context alone when the chain states none: the rest of the chain can be a
+  decoding library's text, which can quote the file. That text is
+  `PixelError::detail`; `server/api/error.rs` keeps it off the response
+  (`ApiError::failed` does the same for the overlay endpoints' other
+  causes), and the request logger writes it at debug level, escaped, only
+  when the session is not masked. Any other log line that reports why a
+  file could not be read writes the cause through `masking::logged_cause`,
+  which leaves it out once the process has a masked session.
+  `pixels/raster.rs` `decoder_failure`
+  reduces a PNG, JPEG, TIFF or WebP library's error to its kind before it
+  enters a chain, so a raster's cause holds no library text at any level.
+  The warning logged for a server error is the response's message.
 - `/api/health` exposes the package version plus build target and profile so
   compatibility evidence can identify the tested viewer build.
 - `/api/files` exposes a response-bounded view of the 256 most recent entries
@@ -920,7 +936,15 @@ what it holds.
 request waiting for a permit is answered `503 decode_busy` at once, and so
 is any that would have to wait from then on. Decodes that hold a permit
 finish, so the drain is bounded by the work already running and not by the
-length of the queue.
+length of the queue. The refusal is permanent for that scheduler: a new
+viewer in the same process is given a new one.
+
+A waiting request registers for the scheduler's next change before it
+checks the state it waits on, so a release or a refusal that happens
+between its check and its wait still wakes it. A unit test in
+`pixels/schedule.rs` polls a request by hand against a release and a
+refusal made from another thread and tells a missed change from the
+scheduler's own account and a counting waker, without a clock.
 
 **Who waits where.** An interactive decode waits inside its own task, and a
 refusal is the result for every request that shared it. The task counts the
@@ -953,7 +977,8 @@ endpoints then answer `422 semantic_mapping_unavailable`.
 **What the budget does not cover.** It bounds what running decodes hold.
 Beside it are the frame caches (`--cache-budget`), the body of each response
 while it is sent (a raw frame is `F` bytes, held once per response when it
-is too large to cache), and tag trees.
+is too large to cache), and tag trees, which are read within the limits of
+"DICOM Data Set Reads".
 
 See [the HTTP API reference](api.md) for endpoint payloads and headers.
 
@@ -1019,6 +1044,84 @@ the bytes that are decoded.
 
 RLE Lossless and native pixel data need none of this: their decoders size
 every buffer from the entry (`pixels/rle.rs`, `pixels/native.rs`).
+
+### DICOM Data Set Reads
+
+Every element of a DICOM data set declares its own length, a deflated data
+set inflates to a size nothing declares, and sequences nest as deep as the
+file says. `src/data_set.rs` is the only code that reads a data set for the
+catalog (`read_for_catalog`, called by `loader/entry.rs`) and for the tag
+endpoints, and its doc comment is the contract for what those reads may
+cost. The limits are fixed
+numbers or the file's real length, never a length the file declares:
+
+| Limit | Value | What it bounds |
+|---|---|---|
+| A value is read only when it fits | the bytes the file has left | No value is allocated at a length the file does not hold. Checked for every element of the file meta group before the group is parsed, too. |
+| `DATA_SET_VALUE_MAX_BYTES` | 1 MiB | No longer value is read. The one exception is Overlay Data (60xx,3000), which the catalog entry keeps. |
+| `DATA_SET_INFLATED_BUDGET_BYTES` | 64 MiB | What one read of a Deflated Explicit VR Little Endian data set may spend: every byte it inflates, kept or discarded, `DATA_SET_INFLATED_ELEMENT_CHARGE_BYTES` (512) for each element it builds and twice that for each item, and, for text and lists of tags, what the built value holds beyond its bytes. Those values are built by the module itself from their bytes: the list of a multi-valued string is sized and checked against what is left before it is filled, each string is charged its reserved bytes once shrunk, and a decoder is handed at most `DATA_SET_INFLATED_TEXT_PIECE_BYTES` (4,096) at a time. Text longer than a piece that does not decode to the bytes it is, is kept as its first piece. |
+| `DATA_SET_CATALOG_MAX_VALUES` | 65,536 | The most values a multi-valued string may have for the catalog read to keep it, counted in its bytes before it is split; a longer list is passed over and the entry is built as if the element were absent. An element with a 16-bit length, which is every such element of an Explicit VR file, cannot hold that many. The tag read has no such limit. |
+| `DATA_SET_MAX_DEPTH` | 64 | How deep sequences nest. |
+
+A value that is not read is passed over by seeking, so it costs neither
+memory nor a read of its bytes; a deflated data set cannot be seeked, and
+its skipped values are inflated and discarded. The read goes through the
+parser's lazy tokens (`dicom-parser` `LazyDataSetReader`), which hand over
+each header before its value, and builds the same object `dicom-object`
+would for what it keeps.
+
+The catalog read keeps the data set before Float Pixel Data (7FE0,0008),
+the earliest standard pixel element, and ends at the header of the data
+set's own top-level pixel element, so it reads no pixel value and nothing
+behind one. Pixel elements nested in sequences, such as an Icon Image
+Sequence, do not count, and their fragments are passed over. A file that
+breaks a limit before its pixel element is not listed: discovery skips it as
+`dicom_parse_failed`, as it does a file that does not parse.
+
+The tag endpoints read through the same module (`read_for_tags`, called by
+`server/tags.rs`) under the same limits, with two differences. The read
+walks the whole data set (a selection before the pixel data stops there),
+and it reads no value the tree shows by its length: Pixel Data, every bulk
+binary value representation (`shown_by_length`) and any value over
+`DATA_SET_VALUE_MAX_BYTES`. Each of those is listed, empty, at its declared
+length; encapsulated Pixel Data is listed at the length of its fragments,
+which are stepped over one item header at a time. So the cost of `/tags`
+and `/tags/select` does not grow with pixel data or bulk values, whichever
+element is selected, and they take no decode permit. A value the read
+would keep that runs past the end of the file fails the read. The tree
+ends early, without failing, in these cases, and then ends with a `Note`
+leaf that says which (`TagDataSet::cut`, added by `server/tags.rs` behind
+the masked nodes):
+
+- a data set that ends, or runs out of inflated budget, inside a value that
+  is being passed over ends there: that element is listed and nothing after
+  it is. The tree of a deflated data set whose pixel data inflates past the
+  budget therefore ends with its pixel element;
+- sequences nested past the limit end the tree at the sequence that is too
+  deep, which is listed without items; the top-level element it is in
+  also shows an error value that says so (`TagDataSet::too_deep`);
+- top-level bytes that are not an element end the tree: a header that
+  cannot be read (which is also how a file cut inside a header looks, and
+  an inflate or read error at a header), or the tag (0000,0000), which no
+  data set holds.
+
+One end is not partial and has no note: nothing but zeros from such a place
+to the end of the file (up to 1 MiB of them, in a file read by seeking) is
+padding after a whole data set. Fewer than four stray bytes at the end of a
+file are taken as its end by the parser and are not noted either. A
+well-formed element is listed wherever it stands, a lower tag behind the
+pixel data included.
+
+What a read holds is bounded by what the file supplies: the values it kept,
+each backed by its bytes in the file, and the in-memory elements and values
+built from the bytes it read. That is not a fixed budget. Only a read of a
+deflated data set has one: what it holds of the data set was charged when
+it was built, and never comes to more than the budget and
+`DATA_SET_INFLATED_OVERSHOOT_BYTES` (the bytes of the one value being
+built, at most 1 MiB, and what a decoder holds for one piece of text). The
+file meta group is outside that budget in every file: it is not deflated,
+and what a read holds of it is bounded by the bytes the file supplies for
+it.
 
 ### Raster Image Files
 
@@ -1472,7 +1575,12 @@ it out. `FileRegistry::stop_key_work` ends hashing at shutdown.
   `sop_instance_uid` (an ordinary DICOM file adds no bytes to the catalog),
   `null` while the file has no key, and the key otherwise. `alias_of` names
   the first file that holds the same key. `key_error` is `unreadable` or
-  `changed`. What an entry shows is the key as it stands, settled or not.
+  `changed` for the file's own digest, or `uncompared` for a file that
+  waits to be compared with the first file of its UID while that file has
+  one of the other two (`KeyView::uncompared`, `KeyTable` rule 4): an entry
+  with `file_key: null` and no `key_error` is always one whose digest is
+  still to come. What an entry shows is the key as it stands, settled or
+  not.
 - Display and raw frame responses carry `X-File-Key` whenever the file has a
   key, so a viewer showing a file whose key was pending learns it from the
   next frame.
@@ -1824,13 +1932,24 @@ installation and VS Code Electron integration can also use network/cache state;
   the budget answers 422, and one nobody waits for leaves the queue. On Unix a decode is held
   in place by a pipe put where its file was, to show that a request dropped
   after its decode began stays counted until the decode ends.
-- Discovery builds each file's catalog metadata in one parse (`loader/entry.rs`
-  `read_discovery_header`): it builds the metadata object from the parser's
-  tokens up to the earliest standard pixel-data tag, exactly as
-  `OpenFileOptions::read_until(FLOAT_PIXEL_DATA)` would, then continues the
-  same parse to the data set's own top-level pixel element (deflated data sets
-  through their inflating adapter). Pixel elements nested in sequences, such
-  as an Icon Image Sequence, do not count. It does not retain integer, float,
+- Data set cost tests (`tests/raster_cost/data_sets.rs`) call
+  `read_for_catalog` on files written element by element
+  (`data_set_files.rs`): values declared past the end of the file, bulk
+  values the catalog has no use for, sequences nested to and past the limit,
+  and deflated data sets that inflate, in bytes or in elements, past their
+  budget. They count the bytes read at the source and the heap at the
+  allocator, then run the real loader over the same files to show that it
+  lists and refuses them as the read does. `data_set_tags.rs` does the same
+  for `read_for_tags` (pixel data, bulk values and long text in files of
+  megabytes) and asks `/tags` and `/tags/select` through the router on a
+  counted runtime, for each element shown by its length.
+- Discovery builds each file's catalog metadata in one bounded read
+  (`loader/entry.rs` `read_discovery_header`, "DICOM Data Set Reads"): the
+  metadata object holds what
+  `OpenFileOptions::read_until(FLOAT_PIXEL_DATA)` would build, less the
+  values the limits leave out, and the same read goes on to the header of
+  the data set's own top-level pixel element (deflated data sets through
+  their inflating adapter). It does not retain integer, float,
   or double-float pixel values in the catalog. Selected candidate FRACTIONAL
   SEGs additionally receive the bounded sample inspection described above; this
   is one pixel-stream pass per object, not a header parse per frame.
@@ -1964,6 +2083,16 @@ Not current correctness blockers:
   one, and never derive an estimate from what the file declares.
 - No codec library is handed a compressed frame before
   `pixels::codestream::checked` has accepted it for the catalog entry.
+- A response of the frame, raw, thumbnail and overlay endpoints never
+  carries a library's error text or bytes of a file: a reason reaches a
+  decode error's message only as a `pixels::Stated`, and a masked session
+  logs nothing else either.
+- Discovery reads a DICOM data set only through `data_set::read_for_catalog`
+  and the tag endpoints only through `data_set::read_for_tags`.
+  Nothing there is sized from a length the file declares before that length
+  has been checked against the file's real length or a constant, and its
+  limits change only together with `tests/raster_cost/data_sets.rs` and
+  `data_set_tags.rs`.
 - Thumbnails write their own cache only, and anything that returns source
   pixels applies the frame's redaction boxes and the masked-session refusal
   before encoding.
