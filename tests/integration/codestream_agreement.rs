@@ -570,6 +570,41 @@ async fn a_jpeg_xl_frame_with_an_embedded_profile_is_refused_wherever_it_is_deco
     }
 }
 
+/// A layout the raw endpoints do not serve answers as that whatever the
+/// frame holds: a frame with an embedded colour profile under a 16-bit
+/// colour header is an unsupported layout, as a frame without one is.
+#[tokio::test]
+async fn an_unsupported_jpeg_xl_layout_is_reported_before_the_frame_is_read() {
+    let dir = tempdir().expect("temp dir");
+    let layout = Layout {
+        bits_allocated: 16,
+        bits_stored: 16,
+        ..Layout::color8(16, 16, "RGB")
+    };
+    for (name, frame) in [
+        ("plain", files::JXL_RGB8_PATTERN),
+        ("with a profile", files::JXL_RGB8_WITH_PROFILE),
+    ] {
+        let path = dir.path().join(format!("layout-{}.dcm", name.len()));
+        files::write(&path, files::JPEG_XL, layout, &[hex(frame)]);
+        let server = files::serve(files::list(&[path]).await);
+        for endpoint in [
+            "/api/file/0/frame/0/raw",
+            "/api/file/0/frame/0/raw/pixel?row=0&column=0",
+        ] {
+            let response = server.get(endpoint).await;
+            assert_eq!(
+                response.status_code(),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "{name} at {endpoint}: {}",
+                response.text()
+            );
+            let body: Value = response.json();
+            assert_eq!(body["code"], "unsupported_pixel_layout", "{name}");
+        }
+    }
+}
+
 /// A Deflated Image Frame has no header of its own: its frame must inflate
 /// to exactly what the entry gives.
 #[tokio::test]
