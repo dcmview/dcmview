@@ -564,6 +564,11 @@ requires an existing `frontend/dist/index.html`.
   values come directly from UI/query/DICOM inputs.
 - Display cache entries are budgeted by `FRAME_CACHE_MAX_BYTES`; raw cache
   entries are budgeted by `RAW_CACHE_MAX_BYTES`.
+- A cache bills a body its length, so a cached body holds no more than its
+  length. Whatever is to be cached goes through `FrameBody::compact` once,
+  before it is cloned (`pixels/service.rs` does it for every decode it
+  caches); a body cached any other way is shrunk where it is made. A new
+  kind of cached body gets a row in `tests/raster_cost/caches.rs`.
 - The raw cache is the display path's decoded tier for grayscale integer
   frames (`pixels/service.rs` `raw_samples_for_display`); a new display
   decoder's integer layout must be mirrored in `display_integer_layout`.
@@ -661,6 +666,10 @@ is cached between requests.
 - A decoder that sizes everything from the entry (RLE Lossless, native
   pixel data) needs no check; keep it that way rather than reading a size
   from the pixel data.
+- A buffer filled from an inflated stream grows with the bytes that have
+  arrived, up to the size the entry gives. Do not allocate it whole from
+  the entry or from a length an element declares: neither says how much
+  the stream holds.
 
 **DICOM data sets**
 

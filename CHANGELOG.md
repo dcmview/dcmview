@@ -164,6 +164,18 @@ diagnostic viewer.
 - A segmentation, RT Dose or Parametric Map overlay that fails while it is
   encoded now answers `500 pixel_decode_failed`, as one whose frames cannot
   be decoded does, instead of `500 internal_error`.
+- A display frame now reserves the larger of its decode and its encoding
+  (its raw frame and seven times its display buffer) of the decode memory
+  budget, where it reserved the decode and three display buffers. An image
+  file reserves less than before: with 4 GiB, a square 8-bit gray one is
+  shown up to 13,470 pixels a side whatever its length, where it was
+  12,636. An uncompressed or RLE 8-bit DICOM frame reserves more: 8 bytes
+  a pixel for gray where it was 6, and 24 for colour where it was 18. The
+  tables in `docs/configuration.md` give the new sizes.
+- A presentation layer (a frame's shutter and overlay graphics) reserves 25
+  bytes a pixel where it reserved 9. A frame of more than 6,550 pixels a
+  side with a 1 GiB budget, or 13,105 with 4 GiB, can be shown while its
+  layer is refused, and is then shown without those graphics.
 
 ### Fixed
 
@@ -196,6 +208,19 @@ diagnostic viewer.
 - An RT Dose or Parametric Map overlay drawn before more files were loaded
   is drawn again afterwards instead of being served from the cache, so its
   colors follow the legend of the files now loaded.
+- A frame of a Deflated Explicit VR Little Endian file is read into a
+  buffer that grows as its data inflates. Before, a file whose data ended
+  early still had memory set aside for the whole frame its header states.
+- Display frames and presentation layers reserve the decode memory an image
+  that does not compress takes while it is encoded. Before, encoding such
+  an image could hold more memory than had been reserved for it.
+- A PALETTE COLOR frame reserves decode memory for the RGB image it is
+  displayed as. Before, it reserved as a gray frame and could hold more
+  than that.
+- Cached display frames, thumbnails, presentation layers and overlays hold
+  exactly the bytes `--cache-budget` counts for them. Before, a cached
+  image could hold up to twice its length, so the caches could hold more
+  than the budget.
 
 ## 0.4.1 - 2026-10-09
 

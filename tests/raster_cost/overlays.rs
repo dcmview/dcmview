@@ -36,7 +36,7 @@ const REQUEST_OVERHEAD: u64 = MIB;
 /// held at its worst: just past a doubling of the buffers it is written
 /// through. `WORST_SIDE` is that size for an image with transparent pixels
 /// among them.
-const SIDE: u16 = 1344;
+pub(super) const SIDE: u16 = 1344;
 const PIXELS: u64 = SIDE as u64 * SIDE as u64;
 
 /// Planes of the dose grid. A displayed frame that cuts through the grid
@@ -44,7 +44,7 @@ const PIXELS: u64 = SIDE as u64 * SIDE as u64;
 const DOSE_PLANES: u32 = 6;
 
 /// A viewer that keeps nothing it decodes or draws.
-const NO_CACHES: CacheBudget = CacheBudget {
+pub(super) const NO_CACHES: CacheBudget = CacheBudget {
     frame_bytes: 0,
     raw_bytes: 0,
     overlay_bytes: 0,
@@ -105,7 +105,7 @@ fn samples(frames: u32, mask: u8) -> Vec<u8> {
 ///   frame that cuts through every plane.
 /// - `seg-binary.dcm` and `seg-fractional.dcm`: one-bit and eight-bit SEG
 ///   objects on the frames of their sources.
-fn files() -> Vec<(&'static str, Vec<u8>)> {
+pub(super) fn files() -> Vec<(&'static str, Vec<u8>)> {
     let text = |tag, vr, value: &str| DataElement::new(tag, vr, value);
     vec![
         (
@@ -209,7 +209,7 @@ fn files() -> Vec<(&'static str, Vec<u8>)> {
 
 /// The loader's entries for [`files`], indexed in that order, with the
 /// directory they name.
-struct Listed {
+pub(super) struct Listed {
     names: Vec<&'static str>,
     entries: Vec<FileEntry>,
     _scan: super::bounds::Listed,
@@ -221,7 +221,7 @@ impl Listed {
     }
 
     /// The entries of `files`, each of `side` rows and columns.
-    fn of(files: Vec<(&'static str, Vec<u8>)>, side: u16) -> Self {
+    pub(super) fn of(files: Vec<(&'static str, Vec<u8>)>, side: u16) -> Self {
         let borrowed: Vec<(&str, &[u8])> = files
             .iter()
             .map(|(name, bytes)| (*name, bytes.as_slice()))
@@ -249,24 +249,29 @@ impl Listed {
         }
     }
 
-    fn index(&self, name: &str) -> usize {
+    pub(super) fn index(&self, name: &str) -> usize {
         self.names
             .iter()
             .position(|listed| *listed == name)
             .unwrap_or_else(|| panic!("{name} is not measured"))
     }
 
-    fn entry(&self, name: &str) -> &FileEntry {
+    pub(super) fn entry(&self, name: &str) -> &FileEntry {
         &self.entries[self.index(name)]
     }
 
     /// A viewer over the files that keeps nothing.
     fn state(&self) -> AppState {
+        self.state_keeping(NO_CACHES)
+    }
+
+    /// A viewer over the files whose caches have `budget`.
+    pub(super) fn state_keeping(&self, budget: CacheBudget) -> AppState {
         AppState::new(
             FileRegistry::from_files(self.entries.clone()),
             AnnotationStore::empty(),
         )
-        .with_cache_budget(NO_CACHES)
+        .with_cache_budget(budget)
     }
 }
 
@@ -287,7 +292,7 @@ impl Overlay {
     }
 }
 
-fn context_path(listed: &Listed, object: &str) -> String {
+pub(super) fn context_path(listed: &Listed, object: &str) -> String {
     format!("/api/file/{}/semantic-context", listed.index(object))
 }
 
@@ -348,7 +353,7 @@ fn overlays(listed: &Listed) -> Vec<Overlay> {
 }
 
 /// A scheduler that reserves what it is asked for and never has to refuse.
-fn roomy_scheduler() -> Arc<DecodeScheduler> {
+pub(super) fn roomy_scheduler() -> Arc<DecodeScheduler> {
     DecodeScheduler::with_limits(
         4,
         DecodeLimits {

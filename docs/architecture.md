@@ -696,7 +696,10 @@ JPEG, JPEG-LS and JPEG XL share one dicom-pixeldata frame decode
 (`pixels/pixeldata_frame.rs`). Deflated Explicit VR Little Endian is a dataset
 encoding and routes through the native layout pipeline: the inflated stream is
 parsed to the pixel element and inflated up to the requested frame, keeping
-only that frame. Deflated Image Frame Compression (`.8.1`) carries one-bit
+only that frame. The frame's buffer grows with the bytes that inflate, up to
+the frame's size: neither the entry nor the length the pixel element
+declares sizes it before the data is there, so a stream that ends early
+costs what it supplied. Deflated Image Frame Compression (`.8.1`) carries one-bit
 monochrome frames, such as binary segmentations, each deflated on its own.
 
 Encapsulated frames are located by `pixels/encapsulated.rs` for every
@@ -817,8 +820,9 @@ share of `--cache-budget`, and nothing the catalog reports depends on it.
 **What is reserved.** `pixels::decode_estimate` (`pixels/admission.rs`)
 gives the bytes one piece of work reserves, from the catalog entry alone and
 before the file is opened. With `P` pixels, `S` samples, a raw frame of `F`
-bytes, a display buffer of `D` bytes (`P`, or `3 * P` for 8-bit colour,
-`6 * P` for deeper colour), and `V` of `32 * S` for samples of 32 or 64 bits
+bytes, a display buffer of `D` bytes (`P`, or `3 * P` for 8-bit colour and
+for a PALETTE COLOR frame, which is displayed as RGB, `6 * P` for deeper
+colour), and `V` of `32 * S` for samples of 32 or 64 bits
 (which are windowed one at a time as 64-bit values) and 0 otherwise; and,
 for an overlay, the `T` pixels of the displayed frame it is drawn on and the
 `N` frames of its object it holds at once:
@@ -826,9 +830,9 @@ for an overlay, the `T` pixels of the displayed frame it is drawn on and the
 | Work (`DecodeWork`) | Reserved |
 |---|---|
 | `RawFrame`: decoding a frame to its samples | `decode` |
-| `DisplayFrame`: a display frame or a preview from a cold cache | `decode + V + 3 * D + 1 MiB` |
+| `DisplayFrame`: a display frame or a preview from a cold cache | `V + max(decode, F + 7 * D) + 1 MiB` |
 | `Thumbnail` | `decode + V + D + 8 MiB` |
-| `PresentationLayer` | `9 * P + 1 MiB` |
+| `PresentationLayer` | `25 * P + 1 MiB` |
 | `RawRedaction`: the copy of a raw frame in which boxes are filled | `F` |
 | `ValueLegend`: the value range of an RT Dose or Parametric Map, one frame after another | `decode + 8 * P` |
 | `SegmentationOverlay`: one SEG frame painted on a displayed frame | `decode + 24 * T + 1 MiB` |
@@ -846,6 +850,23 @@ measures each path against it. The DICOM rows are rules: a compressed
 frame must declare the image of its catalog entry before it is decoded
 ("Compressed Frames Are Held To The Header"), but the heap a DICOM decoder
 holds for that image is not limited the way the raster decoder's is.
+
+A display frame has two stages and reserves the larger. Its decode is over,
+and what the decode held given back, before the frame is encoded; only the
+raw frame may still be held then. An image that does not compress is held
+about six times over while it is encoded as a PNG: the image, the attempt
+to compress it, and the stored copy written instead, each in a buffer that
+grew by doubling. `F + 7 * D` covers that for a display buffer, and
+`25 * P` for a presentation layer, which is four bytes a pixel; a frame of
+noise and a layer whose shutter hides every other pixel measure up to 6.3
+times the display buffer and 24.2 bytes a pixel. Redaction boxes are
+painted on a decoded copy of a display PNG, and the PNG is given up before
+the copy is encoded, so a frame with boxes holds no more than the same
+frame without. `tests/raster_cost/admission.rs` measures such images
+against both rows. A presentation layer is refused at a smaller frame than
+a display frame is (above about 6,550 pixels a side with 1 GiB, 13,105
+with 4 GiB), and the viewer then shows the frame without its shutter and
+overlay graphics.
 
 The overlay rows are estimated from the entry of the overlay's object (the
 SEG, dose or map), which is what they decode; the displayed frame
@@ -1273,13 +1294,15 @@ the file, for a raster that has one.
   starts ("Decode Admission"), so the decodes running at once never have
   more reserved than the budget. The file term is part of every raster
   reservation, so what fits depends on the file's length as well as on its
-  pixels: a display frame at the pixel limit reserves 2.3 GiB and four
-  times its file's length for 8-bit gray, 3.8 GiB and four times its file's
-  length for 16-bit gray, 6.8 GiB and the same for 8-bit RGB, and 16.6 GiB
-  and the same for 16-bit RGBA. With a budget of 4 GiB (the default on a machine with
+  pixels: a display frame at the pixel limit reserves, when its decode is
+  the larger of its two stages, 1.6 GiB and four times its file's length
+  for 8-bit gray, 3.1 GiB and four times its file's length for 16-bit gray,
+  4.6 GiB and the same for 8-bit RGB, and 12.1 GiB and the same for 16-bit
+  RGBA, and never less than its encoding stage (2.0, 2.3, 6.0 and 12.5
+  GiB). With a budget of 4 GiB (the default on a machine with
   16 GiB or more) the first fits when
-  its file is no longer than 439 MiB and the second when its file is no
-  longer than 55 MiB; the colour layouts do not fit at that size. A frame
+  its file is no longer than 631 MiB and the second when its file is no
+  longer than 247 MiB; the colour layouts do not fit at that size. A frame
   that does not fit is refused with `422 decode_memory_exceeded`, which
   states the bytes it needs, until the viewer is started with a
   `--decode-memory` of at least that. `docs/configuration.md`, "Decode
@@ -1757,6 +1780,12 @@ join guarantees after hard task abortion.
   the defaults (256, 384, 64 and 64 MiB), and `AppState::with_cache_budget` builds
   the caches from it before the router exists. Tag, semantic and value
   mapping caches are bounded by entry count and are not part of the budget.
+  A cache bills an entry the length of its body, and a body holds exactly
+  that: the pixel service passes every result through
+  `FrameBody::compact` before it is cloned for the cache and the requests,
+  which gives back the spare room of the buffer it was encoded in.
+  `AppState::cached_bytes` reports what each cache bills, and
+  `tests/raster_cost/caches.rs` compares it with the heap the entries hold.
 - `--exit-with-parent` (hidden) treats end of file on stdin as a stop signal
   and shuts down gracefully, so a child does not outlive a parent that died
   without signalling it. It only works when the parent passes a pipe and
