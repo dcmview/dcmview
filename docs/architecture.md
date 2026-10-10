@@ -1667,8 +1667,12 @@ never used twice; a restore brings back what the store kept, in its old
 place in creation order. A label that loses its value is kept the same way,
 and gets a value back only while its layer exists. Deleted annotations are
 kept whole, for a restore, up to 64 MiB together (`DELETED_BYTES`, counted
-as JSON); past that the oldest keep only their id and revision, and a
-restore of one of those answers `missing` while its id stays taken.
+as JSON); past that the oldest, in the order they were deleted, keep only
+their id and revision, and a restore of one of those answers `missing`
+while its id stays taken. A deleted layer and a label without a value keep
+no content either. What stays for an id that was used is within 2 KiB
+(`tests/raster_cost/annotations.rs` counts it), and the number of ids is
+bounded only by the envelopes a session applies.
 Snapshots and the document list records in creation order.
 
 What the store checks beyond the model's `OpEnvelope::validate` (that the
@@ -1740,10 +1744,24 @@ keeps these rules for every door:
   (`docs/design/annotation-model.md` 1.7).
 - **A shared key names the first file's bytes.** `sop:<uid>` is checked
   against the first file loaded with that UID. When that file can no
-  longer be read or has changed, no file of the group has a key, the
-  readable ones included, and the `422 file_key_unavailable` they get says
-  that it is the first file that failed. An unreadable later file costs
-  only its own key.
+  longer be read or has changed, no file of the group gets `sop:<uid>`
+  that session, the readable ones included, and the
+  `422 file_key_unavailable` they get says that it is the first file that
+  failed. There is one way out, and it depends on what was asked: once
+  two other files of the group have both been hashed (each was asked
+  about, or viewed) and hold different bytes, the group is split, and
+  every file of it that can be read has the key of its own bytes from
+  then on. So a readable member is refused while it is the only one
+  hashed, or while every member hashed so far holds the same bytes, and
+  is given its content key once a member with other bytes has been
+  hashed. An unreadable file that is not the first costs only its own
+  key.
+- **The record an operation changes is on the file it names.** An update,
+  a tile change, a delete and a restore each name a file (`file`, or the
+  `file` of their snapshot) and a record id; when the record is on
+  another file the operation is a conflict and nothing changes. With
+  `?file=`, the file named is that one file, so a request for one file
+  cannot change a record of another.
 
 An operation that names a key no loaded file has is refused before the
 store sees it: `invalid`, `unknown_file`.
@@ -1810,8 +1828,10 @@ admits values the model's would refuse. Every other write is
 
 The export hashes nothing and writes one row per loaded file whose view
 shows a ROI, in the registry's file order, with the path as discovery
-recorded it. It is one read of the staged rows and of the records, so no
-row shows a write another row of the same export does not. `tests/raster_cost/annotations.rs` holds the import to its
+recorded it. It is one read: the staged rows under the import's lock, and
+the records with the store held still while every file's key state and
+view are read, so no row shows a write another row of the same export
+does not. A write waits for at most one export. `tests/raster_cost/annotations.rs` holds the import to its
 bytes per ROI.
 
 ### Redaction Boxes Are Not In It

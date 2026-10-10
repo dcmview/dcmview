@@ -804,9 +804,16 @@ is cached between requests.
   once at the end (deleted or not), and keep counts instead of scanning
   the store. `tests/raster_cost/annotations.rs` counts it; a new kind of
   record gets a case there.
-- What the store keeps beyond live records is bounded by a constant:
-  remembered results (`REMEMBERED_OPS`, `REMEMBERED_REVS`), deleted
-  annotations kept whole (`DELETED_BYTES`).
+- What the store keeps beyond live records is bounded: remembered results
+  by `REMEMBERED_OPS` and `REMEMBERED_REVS`, deleted annotations kept
+  whole by `DELETED_BYTES`. Everything else that was deleted keeps its id
+  and revision and no content (a dropped annotation, a deleted layer, a
+  label without a value), within 2 KiB an id; the ids themselves are
+  bounded only by the envelopes a session applies. A new kind of record
+  that can be deleted lets its content go the same way and gets a line in
+  `what_is_kept_of_deleted_things_is_bounded`.
+- The record an operation changes must be on the file the operation
+  names. A new operation that names a record checks it in the store.
 - The EMBED `PUT` writes with a `ViewCheck` of the view it read, so it
   replaces a file's ROIs whole. A new write that is worked out from a read
   carries a check the store makes under its own lock.

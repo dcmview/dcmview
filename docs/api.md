@@ -839,7 +839,7 @@ made by the client. The body is read whatever its `Content-Type`.
   revision behind: `restore_annotation` brings the record back as it was,
   and a `create_annotation` under that id is `invalid` (`duplicate_id`).
   The viewer keeps deleted annotations whole for a restore up to 64 MiB
-  together, oldest dropped first; a restore of one that was dropped is a
+  together, the ones deleted first dropped first; a restore of one that was dropped is a
   `409` whose `current` is `missing`, and its id stays taken.
   A label whose value is cleared (`"after": null`) keeps its id and
   revision the same way.
@@ -863,7 +863,10 @@ made by the client. The body is read whatever its `Content-Type`.
     nothing is applied. The catalog entry of that file shows its own key
     from then on: read it and send the operation again under it. One retry
     is enough, however many files shared the old key;
-  - an operation is recorded on that file or on none.
+  - an operation is recorded on that file or on none, and changes no
+    record of another file: an update, a tile change, a delete or a
+    restore whose record is on another file than the one it names is a
+    `409 annotation_conflict`.
 
   Without `file`, a `sop:` key whose UID more than one loaded file carries
   is `409 file_key_ambiguous`; any other key must be the settled key of the
