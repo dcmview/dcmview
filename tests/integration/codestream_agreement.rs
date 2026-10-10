@@ -222,6 +222,12 @@ fn honest() -> Vec<Case> {
             Layout::color8(16, 16, "RGB"),
             hex(files::JXL_RGB8_RECOMPRESSED_JPEG),
         ),
+        case(
+            "jpeg xl, longer than its header read",
+            files::JPEG_XL,
+            Layout::gray8(384, 384),
+            files::jxl_gray8_noise_384(),
+        ),
     ]
 }
 

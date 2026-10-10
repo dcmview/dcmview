@@ -30,6 +30,7 @@ use dcmview::pixels::codestream::{
     agrees, declared, decode_jpeg_xl, jxl_decode_limit, CodestreamKind, Declared, Structure,
     CODESTREAM_MAX_HEADER_SEGMENTS, CODESTREAM_MISMATCH, J2K_MAX_TILES, J2K_MIN_PACKET_BUDGET,
     J2K_PIXELS_PER_PACKET, JP2_MAX_BOXES, JPEG_MAX_SCANS, JXL_EMBEDDED_PROFILE,
+    JXL_HEADER_MAX_BYTES,
 };
 use dcmview::types::FileEntry;
 use tempfile::tempdir;
@@ -1316,6 +1317,33 @@ fn a_jpeg_xl_frame_decodes_within_its_entry_s_allowance() {
     assert!(
         held <= allowance,
         "{held} bytes of heap held, the allowance is {allowance}"
+    );
+}
+
+/// The image header is read from the first `JXL_HEADER_MAX_BYTES` of the
+/// codestream and no further: reading what a frame much longer than that
+/// declares holds those bytes and a header's worth more, not the frame.
+#[test]
+fn a_long_jpeg_xl_frame_s_header_is_read_from_its_first_bytes() {
+    let _alone = heap::alone();
+    let frame = files::jxl_gray8_noise_384();
+    let bound = JXL_HEADER_MAX_BYTES as u64;
+    assert_eq!(bound, 64 * KIB);
+    assert!(
+        frame.len() as u64 > 2 * bound,
+        "a frame longer than the read"
+    );
+    let (read, held) = heap::peak_during(|| declared(CodestreamKind::JpegXl, &frame));
+    assert_eq!(
+        read.expect("an honest header"),
+        says(384, 384, 1, 8, JXL_STILL)
+    );
+    report(|| format!("jxl 384 x 384, {} bytes: {held} bytes of heap", frame.len()));
+    let limit = bound + HEADER_HEAP / 4;
+    assert!(
+        held <= limit,
+        "{held} bytes of heap held reading a {}-byte frame, the limit is {limit}",
+        frame.len()
     );
 }
 

@@ -641,7 +641,9 @@ is cached between requests.
   the entry, before it gets a row in the codec table.
 - `codestream::declared` never panics and allocates nothing sized by the
   frame. Its bounds are constants in `pixels/codestream.rs`; a change to one
-  is a change to the contract and to the tests that pin it.
+  is a change to the contract and to the tests that pin it. Tests pin every
+  bound but `JXL_MAX_BOXES`: no encoder writes that many boxes before a
+  codestream, so it is a backstop without a test.
 - The JPEG XL image header is read by the decoder's header parser alone
   (`jxl-image` over `jxl-bitstream`); the decoder (`jxl-oxide`) is not
   started on a frame until `checked` has accepted it, and a frame with an

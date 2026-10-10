@@ -1800,7 +1800,9 @@ installation and VS Code Electron integration can also use network/cache state;
   a larger image under a small entry to count what the allocation limit
   alone holds the decoder to. Frames libjxl wrote in the box container,
   with metadata boxes and with JPEG reconstruction data, decode there
-  within their entry's allowance and to the samples of the bare codestream. Its counting allocator counts every thread,
+  within their entry's allowance and to the samples of the bare codestream,
+  and the header of a frame longer than the header read is read holding no
+  more than that read. Its counting allocator counts every thread,
   because decoders run on blocking threads, so its tests run one at a time;
   it decodes no honest JPEG 2000 frame, for the reason given above.
 - Decode admission tests (`tests/integration/decode_admission.rs`) hold the

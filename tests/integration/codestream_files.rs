@@ -224,6 +224,12 @@ pub fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
+/// An honest frame too long to spell here: 384 x 384, 8-bit gray noise,
+/// `cjxl -d 0` of a PNG written by Pillow (160 KB).
+pub fn jxl_gray8_noise_384() -> Vec<u8> {
+    std::fs::read(fixture("jxl-gray8-noise-384.jxl")).expect("the fixture")
+}
+
 /// The bytes a constant of this module spells in hexadecimal.
 pub fn hex(text: &str) -> Vec<u8> {
     let digits = text.as_bytes();
