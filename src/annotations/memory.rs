@@ -256,6 +256,7 @@ struct State {
     label_targets: HashMap<LabelKey, Uuid>,
     remembered: HashMap<Uuid, ApplyResult>,
     remembered_order: VecDeque<Uuid>,
+    remembered_revs: usize,
 }
 
 impl MemoryBackend {
@@ -297,6 +298,7 @@ impl MemoryBackend {
                 label_targets: HashMap::new(),
                 remembered: HashMap::new(),
                 remembered_order: VecDeque::new(),
+                remembered_revs: 0,
             }),
         }
     }
@@ -392,15 +394,22 @@ impl MemoryBackend {
                 revision: state.revision,
             });
         }
+        let revision_count = transaction.revs.len();
         let result = ApplyResult::Ok {
             revs: transaction.revs,
         };
         state.revision += 1;
         state.remembered.insert(envelope.op_id, result.clone());
         state.remembered_order.push_back(envelope.op_id);
-        if state.remembered_order.len() > REMEMBERED_OPS {
+        state.remembered_revs += revision_count;
+        while state.remembered_order.len() > 1
+            && (state.remembered_order.len() > REMEMBERED_OPS
+                || state.remembered_revs > REMEMBERED_REVS)
+        {
             if let Some(oldest) = state.remembered_order.pop_front() {
-                state.remembered.remove(&oldest);
+                if let Some(ApplyResult::Ok { revs }) = state.remembered.remove(&oldest) {
+                    state.remembered_revs -= revs.len();
+                }
             }
         }
         Ok(Transacted {
