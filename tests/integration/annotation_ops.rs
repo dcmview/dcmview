@@ -844,6 +844,10 @@ async fn an_operation_lands_on_the_file_it_names_or_on_none() {
                 .await;
             assert_eq!(status, StatusCode::CONFLICT, "{body}");
             assert_eq!(body["code"], "file_key_replaced");
+            // A key of the file's own bytes names no other file, so it
+            // needs no index, whatever UID the file carries.
+            let (status, body) = client.send(move_to(record, &own, 1, corners)).await;
+            assert_eq!(status, StatusCode::OK, "file {index} of {count}: {body}");
         }
         for index in 0..usize::from(count) {
             assert_eq!(
@@ -853,6 +857,117 @@ async fn an_operation_lands_on_the_file_it_names_or_on_none() {
             );
         }
     }
+}
+
+/// The record an operation changes is on the file the operation names, for
+/// every kind of operation, with and without a file index: a delete or a
+/// restore that names one file and the id of a record on another changes
+/// nothing, as an update does not.
+#[tokio::test]
+async fn an_operation_changes_only_records_of_the_file_it_names() {
+    let dir = tempdir().expect("temp dir");
+    let (named, other) = ("sop:1.2.3.1", "sop:1.2.3.2");
+    let mut client = Client::new(serve(vec![
+        entry(dir.path(), "named.dcm", "1.2.3.1"),
+        entry(dir.path(), "other.dcm", "1.2.3.2"),
+    ]));
+    // Records 1 and 2 on the other file, 2 deleted; record 3 on the named.
+    client.applied(create(1, other, [1.0, 1.0, 5.0, 5.0])).await;
+    client.applied(create(2, other, [2.0, 2.0, 6.0, 6.0])).await;
+    client
+        .applied(
+            json!({ "type": "delete_annotation", "id": id(2), "base_rev": 1,
+                         "snapshot": rect(2, other, [2.0, 2.0, 6.0, 6.0]) }),
+        )
+        .await;
+    client.applied(create(3, named, [3.0, 3.0, 7.0, 7.0])).await;
+    let revision = client.revision().await;
+
+    // Each names the first file and the id of a record on the second.
+    let table = [
+        (
+            "update_annotation",
+            move_to(1, named, 1, [1.0, 1.0, 9.0, 9.0]),
+        ),
+        (
+            "delete_annotation",
+            json!({ "type": "delete_annotation", "id": id(1), "base_rev": 1,
+                    "snapshot": rect(1, named, [1.0, 1.0, 5.0, 5.0]) }),
+        ),
+        (
+            "restore_annotation",
+            json!({ "type": "restore_annotation", "id": id(2), "base_rev": 2,
+                    "snapshot": rect(2, named, [2.0, 2.0, 6.0, 6.0]) }),
+        ),
+        (
+            "mask_tiles",
+            json!({ "type": "mask_tiles", "id": id(1), "file": named, "base_rev": 1, "frame": 0,
+                    "tiles": [{ "tx": 0, "ty": 0, "before": null, "after": "AAAA" }] }),
+        ),
+        (
+            "batch",
+            json!({ "type": "batch", "ops": [
+                move_to(3, named, 1, [3.0, 3.0, 8.0, 8.0]),
+                { "type": "delete_annotation", "id": id(1), "base_rev": 1,
+                  "snapshot": rect(1, named, [1.0, 1.0, 5.0, 5.0]) },
+            ] }),
+        ),
+    ];
+    for (case, op) in table {
+        for with_index in [true, false] {
+            let (status, body) = if with_index {
+                client.send_for(0, op.clone()).await
+            } else {
+                client.send(op.clone()).await
+            };
+            assert_eq!(status, StatusCode::CONFLICT, "{case}: {body}");
+            assert_eq!(body["code"], "annotation_conflict", "{case}: {body}");
+        }
+    }
+    // With an index, an envelope that names another file's key at all is
+    // refused, although that key is that file's own.
+    let table = [
+        (
+            "update_annotation",
+            move_to(1, other, 1, [1.0, 1.0, 9.0, 9.0]),
+        ),
+        (
+            "delete_annotation",
+            json!({ "type": "delete_annotation", "id": id(1), "base_rev": 1,
+                    "snapshot": rect(1, other, [1.0, 1.0, 5.0, 5.0]) }),
+        ),
+        (
+            "restore_annotation",
+            json!({ "type": "restore_annotation", "id": id(2), "base_rev": 2,
+                    "snapshot": rect(2, other, [2.0, 2.0, 6.0, 6.0]) }),
+        ),
+        ("create_annotation", create(4, other, [1.0, 1.0, 2.0, 2.0])),
+        (
+            "batch",
+            json!({ "type": "batch", "ops": [
+                move_to(3, named, 1, [3.0, 3.0, 8.0, 8.0]),
+                move_to(1, other, 1, [1.0, 1.0, 9.0, 9.0]),
+            ] }),
+        ),
+    ];
+    for (case, op) in table {
+        let (status, body) = client.send_for(0, op).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{case}: {body}");
+        assert_eq!(body["code"], "file_key_replaced", "{case}: {body}");
+    }
+
+    assert_eq!(client.revision().await, revision, "nothing was applied");
+    assert_eq!(client.rois(1).await.roi_coords, [[1, 1, 5, 5]]);
+    assert_eq!(client.rois(0).await.roi_coords, [[3, 3, 7, 7]]);
+    // Named by its own file, the restore goes through.
+    let (status, body) = client
+        .send_for(
+            1,
+            json!({ "type": "restore_annotation", "id": id(2), "base_rev": 2,
+                    "snapshot": rect(2, other, [2.0, 2.0, 6.0, 6.0]) }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 }
 
 /// One of two files that share a key can no longer be read. An operation
@@ -908,6 +1023,27 @@ async fn an_operation_for_an_unreadable_file_does_not_land_on_its_twin() {
             assert_eq!(client.rois(gone).await.num_roi, 0);
         }
     }
+}
+
+/// The key files share by UID names the first file's bytes. With that file
+/// unreadable, a readable member has no key while it is the only one that
+/// was hashed, and its own content key once a member with other bytes was.
+#[tokio::test]
+async fn a_group_whose_first_file_is_gone_is_keyed_by_content_once_two_members_differ() {
+    let dir = tempdir().expect("temp dir");
+    let files = differing_files(dir.path(), 3);
+    std::fs::remove_file(&files[0].path).expect("remove file");
+    let client = Client::new(serve(files));
+    let save = |index: usize| client.put_rois(index, json!([[1, 2, 3, 4]]), json!([]));
+
+    assert_eq!(save(1).await, StatusCode::UNPROCESSABLE_ENTITY);
+    // The third file differs from the second, which was hashed for the
+    // save above: both are keyed by their own bytes from here on.
+    assert_eq!(save(2).await, StatusCode::OK);
+    assert_eq!(save(1).await, StatusCode::OK);
+    assert_eq!(save(0).await, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(client.catalog_key(1).await.starts_with("b3:"));
+    assert_ne!(client.catalog_key(1).await, client.catalog_key(2).await);
 }
 
 /// Byte-identical files share their records, and each keeps its own CSV

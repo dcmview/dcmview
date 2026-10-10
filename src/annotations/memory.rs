@@ -6,8 +6,9 @@ use super::embed::rois_of;
 use super::EmbedRoiAnnotations;
 use dcmview_annotation::{
     limits, Annotation, ApplyResult, Author, Context, Current, Document, FileKey, FileSizes,
-    FrameIndex, Geometry, Invalid, Label, LabelSchema, LabelTarget, Layer, LayerId, LayerKind,
-    LayerSource, Op, OpEnvelope, RecordMeta, RevEntry, Timestamp, Violation, ViolationCode,
+    FrameIndex, FrameScope, Geometry, Invalid, Label, LabelSchema, LabelTarget, LabelValue, Layer,
+    LayerId, LayerKind, LayerSource, Op, OpEnvelope, RecordMeta, RevEntry, Timestamp, Violation,
+    ViolationCode,
 };
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Mutex;
@@ -150,8 +151,8 @@ pub(crate) fn now() -> Timestamp {
 /// |---|---|---|
 /// | `create_annotation` | the id exists, live or deleted: `Invalid` `duplicate_id` at `annotation/id`. The layer does not exist or is deleted: `Invalid` `unknown_layer` at `annotation/layer`. | The record is stored with `rev` 1 and this write's stamps; its `derived_from`, `score`, `extensions` and unknown members are kept. |
 /// | `update_annotation` | see "The target of an operation"; `file` is not the record's file: `Conflict` with the record. A layer `after` names does not exist: `Invalid` `unknown_layer` at `after/layer`. | `after` is applied (`Patch::apply_to`); `rev` rises by one. |
-/// | `delete_annotation` | see "The target of an operation". | The record is kept as deleted: it leaves every snapshot, export and EMBED view, and `rev` rises by one. |
-/// | `restore_annotation` | no record has the id: `Conflict` `missing`. The record is live: `Conflict` with it. `base_rev` is not the deleted record's `rev`: `Conflict` `deleted` with that `rev`. Its content was dropped ("What is remembered"): `Conflict` `missing`. Its layer is deleted: `Invalid` `unknown_layer` at `snapshot/layer`. | The record is live again as it was when it was deleted, in its old place in creation order, with `rev` one higher. The store restores what it kept; of `snapshot` it reads only the id. |
+/// | `delete_annotation` | see "The target of an operation"; the snapshot's `file` is not the record's file: `Conflict` with the record. | The record is kept as deleted: it leaves every snapshot, export and EMBED view, and `rev` rises by one. |
+/// | `restore_annotation` | no record has the id: `Conflict` `missing`. The record is live: `Conflict` with it. `base_rev` is not the deleted record's `rev`: `Conflict` `deleted` with that `rev`. Its content was dropped ("What is remembered"): `Conflict` `missing`. The snapshot's `file` is not the record's file: `Conflict` `deleted` with its `rev`. Its layer is deleted: `Invalid` `unknown_layer` at `snapshot/layer`. | The record is live again as it was when it was deleted, in its old place in creation order, with `rev` one higher. The store restores what it kept; of `snapshot` it reads only the id. |
 /// | `mask_tiles` | as `update_annotation`; the record's geometry is not a mask: `Invalid` `geometry_not_allowed` at `id`. | Each tile with `after` is set and each with `after: null` removed, in the frame the operation names; a frame left without a tile is removed; the record's `frames` becomes the set of frames that hold tiles; `rev` rises by one. |
 /// | `set_label`, `base_rev: null` | the id exists: `Invalid` `duplicate_id` at `id`. `after` is `null`: `Invalid` `empty_patch` at `after`. The layer does not exist: `Invalid` `unknown_layer` at `layer`. A label, with or without a value, already exists for this target, field, layer and author: `Invalid` `duplicate_label` at `id`. | The label is stored with `rev` 1. |
 /// | `set_label`, `base_rev` given | no label has the id: `Conflict` `missing`. `base_rev` is not its `rev`, or the target, field or layer is not the label's: `Conflict` with the label, or `deleted` with its `rev` when it has no value. `after` is a value and the label's layer is deleted: `Invalid` `unknown_layer` at `layer`. | `after` becomes the value, or the label loses its value (`after: null`) and leaves snapshots and exports while keeping its id and `rev`; `rev` rises by one. |
@@ -173,8 +174,13 @@ pub(crate) fn now() -> Timestamp {
 /// with its `rev`; a `base_rev` that is not its `rev` is `Conflict` with
 /// the record or layer as it is.
 ///
-/// `before`, and the `snapshot` of a delete, are never compared with the
-/// stored state: `base_rev` is the check.
+/// The record an operation changes is on the file the operation names:
+/// `file` for an update and a tile change, the snapshot's `file` for a
+/// delete and a restore. An operation that names one file and the id of a
+/// record on another is a conflict, for every one of the four.
+///
+/// Beyond that, `before`, and the `snapshot` of a delete or a restore, are
+/// never compared with the stored state: `base_rev` is the check.
 ///
 /// ## When a changed record is validated
 ///
@@ -232,14 +238,23 @@ pub(crate) fn now() -> Timestamp {
 ///   is a conflict. It is kept *whole*, so that a restore can bring it
 ///   back, while the deleted annotations kept whole are within
 ///   [`DELETED_BYTES`] together (each counted as the length of its JSON,
-///   once, when the transaction that deleted it is applied). Past that the
-///   oldest lose their content, oldest first; the newest is kept whatever
-///   its size. A restore of one that lost its content is `Conflict`
-///   `missing`, like a restore of an id the store never held, and its id
-///   stays taken. What is left of it is a fixed few hundred bytes; those,
-///   like the live records, are bounded only by the envelopes a session
-///   applies. A label that lost its value, and a deleted layer, keep their
-///   small records.
+///   once, when the transaction that deleted it is applied; a restore
+///   takes its count back). Past that the ones deleted first lose their
+///   content first, in the order of the delete operations also within one
+///   envelope; the newest is kept whatever its size. A restore of one that
+///   lost its content is `Conflict` `missing`, like a restore of an id the
+///   store never held, and its id stays taken.
+/// - **What stays of anything deleted is an id and a revision.** An
+///   annotation that lost its content keeps no geometry, frame list,
+///   class, attribute or extension. No operation brings a deleted layer
+///   back, so it lets its name, color, source and unknown members go when
+///   it is deleted. A label that loses its value lets the value go; the
+///   operation that sets it again brings the next one. Each such id costs
+///   the store a fixed amount, within 2,048 bytes with its place in the
+///   indexes (its file key, layer id, target and stamps are short and
+///   bounded by the model); `tests/raster_cost/annotations.rs` counts it.
+///   The number of ids is bounded only by the envelopes a session applies,
+///   as the live records are.
 ///
 /// # Cost
 ///
@@ -292,6 +307,8 @@ struct State {
     /// the delete left); an entry whose record has moved on is stale.
     deleted_order: VecDeque<(usize, u64)>,
     deleted_bytes: usize,
+    /// How many entries of `deleted_order` are not stale.
+    deleted_counted: usize,
 }
 
 impl MemoryBackend {
@@ -337,6 +354,7 @@ impl MemoryBackend {
                 remembered_revs: 0,
                 deleted_order: VecDeque::new(),
                 deleted_bytes: 0,
+                deleted_counted: 0,
             }),
         }
     }
@@ -412,6 +430,7 @@ impl MemoryBackend {
             default_layer: &self.default_layer,
             undo: Vec::new(),
             saved_annotations: HashSet::new(),
+            deletes: Vec::new(),
             saved_layers: HashSet::new(),
             saved_labels: HashSet::new(),
             saved_layer_counts: HashMap::new(),
@@ -437,11 +456,12 @@ impl MemoryBackend {
         }
         let revision_count = transaction.revs.len();
         let touched = std::mem::take(&mut transaction.saved_annotations);
+        let deletes = std::mem::take(&mut transaction.deletes);
         let result = ApplyResult::Ok {
             revs: transaction.revs,
         };
         state.revision += 1;
-        state.account_deleted(touched);
+        state.account_deleted(touched, &deletes);
         state.remembered.insert(envelope.op_id, result.clone());
         state.remembered_order.push_back(envelope.op_id);
         state.remembered_revs += revision_count;
@@ -487,6 +507,27 @@ impl MemoryBackend {
     ) -> Result<Vec<Annotation>, BackendError> {
         let state = self.state.lock().map_err(lock_error)?;
         Ok(embed_view(&state, key, slot).cloned().collect())
+    }
+
+    /// Runs `read` with the store held still: `read` is given a function
+    /// that answers what the EMBED endpoints show for one view (a settled
+    /// key, a slot, a frame count; `rois_of` the records
+    /// [`MemoryBackend::embed_records`] would give), and every answer it
+    /// gets comes from the same moment, because no transaction runs until
+    /// `read` returns. For an export, which must not show one file after a
+    /// write and another before it.
+    ///
+    /// `read` runs under the store's lock: it must not wait for anything
+    /// and must not call back into the store. It may read the file
+    /// registry, which never waits for the store.
+    pub(crate) fn read_views<T>(
+        &self,
+        read: impl FnOnce(&dyn Fn(&FileKey, usize, u32) -> EmbedRoiAnnotations) -> T,
+    ) -> Result<T, BackendError> {
+        let state = self.state.lock().map_err(lock_error)?;
+        Ok(read(&|key, slot, frames| {
+            rois_of(embed_view(&state, key, slot), frames)
+        }))
     }
 
     /// Whether the store holds no annotation at all, live or deleted. Then
@@ -669,46 +710,73 @@ impl State {
     /// Brings the count of deleted bytes up to date for the annotations a
     /// transaction touched, each looked at once, and drops the content of
     /// the oldest deleted records while more than [`DELETED_BYTES`] are
-    /// kept. The newest deleted record is kept whatever its size.
-    fn account_deleted(&mut self, touched: HashSet<usize>) {
-        for place in touched {
+    /// kept. `deletes` are the places the transaction's delete operations
+    /// named, in operation order, so that records deleted by one envelope
+    /// age in the order the envelope deleted them. The newest deleted
+    /// record is kept whatever its size.
+    fn account_deleted(&mut self, touched: HashSet<usize>, deletes: &[usize]) {
+        // What a touched record counted for is released first: it was
+        // restored, or is measured again below.
+        for &place in &touched {
+            if let Some(entry) = self.annotations.get_mut(place) {
+                if entry.deleted_bytes > 0 {
+                    self.deleted_bytes -= entry.deleted_bytes;
+                    entry.deleted_bytes = 0;
+                    self.deleted_counted -= 1;
+                }
+            }
+        }
+        // Each record at its last delete, in operation order.
+        let mut last = HashMap::new();
+        for (position, &place) in deletes.iter().enumerate() {
+            last.insert(place, position);
+        }
+        for (position, &place) in deletes.iter().enumerate() {
+            if last[&place] != position {
+                continue;
+            }
             let Some(entry) = self.annotations.get_mut(place) else {
                 continue;
             };
-            self.deleted_bytes -= entry.deleted_bytes;
-            entry.deleted_bytes = 0;
-            if entry.deleted && !entry.dropped {
+            if entry.deleted && !entry.dropped && entry.deleted_bytes == 0 {
                 let mut count = ByteCount(0);
-                // A record that cannot be written as JSON counts for nothing.
+                // A record that cannot be written as JSON counts for little.
                 let _ = serde_json::to_writer(&mut count, &entry.record);
                 entry.deleted_bytes = count.0.max(1);
                 self.deleted_bytes += entry.deleted_bytes;
+                self.deleted_counted += 1;
                 self.deleted_order.push_back((place, entry.record.meta.rev));
             }
         }
-        while self.deleted_bytes > DELETED_BYTES && self.deleted_order.len() > 1 {
+        while self.deleted_bytes > DELETED_BYTES && self.deleted_counted > 1 {
             let Some((place, rev)) = self.deleted_order.pop_front() else {
                 break;
             };
             let entry = &mut self.annotations[place];
             if entry.deleted && entry.deleted_bytes > 0 && entry.record.meta.rev == rev {
                 self.deleted_bytes -= entry.deleted_bytes;
+                self.deleted_counted -= 1;
                 entry.deleted_bytes = 0;
                 entry.dropped = true;
+                // Only the id and the revision are needed from here on;
+                // the file and the layer are short and stay.
                 entry.record.geometry = Geometry::Point { x: 0.0, y: 0.0 };
+                entry.record.frames = FrameScope::All;
+                entry.record.class = String::new();
                 entry.record.attributes = BTreeMap::new();
                 entry.record.extensions = BTreeMap::new();
                 entry.record.unknown = BTreeMap::new();
             }
         }
-        // Stale entries at the front would otherwise only go when the
-        // bound is passed.
-        while let Some(&(place, rev)) = self.deleted_order.front() {
-            let entry = &self.annotations[place];
-            if entry.deleted && entry.deleted_bytes > 0 && entry.record.meta.rev == rev {
-                break;
-            }
-            self.deleted_order.pop_front();
+        // Entries of records that were restored or deleted again are stale.
+        // They go when they outnumber the ones that count, so the queue
+        // stays within twice the deleted records kept whole.
+        if self.deleted_order.len() > 2 * self.deleted_counted + 16 {
+            let annotations = &self.annotations;
+            self.deleted_order.retain(|&(place, rev)| {
+                let entry = &annotations[place];
+                entry.deleted && entry.deleted_bytes > 0 && entry.record.meta.rev == rev
+            });
         }
     }
 }
@@ -801,6 +869,8 @@ struct Transaction<'a> {
     default_layer: &'a LayerId,
     undo: Vec<Undo>,
     saved_annotations: HashSet<usize>,
+    /// The places delete operations named, in operation order.
+    deletes: Vec<usize>,
     saved_layers: HashSet<usize>,
     saved_labels: HashSet<usize>,
     saved_layer_counts: HashMap<usize, usize>,
@@ -1027,16 +1097,37 @@ impl Transaction<'_> {
                 }
                 self.annotation_changed(place, path, true);
             }
-            Op::DeleteAnnotation { id, base_rev, .. }
-            | Op::RestoreAnnotation { id, base_rev, .. } => {
+            Op::DeleteAnnotation {
+                id,
+                base_rev,
+                snapshot,
+            }
+            | Op::RestoreAnnotation {
+                id,
+                base_rev,
+                snapshot,
+            } => {
                 let restore = matches!(op, Op::RestoreAnnotation { .. });
                 let place = self.annotation_target(id, *base_rev, restore)?;
                 let entry = &self.state.annotations[place];
+                if restore && entry.dropped {
+                    return Err(missing(id));
+                }
+                // The operation names its file in the snapshot; a record
+                // on another file is not the one it knows.
+                if entry.record.file != snapshot.file {
+                    return Err(if restore {
+                        deleted(id, entry.record.meta.rev)
+                    } else {
+                        conflict(Current::Annotation {
+                            record: Box::new(entry.record.clone()),
+                        })
+                    });
+                }
                 if restore {
-                    if entry.dropped {
-                        return Err(missing(id));
-                    }
                     self.require_layer(&entry.record.layer, &format!("{path}/snapshot/layer"))?;
+                } else {
+                    self.deletes.push(place);
                 }
                 self.save_annotation(place);
                 self.count_record(
@@ -1119,9 +1210,9 @@ impl Transaction<'_> {
                     let (author, stamp) = (self.write.author.clone(), self.stamp.clone());
                     let entry = &mut self.state.labels[place];
                     entry.cleared = after.is_none();
-                    if let Some(value) = after {
-                        entry.record.value = value.clone();
-                    }
+                    // A cleared label gets its next value from the
+                    // operation that sets it; the old one is let go.
+                    entry.record.value = after.clone().unwrap_or(LabelValue::Bool(false));
                     entry.record.meta.rev += 1;
                     entry.record.meta.modified_by = author;
                     entry.record.meta.modified_at = stamp;
@@ -1255,6 +1346,12 @@ impl Transaction<'_> {
                 entry.deleted = true;
                 entry.record.rev += 1;
                 let rev = entry.record.rev;
+                // No operation brings a deleted layer back: only its id
+                // and revision are kept.
+                entry.record.name = String::new();
+                entry.record.color = None;
+                entry.record.source = LayerSource::default();
+                entry.record.unknown = BTreeMap::new();
                 self.changed(RevisionKind::Layer, id, rev);
                 self.state.live_layers -= 1;
             }
@@ -1311,5 +1408,31 @@ impl Transaction<'_> {
                 layer.live_records = count;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What an export reads, it reads with the store held still: nothing
+    /// can be written between one file's view and the next.
+    #[test]
+    fn views_are_read_with_the_store_held_still() {
+        let backend = MemoryBackend::new(MemoryConfig {
+            author: Author::parse("user:test").expect("author"),
+            schema: None,
+        });
+        let key = FileKey::parse("sop:1.2.3").expect("key");
+
+        let held = backend
+            .read_views(|view| {
+                assert_eq!(view(&key, 0, 1).num_roi, 0);
+                backend.state.try_lock().is_err()
+            })
+            .expect("read");
+
+        assert!(held, "a write could get in while the views are read");
+        assert!(backend.state.try_lock().is_ok());
     }
 }

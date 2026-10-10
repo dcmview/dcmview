@@ -781,6 +781,19 @@ fn a_batch_cannot_leave_an_invalid_record_behind_a_delete() {
         ViolationCode::GeometryNotAllowed
     );
     assert_eq!(store.revision(), 3);
+
+    // The refusal points at the last operation that changed the record.
+    let again = |base_rev: u64, class: &str| {
+        json!({ "type": "update_annotation", "id": id(2), "file": FIRST, "base_rev": base_rev,
+                "before": { "class": "roi" }, "after": { "class": class } })
+    };
+    let refused = store.apply(json!({ "type": "batch", "ops": [
+        again(1, "landmark"), touch(3, "roi"), again(2, "landmark"),
+    ] }));
+    assert!(
+        matches!(&refused, ApplyResult::Invalid { violations } if violations[0].path.starts_with("/op/ops/2/")),
+        "{refused:?}"
+    );
 }
 
 /// A layer knows what it holds, through moves between layers and through
@@ -845,47 +858,90 @@ fn a_result_keeps_an_annotation_and_a_label_with_one_id_apart() {
     assert_eq!(revs, [(id(1), 1), (id(1), 2)]);
 }
 
-/// Deleted annotations are kept whole for a restore only up to a number
-/// of bytes, oldest dropped first. One that was dropped keeps its id, so
-/// the id is never used again, and a restore of it finds nothing.
+/// Deleted annotations are kept whole for a restore up to a number of
+/// bytes, exactly; past it the oldest is dropped, not the newest; what a
+/// restore takes back no longer counts; and one that was dropped keeps its
+/// id, so the id is never used again, and a restore of it finds nothing.
 #[test]
 fn deleted_annotations_are_kept_whole_up_to_a_bound() {
     let mut store = Store::new();
-    // Each record is a little under four mebibytes: sixteen fit the bound
-    // and the seventeenth passes it.
-    const EACH: usize = 4 * 1024 * 1024 - 4_096;
-    let count = (DELETED_BYTES / EACH + 1) as u32;
-    let restore = |record: u32| {
-        json!({ "type": "restore_annotation", "id": id(record), "base_rev": 2,
+    const RECORDS: u32 = 16;
+    let restore = |record: u32, base_rev: u64| {
+        json!({ "type": "restore_annotation", "id": id(record), "base_rev": base_rev,
                 "snapshot": rect(record, FIRST, DEFAULT_LAYER_ID) })
     };
-    for record in 1..=count {
+    let padded = |record: u32, padding: usize| {
         let mut large = rect(record, FIRST, DEFAULT_LAYER_ID);
-        large["extensions"] = json!({ "test": "x".repeat(EACH) });
-        store.applied(create(large));
+        large["extensions"] = json!({ "test": "x".repeat(padding) });
+        create(large)
+    };
+    // What a record without padding counts for: the length of its JSON.
+    store.applied(padded(99, 0));
+    let plain = store.backend.snapshot(&[key(FIRST)]).expect("snapshot");
+    let plain = serde_json::to_string(&plain.annotations[0])
+        .expect("record")
+        .len();
+    // Sixteen records that count for exactly the bound together.
+    let padding = DELETED_BYTES / RECORDS as usize - plain;
+    assert_eq!((plain + padding) * RECORDS as usize, DELETED_BYTES);
+    for record in 1..=RECORDS {
+        store.applied(padded(record, padding));
         store.applied(delete(record, 1));
     }
+    // At the bound nothing is dropped: the oldest comes back.
+    assert_eq!(store.applied(restore(1, 2)), [(id(1), 3)]);
 
-    // The oldest was dropped: nothing to restore, and its id stays taken.
+    // Deleted again, record 1 is the newest. One small record more passes
+    // the bound, and the oldest goes: record 2, not 1 and not the new one.
+    store.applied(delete(1, 3));
+    store.applied(padded(17, 0));
+    store.applied(delete(17, 1));
     assert!(matches!(
-        store.conflict(restore(1)),
+        store.conflict(restore(2, 2)),
         Current::Missing { .. }
     ));
     assert_eq!(
-        store.refused(create(rect(1, FIRST, DEFAULT_LAYER_ID))),
-        ViolationCode::DuplicateId
+        store.refused(create(rect(2, FIRST, DEFAULT_LAYER_ID))),
+        ViolationCode::DuplicateId,
+        "its id stays taken"
     );
     assert!(matches!(
-        store.conflict(delete(1, 2)),
+        store.conflict(delete(2, 2)),
         Current::Deleted { rev: 2, .. }
     ));
-    // The others come back as they were deleted.
-    assert_eq!(store.applied(restore(2)), [(id(2), 3)]);
-    assert_eq!(store.applied(restore(count)), [(id(count), 3)]);
+    assert_eq!(store.applied(restore(1, 4)), [(id(1), 5)]);
+    assert_eq!(store.applied(restore(17, 2)), [(id(17), 3)]);
+
+    // What the two restores took back no longer counts: another full
+    // record fits beside records 3 to 16 without one of them going.
+    store.applied(padded(18, padding));
+    store.applied(delete(18, 1));
+    assert_eq!(store.applied(restore(3, 2)), [(id(3), 3)]);
     let restored = store.backend.snapshot(&[key(FIRST)]).expect("snapshot");
-    assert_eq!(restored.annotations.len(), 2);
-    assert!(restored
+    let third = restored
         .annotations
         .iter()
-        .all(|record| record.extensions["test"].as_str().map(str::len) == Some(EACH)));
+        .find(|record| record.id.to_string() == id(3))
+        .expect("record 3");
+    assert_eq!(
+        third.extensions["test"].as_str().map(str::len),
+        Some(padding),
+        "restored as it was deleted"
+    );
+
+    // Deleted in one envelope, records age in the order it deleted them.
+    let mut store = Store::new();
+    let mut ops = Vec::new();
+    for record in 1..=RECORDS + 1 {
+        store.applied(padded(record, padding));
+        ops.push(delete(record, 1));
+    }
+    store.applied(json!({ "type": "batch", "ops": ops }));
+    assert!(matches!(
+        store.conflict(restore(1, 2)),
+        Current::Missing { .. }
+    ));
+    for record in 2..=RECORDS + 1 {
+        assert_eq!(store.applied(restore(record, 2)), [(id(record), 3)]);
+    }
 }

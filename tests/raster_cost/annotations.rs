@@ -267,6 +267,97 @@ fn a_batch_holds_each_label_it_changes_once() {
     assert_eq!(document.labels[0].meta.rev, 1);
 }
 
+/// What the store keeps of what was deleted is bounded: deleted
+/// annotations whole up to `DELETED_BYTES`, and beyond that an id and a
+/// revision each, within 2,048 bytes; a deleted layer and a cleared label
+/// keep no content at all.
+#[test]
+fn what_is_kept_of_deleted_things_is_bounded() {
+    const REQUESTS: u32 = 300;
+    const EACH: usize = 1024 * 1024;
+    const RESERVED_ID_BYTES: u64 = 2_048;
+    let mut schema = dcmview_annotation::LabelSchema::implicit();
+    schema.fields = serde_json::from_value(json!([{
+        "id": "note", "name": "Note", "type": "text", "applies_to": ["series"],
+    }]))
+    .expect("field");
+    let backend = MemoryBackend::new(MemoryConfig {
+        author: Author::parse("user:test").expect("author"),
+        schema: Some(schema),
+    });
+    let files = BTreeMap::from([(
+        FileKey::parse(FILE).expect("key"),
+        ImageSize {
+            columns: 4_096,
+            rows: 4_096,
+            frames: 65_536,
+        },
+    )]);
+    // One request: an annotation with a megabyte of points and a long
+    // frame list, a layer with a megabyte it does not know, and a label
+    // with a long value, each created and then deleted or cleared. It is
+    // written as text and read once, so that building it holds little.
+    let points = (0..40_000)
+        .map(|p| format!(r#"{{"x":{},"y":{}.5}}"#, p % 4_096, p / 4_096))
+        .collect::<Vec<_>>()
+        .join(",");
+    let frames = (0..20_000)
+        .map(|frame| frame.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let notes = "x".repeat(EACH);
+    let value = "x".repeat(60_000);
+    let request = |n: u32| -> OpEnvelope {
+        let stamps = r#""rev":1,"created_by":"user:test","created_at":"2026-10-09T08:00:00.000Z","modified_by":"user:test","modified_at":"2026-10-09T08:00:00.000Z""#;
+        let record = format!(
+            r#"{{"id":"{id}","file":"{FILE}","frames":{{"set":[{frames}]}},"layer":"{DEFAULT_LAYER_ID}","class":"roi","geometry":{{"type":"polygon","points":[{points}]}},"attributes":{{}},"extensions":{{}},{stamps}}}"#,
+            id = id(n)
+        );
+        // The delete needs the record's id and file, not its content.
+        let snapshot = format!(
+            r#"{{"id":"{id}","file":"{FILE}","frames":"all","layer":"{DEFAULT_LAYER_ID}","class":"roi","geometry":{{"type":"point","x":1,"y":1}},"attributes":{{}},"extensions":{{}},{stamps}}}"#,
+            id = id(n)
+        );
+        let label = |base_rev: &str, after: &str| {
+            format!(
+                r#"{{"type":"set_label","id":"{id}","base_rev":{base_rev},"target":{{"series":"1.2.{n}"}},"field":"note","layer":"{DEFAULT_LAYER_ID}","before":null,"after":{after}}}"#,
+                id = id(n)
+            )
+        };
+        let text = format!(
+            r#"{{"op_id":"{op}","actor":"user:test","ts":"2026-10-09T08:00:00.000Z","op":{{"type":"batch","ops":[{{"type":"create_annotation","annotation":{record}}},{{"type":"delete_annotation","id":"{id}","base_rev":1,"snapshot":{snapshot}}},{{"type":"create_layer","layer":{{"id":"layer-{n}","name":"Layer","kind":"user","notes":"{notes}"}}}},{{"type":"delete_layer","id":"layer-{n}","base_rev":1,"snapshot":{{"id":"layer-{n}","name":"Layer","kind":"user"}}}},{create},{clear}]}}}}"#,
+            op = id(1_000_000 + n),
+            id = id(n),
+            create = label("null", &format!("\"{value}\"")),
+            clear = label("1", "null"),
+        );
+        OpEnvelope::from_json_str(&text).expect("envelope")
+    };
+
+    let ((), peak) = heap::peak_during(|| {
+        for n in 1..=REQUESTS {
+            let results = backend.apply(vec![request(n)], &files).expect("store");
+            assert!(
+                matches!(results[0], ApplyResult::Ok { .. }),
+                "{:?}",
+                results[0]
+            );
+        }
+    });
+
+    // The bound, a stated number of bytes for each id that stays taken
+    // (three a request), and room for the one request being applied.
+    let allowed = dcmview::annotations::DELETED_BYTES as u64
+        + 3 * u64::from(REQUESTS) * RESERVED_ID_BYTES
+        + 16 * 1024 * 1024;
+    assert!(
+        peak <= allowed,
+        "{REQUESTS} requests left {peak} bytes held, more than {allowed}"
+    );
+    // Far below what the requests carried.
+    assert!(allowed < u64::from(REQUESTS) * 2 * EACH as u64 / 4);
+}
+
 /// The rows of an `--annotations` CSV are kept as rows until something
 /// needs them as records: a ROI costs its coordinates and its frame list,
 /// within 256 bytes, not a record.

@@ -305,13 +305,18 @@ pub async fn replace_embed_rois(
 /// nothing: a file whose key is not settled is written from its staged
 /// rows, and has no row when it has none.
 ///
-/// The export is one read: the staged rows are read under the import's
-/// lock (`AnnotationStore::with_staged`), which is held to the end, and
-/// the records of every settled file in one call of
-/// `MemoryBackend::embed_rois`, so no row of the CSV shows a write that
-/// another row of the same CSV does not. While the store holds no
-/// annotation at all, every view is its file's staged rows and no key is
-/// looked at.
+/// The export is one read. The staged rows are read under the import's
+/// lock (`AnnotationStore::with_staged`), which is held to the end. Rows
+/// staged for a file whose key is settled are made records first; then the
+/// views of every file with a settled key are read with the store held
+/// still (`MemoryBackend::read_views`), and which keys are settled is read
+/// inside that same hold. A record is written only after its file's key
+/// was settled, so every record the read holds is seen with its key; a
+/// write that comes during the export is in no row. No row of the CSV
+/// therefore shows a write that another row of the same CSV does not. A
+/// file whose key settles while the export runs is written from its
+/// staged rows. While the store holds no annotation at all, every view is
+/// its file's staged rows and no key is looked at.
 pub async fn export_embed_csv(
     registry: &FileRegistry,
     store: &AnnotationStore,
@@ -326,29 +331,57 @@ pub async fn export_embed_csv(
         .with_staged(|staged| {
             // With no annotation in the store every view is the file's
             // staged rows, whatever its key: no key is looked at.
-            let records = !backend.holds_no_annotation().map_err(store_error)?;
-            let mut views = Vec::new();
-            // For each file, its place in `views` when its view is records.
-            let mut plan = Vec::with_capacity(files.len());
-            for file in &files {
-                let key = records.then(|| settled_key(registry, file.index)).flatten();
-                plan.push(key.is_some().then_some(views.len()));
-                if let Some(key) = key {
-                    if let Some(rows) = staged.remove(&file.index) {
-                        make_records(store, file, &key, &rows)?;
-                    }
-                    views.push((key, file.index, file.frame_count));
+            if backend.holds_no_annotation().map_err(store_error)? {
+                let rows = files.iter().filter_map(|file| {
+                    let rois = staged.get(&file.index)?;
+                    (rois.num_roi > 0).then(|| (file.path.to_string_lossy(), rois))
+                });
+                return write_embed_csv(rows).map_err(store_error);
+            }
+            // Rows staged for a file whose key is settled become records
+            // first, as a read of that file's view would make them.
+            let indexes: Vec<usize> = staged.keys().copied().collect();
+            for index in indexes {
+                let Some(key) = settled_key(registry, index) else {
+                    continue;
+                };
+                if let (Some(file), Some(rows)) = (files.get(index), staged.remove(&index)) {
+                    make_records(store, file, &key, &rows)?;
                 }
             }
-            let shown = backend.embed_rois(&views).map_err(store_error)?;
-            let rows = files.iter().zip(&plan).filter_map(|(file, place)| {
-                let rois = match place {
-                    Some(place) => &shown[*place],
-                    None => staged.get(&file.index)?,
-                };
-                (rois.num_roi > 0).then(|| (file.path.to_string_lossy(), rois))
-            });
-            write_embed_csv(rows).map_err(store_error)
+            // Then one read with the store held still. Which files have a
+            // settled key is read inside it: a key settles before its
+            // first record is written, so a record the read holds is under
+            // a key that is seen as settled here, and a write that waits
+            // for this read is in none of the rows.
+            let rows: Vec<(
+                std::borrow::Cow<'_, str>,
+                std::borrow::Cow<'_, EmbedRoiAnnotations>,
+            )> = backend
+                .read_views(|view| {
+                    files
+                        .iter()
+                        .filter_map(|file| {
+                            let rois = match staged.get(&file.index) {
+                                // Its key settled after the step above:
+                                // its rows as the import read them.
+                                Some(rows) => std::borrow::Cow::Borrowed(rows),
+                                None => std::borrow::Cow::Owned(view(
+                                    &settled_key(registry, file.index)?,
+                                    file.index,
+                                    file.frame_count,
+                                )),
+                            };
+                            (rois.num_roi > 0).then(|| (file.path.to_string_lossy(), rois))
+                        })
+                        .collect()
+                })
+                .map_err(store_error)?;
+            write_embed_csv(
+                rows.iter()
+                    .map(|(path, rois)| (path.clone(), rois.as_ref())),
+            )
+            .map_err(store_error)
         })
         .map_err(store_error)?
 }
@@ -808,6 +841,63 @@ mod tests {
             embed_rois(&registry, &store, 0).await.expect("view"),
             saved,
             "the view is what the save answered, the moved ROI included"
+        );
+    }
+    /// A row the import read past the image edge is held as loaded, and an
+    /// operation that only deletes or restores it does not judge it: it
+    /// goes and comes back as it was.
+    #[tokio::test]
+    async fn a_leniently_loaded_record_can_be_deleted_and_restored_as_it_was() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/golden-uncompressed-u16-multiframe.dcm");
+        let registry = FileRegistry::from_files(vec![crate::loader::test_entry(&fixture)]);
+        let store = AnnotationStore::loading();
+        let outside = EmbedRoiAnnotations {
+            num_roi: 1,
+            roi_coords: vec![[500, 600, 700, 800]],
+            roi_frames: Vec::new(),
+        };
+        import_embed_rows(
+            &registry,
+            &store,
+            std::collections::HashMap::from([(0, outside.clone())]),
+        )
+        .expect("import");
+        let key = settle_key(&registry, 0).await.expect("key");
+        assert_eq!(
+            embed_rois(&registry, &store, 0).await.expect("view"),
+            outside
+        );
+        let record = store.backend().embed_records(&key, 0).expect("records")[0].clone();
+        let send = |kind: &str, base_rev: u64| {
+            let envelope = serde_json::from_value(serde_json::json!({
+                "op_id": new_id(), "actor": "user:test", "ts": "2026-10-09T08:00:00.000Z",
+                "op": { "type": kind, "id": record.id, "base_rev": base_rev, "snapshot": record },
+            }))
+            .expect("envelope");
+            apply_op(&registry, &store, envelope, Some(0))
+        };
+
+        let deleted = send("delete_annotation", 1).await.expect("delete");
+        assert!(
+            matches!(deleted.result, ApplyResult::Ok { .. }),
+            "{deleted:?}"
+        );
+        assert_eq!(
+            embed_rois(&registry, &store, 0)
+                .await
+                .expect("view")
+                .num_roi,
+            0
+        );
+        let restored = send("restore_annotation", 2).await.expect("restore");
+        assert!(
+            matches!(restored.result, ApplyResult::Ok { .. }),
+            "{restored:?}"
+        );
+        assert_eq!(
+            embed_rois(&registry, &store, 0).await.expect("view"),
+            outside
         );
     }
 }

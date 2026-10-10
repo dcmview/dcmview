@@ -77,8 +77,11 @@ export const THUMBNAIL_DEFAULT_SIZE = 256;
  * envelope names a file by key, and a key this viewer shows may be shared
  * by several loaded files (one SOP Instance UID) until they are compared.
  * With `file`, every file key in the envelope must be the settled key of
- * that one file, or the request is `409 file_key_replaced`; an operation
- * can then not be recorded on another file than the one it names. The
+ * that one file, or the request is `409 file_key_replaced`. The record an
+ * operation changes must be on the file the operation names, for every
+ * kind of operation (`409 annotation_conflict` otherwise), so a request
+ * for one file neither records anything on another nor changes a record
+ * of another. The
  * viewer's page always sends it. Without it, a `sop:` key whose UID more
  * than one loaded file carries is `409 file_key_ambiguous`.
  */
