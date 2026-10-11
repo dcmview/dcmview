@@ -48,7 +48,7 @@
 
 use super::{FileRegistry, KeyError};
 use crate::annotations::{
-    canonicalize_annotations,
+    canonicalize_annotations, common_directory, document_path,
     embed::{replacement_ops, rows_as_creates},
     memory::{now, Checking, ViewCheck, Write},
     AnnotationBackend, AnnotationIndexMap, AnnotationStore, EmbedRoiAnnotations, ImportStatus,
@@ -57,10 +57,12 @@ use crate::annotations::{
 use crate::api::contracts::{AnnotationImportResponse, AnnotationImportState, FileKeyError};
 use crate::types::FileEntry;
 use dcmview_adapters::embed::EmbedRow;
-use dcmview_adapters::Report;
+use dcmview_adapters::{
+    ExportAdapter, ExportContext, ExportError, NativeJson, NativeJsonLines, Report,
+};
 use dcmview_annotation::{
-    new_id, ApplyResult, Author, Current, FileKey, ImageSize, KeyScheme, LabelTarget, Op,
-    OpEnvelope, Violation, ViolationCode,
+    new_id, ApplyResult, Author, Current, FileKey, FileKind, FileRef, ImageSize, KeyScheme,
+    LabelTarget, Op, OpEnvelope, Space, Violation, ViolationCode,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
@@ -522,8 +524,152 @@ pub async fn export_native(
     store: &AnnotationStore,
     form: NativeForm,
 ) -> Result<NativeExport, AnnotationError> {
-    let _ = (registry, store, form);
-    todo!("ADP1")
+    store
+        .wait_until_ready()
+        .await
+        .map_err(|error| AnnotationError::ImportFailed(error.to_string()))?;
+    let permit = store.export_permit().await.map_err(store_error)?;
+    let files = registry.files_snapshot();
+    let mut indexes = store
+        .with_staged(|staged| staged.keys().copied().collect::<Vec<_>>())
+        .map_err(store_error)?;
+    indexes.sort_unstable();
+    for index in indexes {
+        let key = settle_key(registry, index).await?;
+        let file = files.get(index).ok_or(AnnotationError::NotFound(index))?;
+        store_staged_rows(store, file, &key)?;
+    }
+    let registry = registry.clone();
+    let backend = store.backend().clone();
+    tokio::task::spawn_blocking(move || {
+        let mut document = backend.export().map_err(store_error)?;
+        let mut by_key = HashMap::new();
+        for file in &files {
+            if let Some(key) = settled_key(&registry, file.index) {
+                by_key
+                    .entry(key)
+                    .and_modify(|index: &mut usize| *index = (*index).min(file.index))
+                    .or_insert(file.index);
+            }
+        }
+        let root = common_directory(&files);
+        let mut shown = HashMap::<FileKey, FileKey>::new();
+        let mut visit = |key: &mut FileKey| {
+            if let Some(replacement) = shown.get(key) {
+                *key = replacement.clone();
+                return Ok(());
+            }
+            let file = by_key
+                .get(key)
+                .and_then(|index| files.get(*index))
+                .ok_or_else(|| {
+                    AnnotationError::Store("The store names a file that is not loaded.".to_string())
+                })?;
+            let replacement = FileKey::parse(&registry.shown_key_of(key)).map_err(store_error)?;
+            document.files.push(document_file_ref(
+                &registry,
+                file,
+                replacement.clone(),
+                root.as_deref(),
+            ));
+            shown.insert(key.clone(), replacement.clone());
+            *key = replacement;
+            Ok(())
+        };
+        for annotation in &mut document.annotations {
+            visit(&mut annotation.file)?;
+        }
+        for label in &mut document.labels {
+            visit_target_key(&mut label.target, &mut visit)?;
+        }
+        let paths = BTreeMap::<FileKey, Vec<String>>::new();
+        let context = ExportContext {
+            paths: &paths,
+            max_bytes: u64::MAX,
+        };
+        let mut bytes = Vec::new();
+        let report = match form {
+            NativeForm::Json => NativeJson.export(&document, &context, &mut bytes),
+            NativeForm::JsonLines => NativeJsonLines.export(&document, &context, &mut bytes),
+        }
+        .map_err(|error| match error {
+            ExportError::TooLarge { limit } => AnnotationError::ExportTooLarge { limit },
+            error => store_error(error),
+        })?;
+        Ok(NativeExport {
+            bytes,
+            report,
+            permit,
+        })
+    })
+    .await
+    .map_err(|_| AnnotationError::Store("The annotation export thread failed.".to_string()))?
+}
+
+fn document_file_ref(
+    registry: &FileRegistry,
+    file: &FileEntry,
+    key: FileKey,
+    root: Option<&std::path::Path>,
+) -> FileRef {
+    let summary = registry.masker().map(|masker| masker.summary(file));
+    let present = |value: &str| (!value.is_empty()).then(|| value.to_string());
+    FileRef {
+        key,
+        kind: if file.format.is_raster() {
+            FileKind::Raster
+        } else {
+            FileKind::Dicom
+        },
+        format: file.format.as_str().to_string(),
+        sop_instance_uid: present(
+            summary
+                .as_ref()
+                .map_or(&file.sop_instance_uid, |summary| &summary.sop_instance_uid),
+        ),
+        sop_class_uid: present(&file.sop_class_uid),
+        study_instance_uid: present(
+            summary
+                .as_ref()
+                .map_or(&file.study_instance_uid, |summary| {
+                    &summary.study_instance_uid
+                }),
+        ),
+        series_instance_uid: present(
+            summary
+                .as_ref()
+                .map_or(&file.series_instance_uid, |summary| {
+                    &summary.series_instance_uid
+                }),
+        ),
+        patient_id: present(
+            summary
+                .as_ref()
+                .map_or(&file.patient_id, |summary| &summary.patient_id),
+        ),
+        path: document_path(root, &file.path),
+        size_bytes: file.size_bytes,
+        rows: file.rows,
+        columns: file.columns,
+        frames: file.frame_count,
+        digest: registry
+            .key_status(file.index)
+            .and_then(|status| status.digest)
+            .map(|digest| FileKey::blake3(&digest).as_str().to_string()),
+        space: Space {
+            exif_orientation: file
+                .raster
+                .as_ref()
+                .map(|raster| raster.orientation)
+                .filter(|value| *value != 1),
+            ..Space::default()
+        },
+        pixel_digest: Vec::new(),
+        frame_source: None,
+        external_id: None,
+        spacing: None,
+        unknown: BTreeMap::new(),
+    }
 }
 
 /// Ends the store's import with a native `--annotations` document

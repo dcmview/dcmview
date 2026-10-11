@@ -339,19 +339,45 @@ impl FileResolver for FileLookup {
 /// paths as the registry holds them (`Path::components`, nothing resolved).
 /// With one file it is that file's directory. `None` when `files` is empty
 /// or the paths share no first component.
-#[cfg_attr(not(test), expect(dead_code, reason = "not called yet"))]
 pub(crate) fn common_directory(files: &[Arc<FileEntry>]) -> Option<PathBuf> {
-    let _ = files;
-    todo!("ADP1")
+    let mut files = files.iter();
+    let mut common: Vec<_> = files.next()?.path.parent()?.components().collect();
+    for file in files {
+        let parent = file.path.parent()?;
+        let shared = common
+            .iter()
+            .copied()
+            .zip(parent.components())
+            .take_while(|(a, b)| a == b)
+            .count();
+        common.truncate(shared);
+        if common.is_empty() {
+            return None;
+        }
+    }
+    if common.is_empty() {
+        None
+    } else {
+        Some(common.into_iter().collect())
+    }
 }
 
 /// `path` as a document names it (`FileRef::path`): its components below
 /// `root`, each as text (`to_string_lossy`), joined with `/`, when `root`
 /// is given and `path` is below it; otherwise the whole path as text.
-#[cfg_attr(not(test), expect(dead_code, reason = "not called yet"))]
 pub(crate) fn document_path(root: Option<&Path>, path: &Path) -> String {
-    let _ = (root, path);
-    todo!("ADP1")
+    if let Some(relative) = root
+        .and_then(|root| path.strip_prefix(root).ok())
+        .filter(|relative| !relative.as_os_str().is_empty())
+    {
+        relative
+            .components()
+            .map(|part| part.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/")
+    } else {
+        path.to_string_lossy().into_owned()
+    }
 }
 
 fn build_file_lookup(
