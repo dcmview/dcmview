@@ -750,6 +750,18 @@ impl<F: KeyedFile + Clone> KeyTable<F> {
         })
     }
 
+    /// Whether another registered file carries this file's usable UID: its
+    /// group holds more than one file. A `sop:` key built from that UID
+    /// then does not say which of them is meant
+    /// ([`KeyTable::file_for_key`] names the first). `false` for a file
+    /// without a usable UID and for an index that is not registered.
+    pub fn shares_uid(&self, index: usize) -> bool {
+        self.entries
+            .get(index)
+            .and_then(|entry| self.groups.get(&entry.group))
+            .is_some_and(|group| group.multiple_files)
+    }
+
     /// The file a key names. A `sop:` key names the first file registered
     /// with that UID, and keeps naming it after a split has replaced the key
     /// (`docs/design/annotation-model.md` 1.7: "the server keeps an

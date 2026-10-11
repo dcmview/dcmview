@@ -692,6 +692,7 @@ dependencies = [
  "tracing-subscriber",
  "ts-rs",
  "urlencoding",
+ "uuid",
  "walkdir",
 ]
 
