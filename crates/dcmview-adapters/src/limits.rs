@@ -15,7 +15,8 @@ pub const SNIFF_BYTES: usize = 4_096;
 
 /// Longest record of an EMBED CSV, in bytes: 16,777,216 (16 MiB), the
 /// model's bound on one operation envelope. A record is one row, however
-/// many lines its quoted fields span; the header is a record too.
+/// many lines its quoted fields span, counted with the line terminator
+/// that ends it; the header is a record too.
 pub const MAX_CSV_ROW_BYTES: u64 = 16_777_216;
 
 /// How far past [`MAX_CSV_ROW_BYTES`] the reader may have read when it

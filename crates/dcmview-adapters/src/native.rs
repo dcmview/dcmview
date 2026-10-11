@@ -61,7 +61,8 @@
 //! 1. **Counts.** At most [`crate::limits::MAX_FILES`] files and
 //!    [`crate::limits::MAX_RECORDS`] annotations and labels
 //!    ([`ImportError::TooLarge`]); in the JSON Lines form this is checked
-//!    as the lines are read, before the line past the bound is kept.
+//!    as the lines are read, before the line past the bound is kept, and
+//!    so is the bound on layers of step 4.
 //! 2. **The schema** the input carries is not taken. When it is there and
 //!    is not equal to `context.schema`, the report warns
 //!    `schema_not_applied` at row 1. Records are checked against

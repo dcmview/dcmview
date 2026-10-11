@@ -244,19 +244,24 @@ pub fn check_header(input: &mut dyn Read) -> Result<(), ImportError> {
 ///    [`crate::limits::MAX_CSV_PATH_BYTES`], which names no file.
 /// 3. **A row that names no loaded file is counted and nothing else of it
 ///    is looked at**, whatever its other fields hold.
-/// 4. `ROI_coords`, without surrounding whitespace, is a JSON list of
-///    lists of numbers ([`ImportError::RoiCoords`]), each of exactly four
-///    ([`ImportError::RoiCoordsEntry`]), at most
-///    [`crate::limits::MAX_ROIS_PER_ROW`] of them. Each number is taken by
-///    "Lenient coordinates" below.
+/// 4. `ROI_coords`, without surrounding whitespace, is a JSON list
+///    ([`ImportError::RoiCoords`]) of at most
+///    [`crate::limits::MAX_ROIS_PER_ROW`] entries
+///    ([`ImportError::TooLarge`]), each a list
+///    ([`ImportError::RoiCoords`]) of exactly four entries
+///    ([`ImportError::RoiCoordsEntry`] for the first that is not), each a
+///    number ([`ImportError::RoiCoords`]); judged in that order, by
+///    "Counting before keeping" below. Each number is taken by "Lenient
+///    coordinates".
 /// 5. `num_ROI`, when the column is there, is a non-negative integer
 ///    without surrounding whitespace ([`ImportError::NumRoi`]) equal to the
 ///    number of boxes ([`ImportError::NumRoiMismatch`]).
 /// 6. `ROI_frames`, when the column is there, is a JSON list of lists of
-///    integers from 0 to 4,294,967,295 ([`ImportError::RoiFrames`]), each
-///    of at most [`crate::limits::MAX_FRAMES_PER_ROI`], and is empty or has
-///    one list for each box ([`ImportError::RoiFramesLength`]). Without the
-///    column it is empty.
+///    integers from 0 to 4,294,967,295 ([`ImportError::RoiFrames`]): at
+///    most [`crate::limits::MAX_ROIS_PER_ROW`] lists, each of at most
+///    [`crate::limits::MAX_FRAMES_PER_ROI`] ([`ImportError::TooLarge`]),
+///    counted as in step 4. It is empty or has one list for each box
+///    ([`ImportError::RoiFramesLength`]). Without the column it is empty.
 /// 7. For each file the path names, in the resolver's order: a slot an
 ///    earlier row was matched to is [`ImportError::DuplicatePath`]; then
 ///    every frame index must be below that file's frame count
@@ -316,10 +321,23 @@ pub fn check_header(input: &mut dyn Read) -> Result<(), ImportError> {
 /// [`crate::limits::MAX_CSV_ROWS`] rows. Nothing is allocated from
 /// `num_ROI` or from any other number the file states.
 ///
+/// ## Counting before keeping
+///
+/// A field of a matched row is counted before its values are kept, so
+/// that a row of millions of empty boxes, or one box of millions of
+/// numbers, costs no more than the row's own text. `ROI_coords` and
+/// `ROI_frames` are each read from the row's text three times: as a list
+/// of anything (`Vec<serde::de::IgnoredAny>`, which holds nothing) for the
+/// number of entries; then as a list of lists of anything for the length
+/// of each entry; and only then, both within their bounds, as values
+/// (`Vec<[f64; 4]>` and `Vec<Vec<u32>>`).
+///
 /// The read holds the rows it hands on, the one record it is reading with
 /// what that record parses to, and for each matched slot the number of the
-/// row that matched it. It reads `input` once, front to back, and looks at
-/// each row once.
+/// row that matched it. A row that is refused for its counts is refused
+/// while the reader holds no more than three times
+/// [`crate::limits::MAX_CSV_ROW_BYTES`]. It reads `input` once, front to
+/// back.
 pub fn read_rows(
     input: &mut dyn Read,
     resolver: &dyn FileResolver,
