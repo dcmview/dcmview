@@ -654,6 +654,7 @@ dependencies = [
  "chrono",
  "clap",
  "csv",
+ "dcmview-adapters",
  "dcmview-annotation",
  "dcmview-protocol",
  "dicom-core",
@@ -694,6 +695,19 @@ dependencies = [
  "urlencoding",
  "uuid",
  "walkdir",
+]
+
+[[package]]
+name = "dcmview-adapters"
+version = "0.5.0"
+dependencies = [
+ "csv",
+ "dcmview-annotation",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "ts-rs",
+ "uuid",
 ]
 
 [[package]]
