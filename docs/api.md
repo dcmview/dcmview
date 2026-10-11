@@ -864,16 +864,17 @@ A JSON Lines file that does not end with that line, or whose counts are not
 its lines, was cut off or altered and is not loaded; that includes a header
 line alone, with or without a line feed after it.
 
-Loading a document holds at most nine times the length of its text and
-64 MiB, whatever the text is: one record, or everything outside the
-records, may hold 524,288 JSON values; values nest at most 64 deep; and
-the values kept as written (`extensions` and members this version does not
-know) may number 65,536 and one more for every 16 bytes of text. A
-document past one of these fails its import. A record the viewer writes
-has about 40 values.
+Loading a document is bounded whatever the text is. What the import keeps
+may hold 8 bytes for each byte of text and 16 MiB, counted on the records
+as they are built; one record, or everything outside the records, may hold
+1,048,576 JSON values, 131,072 of them objects or arrays, nested at most
+64 deep, which bounds what building it holds to 256 MiB. A document past
+one of these fails its import. A document the viewer writes is counted at
+three bytes for a byte of text, and its records have about 40 values.
 
 - `files` has one `FileRef` for each file a record names, for the loaded
-  file with the lowest index that has that key. `path` is never absolute:
+  file that has that key, of several the one whose path sorts first.
+  `path` is never absolute:
   it is relative to the deepest directory that holds every loaded file,
   with `/` between components, and when the loaded files share no
   directory below the filesystem root, or only one above the home
@@ -897,13 +898,17 @@ has about 40 values.
   that would pass that while another is still being sent answers
   `503 annotation_export_busy` with `Retry-After: 1`, and succeeds when
   asked again after a download has ended. A document is always sent when
-  no other is, whatever its size.
+  no other is, whatever its size. A client that stops reading keeps its
+  share of the budget until its connection is closed.
 - Files with the same bytes share a key and each keeps its own ROIs. A
   record that is one such file's ROI says so in
   `"extensions": { "embed": { "row_of": "<path>", "imported": true } }`,
   and a later session puts it back on the file that path names. A masked
-  session writes `"copy": <n>` in place of `row_of`: which of the copies,
-  in the order they were loaded.
+  session, whose document holds no path, writes `"copies": <n>` in place
+  of `row_of`: the ROI was on one of `n` byte-identical files, and which
+  one is not recorded. A session that loads it puts such ROIs on the copy
+  whose path sorts first and counts them in its report as a
+  `copy_placement_not_kept` loss.
 - A session started with `--mask` names files by content alone: each
   `key` and `digest` is `b3:` and the BLAKE3 digest of the file's bytes,
   `path` is the name the session shows (`File 1`), the three instance UIDs
@@ -974,6 +979,8 @@ not loaded and `counts.refused` those of files that were found and not
 accepted, each with a warning at the file's row: `evidence_conflict` (the
 files found hold other bytes, or have another key, than the document
 names), `file_unverified` (a file found could not be read to compare),
+`file_ambiguous` (its path names more than 64 loaded files, or more than
+64 carry its UID, and nothing else finds it),
 `size_mismatch` (other rows, columns or frame count) and `key_unavailable`.
 `matched_by` says how the accepted files were found. A file is accepted
 only after it was compared with the key the document names it by, so a

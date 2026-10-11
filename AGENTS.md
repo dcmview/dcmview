@@ -965,9 +965,13 @@ is cached between requests.
   files whose path ends with it (`PathSuffixes`), not a path below some
   directory.
 - Byte-identical files keep their own rows through a document: export
-  marks a bound record with `extensions.embed.row_of` (`copy`, a place in
-  load order, in a masked document) when several loaded files have its
-  key, and import binds it to that copy or leaves it out.
+  marks a bound record with `extensions.embed.row_of` when several loaded
+  files have its key, and import binds it to that copy or leaves it out.
+  A masked document cannot say which copy (`copies`), and its rows go to
+  the copy whose path sorts first, reported as `copy_placement_not_kept`.
+- Discovery finds files in an order that differs from run to run. Nothing
+  a document says, and nothing an import chooses among equals, may depend
+  on a catalog index: sort by path.
 - Matching a document is linear in its references and the candidates they
   name. `PathSuffixes` sorts the paths once and a lookup never visits the
   other files of the same name; a later candidate step is looked up only
@@ -979,12 +983,16 @@ is cached between requests.
   of its size and shape, hashing each of those once.
 - The documents being downloaded hold at most `DOWNLOAD_BUDGET_BYTES`
   together, or one of any size; the response body owns its share.
-- Reading a document holds at most nine times its text and 64 MiB for
-  any input. The budgets that make it so (`MAX_UNIT_VALUES`, `MAX_DEPTH`,
-  `MAX_KEPT_VALUES`) are checked on the text before it is parsed, and a
-  JSON document is read a list element at a time; do not parse a whole
-  document or a line into a buffered value first. The cost test holds
-  hostile texts to the bound.
+- Reading a document is bounded for any input by a budget and a
+  transient. Memory is charged, not predicted: after each record is
+  built, `held::Held` counts what it holds on the record itself, and the
+  reader stops past `HELD_TEXT_MULTIPLE` bytes for a byte of text. A new
+  member of a model type that owns heap must be added to its `Held`
+  impl; the cost test compares the count with the allocator. The
+  transient of building one record is bounded before parsing
+  (`MAX_UNIT_VALUES`, `MAX_UNIT_CONTAINERS`, `MAX_DEPTH`), set from the
+  model's largest valid records. Do not parse a whole document or a line
+  into a buffered value first, and do not predict memory from text.
 - A JSON Lines document ends with its `end` line and is refused whole
   without it, a header alone included. An export refuses what an import's bounds (`Limits`) would
   refuse.

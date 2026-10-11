@@ -177,7 +177,9 @@ SOP Instance UID for a `sop:` key, the BLAKE3 digest of its bytes for a
   a copy of it elsewhere finds the same files. One path component (the
   file name) is enough to find a file; of several files a path finds, the
   one that passes the comparison takes the annotations. A path that names
-  more than 64 loaded files is too vague to find a file by;
+  more than 64 loaded files is too vague to find a file by, and so is a
+  UID that more than 64 loaded files carry; a file that only such a path
+  or UID could find is reported as `file_ambiguous`;
 - by content, when the document names a file by a `b3:` key and no key,
   UID or path finds it: among the loaded files of the same byte size,
   dimensions and format, the one whose bytes have that digest. So a copy
@@ -218,18 +220,31 @@ left of a file is its content digest, byte size, SOP class, format, rows,
 columns and frame count. Labels on a patient, study, series or folder are
 left out. It can be loaded into any session, masked or not:
 each file is found by its content, which hashes the loaded files of the
-same size and dimensions. Which of several byte-identical files a ROI
-belongs to is written as the copy's place in loading order, so it comes
-back on the same copy when the same files are loaded the same way. The
-annotated files are read to make the document.
+same size and dimensions. The annotated files are read to make the
+document.
+
+A masked document does not say which of several byte-identical files a
+ROI was on: it has no path to say it with, and such files differ in
+nothing else. It says only that the ROI was on one of that many copies.
+When the document is loaded, those ROIs are put on the copy whose path
+sorts first, the same one every time, and the import's report counts
+them as `copy_placement_not_kept`. To keep each copy's own ROIs, export
+from a session that is not masked.
 
 A JSON Lines file that was cut off, at any line, is not loaded.
 
 A document is read within bounds that no document the viewer writes comes
-near: 524,288 JSON values in one annotation, 64 levels of nesting, and
-one value kept in `extensions` or in members the viewer does not know for
-every 16 bytes of the file (after the first 65,536). A file past one of
-them fails to load and the import's message says which.
+near: 1,048,576 JSON values in one annotation (the largest mask and the
+largest polygon the model allows are within that), 131,072 of them objects
+or arrays, 64 levels of nesting, and 8 bytes of memory held for every byte
+of the file, after the first 16 MiB (what the viewer writes holds 3). A
+file past one of them fails to load and the import's message says which.
+
+One rule about empty documents: a document on a single line that holds no
+file, layer, annotation or label is taken for a JSON Lines file that was
+cut off after its first line, and is not loaded. The same empty document
+written over several lines is loaded, and brings nothing. No document the
+viewer writes is empty, because a session always has a layer.
 
 Loading a document is all or nothing: a record that breaks a rule of the
 annotation model fails the whole import and the report names its line. One

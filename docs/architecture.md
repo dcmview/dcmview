@@ -2035,8 +2035,8 @@ start of a file is for.
 | Files of a document | 1,048,576 |
 | Annotations and labels of a document | 1,048,576 |
 | Layers of a document | 4,096 |
-| JSON values of one record, or of a document's header | 524,288 |
-| JSON values kept as read (`extensions`, unknown members) | 65,536, and one more for every 16 bytes of text |
+| JSON values of one record, or of a document's header | 1,048,576, of which 131,072 objects and arrays |
+| Memory the records of a document hold | 8 bytes for each byte of text, and 16 MiB |
 | JSON nesting | 64 levels |
 
 ### EMBED ROI CSV
@@ -2149,7 +2149,8 @@ session's files and store.
   a settled key is in a document, so a file with staged rows that cannot be
   given a key fails the export (`422 file_key_unavailable`): rows are never
   left out silently. While a file is hashed the request waits. A `FileRef`
-  describes the loaded file with the lowest index that has the key, and
+  describes the loaded file that has the key, of several the one whose
+  path sorts first, and
   its `digest` is set when the registry has computed one. **A document
   never holds an absolute path** (`DocumentPaths`): every file's path is
   made absolute against the working directory, and a `path` is the
@@ -2170,7 +2171,9 @@ session's files and store.
   file whose own path ends with all of its components (`PathSuffixes`; one
   component is enough), so a document finds its files when a subfolder or
   a parent of the exported folder is loaded, or the folder was moved; a
-  path that names more than 64 loaded files is too vague and names none.
+  path that names more than 64 loaded files is too vague and names none,
+  and so is a UID that more than 64 loaded files carry; a reference that
+  nothing else finds is then refused as `file_ambiguous`.
   By content, a reference finds the loaded files of its byte size, rows,
   columns and frame count whose bytes have its digest, of its format and
   SOP class: a copy at a path the document does not name, or any file of
@@ -2203,13 +2206,19 @@ session's files and store.
 and each shows the rows written for it. A document says which: a record
 that is one copy's row carries
 `"extensions": { "embed": { "row_of": <path>, "imported": <bool> } }` when
-more than one loaded file has its key. A masked session, whose document
-holds no path, writes `"copy": <n>` in place of `row_of`: the file's place
-among the loaded files with that key, in index order from 0, which names
-the same file again when the copies are loaded in the same order. An
-import takes the member out and binds the record to the loaded file so
-named that has the record's key; when that copy is not loaded the record
-is left out and counted as unmatched. A record without the member shows
+more than one loaded file has its key. An import takes the member out and
+binds the record to the loaded file that path names and that has the
+record's key; when that copy is not loaded the record is left out and
+counted as unmatched. **A masked document does not say which copy
+(OWNER).** It holds no path, byte-identical files differ in nothing else,
+and the order discovery finds files in differs from run to run, so a place
+in that order would name another file each time. It writes
+`"copies": <n>` in place of `row_of`: the row was on one of `n` copies.
+An import binds such a record to the loaded copy whose path sorts first,
+which is the same in every run, and counts it as a
+`copy_placement_not_kept` loss in its report. For the same reason nothing
+a document says depends on the order files were found in: a reference
+describes the copy whose path sorts first, and `row_of` is a path. A record without the member shows
 on every copy. Settling one file's key settles every loaded file that
 carries its UID, so when an import has ended what such a copy shows does
 not depend on which copies were looked at; a copy without a UID shows a
@@ -2223,18 +2232,24 @@ texts still being sent are bounded together: 512 MiB
 (`DOWNLOAD_BUDGET_BYTES`), or one text of any size when no other is being
 sent; a document that would pass it is dropped when built and answered
 `503 annotation_export_busy` with `Retry-After`. A native import holds,
-for any input, at most nine times the length of the text and 64 MiB, and
-within four times the text for a document a session wrote, the records it
-leaves included. The model keeps `extensions` and unknown members as JSON
-values, which cost many times their text, so the reader counts the text's
-JSON values before it parses them: one record, or the header, holds at
-most 524,288; values nest at most 64 deep; and the values records keep as
-read are bounded by the length of the text. A JSON document is read a
-member and a list element at a time. A record a session writes has some
-40 values, one for nine bytes of text, and keeps at most six. Reading a
-CSV holds the rows it hands on, within 400 bytes a ROI.
-`tests/raster_cost/annotations.rs` counts the CSV read for 200,000 ROIs,
-the documents for 50,000, and pins the import's bound with hostile texts.
+for any input, at most a budget and a transient: what it keeps may hold 8
+bytes for each byte of text read and 16 MiB, and building one record or
+the header may hold 256 MiB more; a JSON document also has its text in a
+buffer, up to three times its length. The budget is charged, not
+predicted: the model keeps `extensions` and unknown members as JSON
+values and a two-byte member can cost a map node of several hundred
+bytes, so after each file reference, layer, annotation and label is built
+the reader counts what it holds on the thing itself (`held`: string and
+vector capacities, map nodes, kept values) and stops when the total is
+past the budget. The transient is bounded before parsing: one pass over
+the text holds a record, or the header, to 1,048,576 JSON values, 131,072
+objects and arrays, and 64 levels. The model's largest mask and polygon
+are within those. A JSON document is read a member and a list element at
+a time. A document a session writes is counted at three bytes for a byte
+of text. Reading a CSV holds the rows it hands on, within 400 bytes a
+ROI. `tests/raster_cost/annotations.rs` counts the CSV read for 200,000
+ROIs, the documents for 50,000, and holds hostile texts to the budget,
+the costliest records to the transient, and the count to the allocator.
 
 **Masked sessions (OWNER).** The masks of a session are drawn for one
 process, so a key or a UID it shows names nothing anywhere else, and a
