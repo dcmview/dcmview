@@ -575,17 +575,45 @@ pub async fn export_native(
     let registry = registry.clone();
     let backend = store.backend().clone();
     tokio::task::spawn_blocking(move || {
-        let mut document = backend.export().map_err(store_error)?;
+        let (mut document, bindings) = backend.export_bound().map_err(store_error)?;
         let mut by_key = HashMap::new();
         for file in &files {
             if let Some(key) = settled_key(&registry, file.index) {
                 by_key
                     .entry(key)
-                    .and_modify(|index: &mut usize| *index = (*index).min(file.index))
-                    .or_insert(file.index);
+                    .and_modify(|(index, count): &mut (usize, usize)| {
+                        *index = (*index).min(file.index);
+                        *count += 1;
+                    })
+                    .or_insert((file.index, 1));
             }
         }
         let root = common_directory(&files);
+        for (annotation, binding) in document.annotations.iter_mut().zip(bindings) {
+            if let Some(binding) = binding {
+                if by_key
+                    .get(&annotation.file)
+                    .is_some_and(|(_, count)| *count > 1)
+                {
+                    if let Some(file) = files.get(binding.slot) {
+                        annotation.extensions.insert(
+                            "embed".to_string(),
+                            serde_json::json!({
+                                "row_of": document_path(root.as_deref(), &file.path),
+                                "imported": binding.imported,
+                            }),
+                        );
+                    }
+                }
+            }
+        }
+        let masked = registry.masker().is_some();
+        if masked {
+            document
+                .extensions
+                .insert("dcmview".to_string(), serde_json::json!({ "masked": true }));
+        }
+        let mut emitted = HashSet::new();
         let mut shown = HashMap::<FileKey, FileKey>::new();
         let mut visit = |key: &mut FileKey| {
             if let Some(replacement) = shown.get(key) {
@@ -594,17 +622,36 @@ pub async fn export_native(
             }
             let file = by_key
                 .get(key)
-                .and_then(|index| files.get(*index))
+                .and_then(|(index, _)| files.get(*index))
                 .ok_or_else(|| {
                     AnnotationError::Store("The store names a file that is not loaded.".to_string())
                 })?;
-            let replacement = FileKey::parse(&registry.shown_key_of(key)).map_err(store_error)?;
-            document.files.push(document_file_ref(
-                &registry,
-                file,
-                replacement.clone(),
-                root.as_deref(),
-            ));
+            let replacement = if masked {
+                let digest = registry
+                    .key_status(file.index)
+                    .and_then(|status| status.digest)
+                    .map_or_else(|| file_digest(file), Ok)
+                    .map_err(|failure| AnnotationError::KeyUnavailable {
+                        index: file.index,
+                        reason: failure.into(),
+                        group: false,
+                    })?;
+                FileKey::blake3(&digest)
+            } else {
+                key.clone()
+            };
+            if emitted.insert(replacement.clone()) {
+                let mut reference =
+                    document_file_ref(&registry, file, replacement.clone(), root.as_deref());
+                if masked {
+                    reference.digest = Some(replacement.as_str().to_string());
+                    reference.sop_instance_uid = None;
+                    reference.study_instance_uid = None;
+                    reference.series_instance_uid = None;
+                    reference.patient_id = None;
+                }
+                document.files.push(reference);
+            }
             shown.insert(key.clone(), replacement.clone());
             *key = replacement;
             Ok(())
@@ -628,6 +675,7 @@ pub async fn export_native(
         }
         .map_err(|error| match error {
             ExportError::TooLarge { limit } => AnnotationError::ExportTooLarge { limit },
+            ExportError::TooMany { limit, .. } => AnnotationError::ExportTooMany { limit },
             error => store_error(error),
         })?;
         // The permit is held to here: while the records are copied and
@@ -1256,7 +1304,6 @@ pub async fn apply_op(
 /// be opened or read is `KeyFailure::Unreadable`. It reads the whole file:
 /// call it on a blocking thread, and only for a file whose digest the
 /// registry does not have.
-#[expect(dead_code, reason = "not called yet")]
 fn file_digest(file: &FileEntry) -> Result<[u8; 32], crate::keys::KeyFailure> {
     let mut hasher = crate::keys::FileHasher::open(&file.path, file.size_bytes, file.modified)?;
     loop {
