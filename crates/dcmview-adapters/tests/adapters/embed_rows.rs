@@ -83,7 +83,7 @@ fn matched_rows_are_read_leniently_and_everything_changed_or_odd_is_reported() {
         "empi_anon,ROI_coords,ROI_frames,side,num_ROI,anon_dicom_path\n",
         // Row 2: a negative value; values that are not whole (halves away
         // from zero); whole values written as decimals.
-        "1,\"[[-1, 20, 50, 80], [20.5, 30.4, 59.5, 90.0], [2e1, 30.0, 60, 90]]\",[],L,3,a.dcm\n",
+        "1,\"[[-1, 20, 50, 80], [20.5, 30.4, 59.5, 90.0], [2e1, 30.0, 60, 200]]\",[],L,3,a.dcm\n",
         // Row 3: what the import never checked, and still does not.
         "2,\"[[0,0,161,241],[500,600,700,800],[40,50,40,90],[5,5,5,5],[60,90,20,30]]\",\"[[0],[],[2,0,0],[0],[0]]\",R, 5 ,  m.dcm \n",
         // Row 4 names no loaded file: nothing of it is read.
@@ -114,7 +114,9 @@ fn matched_rows_are_read_leniently_and_everything_changed_or_odd_is_reported() {
             (
                 0,
                 2,
-                vec![[0, 20, 50, 80], [21, 30, 60, 90], [20, 30, 60, 90]],
+                // The last box reaches column 200 of 240: wider than the
+                // image is high, and inside it.
+                vec![[0, 20, 50, 80], [21, 30, 60, 90], [20, 30, 60, 200]],
                 vec![]
             ),
             (
@@ -159,6 +161,25 @@ fn matched_rows_are_read_leniently_and_everything_changed_or_odd_is_reported() {
             "matched_by": { "key": 0, "sop_instance_uid": 0, "path": 4 },
         })
     );
+}
+
+/// A report is bounded whatever the file holds: an entry counts every
+/// occurrence and names the first sixteen places.
+#[test]
+fn a_report_names_the_first_places_and_counts_them_all() {
+    let boxes = vec!["[-1,2,3,4]"; 20].join(",");
+    let csv = format!("anon_dicom_path,ROI_coords\na.dcm,\"[{boxes}]\"\nb.dcm,\"[[0,0,-2,0]]\"\n");
+    let report = report_json(&read(&csv).expect("read").report);
+    let negative = &report["warnings"][0];
+    assert_eq!(negative["code"], "negative_coordinate");
+    assert_eq!(negative["count"], 21);
+    let rows = negative["rows"].as_array().expect("rows");
+    assert_eq!(rows.len(), dcmview_adapters::limits::MAX_REPORT_ROWS);
+    assert_eq!(rows[0], json!({ "row": 2, "roi": 0 }));
+    assert_eq!(rows[15], json!({ "row": 2, "roi": 15 }));
+    // The other kind of warning is an entry of its own, after it.
+    assert_eq!(report["warnings"][1]["code"], "zero_area");
+    assert_eq!(report["warnings"][1]["count"], 1);
 }
 
 #[test]

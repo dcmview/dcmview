@@ -318,7 +318,8 @@ fn a_box_kept_as_read_is_taken_back_and_reported_and_nothing_else_is_lenient() {
             json!({ "set": [] }),
             rect(600.0, 500.0, 800.0, 700.0),
         ),
-        record(3, "default", json!("all"), rect(50.0, 40.0, 90.0, 40.0)),
+        // Without area, and inside the image: column 200 of 240.
+        record(3, "default", json!("all"), rect(50.0, 40.0, 200.0, 40.0)),
         record(4, "default", json!("all"), rect(90.0, 60.0, 30.0, 20.0)),
         record(5, "default", json!("all"), rect(-3.0, 5.0, 9.0, 9.0)),
         // A sound one, off the thousandth of a pixel: quantized.
