@@ -203,11 +203,13 @@ pub(super) fn annotation_error(error: AnnotationError) -> ApiError {
         AnnotationError::KeyReplaced { .. } => {
             ApiError::coded(StatusCode::CONFLICT, ApiErrorCode::FileKeyReplaced, message)
         }
-        AnnotationError::ExportTooLarge { .. } => ApiError::coded(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            ApiErrorCode::AnnotationExportTooLarge,
-            message,
-        ),
+        AnnotationError::ExportTooLarge { .. } | AnnotationError::ExportTooMany { .. } => {
+            ApiError::coded(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                ApiErrorCode::AnnotationExportTooLarge,
+                message,
+            )
+        }
         AnnotationError::ImportFailed(_) | AnnotationError::Stopped | AnnotationError::Store(_) => {
             ApiError::internal(message)
         }

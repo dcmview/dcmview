@@ -117,6 +117,11 @@ pub enum AnnotationError {
         "the annotations do not fit one JSON document of {limit} bytes; export them as JSON Lines"
     )]
     ExportTooLarge { limit: u64 },
+    /// The session holds more files with annotations, or more annotations
+    /// and labels, than a document may (`dcmview_adapters::Limits`): a
+    /// document that large could not be loaded again.
+    #[error("the session holds more than a document may: {limit}")]
+    ExportTooMany { limit: u64 },
     /// The viewer is shutting down (`KeyError::Stopped`).
     #[error("the viewer is shutting down")]
     Stopped,
@@ -470,24 +475,22 @@ pub struct NativeExport {
 ///    Rows that became records before the failure stay records, which
 ///    changes nothing any view shows. A file without staged rows is not
 ///    settled and not read.
-/// 4. One read of the store, `AnnotationBackend::export`: every layer,
-///    annotation and label at one moment. A write that comes after it is
-///    not in the document; one that came before it is there whole.
+/// 4. One read of the store, `MemoryBackend::export_bound`: every layer,
+///    annotation and label at one moment, and each annotation's view
+///    binding. A write that comes after it is not in the document; one
+///    that came before it is there whole.
 /// 5. **Files.** For each file key the document's annotations name, then
 ///    each a label names in a `file` or `frame` target, in the order first
 ///    named, one `FileRef` in `files`, for the loaded file with the lowest
 ///    index whose settled key it is (`FileRegistry::key_status`; no key is
 ///    settled here). A record whose key no loaded file has is
 ///    [`AnnotationError::Store`]. The reference holds:
-///    - `key`: the key as the session shows it
-///      (`FileRegistry::shown_key_of`);
+///    - `key`: the file's settled key;
 ///    - `kind` and `format`: `dicom`, or `raster` with the file's format
 ///      name (`FileFormat::as_str`);
 ///    - `sop_instance_uid`, `sop_class_uid`, `study_instance_uid`,
 ///      `series_instance_uid`, `patient_id`: the file's, `None` for an
-///      empty one. A masked session (`FileRegistry::masker`) writes the
-///      patient id and the three instance UIDs as its catalog shows them
-///      (`Masker::summary`), never the file's own;
+///      empty one;
 ///    - `path`: `annotations::document_path` below
 ///      `annotations::common_directory` of the files loaded when the
 ///      export reads them;
@@ -500,17 +503,46 @@ pub struct NativeExport {
 ///      it is not 1;
 ///    - `pixel_digest` empty; `frame_source`, `external_id` and `spacing`
 ///      `None`.
-/// 6. **Keys go out in the session's form.** Every annotation's `file` and
-///    every `file` or `frame` label target is rewritten with
-///    `FileRegistry::shown_key_of`. A patient, study, series or folder
+/// 6. **A masked session names files by content and by nothing else.**
+///    Its masks are drawn for one process, so a key or a UID it shows
+///    names nothing anywhere else, and a real one must not leave it. With
+///    `FileRegistry::masker` set, every reference therefore has, in place
+///    of what step 5 says: `key` and `digest` both `b3:` and the digest of
+///    the file's bytes (the registry's when it has one, else the file
+///    hashed now, [`file_digest`]); `sop_instance_uid`,
+///    `study_instance_uid`, `series_instance_uid` and `patient_id` `None`;
+///    `sop_class_uid` and `path` as in step 5. Two keys whose files hold
+///    the same bytes share one reference, the first's. A file that cannot
+///    be read fails the export with [`AnnotationError::KeyUnavailable`]
+///    for it (`group: false`). The document's `extensions` gain
+///    `"dcmview": { "masked": true }`. An unmasked session writes no such
+///    member.
+/// 7. **Keys.** Every annotation's `file` and every `file` or `frame`
+///    label target is the `key` of its file's reference: the settled key,
+///    or the content key of step 6. A patient, study, series or folder
 ///    target is written as it is held.
-/// 7. The document is written by the adapter for `form` with no path
-///    lookup and no bound of the caller's
-///    (`ExportContext::max_bytes` is `u64::MAX`), into memory.
+/// 8. **Rows of byte-identical files.** Files with the same bytes share a
+///    key, and each still shows the rows that were written for it
+///    (`Binding`). For an annotation that has a binding, when more than
+///    one loaded file has its settled key, the record's `extensions` gain
+///    `"embed": { "row_of": <path>, "imported": <bool> }`: the
+///    `document_path` of the file at the binding's slot, and the binding's
+///    import mark. A reader binds the record to the file that path names
+///    ([`import_native`]), so each copy shows its own rows again, in the
+///    same order. An annotation without a binding, or on a key one file
+///    has, gets no such member.
+/// 9. The document is written by the adapter for `form` with no path
+///    lookup, no bound of the caller's (`ExportContext::max_bytes` is
+///    `u64::MAX`) and `Limits::DEFAULT`, into memory.
 ///    `ExportError::TooLarge` is [`AnnotationError::ExportTooLarge`] with
-///    its limit; any other failure is [`AnnotationError::Store`].
+///    its limit, `ExportError::TooMany` is
+///    [`AnnotationError::ExportTooMany`] with its limit (a session holds
+///    more than an import reads: both answer
+///    `422 annotation_export_too_large`); any other failure is
+///    [`AnnotationError::Store`]. The permit is let go of here.
 ///
-/// Steps 4 to 7 copy every record and write every one, so they run on a
+/// Steps 4 to 9 copy every record and write every one, and step 6 may
+/// read files, so they run on a
 /// blocking thread (`tokio::task::spawn_blocking`), never on the runtime's
 /// own; a thread that fails is [`AnnotationError::Store`].
 ///
@@ -687,46 +719,84 @@ fn document_file_ref(
 ///
 /// # Which file a record lands on
 ///
-/// The resolver answers for one `FileRef` of the document, over the files
-/// loaded when the import starts (`FileRegistry::files_snapshot`, taken
-/// once). It finds a candidate by the first of these that names one:
+/// A reference names its file by a key, and a key says what must be true
+/// of the file: `sop:<uid>`, that it is the file with that UID, or one of
+/// several with the same bytes; `b3:<digest>`, that its bytes have that
+/// digest. **A record is placed on a loaded file only when that has been
+/// checked on the file itself.** A UID or a path finds candidates; neither
+/// places a record.
 ///
-/// 1. **The key**, as this session shows keys:
-///    `FileRegistry::file_for_shown_key`. A `sop:` key whose UID more than
-///    one loaded file carries (`FileRegistry::shares_uid`) names none of
-///    them here: a shared key cannot say which file is meant.
-/// 2. **The SOP Instance UID**, when the reference has one that can be a
-///    key (`FileKey::sop`): as step 1 with that key. So a masked session
-///    matches a UID in the form it shows and never a file's real UID.
-/// 3. **The path**: a relative path below
-///    `annotations::common_directory` of the loaded files (the directory
-///    an export of this session writes paths below), an absolute one as it
-///    is, each also by its canonical form (`annotations::FileLookup`); of
-///    several files the one with the lowest index.
+/// The resolver answers for one `FileRef`, over the files loaded when the
+/// import starts (`FileRegistry::files_snapshot`, taken once).
 ///
-/// No candidate is `Resolution::Unmatched`. A candidate is then checked,
-/// in this order:
+/// **Candidates**, in this order, each file once:
 ///
-/// - when the reference and the file both have a SOP Instance UID and the
-///   reference's is neither the file's own nor the one this session shows
-///   for it (`Masker::uid`): `Refusal::EvidenceConflict`. So a document
-///   that a session without masking wrote loads into a masked one, its
-///   files found by their paths;
-/// - the file's key is settled with `FileRegistry::ensure_key`, waited for
-///   from the blocking thread (`tokio::runtime::Handle::block_on`), which
-///   may hash the file. A file that cannot be given a key, or a viewer that
-///   is stopping, is `Refusal::KeyUnavailable`;
-/// - when the reference has a `b3:` digest and the registry has computed
-///   the file's (`FileKeyStatus::digest`) and they differ:
-///   `Refusal::EvidenceConflict`. Nothing is hashed to find out.
+/// 1. by key: `FileRegistry::file_for_shown_key` of the reference's key
+///    (`Matcher::Key`);
+/// 2. by UID: every loaded file whose SOP Instance UID, as this session
+///    shows it, is the reference's `sop_instance_uid`, in index order
+///    (`Matcher::SopInstanceUid`). A masked session shows masked UIDs, so
+///    a file's real UID finds nothing in it;
+/// 3. by path (`Matcher::Path`): for a relative path, every loaded file
+///    whose path ends with it (`annotations::PathSuffixes`), so a document
+///    finds its files when a subfolder or a parent of the exported folder
+///    is loaded, or the folder was moved; for an absolute one,
+///    `annotations::FileLookup::indexes`; each in index order.
 ///
-/// What is left is `Resolution::Matched` with the file's index as the
-/// slot, its **settled** key, its columns, rows and frame count, its size
-/// in bytes, and the step that found it. The adapter refuses a file whose
-/// size differs. So a record lands on the file its reference names, under
-/// that file's settled key, or on no file; byte-identical copies share a
-/// key, and a record on that key shows on each of them, as one an
-/// operation made does.
+/// **The check**, on each candidate in that order until one passes:
+///
+/// - its key is settled with `FileRegistry::ensure_key`, waited for from
+///   the blocking thread (`tokio::runtime::Handle::block_on`), which may
+///   hash it and the files that share its UID. A candidate whose key
+///   cannot be settled could not be read;
+/// - for a `sop:` reference, the settled key must be the reference's key,
+///   as it is or as this session shows it. A file that carries the UID and
+///   holds other bytes than the first file with it is keyed by its content
+///   here, and does not pass;
+/// - for a `b3:` reference, the file's digest must be the key's. The
+///   digest is the registry's (`FileKeyStatus::digest`) or, for a file
+///   whose key needed no hashing, the file's bytes hashed now
+///   ([`file_digest`]). A file that cannot be hashed could not be read;
+/// - when the reference also has a `b3:` `digest` (a `sop:` reference to
+///   files that were compared), the file's digest, found the same way,
+///   must be that digest.
+///
+/// The first candidate that passes is `Resolution::Matched`, with its
+/// index as the slot, its settled key, its columns, rows and frame count,
+/// its size in bytes, and the step that found it. When none passes the
+/// answer is `Resolution::Unmatched` when there was no candidate,
+/// `Refusal::Unverified` when a candidate could not be read, and
+/// `Refusal::EvidenceConflict` otherwise. The adapter refuses a matched
+/// file whose size differs.
+///
+/// So a record lands on a file that its reference was checked against,
+/// under that file's settled key, or on no file, and the report says
+/// which. Only the candidates of a reference are hashed, never the folder.
+/// A file that cannot be read is never matched by its path or UID alone.
+///
+/// The import does this in the background after discovery; until it has
+/// ended its state is `loading`, the EMBED reads wait and writes do not.
+///
+/// ## Rows of byte-identical files
+///
+/// An annotation whose `extensions` hold
+/// `"embed": { "row_of": <path>, "imported": <bool> }` was a row of one of
+/// several files with the same bytes ([`export_native`], step 8). After
+/// the adapter has placed the document, each such record has that member
+/// taken out of its `extensions` and is bound (`Binding`, through
+/// `Write::bindings`) to the first file `annotations::PathSuffixes` gives
+/// for `row_of` whose settled key (`FileRegistry::ensure_key`) is the
+/// record's key, with `imported` as its import mark (`false` when
+/// absent). When no loaded file is that copy, the record is left out: it
+/// is taken from `counts.annotations_out` and added to `counts.unmatched`.
+/// An `embed` member of another shape is left where it is and binds
+/// nothing.
+///
+/// A record without that member shows on every file that has its key. So
+/// that this does not depend on which copies have been looked at, every
+/// loaded file that carries the SOP Instance UID of a matched file other
+/// loaded files share (`FileRegistry::shares_uid`) has its key settled
+/// before the import ends; one that cannot be read is passed over.
 ///
 /// # Applying
 ///
@@ -737,8 +807,8 @@ fn document_file_ref(
 /// in the fragment's order, under a new `op_id`, with
 /// `Checking::AsLoaded` (the adapter has checked every record; a batch of
 /// an import is not bound by the envelope's 10,000 operations), the
-/// author [`NATIVE_IMPORT_AUTHOR`], no EMBED slot, `import: false` and no
-/// view check. An empty fragment is no transaction.
+/// author [`NATIVE_IMPORT_AUTHOR`], no EMBED slot, `import: false`, no
+/// view check, and the bindings of "Rows of byte-identical files". An empty fragment is no transaction.
 ///
 /// The store stamps the records and gives each `rev` 1. A label keeps its
 /// id, target, field, layer and value; the report counts the labels that
@@ -1176,6 +1246,22 @@ pub async fn apply_op(
         result,
         revision: transacted.revision,
     })
+}
+
+/// The BLAKE3 digest of `file`'s bytes, read now, as `keys::FileHasher`
+/// reads a file: it must still have the length and the modification time
+/// discovery saw, else it is `KeyFailure::Changed`, and a file that cannot
+/// be opened or read is `KeyFailure::Unreadable`. It reads the whole file:
+/// call it on a blocking thread, and only for a file whose digest the
+/// registry does not have.
+#[expect(dead_code, reason = "not called yet")]
+fn file_digest(file: &FileEntry) -> Result<[u8; 32], crate::keys::KeyFailure> {
+    let mut hasher = crate::keys::FileHasher::open(&file.path, file.size_bytes, file.modified)?;
+    loop {
+        if let crate::keys::HashProgress::Done(digest) = hasher.next_slice()? {
+            return Ok(digest);
+        }
+    }
 }
 
 fn store_error(error: impl std::fmt::Display) -> AnnotationError {

@@ -342,6 +342,71 @@ impl FileResolver for FileLookup {
     }
 }
 
+/// The loaded files by the end of their paths: which of them a relative
+/// path of a document (`FileRef::path`) may name.
+///
+/// A document writes a file's path below the deepest directory that held
+/// every file of the session that wrote it ([`common_directory`]). The
+/// session that reads it may have loaded a subfolder of that directory, a
+/// parent of it, or the same files somewhere else, so the path is not
+/// resolved against any directory: a file is named by it when the file's
+/// own path **ends with every component of it**. `sub/case/lcc.dcm` names
+/// `/data/sub/case/lcc.dcm` and `/mnt/copy/sub/case/lcc.dcm`, and not
+/// `/data/other/case/lcc.dcm`. One component is enough to name a file,
+/// and several files can be named; a path only finds candidates, and what
+/// is placed on which of them is decided by comparing the file with the
+/// reference's key (`server::annotations::import_native`).
+pub(crate) struct PathSuffixes<'a> {
+    files: &'a [Arc<FileEntry>],
+    by_name: HashMap<&'a std::ffi::OsStr, Vec<usize>>,
+}
+
+impl<'a> PathSuffixes<'a> {
+    /// A lookup over `files`, which costs one map entry a file.
+    #[cfg_attr(not(test), expect(dead_code, reason = "not called yet"))]
+    pub(crate) fn new(files: &'a [Arc<FileEntry>]) -> Self {
+        let mut by_name = HashMap::<_, Vec<usize>>::new();
+        for (place, file) in files.iter().enumerate() {
+            if let Some(name) = file.path.file_name() {
+                by_name.entry(name).or_default().push(place);
+            }
+        }
+        Self { files, by_name }
+    }
+
+    /// The catalog indexes of the files whose path ends with `path`, in
+    /// the order the files were loaded. Empty for a path that is absolute,
+    /// is empty, or steps upwards (`..`); `.` components are passed over.
+    #[cfg_attr(not(test), expect(dead_code, reason = "not called yet"))]
+    pub(crate) fn indexes(&self, path: &str) -> Vec<usize> {
+        let mut wanted = Vec::new();
+        for component in Path::new(path).components() {
+            match component {
+                Component::CurDir => {}
+                Component::Normal(part) => wanted.push(part),
+                _ => return Vec::new(),
+            }
+        }
+        let Some(name) = wanted.last() else {
+            return Vec::new();
+        };
+        self.by_name
+            .get(name)
+            .into_iter()
+            .flatten()
+            .map(|place| &self.files[*place])
+            .filter(|file| {
+                let mut theirs = file.path.components().rev();
+                wanted
+                    .iter()
+                    .rev()
+                    .all(|part| theirs.next() == Some(Component::Normal(part)))
+            })
+            .map(|file| file.index)
+            .collect()
+    }
+}
+
 /// The directory a document's file paths are relative to: the deepest
 /// directory that contains every one of `files`, by the components of the
 /// paths as the registry holds them (`Path::components`, nothing resolved).
@@ -941,6 +1006,34 @@ mod tests {
             elsewhere.to_string_lossy()
         );
         assert_eq!(super::document_path(None, &below), below.to_string_lossy());
+    }
+
+    #[test]
+    fn a_relative_path_names_the_files_whose_path_ends_with_it() {
+        let files = vec![
+            file_entry(0, PathBuf::from("/data/sub/case/lcc.dcm"), 1),
+            file_entry(1, PathBuf::from("/data/other/case/lcc.dcm"), 1),
+            file_entry(2, PathBuf::from("/mnt/copy/sub/case/lcc.dcm"), 1),
+            file_entry(3, PathBuf::from("/data/sub/case/xlcc.dcm"), 1),
+        ];
+        let suffixes = super::PathSuffixes::new(&files);
+        assert_eq!(suffixes.indexes("sub/case/lcc.dcm"), vec![0, 2]);
+        assert_eq!(suffixes.indexes("./case/./lcc.dcm"), vec![0, 1, 2]);
+        assert_eq!(suffixes.indexes("lcc.dcm"), vec![0, 1, 2]);
+        // Whole components: a name is not the end of a longer name, nor a
+        // folder the end of a longer folder.
+        assert_eq!(suffixes.indexes("ub/case/lcc.dcm"), Vec::<usize>::new());
+        assert_eq!(suffixes.indexes("data/sub/case/lcc.dcm"), vec![0]);
+        // Longer than the file's own path, absolute, upwards or empty.
+        for path in [
+            "x/data/sub/case/lcc.dcm",
+            "/data/sub/case/lcc.dcm",
+            "sub/../sub/case/lcc.dcm",
+            "",
+            ".",
+        ] {
+            assert!(suffixes.indexes(path).is_empty(), "{path}");
+        }
     }
 
     #[test]
