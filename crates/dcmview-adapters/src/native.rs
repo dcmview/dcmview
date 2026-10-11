@@ -68,8 +68,9 @@
 //!
 //! `Document::from_json_str` checks `format` and `version`
 //! ([`ImportError::WrongFormat`], [`ImportError::UnsupportedVersion`]) and
-//! refuses JSON nested deeper than serde_json's 128 levels
-//! ([`ImportError::Malformed`]). Input that is not UTF-8 is
+//! reads no JSON nested deeper than serde_json's 128 levels, which
+//! [`crate::limits::MAX_DEPTH`] refuses before it is parsed
+//! ([`ImportError::TooLarge`] with `Bound::Depth`). Input that is not UTF-8 is
 //! [`ImportError::Malformed`] at the row it is on.
 //!
 //! # What an import checks, and what it hands on
@@ -197,10 +198,11 @@
 //!   (`Bound::DocumentBytes`, `Bound::LineBytes`).
 //!
 //! **So a document is written exactly when the same bounds would read
-//! it.** The two forms differ in one bound each: a JSON document has a
-//! bound on its whole length and none on one record's, and a JSON Lines
-//! file the other way round, so a session can be past one form's bound
-//! and within the other's.
+//! it.** The forms do not have the same bounds: a JSON document has a
+//! bound on its whole length and none on one record's, a JSON Lines file
+//! the other way round, and a record stands in a line of its own in one
+//! and two levels down in the other, with a member name more. So a
+//! session can be past a bound of one form and within the other's.
 //!
 //! **The transient is bounded by construction.** One unit (a record, or
 //! everything of a document that is not a record) is in the parser's
@@ -210,9 +212,8 @@
 //! values (objects, arrays, strings, member names, numbers, `true`,
 //! `false`, `null`), to [`crate::limits::MAX_UNIT_CONTAINERS`] objects and
 //! arrays among them, and to [`crate::limits::MAX_DEPTH`] levels of
-//! nesting ([`ImportError::TooLarge`] with `Bound::UnitValues` or
-//! `Bound::UnitContainers`; deeper nesting is [`ImportError::Malformed`]
-//! at its row). The two counts times what a value and an object cost at
+//! nesting ([`ImportError::TooLarge`] with `Bound::UnitValues`,
+//! `Bound::UnitContainers` or `Bound::Depth`). The two counts times what a value and an object cost at
 //! worst are the transient (derived at
 //! [`crate::limits::UNIT_TRANSIENT_BYTES`]). The bounds are set from the
 //! model's: the largest mask (262,144 tiles in 65,536 frames) and the
@@ -608,7 +609,7 @@ fn write_line(
     if scratch.len() as u64 > limit {
         return Err(ExportError::TooMany { bound, limit });
     }
-    check_values(scratch, header, 0, limits, 0).map_err(|error| unit_refusal(error, limits))?;
+    check_values(scratch, header, 0, limits).map_err(|error| unit_refusal(error, limits))?;
     scratch.push(b'\n');
     writer.write_all(scratch).map_err(|error| ExportError::Io {
         kind: error.kind().to_string(),
@@ -619,9 +620,10 @@ fn write_line(
 fn unit_refusal(error: ImportError, limits: &Limits) -> ExportError {
     match error {
         ImportError::TooLarge { bound, limit } => ExportError::TooMany { bound, limit },
+        // It refuses for nothing else.
         _ => ExportError::TooMany {
-            bound: Bound::Depth,
-            limit: u64::from(limits.depth),
+            bound: Bound::UnitValues,
+            limit: limits.unit_values,
         },
     }
 }
@@ -634,7 +636,7 @@ fn check_export_units(document: &Document, limits: &Limits) -> Result<(), Export
     let mut check = |value: &dyn erased::Unit, whole: bool| {
         scratch.clear();
         value.write(&mut scratch)?;
-        check_values(&scratch, whole, if whole { 0 } else { 2 }, limits, 0)
+        check_values(&scratch, whole, if whole { 0 } else { 2 }, limits)
             .map_err(|error| unit_refusal(error, limits))
     };
     check(&header_of(document), true)?;
@@ -733,13 +735,7 @@ fn read_line(
 /// The pass does not check that the text is JSON: text that is not fails
 /// when it is parsed. It only has to count no fewer values than a parser
 /// would make of the text, and it counts every token.
-fn check_values(
-    text: &[u8],
-    whole: bool,
-    outer: u32,
-    bounds: &Limits,
-    row: u64,
-) -> Result<(), ImportError> {
+fn check_values(text: &[u8], whole: bool, outer: u32, bounds: &Limits) -> Result<(), ImportError> {
     let too_many = ImportError::TooLarge {
         bound: Bound::UnitValues,
         limit: bounds.unit_values,
@@ -794,7 +790,10 @@ fn check_values(
                 container = true;
                 depth += 1;
                 if depth > bounds.depth {
-                    return Err(ImportError::Malformed { row });
+                    return Err(ImportError::TooLarge {
+                        bound: Bound::Depth,
+                        limit: u64::from(bounds.depth),
+                    });
                 }
                 if whole && depth == 1 {
                     expect_name = *byte == b'{';
@@ -1072,7 +1071,7 @@ fn read_document(
         buffer.drain(..3);
     }
     let parsed = |buffer: &[u8]| {
-        check_values(buffer, true, 0, bounds, 1)?;
+        check_values(buffer, true, 0, bounds)?;
         match parse_document(text_at(buffer, 1)?, bounds) {
             Ok(document) => Ok(Ok(document)),
             Err(ParseError::Held) => Err(HeldTotal::error(bounds)),
@@ -1134,7 +1133,7 @@ fn read_document(
             }
             has_lines = true;
         }
-        check_values(&buffer, false, 0, bounds, row)?;
+        check_values(&buffer, false, 0, bounds)?;
         let line: InputLine = serde_json::from_str(text_at(&buffer, row)?)
             .map_err(|_| ImportError::Malformed { row })?;
         let held = match line {

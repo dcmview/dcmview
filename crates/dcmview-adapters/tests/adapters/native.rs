@@ -545,13 +545,16 @@ fn what_is_not_a_native_document_is_refused_by_what_is_wrong_with_it() {
             ImportError::Malformed { row: 1 },
         ),
         (
-            "JSON nested deeper than the parser goes",
+            "JSON nested deeper than a document may be",
             format!(
                 "{{\"format\":\"dcmview.annotations\",\"version\":\"1.0\",\"extensions\":{{\"x\":{}{}}}}}",
                 "[".repeat(200),
                 "]".repeat(200)
             ),
-            ImportError::Malformed { row: 1 },
+            ImportError::TooLarge {
+                bound: Bound::Depth,
+                limit: 64,
+            },
         ),
     ];
     for (what, text, expected) in cases {
@@ -1112,11 +1115,50 @@ fn a_document_is_held_to_its_value_budgets() {
     assert_eq!(read_in(&plain, &nested(40), &|_| ()), Ok(1));
     assert_eq!(
         read_in(&plain, &nested(70), &|_| ()),
-        Err(ImportError::Malformed { row: 1 })
+        Err(too_large(Bound::Depth, 64))
     );
     assert_eq!(
         read_in(&plain, &nested(40), &|limits| limits.depth = 16),
-        Err(ImportError::Malformed { row: 1 })
+        Err(too_large(Bound::Depth, 16))
+    );
+    // A record of a JSON document is two levels down in it, and its
+    // extensions two more: 60 arrays there are the 64th level, for a
+    // reader and for a writer alike.
+    let write = |text: &str| {
+        let document = Document::from_json_str(text).expect("document");
+        NativeJson
+            .export(
+                &document,
+                &ExportContext {
+                    paths: &BTreeMap::<FileKey, Vec<String>>::new(),
+                    max_bytes: u64::MAX,
+                    limits: Limits::DEFAULT,
+                },
+                &mut Vec::new(),
+            )
+            .map(|_| ())
+    };
+    assert_eq!(read_in(&plain, &nested(60), &|_| ()), Ok(1));
+    assert_eq!(write(&nested(60)), Ok(()));
+    assert_eq!(
+        read_in(&plain, &nested(61), &|_| ()),
+        Err(too_large(Bound::Depth, 64))
+    );
+    assert_eq!(
+        write(&nested(61)),
+        Err(ExportError::TooMany {
+            bound: Bound::Depth,
+            limit: 64
+        })
+    );
+
+    // A label is charged for the second copy of its target, field and
+    // layer that a store's index of labels keeps.
+    use dcmview_adapters::held::{Charged, Held};
+    let label = &document.labels[0];
+    assert!(
+        label.charge() > label.held_bytes() + <dcmview_annotation::Label as Charged>::ROOM + 128,
+        "the index is not charged"
     );
 }
 
