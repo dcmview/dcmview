@@ -2036,7 +2036,7 @@ start of a file is for.
 | Annotations and labels of a document | 1,048,576 |
 | Layers of a document | 4,096 |
 | JSON values of one record, or of a document's header | 1,048,576, of which 131,072 objects and arrays |
-| Memory the records of a document hold | 8 bytes for each byte of text, and 16 MiB |
+| Memory the records of one document are charged | 4 GiB |
 | JSON nesting | 64 levels |
 
 ### EMBED ROI CSV
@@ -2231,25 +2231,49 @@ export. An export holds a copy of the records and their text once. The
 texts still being sent are bounded together: 512 MiB
 (`DOWNLOAD_BUDGET_BYTES`), or one text of any size when no other is being
 sent; a document that would pass it is dropped when built and answered
-`503 annotation_export_busy` with `Retry-After`. A native import holds,
-for any input, at most a budget and a transient: what it keeps may hold 8
-bytes for each byte of text read and 16 MiB, and building one record or
-the header may hold 256 MiB more; a JSON document also has its text in a
-buffer, up to three times its length. The budget is charged, not
-predicted: the model keeps `extensions` and unknown members as JSON
-values and a two-byte member can cost a map node of several hundred
-bytes, so after each file reference, layer, annotation and label is built
-the reader counts what it holds on the thing itself (`held`: string and
-vector capacities, map nodes, kept values) and stops when the total is
-past the budget. The transient is bounded before parsing: one pass over
-the text holds a record, or the header, to 1,048,576 JSON values, 131,072
-objects and arrays, and 64 levels. The model's largest mask and polygon
-are within those. A JSON document is read a member and a list element at
-a time. A document a session writes is counted at three bytes for a byte
-of text. Reading a CSV holds the rows it hands on, within 400 bytes a
-ROI. `tests/raster_cost/annotations.rs` counts the CSV read for 200,000
-ROIs, the documents for 50,000, and holds hostile texts to the budget,
-the costliest records to the transient, and the count to the allocator.
+`503 annotation_export_busy` with `Retry-After`.
+
+**What a document import holds, from the file to the store,** is at most
+5 GiB for any input: a budget of 4 GiB for what its records are charged
+(`Limits::held_bytes`), 256 MiB for building one record or the header
+before it is charged, and the text in its buffer (up to three times a
+JSON document of 256 MiB; two lines of a JSON Lines file). None of these
+depends on what the text is made of, and the budget is not a multiple of
+the text: the model is expensive for small things (a map of one member is
+a node of several hundred bytes; a mask of one tile a frame is charged
+ten times its text), so a multiple would refuse documents the viewer
+itself wrote. The number is set from the other bounds: 1,048,576
+rectangles on 1,048,576 files, the largest session of the common kind
+they allow, are charged 3.1 GiB.
+
+- **Charged, not predicted.** After each file reference, layer,
+  annotation and label is built, the reader adds its charge (`held`: what
+  the item holds, counted on the item by the lengths of its strings and
+  lists and the number of its members, and the room an import needs for
+  it on the way into the store) and stops past the budget.
+- **Export and import agree.** The writers refuse a session whose
+  document is charged past the budget (`422 annotation_export_too_large`,
+  naming the bound), by the same count on the same records. A document is
+  written exactly when it would be read: whatever a session can export,
+  the same viewer can import.
+- **Nothing is copied whole.** The reader's lists grow by a quarter;
+  placement makes each per-record structure once at its final size; and
+  the store takes the import's batch an operation at a time, letting go
+  of each record's first copy as it keeps its own
+  (`MemoryBackend::transact_owned`), with room for the whole batch made
+  first. The charge of an annotation covers the moments it is in two
+  lists at once.
+- **The transient is bounded before parsing.** One pass over the text
+  holds a record, or the header, to 1,048,576 JSON values, 131,072
+  objects and arrays, and 64 levels, which are set from the model's
+  largest mask and polygon.
+
+Reading a CSV holds the rows it hands on, within 400 bytes a ROI.
+`tests/raster_cost/annotations.rs` counts the CSV read for 200,000 ROIs;
+imports 200,000 rectangles in both forms and hostile texts of every kind
+of record, each under a budget of exactly its charge and of one byte
+less, and holds the peak to the charge; builds the costliest records
+within the transient; and compares what is counted with the allocator.
 
 **Masked sessions (OWNER).** The masks of a session are drawn for one
 process, so a key or a UID it shows names nothing anywhere else, and a

@@ -233,12 +233,15 @@ from a session that is not masked.
 
 A JSON Lines file that was cut off, at any line, is not loaded.
 
-A document is read within bounds that no document the viewer writes comes
-near: 1,048,576 JSON values in one annotation (the largest mask and the
-largest polygon the model allows are within that), 131,072 of them objects
-or arrays, 64 levels of nesting, and 8 bytes of memory held for every byte
-of the file, after the first 16 MiB (what the viewer writes holds 3). A
-file past one of them fails to load and the import's message says which.
+A document is read within bounds: 1,048,576 JSON values in one annotation
+(the largest mask and the largest polygon the model allows are within
+that), 131,072 of them objects or arrays, 64 levels of nesting, and 4 GiB
+for the memory all its records are charged, whatever the size of the file.
+A file past one of them fails to load and the import's message says
+which. The viewer counts the same way when it writes: a session whose
+document would be past the 4 GiB is refused its export, so whatever the
+viewer exports it can load again. A rectangle is charged about 1,900 bytes
+and an annotated file about 1,300.
 
 One rule about empty documents: a document on a single line that holds no
 file, layer, annotation or label is taken for a JSON Lines file that was

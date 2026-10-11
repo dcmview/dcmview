@@ -983,16 +983,22 @@ is cached between requests.
   of its size and shape, hashing each of those once.
 - The documents being downloaded hold at most `DOWNLOAD_BUDGET_BYTES`
   together, or one of any size; the response body owns its share.
-- Reading a document is bounded for any input by a budget and a
-  transient. Memory is charged, not predicted: after each record is
-  built, `held::Held` counts what it holds on the record itself, and the
-  reader stops past `HELD_TEXT_MULTIPLE` bytes for a byte of text. A new
+- A document import is bounded for any input, from the file to the
+  store, by an absolute budget (`Limits::held_bytes`, 4 GiB), a transient
+  and the text's buffer. Memory is charged, not predicted, and never as a
+  multiple of the text: after each record is built, `held` counts what
+  it holds on the record itself, by lengths and member counts, plus the
+  room an import needs for it. The writers refuse a session by the same
+  count, so what a session exports the viewer imports; keep the charge a
+  function of what a record says, not of its layout in memory. A new
   member of a model type that owns heap must be added to its `Held`
-  impl; the cost test compares the count with the allocator. The
-  transient of building one record is bounded before parsing
-  (`MAX_UNIT_VALUES`, `MAX_UNIT_CONTAINERS`, `MAX_DEPTH`), set from the
-  model's largest valid records. Do not parse a whole document or a line
-  into a buffered value first, and do not predict memory from text.
+  impl, and a new per-record structure anywhere on the way into the
+  store to `Charged::ROOM`; the cost tests compare both with the
+  allocator. The store takes an import's batch with `transact_owned`;
+  do not hand it a borrowed envelope that makes it copy every record
+  while the first copy is alive. The transient of building one record is
+  bounded before parsing (`MAX_UNIT_VALUES`, `MAX_UNIT_CONTAINERS`,
+  `MAX_DEPTH`), set from the model's largest valid records.
 - A JSON Lines document ends with its `end` line and is refused whole
   without it, a header alone included. An export refuses what an import's bounds (`Limits`) would
   refuse.
