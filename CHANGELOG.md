@@ -47,13 +47,19 @@ diagnostic viewer.
   document names it by, its bytes hashed when the key is a digest; the key,
   the SOP Instance UID and the path, matched from its end so that a
   subfolder, a parent or a moved copy of the folder still fits, find the
-  files to compare. Loading is all or nothing, and a JSON Lines file that
-  was cut off is refused. Files with the same bytes keep their own ROIs
-  through a document. A `--mask` session's document names files by content
-  digest and path only and loads into any session. A document export needs the key of every file that has ROIs and
-  answers `422 file_key_unavailable` for one that cannot be read; a JSON
-  document past 256 MiB, or a session with more files or records than a
-  document may hold, answers `422 annotation_export_too_large`.
+  files to compare, and a file named by a digest is also found by its
+  content among the loaded files of its size. Loading is all or nothing,
+  and a JSON Lines file that was cut off is refused. Files with the same
+  bytes keep their own ROIs through a document. A document never holds an
+  absolute path. A `--mask` session's document names files by content
+  digest alone, with no UID, patient id, folder, file or user name, and
+  loads into any session. A document export needs the key of every file
+  that has ROIs and answers `422 file_key_unavailable` for one that cannot
+  be read; a JSON document past 256 MiB, or a session with more files or
+  records than a document may hold, answers
+  `422 annotation_export_too_large`; and when the documents still being
+  downloaded hold 512 MiB together, another answers
+  `503 annotation_export_busy` with `Retry-After`.
 - `GET /api/annotations/import` reports where the `--annotations` import
   stands and what it did: rows matched and unmatched, and every box that was
   corrected or kept although it is unusual, by row. The report holds no

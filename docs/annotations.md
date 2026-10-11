@@ -163,7 +163,9 @@ and label, and a description of each annotated file.
 A document names each file by its key, its SOP Instance UID and its path
 below the deepest directory that holds every loaded file, so it can be
 loaded again with `--annotations` after the files have moved or the viewer
-runs on another machine.
+runs on another machine. It never holds an absolute path: files loaded
+from folders that have nothing in common but the filesystem root, or a
+directory above your home directory, are named by their file names.
 
 **What a reload promises.** An annotation is put on a loaded file only
 after that file was compared with the key the document names it by: its
@@ -174,15 +176,26 @@ SOP Instance UID for a `sop:` key, the BLAKE3 digest of its bytes for a
   path, so loading a subfolder of the exported folder, a parent of it, or
   a copy of it elsewhere finds the same files. One path component (the
   file name) is enough to find a file; of several files a path finds, the
-  one that passes the comparison takes the annotations;
+  one that passes the comparison takes the annotations. A path that names
+  more than 64 loaded files is too vague to find a file by;
+- by content, when the document names a file by a `b3:` key and no key,
+  UID or path finds it: among the loaded files of the same byte size,
+  dimensions and format, the one whose bytes have that digest. So a copy
+  of an annotated file is found wherever it is and whatever it is called;
 - a file found that holds other bytes, or carries another UID, is refused
   (`evidence_conflict`), and so is one that can no longer be read to
   compare (`file_unverified`) or has other dimensions (`size_mismatch`).
   Its annotations are counted in the report and left out, as are those of
   a file that is not loaded (`file_unmatched`);
 - comparing a `b3:` key hashes the file, which a large file takes a moment
-  for; the import's state is `loading` meanwhile. Only files a document
-  names are hashed.
+  for; the import's state is `loading` meanwhile. The files hashed are
+  those a document's keys, UIDs and paths find and, when it must search by
+  content, the loaded files of the same byte size and dimensions as the
+  file it looks for, each once. No other file is read;
+- a `sop:` key says which UID the file has, so a file named by one is
+  matched by its UID, unless the document also records a `b3:` digest for
+  it, which is then compared too. A digest of another kind (`sha256:`) is
+  not compared.
 
 A document path longer than 4,096 bytes is not valid and fails the import.
 A path in an EMBED CSV that is longer than that names no file and is
@@ -193,13 +206,23 @@ were written for it: the document marks such a record with the path of its
 copy (`extensions.embed.row_of`), and a reload shows on each copy what it
 showed before. When that copy is not loaded, its ROIs are left out and
 counted as unmatched. An annotation that was drawn on the image shows on
-every copy, before and after a reload.
+every copy, before and after a reload; a copy that is the only one loaded
+is found by its content although the document names the other.
 
 **Masked sessions.** A session started with `--mask` writes a document
-that names files by the digest of their bytes and their paths, with no
-UID or patient id, real or masked, because the masks are different in
-every run. It can be loaded into any session, masked or not. The annotated
-files are read to make it.
+that names files by the digest of their bytes and by nothing else: no UID
+or patient id, real or masked, because the masks are different in every
+run; no folder or file name, which often say whose the files are (a file
+is `File 1`, as the masked viewer shows it); and no user name. What is
+left of a file is its content digest, byte size, SOP class, format, rows,
+columns and frame count. It can be loaded into any session, masked or not:
+each file is found by its content, which hashes the loaded files of the
+same size and dimensions. Which of several byte-identical files a ROI
+belongs to is written as the copy's place in loading order, so it comes
+back on the same copy when the same files are loaded the same way. The
+annotated files are read to make the document.
+
+A JSON Lines file that was cut off, at any line, is not loaded.
 
 Loading a document is all or nothing: a record that breaks a rule of the
 annotation model fails the whole import and the report names its line. One

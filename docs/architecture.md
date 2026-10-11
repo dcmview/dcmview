@@ -1852,11 +1852,14 @@ keeps these rules for every door:
   cannot be given a key (its bytes, or those of the first file loaded with
   its UID, cannot be read or have changed) is not written to: the request
   answers `422 file_key_unavailable` and nothing changes.
-- **A read never hashes, and neither does the import.** A file whose key
+- **A read never hashes, and neither does a CSV import.** A file whose key
   is not settled has no record, because no write got through for it, so a
   read answers at once from `FileRegistry::key_status` and from the rows
   the import staged. What the EMBED endpoints show and export costs what it
-  did before records had keys, whatever the size of the files.
+  did before records had keys, whatever the size of the files. A document
+  import does hash: it makes records, so it settles the key of each file
+  it places and compares bytes with a reference that names them. A
+  document export hashes the annotated files of a masked session.
 - **Keys cross the wire in the session's form.** A key from a client is
   resolved with `FileRegistry::file_for_shown_key` and a key sent back is
   written with `FileRegistry::shown_key_of`. A masked session therefore
@@ -2087,7 +2090,8 @@ The end line is what tells a whole JSON Lines file from one that was cut
 off at a line. A file with record lines and no end line, or with an end
 line whose counts are not the lines read, is refused whole
 (`ImportError::Truncated`), and a line after the end line is malformed. A
-header alone is a whole file: a document without a record.
+header alone, a line that holds no record and is ended by a line feed, is
+a file cut off after its first line and is refused the same way.
 
 An export refuses a document with more files or records than an import
 reads (`ExportError::TooMany`), so nothing is written that cannot be read
@@ -2142,21 +2146,38 @@ session's files and store.
   a settled key is in a document, so a file with staged rows that cannot be
   given a key fails the export (`422 file_key_unavailable`): rows are never
   left out silently. While a file is hashed the request waits. A `FileRef`
-  describes the loaded file with the lowest index that has the key; its
-  `path` is below the deepest directory that holds every loaded file
-  (`common_directory`), with `/` between components, and its `digest` is
-  set when the registry has computed one. The copy and the writing run on
-  a blocking thread. A session that holds more files or records than a
-  document may answers `422 annotation_export_too_large`.
+  describes the loaded file with the lowest index that has the key, and
+  its `digest` is set when the registry has computed one. **A document
+  never holds an absolute path** (`DocumentPaths`): every file's path is
+  made absolute against the working directory, and a `path` is the
+  components below the deepest directory that holds every loaded file,
+  with `/` between them. When that directory is the filesystem root, a
+  drive, or a directory above the home directory, the files share no
+  folder worth naming, and each is named by its file name alone. The copy
+  and the writing run on a blocking thread. A session that holds more
+  files or records than a document may answers
+  `422 annotation_export_too_large`.
 - **A native import** (`import_native`) reads the document on a blocking
   thread and places its files with the session's resolver. **A record is
   placed on a loaded file only when that file was compared with the key
   its reference names it by.** Candidates are found by the key as the
   session shows keys, then by the UID in the same form (every loaded file
-  that carries it), then by the path. A relative path names every loaded
+  that carries it), then by the path, then, for a reference with a
+  content key, by content. A relative path names every loaded
   file whose own path ends with all of its components (`PathSuffixes`; one
   component is enough), so a document finds its files when a subfolder or
-  a parent of the exported folder is loaded, or the folder was moved. Each
+  a parent of the exported folder is loaded, or the folder was moved; a
+  path that names more than 64 loaded files is too vague and names none.
+  By content, a reference finds the loaded files of its byte size, rows,
+  columns and frame count whose bytes have its digest, of its format and
+  SOP class: a copy at a path the document does not name, or any file of
+  a masked session's document. That hashes, once for the import, every
+  loaded file of that size and shape the registry has no digest of, and
+  no other file. A later step is looked up only when the earlier ones
+  gave no file that passes, and a path lookup compares with a few files
+  and those it names (`PathSuffixes` sorts the paths once), so matching
+  is linear in the references and their candidates however many files
+  share a name. Each
   candidate in turn has its key settled; for a `sop:` reference that key
   must be the reference's, and for a `b3:` reference the file's bytes are
   hashed, if they have not been, and their digest must be the key's. The
@@ -2179,39 +2200,52 @@ session's files and store.
 and each shows the rows written for it. A document says which: a record
 that is one copy's row carries
 `"extensions": { "embed": { "row_of": <path>, "imported": <bool> } }` when
-more than one loaded file has its key. An import takes the member out and
-binds the record to the loaded file that path names and that has the
-record's key; when that copy is not loaded the record is left out and
-counted as unmatched. A record without the member shows on every copy. An
-import also settles the key of every loaded file that shares a UID with a
-file it matched, so what a copy shows does not depend on which copies were
-looked at.
+more than one loaded file has its key. A masked session, whose document
+holds no path, writes `"copy": <n>` in place of `row_of`: the file's place
+among the loaded files with that key, in index order from 0, which names
+the same file again when the copies are loaded in the same order. An
+import takes the member out and binds the record to the loaded file so
+named that has the record's key; when that copy is not loaded the record
+is left out and counted as unmatched. A record without the member shows
+on every copy. Settling one file's key settles every loaded file that
+carries its UID, so when an import has ended what such a copy shows does
+not depend on which copies were looked at; a copy without a UID shows a
+record once it has been hashed.
 
 **What a session holds for it.** One document is built at a time: a
 second export waits, holding nothing, until the first one's text is
 written, and a client that reads its download slowly holds up no other
-export. An export holds a copy of the records and their text once, and
-the text of each export still being sent; a
-native import holds what it read once beside the records it leaves; reading
-a CSV holds the rows it hands on, within 400 bytes a ROI.
-`tests/raster_cost/annotations.rs` counts the CSV read for 200,000 ROIs
-and the documents for 50,000.
+export. An export holds a copy of the records and their text once. The
+texts still being sent are bounded together: 512 MiB
+(`DOWNLOAD_BUDGET_BYTES`), or one text of any size when no other is being
+sent; a document that would pass it is dropped when built and answered
+`503 annotation_export_busy` with `Retry-After`. A native import of a
+document a session wrote holds within five times its text, the records it
+leaves included; text made to be costly can hold up to 44 times its length
+while it is read (the model keeps unknown members as JSON values), which
+for a 256 MiB JSON document is about 11 GiB and for a 16 MiB JSON Lines
+record about 0.7 GiB. Reading a CSV holds the rows it hands on, within
+400 bytes a ROI. `tests/raster_cost/annotations.rs` counts the CSV read
+for 200,000 ROIs, the documents for 50,000, and pins the multiples.
 
 **Masked sessions (OWNER).** The masks of a session are drawn for one
 process, so a key or a UID it shows names nothing anywhere else, and a
-real one must not leave it. A masked session's document therefore names
-each file by its content and its path only: `key` and `digest` are the
-`b3:` digest of the file's bytes (annotated files are hashed for the
-export, and one that cannot be read fails it with
-`422 file_key_unavailable`), the three instance UIDs and the patient id
-are absent, and the document's `extensions` say
-`"dcmview": { "masked": true }`. Paths, as everywhere, are not masked,
-nor is a layer's or a record's author (the name of the user who ran the
-viewer, not of a patient). Such a document loads into any session, masked
-or not, by its paths and digests. An import into a masked session finds
-candidates by a key or a UID in the form the session shows only, so a
-document that an unmasked session wrote is found by its paths and checked
-against the files' real keys. A patient, study, series or folder label
+real one must not leave it. A masked session shows a file as `File N`
+without its folder, because folder and file names often say whose the
+files are, and its document says no more than the session shows. It
+names each file by its content only: `key` and `digest` are the `b3:`
+digest of the file's bytes (annotated files are hashed for the export,
+and one that cannot be read fails it with `422 file_key_unavailable`),
+`path` is `File N`, the three instance UIDs and the patient id are
+absent, every `user:` author is written `user:local`, and the document's
+`extensions` say `"dcmview": { "masked": true }`. What a masked document
+holds of a file is its content digest, byte size, SOP class, format,
+rows, columns and frame count, and of a record its id, timestamps, layer,
+class, geometry, attributes and extensions. Such a document loads into
+any session, masked or not: each reference finds its file by content. An
+import into a masked session finds candidates by a key or a UID in the
+form the session shows only, so a document that an unmasked session wrote
+is found by its paths and checked against the files' real keys. A patient, study, series or folder label
 target is text a client chose and is written and read as it is held.
 
 Redaction boxes are in no document and no export.

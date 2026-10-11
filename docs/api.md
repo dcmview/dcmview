@@ -830,9 +830,11 @@ against the first file loaded with that UID: when that first file can no
 longer be read or has changed, the other files of the group get this answer
 too, although they are readable, and the message says that it is the first
 file that failed. Reading never waits for a
-file to be hashed, and neither does `--annotations`: the rows of a CSV are
-shown and exported as the CSV wrote them for every matched file, including
-one that cannot be given a key.
+file to be hashed, and neither does `--annotations` with a CSV: the rows of
+a CSV are shown and exported as the CSV wrote them for every matched file,
+including one that cannot be given a key. `--annotations` with a document
+does hash: it gives each file it places its key, and compares a file's
+bytes with a reference that names them, while the import is `loading`.
 
 ### Annotation documents
 
@@ -858,13 +860,17 @@ line: a header line (the document with its four lists empty), then one line
 for each file, layer, annotation and label, each an object with one member
 named `file`, `layer`, `annotation` or `label`, then an end line that
 counts them: `{"end":{"files":1,"layers":1,"annotations":1,"labels":0}}`.
-A JSON Lines file that has record lines and does not end with that line, or
-whose counts are not its lines, was cut off or altered and is not loaded.
+A JSON Lines file that does not end with that line, or whose counts are not
+its lines, was cut off or altered and is not loaded; that includes a header
+line alone.
 
 - `files` has one `FileRef` for each file a record names, for the loaded
-  file with the lowest index that has that key. `path` is relative to the
-  deepest directory that holds every loaded file, with `/` between
-  components. `digest` is set when the file has been hashed.
+  file with the lowest index that has that key. `path` is never absolute:
+  it is relative to the deepest directory that holds every loaded file,
+  with `/` between components, and when the loaded files share no
+  directory below the filesystem root, or only one above the home
+  directory, it is the file's name alone. `digest` is set when the file
+  has been hashed.
 - Records are written as they are held: nothing is checked, clamped or left
   out. A box that `--annotations` read from an EMBED CSV and kept although
   it reaches past the image is in the document as it was read.
@@ -879,17 +885,27 @@ whose counts are not its lines, was cut off or altered and is not loaded.
   what an export writes, an import can read.
 - One document is built at a time; a second export waits until the first
   is ready to send. A download that is read slowly holds up no other.
+- The documents being downloaded may hold 512 MiB of text together. One
+  that would pass that while another is still being sent answers
+  `503 annotation_export_busy` with `Retry-After: 1`, and succeeds when
+  asked again after a download has ended. A document is always sent when
+  no other is, whatever its size.
 - Files with the same bytes share a key and each keeps its own ROIs. A
   record that is one such file's ROI says so in
   `"extensions": { "embed": { "row_of": "<path>", "imported": true } }`,
-  and a later session puts it back on the file that path names.
-- A session started with `--mask` names files by content: each `key` and
-  `digest` is `b3:` and the BLAKE3 digest of the file's bytes, the three
-  instance UIDs and the patient id are absent, and the document's
-  `extensions` hold `"dcmview": { "masked": true }`. The annotated files
-  are read for it; one that cannot be read answers
-  `422 file_key_unavailable`. Paths are written as everywhere. The
-  document loads into any later session, masked or not.
+  and a later session puts it back on the file that path names. A masked
+  session writes `"copy": <n>` in place of `row_of`: which of the copies,
+  in the order they were loaded.
+- A session started with `--mask` names files by content alone: each
+  `key` and `digest` is `b3:` and the BLAKE3 digest of the file's bytes,
+  `path` is the name the session shows (`File 1`), the three instance UIDs
+  and the patient id are absent, every `user:` author is `user:local`, and
+  the document's `extensions` hold `"dcmview": { "masked": true }`. What
+  is left of a file is its content digest, byte size, SOP class, format,
+  rows, columns and frame count; a record keeps its id and timestamps.
+  The annotated files are read for it; one that cannot be read answers
+  `422 file_key_unavailable`. The document loads into any later session,
+  masked or not, each file found by its content.
 - Both wait for the `--annotations` import, and answer `500` with its
   message when it failed, as the CSV export does.
 - Redaction boxes are never in a document.
@@ -1136,13 +1152,14 @@ A session started with `--mask` reports `masked: true` in `/health` and
 - Slide label and overview images (Image Type value 3 `LABEL` or `OVERVIEW`)
   report `support_state: unsupported` with `support_reason:
   masked_label_image`, and their frame endpoints answer `403` `masked`.
-- An annotation document (`/annotations/export.json`, `export.jsonl`) is
-  written as the session shows its files: file keys, `sop_instance_uid`,
-  `study_instance_uid`, `series_instance_uid` and `patient_id` as the
-  catalog has them. `path` is unchanged, as in the catalog. A document given
-  to `--annotations` names a file by key or UID only in that form, so one
-  written by an unmasked session is matched by its paths. The import's
-  report and its error message hold no text of the file in any session.
+- An annotation document (`/annotations/export.json`, `export.jsonl`)
+  holds no UID and no patient id, real or masked, no folder or file name
+  and no user name: files are named by the digest of their bytes and
+  shown as `File N`, and a `user:` author is `user:local`. A document
+  given to `--annotations` names a file by key or UID only in the form the
+  session shows, so one written by an unmasked session is found by its
+  paths and checked against the files themselves. The import's report and
+  its error message hold no text of the file in any session.
 
 `burned_in_annotation` in a file summary is `true` when the file declares
 Burned In Annotation `YES`; masking does not change pixels.

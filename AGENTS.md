@@ -965,9 +965,20 @@ is cached between requests.
   files whose path ends with it (`PathSuffixes`), not a path below some
   directory.
 - Byte-identical files keep their own rows through a document: export
-  marks a bound record with `extensions.embed.row_of` when several loaded
-  files have its key, and import binds it to that copy or leaves it out.
-  Do not let what a copy shows depend on which copies were viewed.
+  marks a bound record with `extensions.embed.row_of` (`copy`, a place in
+  load order, in a masked document) when several loaded files have its
+  key, and import binds it to that copy or leaves it out.
+- Matching a document is linear in its references and the candidates they
+  name. `PathSuffixes` sorts the paths once and a lookup never visits the
+  other files of the same name; a later candidate step is looked up only
+  when the earlier ones failed; a path that names more than
+  `PATH_CANDIDATES` files names none. The lookup has a counted test; keep
+  it counted, not timed.
+- A document never holds an absolute path (`DocumentPaths`), and a
+  reference with a content key also finds its file among the loaded files
+  of its size and shape, hashing each of those once.
+- The documents being downloaded hold at most `DOWNLOAD_BUDGET_BYTES`
+  together, or one of any size; the response body owns its share.
 - A JSON Lines document ends with its `end` line and is refused whole
   without it. An export refuses what an import's bounds (`Limits`) would
   refuse.
@@ -978,9 +989,10 @@ is cached between requests.
   reads. `tests/raster_cost/annotations.rs` counts what the exports, a
   native import and a CSV read hold; a new format gets a case.
 - A masked session's document holds no key, UID or patient id, real or
-  masked: masks are drawn per process and mean nothing elsewhere. It names
-  files by the `b3:` digest of their bytes and their paths and says
-  `extensions.dcmview.masked`. An import into a masked session finds
+  masked (masks are drawn per process and mean nothing elsewhere), no
+  folder or file name (`path` is `File N`) and no user name (`user:`
+  authors become `user:local`). It names files by the `b3:` digest of
+  their bytes and says `extensions.dcmview.masked`. An import into a masked session finds
   candidates by a key or a UID in the form the session shows only.
   `tests/integration/annotation_documents.rs` asserts both.
 
