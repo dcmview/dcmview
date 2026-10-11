@@ -17,6 +17,10 @@ use std::path::Path;
 use std::sync::Arc;
 use tempfile::tempdir;
 
+/// Two content keys no loaded file has.
+const OTHER_BYTES: &str = "b3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const CHANGED_BYTES: &str = "b3:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+
 /// A UUIDv7 that is the same in every run.
 fn id(n: u32) -> String {
     format!("0199c0de-0000-7000-8000-{n:012x}")
@@ -547,6 +551,30 @@ async fn an_import_is_applied_whole_or_not_at_all() {
     );
     assert_eq!(session.store.backend().revision().expect("revision"), 0);
 
+    // A file that is gone when it is read: the message says so, and does
+    // not say where the file was.
+    let session = Session::loading(files());
+    let path = dir.path().join("gone.json");
+    std::fs::write(&path, &document).expect("write document");
+    let source = NativeSource::from_path(&path).expect("document source");
+    std::fs::remove_file(&path).expect("remove document");
+    let error = import_native(
+        &session.registry,
+        &session.store,
+        &source,
+        Arc::new(|| true),
+    )
+    .await
+    .expect_err("no file");
+    assert_eq!(
+        error,
+        AnnotationError::ImportFailed(
+            "the annotations file could not be opened: entity not found".to_string()
+        )
+    );
+    let status: Value = session.server.get("/api/annotations/import").await.json();
+    assert_eq!(status["state"], "failed");
+
     // An empty document is an import that brought nothing.
     let session = Session::loading(files());
     let report = session
@@ -583,9 +611,10 @@ async fn a_record_lands_on_the_file_its_reference_names_or_on_no_file() {
         // 4, 5: one UID, and neither can be read to tell them apart.
         entry(dir.path(), "gone.dcm", "1.2.3.7"),
         entry(dir.path(), "gone-twin.dcm", "1.2.3.7"),
-        // 6, 7: files of their own.
+        // 6, 7, 8: files of their own.
         entry(dir.path(), "alone.dcm", "1.2.3.1"),
         entry(dir.path(), "sized.dcm", "1.2.3.6"),
+        entry(dir.path(), "renumbered.dcm", "1.2.3.5"),
     ];
     let session = Session::loading(files);
     let mut smaller = reference("sop:1.2.3.6", Some("1.2.3.6"), "sized.dcm");
@@ -609,6 +638,16 @@ async fn a_record_lands_on_the_file_its_reference_names_or_on_no_file() {
         reference("sop:5.5.5", Some("5.5.5"), "nowhere.dcm"),
         // Row 8: another size than the loaded file.
         smaller,
+        // Row 9: keyed by content where it was written, and neither that
+        // key nor its path is known here: its UID finds it.
+        reference(OTHER_BYTES, Some("1.2.3.5"), "moved/away.dcm"),
+        // Row 10: found by its path, but the bytes it was written for are
+        // not the bytes of the file here, which had to be hashed.
+        {
+            let mut changed = of_64_bytes(reference(CHANGED_BYTES, Some("1.2.3.9"), "first.dcm"));
+            changed["digest"] = json!(CHANGED_BYTES);
+            changed
+        },
     ];
     let records: Vec<Value> = [
         "sop:1.2.3.9",
@@ -618,6 +657,8 @@ async fn a_record_lands_on_the_file_its_reference_names_or_on_no_file() {
         "sop:4.4.4",
         "sop:5.5.5",
         "sop:1.2.3.6",
+        OTHER_BYTES,
+        CHANGED_BYTES,
     ]
     .iter()
     .enumerate()
@@ -635,22 +676,22 @@ async fn a_record_lands_on_the_file_its_reference_names_or_on_no_file() {
     assert_eq!(
         report["counts"],
         json!({
-            "files": 3, "annotations_in": 7, "annotations_out": 3,
-            "labels_in": 0, "labels_out": 0, "unmatched": 1, "refused": 3,
+            "files": 4, "annotations_in": 9, "annotations_out": 4,
+            "labels_in": 0, "labels_out": 0, "unmatched": 1, "refused": 4,
         })
     );
     assert_eq!(
         report["warnings"],
         json!([
             { "code": "key_unavailable", "count": 1, "rows": [{ "row": 4 }] },
-            { "code": "evidence_conflict", "count": 1, "rows": [{ "row": 6 }] },
+            { "code": "evidence_conflict", "count": 2, "rows": [{ "row": 6 }, { "row": 10 }] },
             { "code": "file_unmatched", "count": 1, "rows": [{ "row": 7 }] },
             { "code": "size_mismatch", "count": 1, "rows": [{ "row": 8 }] },
         ])
     );
     assert_eq!(
         report["matched_by"],
-        json!({ "key": 1, "sop_instance_uid": 0, "path": 2 })
+        json!({ "key": 1, "sop_instance_uid": 1, "path": 2 })
     );
 
     let shown = |n: u32| rows(&[[n, n, n + 10, n + 10]], &[]);
@@ -662,6 +703,7 @@ async fn a_record_lands_on_the_file_its_reference_names_or_on_no_file() {
     assert_eq!(session.rois(2).await, shown(2));
     assert_eq!(session.rois(3).await, shown(2));
     assert_eq!(session.rois(6).await, shown(4));
+    assert_eq!(session.rois(8).await, shown(8));
     for index in [4, 5, 7] {
         assert_eq!(session.rois(index).await.num_roi, 0, "file {index}");
     }
@@ -686,7 +728,10 @@ async fn a_record_lands_on_the_file_its_reference_names_or_on_no_file() {
         .filter_map(|file| file["path"].as_str())
         .collect();
     // A shared key is described once, by the first file that has it.
-    assert_eq!(paths, ["second.dcm", "copy-a.dcm", "alone.dcm"]);
+    assert_eq!(
+        paths,
+        ["second.dcm", "copy-a.dcm", "alone.dcm", "renumbered.dcm"]
+    );
 }
 
 /// A masked session writes a document in the form it shows, and reads one
@@ -876,6 +921,38 @@ async fn a_document_export_needs_a_key_for_every_file_with_rows() {
     // Nothing a view shows changed, and the CSV is what it was.
     assert_eq!(session.rois(0).await, rows(&[[1, 2, 3, 4]], &[]));
     assert_eq!(session.rois(2).await, rows(&[[5, 6, 7, 8]], &[]));
+    assert_eq!(session.csv().await, csv);
+
+    // Copies with the same bytes, each with a row of its own: the export
+    // hashes them for their key and stores both rows under it, and each
+    // copy still shows and exports the row that was written for it.
+    let session = Session::loading(vec![
+        written(dir.path(), "copy-a.dcm", "1.2.3.8", &[3; 64]),
+        written(dir.path(), "copy-b.dcm", "1.2.3.8", &[3; 64]),
+    ]);
+    session.stage(HashMap::from([
+        (0, rows(&[[1, 2, 3, 4]], &[])),
+        (1, rows(&[[5, 6, 7, 8]], &[])),
+    ]));
+    let csv = session.csv().await;
+    let document = session.document().await;
+    assert_eq!(document["files"].as_array().map(Vec::len), Some(1));
+    assert_eq!(document["files"][0]["path"], "copy-a.dcm");
+    // Copies keep the key of their UID; the digest they were compared by
+    // is beside it.
+    assert_eq!(document["files"][0]["key"], "sop:1.2.3.8");
+    assert!(document["files"][0]["digest"]
+        .as_str()
+        .is_some_and(|digest| digest.starts_with("b3:")));
+    let boxes: Vec<&Value> = document["annotations"]
+        .as_array()
+        .expect("annotations")
+        .iter()
+        .map(|record| &record["geometry"])
+        .collect();
+    assert_eq!(boxes, [&rect(2, 1, 4, 3), &rect(6, 5, 8, 7)]);
+    assert_eq!(session.rois(0).await, rows(&[[1, 2, 3, 4]], &[]));
+    assert_eq!(session.rois(1).await, rows(&[[5, 6, 7, 8]], &[]));
     assert_eq!(session.csv().await, csv);
 
     // A file without rows is not asked for a key: with the rows of the

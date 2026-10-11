@@ -1093,26 +1093,41 @@ mod tests {
             "the view is what the save answered, the moved ROI included"
         );
     }
-    /// One document export runs at a time: a second waits, having read
-    /// nothing, until the first one's result is let go of.
+    /// One document export runs at a time. One that has to wait has read
+    /// and changed nothing yet, and its own result holds the permit until
+    /// it is let go of.
     #[tokio::test]
     async fn a_second_document_export_waits_for_the_first() {
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/golden-uncompressed-u16-multiframe.dcm");
         let registry = FileRegistry::from_files(vec![crate::loader::test_entry(&fixture)]);
-        let store = AnnotationStore::empty();
+        let store = AnnotationStore::loading();
+        import_embed_rows(&registry, &store, HashMap::from([(0, rois([0, 0, 1, 1]))]))
+            .expect("import");
 
-        let first = export_native(&registry, &store, NativeForm::Json)
-            .await
-            .expect("the first export");
-        let mut second = Box::pin(export_native(&registry, &store, NativeForm::JsonLines));
+        // The permit is taken: an export is being sent.
+        let sending = store.export_permit().await.expect("permit");
+        let mut export = Box::pin(export_native(&registry, &store, NativeForm::Json));
         assert!(
-            futures::poll!(second.as_mut()).is_pending(),
-            "the second export waits while the first is held"
+            futures::poll!(export.as_mut()).is_pending(),
+            "an export waits while another holds the permit"
         );
-        drop(first);
-        let second = second.await.expect("the second export");
-        assert!(!second.bytes.is_empty());
+        assert!(
+            store.staged_rows(0).expect("staged rows").is_some(),
+            "an export that waits has made no staged row a record"
+        );
+        drop(sending);
+        let export = export.await.expect("the export");
+        assert_eq!(export.report.counts.annotations_out, 1);
+        assert!(store.staged_rows(0).expect("staged rows").is_none());
+
+        let mut next = Box::pin(export_native(&registry, &store, NativeForm::JsonLines));
+        assert!(
+            futures::poll!(next.as_mut()).is_pending(),
+            "the result of an export holds the permit"
+        );
+        drop(export);
+        assert!(next.await.is_ok());
     }
 
     /// A row the import read past the image edge is held as loaded, and an
