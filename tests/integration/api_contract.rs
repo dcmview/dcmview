@@ -6,6 +6,7 @@ use dcmview::annotations::EmbedRoiAnnotations;
 use dcmview::api::contracts::{
     endpoints, Endpoint, ResponseHeaders, CACHE_HEADER, CACHE_HIT, CACHE_MISS,
     DISPLAY_FRAME_HEADERS, EXPORT_CONTENT_DISPOSITION_HEADER, EXPORT_CONTENT_DISPOSITION_VALUE,
+    EXPORT_JSONL_CONTENT_DISPOSITION_VALUE, EXPORT_JSON_CONTENT_DISPOSITION_VALUE,
     RAW_FRAME_HEADERS, SERVER_INSTANCE_HEADER, THUMBNAIL_HEADERS,
 };
 use dcmview::server;
@@ -507,12 +508,19 @@ fn assert_declared_response_headers(endpoint: &Endpoint, response: &TestResponse
             assert_no_cache_header(endpoint, response);
             assert_no_raw_frame_headers(endpoint, response);
             assert_no_display_frame_headers(endpoint, response);
+            let expected = if *endpoint == endpoints::ANNOTATIONS_EXPORT_JSON {
+                EXPORT_JSON_CONTENT_DISPOSITION_VALUE
+            } else if *endpoint == endpoints::ANNOTATIONS_EXPORT_JSONL {
+                EXPORT_JSONL_CONTENT_DISPOSITION_VALUE
+            } else {
+                EXPORT_CONTENT_DISPOSITION_VALUE
+            };
             assert_eq!(
                 response
                     .header(EXPORT_CONTENT_DISPOSITION_HEADER)
                     .to_str()
                     .expect("content-disposition"),
-                EXPORT_CONTENT_DISPOSITION_VALUE,
+                expected,
                 "{} content-disposition contract",
                 endpoint.id
             );

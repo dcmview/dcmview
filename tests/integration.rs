@@ -1,5 +1,6 @@
 mod integration {
     mod access_token;
+    mod annotation_documents;
     mod annotation_ops;
     mod annotation_store;
     mod annotations_endpoint;

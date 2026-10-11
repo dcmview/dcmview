@@ -1093,6 +1093,28 @@ mod tests {
             "the view is what the save answered, the moved ROI included"
         );
     }
+    /// One document export runs at a time: a second waits, having read
+    /// nothing, until the first one's result is let go of.
+    #[tokio::test]
+    async fn a_second_document_export_waits_for_the_first() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/golden-uncompressed-u16-multiframe.dcm");
+        let registry = FileRegistry::from_files(vec![crate::loader::test_entry(&fixture)]);
+        let store = AnnotationStore::empty();
+
+        let first = export_native(&registry, &store, NativeForm::Json)
+            .await
+            .expect("the first export");
+        let mut second = Box::pin(export_native(&registry, &store, NativeForm::JsonLines));
+        assert!(
+            futures::poll!(second.as_mut()).is_pending(),
+            "the second export waits while the first is held"
+        );
+        drop(first);
+        let second = second.await.expect("the second export");
+        assert!(!second.bytes.is_empty());
+    }
+
     /// A row the import read past the image edge is held as loaded, and an
     /// operation that only deletes or restores it does not judge it: it
     /// goes and comes back as it was.
