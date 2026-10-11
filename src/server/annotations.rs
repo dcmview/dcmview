@@ -56,8 +56,8 @@ use crate::annotations::{
     embed::{replacement_ops, rows_as_creates},
     memory::{now, Binding, Checking, ViewCheck, Write},
     AnnotationBackend, AnnotationIndexMap, AnnotationStore, DocumentPaths, DownloadHold,
-    EmbedRoiAnnotations, FileLookup, ImportStatus, NativeSource, PathSuffixes,
-    DOWNLOAD_BUDGET_BYTES, EMBED_IMPORT_AUTHOR, NATIVE_IMPORT_AUTHOR,
+    EmbedRoiAnnotations, FileLookup, ImportStatus, NativeSource, PathSuffixes, EMBED_IMPORT_AUTHOR,
+    NATIVE_IMPORT_AUTHOR,
 };
 use crate::api::contracts::{AnnotationImportResponse, AnnotationImportState, FileKeyError};
 use crate::types::FileEntry;
@@ -549,7 +549,11 @@ pub struct NativeExport {
 ///    (a layer's `source.author`, a record's `created_by` and
 ///    `modified_by`) is written as [`MASKED_USER_AUTHOR`]: the name of
 ///    whoever ran the viewer stays with the session. An unmasked session
-///    writes none of this. What a masked document says of a file is then
+///    writes none of this. A label whose target is not a file or a frame
+///    (a patient, study, series or folder, named by text a client chose
+///    from what the session showed, or by a folder path) is left out, and
+///    the export's report counts it in `labels_in` and as a
+///    `labels_dropped` loss. What a masked document says of a file is then
 ///    its content digest, byte size, SOP class, format, rows, columns and
 ///    frame count; of a record, everything but a user's name.
 /// 7. **Keys.** Every annotation's `file` and every `file` or `frame`
@@ -603,24 +607,16 @@ pub async fn export_native(
     store: &AnnotationStore,
     form: NativeForm,
 ) -> Result<NativeExport, AnnotationError> {
-    export_native_within(
-        registry,
-        store,
-        form,
-        dcmview_adapters::Limits::DEFAULT,
-        DOWNLOAD_BUDGET_BYTES,
-    )
-    .await
+    export_native_within(registry, store, form, dcmview_adapters::Limits::DEFAULT).await
 }
 
-/// [`export_native`] under the bounds and the download budget given,
-/// which are `Limits::DEFAULT` and [`DOWNLOAD_BUDGET_BYTES`] in a session.
+/// [`export_native`] under the bounds given, which are `Limits::DEFAULT`
+/// in a session.
 pub async fn export_native_within(
     registry: &FileRegistry,
     store: &AnnotationStore,
     form: NativeForm,
     limits: dcmview_adapters::Limits,
-    download_budget: u64,
 ) -> Result<NativeExport, AnnotationError> {
     store
         .wait_until_ready()
@@ -704,6 +700,19 @@ pub async fn export_native_within(
                 unnamed(&mut meta.modified_by);
             }
         }
+        // A label on a patient, study, series or folder names it by text
+        // a client chose from what the masked session showed, or by a
+        // folder path: neither leaves the session.
+        let labels_held = document.labels.len();
+        if masked {
+            document.labels.retain(|label| {
+                matches!(
+                    label.target,
+                    LabelTarget::File { .. } | LabelTarget::Frame { .. }
+                )
+            });
+        }
+        let labels_left_out = (labels_held - document.labels.len()) as u64;
         let mut emitted = HashSet::new();
         let mut shown = HashMap::<FileKey, FileKey>::new();
         let mut visit = |key: &mut FileKey| {
@@ -762,7 +771,7 @@ pub async fn export_native_within(
             limits,
         };
         let mut bytes = Vec::new();
-        let report = match form {
+        let mut report = match form {
             NativeForm::Json => NativeJson.export(&document, &context, &mut bytes),
             NativeForm::JsonLines => NativeJsonLines.export(&document, &context, &mut bytes),
         }
@@ -771,10 +780,12 @@ pub async fn export_native_within(
             ExportError::TooMany { limit, .. } => AnnotationError::ExportTooMany { limit },
             error => store_error(error),
         })?;
+        report.counts.labels_in += labels_left_out;
+        report.lose(LossCode::LabelsDropped, None, labels_left_out, None);
         // The text is kept only when the downloads being sent leave room
         // for it; otherwise it is dropped here and the client asks again.
         let hold = downloads
-            .hold_download(bytes.len() as u64, download_budget)
+            .hold_download(bytes.len() as u64)
             .ok_or(AnnotationError::ExportBusy)?;
         // The permit is held to here: while the records are copied and
         // their text is written, and no longer.

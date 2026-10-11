@@ -143,8 +143,10 @@ pub struct AnnotationStore {
     import: Arc<Mutex<EmbedImport>>,
     ready: Arc<Notify>,
     exports: Arc<Semaphore>,
-    /// Bytes of document text held by downloads that are being sent.
+    /// Bytes of document text held by downloads that are being sent, and
+    /// how many they may hold together.
     downloads: Arc<Mutex<u64>>,
+    download_budget: u64,
     /// Run by [`AnnotationStore::before_embed_write`], so a test can make a
     /// second write at exactly the point between a save's read of the view
     /// and its write.
@@ -166,6 +168,7 @@ impl AnnotationStore {
             ready: Arc::new(Notify::new()),
             exports: Arc::new(Semaphore::new(1)),
             downloads: Arc::new(Mutex::new(0)),
+            download_budget: DOWNLOAD_BUDGET_BYTES,
             #[cfg(test)]
             before_embed_write: None,
         }
@@ -257,13 +260,22 @@ impl AnnotationStore {
             .map_err(|_| anyhow!("annotations store is closed"))
     }
 
+    /// The same store with `bytes` as its download budget in place of
+    /// [`DOWNLOAD_BUDGET_BYTES`], for a session or a test that wants
+    /// another. Holds taken before the change still count.
+    pub fn with_download_budget(mut self, bytes: u64) -> Self {
+        self.download_budget = bytes;
+        self
+    }
+
     /// Takes `bytes` of the session's download budget for a document text
     /// that is about to be sent, until the hold is dropped. `None` when
     /// other downloads are being sent and this one would make them hold
-    /// more than `budget` bytes together. A text is always admitted when
+    /// more than the budget together. A text is always admitted when
     /// no other is being sent, whatever its size, so every session can be
     /// downloaded.
-    pub fn hold_download(&self, bytes: u64, budget: u64) -> Option<DownloadHold> {
+    pub fn hold_download(&self, bytes: u64) -> Option<DownloadHold> {
+        let budget = self.download_budget;
         let mut held = self.downloads.lock().ok()?;
         if *held > 0 && held.saturating_add(bytes) > budget {
             return None;

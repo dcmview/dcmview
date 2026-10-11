@@ -582,12 +582,17 @@ async fn an_import_is_applied_whole_or_not_at_all() {
     let status: Value = session.server.get("/api/annotations/import").await.json();
     assert_eq!(status["state"], "failed");
 
-    // An empty document is an import that brought nothing.
+    // A document without a record is an import that brought nothing.
     let session = Session::loading(files());
+    let nothing = document_of(
+        vec![reference("sop:9.9.9", Some("9.9.9"), "nowhere.dcm")],
+        vec![],
+        vec![],
+    );
     let report = session
-        .import(dir.path(), &document_of(vec![], vec![], vec![]))
+        .import(dir.path(), &nothing)
         .await
-        .expect("empty");
+        .expect("no record");
     assert_eq!(report["counts"]["annotations_out"], 0);
     assert_eq!(session.store.backend().revision().expect("revision"), 0);
     assert_eq!(session.rois(0).await.num_roi, 0);
@@ -1569,63 +1574,103 @@ async fn references_and_rows_are_held_to_what_they_say() {
 #[tokio::test]
 async fn exports_are_refused_past_their_bounds() {
     let dir = tempdir().expect("temp dir");
-    let session = Session::loading(vec![
-        entry(dir.path(), "a.dcm", "1.2.3.1"),
-        entry(dir.path(), "b.dcm", "1.2.3.2"),
-    ]);
-    session.stage(HashMap::from([
-        (0, rows(&[[1, 2, 3, 4], [5, 6, 7, 8]], &[])),
-        (1, rows(&[[1, 2, 3, 4]], &[])),
-    ]));
+    let with_budget = |budget: Option<u64>| {
+        let store = AnnotationStore::loading();
+        let session = Session::over(
+            FileRegistry::from_files(vec![
+                entry(dir.path(), "a.dcm", "1.2.3.1"),
+                entry(dir.path(), "b.dcm", "1.2.3.2"),
+            ]),
+            match budget {
+                Some(budget) => store.with_download_budget(budget),
+                None => store,
+            },
+        );
+        session.stage(HashMap::from([
+            (0, rows(&[[1, 2, 3, 4], [5, 6, 7, 8]], &[])),
+            (1, rows(&[[1, 2, 3, 4]], &[])),
+        ]));
+        session
+    };
     let limits = dcmview_adapters::Limits::DEFAULT;
-    let export = |limits, budget| {
+    async fn export(
+        session: &Session,
+        limits: dcmview_adapters::Limits,
+    ) -> Result<dcmview::server::annotations::NativeExport, AnnotationError> {
         export_native_within(
             &session.registry,
             &session.store,
             NativeForm::JsonLines,
             limits,
-            budget,
         )
-    };
+        .await
+    }
     let refused = |result: Result<_, AnnotationError>| match result {
         Ok(_) => panic!("the export was written"),
         Err(error) => error,
     };
+    let session = with_budget(None);
     assert_eq!(
         refused(
             export(
+                &session,
                 dcmview_adapters::Limits {
                     records: 2,
                     ..limits
-                },
-                u64::MAX
+                }
             )
             .await
         ),
         AnnotationError::ExportTooMany { limit: 2 }
     );
     assert_eq!(
-        refused(export(dcmview_adapters::Limits { files: 1, ..limits }, u64::MAX).await),
+        refused(export(&session, dcmview_adapters::Limits { files: 1, ..limits }).await),
         AnnotationError::ExportTooMany { limit: 1 }
     );
+    let size = export(&session, limits).await.expect("export").bytes.len() as u64;
 
     // One text is always kept, whatever its size. A second is kept beside
     // it only within the budget, and again once the first has gone.
-    let first = export(limits, 1).await.expect("the only download");
-    let size = first.bytes.len() as u64;
+    let tight = with_budget(Some(2 * size - 1));
+    let first = export(&tight, limits).await.expect("the only download");
     assert_eq!(
-        refused(export(limits, 2 * size - 1).await),
-        AnnotationError::ExportBusy
-    );
-    let second = export(limits, 2 * size).await.expect("within the budget");
-    assert_eq!(
-        refused(export(limits, 2 * size).await),
+        refused(export(&tight, limits).await),
         AnnotationError::ExportBusy
     );
     drop(first);
-    let third = export(limits, 2 * size).await.expect("room again");
+    let roomy = with_budget(Some(2 * size));
+    let first = export(&roomy, limits).await.expect("the only download");
+    let second = export(&roomy, limits).await.expect("within the budget");
+    assert_eq!(
+        refused(export(&roomy, limits).await),
+        AnnotationError::ExportBusy
+    );
+    drop(first);
+    let third = export(&roomy, limits).await.expect("room again");
     drop((second, third));
-    export(limits, 1).await.expect("nothing is being sent");
+
+    // Through the endpoint: while a download holds the budget, another is
+    // answered 503 with the time to wait, and is sent once it has ended.
+    let small = with_budget(Some(1));
+    let held = small.store.hold_download(1).expect("a download in flight");
+    for path in [
+        "/api/annotations/export.json",
+        "/api/annotations/export.jsonl",
+    ] {
+        let response = small.server.get(path).await;
+        assert_eq!(
+            response.status_code(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "{path}"
+        );
+        assert_eq!(response.header("retry-after"), "1", "{path}");
+        let body: Value = response.json();
+        assert_eq!(body["code"], "annotation_export_busy", "{path}");
+    }
+    drop(held);
+    small.text("/api/annotations/export.json").await;
+    // A response that was read to its end holds nothing any more.
+    small.text("/api/annotations/export.jsonl").await;
 }
 
 /// A masked session's document holds no path to say which copy a row is
@@ -1727,7 +1772,7 @@ fn labelled_store() -> AnnotationStore {
     schema.fields = serde_json::from_value(json!([{
         "id": "quality", "name": "Quality", "type": "category",
         "options": [{ "id": "good", "name": "Good" }, { "id": "bad", "name": "Bad" }],
-        "applies_to": ["file", "frame"],
+        "applies_to": ["file", "frame", "series", "folder"],
     }]))
     .expect("field");
     AnnotationStore::with_backend(MemoryBackend::new(MemoryConfig {
@@ -1783,6 +1828,13 @@ async fn labels_go_through_a_document_with_the_files_they_are_on() {
             vec![
                 label(1, json!({ "file": "sop:1.2.3.1" }), "good"),
                 label(2, json!({ "frame": "sop:1.2.3.2", "index": 3 }), "bad"),
+                // Named by what the session showed, and by a folder.
+                label(3, json!({ "series": "2.25.1234567890" }), "good"),
+                label(
+                    4,
+                    json!({ "folder": "ward-7-north/DOE_JANE_1961", "root": "data" }),
+                    "bad",
+                ),
             ],
             &BTreeMap::from([(key("sop:1.2.3.1"), size), (key("sop:1.2.3.2"), size)]),
         )
@@ -1794,7 +1846,14 @@ async fn labels_go_through_a_document_with_the_files_they_are_on() {
         "{results:?}"
     );
 
-    let mut document = first.document().await;
+    let text = first.text("/api/annotations/export.json").await;
+    // A masked document holds labels on files and frames only: the others
+    // name a folder, or what one session showed.
+    for kept_back in ["DOE_JANE_1961", "ward-7-north", "2.25.1234567890"] {
+        assert!(!text.contains(kept_back), "{kept_back}: {text}");
+    }
+    let mut document: Value = serde_json::from_str(&text).expect("document");
+    assert_eq!(document["labels"].as_array().expect("labels").len(), 2);
     assert_eq!(document["files"].as_array().expect("files").len(), 2);
     let of = |document: &Value, n: usize| document["labels"][n]["target"].clone();
     assert_eq!(
