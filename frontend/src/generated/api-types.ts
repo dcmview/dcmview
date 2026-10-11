@@ -146,7 +146,7 @@ result: ApplyResult,
  */
 revision: number, code?: ApiErrorCode, error?: string, };
 
-export type ApiErrorCode = "invalid_path" | "invalid_query" | "invalid_json" | "bad_request" | "not_found" | "route_not_found" | "asset_not_found" | "method_not_allowed" | "no_pixel_data" | "frame_out_of_range" | "invalid_window" | "unsupported_transfer_syntax" | "unsupported_pixel_layout" | "semantic_mapping_unavailable" | "overlay_not_covering_frame" | "pixel_decode_failed" | "decode_busy" | "decode_memory_exceeded" | "masked" | "annotation_conflict" | "annotation_invalid" | "file_key_unavailable" | "file_key_replaced" | "file_key_ambiguous" | "annotation_export_too_large" | "payload_too_large" | "unauthorized" | "internal_error";
+export type ApiErrorCode = "invalid_path" | "invalid_query" | "invalid_json" | "bad_request" | "not_found" | "route_not_found" | "asset_not_found" | "method_not_allowed" | "no_pixel_data" | "frame_out_of_range" | "invalid_window" | "unsupported_transfer_syntax" | "unsupported_pixel_layout" | "semantic_mapping_unavailable" | "overlay_not_covering_frame" | "pixel_decode_failed" | "decode_busy" | "decode_memory_exceeded" | "masked" | "annotation_conflict" | "annotation_invalid" | "file_key_unavailable" | "file_key_replaced" | "file_key_ambiguous" | "annotation_export_too_large" | "annotation_export_busy" | "payload_too_large" | "unauthorized" | "internal_error";
 
 export type CodedConceptSummary = { value: string, scheme: string, meaning: string, };
 

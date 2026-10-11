@@ -1514,6 +1514,14 @@ pub enum ApiErrorCode {
     /// `endpoints::ANNOTATIONS_EXPORT_JSON` only. The JSON Lines export has
     /// no such bound.
     AnnotationExportTooLarge,
+    /// The annotation documents still being downloaded hold as much text
+    /// as the session lets them hold together (512 MiB), and this one
+    /// would pass it. Status 503 with `Retry-After:`
+    /// [`DECODE_BUSY_RETRY_AFTER_SECONDS`]; the same request succeeds once
+    /// a download has ended. A document is always sent when no other is.
+    /// On `endpoints::ANNOTATIONS_EXPORT_JSON` and
+    /// `endpoints::ANNOTATIONS_EXPORT_JSONL` only.
+    AnnotationExportBusy,
     /// A request body longer than its endpoint reads. Status 413.
     PayloadTooLarge,
     /// The request lacks the session's bearer token. Status 401 with

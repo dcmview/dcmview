@@ -14,13 +14,17 @@
 //!   annotation write on either file"). The write waits for that. A file
 //!   that cannot be given a key is not written to:
 //!   [`AnnotationError::KeyUnavailable`].
-//! - **Reads never hash, and neither does the import.** A file whose key
-//!   is not settled has no record, because no write got through for it, so
-//!   a read answers at once from `FileRegistry::key_status` and from the
-//!   rows the import staged (`AnnotationStore`, "Staged rows"). No read
-//!   and no import calls `ensure_key`: what the EMBED endpoints show and
-//!   export costs what it cost before the store held records, whatever the
-//!   size of the files.
+//! - **Reads never hash, and neither does a CSV import.** A file whose
+//!   key is not settled has no record, because no write got through for
+//!   it, so a read answers at once from `FileRegistry::key_status` and
+//!   from the rows the import staged (`AnnotationStore`, "Staged rows").
+//!   No read and no CSV import calls `ensure_key`: what the EMBED
+//!   endpoints show and export costs what it cost before the store held
+//!   records, whatever the size of the files. **A document import does
+//!   hash**: it makes records, so it settles the key of every file it
+//!   places, and it compares a file's bytes with a reference that names
+//!   them ([`import_native`]). A document export hashes the annotated
+//!   files of a masked session ([`export_native`]).
 //! - **Keys cross the wire in the session's form.** A key from a client is
 //!   resolved with `FileRegistry::file_for_shown_key`, and a key sent back
 //!   is written with `FileRegistry::shown_key_of`, so a masked session
@@ -48,11 +52,12 @@
 
 use super::{FileRegistry, KeyError};
 use crate::annotations::{
-    canonicalize_annotations, common_directory, document_path,
+    canonicalize_annotations, common_directory,
     embed::{replacement_ops, rows_as_creates},
     memory::{now, Binding, Checking, ViewCheck, Write},
-    AnnotationBackend, AnnotationIndexMap, AnnotationStore, EmbedRoiAnnotations, FileLookup,
-    ImportStatus, NativeSource, PathSuffixes, EMBED_IMPORT_AUTHOR, NATIVE_IMPORT_AUTHOR,
+    AnnotationBackend, AnnotationIndexMap, AnnotationStore, DocumentPaths, DownloadHold,
+    EmbedRoiAnnotations, FileLookup, ImportStatus, NativeSource, PathSuffixes,
+    DOWNLOAD_BUDGET_BYTES, EMBED_IMPORT_AUTHOR, NATIVE_IMPORT_AUTHOR,
 };
 use crate::api::contracts::{AnnotationImportResponse, AnnotationImportState, FileKeyError};
 use crate::types::FileEntry;
@@ -124,6 +129,12 @@ pub enum AnnotationError {
     /// document that large could not be loaded again.
     #[error("the session holds more than a document may: {limit}")]
     ExportTooMany { limit: u64 },
+    /// The document was built, and the documents that are still being
+    /// downloaded hold so much that this one would take them past the
+    /// session's download budget (`DOWNLOAD_BUDGET_BYTES`). Asked again
+    /// once a download has ended, it is answered.
+    #[error("other annotation downloads are still being sent: try again shortly")]
+    ExportBusy,
     /// The viewer is shutting down (`KeyError::Stopped`).
     #[error("the viewer is shutting down")]
     Stopped,
@@ -444,11 +455,25 @@ pub enum NativeForm {
     JsonLines,
 }
 
+/// The author a masked session's document gives in place of every `user:`
+/// author: the one a session without a user name stamps.
+pub const MASKED_USER_AUTHOR: &str = "user:local";
+
+/// How many loaded files a path of a document may name and still find a
+/// file by: with more, the path is too vague to be evidence, and the
+/// reference is found by its key or its content or not at all. It bounds
+/// the files compared for one reference.
+pub const PATH_CANDIDATES: usize = 64;
+
 /// A native export, ready to send.
 pub struct NativeExport {
     pub bytes: Vec<u8>,
     /// What the adapter wrote.
     pub report: Report,
+    /// The text's share of the session's download budget. Whoever sends
+    /// the text keeps this until the last byte is handed on or the
+    /// response is dropped.
+    pub hold: DownloadHold,
 }
 
 /// `GET /api/annotations/export.json` and `export.jsonl`: every record of
@@ -493,9 +518,10 @@ pub struct NativeExport {
 ///    - `sop_instance_uid`, `sop_class_uid`, `study_instance_uid`,
 ///      `series_instance_uid`, `patient_id`: the file's, `None` for an
 ///      empty one;
-///    - `path`: `annotations::document_path` below
-///      `annotations::common_directory` of the files loaded when the
-///      export reads them;
+///    - `path`: `annotations::DocumentPaths::of_session` of the files
+///      loaded when the export reads them: below the deepest folder that
+///      holds them all, or the file's name when they share none worth
+///      naming. Never an absolute path;
 ///    - `size_bytes`, `rows`, `columns`, `frames` (the frame count): the
 ///      file's;
 ///    - `digest`: `b3:` and the 64 lowercase hex digits of the file's
@@ -513,12 +539,19 @@ pub struct NativeExport {
 ///    the file's bytes (the registry's when it has one, else the file
 ///    hashed now, [`file_digest`]); `sop_instance_uid`,
 ///    `study_instance_uid`, `series_instance_uid` and `patient_id` `None`;
-///    `sop_class_uid` and `path` as in step 5. Two keys whose files hold
+///    `path` the name the session shows for the file, `File <index + 1>`,
+///    because folder and file names often say whose the files are;
+///    `sop_class_uid` as in step 5. Two keys whose files hold
 ///    the same bytes share one reference, the first's. A file that cannot
 ///    be read fails the export with [`AnnotationError::KeyUnavailable`]
 ///    for it (`group: false`). The document's `extensions` gain
-///    `"dcmview": { "masked": true }`. An unmasked session writes no such
-///    member.
+///    `"dcmview": { "masked": true }`. Every author of the kind `user`
+///    (a layer's `source.author`, a record's `created_by` and
+///    `modified_by`) is written as [`MASKED_USER_AUTHOR`]: the name of
+///    whoever ran the viewer stays with the session. An unmasked session
+///    writes none of this. What a masked document says of a file is then
+///    its content digest, byte size, SOP class, format, rows, columns and
+///    frame count; of a record, everything but a user's name.
 /// 7. **Keys.** Every annotation's `file` and every `file` or `frame`
 ///    label target is the `key` of its file's reference: the settled key,
 ///    or the content key of step 6. A patient, study, series or folder
@@ -527,9 +560,12 @@ pub struct NativeExport {
 ///    key, and each still shows the rows that were written for it
 ///    (`Binding`). For an annotation that has a binding, when more than
 ///    one loaded file has its settled key, the record's `extensions` gain
-///    `"embed": { "row_of": <path>, "imported": <bool> }`: the
-///    `document_path` of the file at the binding's slot, and the binding's
-///    import mark. A reader binds the record to the file that path names
+///    `"embed": { "row_of": <path>, "imported": <bool> }`: the document
+///    path (step 5) of the file at the binding's slot, and the binding's
+///    import mark. A masked session, whose document holds no path, writes
+///    `"embed": { "copy": <n>, "imported": <bool> }` instead: the place of
+///    that file among the loaded files with that key, in index order,
+///    counted from 0. A reader binds the record to the file so named
 ///    ([`import_native`]), so each copy shows its own rows again, in the
 ///    same order. An annotation without a binding, or on a key one file
 ///    has, gets no such member.
@@ -541,7 +577,15 @@ pub struct NativeExport {
 ///    [`AnnotationError::ExportTooMany`] with its limit (a session holds
 ///    more than an import reads: both answer
 ///    `422 annotation_export_too_large`); any other failure is
-///    [`AnnotationError::Store`]. The permit is let go of here.
+///    [`AnnotationError::Store`].
+/// 10. **The download budget.** The text is kept for sending only when
+///     `AnnotationStore::hold_download` admits its length: the texts being
+///     sent may hold `DOWNLOAD_BUDGET_BYTES` together, and one is always
+///     admitted when no other is being sent. A text that is not admitted
+///     is dropped and the export is [`AnnotationError::ExportBusy`]
+///     (`503 annotation_export_busy` with `Retry-After`). The hold goes
+///     with the text ([`NativeExport::hold`]). The permit is let go of
+///     here.
 ///
 /// Steps 4 to 9 copy every record and write every one, and step 6 may
 /// read files, so they run on a
@@ -549,8 +593,8 @@ pub struct NativeExport {
 /// own; a thread that fails is [`AnnotationError::Store`].
 ///
 /// What exports make the process hold: the copy of the records and the
-/// text for the one export being built, and the text of each export that
-/// is being sent. Nothing a record holds is
+/// text for the one export being built, and the texts being sent, within
+/// the download budget or one text of any size. Nothing a record holds is
 /// checked, clamped or left out, so a rectangle the EMBED import kept as
 /// read is written as it is held. Redaction boxes are in another store and
 /// are never in a document.
@@ -558,6 +602,25 @@ pub async fn export_native(
     registry: &FileRegistry,
     store: &AnnotationStore,
     form: NativeForm,
+) -> Result<NativeExport, AnnotationError> {
+    export_native_within(
+        registry,
+        store,
+        form,
+        dcmview_adapters::Limits::DEFAULT,
+        DOWNLOAD_BUDGET_BYTES,
+    )
+    .await
+}
+
+/// [`export_native`] under the bounds and the download budget given,
+/// which are `Limits::DEFAULT` and [`DOWNLOAD_BUDGET_BYTES`] in a session.
+pub async fn export_native_within(
+    registry: &FileRegistry,
+    store: &AnnotationStore,
+    form: NativeForm,
+    limits: dcmview_adapters::Limits,
+    download_budget: u64,
 ) -> Result<NativeExport, AnnotationError> {
     store
         .wait_until_ready()
@@ -576,44 +639,70 @@ pub async fn export_native(
     }
     let registry = registry.clone();
     let backend = store.backend().clone();
+    let downloads = store.clone();
     tokio::task::spawn_blocking(move || {
         let (mut document, bindings) = backend.export_bound().map_err(store_error)?;
-        let mut by_key = HashMap::new();
+        // For each settled key, the loaded files that have it, in order.
+        let mut by_key = HashMap::<FileKey, Vec<usize>>::new();
         for file in &files {
             if let Some(key) = settled_key(&registry, file.index) {
-                by_key
-                    .entry(key)
-                    .and_modify(|(index, count): &mut (usize, usize)| {
-                        *index = (*index).min(file.index);
-                        *count += 1;
-                    })
-                    .or_insert((file.index, 1));
+                by_key.entry(key).or_default().push(file.index);
             }
         }
-        let root = common_directory(&files);
-        for (annotation, binding) in document.annotations.iter_mut().zip(bindings) {
-            if let Some(binding) = binding {
-                if by_key
-                    .get(&annotation.file)
-                    .is_some_and(|(_, count)| *count > 1)
-                {
-                    if let Some(file) = files.get(binding.slot) {
-                        annotation.extensions.insert(
-                            "embed".to_string(),
-                            serde_json::json!({
-                                "row_of": document_path(root.as_deref(), &file.path),
-                                "imported": binding.imported,
-                            }),
-                        );
-                    }
-                }
-            }
-        }
+        let names = DocumentPaths::of_session(&files);
         let masked = registry.masker().is_some();
+        for (annotation, binding) in document.annotations.iter_mut().zip(bindings) {
+            let (Some(binding), Some(copies)) = (binding, by_key.get(&annotation.file)) else {
+                continue;
+            };
+            if copies.len() < 2 {
+                continue;
+            }
+            // A masked document holds no path: the copy is named by its
+            // place among the copies.
+            let copy = if masked {
+                copies
+                    .iter()
+                    .position(|index| *index == binding.slot)
+                    .map(|place| ("copy", serde_json::json!(place)))
+            } else {
+                files
+                    .get(binding.slot)
+                    .map(|file| ("row_of", serde_json::json!(names.path(&file.path))))
+            };
+            if let Some((member, value)) = copy {
+                annotation.extensions.insert(
+                    "embed".to_string(),
+                    serde_json::json!({ member: value, "imported": binding.imported }),
+                );
+            }
+        }
         if masked {
             document
                 .extensions
                 .insert("dcmview".to_string(), serde_json::json!({ "masked": true }));
+            // The name of whoever ran the viewer stays with the session.
+            let unnamed = |author: &mut Author| {
+                if author.kind() == dcmview_annotation::AuthorKind::User {
+                    if let Ok(local) = Author::parse(MASKED_USER_AUTHOR) {
+                        *author = local;
+                    }
+                }
+            };
+            for layer in &mut document.layers {
+                if let Some(author) = &mut layer.source.author {
+                    unnamed(author);
+                }
+            }
+            for meta in document
+                .annotations
+                .iter_mut()
+                .map(|annotation| &mut annotation.meta)
+                .chain(document.labels.iter_mut().map(|label| &mut label.meta))
+            {
+                unnamed(&mut meta.created_by);
+                unnamed(&mut meta.modified_by);
+            }
         }
         let mut emitted = HashSet::new();
         let mut shown = HashMap::<FileKey, FileKey>::new();
@@ -624,7 +713,8 @@ pub async fn export_native(
             }
             let file = by_key
                 .get(key)
-                .and_then(|(index, _)| files.get(*index))
+                .and_then(|indexes| indexes.first())
+                .and_then(|index| files.get(*index))
                 .ok_or_else(|| {
                     AnnotationError::Store("The store names a file that is not loaded.".to_string())
                 })?;
@@ -644,8 +734,9 @@ pub async fn export_native(
             };
             if emitted.insert(replacement.clone()) {
                 let mut reference =
-                    document_file_ref(&registry, file, replacement.clone(), root.as_deref());
+                    document_file_ref(&registry, file, replacement.clone(), names.path(&file.path));
                 if masked {
+                    reference.path = format!("File {}", file.index + 1);
                     reference.digest = Some(replacement.as_str().to_string());
                     reference.sop_instance_uid = None;
                     reference.study_instance_uid = None;
@@ -668,7 +759,7 @@ pub async fn export_native(
         let context = ExportContext {
             paths: &paths,
             max_bytes: u64::MAX,
-            limits: dcmview_adapters::Limits::DEFAULT,
+            limits,
         };
         let mut bytes = Vec::new();
         let report = match form {
@@ -680,10 +771,19 @@ pub async fn export_native(
             ExportError::TooMany { limit, .. } => AnnotationError::ExportTooMany { limit },
             error => store_error(error),
         })?;
+        // The text is kept only when the downloads being sent leave room
+        // for it; otherwise it is dropped here and the client asks again.
+        let hold = downloads
+            .hold_download(bytes.len() as u64, download_budget)
+            .ok_or(AnnotationError::ExportBusy)?;
         // The permit is held to here: while the records are copied and
         // their text is written, and no longer.
         drop(permit);
-        Ok(NativeExport { bytes, report })
+        Ok(NativeExport {
+            bytes,
+            report,
+            hold,
+        })
     })
     .await
     .map_err(|_| AnnotationError::Store("The annotation export thread failed.".to_string()))?
@@ -693,7 +793,7 @@ fn document_file_ref(
     registry: &FileRegistry,
     file: &FileEntry,
     key: FileKey,
-    root: Option<&std::path::Path>,
+    path: String,
 ) -> FileRef {
     let summary = registry.masker().map(|masker| masker.summary(file));
     let present = |value: &str| (!value.is_empty()).then(|| value.to_string());
@@ -730,7 +830,7 @@ fn document_file_ref(
                 .as_ref()
                 .map_or(&file.patient_id, |summary| &summary.patient_id),
         ),
-        path: document_path(root, &file.path),
+        path,
         size_bytes: file.size_bytes,
         rows: file.rows,
         columns: file.columns,
@@ -790,8 +890,25 @@ fn document_file_ref(
 /// 3. by path (`Matcher::Path`): for a relative path, every loaded file
 ///    whose path ends with it (`annotations::PathSuffixes`), so a document
 ///    finds its files when a subfolder or a parent of the exported folder
-///    is loaded, or the folder was moved; for an absolute one,
-///    `annotations::FileLookup::indexes`; each in index order.
+///    is loaded, or the folder was moved, **unless** the path names more
+///    than [`PATH_CANDIDATES`] loaded files: then it is too vague to be
+///    evidence and names none. For an absolute one,
+///    `annotations::FileLookup::indexes`. Each in index order;
+/// 4. by content (`Matcher::Key`), for a reference whose key is not a
+///    `sop:` key: every loaded file with the reference's `size_bytes`,
+///    `rows`, `columns` and `frames` whose bytes have the digest the key
+///    names, and whose format is the reference's `format` and whose SOP
+///    class, when both state one, is the reference's. This finds a file
+///    that no key, UID or path finds: a copy at another path, or any file
+///    of a masked session's document, which names files by nothing else.
+///    **What it hashes:** the first time a size and shape is asked for,
+///    every loaded file of that size and shape that the registry has no
+///    digest of, each once for the whole import. A file of another size
+///    or shape is never read for it.
+///
+/// A step is looked up only when the steps before it gave no file that
+/// passes, so a document whose keys find its files costs one lookup a
+/// reference.
 ///
 /// **The check**, on each candidate in that order until one passes:
 ///
@@ -806,10 +923,14 @@ fn document_file_ref(
 /// - for a `b3:` reference, the file's digest must be the key's. The
 ///   digest is the registry's (`FileKeyStatus::digest`) or, for a file
 ///   whose key needed no hashing, the file's bytes hashed now
-///   ([`file_digest`]). A file that cannot be hashed could not be read;
+///   ([`file_digest`]), once for the import. A file that cannot be hashed
+///   could not be read;
 /// - when the reference also has a `b3:` `digest` (a `sop:` reference to
 ///   files that were compared), the file's digest, found the same way,
-///   must be that digest.
+///   must be that digest. A `digest` of another scheme (`sha256:`) is not
+///   compared: the viewer computes no such digest. So a `sop:` reference
+///   without a `b3:` digest is matched by the file's settled `sop:` key,
+///   which is to say by its UID.
 ///
 /// The first candidate that passes is `Resolution::Matched`, with its
 /// index as the slot, its settled key, its columns, rows and frame count,
@@ -824,31 +945,47 @@ fn document_file_ref(
 /// which. Only the candidates of a reference are hashed, never the folder.
 /// A file that cannot be read is never matched by its path or UID alone.
 ///
+/// **Cost.** One reference costs a map lookup for its key and its UID, a
+/// path lookup that compares the path with at most `2 + log2(files)`
+/// files and with the at most [`PATH_CANDIDATES`] it names, and a check of
+/// each candidate. Matching a document is linear in its references and
+/// the candidates they name, however many loaded files share a name.
+///
 /// The import does this in the background after discovery; until it has
 /// ended its state is `loading`, the EMBED reads wait and writes do not.
 ///
 /// ## Rows of byte-identical files
 ///
-/// An annotation whose `extensions` hold
-/// `"embed": { "row_of": <path>, "imported": <bool> }` was a row of one of
-/// several files with the same bytes ([`export_native`], step 8). After
-/// the adapter has placed the document, each such record has that member
-/// taken out of its `extensions` and is bound (`Binding`, through
-/// `Write::bindings`) to the first file `annotations::PathSuffixes` gives
-/// for `row_of` whose settled key (`FileRegistry::ensure_key`) is the
-/// record's key, with `imported` as its import mark (`false` when
-/// absent). When no loaded file is that copy, the record is left out: it
-/// is taken from `counts.annotations_out` and added to `counts.unmatched`.
-/// The member has that shape when it is an object with a string `row_of`,
-/// an `imported` that is a boolean or absent, and no other member. An
+/// An annotation whose `extensions` hold an `embed` member of the shape
+/// an export writes was a row of one of several files with the same bytes
+/// ([`export_native`], step 8). The member has that shape when it is an
+/// object with exactly one of `row_of` (a string) and `copy` (an unsigned
+/// integer), an `imported` that is a boolean or absent, and no other
+/// member. After the adapter has placed the document, each such record
+/// has that member taken out of its `extensions` and is bound (`Binding`,
+/// through `Write::bindings`), with `imported` as its import mark (`false`
+/// when absent), to:
+///
+/// - `row_of`: the first file `annotations::PathSuffixes` gives for the
+///   path (none when it names more than [`PATH_CANDIDATES`]) whose settled
+///   key (`FileRegistry::ensure_key`) is the record's key;
+/// - `copy`: the file at that place, counted from 0, among the loaded
+///   files whose settled key is the record's key, in index order. Those
+///   are looked for among the file the record's reference was matched to,
+///   the files that share its SOP Instance UID, and, for a content key,
+///   the files of its size and shape with its digest.
+///
+/// When no loaded file is that copy, the record is left out: it is taken
+/// from `counts.annotations_out` and added to `counts.unmatched`. An
 /// `embed` member of any other shape is left where it is and binds
 /// nothing.
 ///
-/// A record without that member shows on every file that has its key. So
-/// that this does not depend on which copies have been looked at, every
-/// loaded file that carries the SOP Instance UID of a matched file other
-/// loaded files share (`FileRegistry::shares_uid`) has its key settled
-/// before the import ends; one that cannot be read is passed over.
+/// A record without that member shows on every file that has its key.
+/// Settling one file's key settles the key of every loaded file that
+/// carries its SOP Instance UID (`FileRegistry::ensure_key`), so when the
+/// import has ended every such copy shows the record, whether or not it
+/// was looked at. A copy without a UID (a raster) shows it once it has
+/// been hashed, as it shows any record.
 ///
 /// # Applying
 ///
@@ -955,7 +1092,12 @@ async fn read_native_into_store(
         let lookup = FileLookup::new(&files, base).map_err(|_| native_store_failure())?;
         let suffixes = PathSuffixes::new(&files);
         let mut by_uid = HashMap::<String, Vec<usize>>::new();
+        let mut by_shape = HashMap::<Shape, Vec<usize>>::new();
         for file in &files {
+            by_shape
+                .entry((file.size_bytes, file.rows, file.columns, file.frame_count))
+                .or_default()
+                .push(file.index);
             if !file.sop_instance_uid.is_empty() {
                 let uid = registry.masker().map_or_else(
                     || file.sop_instance_uid.clone(),
@@ -970,6 +1112,8 @@ async fn read_native_into_store(
             lookup: &lookup,
             suffixes: &suffixes,
             by_uid,
+            by_shape,
+            hashed: RefCell::new(Hashed::default()),
             matched: RefCell::new(Vec::new()),
             handle: &handle,
         };
@@ -993,17 +1137,30 @@ async fn read_native_into_store(
             .import(&mut file, &context)
             .map_err(|error| AnnotationError::ImportFailed(error.to_string()))?;
         let mut bindings = HashMap::new();
+        let mut copies = HashMap::<FileKey, Vec<usize>>::new();
         imported.fragment.annotations.retain_mut(|annotation| {
-            let Some((row_of, imported_row)) =
+            let Some((copy, imported_row)) =
                 annotation.extensions.get("embed").and_then(row_binding)
             else {
                 return true;
             };
-            let slot = suffixes.indexes(row_of).into_iter().find(|index| {
+            let has_key = |index: &usize| {
                 handle
                     .block_on(registry.ensure_key(*index))
                     .is_ok_and(|key| key == annotation.file)
-            });
+            };
+            let slot = match copy {
+                RowOf::Path(path) => suffixes
+                    .at_most(&path, PATH_CANDIDATES)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .find(has_key),
+                RowOf::Copy(place) => copies
+                    .entry(annotation.file.clone())
+                    .or_insert_with(|| resolver.holders(&annotation.file))
+                    .get(place)
+                    .copied(),
+            };
             annotation.extensions.remove("embed");
             if let Some(slot) = slot {
                 bindings.insert(
@@ -1020,23 +1177,6 @@ async fn read_native_into_store(
                 false
             }
         });
-        let mut settled_uids = HashSet::new();
-        for index in resolver.matched.borrow().iter().copied() {
-            let Some(file) = files.get(index) else {
-                continue;
-            };
-            if registry.shares_uid(index) && settled_uids.insert(&file.sop_instance_uid) {
-                let uid = registry.masker().map_or_else(
-                    || file.sop_instance_uid.clone(),
-                    |masker| masker.uid(&file.sop_instance_uid),
-                );
-                if let Some(indexes) = resolver.by_uid.get(&uid) {
-                    for other in indexes {
-                        let _ = handle.block_on(registry.ensure_key(*other));
-                    }
-                }
-            }
-        }
         Ok::<_, AnnotationError>((imported, bindings))
     })
     .await
@@ -1120,20 +1260,49 @@ async fn read_native_into_store(
     Ok(report)
 }
 
-fn row_binding(value: &serde_json::Value) -> Option<(&str, bool)> {
+/// Which of several byte-identical files a row was written for.
+enum RowOf {
+    /// By the path a document gives the file.
+    Path(String),
+    /// By its place among the loaded files with those bytes, counted from
+    /// 0 in index order: what a masked document, which holds no path, says.
+    Copy(usize),
+}
+
+/// What an `embed` extension member of the shape an export writes says,
+/// or `None` for any other shape.
+fn row_binding(value: &serde_json::Value) -> Option<(RowOf, bool)> {
     let object = value.as_object()?;
-    if object
-        .keys()
-        .any(|key| key != "row_of" && key != "imported")
-    {
-        return None;
-    }
-    let path = object.get("row_of")?.as_str()?;
     let imported = match object.get("imported") {
         Some(value) => value.as_bool()?,
         None => false,
     };
-    Some((path, imported))
+    let known = 1 + usize::from(object.contains_key("imported"));
+    if object.len() != known {
+        return None;
+    }
+    let copy = match (object.get("row_of"), object.get("copy")) {
+        (Some(path), None) => RowOf::Path(path.as_str()?.to_string()),
+        (None, Some(place)) => RowOf::Copy(usize::try_from(place.as_u64()?).ok()?),
+        _ => return None,
+    };
+    Some((copy, imported))
+}
+
+/// What a content-key reference says of its file besides the key: its
+/// size in bytes, rows, columns and frame count.
+type Shape = (u64, u32, u32, u32);
+
+/// What the import has hashed, so that no file is read twice.
+#[derive(Default)]
+struct Hashed {
+    /// The digest of each file asked for, `None` for one that could not
+    /// be read.
+    digests: HashMap<usize, Option<[u8; 32]>>,
+    /// The shapes whose files have all been hashed, and those files by
+    /// content key.
+    shapes: HashSet<Shape>,
+    by_content: HashMap<String, Vec<usize>>,
 }
 
 struct NativeResolver<'a> {
@@ -1142,104 +1311,235 @@ struct NativeResolver<'a> {
     lookup: &'a FileLookup,
     suffixes: &'a PathSuffixes<'a>,
     by_uid: HashMap<String, Vec<usize>>,
-    matched: RefCell<Vec<usize>>,
+    by_shape: HashMap<Shape, Vec<usize>>,
+    hashed: RefCell<Hashed>,
+    /// Each file a reference was matched to, with its settled key.
+    matched: RefCell<Vec<(usize, FileKey)>>,
     handle: &'a tokio::runtime::Handle,
+}
+
+/// What comparing one candidate with a reference found.
+enum Checked {
+    Passed(FileKey),
+    Differs,
+    Unreadable,
+}
+
+impl NativeResolver<'_> {
+    /// The digest of a file's bytes: the registry's, or the file hashed
+    /// now, once.
+    fn digest(&self, file: &FileEntry) -> Option<[u8; 32]> {
+        if let Some(digest) = self
+            .registry
+            .key_status(file.index)
+            .and_then(|status| status.digest)
+        {
+            return Some(digest);
+        }
+        if let Some(known) = self.hashed.borrow().digests.get(&file.index) {
+            return *known;
+        }
+        let digest = file_digest(file).ok();
+        self.hashed.borrow_mut().digests.insert(file.index, digest);
+        digest
+    }
+
+    /// The loaded files with the shape `reference` states whose bytes have
+    /// the digest its key names, in index order. Hashes every file of that
+    /// shape the first time the shape is asked for.
+    fn by_content(&self, reference: &FileRef) -> Vec<usize> {
+        let shape = (
+            reference.size_bytes,
+            reference.rows,
+            reference.columns,
+            reference.frames,
+        );
+        if !self.hashed.borrow().shapes.contains(&shape) {
+            for index in self.by_shape.get(&shape).into_iter().flatten() {
+                let Some(file) = self.files.get(*index) else {
+                    continue;
+                };
+                if let Some(digest) = self.digest(file) {
+                    self.hashed
+                        .borrow_mut()
+                        .by_content
+                        .entry(FileKey::blake3(&digest).as_str().to_string())
+                        .or_default()
+                        .push(*index);
+                }
+            }
+            self.hashed.borrow_mut().shapes.insert(shape);
+        }
+        self.hashed
+            .borrow()
+            .by_content
+            .get(reference.key.as_str())
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|index| {
+                self.files.get(*index).is_some_and(|file| {
+                    file.size_bytes == reference.size_bytes
+                        && file.format.as_str() == reference.format
+                        && reference.sop_class_uid.as_ref().is_none_or(|class| {
+                            file.sop_class_uid.is_empty() || *class == file.sop_class_uid
+                        })
+                })
+            })
+            .collect()
+    }
+
+    /// The loaded files whose settled key is `key`, in index order: the
+    /// file a reference with that key was matched to, and the files that
+    /// share its SOP Instance UID or its bytes.
+    fn holders(&self, key: &FileKey) -> Vec<usize> {
+        let matched = self
+            .matched
+            .borrow()
+            .iter()
+            .find(|(_, settled)| settled == key)
+            .map(|(index, _)| *index);
+        let Some(file) = matched.and_then(|index| self.files.get(index)) else {
+            return Vec::new();
+        };
+        let mut group = vec![file.index];
+        if !file.sop_instance_uid.is_empty() {
+            let uid = self.registry.masker().map_or_else(
+                || file.sop_instance_uid.clone(),
+                |masker| masker.uid(&file.sop_instance_uid),
+            );
+            group.extend(self.by_uid.get(&uid).into_iter().flatten());
+        }
+        if key.scheme() != KeyScheme::Sop {
+            let shape = (file.size_bytes, file.rows, file.columns, file.frame_count);
+            for index in self.by_shape.get(&shape).into_iter().flatten() {
+                let same = self
+                    .files
+                    .get(*index)
+                    .and_then(|other| self.digest(other))
+                    .is_some_and(|digest| FileKey::blake3(&digest) == *key);
+                if same {
+                    group.push(*index);
+                }
+            }
+        }
+        group.sort_unstable();
+        group.dedup();
+        group.retain(|index| {
+            self.handle
+                .block_on(self.registry.ensure_key(*index))
+                .is_ok_and(|settled| settled == *key)
+        });
+        group
+    }
+
+    fn check(&self, reference: &FileRef, file: &FileEntry) -> Checked {
+        let Ok(key) = self.handle.block_on(self.registry.ensure_key(file.index)) else {
+            return Checked::Unreadable;
+        };
+        let by_content = reference.key.scheme() != KeyScheme::Sop;
+        if !by_content
+            && key != reference.key
+            && self.registry.shown_key_of(&key) != reference.key.as_str()
+        {
+            return Checked::Differs;
+        }
+        let recorded = reference
+            .digest
+            .as_deref()
+            .filter(|text| text.starts_with("b3:"));
+        if by_content || recorded.is_some() {
+            let Some(digest) = self.digest(file) else {
+                return Checked::Unreadable;
+            };
+            let digest = FileKey::blake3(&digest);
+            if (by_content && reference.key.as_str() != digest.as_str())
+                || recorded.is_some_and(|text| text != digest.as_str())
+            {
+                return Checked::Differs;
+            }
+        }
+        Checked::Passed(key)
+    }
 }
 
 impl FileResolver for NativeResolver<'_> {
     fn resolve(&self, reference: &FileRef) -> Resolution {
-        let mut candidates = Vec::new();
-        let mut seen = HashSet::new();
-        let mut add = |index, matcher| {
-            if seen.insert(index) {
-                candidates.push((index, matcher));
+        let mut seen = Vec::<usize>::new();
+        let mut unreadable = false;
+        // Compares the candidates of one step, in order, with the
+        // reference; the first that passes is the match.
+        let mut first = |indexes: &[usize], matcher: Matcher| {
+            for index in indexes {
+                if seen.contains(index) {
+                    continue;
+                }
+                seen.push(*index);
+                let Some(file) = self.files.get(*index) else {
+                    continue;
+                };
+                match self.check(reference, file) {
+                    Checked::Passed(key) => {
+                        self.matched.borrow_mut().push((*index, key.clone()));
+                        return Some(Resolution::Matched(
+                            Resolved {
+                                slot: *index,
+                                key: Some(key),
+                                size: image_size(file),
+                                size_bytes: file.size_bytes,
+                            },
+                            matcher,
+                        ));
+                    }
+                    Checked::Differs => {}
+                    Checked::Unreadable => unreadable = true,
+                }
             }
+            None
         };
-        if let Some(index) = self.registry.file_for_shown_key(reference.key.as_str()) {
-            add(index, Matcher::Key);
+        // Each step is looked up only when the steps before it found no
+        // file that passes.
+        let by_key: Vec<usize> = self
+            .registry
+            .file_for_shown_key(reference.key.as_str())
+            .into_iter()
+            .collect();
+        if let Some(matched) = first(&by_key, Matcher::Key) {
+            return matched;
         }
         if let Some(indexes) = reference
             .sop_instance_uid
             .as_ref()
             .and_then(|uid| self.by_uid.get(uid))
         {
-            for index in indexes {
-                add(*index, Matcher::SopInstanceUid);
+            if let Some(matched) = first(indexes, Matcher::SopInstanceUid) {
+                return matched;
             }
         }
-        let mut paths = if Path::new(&reference.path).is_absolute() {
-            self.lookup.indexes(&reference.path)
+        let by_path = if Path::new(&reference.path).is_absolute() {
+            let mut indexes = self.lookup.indexes(&reference.path);
+            indexes.sort_unstable();
+            indexes
         } else {
-            self.suffixes.indexes(&reference.path)
+            self.suffixes
+                .at_most(&reference.path, PATH_CANDIDATES)
+                .unwrap_or_default()
         };
-        paths.sort_unstable();
-        for index in paths {
-            add(index, Matcher::Path);
+        if let Some(matched) = first(&by_path, Matcher::Path) {
+            return matched;
         }
-        if candidates.is_empty() {
-            return Resolution::Unmatched;
-        }
-        let mut unverified = false;
-        for (index, matcher) in candidates {
-            let Some(file) = self.files.get(index) else {
-                continue;
-            };
-            let key = match self.handle.block_on(self.registry.ensure_key(index)) {
-                Ok(key) => key,
-                Err(_) => {
-                    unverified = true;
-                    continue;
-                }
-            };
-            if reference.key.scheme() == KeyScheme::Sop
-                && key != reference.key
-                && self.registry.shown_key_of(&key) != reference.key.as_str()
-            {
-                continue;
+        if reference.key.scheme() != KeyScheme::Sop {
+            if let Some(matched) = first(&self.by_content(reference), Matcher::Key) {
+                return matched;
             }
-            let key_digest =
-                (reference.key.scheme() != KeyScheme::Sop).then_some(reference.key.as_str());
-            let recorded_digest = reference
-                .digest
-                .as_deref()
-                .filter(|text| text.starts_with("b3:"));
-            if key_digest.is_some() || recorded_digest.is_some() {
-                let digest = match self
-                    .registry
-                    .key_status(index)
-                    .and_then(|status| status.digest)
-                    .map_or_else(|| file_digest(file), Ok)
-                {
-                    Ok(digest) => FileKey::blake3(&digest),
-                    Err(_) => {
-                        unverified = true;
-                        continue;
-                    }
-                };
-                if key_digest
-                    .into_iter()
-                    .chain(recorded_digest)
-                    .any(|text| text != digest.as_str())
-                {
-                    continue;
-                }
-            }
-            self.matched.borrow_mut().push(index);
-            return Resolution::Matched(
-                Resolved {
-                    slot: index,
-                    key: Some(key),
-                    size: image_size(file),
-                    size_bytes: file.size_bytes,
-                },
-                matcher,
-            );
         }
-        Resolution::Refused(if unverified {
-            Refusal::Unverified
+        if seen.is_empty() {
+            Resolution::Unmatched
+        } else if unreadable {
+            Resolution::Refused(Refusal::Unverified)
         } else {
-            Refusal::EvidenceConflict
-        })
+            Resolution::Refused(Refusal::EvidenceConflict)
+        }
     }
 }
 

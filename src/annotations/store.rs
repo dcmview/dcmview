@@ -48,6 +48,26 @@ pub fn session_author() -> Author {
         .unwrap_or_else(|| Author::parse("user:local").expect("a valid author"))
 }
 
+/// How many bytes of document text the downloads being sent may hold
+/// together: 512 MiB. A download that would pass it while another is being
+/// sent is refused, and can be asked for again.
+pub const DOWNLOAD_BUDGET_BYTES: u64 = 512 * 1024 * 1024;
+
+/// A share of the download budget, given back when this is dropped.
+#[derive(Debug)]
+pub struct DownloadHold {
+    held: Arc<Mutex<u64>>,
+    bytes: u64,
+}
+
+impl Drop for DownloadHold {
+    fn drop(&mut self) {
+        if let Ok(mut held) = self.held.lock() {
+            *held = held.saturating_sub(self.bytes);
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum LoadState {
     Loading,
@@ -114,14 +134,17 @@ struct EmbedImport {
 /// a second waits, holding nothing, until the first one's text is
 /// written. The permit is not held while a text is sent: a client that
 /// reads slowly must not hold up every later export. What exports make the
-/// process hold is one copy of the records, and the texts that are being
-/// built or sent.
+/// process hold is one copy of the records, the text that is being built,
+/// and the texts that are being sent, which are bounded together
+/// ([`DOWNLOAD_BUDGET_BYTES`], [`AnnotationStore::hold_download`]).
 #[derive(Clone)]
 pub struct AnnotationStore {
     backend: Arc<MemoryBackend>,
     import: Arc<Mutex<EmbedImport>>,
     ready: Arc<Notify>,
     exports: Arc<Semaphore>,
+    /// Bytes of document text held by downloads that are being sent.
+    downloads: Arc<Mutex<u64>>,
     /// Run by [`AnnotationStore::before_embed_write`], so a test can make a
     /// second write at exactly the point between a save's read of the view
     /// and its write.
@@ -142,6 +165,7 @@ impl AnnotationStore {
             })),
             ready: Arc::new(Notify::new()),
             exports: Arc::new(Semaphore::new(1)),
+            downloads: Arc::new(Mutex::new(0)),
             #[cfg(test)]
             before_embed_write: None,
         }
@@ -231,6 +255,24 @@ impl AnnotationStore {
             .acquire_owned()
             .await
             .map_err(|_| anyhow!("annotations store is closed"))
+    }
+
+    /// Takes `bytes` of the session's download budget for a document text
+    /// that is about to be sent, until the hold is dropped. `None` when
+    /// other downloads are being sent and this one would make them hold
+    /// more than `budget` bytes together. A text is always admitted when
+    /// no other is being sent, whatever its size, so every session can be
+    /// downloaded.
+    pub fn hold_download(&self, bytes: u64, budget: u64) -> Option<DownloadHold> {
+        let mut held = self.downloads.lock().ok()?;
+        if *held > 0 && held.saturating_add(bytes) > budget {
+            return None;
+        }
+        *held = held.saturating_add(bytes);
+        Some(DownloadHold {
+            held: self.downloads.clone(),
+            bytes,
+        })
     }
 
     /// Ends the import: readers stop waiting. A store that already failed

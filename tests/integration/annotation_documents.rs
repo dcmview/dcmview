@@ -11,7 +11,9 @@ use dcmview::annotations::{
     NativeSource,
 };
 use dcmview::masking::Masker;
-use dcmview::server::annotations::{import_embed_rows, import_native, AnnotationError};
+use dcmview::server::annotations::{
+    export_native_within, import_embed_rows, import_native, AnnotationError, NativeForm,
+};
 use dcmview::server::{self, AppState, FileRegistry};
 use dcmview::types::FileEntry;
 use dcmview_annotation::{ApplyResult, Author, FileKey, ImageSize, LabelSchema, OpEnvelope};
@@ -750,9 +752,10 @@ fn content_key(bytes: &[u8]) -> String {
 }
 
 /// The masks of a session are drawn for one process, so nothing a masked
-/// session shows for a file means anything to another. Its document names
-/// files by their bytes and their paths and by nothing else, and loads
-/// into any session: masked by other masks, or not masked.
+/// session shows for a file means anything to another, and folder and file
+/// names often say whose the files are. Its document names files by their
+/// bytes and by nothing else, names no user, and loads into any session:
+/// masked by other masks, or not masked.
 #[tokio::test]
 async fn a_masked_sessions_document_names_files_by_content_and_loads_anywhere() {
     let dir = tempdir().expect("temp dir");
@@ -762,12 +765,17 @@ async fn a_masked_sessions_document_names_files_by_content_and_loads_anywhere() 
     ];
     // Written once: a file that changes after a session loaded it cannot
     // be compared by that session.
-    written(dir.path(), "a.dcm", real[0], b"the bytes of a");
-    written(dir.path(), "b.dcm", real[1], b"the bytes of b");
+    let names = [
+        "ward-7-north/DOE_JANE_1961/scan-a.dcm",
+        "ward-7-north/scan-b.dcm",
+    ];
+    std::fs::create_dir_all(dir.path().join("ward-7-north/DOE_JANE_1961")).expect("folders");
+    written(dir.path(), names[0], real[0], b"the bytes of a");
+    written(dir.path(), names[1], real[1], b"the bytes of b");
     let files = || {
         let mut files = vec![
-            entry(dir.path(), "a.dcm", real[0]),
-            entry(dir.path(), "b.dcm", real[1]),
+            entry(dir.path(), names[0], real[0]),
+            entry(dir.path(), names[1], real[1]),
         ];
         for file in &mut files {
             file.patient_id = "MRN-0042".to_string();
@@ -819,6 +827,39 @@ async fn a_masked_sessions_document_names_files_by_content_and_loads_anywhere() 
             secrets.push(file[member].as_str().expect("shown").to_string());
         }
     }
+    // Where the files are, and who and where the viewer runs.
+    let mut places: Vec<String> = dir
+        .path()
+        .join(names[0])
+        .components()
+        .chain(Path::new(names[1]).components())
+        .filter_map(|part| match part {
+            std::path::Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .filter(|part| part.len() >= 4)
+        .collect();
+    if let Ok(host) = std::process::Command::new("hostname").output() {
+        let host = String::from_utf8_lossy(&host.stdout).trim().to_string();
+        places.extend(host.split('.').next().map(str::to_string));
+        places.push(host);
+    }
+    places.retain(|place| place.len() >= 4 && !"user:local import:embed".contains(place.as_str()));
+    for variable in ["USER", "USERNAME"] {
+        if let Ok(name) = std::env::var(variable) {
+            if name != "local" {
+                places.push(format!("user:{name}"));
+            }
+        }
+    }
+    let unplaced = |what: &str, text: &str| {
+        for place in &places {
+            assert!(
+                !text.contains(place.as_str()),
+                "{what} holds {place}: {text}"
+            );
+        }
+    };
     let clean = |what: &str, text: &str| {
         for secret in &secrets {
             assert!(
@@ -830,12 +871,13 @@ async fn a_masked_sessions_document_names_files_by_content_and_loads_anywhere() 
 
     let text = first.text("/api/annotations/export.json").await;
     clean("the JSON document", &text);
-    clean(
-        "the JSON Lines document",
-        &first.text("/api/annotations/export.jsonl").await,
-    );
+    unplaced("the JSON document", &text);
+    let lines = first.text("/api/annotations/export.jsonl").await;
+    clean("the JSON Lines document", &lines);
+    unplaced("the JSON Lines document", &lines);
     let document: Value = serde_json::from_str(&text).expect("document");
     assert_eq!(document["extensions"]["dcmview"], json!({ "masked": true }));
+    assert_eq!(document["layers"][0]["source"]["author"], "user:local");
     for (index, bytes) in [&b"the bytes of a"[..], b"the bytes of b"]
         .into_iter()
         .enumerate()
@@ -843,21 +885,36 @@ async fn a_masked_sessions_document_names_files_by_content_and_loads_anywhere() 
         let file = &document["files"][index];
         assert_eq!(file["key"], content_key(bytes));
         assert_eq!(file["digest"], file["key"]);
-        assert_eq!(file["path"], ["a.dcm", "b.dcm"][index]);
-        for member in [
-            "sop_instance_uid",
-            "study_instance_uid",
-            "series_instance_uid",
-            "patient_id",
-        ] {
-            assert!(file[member].is_null(), "{member}: {file}");
-        }
+        // What is left of a file: its bytes' digest and size, what kind
+        // of image it is and how large, and the name the session shows.
+        let mut said: Vec<(&String, &Value)> = file
+            .as_object()
+            .expect("file")
+            .iter()
+            .filter(|(_, value)| !value.is_null() && **value != json!([]))
+            .collect();
+        said.retain(|(member, _)| *member != "space");
+        let expected = json!({
+            "key": content_key(bytes), "digest": content_key(bytes), "kind": "dicom",
+            "format": "dicom", "path": format!("File {}", index + 1), "size_bytes": 14,
+            "rows": 100, "columns": 120, "frames": 4,
+            "sop_class_uid": file["sop_class_uid"],
+        });
+        assert_eq!(
+            said,
+            expected
+                .as_object()
+                .expect("object")
+                .iter()
+                .collect::<Vec<_>>(),
+            "{file}"
+        );
         assert_eq!(document["annotations"][index]["file"], file["key"]);
     }
     let views = [first.rois(0).await, first.rois(1).await];
 
     // Loaded by another masked session and by one that is not masked: the
-    // files are found by their paths and matched by their bytes.
+    // files are found among those of their size, by their bytes.
     for (what, registry) in [
         ("other masks", masked()),
         ("no masks", FileRegistry::from_files(files())),
@@ -869,7 +926,7 @@ async fn a_masked_sessions_document_names_files_by_content_and_loads_anywhere() 
             .unwrap_or_else(|error| panic!("{what}: {error}"));
         assert_eq!(
             report["matched_by"],
-            json!({ "key": 0, "sop_instance_uid": 0, "path": 2 }),
+            json!({ "key": 2, "sop_instance_uid": 0, "path": 0 }),
             "{what}: {report}"
         );
         assert_eq!(report["counts"]["refused"], 0, "{what}");
@@ -924,7 +981,7 @@ async fn a_masked_sessions_document_names_files_by_content_and_loads_anywhere() 
         vec![reference(
             &format!("sop:{}", real[0]),
             Some(real[0]),
-            "a.dcm",
+            "scan-a.dcm",
         )],
         vec![],
         vec![named],
@@ -1209,6 +1266,442 @@ async fn copies_keep_their_own_rows_through_a_document() {
         fewer.rois(1).await.roi_coords,
         [[1, 2, 3, 4], [20, 20, 30, 30]]
     );
+}
+
+/// A file that is loaded is found by what a document says of its bytes
+/// when nothing else finds it: the document names the copy that is not
+/// loaded, by a path no loaded file has, and the file has no UID.
+#[tokio::test]
+async fn a_loaded_copy_is_found_by_its_bytes_when_its_path_names_another() {
+    let dir = tempdir().expect("temp dir");
+    let both = || {
+        vec![
+            unnamed(dir.path(), "first/scan.png", b"the same bytes"),
+            unnamed(dir.path(), "second/scan.png", b"the same bytes"),
+            // Of the same size and not the same bytes.
+            unnamed(dir.path(), "second/else.png", b"not those ones"),
+        ]
+    };
+    let first = Session::plain(both());
+    let key = content_key(b"the same bytes");
+    first.registry.ensure_key(0).await.expect("key");
+    first
+        .op(Some(0), create(1, &key, "default", rect(4, 4, 8, 8)))
+        .await;
+    let text = first.text("/api/annotations/export.json").await;
+    let document: Value = serde_json::from_str(&text).expect("document");
+    assert_eq!(document["files"][0]["path"], "first/scan.png");
+
+    // Only the second folder is loaded, the other file of that size first.
+    let second = Session::loading(vec![
+        unnamed(dir.path(), "second/else.png", b"not those ones"),
+        unnamed(dir.path(), "second/scan.png", b"the same bytes"),
+    ]);
+    let report = second.import(dir.path(), &text).await.expect("import");
+    assert_eq!(
+        report["matched_by"],
+        json!({ "key": 1, "sop_instance_uid": 0, "path": 0 }),
+        "{report}"
+    );
+    assert_eq!(report["warnings"], json!([]));
+    assert_eq!(second.rois(1).await.roi_coords, [[4, 4, 8, 8]]);
+    assert_eq!(second.rois(0).await.num_roi, 0);
+
+    // What the document says of the bytes is held to: a reference of
+    // another size, or of another format, finds no file by content.
+    for (member, value) in [("size_bytes", json!(15)), ("format", json!("jpeg"))] {
+        let mut other = document.clone();
+        other["files"][0][member] = value;
+        let third = Session::loading(vec![unnamed(
+            dir.path(),
+            "second/scan.png",
+            b"the same bytes",
+        )]);
+        let report = third
+            .import(dir.path(), &other.to_string())
+            .await
+            .expect("import");
+        assert_eq!(report["counts"]["unmatched"], 1, "{member}: {report}");
+    }
+}
+
+/// A document never holds an absolute path. Files that share no folder
+/// worth naming are named by their file names, and are found by them.
+#[tokio::test]
+async fn files_from_unrelated_folders_are_named_by_their_file_names() {
+    let files = || {
+        vec![
+            entry(Path::new("/alpha/study"), "one.dcm", "1.2.3.1"),
+            entry(Path::new("/beta/other/deep"), "two.dcm", "1.2.3.2"),
+        ]
+    };
+    let first = Session::loading(files());
+    first.stage(HashMap::from([
+        (0, rows(&[[1, 2, 3, 4]], &[])),
+        (1, rows(&[[5, 6, 7, 8]], &[])),
+    ]));
+    let text = first.text("/api/annotations/export.json").await;
+    let document: Value = serde_json::from_str(&text).expect("document");
+    let paths: Vec<&str> = document["files"]
+        .as_array()
+        .expect("files")
+        .iter()
+        .filter_map(|file| file["path"].as_str())
+        .collect();
+    assert_eq!(paths, ["one.dcm", "two.dcm"]);
+    assert!(!text.contains("alpha") && !text.contains("beta"), "{text}");
+
+    // Named by an argument below the working directory and by an absolute
+    // one, the files of one folder are one tree.
+    let here = std::env::current_dir().expect("working directory");
+    let mixed = Session::loading(vec![
+        entry(Path::new("case/left"), "one.dcm", "1.2.3.1"),
+        entry(&here.join("case/right"), "two.dcm", "1.2.3.2"),
+    ]);
+    mixed.stage(HashMap::from([
+        (0, rows(&[[1, 2, 3, 4]], &[])),
+        (1, rows(&[[5, 6, 7, 8]], &[])),
+    ]));
+    let document = mixed.document().await;
+    assert_eq!(document["files"][0]["path"], "left/one.dcm");
+    assert_eq!(document["files"][1]["path"], "right/two.dcm");
+
+    let dir = tempdir().expect("temp dir");
+    let second = Session::loading(files());
+    let report = second.import(dir.path(), &text).await.expect("import");
+    assert_eq!(report["counts"]["annotations_out"], 2);
+    assert_eq!(second.rois(1).await.roi_coords, [[5, 6, 7, 8]]);
+}
+
+/// What finds a file for a reference, case by case: an absolute path is
+/// the path of one file and not the end of others'; a key in the form a
+/// masked session shows names its file there; and the member that says
+/// which copy a row is of binds only in its own shape, only to a file
+/// that has the record's key.
+#[tokio::test]
+async fn references_and_rows_are_held_to_what_they_say() {
+    let dir = tempdir().expect("temp dir");
+
+    // An absolute path that is the file's own finds it. Its last
+    // component alone would find it too, and that is not how it is read.
+    let raster = Session::loading(vec![unnamed(dir.path(), "kept/scan.png", b"raster bytes")]);
+    let key = content_key(b"raster bytes");
+    let mut named = reference(
+        &key,
+        None,
+        &dir.path().join("kept/scan.png").to_string_lossy(),
+    );
+    named["size_bytes"] = json!(12);
+    let by_own_path = document_of(
+        vec![named.clone()],
+        vec![],
+        vec![annotation(1, &key, "default", rect(1, 1, 2, 2))],
+    );
+    let report = raster
+        .import(dir.path(), &by_own_path)
+        .await
+        .expect("import");
+    assert_eq!(
+        report["matched_by"],
+        json!({ "key": 0, "sop_instance_uid": 0, "path": 1 }),
+        "{report}"
+    );
+    // Another folder's absolute path with the same end is another file's:
+    // the file here is found by its bytes, not by that path.
+    named["path"] = json!("/elsewhere/kept/scan.png");
+    let by_other_path = document_of(
+        vec![named],
+        vec![],
+        vec![annotation(1, &key, "default", rect(1, 1, 2, 2))],
+    );
+    let raster = Session::loading(vec![unnamed(dir.path(), "kept/scan.png", b"raster bytes")]);
+    let report = raster
+        .import(dir.path(), &by_other_path)
+        .await
+        .expect("import");
+    assert_eq!(
+        report["matched_by"],
+        json!({ "key": 1, "sop_instance_uid": 0, "path": 0 }),
+        "{report}"
+    );
+
+    // A masked session shows keys of its own, and takes them back.
+    let registry = FileRegistry::masked(Arc::new(Masker::new()));
+    registry.insert(entry(
+        dir.path(),
+        "masked.dcm",
+        "1.2.826.0.1.3680043.10.777.9",
+    ));
+    registry.mark_scan_complete();
+    let masked = Session::over(registry, AnnotationStore::loading());
+    let catalog: Value = serde_json::from_str(&masked.text("/api/files").await).expect("catalog");
+    let shown_uid = catalog["files"][0]["sop_instance_uid"]
+        .as_str()
+        .expect("shown UID");
+    let shown_key = format!("sop:{shown_uid}");
+    let shown = document_of(
+        vec![reference(&shown_key, Some(shown_uid), "not-its-name.dcm")],
+        vec![],
+        vec![annotation(1, &shown_key, "default", rect(1, 1, 2, 2))],
+    );
+    let report = masked.import(dir.path(), &shown).await.expect("import");
+    assert_eq!(
+        report["matched_by"],
+        json!({ "key": 1, "sop_instance_uid": 0, "path": 0 }),
+        "{report}"
+    );
+    assert_eq!(masked.rois(0).await.num_roi, 1);
+
+    // Rows of copies. Two copies of one image and a file of its own.
+    let files = || {
+        vec![
+            written(dir.path(), "a.dcm", "1.2.3.8", &[3; 64]),
+            written(dir.path(), "b.dcm", "1.2.3.8", &[3; 64]),
+            written(dir.path(), "alone.dcm", "1.2.3.7", &[7; 64]),
+        ]
+    };
+    let record = |n: u32, embed: Value| {
+        let mut record = annotation(n, "sop:1.2.3.8", "default", rect(n, n, n + 5, n + 5));
+        record["extensions"] = json!({ "embed": embed, "other": { "kept": true } });
+        record
+    };
+    let of_64_bytes = |mut reference: Value| {
+        reference["size_bytes"] = json!(64);
+        reference
+    };
+    let text = document_of(
+        vec![
+            of_64_bytes(reference("sop:1.2.3.8", Some("1.2.3.8"), "a.dcm")),
+            of_64_bytes(reference("sop:1.2.3.7", Some("1.2.3.7"), "alone.dcm")),
+        ],
+        vec![],
+        vec![
+            // Bound to the second copy, by its path and by its place.
+            record(1, json!({ "row_of": "b.dcm", "imported": true })),
+            record(2, json!({ "copy": 1 })),
+            // Names a loaded file that does not have the record's key, a
+            // file that is not loaded, a place no copy has: left out.
+            record(3, json!({ "row_of": "alone.dcm" })),
+            record(4, json!({ "row_of": "c.dcm" })),
+            record(5, json!({ "copy": 2 })),
+            // Not the member's shape: kept as it is, on every copy.
+            record(6, json!({ "row_of": "b.dcm", "more": 1 })),
+            record(7, json!({ "row_of": 3 })),
+            record(8, json!({ "row_of": "b.dcm", "copy": 1 })),
+            record(9, json!({ "copy": -1 })),
+            record(10, json!("b.dcm")),
+        ],
+    );
+    let session = Session::loading(files());
+    let report = session.import(dir.path(), &text).await.expect("import");
+    assert_eq!(
+        (
+            &report["counts"]["annotations_out"],
+            &report["counts"]["unmatched"]
+        ),
+        (&json!(7), &json!(3)),
+        "{report}"
+    );
+    let boxes = |n: u32| [n, n, n + 5, n + 5];
+    assert_eq!(
+        session.rois(0).await.roi_coords,
+        [boxes(6), boxes(7), boxes(8), boxes(9), boxes(10)]
+    );
+    assert_eq!(
+        session.rois(1).await.roi_coords,
+        [
+            boxes(1),
+            boxes(2),
+            boxes(6),
+            boxes(7),
+            boxes(8),
+            boxes(9),
+            boxes(10)
+        ]
+    );
+    assert_eq!(session.rois(2).await.num_roi, 0);
+    // The member that bound a row is taken out, and written again from
+    // the binding; one that bound nothing is still there.
+    let again = session.document().await;
+    let extensions: Vec<&Value> = again["annotations"]
+        .as_array()
+        .expect("annotations")
+        .iter()
+        .map(|record| &record["extensions"])
+        .collect();
+    let bound = |imported: bool| json!({ "embed": { "row_of": "b.dcm", "imported": imported }, "other": { "kept": true } });
+    let unbound = |embed: Value| json!({ "embed": embed, "other": { "kept": true } });
+    assert_eq!(
+        extensions,
+        [
+            &bound(true),
+            &bound(false),
+            &unbound(json!({ "row_of": "b.dcm", "more": 1 })),
+            &unbound(json!({ "row_of": 3 })),
+            &unbound(json!({ "row_of": "b.dcm", "copy": 1 })),
+            &unbound(json!({ "copy": -1 })),
+            &unbound(json!("b.dcm")),
+        ]
+    );
+}
+
+/// What a session may write and what downloads may hold are bounded: a
+/// session with more records than a document may hold is refused as
+/// such, and a document is not kept for sending while the documents
+/// still being sent hold the session's budget.
+#[tokio::test]
+async fn exports_are_refused_past_their_bounds() {
+    let dir = tempdir().expect("temp dir");
+    let session = Session::loading(vec![
+        entry(dir.path(), "a.dcm", "1.2.3.1"),
+        entry(dir.path(), "b.dcm", "1.2.3.2"),
+    ]);
+    session.stage(HashMap::from([
+        (0, rows(&[[1, 2, 3, 4], [5, 6, 7, 8]], &[])),
+        (1, rows(&[[1, 2, 3, 4]], &[])),
+    ]));
+    let limits = dcmview_adapters::Limits::DEFAULT;
+    let export = |limits, budget| {
+        export_native_within(
+            &session.registry,
+            &session.store,
+            NativeForm::JsonLines,
+            limits,
+            budget,
+        )
+    };
+    let refused = |result: Result<_, AnnotationError>| match result {
+        Ok(_) => panic!("the export was written"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        refused(
+            export(
+                dcmview_adapters::Limits {
+                    records: 2,
+                    ..limits
+                },
+                u64::MAX
+            )
+            .await
+        ),
+        AnnotationError::ExportTooMany { limit: 2 }
+    );
+    assert_eq!(
+        refused(export(dcmview_adapters::Limits { files: 1, ..limits }, u64::MAX).await),
+        AnnotationError::ExportTooMany { limit: 1 }
+    );
+
+    // One text is always kept, whatever its size. A second is kept beside
+    // it only within the budget, and again once the first has gone.
+    let first = export(limits, 1).await.expect("the only download");
+    let size = first.bytes.len() as u64;
+    assert_eq!(
+        refused(export(limits, 2 * size - 1).await),
+        AnnotationError::ExportBusy
+    );
+    let second = export(limits, 2 * size).await.expect("within the budget");
+    assert_eq!(
+        refused(export(limits, 2 * size).await),
+        AnnotationError::ExportBusy
+    );
+    drop(first);
+    let third = export(limits, 2 * size).await.expect("room again");
+    drop((second, third));
+    export(limits, 1).await.expect("nothing is being sent");
+}
+
+/// A masked session's document holds no path to say which copy a row is
+/// of: it says which of the copies, in the order they were loaded, and a
+/// session that loads the copies in that order shows on each what the
+/// first one showed.
+#[tokio::test]
+async fn copies_keep_their_own_rows_through_a_masked_document() {
+    let dir = tempdir().expect("temp dir");
+    for name in ["a.dcm", "b.dcm", "c.dcm"] {
+        written(dir.path(), name, "1.2.3.8", &[3; 64]);
+    }
+    let masked = || {
+        let registry = FileRegistry::masked(Arc::new(Masker::new()));
+        for name in ["a.dcm", "b.dcm", "c.dcm"] {
+            registry.insert(entry(dir.path(), name, "1.2.3.8"));
+        }
+        registry.mark_scan_complete();
+        Session::over(registry, AnnotationStore::loading())
+    };
+    let first = masked();
+    first.stage(HashMap::from([
+        (0, rows(&[[1, 2, 3, 4]], &[])),
+        (2, rows(&[[5, 6, 7, 8], [9, 9, 12, 12]], &[])),
+    ]));
+    let document = first.document().await;
+    let views = [
+        first.rois(0).await,
+        first.rois(1).await,
+        first.rois(2).await,
+    ];
+    assert_eq!(views[1].num_roi, 0);
+    let copies: Vec<&Value> = document["annotations"]
+        .as_array()
+        .expect("annotations")
+        .iter()
+        .map(|record| &record["extensions"]["embed"])
+        .collect();
+    assert_eq!(
+        copies,
+        [
+            &json!({ "copy": 0, "imported": true }),
+            &json!({ "copy": 2, "imported": true }),
+            &json!({ "copy": 2, "imported": true }),
+        ]
+    );
+    assert_eq!(document["files"].as_array().expect("files").len(), 1);
+
+    let second = masked();
+    let report = second
+        .import(dir.path(), &document.to_string())
+        .await
+        .expect("import");
+    assert_eq!(report["counts"]["annotations_out"], 3, "{report}");
+    assert_eq!(
+        [
+            second.rois(0).await,
+            second.rois(1).await,
+            second.rois(2).await
+        ],
+        views
+    );
+}
+
+/// What a copy shows after a reload does not wait for the copy to be
+/// hashed in the background: when the import has ended, every loaded file
+/// that carries the UID of a file it matched has its key.
+#[tokio::test]
+async fn an_import_leaves_no_copy_of_a_matched_file_without_its_key() {
+    let dir = tempdir().expect("temp dir");
+    // Large enough that hashing one takes far longer than the import
+    // takes to place one record on the first.
+    let bytes = vec![5_u8; 24 * 1024 * 1024];
+    let copies = || -> Vec<FileEntry> {
+        ["a.dcm", "b.dcm", "c.dcm", "d.dcm"]
+            .iter()
+            .map(|name| written(dir.path(), name, "1.2.3.8", &bytes))
+            .collect()
+    };
+    let mut named = reference("sop:1.2.3.8", Some("1.2.3.8"), "a.dcm");
+    named["size_bytes"] = json!(bytes.len());
+    let text = document_of(
+        vec![named],
+        vec![],
+        vec![annotation(1, "sop:1.2.3.8", "default", rect(4, 4, 8, 8))],
+    );
+    let session = Session::loading(copies());
+    session.import(dir.path(), &text).await.expect("import");
+    for index in 0..4 {
+        let status = session.registry.key_status(index).expect("status");
+        assert!(status.settled, "file {index} has no key yet");
+    }
+    assert_eq!(session.rois(3).await.roi_coords, [[4, 4, 8, 8]]);
 }
 
 /// A store that takes labels: a schema with one field for files and frames.

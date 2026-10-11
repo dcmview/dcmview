@@ -39,7 +39,8 @@ pub use memory::{
     REMEMBERED_OPS, REMEMBERED_REVS,
 };
 pub use store::{
-    session_author, AnnotationStore, ImportStatus, EMBED_IMPORT_AUTHOR, NATIVE_IMPORT_AUTHOR,
+    session_author, AnnotationStore, DownloadHold, ImportStatus, DOWNLOAD_BUDGET_BYTES,
+    EMBED_IMPORT_AUTHOR, NATIVE_IMPORT_AUTHOR,
 };
 
 use crate::types::FileEntry;
@@ -358,50 +359,98 @@ impl FileResolver for FileLookup {
 /// reference's key (`server::annotations::import_native`).
 pub(crate) struct PathSuffixes<'a> {
     files: &'a [Arc<FileEntry>],
-    by_name: HashMap<&'a std::ffi::OsStr, Vec<usize>>,
+    /// Places in `files`, ordered by their paths read from the last
+    /// component to the first, so the files a suffix names are neighbours.
+    order: Vec<usize>,
+    examined: std::cell::Cell<u64>,
 }
 
 impl<'a> PathSuffixes<'a> {
-    /// A lookup over `files`, which costs one map entry a file.
+    /// A lookup over `files`. It holds one number a file and is built by
+    /// sorting them once.
     pub(crate) fn new(files: &'a [Arc<FileEntry>]) -> Self {
-        let mut by_name = HashMap::<_, Vec<usize>>::new();
-        for (place, file) in files.iter().enumerate() {
-            if let Some(name) = file.path.file_name() {
-                by_name.entry(name).or_default().push(place);
-            }
+        let mut order: Vec<usize> = (0..files.len()).collect();
+        order.sort_by(|a, b| {
+            files[*a]
+                .path
+                .components()
+                .rev()
+                .cmp(files[*b].path.components().rev())
+        });
+        Self {
+            files,
+            order,
+            examined: std::cell::Cell::new(0),
         }
-        Self { files, by_name }
     }
 
     /// The catalog indexes of the files whose path ends with `path`, in
-    /// the order the files were loaded. Empty for a path that is absolute,
-    /// is empty, or steps upwards (`..`); `.` components are passed over.
+    /// ascending order. Empty for a path that is absolute, is empty, or
+    /// steps upwards (`..`); `.` components are passed over.
+    ///
+    /// **Cost.** A lookup compares the path with at most
+    /// `2 + log2(files)` files to find where its files start, and then
+    /// with each file it returns and one more. It never visits the other
+    /// files that share a file name with it, so looking up every file of a
+    /// tree whose files are all named alike is not quadratic.
+    #[cfg(test)]
     pub(crate) fn indexes(&self, path: &str) -> Vec<usize> {
+        self.matching(path, usize::MAX).unwrap_or_default()
+    }
+
+    fn matching(&self, path: &str, limit: usize) -> Option<Vec<usize>> {
         let mut wanted = Vec::new();
         for component in Path::new(path).components() {
             match component {
                 Component::CurDir => {}
-                Component::Normal(part) => wanted.push(part),
-                _ => return Vec::new(),
+                Component::Normal(part) => wanted.push(Component::Normal(part)),
+                _ => return Some(Vec::new()),
             }
         }
-        let Some(name) = wanted.last() else {
-            return Vec::new();
+        if wanted.is_empty() {
+            return Some(Vec::new());
+        }
+        // How the end of a file's path stands to the wanted components.
+        let compare = |place: &usize| {
+            self.examined.set(self.examined.get() + 1);
+            let mut theirs = self.files[*place].path.components().rev();
+            for part in wanted.iter().rev() {
+                match theirs.next() {
+                    None => return std::cmp::Ordering::Less,
+                    Some(component) => match component.cmp(part) {
+                        std::cmp::Ordering::Equal => {}
+                        other => return other,
+                    },
+                }
+            }
+            std::cmp::Ordering::Equal
         };
-        self.by_name
-            .get(name)
-            .into_iter()
-            .flatten()
-            .map(|place| &self.files[*place])
-            .filter(|file| {
-                let mut theirs = file.path.components().rev();
-                wanted
-                    .iter()
-                    .rev()
-                    .all(|part| theirs.next() == Some(Component::Normal(part)))
-            })
-            .map(|file| file.index)
-            .collect()
+        let start = self
+            .order
+            .partition_point(|place| compare(place) == std::cmp::Ordering::Less);
+        let mut indexes: Vec<usize> = self.order[start..]
+            .iter()
+            .take(limit.saturating_add(1))
+            .take_while(|place| compare(place) == std::cmp::Ordering::Equal)
+            .map(|place| self.files[*place].index)
+            .collect();
+        if indexes.len() > limit {
+            return None;
+        }
+        indexes.sort_unstable();
+        Some(indexes)
+    }
+
+    /// [`PathSuffixes::indexes`] when the path names at most `limit` files,
+    /// and `None` when it names more, found at the cost of `limit` files.
+    pub(crate) fn at_most(&self, path: &str, limit: usize) -> Option<Vec<usize>> {
+        self.matching(path, limit)
+    }
+
+    /// How many files' paths the lookups so far were compared with.
+    #[cfg(test)]
+    pub(crate) fn examined(&self) -> u64 {
+        self.examined.get()
     }
 }
 
@@ -433,21 +482,99 @@ pub(crate) fn common_directory(files: &[Arc<FileEntry>]) -> Option<PathBuf> {
     }
 }
 
-/// `path` as a document names it (`FileRef::path`): its components below
-/// `root`, each as text (`to_string_lossy`), joined with `/`, when `root`
-/// is given and `path` is below it; otherwise the whole path as text.
-pub(crate) fn document_path(root: Option<&Path>, path: &Path) -> String {
-    if let Some(relative) = root
-        .and_then(|root| path.strip_prefix(root).ok())
-        .filter(|relative| !relative.as_os_str().is_empty())
-    {
-        relative
-            .components()
-            .map(|part| part.as_os_str().to_string_lossy())
-            .collect::<Vec<_>>()
-            .join("/")
-    } else {
-        path.to_string_lossy().into_owned()
+/// How a document names the loaded files (`FileRef::path`): never by an
+/// absolute path, and never by a path that starts above the folder the
+/// files were loaded from.
+///
+/// Every file's path is first made absolute against `base` (the working
+/// directory), without resolving links. The root is the deepest directory
+/// that holds every file ([`common_directory`] of those paths), **unless**
+/// that directory is the filesystem root, a drive, or a directory above the
+/// home directory: then the files share nothing worth naming, and there is
+/// no root. The home directory itself, and anything below it, is a root.
+///
+/// A file's path is its components below the root, each as text
+/// (`to_string_lossy`), joined with `/`. Without a root, or for a file that
+/// is not below it, the path is the file's name alone. A reader finds a
+/// file by the end of its path ([`PathSuffixes`]) and compares its bytes
+/// or its key, so a name is enough to find it again.
+pub(crate) struct DocumentPaths {
+    root: Option<PathBuf>,
+    base: PathBuf,
+}
+
+impl DocumentPaths {
+    /// The paths of `files`, with relative ones below `base` and `home`
+    /// the home directory when there is one.
+    pub(crate) fn new(files: &[Arc<FileEntry>], base: &Path, home: Option<&Path>) -> Self {
+        let mut common: Option<Vec<Component<'_>>> = None;
+        let absolute: Vec<PathBuf> = files
+            .iter()
+            .map(|file| absolute_path(&file.path, base))
+            .collect();
+        for path in &absolute {
+            let parent: Vec<_> = path
+                .parent()
+                .map(|parent| parent.components().collect())
+                .unwrap_or_default();
+            common = Some(match common {
+                None => parent,
+                Some(mut common) => {
+                    let shared = common
+                        .iter()
+                        .zip(&parent)
+                        .take_while(|(a, b)| a == b)
+                        .count();
+                    common.truncate(shared);
+                    common
+                }
+            });
+        }
+        let root = common
+            .filter(|common| {
+                common
+                    .iter()
+                    .any(|part| matches!(part, Component::Normal(_)))
+            })
+            .map(|common| common.into_iter().collect::<PathBuf>())
+            .filter(|root| {
+                home.map(normalize_path)
+                    .is_none_or(|home| home == *root || !home.starts_with(root))
+            });
+        Self {
+            root,
+            base: base.to_path_buf(),
+        }
+    }
+
+    /// The paths of a session's files: relative ones below the working
+    /// directory, and the home directory as the environment gives it.
+    pub(crate) fn of_session(files: &[Arc<FileEntry>]) -> Self {
+        let base = std::env::current_dir().unwrap_or_default();
+        Self::new(files, &base, std::env::home_dir().as_deref())
+    }
+
+    /// `path` as a document names it.
+    pub(crate) fn path(&self, path: &Path) -> String {
+        let absolute = absolute_path(path, &self.base);
+        let below = self
+            .root
+            .as_deref()
+            .and_then(|root| absolute.strip_prefix(root).ok())
+            .map(|relative| {
+                relative
+                    .components()
+                    .map(|part| part.as_os_str().to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("/")
+            })
+            .filter(|relative| !relative.is_empty());
+        below.unwrap_or_else(|| {
+            path.file_name().map_or_else(
+                || "file".to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            )
+        })
     }
 }
 
@@ -995,15 +1122,14 @@ mod tests {
     #[test]
     fn a_document_path_is_written_below_the_root_with_slashes() {
         let root = PathBuf::from("/data").join("set");
-        let below = root.join("case 1").join("lcc.dcm");
-        assert_eq!(super::document_path(Some(&root), &below), "case 1/lcc.dcm");
-        // Not below the root, or no root: the path as it is.
-        let elsewhere = PathBuf::from("/other").join("lcc.dcm");
-        assert_eq!(
-            super::document_path(Some(&root), &elsewhere),
-            elsewhere.to_string_lossy()
-        );
-        assert_eq!(super::document_path(None, &below), below.to_string_lossy());
+        let files = vec![
+            file_entry(0, root.join("case 1").join("lcc.dcm"), 1),
+            file_entry(1, root.join("rcc.dcm"), 1),
+        ];
+        let names = super::DocumentPaths::new(&files, Path::new("/work"), None);
+        assert_eq!(names.path(&files[0].path), "case 1/lcc.dcm");
+        // Not below the root: the file's name.
+        assert_eq!(names.path(Path::new("/other/mlo.dcm")), "mlo.dcm");
     }
 
     #[test]
@@ -1031,6 +1157,119 @@ mod tests {
             ".",
         ] {
             assert!(suffixes.indexes(path).is_empty(), "{path}");
+        }
+    }
+
+    /// Looking up every file of a tree whose files are all named alike
+    /// compares each path with a few files, not with every file of that
+    /// name: counted, for 4,096 files.
+    #[test]
+    fn looking_up_files_that_share_a_name_is_not_quadratic() {
+        const FILES: usize = 4_096;
+        let files: Vec<_> = (0..FILES)
+            .map(|n| {
+                file_entry(
+                    n,
+                    PathBuf::from(format!("/data/patient-{n}/series/image.dcm")),
+                    1,
+                )
+            })
+            .collect();
+        let suffixes = super::PathSuffixes::new(&files);
+        for n in 0..FILES {
+            assert_eq!(
+                suffixes.indexes(&format!("patient-{n}/series/image.dcm")),
+                vec![n]
+            );
+        }
+        // 12 halvings, the file itself and the one after it: within 16 a
+        // lookup, where visiting every file of the name is 4,096.
+        assert!(
+            suffixes.examined() <= 16 * FILES as u64,
+            "{} comparisons for {FILES} lookups",
+            suffixes.examined()
+        );
+        // A path that names them all costs one comparison each, and gives
+        // them in index order.
+        let before = suffixes.examined();
+        assert_eq!(
+            suffixes.indexes("series/image.dcm"),
+            (0..FILES).collect::<Vec<_>>()
+        );
+        assert!(suffixes.examined() - before <= FILES as u64 + 16);
+        // Asked for at most a few, a path that names more names none, at
+        // the cost of those few.
+        let before = suffixes.examined();
+        assert_eq!(suffixes.at_most("series/image.dcm", 64), None);
+        assert!(suffixes.examined() - before <= 64 + 16);
+        assert_eq!(
+            suffixes.at_most("patient-7/series/image.dcm", 1),
+            Some(vec![7])
+        );
+    }
+
+    #[test]
+    fn a_document_never_names_a_file_by_an_absolute_path() {
+        let paths = |files: &[&str], base: &str, home: Option<&str>| -> Vec<String> {
+            let files: Vec<_> = files
+                .iter()
+                .enumerate()
+                .map(|(index, path)| file_entry(index, PathBuf::from(path), 1))
+                .collect();
+            let names = super::DocumentPaths::new(&files, Path::new(base), home.map(Path::new));
+            files.iter().map(|file| names.path(&file.path)).collect()
+        };
+        let home = Some("/home/reader");
+        // One tree: below the deepest folder that holds every file.
+        assert_eq!(
+            paths(
+                &["/data/set/a/one.dcm", "/data/set/b/two.dcm"],
+                "/work",
+                home
+            ),
+            ["a/one.dcm", "b/two.dcm"]
+        );
+        // A relative and an absolute argument for one tree are one tree.
+        assert_eq!(
+            paths(
+                &["set/a/one.dcm", "/work/set/b/two.dcm", "./set/c.dcm"],
+                "/work",
+                home
+            ),
+            ["a/one.dcm", "b/two.dcm", "c.dcm"]
+        );
+        // Two trees that share only the root: file names.
+        assert_eq!(
+            paths(&["/alpha/a/one.dcm", "/beta/b/two.dcm"], "/work", home),
+            ["one.dcm", "two.dcm"]
+        );
+        // Two trees that share only a directory above the home directory:
+        // a path below it would start with the user's name.
+        assert_eq!(
+            paths(
+                &["/home/reader/x/one.dcm", "/home/other/y/two.dcm"],
+                "/work",
+                home
+            ),
+            ["one.dcm", "two.dcm"]
+        );
+        // The home directory itself is a root, and so is anything below.
+        assert_eq!(
+            paths(
+                &["/home/reader/x/one.dcm", "/home/reader/y/two.dcm"],
+                "/work",
+                home
+            ),
+            ["x/one.dcm", "y/two.dcm"]
+        );
+        // One file: its name.
+        assert_eq!(paths(&["/one.dcm"], "/work", home), ["one.dcm"]);
+        assert_eq!(paths(&["/data/one.dcm"], "/work", None), ["one.dcm"]);
+        for path in paths(&["rel/one.dcm", "/abs/two.dcm", "/"], "/", None) {
+            assert!(
+                !Path::new(&path).is_absolute() && !path.is_empty(),
+                "{path}"
+            );
         }
     }
 

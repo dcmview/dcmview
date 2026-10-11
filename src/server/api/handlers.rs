@@ -584,10 +584,15 @@ pub(super) async fn export_annotations_jsonl(
     .await
 }
 
+/// How much of a document export is handed to the connection at a time.
+const EXPORT_CHUNK_BYTES: usize = 1024 * 1024;
+
 /// A native export as a response. The session's document export permit
 /// is held while the text is built and let go of before it is sent
 /// (`annotations::export_native`), so a client that reads slowly holds up
-/// no other export.
+/// no other export. The body is sent in pieces and owns the text's share
+/// of the download budget until its last piece has been taken or the
+/// response is dropped.
 async fn native_export(
     state: &AppState,
     form: annotations::NativeForm,
@@ -597,9 +602,21 @@ async fn native_export(
     let export = annotations::export_native(state.registry(), state.annotations(), form)
         .await
         .map_err(error::annotation_error)?;
-    let mut response = Response::new(axum::body::Body::from(export.bytes));
+    let length = export.bytes.len();
+    let body = futures::stream::unfold(
+        (Bytes::from(export.bytes), export.hold),
+        |(mut rest, hold)| async move {
+            if rest.is_empty() {
+                return None;
+            }
+            let piece = rest.split_to(rest.len().min(EXPORT_CHUNK_BYTES));
+            Some((Ok::<_, std::convert::Infallible>(piece), (rest, hold)))
+        },
+    );
+    let mut response = Response::new(axum::body::Body::from_stream(body));
     let headers = response.headers_mut();
     headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(media_type));
+    headers.insert(header::CONTENT_LENGTH, HeaderValue::from(length));
     headers.insert(
         EXPORT_CONTENT_DISPOSITION_HEADER,
         HeaderValue::from_static(disposition),
