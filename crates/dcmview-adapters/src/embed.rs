@@ -36,17 +36,21 @@
 
 use crate::adapter::{
     AdapterInfo, Capabilities, Confidence, Directions, ExportAdapter, ExportContext, FileResolver,
-    ImportAdapter, ImportContext, Imported,
+    Fragment, ImportAdapter, ImportContext, Imported, Resolved,
 };
-use crate::error::{ExportError, ImportError};
-use crate::report::Report;
+use crate::error::{Bound, ExportError, ImportError};
+use crate::limits;
+use crate::report::{AdapterRef, Direction, LossCode, Report, RowRef, WarningCode};
 use dcmview_annotation::{
     new_id, Annotation, Author, Document, FileKey, FrameScope, Geometry, GeometryType, LayerId,
     RecordMeta, Timestamp, IMPLICIT_CLASS_ID,
 };
+use serde::de::IgnoredAny;
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Write};
+use std::rc::Rc;
 
 /// The id of the EMBED adapter.
 pub const EMBED_ADAPTER_ID: &str = "embed";
@@ -205,8 +209,23 @@ pub fn write_csv<'a>(
     rows: impl IntoIterator<Item = EmbedRow<'a>>,
     out: &mut dyn Write,
 ) -> Result<(), ExportError> {
-    let _ = (rows.into_iter().count(), out);
-    todo!("ADP1")
+    let mut rows: Vec<_> = rows.into_iter().collect();
+    rows.sort_by(|a, b| a.path.as_bytes().cmp(b.path.as_bytes()));
+    let mut writer = csv::Writer::from_writer(out);
+    writer
+        .write_record(EMBED_COLUMNS)
+        .map_err(csv_export_error)?;
+    for row in rows {
+        let count = row.roi_coords.len().to_string();
+        let coords = serde_json::to_string(row.roi_coords)
+            .map_err(|_| export_io(std::io::ErrorKind::Other))?;
+        let frames = serde_json::to_string(row.roi_frames)
+            .map_err(|_| export_io(std::io::ErrorKind::Other))?;
+        writer
+            .write_record([row.path.as_ref(), &count, &coords, &frames])
+            .map_err(csv_export_error)?;
+    }
+    writer.flush().map_err(|error| export_io(error.kind()))
 }
 
 /// Checks that `input` starts with the header of an EMBED CSV: a first
@@ -219,8 +238,8 @@ pub fn write_csv<'a>(
 /// [`ImportError::TooLarge`] for a header past
 /// [`crate::limits::MAX_CSV_ROW_BYTES`].
 pub fn check_header(input: &mut dyn Read) -> Result<(), ImportError> {
-    let _ = input;
-    todo!("ADP1")
+    let (mut reader, budget) = csv_reader(input);
+    read_header(&mut reader, &budget).map(|_| ())
 }
 
 /// Reads an EMBED CSV as rows for the loaded files its paths name.
@@ -344,10 +363,202 @@ pub fn read_rows(
     resolver: &dyn FileResolver,
     keep_going: &dyn Fn() -> bool,
 ) -> Result<EmbedRead, ImportError> {
-    let _ = (input, keep_going());
-    let mut found = Vec::new();
-    resolver.by_path("", &mut found);
-    todo!("ADP1")
+    let (mut reader, budget) = csv_reader(input);
+    let columns = read_header(&mut reader, &budget)?;
+    let mut report = Report::new(
+        AdapterRef {
+            id: EMBED_ADAPTER_ID.to_string(),
+            version: 1,
+        },
+        Direction::Import,
+    );
+    let mut files = Vec::new();
+    let mut matched = HashMap::new();
+    let mut targets = Vec::new();
+    let mut record = csv::StringRecord::new();
+    let mut row = 1;
+    loop {
+        if !keep_going() {
+            return Err(ImportError::Cancelled);
+        }
+        budget.reset();
+        let start = reader.position().byte();
+        let read = reader.read_record(&mut record);
+        if budget.exceeded.get() || reader.position().byte() - start > limits::MAX_CSV_ROW_BYTES {
+            return Err(csv_row_too_large());
+        }
+        let has_record = read.map_err(|error| match error.kind() {
+            csv::ErrorKind::Io(error) => ImportError::Io {
+                kind: error.kind().to_string(),
+            },
+            _ => ImportError::CsvRow { row: row + 1 },
+        })?;
+        if !has_record {
+            break;
+        }
+        row += 1;
+        if row - 1 > limits::MAX_CSV_ROWS {
+            return Err(ImportError::TooLarge {
+                bound: Bound::CsvRows,
+                limit: limits::MAX_CSV_ROWS,
+            });
+        }
+        let path = record.get(columns.path).unwrap_or_default().trim();
+        if path.is_empty() {
+            return Err(ImportError::EmptyPath { row });
+        }
+        targets.clear();
+        if path.len() <= limits::MAX_CSV_PATH_BYTES {
+            resolver.by_path(path, &mut targets);
+        }
+        let Some(first) = targets.first() else {
+            report.counts.unmatched += 1;
+            continue;
+        };
+        let size = first.size;
+        let text = record.get(columns.coords).unwrap_or_default().trim();
+        let count: Vec<IgnoredAny> =
+            serde_json::from_str(text).map_err(|_| ImportError::RoiCoords { row })?;
+        check_roi_count(count.len())?;
+        let shapes: Vec<Vec<IgnoredAny>> =
+            serde_json::from_str(text).map_err(|_| ImportError::RoiCoords { row })?;
+        if let Some(roi) = shapes.iter().position(|shape| shape.len() != 4) {
+            return Err(ImportError::RoiCoordsEntry { row, roi });
+        }
+        drop(shapes);
+        let values: Vec<[f64; 4]> =
+            serde_json::from_str(text).map_err(|_| ImportError::RoiCoords { row })?;
+        let mut coords = Vec::with_capacity(values.len());
+        let mut corrections = Vec::with_capacity(values.len());
+        for (roi, values) in values.into_iter().enumerate() {
+            let mut negative = false;
+            let mut fractional = false;
+            let mut converted = [0; 4];
+            for (place, number) in converted.iter_mut().zip(values) {
+                let value = if number < 0.0 {
+                    negative = true;
+                    0.0
+                } else {
+                    let rounded = number.round();
+                    fractional |= rounded != number;
+                    rounded
+                };
+                if value > f64::from(u32::MAX) {
+                    return Err(ImportError::RoiCoordsEntry { row, roi });
+                }
+                *place = value as u32;
+            }
+            coords.push(converted);
+            corrections.push((negative, fractional));
+        }
+        if let Some(column) = columns.count {
+            let num_roi = record
+                .get(column)
+                .unwrap_or_default()
+                .trim()
+                .parse::<usize>()
+                .map_err(|_| ImportError::NumRoi { row })?;
+            if num_roi != coords.len() {
+                return Err(ImportError::NumRoiMismatch {
+                    row,
+                    coords: coords.len(),
+                    num_roi,
+                });
+            }
+        }
+        let frames = if let Some(column) = columns.frames {
+            let text = record.get(column).unwrap_or_default().trim();
+            let count: Vec<IgnoredAny> =
+                serde_json::from_str(text).map_err(|_| ImportError::RoiFrames { row })?;
+            check_roi_count(count.len())?;
+            let shapes: Vec<Vec<IgnoredAny>> =
+                serde_json::from_str(text).map_err(|_| ImportError::RoiFrames { row })?;
+            if shapes
+                .iter()
+                .any(|shape| shape.len() > limits::MAX_FRAMES_PER_ROI)
+            {
+                return Err(ImportError::TooLarge {
+                    bound: Bound::FramesPerRoi,
+                    limit: limits::MAX_FRAMES_PER_ROI as u64,
+                });
+            }
+            drop(shapes);
+            let frames: Vec<Vec<u32>> =
+                serde_json::from_str(text).map_err(|_| ImportError::RoiFrames { row })?;
+            if !frames.is_empty() && frames.len() != coords.len() {
+                return Err(ImportError::RoiFramesLength {
+                    row,
+                    frames: frames.len(),
+                    num_roi: coords.len(),
+                });
+            }
+            frames
+        } else {
+            Vec::new()
+        };
+        let rois = EmbedRois {
+            roi_coords: coords,
+            roi_frames: frames,
+        };
+        for target in &targets {
+            if let Some(previous_row) = matched.insert(target.slot, row) {
+                return Err(ImportError::DuplicatePath { row, previous_row });
+            }
+            for (roi, frames) in rois.roi_frames.iter().enumerate() {
+                for &frame in frames {
+                    if frame >= target.size.frames {
+                        return Err(ImportError::FrameOutOfRange {
+                            row,
+                            roi,
+                            frame,
+                            frame_count: target.size.frames,
+                        });
+                    }
+                }
+            }
+            files.push(EmbedFileRois {
+                slot: target.slot,
+                row,
+                rois: rois.clone(),
+            });
+        }
+        for (i, ([ymin, xmin, ymax, xmax], (negative, fractional))) in
+            rois.roi_coords.iter().zip(corrections).enumerate()
+        {
+            let at = RowRef {
+                row,
+                roi: Some(i as u32),
+            };
+            for (applies, code) in [
+                (negative, WarningCode::NegativeCoordinate),
+                (fractional, WarningCode::NonIntegerCoordinate),
+                (
+                    *ymin > size.rows
+                        || *ymax > size.rows
+                        || *xmin > size.columns
+                        || *xmax > size.columns,
+                    WarningCode::OutOfRange,
+                ),
+                (ymin == ymax || xmin == xmax, WarningCode::ZeroArea),
+                (ymin > ymax || xmin > xmax, WarningCode::CornersOutOfOrder),
+                (
+                    rois.roi_frames.get(i).is_some_and(Vec::is_empty),
+                    WarningCode::FramesEmpty,
+                ),
+            ] {
+                if applies {
+                    report.warn(code, at);
+                }
+            }
+        }
+        report.counts.annotations_in += rois.roi_coords.len() as u64;
+        report.counts.annotations_out += rois.roi_coords.len() as u64 * targets.len() as u64;
+        report.counts.files += targets.len() as u64;
+        if let Some(matched_by) = &mut report.matched_by {
+            matched_by.path += 1;
+        }
+    }
+    Ok(EmbedRead { files, report })
 }
 
 /// EMBED ROI CSV behind the adapter traits, for a caller that holds
@@ -412,8 +623,103 @@ impl ExportAdapter for EmbedAdapter {
         context: &ExportContext<'_>,
         out: &mut dyn Write,
     ) -> Result<Report, ExportError> {
-        let _ = (document, context.max_bytes, out);
-        todo!("ADP1")
+        let mut report = Report::new(
+            AdapterRef {
+                id: EMBED_ADAPTER_ID.to_string(),
+                version: 1,
+            },
+            Direction::Export,
+        );
+        report.counts.annotations_in = document.annotations.len() as u64;
+        report.counts.labels_in = document.labels.len() as u64;
+        let known: HashSet<_> = document.files.iter().map(|file| &file.key).collect();
+        let mut rectangles: HashMap<&FileKey, Vec<&Annotation>> = HashMap::new();
+        let mut skipped = HashMap::new();
+        let mut classes = HashSet::new();
+        let (mut rounded, mut attributes, mut scores) = (0, 0, 0);
+        for annotation in &document.annotations {
+            if !known.contains(&annotation.file) {
+                return Err(ExportError::UnknownFile);
+            }
+            if let Geometry::Rect { x0, y0, x1, y1 } = annotation.geometry {
+                rectangles
+                    .entry(&annotation.file)
+                    .or_default()
+                    .push(annotation);
+                report.counts.annotations_out += 1;
+                rounded += u64::from([x0, y0, x1, y1].iter().any(|value| value.fract() != 0.0));
+                classes.insert(&annotation.class);
+                attributes += u64::from(!annotation.attributes.is_empty());
+                scores += u64::from(annotation.meta.score.is_some());
+            } else {
+                *skipped
+                    .entry(annotation.geometry.geometry_type())
+                    .or_insert(0) += 1;
+            }
+        }
+        let mut rows = Vec::new();
+        for file in &document.files {
+            let Some(records) = rectangles.get(&file.key) else {
+                continue;
+            };
+            let rois = rois_of(records.iter().copied(), file.frames);
+            let mut paths = Vec::new();
+            context.paths.paths_of(&file.key, &mut paths);
+            if paths.is_empty() {
+                paths.push(file.path.clone());
+            }
+            report.counts.files += paths.len() as u64;
+            rows.push((paths, rois));
+        }
+        let mut writer = LimitedWriter {
+            out,
+            remaining: context.max_bytes,
+            exceeded: false,
+        };
+        let result = write_csv(
+            rows.iter().flat_map(|(paths, rois)| {
+                paths.iter().map(|path| EmbedRow {
+                    path: Cow::Borrowed(path),
+                    roi_coords: &rois.roi_coords,
+                    roi_frames: &rois.roi_frames,
+                })
+            }),
+            &mut writer,
+        );
+        if writer.exceeded {
+            return Err(ExportError::TooLarge {
+                limit: context.max_bytes,
+            });
+        }
+        result?;
+        for kind in GeometryType::ALL {
+            report.lose(
+                LossCode::TypeSkipped,
+                Some(kind),
+                skipped.get(&kind).copied().unwrap_or(0),
+                None,
+            );
+        }
+        report.lose(LossCode::RoundedOutward, None, rounded, None);
+        report.lose(
+            LossCode::ClassesMerged,
+            None,
+            if classes.len() > 1 {
+                classes.len() as u64
+            } else {
+                0
+            },
+            None,
+        );
+        report.lose(LossCode::AttributesDropped, None, attributes, None);
+        report.lose(LossCode::ScoresDropped, None, scores, None);
+        report.lose(
+            LossCode::LabelsDropped,
+            None,
+            document.labels.len() as u64,
+            None,
+        );
+        Ok(report)
     }
 }
 
@@ -426,8 +732,19 @@ impl ImportAdapter for EmbedAdapter {
     /// when it holds no line feed), read as one CSV record, has the fields
     /// `anon_dicom_path` and `ROI_coords`; [`Confidence::None`] otherwise.
     fn sniff(&self, head: &[u8]) -> Confidence {
-        let _ = head;
-        todo!("ADP1")
+        let head = head.split(|byte| *byte == b'\n').next().unwrap_or_default();
+        let mut reader = csv::ReaderBuilder::new()
+            .has_headers(false)
+            .from_reader(head);
+        let mut record = csv::ByteRecord::new();
+        if matches!(reader.read_byte_record(&mut record), Ok(true))
+            && record.iter().any(|field| field == b"anon_dicom_path")
+            && record.iter().any(|field| field == b"ROI_coords")
+        {
+            Confidence::Certain
+        } else {
+            Confidence::None
+        }
     }
 
     /// Reads an EMBED CSV ([`read_rows`] with `context.resolver` and
@@ -447,7 +764,192 @@ impl ImportAdapter for EmbedAdapter {
         input: &mut dyn Read,
         context: &ImportContext<'_>,
     ) -> Result<Imported, ImportError> {
-        let _ = (input, context.layer);
-        todo!("ADP1")
+        let resolver = RememberKeys {
+            inner: context.resolver,
+            keys: RefCell::new(HashMap::new()),
+        };
+        let EmbedRead { files, mut report } = read_rows(input, &resolver, context.keep_going)?;
+        let keys = resolver.keys.into_inner();
+        let mut fragment = Fragment::default();
+        for file in files {
+            let Some(Some(key)) = keys.get(&file.slot) else {
+                report.warn(
+                    WarningCode::KeyUnavailable,
+                    RowRef {
+                        row: file.row,
+                        roi: None,
+                    },
+                );
+                report.counts.refused += file.rois.roi_coords.len() as u64;
+                report.counts.annotations_out -= file.rois.roi_coords.len() as u64;
+                report.counts.files -= 1;
+                continue;
+            };
+            for (i, coords) in file.rois.roi_coords.iter().enumerate() {
+                fragment.annotations.push(annotation_of(
+                    *coords,
+                    scope_at(&file.rois.roi_frames, i),
+                    key,
+                    context.layer,
+                    context.author,
+                    context.now,
+                ));
+            }
+        }
+        Ok(Imported { fragment, report })
+    }
+}
+
+fn export_io(kind: std::io::ErrorKind) -> ExportError {
+    ExportError::Io {
+        kind: kind.to_string(),
+    }
+}
+
+fn csv_export_error(error: csv::Error) -> ExportError {
+    export_io(match error.kind() {
+        csv::ErrorKind::Io(error) => error.kind(),
+        _ => std::io::ErrorKind::Other,
+    })
+}
+
+struct LimitedWriter<'a> {
+    out: &'a mut dyn Write,
+    remaining: u64,
+    exceeded: bool,
+}
+
+impl Write for LimitedWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if bytes.len() as u64 > self.remaining {
+            self.exceeded = true;
+            return Err(std::io::ErrorKind::Other.into());
+        }
+        let written = self.out.write(bytes)?;
+        self.remaining -= written as u64;
+        Ok(written)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.out.flush()
+    }
+}
+
+#[derive(Clone)]
+struct RowBudget {
+    remaining: Rc<Cell<u64>>,
+    exceeded: Rc<Cell<bool>>,
+}
+
+impl RowBudget {
+    fn reset(&self) {
+        self.remaining
+            .set(limits::MAX_CSV_ROW_BYTES + limits::CSV_READ_AHEAD_BYTES);
+        self.exceeded.set(false);
+    }
+}
+
+struct BudgetReader<'a> {
+    input: &'a mut dyn Read,
+    budget: RowBudget,
+}
+
+impl Read for BudgetReader<'_> {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        let remaining = self.budget.remaining.get();
+        if remaining == 0 {
+            self.budget.exceeded.set(true);
+            return Err(std::io::ErrorKind::Other.into());
+        }
+        let take = bytes.len().min(remaining as usize);
+        let read = self.input.read(&mut bytes[..take])?;
+        self.budget.remaining.set(remaining - read as u64);
+        Ok(read)
+    }
+}
+
+fn csv_reader(input: &mut dyn Read) -> (csv::Reader<BudgetReader<'_>>, RowBudget) {
+    let budget = RowBudget {
+        remaining: Rc::new(Cell::new(0)),
+        exceeded: Rc::new(Cell::new(false)),
+    };
+    let reader = csv::ReaderBuilder::new()
+        .flexible(false)
+        .from_reader(BudgetReader {
+            input,
+            budget: budget.clone(),
+        });
+    (reader, budget)
+}
+
+struct Columns {
+    path: usize,
+    coords: usize,
+    count: Option<usize>,
+    frames: Option<usize>,
+}
+
+fn read_header(
+    reader: &mut csv::Reader<BudgetReader<'_>>,
+    budget: &RowBudget,
+) -> Result<Columns, ImportError> {
+    budget.reset();
+    let start = reader.position().byte();
+    let headers = reader.headers().map_err(|_| {
+        if budget.exceeded.get() {
+            csv_row_too_large()
+        } else {
+            ImportError::CsvHeader
+        }
+    })?;
+    let path = headers.iter().position(|field| field == "anon_dicom_path");
+    let coords = headers.iter().position(|field| field == "ROI_coords");
+    let count = headers.iter().position(|field| field == "num_ROI");
+    let frames = headers.iter().position(|field| field == "ROI_frames");
+    if reader.position().byte() - start > limits::MAX_CSV_ROW_BYTES {
+        return Err(csv_row_too_large());
+    }
+    Ok(Columns {
+        path: path.ok_or(ImportError::MissingColumn {
+            column: "anon_dicom_path",
+        })?,
+        coords: coords.ok_or(ImportError::MissingColumn {
+            column: "ROI_coords",
+        })?,
+        count,
+        frames,
+    })
+}
+
+fn csv_row_too_large() -> ImportError {
+    ImportError::TooLarge {
+        bound: Bound::CsvRowBytes,
+        limit: limits::MAX_CSV_ROW_BYTES,
+    }
+}
+
+fn check_roi_count(count: usize) -> Result<(), ImportError> {
+    if count > limits::MAX_ROIS_PER_ROW {
+        Err(ImportError::TooLarge {
+            bound: Bound::RoisPerRow,
+            limit: limits::MAX_ROIS_PER_ROW as u64,
+        })
+    } else {
+        Ok(())
+    }
+}
+
+struct RememberKeys<'a> {
+    inner: &'a dyn FileResolver,
+    keys: RefCell<HashMap<usize, Option<FileKey>>>,
+}
+
+impl FileResolver for RememberKeys<'_> {
+    fn by_path(&self, path: &str, out: &mut Vec<Resolved>) {
+        let start = out.len();
+        self.inner.by_path(path, out);
+        let mut keys = self.keys.borrow_mut();
+        for target in out.iter().skip(start) {
+            keys.insert(target.slot, target.key.clone());
+        }
     }
 }
