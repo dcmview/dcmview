@@ -215,7 +215,8 @@ or patient id, real or masked, because the masks are different in every
 run; no folder or file name, which often say whose the files are (a file
 is `File 1`, as the masked viewer shows it); and no user name. What is
 left of a file is its content digest, byte size, SOP class, format, rows,
-columns and frame count. It can be loaded into any session, masked or not:
+columns and frame count. Labels on a patient, study, series or folder are
+left out. It can be loaded into any session, masked or not:
 each file is found by its content, which hashes the loaded files of the
 same size and dimensions. Which of several byte-identical files a ROI
 belongs to is written as the copy's place in loading order, so it comes
@@ -223,6 +224,12 @@ back on the same copy when the same files are loaded the same way. The
 annotated files are read to make the document.
 
 A JSON Lines file that was cut off, at any line, is not loaded.
+
+A document is read within bounds that no document the viewer writes comes
+near: 524,288 JSON values in one annotation, 64 levels of nesting, and
+one value kept in `extensions` or in members the viewer does not know for
+every 16 bytes of the file (after the first 65,536). A file past one of
+them fails to load and the import's message says which.
 
 Loading a document is all or nothing: a record that breaks a rule of the
 annotation model fails the whole import and the report names its line. One

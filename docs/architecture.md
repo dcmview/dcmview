@@ -2035,7 +2035,9 @@ start of a file is for.
 | Files of a document | 1,048,576 |
 | Annotations and labels of a document | 1,048,576 |
 | Layers of a document | 4,096 |
-| JSON nesting | 128 levels |
+| JSON values of one record, or of a document's header | 524,288 |
+| JSON values kept as read (`extensions`, unknown members) | 65,536, and one more for every 16 bytes of text |
+| JSON nesting | 64 levels |
 
 ### EMBED ROI CSV
 
@@ -2090,8 +2092,9 @@ The end line is what tells a whole JSON Lines file from one that was cut
 off at a line. A file with record lines and no end line, or with an end
 line whose counts are not the lines read, is refused whole
 (`ImportError::Truncated`), and a line after the end line is malformed. A
-header alone, a line that holds no record and is ended by a line feed, is
-a file cut off after its first line and is refused the same way.
+header alone, a text on one line that holds no record, is a file cut off
+after its first line and is refused the same way, with or without a line
+feed after it.
 
 An export refuses a document with more files or records than an import
 reads (`ExportError::TooMany`), so nothing is written that cannot be read
@@ -2219,14 +2222,19 @@ export. An export holds a copy of the records and their text once. The
 texts still being sent are bounded together: 512 MiB
 (`DOWNLOAD_BUDGET_BYTES`), or one text of any size when no other is being
 sent; a document that would pass it is dropped when built and answered
-`503 annotation_export_busy` with `Retry-After`. A native import of a
-document a session wrote holds within five times its text, the records it
-leaves included; text made to be costly can hold up to 44 times its length
-while it is read (the model keeps unknown members as JSON values), which
-for a 256 MiB JSON document is about 11 GiB and for a 16 MiB JSON Lines
-record about 0.7 GiB. Reading a CSV holds the rows it hands on, within
-400 bytes a ROI. `tests/raster_cost/annotations.rs` counts the CSV read
-for 200,000 ROIs, the documents for 50,000, and pins the multiples.
+`503 annotation_export_busy` with `Retry-After`. A native import holds,
+for any input, at most nine times the length of the text and 64 MiB, and
+within four times the text for a document a session wrote, the records it
+leaves included. The model keeps `extensions` and unknown members as JSON
+values, which cost many times their text, so the reader counts the text's
+JSON values before it parses them: one record, or the header, holds at
+most 524,288; values nest at most 64 deep; and the values records keep as
+read are bounded by the length of the text. A JSON document is read a
+member and a list element at a time. A record a session writes has some
+40 values, one for nine bytes of text, and keeps at most six. Reading a
+CSV holds the rows it hands on, within 400 bytes a ROI.
+`tests/raster_cost/annotations.rs` counts the CSV read for 200,000 ROIs,
+the documents for 50,000, and pins the import's bound with hostile texts.
 
 **Masked sessions (OWNER).** The masks of a session are drawn for one
 process, so a key or a UID it shows names nothing anywhere else, and a
@@ -2241,12 +2249,16 @@ absent, every `user:` author is written `user:local`, and the document's
 `extensions` say `"dcmview": { "masked": true }`. What a masked document
 holds of a file is its content digest, byte size, SOP class, format,
 rows, columns and frame count, and of a record its id, timestamps, layer,
-class, geometry, attributes and extensions. Such a document loads into
+class, geometry, attributes and extensions. A label whose target is a
+patient, study, series or folder is left out and counted as a
+`labels_dropped` loss in the export's report: such a target is text a
+client chose from what the masked session showed, or a folder path. Such a document loads into
 any session, masked or not: each reference finds its file by content. An
 import into a masked session finds candidates by a key or a UID in the
 form the session shows only, so a document that an unmasked session wrote
-is found by its paths and checked against the files' real keys. A patient, study, series or folder label
-target is text a client chose and is written and read as it is held.
+is found by its paths and checked against the files' real keys. In a session that is not masked, a patient,
+study, series or folder label target is text a client chose and is
+written and read as it is held.
 
 Redaction boxes are in no document and no export.
 

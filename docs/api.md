@@ -862,7 +862,15 @@ named `file`, `layer`, `annotation` or `label`, then an end line that
 counts them: `{"end":{"files":1,"layers":1,"annotations":1,"labels":0}}`.
 A JSON Lines file that does not end with that line, or whose counts are not
 its lines, was cut off or altered and is not loaded; that includes a header
-line alone.
+line alone, with or without a line feed after it.
+
+Loading a document holds at most nine times the length of its text and
+64 MiB, whatever the text is: one record, or everything outside the
+records, may hold 524,288 JSON values; values nest at most 64 deep; and
+the values kept as written (`extensions` and members this version does not
+know) may number 65,536 and one more for every 16 bytes of text. A
+document past one of these fails its import. A record the viewer writes
+has about 40 values.
 
 - `files` has one `FileRef` for each file a record names, for the loaded
   file with the lowest index that has that key. `path` is never absolute:
@@ -902,7 +910,9 @@ line alone.
   and the patient id are absent, every `user:` author is `user:local`, and
   the document's `extensions` hold `"dcmview": { "masked": true }`. What
   is left of a file is its content digest, byte size, SOP class, format,
-  rows, columns and frame count; a record keeps its id and timestamps.
+  rows, columns and frame count; a record keeps its id and timestamps. A
+  label on a patient, study, series or folder is left out: it names its
+  target by what the masked session showed or by a folder path.
   The annotated files are read for it; one that cannot be read answers
   `422 file_key_unavailable`. The document loads into any later session,
   masked or not, each file found by its content.

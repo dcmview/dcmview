@@ -979,8 +979,14 @@ is cached between requests.
   of its size and shape, hashing each of those once.
 - The documents being downloaded hold at most `DOWNLOAD_BUDGET_BYTES`
   together, or one of any size; the response body owns its share.
+- Reading a document holds at most nine times its text and 64 MiB for
+  any input. The budgets that make it so (`MAX_UNIT_VALUES`, `MAX_DEPTH`,
+  `MAX_KEPT_VALUES`) are checked on the text before it is parsed, and a
+  JSON document is read a list element at a time; do not parse a whole
+  document or a line into a buffered value first. The cost test holds
+  hostile texts to the bound.
 - A JSON Lines document ends with its `end` line and is refused whole
-  without it. An export refuses what an import's bounds (`Limits`) would
+  without it, a header alone included. An export refuses what an import's bounds (`Limits`) would
   refuse.
 - A native import changes the store with one transaction, and reads
   nothing from the store to decide what to write.
