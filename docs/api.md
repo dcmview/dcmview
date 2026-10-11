@@ -116,7 +116,10 @@ and redirects the bare prefix to its trailing-slash form.
 | GET | `/file/{index}/redactions` | `EmbedRoiAnnotations`: one file's redaction boxes. |
 | PUT | `/file/{index}/redactions` | Replaces one file's redaction boxes with a JSON `EmbedRoiAnnotations` body and returns the canonical result. |
 | PUT | `/file/{index}/redactions/series` | `RedactionSeriesResponse`: copies the file's redaction boxes to every file of its series with the same rows and columns, and lists those files. Takes no body. |
-| GET | `/annotations/export.csv` | `text/csv; charset=utf-8` with `Content-Disposition: attachment; filename="dcmview-annotations.csv"`. |
+| GET | `/annotations/export.csv` | `text/csv; charset=utf-8` with `Content-Disposition: attachment; filename="dcmview-annotations.csv"`. Rows are sorted by path. |
+| GET | `/annotations/export.json` | The session's annotations as one `dcmview.annotations` JSON document, `application/json`, with `Content-Disposition: attachment; filename="dcmview-annotations.json"`. See [Annotation documents](#annotation-documents). |
+| GET | `/annotations/export.jsonl` | The same document as JSON Lines, `application/jsonl`, with `Content-Disposition: attachment; filename="dcmview-annotations.jsonl"`. |
+| GET | `/annotations/import` | `AnnotationImportResponse`: where the `--annotations` import stands, and its report. |
 | POST | `/annotations/ops` | `AnnotationOpResponse`: applies one annotation operation. Query: `file` (the catalog index of the file the operation is for). The body is one `OpEnvelope` as JSON, at most 16 MiB. Also answers `409` and `422` with the same body shape; see [Annotation operations](#annotation-operations). |
 
 Every success status is `200`.
@@ -799,8 +802,9 @@ Annotations are EMBED-style rectangles held in memory:
 
 `PUT` validates coordinates and frame indices against the file and answers
 `400 bad_request` when they do not fit. The CSV export is built from the
-current in-memory store; source DICOM and CSV files are never modified. See
-[annotations](annotations.md) for the CSV format.
+current in-memory store, one row for each file that has a ROI, sorted by
+path (the byte order of the path as written); source DICOM and CSV files are
+never modified. See [annotations](annotations.md) for the CSV format.
 
 These endpoints are a view of the annotation store, which holds records of
 the annotation model (`frontend/src/generated/annotation-types.ts`,
@@ -829,6 +833,81 @@ file that failed. Reading never waits for a
 file to be hashed, and neither does `--annotations`: the rows of a CSV are
 shown and exported as the CSV wrote them for every matched file, including
 one that cannot be given a key.
+
+### Annotation documents
+
+`GET /api/annotations/export.json` answers every annotation, label and layer
+of the session as one document of the annotation model
+(`Document` in `frontend/src/generated/annotation-types.ts`,
+`crates/dcmview-annotation/schema/`):
+
+```json
+{ "format": "dcmview.annotations", "version": "1.0", "schema": null,
+  "files": [ { "key": "sop:1.2.840.1", "kind": "dicom", "path": "case/lcc.dcm",
+               "rows": 4096, "columns": 3328, "frames": 1, "...": "..." } ],
+  "layers": [ { "id": "default", "name": "Annotations", "kind": "user", "...": "..." } ],
+  "annotations": [ { "id": "0199...", "file": "sop:1.2.840.1", "frames": "all",
+                     "layer": "default", "class": "roi",
+                     "geometry": { "type": "rect", "x0": 340, "y0": 120, "x1": 430, "y1": 220 },
+                     "...": "..." } ],
+  "labels": [], "extensions": {} }
+```
+
+`GET /api/annotations/export.jsonl` answers the same document a record a
+line: a header line (the document with its four lists empty), then one line
+for each file, layer, annotation and label, each an object with one member
+named `file`, `layer`, `annotation` or `label`.
+
+- `files` has one `FileRef` for each file a record names, for the loaded
+  file with the lowest index that has that key. `path` is relative to the
+  deepest directory that holds every loaded file, with `/` between
+  components. `digest` is set when the file has been hashed.
+- Records are written as they are held: nothing is checked, clamped or left
+  out. A box that `--annotations` read from an EMBED CSV and kept although
+  it reaches past the image is in the document as it was read.
+- ROIs that `--annotations` read and nothing has touched are made records
+  first, which needs each such file's key: the request waits while a file
+  is hashed, and answers `422 file_key_unavailable` when one cannot be given
+  a key. Rows are never left out. The CSV export has no such need.
+- A document of more than 268,435,456 bytes answers
+  `422 annotation_export_too_large`; the JSON Lines form has no bound.
+- One document export runs at a time; a second waits for the first to be
+  sent.
+- Both wait for the `--annotations` import, and answer `500` with its
+  message when it failed, as the CSV export does.
+- Redaction boxes are never in a document.
+
+Either form can be given to `--annotations` of a later session; see
+[annotations](annotations.md).
+
+### The import's status
+
+`GET /api/annotations/import` answers at once:
+
+```json
+{ "state": "ready",
+  "report": { "adapter": { "id": "embed", "version": 1 }, "direction": "import",
+              "counts": { "files": 2, "annotations_in": 3, "annotations_out": 3,
+                          "labels_in": 0, "labels_out": 0, "unmatched": 1, "refused": 0 },
+              "losses": [],
+              "warnings": [ { "code": "negative_coordinate", "count": 1,
+                              "rows": [ { "row": 3, "roi": 0 } ] } ],
+              "matched_by": { "key": 0, "sop_instance_uid": 0, "path": 2 } } }
+```
+
+| `state` | Meaning |
+|---|---|
+| `none` | The session was started without `--annotations`. |
+| `loading` | The file is still being read. |
+| `ready` | The import ended; `report` says what it did. |
+| `failed` | The import failed and brought nothing; `error` is its message, which the EMBED reads and the exports also answer with. |
+
+A report is codes, counts and row numbers. `warnings[].rows` and
+`losses[].rows` hold the first 16 places of each kind; `row` is the CSV
+row with the header as row 1 (for a document, the line the record has in
+the JSON Lines form) and `roi` the position of a box in that row. It holds no
+path, file key, UID or other text of the file. The codes are listed with
+`Report` in `frontend/src/generated/api-types.ts`.
 
 ### Annotation operations
 
@@ -1013,6 +1092,13 @@ A session started with `--mask` reports `masked: true` in `/health` and
 - Slide label and overview images (Image Type value 3 `LABEL` or `OVERVIEW`)
   report `support_state: unsupported` with `support_reason:
   masked_label_image`, and their frame endpoints answer `403` `masked`.
+- An annotation document (`/annotations/export.json`, `export.jsonl`) is
+  written as the session shows its files: file keys, `sop_instance_uid`,
+  `study_instance_uid`, `series_instance_uid` and `patient_id` as the
+  catalog has them. `path` is unchanged, as in the catalog. A document given
+  to `--annotations` names a file by key or UID only in that form, so one
+  written by an unmasked session is matched by its paths. The import's
+  report and its error message hold no text of the file in any session.
 
 `burned_in_annotation` in a file summary is `true` when the file declares
 Burned In Annotation `YES`; masking does not change pixels.
@@ -1038,7 +1124,7 @@ Branch on `code`; `error` is diagnostic text and may change.
 | `409` | `annotation_conflict` (an annotation operation based on an older revision; the body is an `AnnotationOpResponse`), `file_key_replaced` (an annotation operation under a key that is not its file's settled key), `file_key_ambiguous` (an annotation operation without `file` under a key several files carry) |
 | `413` | `invalid_json` (a JSON body over 2 MiB, about 200,000 ROIs in one annotation edit), `payload_too_large` (an annotation operation over 16 MiB) |
 | `415` | `invalid_json` (missing `Content-Type: application/json`) |
-| `422` | `invalid_json` (valid JSON of the wrong shape), `unsupported_transfer_syntax`, `unsupported_pixel_layout` (display frames for any layout the catalog marks unsupported; raw frames for invalid geometry or numeric precision), `semantic_mapping_unavailable`, `decode_memory_exceeded` (decode estimate exceeds the budget or thumbnail share; increase `--decode-memory`), `annotation_invalid` (an annotation operation that breaks a rule; the body is an `AnnotationOpResponse`), `file_key_unavailable` (an annotation write for a file that cannot be given a key) |
+| `422` | `invalid_json` (valid JSON of the wrong shape), `unsupported_transfer_syntax`, `unsupported_pixel_layout` (display frames for any layout the catalog marks unsupported; raw frames for invalid geometry or numeric precision), `semantic_mapping_unavailable`, `decode_memory_exceeded` (decode estimate exceeds the budget or thumbnail share; increase `--decode-memory`), `annotation_invalid` (an annotation operation that breaks a rule; the body is an `AnnotationOpResponse`), `file_key_unavailable` (an annotation write, or a document export, for a file that cannot be given a key), `annotation_export_too_large` (the session's annotations do not fit one JSON document; export JSON Lines) |
 | `500` | `pixel_decode_failed`, `internal_error` |
 | `503` | `decode_busy` (decode queue full; `Retry-After: 1`) |
 

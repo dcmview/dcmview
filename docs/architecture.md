@@ -22,6 +22,7 @@ repository may depend on without the viewer:
 | `dcmview` | `.` | The viewer binary and library. | Everything, including the members. |
 | `dcmview-protocol` | `crates/dcmview-protocol` | The launch and startup contract: `StartupEvent` (with the `key_rules` number the viewer reports in it), `launch_url`, `STARTUP_PROTOCOL`, `TOKEN_FRAGMENT_PARAM`, `TOKEN_ENV_VAR`, and the test that pins the startup line. | `serde` only. No axum, tokio or DICOM crates. |
 | `dcmview-annotation` | `crates/dcmview-annotation` | The neutral annotation model: file keys, file references, geometry, frame scopes, the label schema, labels, layers, annotations, the document, operations, and the validation of all of them. See [Annotation Model](#annotation-model). | `serde`, `serde_json`, `thiserror`, `uuid`, `ts-rs`, `schemars`. No axum, tokio, DICOM or pixel-pipeline crates; no filesystem or network access. |
+| `dcmview-adapters` | `crates/dcmview-adapters` | Import and export adapters over the model: the adapter traits and their contexts, the registry, the report every import and export answers with, EMBED ROI CSV (rows, and the adapter between rows and rectangle records) and the native JSON and JSON Lines formats. See [Annotation Files](#annotation-files). | `dcmview-annotation`, `serde`, `serde_json`, `thiserror`, `csv`, `uuid`, `ts-rs`. No axum, tokio, DICOM or pixel-pipeline crates; an adapter reads the `Read` and writes the `Write` it is handed and touches no file or socket of its own. |
 
 Rules for the workspace:
 
@@ -52,7 +53,8 @@ application module:
 | HTTP wire model | `src/api/contracts.rs` | Plain `endpoints` table, media types, header names, wire structs (query names are `FrameQuery`/`TagQuery` fields), and error envelope. |
 | Launch and startup contract | `crates/dcmview-protocol` | `StartupEvent` (the `--startup-json` line), `launch_url`, `STARTUP_PROTOCOL`, the token fragment parameter and the token environment variable. Re-exported by `src/api/contracts.rs`. Fields are only added. |
 | Annotation model | `crates/dcmview-annotation` | The model's types and wire format, `validate` on each of them, `FileKey` and `KEY_RULES`, `Op` and `OpEnvelope`, the size bounds in `limits`, and the generated TypeScript and JSON Schema. The root package takes `FileKey` and `KEY_RULES` from it (`src/keys.rs`), and its annotation store holds the model's records and applies its operations. |
-| Annotation store | `src/annotations.rs`, `src/annotations/`, `src/server/annotations.rs` | `AnnotationBackend` (`snapshot`, `apply`, `export`, `revision`) and its in-memory implementation `MemoryBackend`: records by id under settled file keys, one transaction per operation envelope. `AnnotationStore` is what a session holds: the backend and the state of the `--annotations` import. `annotations/embed.rs` is the EMBED compatibility view as pure functions, and `annotations.rs` the EMBED CSV reader. `server/annotations.rs` joins the store to the registry for every door: it settles keys, translates the keys a masked session shows, and serves the EMBED endpoints and the operation endpoint. See [Annotation Store](#annotation-store). |
+| Annotation store | `src/annotations.rs`, `src/annotations/`, `src/server/annotations.rs` | `AnnotationBackend` (`snapshot`, `apply`, `export`, `revision`) and its in-memory implementation `MemoryBackend`: records by id under settled file keys, one transaction per operation envelope. `AnnotationStore` is what a session holds: the backend, the state and the report of the `--annotations` import, and the one permit for document exports. `annotations/embed.rs` is the EMBED compatibility view as pure functions, and `annotations.rs` the `--annotations` file: its format, and an EMBED CSV matched to the loaded files by path. `server/annotations.rs` joins the store to the registry for every door: it settles keys, translates the keys a masked session shows, and serves the EMBED endpoints, the operation endpoint, the document exports and the native import. See [Annotation Store](#annotation-store). |
+| Annotation adapters | `crates/dcmview-adapters` | `ExportAdapter` and `ImportAdapter` with `ExportContext`, `ImportContext` and `FileResolver`; `Registry`; `Report` and its closed codes; `ImportError` and `ExportError`; the bounds in `limits`; `embed::{read_rows, write_csv, rois_of}` and `EmbedAdapter`; `NativeJson` and `NativeJsonLines`. See [Annotation Files](#annotation-files). |
 | File keys | `src/keys/` | `KeyTable`: which key each loaded file has and whether it is settled, as a plain data structure with no I/O that holds no string per file. `FileHasher`: one file's BLAKE3 digest in bounded slices. See [File Keys And The Catalog Cursor](#file-keys-and-the-catalog-cursor). |
 | HTTP runtime | `src/server/` | Listener/runtime, route registration, handlers, state, registry, activity tracking, tags, and embedded assets. `server/catalog.rs` holds the registry with its key table and catalog revisions; `server/catalog/keys.rs` holds background hashing and what a session shows for a key. |
 | Pixel service | `src/pixels/` | Typed display, raw and thumbnail requests, cache behavior, transfer-syntax classification, decoding, the render seam (`render.rs` `DisplayBuffer`), decode classes (`schedule.rs`), and `PixelError`. `raster.rs` decodes PNG, JPEG, TIFF and WebP frames within fixed read and memory limits and renders them; `raster/tags.rs` reads their metadata tree through the same reader, within limits of its own and without reading pixels. |
@@ -1742,7 +1744,8 @@ records and read and write the bytes they always did.
 flowchart LR
     ops["POST /api/annotations/ops<br/>one OpEnvelope"] --> service
     embed["GET, PUT /api/file/{index}/annotations<br/>GET /api/annotations/export.csv"] --> service
-    csv["--annotations CSV<br/>annotations.rs reader"] --> service
+    csv["--annotations file<br/>annotations.rs, dcmview-adapters"] --> service
+    documents["GET /api/annotations/export.json, export.jsonl<br/>GET /api/annotations/import"] --> service
     service["server/annotations.rs<br/>settle keys, translate shown keys"] --> registry["FileRegistry<br/>ensure_key, key_status"]
     service --> view["annotations/embed.rs<br/>ROI rows as records and back"]
     service --> backend["AnnotationBackend<br/>MemoryBackend"]
@@ -1940,8 +1943,10 @@ real binary.
   one file, the one applied last decides everything the view shows, and
   ROIs of the other never remain beside it.
 - **The import stages rows; it does not make records.** After discovery the
-  CSV is read all or nothing as before. Its rows are then kept by file
-  index exactly as written (a box past the image edge, with no area or with
+  CSV is read all or nothing as before, by the EMBED adapter's reader
+  ([Annotation Files](#annotation-files)), which reads a negative coordinate
+  as 0 and rounds one that is not whole. Its rows are then kept by file
+  index exactly as read (a box past the image edge, with no area or with
   its corners out of order included), at the cost they had before the store
   held records: a staged ROI is its coordinates and its frame list, within
   256 bytes, and no file is read. A file's staged rows are what its view
@@ -1949,19 +1954,22 @@ real binary.
   given a key. They become records, authored `import:embed`, the first time
   the file's key is settled and something reads its view or an operation
   names it; a `PUT` replaces them instead. Staged rows are in no snapshot
-  and no document: whoever exports a document settles and stores them
-  first. EMBED reads wait for the CSV to be read; writes do not, and a file
+  and no document: a document export settles and stores them first
+  ([Annotation Files](#annotation-files)). EMBED reads wait for the CSV to be read; writes do not, and a file
   the EMBED endpoint wrote to while the CSV was loading keeps what was
   written.
 
 EMBED writes go through the store with `Checking::AsLoaded`: the store's own
 checks apply and the model's `validate` does not, because the EMBED rule
-admits values the model's would refuse. Every other write is
+admits values the model's would refuse. A native import writes the same
+way, after its adapter has checked every record
+([Annotation Files](#annotation-files)). Every other write is
 `Checking::Strict`.
 
 The export hashes nothing and writes one row per loaded file whose view
-shows a ROI, in the registry's file order, with the path as discovery
-recorded it. It is one read: the staged rows under the import's lock, and
+shows a ROI, with the path as discovery recorded it, sorted by path: the
+byte order of the path as written, whatever order discovery found the files
+in (`docs/design/annotation-model.md` 12.11). It is one read: the staged rows under the import's lock, and
 the records with the store held still while every file's key state and
 view are read, so no row shows a write another row of the same export
 does not. A write waits only while an export is reading.
@@ -1976,11 +1984,190 @@ endpoints and nothing with the annotation store: a box has no file key, is
 changed by no operation, and is in no snapshot, document or export
 (`docs/design/annotation-model.md`, re-baseline amendment of 2026-10-05).
 
+## Annotation Files
+
+Reading and writing annotation files is the `dcmview-adapters` crate
+(`docs/design/output-adapters.md`; `docs/design/annotation-model.md` 8, 9).
+An adapter is code over the model: it reads the `Read` or writes the `Write`
+it is handed and learns about files only from the context its caller fills,
+so the viewer and any other consumer of the crate get the same bytes.
+
+| Adapter id | Reads | Writes |
+|---|---|---|
+| `embed` | EMBED ROI CSV | EMBED ROI CSV |
+| `native` | a `dcmview.annotations` document as JSON, and its JSON Lines form | the JSON document |
+| `native-jsonl` | | the JSON Lines form |
+
+`Registry::builtin` holds them; `Registry::sniff` says which importer the
+start of a file is for.
+
+### What Every Adapter Keeps
+
+- **Input is untrusted.** An importer never panics on its input, reads it
+  within the fixed bounds of `dcmview_adapters::limits`, allocates only for
+  what it has read and never from a count the input states, and does work
+  in proportion to the input. Past a bound the import fails; nothing is
+  truncated.
+- **An import is all or nothing.** Invalid data on a record that matched a
+  file fails the whole import. What matched no file is counted and left
+  out.
+- **Nothing is silent.** Every import and export answers with a `Report`:
+  the adapter, counts, and one entry for each kind of loss and warning with
+  how often it happened and the first 16 places.
+- **No text of the input leaves in a report or an error.** Both are fixed
+  codes and words, numbers and row numbers: never a path, a file key, a
+  UID, a record id or a parser's message that quotes what it read. They can
+  be shown, logged and sent in a masked session.
+- **An export changes nothing** and gives the same bytes for the same
+  document and context.
+
+| Bound | Value |
+|---|---|
+| One CSV record, its line terminator included | 16 MiB |
+| Rows of a CSV | 16,777,216 |
+| ROIs of one row | 65,536 |
+| Frames of one ROI | 65,536 |
+| A JSON document, and the first line of a JSON Lines file | 256 MiB |
+| One record line of a JSON Lines file | 16 MiB |
+| Files of a document | 1,048,576 |
+| Annotations and labels of a document | 1,048,576 |
+| Layers of a document | 4,096 |
+| JSON nesting | 128 levels |
+
+### EMBED ROI CSV
+
+The format is rows: a path and the boxes on the file at that path. The crate
+has it at two levels. `embed::read_rows` and `embed::write_csv` are rows, for
+a caller that holds boxes by file; the viewer uses them, because it stages
+an import's rows by file index without settling a key and writes one row
+for each loaded path, byte-identical copies included. `EmbedAdapter` is the
+same reader and writer between rows and the rectangle records of a
+document, for a caller that holds records under file keys.
+
+**Writing.** The header `anon_dicom_path,num_ROI,ROI_coords,ROI_frames`,
+then one record per row sorted by path, each with compact JSON, written by
+`csv::Writer` with its default settings. These bytes are released
+behaviour and `tests/fixtures/embed-goldens/` holds them.
+
+**Reading.** The columns are found by name; `anon_dicom_path` and
+`ROI_coords` are required. A row whose path names no loaded file is counted
+and nothing else of it is read. A matched row must be well formed (its JSON,
+`num_ROI`, one frame list per box, frame indices below the file's frame
+count, no second row for a file), and one that is not fails the whole
+import, with the messages the import has always given, without the parser's
+own text after them.
+
+**Lenient coordinates** (owner decision of 2026-10-08, EMBED parity
+amendment of `docs/design/annotation-model.md`): a negative coordinate is
+read as 0, and one that is not a whole number is rounded to the nearest
+pixel, halves away from zero. Nothing else is changed: a box that reaches
+past the image edge, has no area or has its corners out of order is kept
+exactly as read. The report lists each such box by row and position
+(`negative_coordinate`, `non_integer_coordinate`, `out_of_range`,
+`zero_area`, `corners_out_of_order`, `frames_empty`).
+
+**Bounded.** The reader counts the bytes it takes for the record it is
+reading and refuses one past its bound without reading it whole. A matched
+row's boxes and frame lists are counted from the row's text before their
+values are kept, so a row of millions of empty boxes costs no more than its
+text.
+
+### The Native Formats
+
+A JSON document is one `dcmview.annotations` document, compact. The JSON
+Lines form holds the same document a record a line: a header (the document
+with its four lists empty), then `{"file": ...}`, `{"layer": ...}`,
+`{"annotation": ...}` and `{"label": ...}` lines. `NativeJson` reads both,
+and a document written over several lines, without being told which it is.
+
+The import is strict: every file reference, layer, annotation and label
+must pass the model's `validate`, against the label schema in force where
+the records will live (a schema the document carries is not taken, and the
+report says so). A failure names the row and the first rule broken.
+
+**A box the EMBED import kept as read (OWNER).** A record that was loaded
+leniently is held unchanged, and a native export writes records as they are
+held, so a document can hold a rectangle the strict check refuses. The
+native import takes it back as it is: a rectangle whose only violations are
+`out_of_bounds`, `degenerate` or `frames_empty` is kept as read and
+reported (`out_of_range`, `zero_area`, `corners_out_of_order`,
+`frames_empty`). Anything else that breaks a rule, and any other geometry
+that does, fails the import. A document the viewer wrote can therefore be
+loaded by it, and nothing is changed or dropped without a line in the
+report.
+
+Each file of a document is placed through the caller's `FileResolver`: by
+key, then SOP Instance UID, then path. A file that matches nothing has its
+records counted as unmatched; one that matches a loaded file of another
+size, with contradicting evidence, or without a key is refused and its
+records counted as refused. Every other record is handed on under the key
+the resolver gave.
+
+### In A Session
+
+`server/annotations.rs` and `annotations.rs` hand the adapters the
+session's files and store.
+
+- **`--annotations FILE`** is an EMBED CSV or a native document. The start
+  of the file decides (`AnnotationInput::from_path`): a file the native
+  adapter recognizes is native, and every other file is read, and refused,
+  as the EMBED CSV it always was. `--annotations-format embed|native`
+  forces one. An EMBED header is checked before the viewer serves; a native
+  file is read after discovery, and what is wrong with it fails the import
+  with the viewer serving.
+- **The CSV export** is `embed::write_csv` over each file's EMBED view.
+- **A document export** (`GET /api/annotations/export.json` and
+  `export.jsonl`, `export_native`) waits for the import, takes the
+  session's one export permit, settles and stores the staged rows of every
+  file that has some, reads the store once (`AnnotationBackend::export`),
+  adds one `FileRef` for each file key a record names, and writes it. Only
+  a settled key is in a document, so a file with staged rows that cannot be
+  given a key fails the export (`422 file_key_unavailable`): rows are never
+  left out silently. While a file is hashed the request waits. A `FileRef`
+  describes the loaded file with the lowest index that has the key; its
+  `path` is below the deepest directory that holds every loaded file, with
+  `/` between components, and its `digest` is set when the registry has
+  computed one. The copy and the writing run on a blocking thread.
+- **A native import** (`import_native`) reads the document on a blocking
+  thread and places its files with the session's resolver: by the key as
+  the session shows keys (a `sop:` key more than one loaded file carries
+  names none), then the UID in the same form, then the path, relative ones
+  below the directory an export writes paths below. The candidate's key is
+  settled, which may hash it; a file that cannot be given a key is refused.
+  So a record lands on the file its reference names, under that file's
+  settled key, or on no file. The records are then applied as **one
+  transaction** (`Checking::AsLoaded`, author `import:native`): layers the
+  document has and the session lacks are created, a record keeps its id,
+  layer, class, geometry, frames, attributes and extensions, and the store
+  stamps it and gives it `rev` 1. A record or layer id the session already
+  holds refuses the whole document, and nothing of it is in the session. A
+  failed import leaves the store failed, as a failed CSV does.
+- **`GET /api/annotations/import`** answers at once with where the import
+  stands (`none`, `loading`, `ready`, `failed`), its report or its message.
+
+**What a session holds for it.** One document export runs at a time: a
+second waits, holding nothing, until the first one's body has been sent or
+dropped. An export holds a copy of the records and their text once; a
+native import holds what it read once beside the records it leaves; reading
+a CSV holds the rows it hands on, within 400 bytes a ROI.
+`tests/raster_cost/annotations.rs` counts all three for 200,000 ROIs.
+
+**Masked sessions.** A document is written in the form the session shows:
+keys, the three instance UIDs and the patient id as the catalog shows them;
+paths, as everywhere, are not masked. An import takes a key and a UID in
+that form only, so a file's real UID names nothing; a document that an
+unmasked session wrote is placed by its paths. A patient, study, series or
+folder label target is text a client chose and is written and read as it is
+held.
+
+Redaction boxes are in no document and no export.
+
 ## Lifecycle And Discovery Ownership
 
 Local startup follows a strict order:
 
-1. Validate the optional annotation CSV header.
+1. Decide the format of the optional `--annotations` file and validate an
+   EMBED CSV's header.
 2. Construct state and configuration.
 3. Bind `BoundServer`; an occupied explicit port fails before discovery starts.
 4. Spawn the owned discovery task.
@@ -2232,9 +2419,23 @@ installation and VS Code Electron integration can also use network/cache state;
 - `tests/fixtures/embed-goldens/` freezes the EMBED-style ROI CSV bytes: each
   hand-written input is loaded by the real binary with `--annotations` over
   copies of committed fixtures, and the export must equal the expected file
-  byte for byte, with rows in any order (Unix only). The cases go through
-  the annotation store, so they are also what holds the EMBED compatibility
-  view to the bytes it had before.
+  byte for byte, rows in path order (Unix only). Each case also states what
+  the import reports, and two more tests reload a session from its own
+  JSON and JSON Lines export and compare the CSV it then writes. The cases
+  go through the annotation store and the adapters, so they are also what
+  holds the EMBED compatibility view to the bytes it had before.
+- The adapters' tests (`crates/dcmview-adapters/tests/`) go through the
+  crate's public API with a small file registry of their own: the bytes
+  each format writes, what a lenient EMBED read changes and keeps with the
+  report it leaves, every way a matched row or a record fails an import,
+  the bounds (with an input that never ends, counted, to show how far it is
+  read), and the committed goldens and the model's document fixture mutated
+  a few thousand ways with a fixed seed. A word planted in every free text
+  of an input must be in no report and no error.
+  `tests/integration/annotation_documents.rs` covers the same formats as a
+  session serves them: a session written and read back, an import applied
+  whole or not at all, which file a record lands on, a masked session, and
+  an export for a file without a key.
 - `tests/integration/annotation_ops.rs` drives the store through
   `POST /api/annotations/ops` and the EMBED endpoints together: an envelope
   applied whole or not at all, revisions and stale operations, a repeated
@@ -2249,7 +2450,8 @@ installation and VS Code Electron integration can also use network/cache state;
   forgotten, what a refusal leaves behind, and what a delete may hide. A unit test in
   `server/annotations.rs` puts a second save between a save's read and its
   write. `tests/raster_cost/annotations.rs` counts, at the allocator, what
-  a batch on a large record and an import hold.
+  a batch on a large record holds, and what reading a CSV, both exports and
+  a native import hold for 200,000 ROIs.
 - Python unit tests isolate subprocess policy; `python-integration` adds the real
   binary. VS Code compile and Electron integration remain separate layers.
 - `scripts/compatibility/run.py --corpus-root` checks the real binary against
@@ -2395,9 +2597,20 @@ Not current correctness blockers:
   refused transaction is undone from what it changed, never by copying the
   store.
 - The EMBED endpoints and the CSV export are released behaviour. A change
-  to `annotations/embed.rs`, `canonicalize_annotations` or the CSV reader
-  that moves a byte needs the owner's sign-off and the golden changed in the
-  same commit (`tests/fixtures/embed-goldens/README.md`).
+  to `annotations/embed.rs`, `canonicalize_annotations` or the EMBED reader
+  and writer of `dcmview-adapters` that moves a byte needs the owner's
+  sign-off and the golden changed in the same commit
+  (`tests/fixtures/embed-goldens/README.md`).
+- Keep `crates/dcmview-adapters` free of the viewer: no axum, tokio, DICOM
+  or pixel-pipeline dependency, and no file or socket opened by an adapter.
+  What a format needs from a file registry comes through its context.
+- An importer bounds what it reads by a constant in
+  `dcmview_adapters::limits` and allocates for what it has read, never from
+  a count the input states. A report and an import or export error hold no
+  text of the input.
+- Only a settled file key is in a document. A document export settles and
+  stores staged rows first and fails for a file that cannot be given a key;
+  a native import settles the key of every file it places.
 - Add endpoint fetches through `frontend/src/api.ts`.
 - Use generated synthetic fixtures for integration coverage; never commit PHI.
 - Run the narrow profile while iterating, then the profile required by the

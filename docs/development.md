@@ -117,8 +117,8 @@ DCMVIEW_SKIP_FRONTEND_BUILD=1 cargo test --workspace --locked
 The repository is a Cargo workspace whose root is also the `dcmview` package.
 Without `--workspace`, `cargo test` and `cargo clippy` cover only that
 package and skip the member crates under `crates/`. `cargo test -p
-dcmview-protocol` or `cargo test -p dcmview-annotation` runs one member and
-needs no frontend build. After changing a type of the annotation model, run
+dcmview-protocol`, `cargo test -p dcmview-annotation` or `cargo test -p
+dcmview-adapters` runs one member and needs no frontend build. After changing a type of the annotation model, run
 `cargo run -p dcmview-annotation --example generate_annotation_model` to
 rewrite `frontend/src/generated/annotation-types.ts` and the JSON Schema
 under `crates/dcmview-annotation/schema/`; the crate's tests fail while
@@ -186,6 +186,9 @@ The [architecture and test model](architecture.md) is normative. In brief:
 - `crates/dcmview-annotation` owns the neutral annotation model, its
   validation and its operations. The root package takes file keys from it
   (`src/keys/`) and nothing else.
+- `crates/dcmview-adapters` owns the annotation file formats: EMBED ROI CSV
+  and the native JSON and JSON Lines documents, their bounds, and the report
+  each import and export leaves.
 - `server/` separates runtime, lifecycle, catalog, API, tags, and embedded web
   assets. `pixels/` separates service, codecs, caches, windowing, and rendering.
 - `App.svelte` composes `FileNavigator`, `OpenImageTabs`, the viewer controls,
