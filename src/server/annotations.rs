@@ -127,8 +127,11 @@ pub enum AnnotationError {
     /// The session holds more files with annotations, or more annotations
     /// and labels, than a document may (`dcmview_adapters::Limits`): a
     /// document that large could not be loaded again.
-    #[error("the session holds more than a document may: {limit}")]
-    ExportTooMany { limit: u64 },
+    #[error("the session holds more than a document may: more than {limit} of {bound}")]
+    ExportTooMany {
+        bound: dcmview_adapters::Bound,
+        limit: u64,
+    },
     /// The document was built, and the documents that are still being
     /// downloaded hold so much that this one would take them past the
     /// session's download budget (`DOWNLOAD_BUDGET_BYTES`). Asked again
@@ -580,9 +583,12 @@ pub struct NativeExport {
 ///    `u64::MAX`) and `Limits::DEFAULT`, into memory.
 ///    `ExportError::TooLarge` is [`AnnotationError::ExportTooLarge`] with
 ///    its limit, `ExportError::TooMany` is
-///    [`AnnotationError::ExportTooMany`] with its limit (a session holds
-///    more than an import reads: both answer
-///    `422 annotation_export_too_large`); any other failure is
+///    [`AnnotationError::ExportTooMany`] with its bound and limit (a
+///    session holds more files or records than an import reads, or its
+///    records are charged more memory than an import's budget,
+///    `Limits::held_bytes`, by the count an import makes: both answer
+///    `422 annotation_export_too_large`, and whatever is written here is
+///    read by [`import_native`] under the same bounds); any other failure is
 ///    [`AnnotationError::Store`].
 /// 10. **The download budget.** The text is kept for sending only when
 ///     `AnnotationStore::hold_download` admits its length: the texts being
@@ -783,7 +789,9 @@ pub async fn export_native_within(
         }
         .map_err(|error| match error {
             ExportError::TooLarge { limit } => AnnotationError::ExportTooLarge { limit },
-            ExportError::TooMany { limit, .. } => AnnotationError::ExportTooMany { limit },
+            ExportError::TooMany { bound, limit } => {
+                AnnotationError::ExportTooMany { bound, limit }
+            }
             error => store_error(error),
         })?;
         report.counts.labels_in += labels_left_out;
@@ -1022,7 +1030,14 @@ fn document_file_ref(
 /// `Checking::AsLoaded` (the adapter has checked every record; a batch of
 /// an import is not bound by the envelope's 10,000 operations), the
 /// author [`NATIVE_IMPORT_AUTHOR`], no EMBED slot, `import: false`, no
-/// view check, and the bindings of "Rows of byte-identical files". An empty fragment is no transaction.
+/// view check, and the bindings of "Rows of byte-identical files". An
+/// empty fragment is no transaction.
+///
+/// The batch is given up to the store (`MemoryBackend::transact_owned`),
+/// which makes room for all of it and then takes it an operation at a
+/// time, so the records are never held twice over: what the import holds
+/// from the file to the store is what the adapter charged
+/// (`dcmview_adapters::held`), within `Limits::held_bytes`.
 ///
 /// The store stamps the records and gives each `rev` 1. A label keeps its
 /// id, target, field, layer and value; the report counts the labels that
@@ -1061,7 +1076,26 @@ pub async fn import_native(
     source: &NativeSource,
     keep_going: Arc<dyn Fn() -> bool + Send + Sync>,
 ) -> Result<Report, AnnotationError> {
-    let result = read_native_into_store(registry, store, source, keep_going).await;
+    import_native_within(
+        registry,
+        store,
+        source,
+        keep_going,
+        dcmview_adapters::Limits::DEFAULT,
+    )
+    .await
+}
+
+/// [`import_native`] under the bounds given, which are `Limits::DEFAULT`
+/// in a session.
+pub async fn import_native_within(
+    registry: &FileRegistry,
+    store: &AnnotationStore,
+    source: &NativeSource,
+    keep_going: Arc<dyn Fn() -> bool + Send + Sync>,
+    limits: dcmview_adapters::Limits,
+) -> Result<Report, AnnotationError> {
+    let result = read_native_into_store(registry, store, source, keep_going, limits).await;
     match result {
         Ok(report) => {
             let finish = store
@@ -1094,6 +1128,7 @@ async fn read_native_into_store(
     store: &AnnotationStore,
     source: &NativeSource,
     keep_going: Arc<dyn Fn() -> bool + Send + Sync>,
+    limits: dcmview_adapters::Limits,
 ) -> Result<Report, AnnotationError> {
     let handle = tokio::runtime::Handle::current();
     let registry = registry.clone();
@@ -1156,7 +1191,7 @@ async fn read_native_into_store(
             author: &import_author,
             now: &stamp,
             keep_going: &*keep_going,
-            limits: dcmview_adapters::Limits::DEFAULT,
+            limits,
         };
         let mut imported = NativeJson
             .import(&mut file, &context)
@@ -1266,8 +1301,8 @@ async fn read_native_into_store(
         };
         let transacted = store
             .backend()
-            .transact(
-                &envelope,
+            .transact_owned(
+                envelope,
                 &BTreeMap::<FileKey, ImageSize>::new(),
                 Write {
                     checking: Checking::AsLoaded,
@@ -1972,11 +2007,6 @@ mod tests {
         }
     }
 
-    /// A save is "replace this file's ROIs": of two saves of one file the
-    /// one applied last decides the whole view. Here a second save gets in
-    /// at the one point where it could do harm, after the first has read
-    /// the view (empty) and before it writes. The first save must notice,
-    /// read again and replace what the second left.
     /// A UID that thousands of loaded files carry is no evidence of which
     /// file a reference means: references that name files by it are not
     /// compared with every one of them. Counted, for 100 references and
@@ -2032,6 +2062,11 @@ mod tests {
         assert_eq!(codes, [("file_ambiguous", 100)]);
     }
 
+    /// A save is "replace this file's ROIs": of two saves of one file the
+    /// one applied last decides the whole view. Here a second save gets in
+    /// at the one point where it could do harm, after the first has read
+    /// the view (empty) and before it writes. The first save must notice,
+    /// read again and replace what the second left.
     #[tokio::test]
     async fn of_two_saves_of_one_file_the_one_applied_last_decides_the_whole_view() {
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

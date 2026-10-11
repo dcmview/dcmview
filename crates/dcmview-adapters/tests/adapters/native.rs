@@ -976,41 +976,61 @@ fn a_document_is_held_to_its_value_budgets() {
             "{name}, in the header"
         );
     }
-    // Many records of few values each are not one unit. What they hold
-    // is counted on them once they are built and held to the text: a
-    // record of some 500 bytes that keeps an array of 40 numbers in a
-    // member the model does not read holds more than eight times that.
+    // What a document's records hold is counted on them once they are
+    // built, and held to a number of bytes that does not depend on the
+    // text. The writers count the same way: a document is written exactly
+    // when it would be read, to the byte of the budget.
     let kept: Vec<Value> = (0..200)
         .map(|n| {
             let mut annotation = record(n, "default", json!("all"), rect(1.0, 1.0, 2.0, 2.0));
-            annotation["extensions"] = json!({ "x": vec![0; 40] });
+            annotation["extensions"] = json!({ "x": vec![0; 40], "y": { "z": { "w": "v" } } });
             annotation
         })
         .collect();
-    let text = small(json!([]), kept);
-    let lines = {
-        let document = Document::from_json_str(&text).expect("document");
-        export(&NativeJsonLines, &document).0
-    };
-    for text in [&text, &lines] {
-        assert_eq!(
-            read_in(&plain, text, &|limits| limits.held_base_bytes = 0),
-            Err(too_large(Bound::HeldBytes, 8))
-        );
-        assert_eq!(
-            read_in(&plain, text, &|limits| {
-                limits.held_base_bytes = 0;
-                limits.held_text_multiple = 40;
-            }),
-            Ok(200)
-        );
-        assert_eq!(read_in(&plain, text, &|_| ()), Ok(200), "a short text");
+    let extensions = Document::from_json_str(&small(json!([]), kept)).expect("document");
+    for (what, session, document) in [
+        ("the fixture", &session, &document),
+        ("records with extensions", &plain, &extensions),
+    ] {
+        let charge = dcmview_adapters::held::document_charge(document);
+        let write = |adapter: &dyn ExportAdapter, held_bytes: u64| {
+            let mut text = Vec::new();
+            adapter
+                .export(
+                    document,
+                    &ExportContext {
+                        paths: &BTreeMap::<FileKey, Vec<String>>::new(),
+                        max_bytes: u64::MAX,
+                        limits: Limits {
+                            held_bytes,
+                            ..Limits::DEFAULT
+                        },
+                    },
+                    &mut text,
+                )
+                .map(|_| String::from_utf8(text).expect("text"))
+        };
+        for adapter in [&NativeJson as &dyn ExportAdapter, &NativeJsonLines] {
+            assert_eq!(
+                write(adapter, charge - 1).err(),
+                Some(ExportError::TooMany {
+                    bound: Bound::HeldBytes,
+                    limit: charge - 1
+                }),
+                "{what}"
+            );
+            let text = write(adapter, charge).expect("within the budget");
+            assert!(
+                read_in(session, &text, &|limits| limits.held_bytes = charge).is_ok(),
+                "{what}"
+            );
+            assert_eq!(
+                read_in(session, &text, &|limits| limits.held_bytes = charge - 1),
+                Err(too_large(Bound::HeldBytes, charge - 1)),
+                "{what}"
+            );
+        }
     }
-    // What a session writes is held within the multiple alone.
-    assert_eq!(
-        read(&json_text, &|limits| limits.held_base_bytes = 0),
-        Ok(8)
-    );
     // Objects and arrays have a bound of their own.
     let mut annotation = record(1, "default", json!("all"), rect(1.0, 1.0, 2.0, 2.0));
     annotation["extensions"] = json!({ "x": vec![json!({}); 300] });

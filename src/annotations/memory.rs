@@ -95,6 +95,12 @@ pub(crate) struct Write<'a> {
     pub bindings: Option<&'a HashMap<Uuid, Binding>>,
 }
 
+/// The operation of an envelope, lent or given up.
+enum Given<'a> {
+    Borrowed(&'a Op),
+    Owned(Op),
+}
+
 /// Where a record stands in the EMBED views: the file index whose view
 /// alone shows it, and whether it stands with the rows of the
 /// `--annotations` import, first in that view
@@ -403,8 +409,49 @@ impl MemoryBackend {
         files: &dyn FileSizes,
         write: Write<'_>,
     ) -> Result<Transacted, BackendError> {
+        self.run(
+            envelope.op_id,
+            Some(envelope),
+            Given::Borrowed(&envelope.op),
+            files,
+            write,
+        )
+    }
+
+    /// [`MemoryBackend::transact`] of an envelope that is given up: each
+    /// operation of a batch is let go of as soon as it is applied, so the
+    /// records it carries are never held beside the store's copies of all
+    /// of them, only beside the copy of the one being applied. The store's
+    /// lists and indexes are given room for the whole batch first, so none
+    /// of them grows while it is applied.
+    ///
+    /// For `Checking::AsLoaded` only: the envelope is not validated.
+    pub(crate) fn transact_owned(
+        &self,
+        envelope: OpEnvelope,
+        files: &dyn FileSizes,
+        write: Write<'_>,
+    ) -> Result<Transacted, BackendError> {
+        debug_assert!(write.checking == Checking::AsLoaded);
+        self.run(
+            envelope.op_id,
+            None,
+            Given::Owned(envelope.op),
+            files,
+            write,
+        )
+    }
+
+    fn run(
+        &self,
+        op_id: Uuid,
+        envelope: Option<&OpEnvelope>,
+        op: Given<'_>,
+        files: &dyn FileSizes,
+        write: Write<'_>,
+    ) -> Result<Transacted, BackendError> {
         let mut state = self.state.lock().map_err(lock_error)?;
-        if let Some(result) = state.remembered.get(&envelope.op_id) {
+        if let Some(result) = state.remembered.get(&op_id) {
             return Ok(Transacted {
                 result: result.clone(),
                 revision: state.revision,
@@ -433,7 +480,7 @@ impl MemoryBackend {
             }
         };
         let context = Context { files, schema };
-        if write.checking == Checking::Strict {
+        if let (Checking::Strict, Some(envelope)) = (write.checking, envelope) {
             if let Err(invalid) = envelope.validate(&context) {
                 return Ok(Transacted {
                     result: ApplyResult::Invalid {
@@ -460,12 +507,20 @@ impl MemoryBackend {
             revs: Vec::new(),
             rev_places: HashMap::new(),
         };
-        let outcome = match &envelope.op {
-            Op::Batch { ops } => ops
+        let outcome = match op {
+            Given::Borrowed(Op::Batch { ops }) => ops
                 .iter()
                 .enumerate()
                 .try_for_each(|(i, op)| transaction.apply(op, &format!("/op/ops/{i}"))),
-            op => transaction.apply(op, "/op"),
+            Given::Borrowed(op) => transaction.apply(op, "/op"),
+            Given::Owned(Op::Batch { ops }) => {
+                transaction.make_room(&ops);
+                // Each operation is dropped when it has been applied.
+                ops.into_iter()
+                    .enumerate()
+                    .try_for_each(|(i, op)| transaction.apply(&op, &format!("/op/ops/{i}")))
+            }
+            Given::Owned(op) => transaction.apply(&op, "/op"),
         };
         let outcome = outcome.and_then(|()| transaction.validate_annotations());
         if let Err(refusal) = outcome {
@@ -483,8 +538,8 @@ impl MemoryBackend {
         };
         state.revision += 1;
         state.account_deleted(touched, &deletes);
-        state.remembered.insert(envelope.op_id, result.clone());
-        state.remembered_order.push_back(envelope.op_id);
+        state.remembered.insert(op_id, result.clone());
+        state.remembered_order.push_back(op_id);
         state.remembered_revs += revision_count;
         while state.remembered_order.len() > 1
             && (state.remembered_order.len() > REMEMBERED_OPS
@@ -1068,6 +1123,28 @@ impl Transaction<'_> {
             }
         }
         Ok(())
+    }
+
+    /// Room for everything the creating operations of `ops` add, so that
+    /// no list or index grows, and copies itself, while they are applied.
+    fn make_room(&mut self, ops: &[Op]) {
+        let annotations = ops
+            .iter()
+            .filter(|op| matches!(op, Op::CreateAnnotation { .. }))
+            .count();
+        let labels = ops
+            .iter()
+            .filter(|op| matches!(op, Op::SetLabel { base_rev: None, .. }))
+            .count();
+        self.state.annotations.reserve_exact(annotations);
+        self.state.annotation_ids.reserve(annotations);
+        self.state.labels.reserve_exact(labels);
+        self.state.label_ids.reserve(labels);
+        self.saved_annotations.reserve(annotations);
+        self.saved_labels.reserve(labels);
+        self.undo.reserve_exact(ops.len());
+        self.revs.reserve_exact(ops.len());
+        self.rev_places.reserve(ops.len());
     }
 
     fn apply(&mut self, op: &Op, path: &str) -> Result<(), ApplyResult> {

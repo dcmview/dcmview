@@ -84,18 +84,24 @@ pub const UNIT_TRANSIENT_BYTES: u64 = 256 * 1024 * 1024;
 /// Deepest nesting of arrays and objects in a native document: 64.
 pub const MAX_DEPTH: u32 = 64;
 
-/// How many bytes the things a native import keeps may hold for every
-/// byte of text read: 8. What they hold is counted on them after each is
-/// built ([`crate::held`]), not predicted from the text. A document a
-/// session writes is counted at 2 to 4 bytes for a byte of text: a
-/// rectangle at some 2, and one that says which copy it is a row of,
-/// whose two small maps are a node each, at some 4.
-pub const HELD_TEXT_MULTIPLE: u64 = 8;
-
-/// What the things a native import keeps may hold beside
-/// [`HELD_TEXT_MULTIPLE`] times the text: 16 MiB, so that a short
-/// document is not held to its few bytes.
-pub const HELD_BASE_BYTES: u64 = 16 * 1024 * 1024;
+/// What one native import may be charged for what it keeps, in bytes:
+/// 4,294,967,296 (4 GiB). The charge is counted on the records as they are
+/// built ([`crate::held`]), not predicted from the text, and does not
+/// depend on the text's length: a document of small maps and short
+/// strings costs many times its text, and a session that holds one must
+/// still be able to write it and read it back. An export is held to the
+/// same number by the same count, so what is written is read.
+///
+/// The number comes from the bounds beside it. The largest session of the
+/// common kind those allow, [`MAX_RECORDS`] rectangles on [`MAX_FILES`]
+/// files, is charged 3.1 GiB (1,889 bytes a rectangle and 1,283 a file
+/// reference as the viewer writes them), so every such session exports
+/// and reloads with room to spare, and nothing much larger than the
+/// largest of them is held for any text. With the text itself (a JSON
+/// document of [`MAX_DOCUMENT_BYTES`] in a buffer of up to three times
+/// that) and [`UNIT_TRANSIENT_BYTES`], an import holds at most 5 GiB,
+/// from the file to the store.
+pub const MAX_HELD_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
 /// How many row references one entry of a `Report` keeps: the first 16. The
 /// entry's `count` still counts every occurrence.
@@ -133,10 +139,8 @@ pub struct Limits {
     pub depth: u32,
     /// [`MAX_UNIT_CONTAINERS`].
     pub unit_containers: u64,
-    /// [`HELD_TEXT_MULTIPLE`].
-    pub held_text_multiple: u64,
-    /// [`HELD_BASE_BYTES`].
-    pub held_base_bytes: u64,
+    /// [`MAX_HELD_BYTES`].
+    pub held_bytes: u64,
 }
 
 impl Limits {
@@ -154,8 +158,7 @@ impl Limits {
         unit_values: MAX_UNIT_VALUES,
         depth: MAX_DEPTH,
         unit_containers: MAX_UNIT_CONTAINERS,
-        held_text_multiple: HELD_TEXT_MULTIPLE,
-        held_base_bytes: HELD_BASE_BYTES,
+        held_bytes: MAX_HELD_BYTES,
     };
 }
 

@@ -12,7 +12,8 @@ use dcmview::annotations::{
 };
 use dcmview::masking::Masker;
 use dcmview::server::annotations::{
-    export_native_within, import_embed_rows, import_native, AnnotationError, NativeForm,
+    export_native_within, import_embed_rows, import_native, import_native_within, AnnotationError,
+    NativeForm,
 };
 use dcmview::server::{self, AppState, FileRegistry};
 use dcmview::types::FileEntry;
@@ -1430,6 +1431,35 @@ async fn references_and_rows_are_held_to_what_they_say() {
         "{report}"
     );
 
+    // Nothing depends on the order files were found in. A path that names
+    // two copies names the one whose own path sorts first, and a document
+    // describes that copy, whichever was found first.
+    for name in ["q/a.dcm", "p/a.dcm"] {
+        std::fs::create_dir_all(dir.path().join(name).parent().expect("folder")).expect("folder");
+        written(dir.path(), name, "1.2.3.8", &[3; 64]);
+    }
+    let found = Session::loading(vec![
+        entry(dir.path(), "q/a.dcm", "1.2.3.8"),
+        entry(dir.path(), "p/a.dcm", "1.2.3.8"),
+    ]);
+    let mut bound = annotation(1, "sop:1.2.3.8", "default", rect(1, 1, 2, 2));
+    bound["extensions"] = json!({ "embed": { "row_of": "a.dcm" } });
+    let mut named = reference("sop:1.2.3.8", Some("1.2.3.8"), "a.dcm");
+    named["size_bytes"] = json!(64);
+    let report = found
+        .import(dir.path(), &document_of(vec![named], vec![], vec![bound]))
+        .await
+        .expect("import");
+    assert_eq!(report["counts"]["annotations_out"], 1, "{report}");
+    assert_eq!(found.rois(0).await.num_roi, 0, "the copy found first");
+    assert_eq!(found.rois(1).await.num_roi, 1);
+    let written_again = found.document().await;
+    assert_eq!(written_again["files"][0]["path"], "p/a.dcm");
+    assert_eq!(
+        written_again["annotations"][0]["extensions"]["embed"]["row_of"],
+        "p/a.dcm"
+    );
+
     // A path that names more files than are compared finds none of them,
     // and the report says that this is why.
     let alike = Session::loading(
@@ -1664,11 +1694,17 @@ async fn exports_are_refused_past_their_bounds() {
             )
             .await
         ),
-        AnnotationError::ExportTooMany { limit: 2 }
+        AnnotationError::ExportTooMany {
+            bound: dcmview_adapters::Bound::Records,
+            limit: 2
+        }
     );
     assert_eq!(
         refused(export(&session, dcmview_adapters::Limits { files: 1, ..limits }).await),
-        AnnotationError::ExportTooMany { limit: 1 }
+        AnnotationError::ExportTooMany {
+            bound: dcmview_adapters::Bound::Files,
+            limit: 1
+        }
     );
     let size = export(&session, limits).await.expect("export").bytes.len() as u64;
 
@@ -1857,6 +1893,177 @@ async fn a_compressed_download_is_the_same_document() {
                 .unwrap_or_else(|error| panic!("{path}, {files} files: {error}"));
             // Ids and stamps are the store's, so two exports are one text.
             assert_eq!(unpacked, plain, "{path}, {files} files");
+        }
+    }
+}
+
+/// Whatever a session holds and can write, the same viewer reads back:
+/// records that cost many times their text to hold (masks of one tile a
+/// frame, large and deeply nested `extensions`), and the largest mask and
+/// polygon the model allows. And a session is refused its export exactly
+/// when a document of it would be refused its import: by the same count,
+/// to the byte.
+#[tokio::test]
+async fn what_a_session_can_write_it_can_read() {
+    let dir = tempdir().expect("temp dir");
+    let file = || {
+        let mut file = entry(dir.path(), "volume.dcm", "1.2.3.1");
+        file.rows = 4096;
+        file.columns = 4096;
+        file.frame_count = 65_536;
+        vec![file]
+    };
+    let size = ImageSize {
+        columns: 4096,
+        rows: 4096,
+        frames: 65_536,
+    };
+    let key = FileKey::parse("sop:1.2.3.1").expect("key");
+    let mut records = Vec::new();
+    let mut create = |frames: Value, geometry: Value, extensions: Value| {
+        let n = records.len() as u32 + 1;
+        let mut record = annotation(n, "sop:1.2.3.1", "default", geometry);
+        record["frames"] = frames;
+        record["extensions"] = extensions;
+        records.push(record);
+    };
+    // Masks of thirty frames with one tile each.
+    for n in 0..400_u32 {
+        let frames: Vec<u32> = (n..n + 30).collect();
+        let tiles: serde_json::Map<String, Value> = frames
+            .iter()
+            .map(|frame| (frame.to_string(), json!({ "0,0": "AAAA" })))
+            .collect();
+        create(
+            json!({ "set": frames }),
+            json!({ "type": "mask", "encoding": "tiles-v1", "tile": 64, "depth": 1, "frames": tiles }),
+            json!({}),
+        );
+    }
+    // Extensions that are large, and that are deep.
+    let deep = (0..40).fold(json!(0), |inner, _| json!({ "a": inner }));
+    for _ in 0..50 {
+        create(
+            json!("all"),
+            rect(1, 1, 9, 9),
+            json!({ "x": vec![0; 2_000] }),
+        );
+        create(
+            json!("all"),
+            rect(1, 1, 9, 9),
+            json!({ "x": vec![deep.clone(); 20] }),
+        );
+    }
+    // The largest mask and the largest polygon.
+    let frames: Vec<u32> = (0..65_536).collect();
+    let tiles: serde_json::Map<String, Value> = frames
+        .iter()
+        .map(|frame| {
+            (
+                frame.to_string(),
+                json!({ "0,0": "AAAA", "1,0": "AAAA", "0,1": "AAAA", "1,1": "AAAA" }),
+            )
+        })
+        .collect();
+    create(
+        json!({ "set": frames }),
+        json!({ "type": "mask", "encoding": "tiles-v1", "tile": 64, "depth": 1, "frames": tiles }),
+        json!({}),
+    );
+    let points: Vec<Value> = (0..100_000)
+        .map(|n| json!({ "x": n % 4096, "y": n / 4096 }))
+        .collect();
+    create(
+        json!("all"),
+        json!({ "type": "polygon", "points": points }),
+        json!({}),
+    );
+
+    let first = Session::plain(file());
+    first.registry.ensure_key(0).await.expect("key");
+    let count = records.len() as u64;
+    for (n, record) in records.into_iter().enumerate() {
+        let envelope: OpEnvelope = serde_json::from_value(json!({
+            "op_id": id(100_000 + n as u32), "actor": "user:test",
+            "ts": "2026-10-10T08:00:00.000Z",
+            "op": { "type": "create_annotation", "annotation": record },
+        }))
+        .expect("envelope");
+        let results = first
+            .store
+            .backend()
+            .apply(vec![envelope], &BTreeMap::from([(key.clone(), size)]))
+            .expect("store");
+        assert!(
+            matches!(results[0], ApplyResult::Ok { .. }),
+            "record {n}: {:?}",
+            results[0]
+        );
+    }
+
+    let limits = dcmview_adapters::Limits::DEFAULT;
+    let mut charge = 0;
+    for form in [NativeForm::Json, NativeForm::JsonLines] {
+        let export = export_native_within(&first.registry, &first.store, form, limits)
+            .await
+            .unwrap_or_else(|error| panic!("{form:?}: {error}"));
+        let text = String::from_utf8(export.bytes).expect("text");
+        if form == NativeForm::Json {
+            let document = dcmview_annotation::Document::from_json_str(&text).expect("document");
+            charge = dcmview_adapters::held::document_charge(&document);
+            // Many times the text, and far inside the budget.
+            assert!(
+                charge > 3 * text.len() as u64,
+                "{charge} for {}",
+                text.len()
+            );
+            assert!(charge < limits.held_bytes / 8);
+        }
+        let second = Session::loading(file());
+        let report = second.import(dir.path(), &text).await.expect("import");
+        assert_eq!(report["counts"]["annotations_out"], count, "{form:?}");
+        assert_eq!(report["counts"]["refused"], 0, "{form:?}");
+
+        // At the budget's edge the two agree: a session charged one byte
+        // more than the budget is not written, and its document, written
+        // under a larger one, is not read.
+        let within = |held_bytes| dcmview_adapters::Limits {
+            held_bytes,
+            ..limits
+        };
+        let refused = export_native_within(&first.registry, &first.store, form, within(charge - 1))
+            .await
+            .err()
+            .expect("past the budget");
+        assert_eq!(
+            refused,
+            AnnotationError::ExportTooMany {
+                bound: dcmview_adapters::Bound::HeldBytes,
+                limit: charge - 1
+            }
+        );
+        assert!(refused.to_string().contains("bytes of memory"), "{refused}");
+        export_native_within(&first.registry, &first.store, form, within(charge))
+            .await
+            .expect("at the budget");
+        let path = dir.path().join("edge");
+        std::fs::write(&path, &text).expect("write");
+        let source = NativeSource::from_path(&path).expect("source");
+        for (held_bytes, read) in [(charge, true), (charge - 1, false)] {
+            let third = Session::loading(file());
+            let result = import_native_within(
+                &third.registry,
+                &third.store,
+                &source,
+                Arc::new(|| true),
+                within(held_bytes),
+            )
+            .await;
+            assert_eq!(
+                result.is_ok(),
+                read,
+                "{form:?} under {held_bytes}: {result:?}"
+            );
         }
     }
 }

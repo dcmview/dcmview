@@ -34,9 +34,8 @@ pub enum Bound {
     UnitValues,
     /// [`crate::limits::MAX_UNIT_CONTAINERS`].
     UnitContainers,
-    /// What the import keeps holds more than the text read allows
-    /// ([`crate::limits::HELD_TEXT_MULTIPLE`]). The limit reported is the
-    /// multiple.
+    /// [`crate::limits::MAX_HELD_BYTES`]: what the document's records are
+    /// charged for the memory they hold.
     HeldBytes,
 }
 
@@ -55,7 +54,7 @@ impl std::fmt::Display for Bound {
             Self::UnitContainers => {
                 "the objects and arrays of one record or of a document's header"
             }
-            Self::HeldBytes => "the memory its records hold for each byte of it",
+            Self::HeldBytes => "the bytes of memory its records hold",
         })
     }
 }

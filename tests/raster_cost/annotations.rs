@@ -406,9 +406,11 @@ mod documents {
     use super::{entry, heap};
     use dcmview::annotations::{AnnotationSource, AnnotationStore, NativeSource};
     use dcmview::server::annotations::{
-        export_embed_csv, export_native, import_embed_rows, import_native, NativeForm,
+        export_embed_csv, export_native, import_embed_rows, import_native, import_native_within,
+        NativeForm,
     };
     use dcmview::server::FileRegistry;
+    use dcmview_adapters::held::Charged;
     use std::io::Write;
     use std::sync::Arc;
 
@@ -423,11 +425,23 @@ mod documents {
     }
 
     fn registry(dir: &std::path::Path, files: usize) -> FileRegistry {
+        registry_of(dir, 0..files)
+    }
+
+    fn registry_of(dir: &std::path::Path, files: std::ops::Range<usize>) -> FileRegistry {
         FileRegistry::from_files(
-            (0..files)
+            files
                 .map(|n| entry(dir.join(format!("{n}.dcm")), format!("1.2.3.{n}")))
                 .collect(),
         )
+    }
+
+    fn two_rois() -> dcmview::annotations::EmbedRoiAnnotations {
+        dcmview::annotations::EmbedRoiAnnotations {
+            num_roi: 2,
+            roi_coords: vec![[1, 2, 3, 4], [5, 6, 7, 8]],
+            roi_frames: vec![vec![0], vec![0]],
+        }
     }
 
     /// An EMBED CSV with a row of two ROIs for every file, and as many rows
@@ -729,7 +743,12 @@ mod documents {
                 Box::new(|n| {
                     (
                         "annotation",
-                        annotation(n, rect, "{}", &format!(r#","x":"{}""#, r"A".repeat(2000))),
+                        annotation(
+                            n,
+                            rect,
+                            "{}",
+                            &format!(r#","x":"{}""#, "\\u0041".repeat(2000)),
+                        ),
                     )
                 }),
             ),
@@ -767,6 +786,37 @@ mod documents {
                     )
                 }),
             ),
+            (
+                "annotations on sets of 5,000 frames",
+                Box::new(|n| {
+                    (
+                        "annotation",
+                        annotation(n, rect, "{}", "").replace(
+                            r#""frames":"all""#,
+                            &format!(
+                                r#""frames":{{"set":[{}]}}"#,
+                                (0..5000)
+                                    .map(|k| k.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(",")
+                            ),
+                        ),
+                    )
+                }),
+            ),
+            (
+                "layers with long names and unknown members",
+                Box::new(|n| {
+                    (
+                        "layer",
+                        format!(
+                            r#"{{"id":"l{n}","name":"{}","kind":"user","x":{},"source":{{"author":"user:a","y":[1,2,3]}}}}"#,
+                            "n".repeat(250),
+                            repeated(r#"{"a":0}"#, 80)
+                        ),
+                    )
+                }),
+            ),
             ("minimal labels", Box::new(|n| ("label", label(n, "true")))),
             (
                 "labels whose value is an array of empty strings",
@@ -796,15 +846,21 @@ mod documents {
             cases.push((
                 format!("{what}, JSON"),
                 format!(
-                    r#"{{{head},"files":[{}],"layers":[],"annotations":[{}],"labels":[{}]}}"#,
+                    r#"{{{head},"extensions":{{"x":{}}},"files":[{}],"layers":[{}],"annotations":[{}],"labels":[{}]}}"#,
+                    repeated(r#"{"a":"b"}"#, 2000),
                     files.join(","),
+                    of("layer").join(","),
                     of("annotation").join(","),
                     of("label").join(",")
                 ),
             ));
-            let mut lines = format!("{{{head}}}\n");
+            let mut lines = format!(
+                "{{{head},\"extensions\":{{\"x\":{}}}}}\n",
+                repeated(r#"{"a":"b"}"#, 2000)
+            );
             for (kind, records) in [
                 ("file", files),
+                ("layer", of("layer")),
                 ("annotation", of("annotation")),
                 ("label", of("label")),
             ] {
@@ -813,8 +869,9 @@ mod documents {
                 }
             }
             lines.push_str(&format!(
-                "{{\"end\":{{\"files\":{},\"layers\":0,\"annotations\":{},\"labels\":{}}}}}\n",
+                "{{\"end\":{{\"files\":{},\"layers\":{},\"annotations\":{},\"labels\":{}}}}}\n",
                 of("file").len().max(1),
+                of("layer").len(),
                 of("annotation").len(),
                 of("label").len()
             ));
@@ -883,89 +940,136 @@ mod documents {
         cases
     }
 
-    /// For any text, reading a document holds at most `MULTIPLE` times the
-    /// text, `BASE` and `TRANSIENT` (`dcmview_adapters::native`, "Cost"):
-    /// what the import keeps is counted on it as it is built and held to
-    /// a budget of the text read, and what building one record or the
-    /// header holds is bounded by how many values it may have. Texts of
-    /// records made to cost the most for their length are held to the
-    /// multiple, at a size where the constants are small beside it; and
-    /// the units that cost the most to build, in a short text, to the
-    /// transient.
+    /// A session over one file that the hostile records name.
+    fn one_file(dir: &std::path::Path) -> FileRegistry {
+        let mut file = entry(dir.join("a.dcm"), "1.2.3".to_string());
+        file.rows = 4096;
+        file.columns = 4096;
+        file.frame_count = 4;
+        FileRegistry::from_files(vec![file])
+    }
+
+    /// What an import of `text` holds at most, from the file to the store,
+    /// under `held_bytes`, and how it ended.
+    fn import_peak(
+        runtime: &heap::CountedRuntime,
+        dir: &std::path::Path,
+        text: &str,
+        held_bytes: u64,
+    ) -> (Result<u64, String>, u64) {
+        let path = dir.join("document");
+        std::fs::write(&path, text).expect("write document");
+        let source = NativeSource::from_path(&path).expect("source");
+        let registry = one_file(dir);
+        let store = AnnotationStore::loading();
+        let (result, peak) = runtime.peak_during(import_native_within(
+            &registry,
+            &store,
+            &source,
+            Arc::new(|| true),
+            dcmview_adapters::Limits {
+                held_bytes,
+                ..dcmview_adapters::Limits::DEFAULT
+            },
+        ));
+        (
+            result
+                .map(|report| report.counts.annotations_out)
+                .map_err(|error| error.to_string()),
+            peak,
+        )
+    }
+
+    /// **An import holds no more than it is charged**, from the file to
+    /// the store: the charge of its records (`dcmview_adapters::held`),
+    /// the text in its buffer (three times its length at most), and what
+    /// building one record holds, which for these small records is
+    /// `SLACK`. Texts made to cost the most for their length are imported
+    /// under a budget of exactly their charge, where they are taken, and
+    /// under one byte less, where they are refused as a whole; the peak is
+    /// within the bound both times. So the budget, which is a number of
+    /// bytes and not a multiple of the text, bounds what any import holds.
     #[test]
-    fn a_hostile_document_holds_a_bounded_multiple_of_its_text() {
-        use dcmview_adapters::limits::{HELD_BASE_BYTES, HELD_TEXT_MULTIPLE, UNIT_TRANSIENT_BYTES};
+    fn an_import_holds_no_more_than_it_is_charged() {
+        const TEXT: usize = 1024 * 1024;
+        const SLACK: u64 = 8 * 1024 * 1024;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let runtime = heap::CountedRuntime::new();
+        let said = std::env::var_os("RASTER_COST_REPORT").is_some();
+        let mut charge = 0;
+        let mut taken = 0;
+        for (what, text) in hostile(TEXT) {
+            // The JSON form of each shape comes first; its JSON Lines form
+            // holds the same records and has the same charge.
+            if what.ends_with(", JSON") {
+                let document =
+                    dcmview_annotation::Document::from_json_str(&text).expect("a document");
+                charge = dcmview_adapters::held::document_charge(&document);
+            }
+            let allowed = charge + 3 * text.len() as u64 + SLACK;
+            let (result, peak) = import_peak(&runtime, dir.path(), &text, charge);
+            if said {
+                eprintln!(
+                    "{what}: peak {:.1} MiB, charge {:.1} MiB, text {:.1} MiB, {result:?}",
+                    peak as f64 / 1048576.0,
+                    charge as f64 / 1048576.0,
+                    text.len() as f64 / 1048576.0
+                );
+            }
+            assert!(
+                !result.as_ref().is_err_and(|error| error.contains("memory")),
+                "{what}: refused within its charge: {result:?}"
+            );
+            taken += u64::from(result.is_ok_and(|records| records > 0));
+            assert!(peak <= allowed, "{what}: held {peak}, charged {charge}");
+            let (result, peak) = import_peak(&runtime, dir.path(), &text, charge - 1);
+            assert!(
+                result
+                    .as_ref()
+                    .is_err_and(|error| error.contains("bytes of memory")),
+                "{what}: taken past its budget: {result:?}"
+            );
+            assert!(peak <= allowed, "{what}: held {peak} when refused");
+        }
+        // Enough of the shapes are valid records that reach the store.
+        assert!(taken >= 12, "{taken} shapes were stored");
+    }
+
+    /// What building one unit holds before it can be charged is within
+    /// `UNIT_TRANSIENT_BYTES`: the units that cost the most to build, read
+    /// under a budget that refuses each as soon as it is built.
+    #[test]
+    fn the_costliest_units_are_built_within_the_transient() {
+        use dcmview_adapters::limits::UNIT_TRANSIENT_BYTES;
         use dcmview_adapters::{ImportAdapter, ImportContext, Limits, NativeJson};
 
-        // The text itself, in a buffer that grows by doubling while it is
-        // read (three times), and what is kept, by its budget.
-        const MULTIPLE: u64 = 3 + HELD_TEXT_MULTIPLE;
-        const TEXT: usize = 24 * 1024 * 1024;
-
-        struct Any;
-        impl dcmview_adapters::FileResolver for Any {
-            fn resolve(&self, file: &dcmview_annotation::FileRef) -> dcmview_adapters::Resolution {
-                dcmview_adapters::Resolution::Matched(
-                    dcmview_adapters::Resolved {
-                        slot: 0,
-                        key: Some(file.key.clone()),
-                        size: dcmview_annotation::ImageSize {
-                            columns: file.columns,
-                            rows: file.rows,
-                            frames: file.frames,
-                        },
-                        size_bytes: file.size_bytes,
-                    },
-                    dcmview_adapters::Matcher::Key,
-                )
-            }
-        }
+        struct NoFile;
+        impl dcmview_adapters::FileResolver for NoFile {}
         let author = dcmview_annotation::Author::parse("import:native").expect("author");
         let layer = dcmview_annotation::LayerId::parse("default").expect("layer");
         let stamp = dcmview_annotation::Timestamp::parse("2026-10-10T08:00:00.000Z").expect("time");
-        let held = |text: &str| {
+        for (what, text) in largest_units() {
             let context = ImportContext {
-                resolver: &Any,
+                resolver: &NoFile,
                 schema: Option::None,
                 layer: &layer,
                 author: &author,
                 now: &stamp,
                 keep_going: &|| true,
-                limits: Limits::DEFAULT,
+                limits: Limits {
+                    held_bytes: 0,
+                    ..Limits::DEFAULT
+                },
             };
-            heap::peak_during(|| {
+            let (result, peak) = heap::peak_during(|| {
                 NativeJson
                     .import(&mut text.as_bytes(), &context)
                     .map(|imported| imported.report.counts.annotations_out)
-            })
-        };
-        let said = std::env::var_os("RASTER_COST_REPORT").is_some();
-        for (what, text) in hostile(TEXT) {
-            let (result, peak) = held(&text);
-            if said {
-                eprintln!(
-                    "{what}: {:.2} times {} bytes, {result:?}",
-                    peak as f64 / text.len() as f64,
-                    text.len()
-                );
-            }
+            });
+            report(&what, peak, text.len() as u64);
+            assert!(result.is_err(), "{what}");
             assert!(
-                peak <= MULTIPLE * text.len() as u64 + HELD_BASE_BYTES,
-                "{what}: {} bytes of text held {peak}",
-                text.len()
-            );
-        }
-        for (what, text) in largest_units() {
-            let (result, peak) = held(&text);
-            if said {
-                eprintln!(
-                    "{what}: {} MiB for {} bytes, {result:?}",
-                    peak / (1024 * 1024),
-                    text.len()
-                );
-            }
-            assert!(
-                peak <= UNIT_TRANSIENT_BYTES + HELD_BASE_BYTES,
+                peak <= UNIT_TRANSIENT_BYTES + 3 * text.len() as u64,
                 "{what}: {} bytes of text held {peak}",
                 text.len()
             );
@@ -979,7 +1083,7 @@ mod documents {
     #[test]
     fn what_a_document_is_counted_as_holding_is_what_it_holds() {
         use dcmview_adapters::held::Held;
-        for (what, text) in hostile(2 * 1024 * 1024) {
+        for (what, text) in hostile(1024 * 1024) {
             if !what.ends_with(", JSON") {
                 continue;
             }
@@ -993,6 +1097,85 @@ mod documents {
             assert!(
                 actual <= counted && counted <= 3 * actual,
                 "{what}: counted {counted} for {actual} held"
+            );
+        }
+    }
+
+    /// A session of 200,000 rectangles is written and read back in both
+    /// forms under the bounds of a session, and holds no more than it is
+    /// charged while it is read.
+    #[test]
+    fn a_large_session_is_read_back_within_its_charge() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let registry = registry(dir.path(), FILES);
+        let store = AnnotationStore::loading();
+        import_embed_rows(
+            &registry,
+            &store,
+            (0..FILES).map(|n| (n, two_rois())).collect(),
+        )
+        .expect("stage");
+        let runtime = heap::CountedRuntime::new();
+        // What a file reference and a rectangle of such a session are
+        // charged, from a session of a few, which the default budget is
+        // derived from: a million of each are within it.
+        let (file, record) = {
+            let few = registry_of(dir.path(), 99_990..FILES);
+            let store = AnnotationStore::loading();
+            import_embed_rows(&few, &store, (0..10).map(|n| (n, two_rois())).collect())
+                .expect("stage");
+            let export = runtime
+                .peak_during(export_native(&few, &store, NativeForm::Json))
+                .0
+                .expect("export");
+            let text = std::str::from_utf8(&export.bytes).expect("text");
+            let document = dcmview_annotation::Document::from_json_str(text).expect("document");
+            (
+                document
+                    .files
+                    .iter()
+                    .map(Charged::charge)
+                    .max()
+                    .expect("files"),
+                document
+                    .annotations
+                    .iter()
+                    .map(Charged::charge)
+                    .max()
+                    .expect("records"),
+            )
+        };
+        report("a file reference is charged", file, 1);
+        report("a rectangle is charged", record, 1);
+        assert!(file <= 1_300 && record <= 1_900, "{file}, {record}");
+        assert!((file + record) * 1_048_576 <= dcmview_adapters::limits::MAX_HELD_BYTES);
+        let charge = ROIS * record + FILES as u64 * file;
+        for form in [NativeForm::Json, NativeForm::JsonLines] {
+            let export = runtime
+                .peak_during(export_native(&registry, &store, form))
+                .0
+                .expect("export");
+            let path = dir.path().join("session");
+            std::fs::write(&path, &export.bytes).expect("write document");
+            let text = export.bytes.len() as u64;
+            drop(export);
+            let source = NativeSource::from_path(&path).expect("source");
+            let second = AnnotationStore::loading();
+            let (result, peak) = runtime.peak_during(import_native(
+                &registry,
+                &second,
+                &source,
+                Arc::new(|| true),
+            ));
+            assert_eq!(result.expect("import").counts.annotations_out, ROIS);
+            report(
+                &format!("{form:?} import of 200,000 rectangles"),
+                peak,
+                text,
+            );
+            assert!(
+                peak <= charge + 3 * text,
+                "{form:?}: held {peak} for a charge of {charge}"
             );
         }
     }

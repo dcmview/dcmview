@@ -148,38 +148,47 @@
 //!
 //! # Cost
 //!
-//! **For any input, reading holds at most the budget and the transient**
-//! (and, for a JSON document or a first line, its text in a buffer that
-//! grows by doubling: up to three times its length while it grows):
+//! **For any input, an import holds at most the budget, the transient
+//! and the text's buffer**, each a number of bytes that does not depend
+//! on what the text is made of:
 //!
-//! - **The budget** is [`crate::limits::HELD_TEXT_MULTIPLE`] (8) bytes
-//!   for every byte of text read, and [`crate::limits::HELD_BASE_BYTES`]
-//!   (16 MiB). It is what everything the import keeps may hold.
-//! - **The transient** is [`crate::limits::UNIT_TRANSIENT_BYTES`]
+//! - **The budget**, [`crate::Limits::held_bytes`] (4 GiB by default,
+//!   [`crate::limits::MAX_HELD_BYTES`], which says where the number comes
+//!   from): what the records of one document may be charged.
+//! - **The transient**, [`crate::limits::UNIT_TRANSIENT_BYTES`]
 //!   (256 MiB): what building one record, or the header, may hold before
-//!   it is counted.
+//!   it is charged.
+//! - **The text**: a JSON document or a first line is read into a buffer
+//!   that grows by doubling, up to three times its length while it grows
+//!   (768 MiB for the largest document); a JSON Lines file has two of its
+//!   lines at most (48 MiB).
 //!
-//! So a JSON document of `n` bytes is read within `11 n` + 272 MiB, and a
-//! JSON Lines file within `8 n` + 272 MiB and two of its lines.
+//! **The budget is charged, not predicted, and is not a multiple of the
+//! text.** What a value costs to hold cannot be told from its text: the
+//! model keeps `extensions` and members it does not know as JSON values,
+//! a member of two bytes can be a map node of several hundred, and a
+//! mask of one tile a frame is charged ten times its text. So after each
+//! file reference, layer, annotation and label is built, and after the
+//! header is, the reader adds its charge ([`crate::held`]: what the item
+//! holds, counted on the item, and the room an import needs for it on
+//! its way into a session) to a total, and stops when the total is past
+//! the budget: [`ImportError::TooLarge`] with `Bound::HeldBytes`, and
+//! nothing is handed on. The charge covers the whole way of a record,
+//! from this reader's lists to a store that takes the records without
+//! keeping a second copy of them all, so a caller that hands the records
+//! on one at a time holds no more than was charged.
 //!
-//! **The budget is charged, not predicted.** What a value costs to hold
-//! cannot be told from its text: the model keeps `extensions` and members
-//! it does not know as JSON values, and a member of two bytes can be a
-//! map node of several hundred. So after each file reference, layer,
-//! annotation and label is built, and after the header's members are,
-//! the reader counts on the thing itself what it holds ([`crate::held`]:
-//! the capacity of every string and vector, every map node, every kept
-//! value) and the room it takes in its list, adds that to a running
-//! total, and stops when the total is past the budget for the text read
-//! so far: [`ImportError::TooLarge`] with `Bound::HeldBytes`, and nothing
-//! is handed on. A list grows by a quarter, not by doubling, and an item
-//! is counted at nine quarters of its size for the room the list keeps
-//! free and copies from. A document a session wrote is counted at three
-//! bytes for a byte of text.
+//! **A writer counts the same way.** [`NativeJson`] and
+//! [`NativeJsonLines`] refuse a document whose charge
+//! ([`crate::held::document_charge`]) is past the budget
+//! ([`ExportError::TooMany`] with `Bound::HeldBytes`), and the charge is
+//! a function of what the records say, so it is the same before a
+//! document is written and after it is read: **a document is written
+//! exactly when it would be read.**
 //!
 //! **The transient is bounded by construction.** One unit (a record, or
 //! everything of a document that is not a record) is in the parser's
-//! buffered form and in its kept form at once, before it can be counted.
+//! buffered form and in its kept form at once, before it can be charged.
 //! One pass over the text that allocates nothing, before any value of it
 //! is parsed, holds a unit to [`crate::limits::MAX_UNIT_VALUES`] JSON
 //! values (objects, arrays, strings, member names, numbers, `true`,
@@ -195,10 +204,13 @@
 //!
 //! A JSON document is read member by member, and each of its four lists
 //! an element at a time, so that only one record is in the buffered form
-//! at once; a JSON Lines file is read a line at a time.
-//! `tests/raster_cost/annotations.rs` holds texts made to cost the most
-//! for their length to the budget, the costliest units to the transient,
-//! and what is counted to what the allocator gave out.
+//! at once; a JSON Lines file is read a line at a time. Placing the
+//! records makes every structure that has an entry a record once, at its
+//! final size. `tests/raster_cost/annotations.rs` imports texts made to
+//! cost the most, from the file to the store, under a budget of exactly
+//! their charge and of one byte less, and holds the peak to the charge;
+//! builds the costliest units within the transient; and compares what is
+//! counted with what the allocator gave out.
 //!
 //! An import looks at each record a fixed number of times and finds a
 //! file, a layer and an id through a map, not by scanning a list for each
@@ -209,7 +221,7 @@ use crate::adapter::{
     ImportAdapter, ImportContext, Imported, Matcher, Refusal, Resolution,
 };
 use crate::error::{Bound, ExportError, ImportError};
-use crate::held::Held;
+use crate::held::{document_charge, header_charge, Charged};
 use crate::limits::Limits;
 use crate::report::{AdapterRef, Direction, Report, RowRef, WarningCode};
 use dcmview_annotation::{
@@ -265,11 +277,13 @@ impl ExportAdapter for NativeJson {
     /// exactly as it is: nothing is checked, clamped or left out, and a
     /// record that was loaded leniently is written as it is held.
     ///
-    /// A document with more files than `context.limits.files`, or more
-    /// annotations and labels together than `context.limits.records`, is
-    /// [`ExportError::TooMany`] with that bound and number, before anything
-    /// is written: an export never writes what an import within the same
-    /// bounds refuses for its size. Output past `context.max_bytes` or past
+    /// A document with more files than `context.limits.files`, more
+    /// annotations and labels together than `context.limits.records`, or a
+    /// charge ([`crate::held::document_charge`]) past
+    /// `context.limits.held_bytes`, is [`ExportError::TooMany`] with that
+    /// bound and number, before anything is written: an export never
+    /// writes what an import within the same bounds refuses for its size,
+    /// and writes everything such an import reads. Output past `context.max_bytes` or past
     /// `context.limits.document_bytes`, whichever is smaller, is
     /// [`ExportError::TooLarge`] with that limit. The bytes are counted as
     /// they are written, and nothing is buffered beyond what `out` buffers.
@@ -432,6 +446,12 @@ fn check_export_counts(document: &Document, limits: &Limits) -> Result<(), Expor
                 limit: limit as u64,
             });
         }
+    }
+    if document_charge(document) > limits.held_bytes {
+        return Err(ExportError::TooMany {
+            bound: Bound::HeldBytes,
+            limit: limits.held_bytes,
+        });
     }
     Ok(())
 }
@@ -707,44 +727,38 @@ fn check_values(text: &[u8], whole: bool, bounds: &Limits, row: u64) -> Result<(
     Ok(())
 }
 
-/// What the things read so far hold ([`crate::held`]), against what the
-/// text read so far allows ([`Limits::held_text_multiple`]).
+/// What the things read so far are charged ([`crate::held`]), against
+/// [`Limits::held_bytes`].
 struct HeldTotal {
     bytes: u64,
     exceeded: bool,
 }
 
 impl HeldTotal {
-    /// Adds `bytes`. `false` when the total is more than `text` bytes of
-    /// text allow.
-    fn add(&mut self, bytes: u64, text: u64, bounds: &Limits) -> bool {
+    /// Adds `bytes`. `false` when the total is past the budget.
+    fn add(&mut self, bytes: u64, bounds: &Limits) -> bool {
         self.bytes = self.bytes.saturating_add(bytes);
-        let allowed = bounds
-            .held_base_bytes
-            .saturating_add(text.saturating_mul(bounds.held_text_multiple));
-        self.exceeded |= self.bytes > allowed;
+        self.exceeded |= self.bytes > bounds.held_bytes;
         !self.exceeded
     }
 
     fn error(bounds: &Limits) -> ImportError {
         ImportError::TooLarge {
             bound: Bound::HeldBytes,
-            limit: bounds.held_text_multiple,
+            limit: bounds.held_bytes,
         }
     }
 }
 
 /// Puts `item` at the end of `list`, which grows by a quarter when it is
-/// full, and returns what the item is counted as holding: what it owns,
-/// and nine quarters of its own size, for the room the list keeps free
-/// and the room it copies from while it grows.
-fn keep<T: Held>(list: &mut Vec<T>, item: T) -> u64 {
-    let held = item.held_bytes() + (std::mem::size_of::<T>() as u64 * 9).div_ceil(4);
+/// full, and returns what the item is charged.
+fn keep<T: Charged>(list: &mut Vec<T>, item: T) -> u64 {
+    let charge = item.charge();
     if list.len() == list.capacity() {
         list.reserve_exact((list.capacity() / 4).max(16));
     }
     list.push(item);
-    held
+    charge
 }
 
 /// One of a document's four lists, read an element at a time, so that no
@@ -752,11 +766,10 @@ fn keep<T: Held>(list: &mut Vec<T>, item: T) -> u64 {
 struct List<'a, T> {
     into: &'a mut Vec<T>,
     kept: &'a std::cell::RefCell<HeldTotal>,
-    bytes: u64,
     bounds: &'a Limits,
 }
 
-impl<'de, T: Deserialize<'de> + Held> serde::de::DeserializeSeed<'de> for List<'_, T> {
+impl<'de, T: Deserialize<'de> + Charged> serde::de::DeserializeSeed<'de> for List<'_, T> {
     type Value = ();
 
     fn deserialize<D: serde::Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
@@ -764,7 +777,7 @@ impl<'de, T: Deserialize<'de> + Held> serde::de::DeserializeSeed<'de> for List<'
     }
 }
 
-impl<'de, T: Deserialize<'de> + Held> serde::de::Visitor<'de> for List<'_, T> {
+impl<'de, T: Deserialize<'de> + Charged> serde::de::Visitor<'de> for List<'_, T> {
     type Value = ();
 
     fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -774,7 +787,7 @@ impl<'de, T: Deserialize<'de> + Held> serde::de::Visitor<'de> for List<'_, T> {
     fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut items: A) -> Result<(), A::Error> {
         while let Some(item) = items.next_element::<T>()? {
             let held = keep(self.into, item);
-            if !self.kept.borrow_mut().add(held, self.bytes, self.bounds) {
+            if !self.kept.borrow_mut().add(held, self.bounds) {
                 return Err(serde::de::Error::custom("too much held"));
             }
         }
@@ -788,7 +801,6 @@ impl<'de, T: Deserialize<'de> + Held> serde::de::Visitor<'de> for List<'_, T> {
 struct Members<'a> {
     document: &'a mut Lists,
     kept: &'a std::cell::RefCell<HeldTotal>,
-    bytes: u64,
     bounds: &'a Limits,
 }
 
@@ -827,7 +839,6 @@ impl<'de> serde::de::Visitor<'de> for Members<'_> {
                     members.next_value_seed(List {
                         into: &mut self.document.$field,
                         kept: self.kept,
-                        bytes: self.bytes,
                         bounds: self.bounds,
                     })?
                 };
@@ -862,7 +873,6 @@ fn parse_document(text: &str, bounds: &Limits) -> Result<(Document, u64), ParseE
         Members {
             document: &mut lists,
             kept: &kept,
-            bytes: text.len() as u64,
             bounds,
         },
     )
@@ -871,16 +881,14 @@ fn parse_document(text: &str, bounds: &Limits) -> Result<(Document, u64), ParseE
         return Err(ParseError::Held);
     }
     let rest = rest.map_err(|_| ParseError::Document(DocumentError::Malformed(String::new())))?;
-    if !kept
-        .borrow_mut()
-        .add(rest.held_bytes(), text.len() as u64, bounds)
-    {
-        return Err(ParseError::Held);
-    }
     let header = serde_json::to_string(&rest)
         .map_err(|_| ParseError::Document(DocumentError::Malformed(String::new())))?;
     drop(rest);
     let mut document = Document::from_json_str(&header).map_err(ParseError::Document)?;
+    drop(header);
+    if !kept.borrow_mut().add(header_charge(&document), bounds) {
+        return Err(ParseError::Held);
+    }
     document.files = lists.files;
     document.layers = lists.layers;
     document.annotations = lists.annotations;
@@ -967,7 +975,6 @@ fn read_document(
         Err(error) => return Err(document_error(error, bounds)),
     };
     // Release the possibly document-sized first line before reading records.
-    let mut read = buffer.len() as u64;
     drop(buffer);
     let mut buffer = Vec::new();
     let mut rows = RecordRows::default();
@@ -985,7 +992,6 @@ fn read_document(
         Bound::LineBytes,
     )? {
         row += 1;
-        read += buffer.len() as u64 + 1;
         if buffer.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
@@ -1047,7 +1053,7 @@ fn read_document(
                 keep(&mut document.labels, label)
             }
         };
-        if !kept.add(held, read, bounds) {
+        if !kept.add(held, bounds) {
             return Err(HeldTotal::error(bounds));
         }
     }
@@ -1119,7 +1125,9 @@ fn place_document(
     }
     let implicit = LabelSchema::implicit();
     let schema = context.schema.unwrap_or(&implicit);
-    let mut files = HashMap::new();
+    // Every structure with an entry a record is made once, at its final
+    // size: none of them doubles while records are placed.
+    let mut files = HashMap::with_capacity(document.files.len());
     for (file, row) in document.files.into_iter().zip(rows.files) {
         file.validate().map_err(|error| invalid_at(row, error))?;
         if files.contains_key(&file.key) {
@@ -1192,7 +1200,10 @@ fn place_document(
         }
     }
     layers.insert(context.layer.clone());
-    let mut ids = HashSet::new();
+    let mut ids = HashSet::with_capacity(document.annotations.len());
+    fragment
+        .annotations
+        .reserve_exact(document.annotations.len());
     for (mut annotation, row) in document.annotations.into_iter().zip(rows.annotations) {
         if !(context.keep_going)() {
             return Err(ImportError::Cancelled);
@@ -1237,7 +1248,9 @@ fn place_document(
         report.counts.annotations_out += 1;
         fragment.annotations.push(annotation);
     }
-    let mut ids = HashSet::new();
+    drop(ids);
+    let mut ids = HashSet::with_capacity(document.labels.len());
+    fragment.labels.reserve_exact(document.labels.len());
     for (mut label, row) in document.labels.into_iter().zip(rows.labels) {
         if !(context.keep_going)() {
             return Err(ImportError::Cancelled);

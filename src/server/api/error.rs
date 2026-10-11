@@ -381,7 +381,10 @@ mod tests {
     fn an_export_past_a_bound_says_which_bound() {
         for (error, status, code, retry) in [
             (
-                AnnotationError::ExportTooMany { limit: 2 },
+                AnnotationError::ExportTooMany {
+                    bound: dcmview_adapters::Bound::Records,
+                    limit: 2,
+                },
                 StatusCode::UNPROCESSABLE_ENTITY,
                 ApiErrorCode::AnnotationExportTooLarge,
                 false,
