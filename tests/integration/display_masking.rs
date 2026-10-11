@@ -155,7 +155,8 @@ fn assert_no_identifiers_of(what: &str, text: &str, real: &FixtureDates, shown_s
 }
 
 /// A masked catalog whose files are, in order, the fixtures of `dates`:
-/// each entry against its own fixture, and the rest against them all.
+/// each entry against its own fixture, and the rest, the server's start
+/// time aside, against them all.
 fn assert_catalog_masked(catalog: &Value, dates: &[&FixtureDates]) {
     let files = catalog["files"].as_array().expect("files");
     assert_eq!(files.len(), dates.len());
@@ -169,6 +170,10 @@ fn assert_catalog_masked(catalog: &Value, dates: &[&FixtureDates]) {
     }
     let mut rest = catalog.clone();
     rest["files"] = Value::Null;
+    // The time the server started is a reading of the clock, and its
+    // digits spell any short number now and then.
+    assert!(rest["server_start_ms"].is_u64(), "{rest}");
+    rest["server_start_ms"] = Value::Null;
     assert_no_identifiers("catalog", &rest.to_string());
 }
 
