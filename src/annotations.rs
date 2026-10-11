@@ -1243,6 +1243,10 @@ mod tests {
             paths(&["/alpha/a/one.dcm", "/beta/b/two.dcm"], "/work", home),
             ["one.dcm", "two.dcm"]
         );
+        assert_eq!(
+            paths(&["/alpha/a/one.dcm", "/beta/b/two.dcm"], "/work", None),
+            ["one.dcm", "two.dcm"]
+        );
         // Two trees that share only a directory above the home directory:
         // a path below it would start with the user's name.
         assert_eq!(

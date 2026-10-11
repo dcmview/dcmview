@@ -1529,6 +1529,23 @@ async fn references_and_rows_are_held_to_what_they_say() {
         .iter()
         .map(|record| &record["extensions"])
         .collect();
+    // Loaded where the image has one copy, a row is bound to it and is no
+    // longer the row of one of several: the member is gone.
+    let single = document_of(
+        vec![of_64_bytes(reference(
+            "sop:1.2.3.8",
+            Some("1.2.3.8"),
+            "b.dcm",
+        ))],
+        vec![],
+        vec![record(1, json!({ "row_of": "b.dcm", "imported": true }))],
+    );
+    let one = Session::loading(vec![written(dir.path(), "b.dcm", "1.2.3.8", &[3; 64])]);
+    one.import(dir.path(), &single).await.expect("import");
+    assert_eq!(
+        one.document().await["annotations"][0]["extensions"],
+        json!({ "other": { "kept": true } })
+    );
     let bound = |imported: bool| json!({ "embed": { "row_of": "b.dcm", "imported": imported }, "other": { "kept": true } });
     let unbound = |embed: Value| json!({ "embed": embed, "other": { "kept": true } });
     assert_eq!(
