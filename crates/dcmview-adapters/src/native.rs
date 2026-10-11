@@ -223,6 +223,7 @@ impl ExportAdapter for NativeJson {
         context: &ExportContext<'_>,
         out: &mut dyn Write,
     ) -> Result<Report, ExportError> {
+        check_export_counts(document, &context.limits)?;
         let limit = context.max_bytes.min(context.limits.document_bytes);
         let mut writer = LimitedWriter {
             out,
@@ -249,6 +250,7 @@ impl ImportAdapter for NativeJson {
     /// holds the bytes `"dcmview.annotations"` (with the quotes), else
     /// [`Confidence::Possible`].
     fn sniff(&self, head: &[u8]) -> Confidence {
+        let head = head.strip_prefix(b"\xef\xbb\xbf").unwrap_or(head);
         if head.iter().find(|byte| !byte.is_ascii_whitespace()) != Some(&b'{') {
             Confidence::None
         } else if head
@@ -311,6 +313,7 @@ impl ExportAdapter for NativeJsonLines {
         context: &ExportContext<'_>,
         out: &mut dyn Write,
     ) -> Result<Report, ExportError> {
+        check_export_counts(document, &context.limits)?;
         let header = Document {
             format: document.format.clone(),
             version: document.version.clone(),
@@ -341,6 +344,7 @@ impl ExportAdapter for NativeJsonLines {
             for label in &document.labels {
                 write_line(&mut writer, &OutputLine::Label(label))?;
             }
+            write_line(&mut writer, &OutputLine::End(EndCounts::of(document)))?;
             Ok(())
         })();
         if writer.exceeded {
@@ -350,6 +354,45 @@ impl ExportAdapter for NativeJsonLines {
         }
         result?;
         Ok(export_report(document, NATIVE_JSONL_ADAPTER_ID))
+    }
+}
+
+fn check_export_counts(document: &Document, limits: &Limits) -> Result<(), ExportError> {
+    for (count, limit, bound) in [
+        (document.files.len(), limits.files, Bound::Files),
+        (
+            document.annotations.len() + document.labels.len(),
+            limits.records,
+            Bound::Records,
+        ),
+    ] {
+        if count > limit {
+            return Err(ExportError::TooMany {
+                bound,
+                limit: limit as u64,
+            });
+        }
+    }
+    Ok(())
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct EndCounts {
+    files: u64,
+    layers: u64,
+    annotations: u64,
+    labels: u64,
+}
+
+impl EndCounts {
+    fn of(document: &Document) -> Self {
+        Self {
+            files: document.files.len() as u64,
+            layers: document.layers.len() as u64,
+            annotations: document.annotations.len() as u64,
+            labels: document.labels.len() as u64,
+        }
     }
 }
 
@@ -405,6 +448,7 @@ enum OutputLine<'a> {
     Layer(&'a Layer),
     Annotation(&'a Annotation),
     Label(&'a Label),
+    End(EndCounts),
 }
 
 #[derive(Deserialize)]
@@ -414,6 +458,25 @@ enum InputLine {
     Layer(Layer),
     Annotation(Annotation),
     Label(Label),
+    End(#[serde(deserialize_with = "read_end_counts")] EndCounts),
+}
+
+fn read_end_counts<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<EndCounts, D::Error> {
+    struct EndVisitor;
+    impl<'de> serde::de::Visitor<'de> for EndVisitor {
+        type Value = EndCounts;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("an object with the four record counts")
+        }
+
+        fn visit_map<M: serde::de::MapAccess<'de>>(self, map: M) -> Result<EndCounts, M::Error> {
+            EndCounts::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+        }
+    }
+    deserializer.deserialize_map(EndVisitor)
 }
 
 fn write_line(writer: &mut dyn Write, value: &impl Serialize) -> Result<(), ExportError> {
@@ -499,6 +562,9 @@ fn read_document(
     )? {
         return Err(ImportError::Malformed { row: 1 });
     }
+    if buffer.starts_with(b"\xef\xbb\xbf") {
+        buffer.drain(..3);
+    }
     let mut document = match Document::from_json_str(text_at(&buffer, 1)?) {
         Ok(document) => document,
         Err(DocumentError::Malformed(_)) => {
@@ -526,6 +592,7 @@ fn read_document(
     let mut buffer = Vec::new();
     let mut rows = RecordRows::default();
     let mut has_lines = false;
+    let mut ended = false;
     let mut row = 1;
     while read_line(
         &mut reader,
@@ -536,6 +603,9 @@ fn read_document(
         row += 1;
         if buffer.iter().all(u8::is_ascii_whitespace) {
             continue;
+        }
+        if ended {
+            return Err(ImportError::Malformed { row });
         }
         if !has_lines {
             if !document.files.is_empty()
@@ -550,6 +620,12 @@ fn read_document(
         let line: InputLine = serde_json::from_str(text_at(&buffer, row)?)
             .map_err(|_| ImportError::Malformed { row })?;
         match line {
+            InputLine::End(counts) => {
+                if counts != EndCounts::of(&document) {
+                    return Err(ImportError::Truncated);
+                }
+                ended = true;
+            }
             InputLine::File(file) => {
                 check_count(document.files.len() + 1, bounds.files, Bound::Files)?;
                 document.files.push(file);
@@ -587,6 +663,8 @@ fn read_document(
     }
     if !has_lines {
         rows = document_rows(&document);
+    } else if !ended {
+        return Err(ImportError::Truncated);
     }
     Ok((document, rows))
 }
