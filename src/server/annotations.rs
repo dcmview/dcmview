@@ -50,9 +50,9 @@ use super::{FileRegistry, KeyError};
 use crate::annotations::{
     canonicalize_annotations, common_directory, document_path,
     embed::{replacement_ops, rows_as_creates},
-    memory::{now, Checking, ViewCheck, Write},
+    memory::{now, Binding, Checking, ViewCheck, Write},
     AnnotationBackend, AnnotationIndexMap, AnnotationStore, EmbedRoiAnnotations, FileLookup,
-    ImportStatus, NativeSource, EMBED_IMPORT_AUTHOR, NATIVE_IMPORT_AUTHOR,
+    ImportStatus, NativeSource, PathSuffixes, EMBED_IMPORT_AUTHOR, NATIVE_IMPORT_AUTHOR,
 };
 use crate::api::contracts::{AnnotationImportResponse, AnnotationImportState, FileKeyError};
 use crate::types::FileEntry;
@@ -66,7 +66,9 @@ use dcmview_annotation::{
     new_id, ApplyResult, Author, Current, FileKey, FileKind, FileRef, ImageSize, KeyScheme,
     LabelTarget, Op, OpEnvelope, Space, Violation, ViolationCode,
 };
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::Path;
 use std::sync::Arc;
 
 /// Why an annotation request could not be served. A refused operation is
@@ -937,7 +939,7 @@ async fn read_native_into_store(
     let source = source.clone();
     let author = Author::parse(NATIVE_IMPORT_AUTHOR).map_err(|_| native_store_failure())?;
     let import_author = author.clone();
-    let imported = tokio::task::spawn_blocking(move || {
+    let (imported, bindings) = tokio::task::spawn_blocking(move || {
         let files = registry.files_snapshot();
         let base = match common_directory(&files) {
             Some(base) => base,
@@ -951,10 +953,24 @@ async fn read_native_into_store(
             })?,
         };
         let lookup = FileLookup::new(&files, base).map_err(|_| native_store_failure())?;
+        let suffixes = PathSuffixes::new(&files);
+        let mut by_uid = HashMap::<String, Vec<usize>>::new();
+        for file in &files {
+            if !file.sop_instance_uid.is_empty() {
+                let uid = registry.masker().map_or_else(
+                    || file.sop_instance_uid.clone(),
+                    |masker| masker.uid(&file.sop_instance_uid),
+                );
+                by_uid.entry(uid).or_default().push(file.index);
+            }
+        }
         let resolver = NativeResolver {
             registry: &registry,
             files: &files,
             lookup: &lookup,
+            suffixes: &suffixes,
+            by_uid,
+            matched: RefCell::new(Vec::new()),
             handle: &handle,
         };
         let mut file = std::fs::File::open(source.path()).map_err(|error| {
@@ -973,9 +989,55 @@ async fn read_native_into_store(
             keep_going: &*keep_going,
             limits: dcmview_adapters::Limits::DEFAULT,
         };
-        NativeJson
+        let mut imported = NativeJson
             .import(&mut file, &context)
-            .map_err(|error| AnnotationError::ImportFailed(error.to_string()))
+            .map_err(|error| AnnotationError::ImportFailed(error.to_string()))?;
+        let mut bindings = HashMap::new();
+        imported.fragment.annotations.retain_mut(|annotation| {
+            let Some((row_of, imported_row)) =
+                annotation.extensions.get("embed").and_then(row_binding)
+            else {
+                return true;
+            };
+            let slot = suffixes.indexes(row_of).into_iter().find(|index| {
+                handle
+                    .block_on(registry.ensure_key(*index))
+                    .is_ok_and(|key| key == annotation.file)
+            });
+            annotation.extensions.remove("embed");
+            if let Some(slot) = slot {
+                bindings.insert(
+                    annotation.id,
+                    Binding {
+                        slot,
+                        imported: imported_row,
+                    },
+                );
+                true
+            } else {
+                imported.report.counts.annotations_out -= 1;
+                imported.report.counts.unmatched += 1;
+                false
+            }
+        });
+        let mut settled_uids = HashSet::new();
+        for index in resolver.matched.borrow().iter().copied() {
+            let Some(file) = files.get(index) else {
+                continue;
+            };
+            if registry.shares_uid(index) && settled_uids.insert(&file.sop_instance_uid) {
+                let uid = registry.masker().map_or_else(
+                    || file.sop_instance_uid.clone(),
+                    |masker| masker.uid(&file.sop_instance_uid),
+                );
+                if let Some(indexes) = resolver.by_uid.get(&uid) {
+                    for other in indexes {
+                        let _ = handle.block_on(registry.ensure_key(*other));
+                    }
+                }
+            }
+        }
+        Ok::<_, AnnotationError>((imported, bindings))
     })
     .await
     .map_err(|_| native_store_failure())??;
@@ -1038,7 +1100,7 @@ async fn read_native_into_store(
                     embed_slot: None,
                     import: false,
                     view: None,
-                    bindings: None,
+                    bindings: Some(&bindings),
                 },
             )
             .map_err(|_| native_store_failure())?;
@@ -1058,79 +1120,126 @@ async fn read_native_into_store(
     Ok(report)
 }
 
+fn row_binding(value: &serde_json::Value) -> Option<(&str, bool)> {
+    let object = value.as_object()?;
+    if object
+        .keys()
+        .any(|key| key != "row_of" && key != "imported")
+    {
+        return None;
+    }
+    let path = object.get("row_of")?.as_str()?;
+    let imported = match object.get("imported") {
+        Some(value) => value.as_bool()?,
+        None => false,
+    };
+    Some((path, imported))
+}
+
 struct NativeResolver<'a> {
     registry: &'a FileRegistry,
     files: &'a [Arc<FileEntry>],
     lookup: &'a FileLookup,
+    suffixes: &'a PathSuffixes<'a>,
+    by_uid: HashMap<String, Vec<usize>>,
+    matched: RefCell<Vec<usize>>,
     handle: &'a tokio::runtime::Handle,
 }
 
 impl FileResolver for NativeResolver<'_> {
     fn resolve(&self, reference: &FileRef) -> Resolution {
-        let by_key = |key: &FileKey| {
-            self.registry
-                .file_for_shown_key(key.as_str())
-                .filter(|index| key.scheme() != KeyScheme::Sop || !self.registry.shares_uid(*index))
+        let mut candidates = Vec::new();
+        let mut seen = HashSet::new();
+        let mut add = |index, matcher| {
+            if seen.insert(index) {
+                candidates.push((index, matcher));
+            }
         };
-        let candidate = by_key(&reference.key)
-            .map(|index| (index, Matcher::Key))
-            .or_else(|| {
-                reference
-                    .sop_instance_uid
-                    .as_deref()
-                    .and_then(|uid| FileKey::sop(uid).ok())
-                    .and_then(|key| by_key(&key))
-                    .map(|index| (index, Matcher::SopInstanceUid))
-            })
-            .or_else(|| {
-                self.lookup
-                    .indexes(&reference.path)
-                    .into_iter()
-                    .min()
-                    .map(|index| (index, Matcher::Path))
-            });
-        let Some((index, matcher)) = candidate else {
-            return Resolution::Unmatched;
-        };
-        let Some(file) = self.files.get(index) else {
-            return Resolution::Unmatched;
-        };
-        if reference.sop_instance_uid.as_ref().is_some_and(|uid| {
-            !file.sop_instance_uid.is_empty()
-                && uid != &file.sop_instance_uid
-                && self
-                    .registry
-                    .masker()
-                    .is_none_or(|masker| uid != &masker.uid(&file.sop_instance_uid))
-        }) {
-            return Resolution::Refused(Refusal::EvidenceConflict);
+        if let Some(index) = self.registry.file_for_shown_key(reference.key.as_str()) {
+            add(index, Matcher::Key);
         }
-        let key = match self.handle.block_on(self.registry.ensure_key(index)) {
-            Ok(key) => key,
-            Err(_) => return Resolution::Refused(Refusal::KeyUnavailable),
-        };
-        if let (Some(recorded), Some(digest)) = (
-            reference
-                .digest
-                .as_ref()
-                .filter(|digest| digest.starts_with("b3:")),
-            self.registry
-                .key_status(index)
-                .and_then(|status| status.digest),
-        ) {
-            if recorded != FileKey::blake3(&digest).as_str() {
-                return Resolution::Refused(Refusal::EvidenceConflict);
+        if let Some(indexes) = reference
+            .sop_instance_uid
+            .as_ref()
+            .and_then(|uid| self.by_uid.get(uid))
+        {
+            for index in indexes {
+                add(*index, Matcher::SopInstanceUid);
             }
         }
-        Resolution::Matched(
-            Resolved {
-                slot: index,
-                key: Some(key),
-                size: image_size(file),
-                size_bytes: file.size_bytes,
-            },
-            matcher,
-        )
+        let mut paths = if Path::new(&reference.path).is_absolute() {
+            self.lookup.indexes(&reference.path)
+        } else {
+            self.suffixes.indexes(&reference.path)
+        };
+        paths.sort_unstable();
+        for index in paths {
+            add(index, Matcher::Path);
+        }
+        if candidates.is_empty() {
+            return Resolution::Unmatched;
+        }
+        let mut unverified = false;
+        for (index, matcher) in candidates {
+            let Some(file) = self.files.get(index) else {
+                continue;
+            };
+            let key = match self.handle.block_on(self.registry.ensure_key(index)) {
+                Ok(key) => key,
+                Err(_) => {
+                    unverified = true;
+                    continue;
+                }
+            };
+            if reference.key.scheme() == KeyScheme::Sop
+                && key != reference.key
+                && self.registry.shown_key_of(&key) != reference.key.as_str()
+            {
+                continue;
+            }
+            let key_digest =
+                (reference.key.scheme() != KeyScheme::Sop).then_some(reference.key.as_str());
+            let recorded_digest = reference
+                .digest
+                .as_deref()
+                .filter(|text| text.starts_with("b3:"));
+            if key_digest.is_some() || recorded_digest.is_some() {
+                let digest = match self
+                    .registry
+                    .key_status(index)
+                    .and_then(|status| status.digest)
+                    .map_or_else(|| file_digest(file), Ok)
+                {
+                    Ok(digest) => FileKey::blake3(&digest),
+                    Err(_) => {
+                        unverified = true;
+                        continue;
+                    }
+                };
+                if key_digest
+                    .into_iter()
+                    .chain(recorded_digest)
+                    .any(|text| text != digest.as_str())
+                {
+                    continue;
+                }
+            }
+            self.matched.borrow_mut().push(index);
+            return Resolution::Matched(
+                Resolved {
+                    slot: index,
+                    key: Some(key),
+                    size: image_size(file),
+                    size_bytes: file.size_bytes,
+                },
+                matcher,
+            );
+        }
+        Resolution::Refused(if unverified {
+            Refusal::Unverified
+        } else {
+            Refusal::EvidenceConflict
+        })
     }
 }
 

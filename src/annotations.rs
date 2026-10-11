@@ -363,7 +363,6 @@ pub(crate) struct PathSuffixes<'a> {
 
 impl<'a> PathSuffixes<'a> {
     /// A lookup over `files`, which costs one map entry a file.
-    #[cfg_attr(not(test), expect(dead_code, reason = "not called yet"))]
     pub(crate) fn new(files: &'a [Arc<FileEntry>]) -> Self {
         let mut by_name = HashMap::<_, Vec<usize>>::new();
         for (place, file) in files.iter().enumerate() {
@@ -377,7 +376,6 @@ impl<'a> PathSuffixes<'a> {
     /// The catalog indexes of the files whose path ends with `path`, in
     /// the order the files were loaded. Empty for a path that is absolute,
     /// is empty, or steps upwards (`..`); `.` components are passed over.
-    #[cfg_attr(not(test), expect(dead_code, reason = "not called yet"))]
     pub(crate) fn indexes(&self, path: &str) -> Vec<usize> {
         let mut wanted = Vec::new();
         for component in Path::new(path).components() {
