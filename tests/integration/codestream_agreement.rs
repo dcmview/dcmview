@@ -7,7 +7,7 @@ use super::codestream_files::{self as files, hex, Layout};
 use super::support;
 use axum::http::StatusCode;
 use axum_test::TestServer;
-use dcmview::pixels::codestream::CODESTREAM_MISMATCH;
+use dcmview::pixels::codestream::{CODESTREAM_MISMATCH, JXL_EMBEDDED_PROFILE};
 use serde_json::Value;
 use tempfile::tempdir;
 
@@ -204,6 +204,30 @@ fn honest() -> Vec<Case> {
             gray8,
             hex(files::JXL_GRAY8_CONTAINER),
         ),
+        case(
+            "jpeg xl, a known image",
+            files::JPEG_XL,
+            gray8,
+            hex(files::JXL_GRAY8_PATTERN),
+        ),
+        case(
+            "jpeg xl, a known colour image",
+            files::JPEG_XL,
+            Layout::color8(16, 16, "RGB"),
+            hex(files::JXL_RGB8_PATTERN),
+        ),
+        case(
+            "jpeg xl, a recompressed jpeg file with its reconstruction box",
+            files::JPEG_XL,
+            Layout::color8(16, 16, "RGB"),
+            hex(files::JXL_RGB8_RECOMPRESSED_JPEG),
+        ),
+        case(
+            "jpeg xl, longer than its header read",
+            files::JPEG_XL,
+            Layout::gray8(384, 384),
+            files::jxl_gray8_noise_384(),
+        ),
     ]
 }
 
@@ -283,6 +307,43 @@ fn assert_refused_as(
         message.contains(CODESTREAM_MISMATCH),
         "{context}: the message says the pixel data disagrees with the header: {message}"
     );
+}
+
+/// The refusal of a JPEG XL frame with an embedded colour profile: the
+/// frame's decode error with that sentence, and not the one for a frame
+/// that declares another image.
+fn assert_profile_refused(context: &str, response: &axum_test::TestResponse) {
+    assert_eq!(
+        response.status_code(),
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "{context}: {}",
+        response.text()
+    );
+    let body: Value = response.json();
+    assert_eq!(body["code"], "pixel_decode_failed", "{context}");
+    let message = body["error"].as_str().expect("an error message");
+    assert!(
+        message.contains(JXL_EMBEDDED_PROFILE),
+        "{context}: the message names the embedded colour profile: {message}"
+    );
+    assert!(
+        !message.contains(CODESTREAM_MISMATCH),
+        "{context}: the image itself is the header's: {message}"
+    );
+}
+
+/// The samples of a 16 x 16 frame of `jxl_pattern` with `channels` samples
+/// a pixel, as the raw endpoint returns them.
+fn pattern(channels: usize) -> Vec<u8> {
+    let mut samples = Vec::new();
+    for row in 0..16 {
+        for column in 0..16 {
+            for channel in 0..channels {
+                samples.push(files::jxl_pattern(row, column, channel));
+            }
+        }
+    }
+    samples
 }
 
 async fn png_size(server: &TestServer, path: &str, context: &str) -> (u32, u32) {
@@ -389,6 +450,163 @@ async fn one_lying_frame_does_not_take_its_file_s_other_frames_with_it() {
                 &format!("{} at {endpoint}", case.name),
                 &server.get(endpoint).await,
             );
+        }
+    }
+}
+
+/// JPEG XL frames without an embedded colour profile decode to the samples
+/// their encoder was given.
+#[tokio::test]
+async fn jpeg_xl_frames_without_a_profile_decode_exactly() {
+    let dir = tempdir().expect("temp dir");
+    for (name, layout, frame, channels) in [
+        ("gray", Layout::gray8(16, 16), files::JXL_GRAY8_PATTERN, 1),
+        (
+            "gray in the box container",
+            Layout::gray8(16, 16),
+            files::JXL_GRAY8_PATTERN_CONTAINER,
+            1,
+        ),
+        (
+            "gray with compressed metadata boxes",
+            Layout::gray8(16, 16),
+            files::JXL_GRAY8_PATTERN_COMPRESSED_BOXES,
+            1,
+        ),
+        (
+            "gray with metadata boxes",
+            Layout::gray8(16, 16),
+            files::JXL_GRAY8_PATTERN_BOXES,
+            1,
+        ),
+        (
+            "colour",
+            Layout::color8(16, 16, "RGB"),
+            files::JXL_RGB8_PATTERN,
+            3,
+        ),
+    ] {
+        let path = dir.path().join(format!("exact-{}.dcm", name.len()));
+        files::write(&path, files::JPEG_XL, layout, &[hex(frame)]);
+        let server = files::serve(files::list(&[path]).await);
+        let raw = server.get("/api/file/0/frame/0/raw").await;
+        assert_eq!(raw.status_code(), StatusCode::OK, "{name}: {}", raw.text());
+        assert_eq!(raw.as_bytes().as_ref(), pattern(channels), "{name}");
+    }
+    // The display of a colour frame is its samples.
+    let path = dir.path().join("display.dcm");
+    files::write(
+        &path,
+        files::JPEG_XL,
+        Layout::color8(16, 16, "RGB"),
+        &[hex(files::JXL_RGB8_PATTERN)],
+    );
+    let server = files::serve(files::list(&[path]).await);
+    let png = server.get("/api/file/0/frame/0").await;
+    png.assert_status_ok();
+    let shown = image::load_from_memory(png.as_bytes().as_ref())
+        .expect("a PNG")
+        .to_rgb8();
+    assert_eq!(shown.as_raw(), &pattern(3));
+}
+
+/// A JPEG XL frame that carries an embedded colour profile is refused at
+/// every endpoint that decodes it, bare or in the box container, and the
+/// frames beside it decode.
+#[tokio::test]
+async fn a_jpeg_xl_frame_with_an_embedded_profile_is_refused_wherever_it_is_decoded() {
+    let dir = tempdir().expect("temp dir");
+    let layout = Layout::color8(16, 16, "RGB");
+    let plain = hex(files::JXL_RGB8_PATTERN);
+    for (name, frame) in [
+        ("bare", hex(files::JXL_RGB8_WITH_PROFILE)),
+        (
+            "in the box container",
+            hex(files::JXL_RGB8_WITH_PROFILE_CONTAINER),
+        ),
+    ] {
+        let alone = dir.path().join(format!("alone-{}.dcm", name.len()));
+        files::write(&alone, files::JPEG_XL, layout, std::slice::from_ref(&frame));
+        let server = files::serve(files::list(&[alone]).await);
+        for endpoint in [
+            "/api/file/0/frame/0",
+            "/api/file/0/frame/0?window_mode=full_dynamic",
+            "/api/file/0/frame/0/raw",
+            "/api/file/0/frame/0/raw/pixel?row=0&column=0",
+            "/api/file/0/frame/0/thumbnail",
+        ] {
+            let context = format!("{name} at {endpoint}");
+            assert_profile_refused(&context, &server.get(endpoint).await);
+            // A refusal is not cached as a frame.
+            assert_profile_refused(&context, &server.get(endpoint).await);
+        }
+        // The file stays listed, described by its header.
+        let listed: Value = server.get("/api/files").await.json();
+        assert_eq!(listed["files"].as_array().map(Vec::len), Some(1), "{name}");
+        let info: Value = server.get("/api/file/0/info").await.json();
+        assert_eq!(info["rows"], 16, "{name}");
+        assert_eq!(info["columns"], 16, "{name}");
+
+        let mixed = dir.path().join(format!("mixed-{}.dcm", name.len()));
+        files::write(
+            &mixed,
+            files::JPEG_XL,
+            layout,
+            &[plain.clone(), frame, plain.clone()],
+        );
+        let server = files::serve(files::list(&[mixed]).await);
+        for index in [0, 2] {
+            let raw = server.get(&format!("/api/file/0/frame/{index}/raw")).await;
+            assert_eq!(
+                raw.status_code(),
+                StatusCode::OK,
+                "{name} frame {index}: {}",
+                raw.text()
+            );
+            assert_eq!(raw.as_bytes().as_ref(), pattern(3), "{name} frame {index}");
+            let display = format!("/api/file/0/frame/{index}");
+            assert_eq!(png_size(&server, &display, name).await, (16, 16));
+        }
+        for endpoint in ["/api/file/0/frame/1", "/api/file/0/frame/1/raw"] {
+            assert_profile_refused(
+                &format!("{name} at {endpoint}"),
+                &server.get(endpoint).await,
+            );
+        }
+    }
+}
+
+/// A layout the raw endpoints do not serve answers as that whatever the
+/// frame holds: a frame with an embedded colour profile under a 16-bit
+/// colour header is an unsupported layout, as a frame without one is.
+#[tokio::test]
+async fn an_unsupported_jpeg_xl_layout_is_reported_before_the_frame_is_read() {
+    let dir = tempdir().expect("temp dir");
+    let layout = Layout {
+        bits_allocated: 16,
+        bits_stored: 16,
+        ..Layout::color8(16, 16, "RGB")
+    };
+    for (name, frame) in [
+        ("plain", files::JXL_RGB8_PATTERN),
+        ("with a profile", files::JXL_RGB8_WITH_PROFILE),
+    ] {
+        let path = dir.path().join(format!("layout-{}.dcm", name.len()));
+        files::write(&path, files::JPEG_XL, layout, &[hex(frame)]);
+        let server = files::serve(files::list(&[path]).await);
+        for endpoint in [
+            "/api/file/0/frame/0/raw",
+            "/api/file/0/frame/0/raw/pixel?row=0&column=0",
+        ] {
+            let response = server.get(endpoint).await;
+            assert_eq!(
+                response.status_code(),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "{name} at {endpoint}: {}",
+                response.text()
+            );
+            let body: Value = response.json();
+            assert_eq!(body["code"], "unsupported_pixel_layout", "{name}");
         }
     }
 }

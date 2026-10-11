@@ -5,7 +5,10 @@
 //! stated in things that can be counted, and none of them is a time: the
 //! heap the process holds while the header is read and while a frame is
 //! refused, counted at the allocator, with files a few hundred bytes long
-//! that declare images of millions of pixels.
+//! that declare images of millions of pixels. For JPEG XL they also state
+//! that a frame with an embedded colour profile is refused without the
+//! decoder being started, and what the decoder's allocation limit holds it
+//! to by itself.
 //!
 //! These tests are a test binary of their own because they replace the
 //! global allocator. For the same reason no test here decodes an honest
@@ -18,14 +21,16 @@
 
 #[path = "../integration/codestream_files.rs"]
 mod codestream_files;
+mod decoder;
 mod heap;
 
 use axum::http::StatusCode;
 use codestream_files::{self as files, hex, siz, Layout};
 use dcmview::pixels::codestream::{
-    agrees, declared, jxl_decode_limit, CodestreamKind, Declared, Structure,
+    agrees, declared, decode_jpeg_xl, jxl_decode_limit, CodestreamKind, Declared, Structure,
     CODESTREAM_MAX_HEADER_SEGMENTS, CODESTREAM_MISMATCH, J2K_MAX_TILES, J2K_MIN_PACKET_BUDGET,
-    J2K_PIXELS_PER_PACKET, JP2_MAX_BOXES, JPEG_MAX_SCANS,
+    J2K_PIXELS_PER_PACKET, JP2_MAX_BOXES, JPEG_MAX_SCANS, JXL_EMBEDDED_PROFILE,
+    JXL_HEADER_MAX_BYTES,
 };
 use dcmview::types::FileEntry;
 use tempfile::tempdir;
@@ -38,8 +43,9 @@ const KIB: u64 = 1024;
 const MIB: u64 = 1024 * KIB;
 
 /// The most heap reading one frame's header may hold: nothing that grows
-/// with what the frame declares. The JPEG XL header is read by the decoder
-/// itself, which builds its header structures.
+/// with what the frame declares. The JPEG XL header is read by the decoder's
+/// header parser, which builds a description of every extra channel the
+/// header spells out (at most 4,096 of them).
 const HEADER_HEAP: u64 = 64 * KIB;
 const JXL_HEADER_HEAP: u64 = MIB;
 
@@ -114,6 +120,16 @@ fn honest_streams() -> Vec<(&'static str, CodestreamKind, Vec<u8>)> {
             JpegXl,
             hex(files::JXL_GRAY8_CONTAINER),
         ),
+        (
+            "JXL_RGB8_WITH_PROFILE",
+            JpegXl,
+            hex(files::JXL_RGB8_WITH_PROFILE),
+        ),
+        (
+            "JXL_RGB8_WITH_PROFILE_CONTAINER",
+            JpegXl,
+            hex(files::JXL_RGB8_WITH_PROFILE_CONTAINER),
+        ),
     ]
 }
 
@@ -128,15 +144,7 @@ fn reading_what_a_frame_declares_never_panics_and_holds_a_header_s_worth_of_heap
         let mut inputs = (0..=stream.len())
             .map(|length| stream[..length].to_vec())
             .collect::<Vec<_>>();
-        // The JPEG XL header is read by the decoder, whose own cap on an
-        // embedded colour profile is what bounds a header edited to declare
-        // one (see `codestream::declared`); its edits are left out here.
-        let edited = if kind == CodestreamKind::JpegXl {
-            0
-        } else {
-            stream.len().min(160)
-        };
-        for at in 0..edited {
+        for at in 0..stream.len().min(160) {
             for value in [0x00, 0x01, 0x7F, 0x80, 0xFF] {
                 let mut edited = stream.clone();
                 edited[at] = value;
@@ -190,6 +198,13 @@ fn j2k(
 const JXL_STILL: Structure = Structure::JpegXl {
     integer_samples: true,
     animated: false,
+    embedded_profile: false,
+};
+
+const JXL_WITH_PROFILE: Structure = Structure::JpegXl {
+    integer_samples: true,
+    animated: false,
+    embedded_profile: true,
 };
 
 fn says(
@@ -351,6 +366,26 @@ fn a_frame_s_own_header_is_read_as_its_format_defines_it() {
         (JpegXl, files::JXL_RGBA8, says(16, 16, 4, 8, JXL_STILL)),
         (
             JpegXl,
+            files::JXL_GRAY8_PATTERN,
+            says(16, 16, 1, 8, JXL_STILL),
+        ),
+        (
+            JpegXl,
+            files::JXL_RGB8_PATTERN,
+            says(16, 16, 3, 8, JXL_STILL),
+        ),
+        (
+            JpegXl,
+            files::JXL_RGB8_WITH_PROFILE,
+            says(16, 16, 3, 8, JXL_WITH_PROFILE),
+        ),
+        (
+            JpegXl,
+            files::JXL_RGB8_WITH_PROFILE_CONTAINER,
+            says(16, 16, 3, 8, JXL_WITH_PROFILE),
+        ),
+        (
+            JpegXl,
             files::JXL_GRAY8_2048X2048,
             says(2048, 2048, 1, 8, JXL_STILL),
         ),
@@ -365,6 +400,7 @@ fn a_frame_s_own_header_is_read_as_its_format_defines_it() {
                 Structure::JpegXl {
                     integer_samples: true,
                     animated: true,
+                    embedded_profile: false,
                 },
             ),
         ),
@@ -525,10 +561,12 @@ fn a_frame_agrees_with_its_entry_exactly_by_the_accept_table() {
     let floating = Structure::JpegXl {
         integer_samples: false,
         animated: false,
+        embedded_profile: false,
     };
     let moving = Structure::JpegXl {
         integer_samples: true,
         animated: true,
+        embedded_profile: false,
     };
     let subsampled = Structure::Jpeg2000 {
         codestream: 0..0,
@@ -825,6 +863,13 @@ fn a_frame_agrees_with_its_entry_exactly_by_the_accept_table() {
             says(16, 16, 1, 8, moving),
             false,
         ),
+        (
+            "jxl, an embedded colour profile",
+            &color8,
+            says(16, 16, 3, 8, JXL_WITH_PROFILE),
+            false,
+        ),
+        ("jxl, colour", &color8, says(16, 16, 3, 8, still()), true),
     ];
     for (name, file, declared, accepted) in cases {
         let verdict = agrees(file, &declared);
@@ -1167,6 +1212,83 @@ fn a_frame_that_disagrees_with_its_header_is_refused_before_anything_is_allocate
     }
 }
 
+/// A JPEG XL frame that carries an embedded colour profile is refused from
+/// its image header alone: both endpoints answer with the decode error that
+/// says so, the process holds no more than `REFUSAL_HEAP` for it, and the
+/// decoder is never started on it. The same image without the profile
+/// decodes, and that does start the decoder.
+#[test]
+fn a_jpeg_xl_frame_with_an_embedded_profile_is_refused_before_the_decoder_starts() {
+    let _alone = heap::alone();
+    let runtime = runtime();
+    let dir = tempdir().expect("temp dir");
+    let layout = Layout::color8(16, 16, "RGB");
+    let get = |server: &axum_test::TestServer, endpoint: &str| {
+        runtime.block_on(async { server.get(endpoint).await })
+    };
+
+    let plain = dir.path().join("plain.dcm");
+    files::write(
+        &plain,
+        files::JPEG_XL,
+        layout,
+        &[hex(files::JXL_RGB8_PATTERN)],
+    );
+    let server = files::serve(runtime.block_on(files::list(&[plain])));
+    let (response, heard) = decoder::crates_heard(|| get(&server, "/api/file/0/frame/0/raw"));
+    response.assert_status_ok();
+    assert!(
+        heard
+            .iter()
+            .any(|name| !decoder::HEADER_READERS.contains(name)),
+        "decoding a frame starts the decoder, which logs: {heard:?}"
+    );
+
+    for (name, frame) in [
+        ("bare", files::JXL_RGB8_WITH_PROFILE),
+        (
+            "in the box container",
+            files::JXL_RGB8_WITH_PROFILE_CONTAINER,
+        ),
+    ] {
+        let path = dir.path().join(format!("profile-{}.dcm", name.len()));
+        files::write(&path, files::JPEG_XL, layout, &[hex(frame)]);
+        let length = std::fs::metadata(&path).expect("written").len();
+        let server = files::serve(runtime.block_on(files::list(&[path])));
+        for endpoint in ["/api/file/0/frame/0", "/api/file/0/frame/0/raw"] {
+            for attempt in 0..2 {
+                let context = format!("{name} at {endpoint}, attempt {attempt}");
+                let (response, held) = heap::peak_during(|| get(&server, endpoint));
+                assert_eq!(
+                    response.status_code(),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "{context}: {}",
+                    response.text()
+                );
+                assert!(
+                    response.text().contains(JXL_EMBEDDED_PROFILE),
+                    "{context}: {}",
+                    response.text()
+                );
+                let limit = REFUSAL_HEAP + 2 * length;
+                assert!(
+                    held <= limit,
+                    "{context}: {held} bytes of heap held for a {length}-byte file, the limit is {limit}"
+                );
+                report(|| format!("{context}: {held} bytes of heap, file {length}"));
+
+                let (_, heard) = decoder::crates_heard(|| get(&server, endpoint));
+                assert!(
+                    heard
+                        .iter()
+                        .all(|name| decoder::HEADER_READERS.contains(name)),
+                    "{context}: only the header is read, but these logged: {heard:?}"
+                );
+            }
+        }
+    }
+}
+
 /// An honest JPEG XL frame decodes inside the allowance its entry gives the
 /// decoder, which is what bounds a frame whose image header agrees but
 /// whose contents ask for more.
@@ -1195,5 +1317,136 @@ fn a_jpeg_xl_frame_decodes_within_its_entry_s_allowance() {
     assert!(
         held <= allowance,
         "{held} bytes of heap held, the allowance is {allowance}"
+    );
+}
+
+/// The image header is read from the first `JXL_HEADER_MAX_BYTES` of the
+/// codestream and no further: reading what a frame much longer than that
+/// declares holds those bytes and a header's worth more, not the frame.
+#[test]
+fn a_long_jpeg_xl_frame_s_header_is_read_from_its_first_bytes() {
+    let _alone = heap::alone();
+    let frame = files::jxl_gray8_noise_384();
+    let bound = JXL_HEADER_MAX_BYTES as u64;
+    assert_eq!(bound, 64 * KIB);
+    assert!(
+        frame.len() as u64 > 2 * bound,
+        "a frame longer than the read"
+    );
+    let (read, held) = heap::peak_during(|| declared(CodestreamKind::JpegXl, &frame));
+    assert_eq!(
+        read.expect("an honest header"),
+        says(384, 384, 1, 8, JXL_STILL)
+    );
+    report(|| format!("jxl 384 x 384, {} bytes: {held} bytes of heap", frame.len()));
+    let limit = bound + HEADER_HEAP / 4;
+    assert!(
+        held <= limit,
+        "{held} bytes of heap held reading a {}-byte frame, the limit is {limit}",
+        frame.len()
+    );
+}
+
+/// A frame in the box container is decoded from its codestream alone: the
+/// decoder is not given the boxes beside it, which it would read and
+/// decompress outside its allowance. Frames libjxl wrote with metadata
+/// boxes, compressed and not, between the parts of a split codestream
+/// decode to the samples of the bare codestream, and the process holds no
+/// more than the entry's allowance while they do, although one of them
+/// holds a description that is longer than the allowance once decompressed.
+#[test]
+fn a_boxed_jpeg_xl_frame_is_decoded_from_its_codestream_alone() {
+    let _alone = heap::alone();
+    let runtime = runtime();
+    let dir = tempdir().expect("temp dir");
+    let gray = Layout::gray8(16, 16);
+    let color = Layout::color8(16, 16, "RGB");
+    let pattern: Vec<u8> = (0..16)
+        .flat_map(|row| (0..16).map(move |column| files::jxl_pattern(row, column, 0)))
+        .collect();
+    for (name, layout, frame, expected) in [
+        ("bare", gray, files::JXL_GRAY8_PATTERN, Some(&pattern)),
+        (
+            "one codestream box",
+            gray,
+            files::JXL_GRAY8_PATTERN_CONTAINER,
+            Some(&pattern),
+        ),
+        (
+            "compressed metadata boxes",
+            gray,
+            files::JXL_GRAY8_PATTERN_COMPRESSED_BOXES,
+            Some(&pattern),
+        ),
+        (
+            "metadata boxes",
+            gray,
+            files::JXL_GRAY8_PATTERN_BOXES,
+            Some(&pattern),
+        ),
+        (
+            "a long compressed description",
+            gray,
+            files::JXL_GRAY8_PATTERN_LONG_DESCRIPTION,
+            Some(&pattern),
+        ),
+        (
+            "a recompressed JPEG file",
+            color,
+            files::JXL_RGB8_RECOMPRESSED_JPEG,
+            None,
+        ),
+    ] {
+        let path = dir.path().join(format!("boxed-{}.dcm", name.len()));
+        files::write(&path, files::JPEG_XL, layout, &[hex(frame)]);
+        let listed = runtime.block_on(files::list(&[path]));
+        let allowance = jxl_decode_limit(&listed[0]);
+        let samples = 16 * 16 * usize::from(layout.samples);
+        let server = files::serve(listed);
+        let (response, held) = heap::peak_during(|| {
+            runtime.block_on(async { server.get("/api/file/0/frame/0/raw").await })
+        });
+        assert_eq!(
+            response.status_code(),
+            StatusCode::OK,
+            "{name}: {}",
+            response.text()
+        );
+        assert_eq!(response.as_bytes().len(), samples, "{name}");
+        if let Some(expected) = expected {
+            assert_eq!(response.as_bytes().as_ref(), expected.as_slice(), "{name}");
+        }
+        report(|| format!("jxl, {name}: {held} bytes of heap, allowance {allowance}"));
+        assert!(
+            held <= allowance,
+            "{name}: {held} bytes of heap held, the allowance is {allowance}"
+        );
+    }
+}
+
+/// What the allowance guards by itself: the decoder stops when it has
+/// allocated its entry's allowance, whatever the frame goes on to ask for.
+/// The image header check is left out here on purpose, so that an honest
+/// frame of a larger image stands in for a frame whose contents ask for
+/// more than its image header: decoded under the entry of a 16 x 16 image,
+/// a 2,048 x 2,048 frame is stopped at that entry's allowance, where its
+/// decode would hold four times as much.
+#[test]
+fn the_jpeg_xl_decoder_stops_at_its_entry_s_allowance() {
+    let _alone = heap::alone();
+    let runtime = runtime();
+    let small = entry(&runtime, files::JPEG_XL, Layout::gray8(16, 16));
+    let allowance = jxl_decode_limit(&small);
+    assert_eq!(allowance, 4 * MIB + 64 * 16 * 16);
+    let frame = hex(files::JXL_GRAY8_2048X2048);
+    let (decoded, held) = heap::peak_during(|| decode_jpeg_xl(&small, &frame));
+    let error = decoded.expect_err("the decoder runs out of its allowance");
+    report(|| format!("jxl 2048 x 2048 under 16 x 16: {held} bytes of heap, {error:#}"));
+    // What the decoder holds outside its tracker for a frame this small is
+    // far under the slack.
+    let limit = allowance + MIB;
+    assert!(
+        held <= limit,
+        "{held} bytes of heap held, the allowance is {allowance}: {error:#}"
     );
 }

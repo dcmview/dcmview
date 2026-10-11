@@ -1005,13 +1005,19 @@ entry's image costs whatever its own header declares.
   pixel_decode_failed`, or the overlay endpoints' own error) whose message
   contains `codestream::CODESTREAM_MISMATCH`, "pixel data disagrees with the
   header". The file stays listed and its other frames decode.
+- A JPEG XL frame whose image header says an embedded colour profile
+  follows is refused the same way, with `codestream::JXL_EMBEDDED_PROFILE`
+  as its message: "JPEG XL frame carries an embedded colour profile, which
+  is not supported". The viewer takes colour from the data set and has no
+  use for that profile, and the decoder would read it outside its
+  allocation limit, so the frame never reaches the decoder.
 
 | Syntax | Read from the frame, and how far | Compared with the entry |
 |---|---|---|
 | JPEG Baseline, JPEG Lossless | The frame header (`SOFn`), after at most 1,024 marker segments, each stepped over by its length; then the scans are counted to the end of the frame | Rows, columns, components; precision against Bits Allocated by process (8 in 8 for the DCT processes; for lossless 8 in 8, any other precision in 16); at most 100 scans |
 | JPEG-LS | The frame header (`SOF55`), after at most 1,024 marker segments | Rows, columns, components; precision 2 to 8 in 8 bits allocated, 9 to 16 in 16 |
 | JPEG 2000 | `SIZ`, then every coding style (`COD`, `COC`) of the main header (at most 1,024 marker segments) and of each tile-part header; a JP2 file's boxes up to its codestream box (at most 64) | Rows, columns (from the image size and offset), components, all at full resolution and one depth; precision at most Bits Allocated; at most 4,096 tiles; at most 65,536 packets for a component of a tile, or one for every 64 pixels of the tile if that is more |
-| JPEG XL | The image header, read by the decoder from at most the first 4 MiB + 64 KiB of the frame | Rows, columns, channels (colour and alpha); integer samples of at most Bits Allocated; no animation |
+| JPEG XL | The image header, read by the decoder's header parser from at most the first 64 KiB of the codestream, without starting the decoder; in the box container, the boxes up to those bytes (at most 64). A header that does not end within those bytes (dozens of named extra channels would do it) is refused as unreadable | No embedded colour profile; rows, columns, channels (colour and alpha); integer samples of at most Bits Allocated; no animation |
 
 What the table does not name is not compared: the colour transform, the
 number of resolution levels, chroma subsampling, restart intervals, a
@@ -1029,9 +1035,16 @@ Three more rules close the same gap where there is no header to compare:
   frame is decoded by `codestream::decode_jpeg_xl` with the decoder's
   allocation tracker limited to `codestream::jxl_decode_limit` (4 MiB plus 64
   bytes for each sample of the entry's frame), and the output buffer is
-  sized from the entry. An embedded colour profile is the exception: the
-  decoder reads it under its own cap of 256 MiB encoded and 256 MiB decoded
-  and does not count it against the tracker.
+  sized from the entry. Two things the decoder would read outside that
+  limit never reach it. An embedded colour profile: a frame that has one is
+  refused before the decoder starts. The boxes of the box container
+  (metadata, compressed or not, and JPEG reconstruction data, which the
+  decoder decompresses and keeps): the decoder is given the codestream
+  alone, the contents of the frame's `jxlc` box or of its `jxlp` boxes
+  joined in one buffer no longer than the frame, so it never sees a
+  container. A recompressed JPEG file decodes to the same pixels without
+  its reconstruction data. The limit bounds what the decoder accounts for
+  with its tracker.
 - **Deflated Image Frame.** `codestream::inflate_frame` reads the frame's
   packed size plus one byte out of the inflater and no more; a frame that
   inflates to anything else is refused.
@@ -2166,9 +2179,18 @@ installation and VS Code Electron integration can also use network/cache state;
   random frames, checks `codestream::agrees` against its accept table row by
   row, and serves frames a few hundred bytes long that declare images of
   millions of pixels, asserting the heap the whole process holds while each
-  is refused. Its counting allocator counts every thread, because decoders
-  run on blocking threads, so its tests run one at a time; it decodes no
-  honest JPEG 2000 frame, for the reason given above.
+  is refused. A JPEG XL frame that libjxl wrote with an embedded colour
+  profile is refused at every endpoint in the first and under the same heap
+  bound in the second, which also listens to what the decoder's crates log
+  to tell that the decoder was never started on it, and decodes a frame of
+  a larger image under a small entry to count what the allocation limit
+  alone holds the decoder to. Frames libjxl wrote in the box container,
+  with metadata boxes and with JPEG reconstruction data, decode there
+  within their entry's allowance and to the samples of the bare codestream,
+  and the header of a frame longer than the header read is read holding no
+  more than that read. Its counting allocator counts every thread,
+  because decoders run on blocking threads, so its tests run one at a time;
+  it decodes no honest JPEG 2000 frame, for the reason given above.
 - Decode admission tests (`tests/integration/decode_admission.rs`) hold the
   scheduler to its rules through its own account of itself
   (`DecodeScheduler::load` and `load_when`), never through time: the bytes

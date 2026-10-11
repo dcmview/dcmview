@@ -50,6 +50,17 @@ fn render_jpeg_xl_blocking(
     requested_ww: Option<f64>,
     window_mode: WindowMode,
 ) -> PixelResult<DisplayBuffer> {
+    // A layout that is not displayed is refused as that, before the frame
+    // is read: the decode returns the entry's layout or fails.
+    if !matches!(
+        (file.bits_allocated, file.samples_per_pixel),
+        (8, 1 | 3) | (16, 1)
+    ) {
+        return Err(PixelError::UnsupportedLayout(format!(
+            "JPEG XL Lossless display does not support BitsAllocated {} with SamplesPerPixel {}",
+            file.bits_allocated, file.samples_per_pixel
+        )));
+    }
     let decoded = decode_frame(file, frame).map_err(PixelError::frame_decode)?;
     match (decoded.bits_allocated, decoded.samples_per_pixel) {
             (8, 3) => {
@@ -115,8 +126,9 @@ pub(crate) async fn decode_raw_jpeg_xl(
     frame: u32,
 ) -> PixelResult<(Bytes, RawFrameMetadata)> {
     task::spawn_blocking(move || {
-        let decoded = decode_frame(&file, frame).map_err(PixelError::raw_decode)?;
-        match (decoded.bits_allocated, decoded.samples_per_pixel) {
+        // Refused as an unsupported layout before the frame is read: the
+        // decode returns the entry's layout or fails.
+        match (file.bits_allocated, file.samples_per_pixel) {
             (8, 1 | 3) | (16, 1) => {}
             (bits, samples) => {
                 return Err(PixelError::UnsupportedLayout(format!(
@@ -124,6 +136,7 @@ pub(crate) async fn decode_raw_jpeg_xl(
                 )));
             }
         }
+        let decoded = decode_frame(&file, frame).map_err(PixelError::raw_decode)?;
         let mut metadata = file.raw_metadata(
             decoded.rows,
             decoded.columns,
