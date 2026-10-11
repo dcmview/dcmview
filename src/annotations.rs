@@ -94,10 +94,16 @@ impl AnnotationInput {
     /// Otherwise the start of the file decides
     /// (`dcmview_adapters::Registry::sniff` over the built-in adapters, on
     /// at most `dcmview_adapters::limits::SNIFF_BYTES`): a file the native
-    /// adapter is the most confident about is [`AnnotationFormat::Native`],
-    /// and every other file is [`AnnotationFormat::Embed`], so anything
-    /// that is not recognizably a native document is read, and refused, as
-    /// the EMBED CSV it always was.
+    /// adapter is certain of (it starts with `{`, after an optional byte
+    /// order mark and whitespace, and names the format
+    /// `"dcmview.annotations"` in those first bytes) is
+    /// [`AnnotationFormat::Native`], and every other file is
+    /// [`AnnotationFormat::Embed`]. So anything that is not recognizably a
+    /// native document, a JSON file of another kind included, is read as
+    /// the EMBED CSV it always was and stops the process as one does, with
+    /// status 1 and the message about its columns. A document whose
+    /// `format` member is not in its first 4,096 bytes needs
+    /// `--annotations-format native`.
     ///
     /// An EMBED CSV has its header checked here
     /// ([`AnnotationSource::from_path`]). A native file is only opened: it
@@ -123,10 +129,13 @@ fn sniff_format(path: &Path) -> Result<AnnotationFormat> {
                 .read_to_end(&mut head)
         })
         .with_context(|| format!("failed to open annotations file: {}", path.display()))?;
+    // Only a file that says it is a document is one. A file that merely
+    // starts like JSON is read as the CSV it always was, and fails as one.
     let native = Registry::builtin()
         .sniff(&head)
-        .is_some_and(|(adapter, _)| {
+        .is_some_and(|(adapter, confidence)| {
             adapter.info().id == dcmview_adapters::native::NATIVE_ADAPTER_ID
+                && confidence == dcmview_adapters::Confidence::Certain
         });
     Ok(if native {
         AnnotationFormat::Native
