@@ -236,6 +236,16 @@ diagnostic viewer.
   side with a 1 GiB budget, or 13,105 with 4 GiB, can be shown while its
   layer is refused, and is then shown without those graphics.
 
+- A JPEG XL frame that carries an embedded colour profile is now refused
+  with `500 pixel_decode_failed` and "JPEG XL frame carries an embedded
+  colour profile, which is not supported". The viewer takes colour from the
+  DICOM data set and never used that profile. Files whose JPEG XL frames
+  embed one, as a lossless libjxl encode writes them from a source that has
+  one, displayed before and no longer do; encode them again without the
+  profile. The file stays listed and its frames without a profile decode.
+- A JPEG XL frame whose image header does not end within the first 64 KiB
+  of its codestream is refused as unreadable.
+
 ### Fixed
 
 - Discovery no longer sizes what it reads from the lengths a DICOM file
@@ -280,6 +290,14 @@ diagnostic viewer.
   exactly the bytes `--cache-budget` counts for them. Before, a cached
   image could hold up to twice its length, so the caches could hold more
   than the budget.
+- A JPEG XL frame is decoded with the decoder's own allocation limit set
+  from the file's header, and two parts of a frame that were read outside
+  that limit no longer reach the decoder: an embedded colour profile, which
+  was read before the frame was checked, and the metadata and JPEG
+  reconstruction boxes of a frame in the box container, which were
+  decompressed and kept. The viewer used neither. A frame with an embedded
+  profile is now refused (see Changed), and a frame in the box container is
+  decoded from its codestream alone; its pixels are unchanged.
 
 ## 0.4.1 - 2026-10-09
 

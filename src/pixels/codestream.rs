@@ -20,7 +20,10 @@
 //!
 //! [`checked`] runs both. A frame that fails either is a decode error for
 //! that frame, with [`CODESTREAM_MISMATCH`] in its message; the file stays
-//! listed and its other frames decode.
+//! listed and its other frames decode. A JPEG XL frame that carries an
+//! embedded colour profile is refused the same way, with
+//! [`JXL_EMBEDDED_PROFILE`] as its message, before the decoder is given a
+//! byte of it.
 //!
 //! Two decoders are bounded differently, because their formats have no
 //! header that settles the cost: [`decode_jpeg_xl`] decodes under the
@@ -35,7 +38,11 @@ use anyhow::{anyhow, Result};
 use dicom_core::Tag;
 use dicom_dictionary_std::tags;
 use dicom_object::DefaultDicomObject;
+use std::borrow::Cow;
 use std::ops::Range;
+
+use jxl_bitstream::{Bitstream, ContainerParser, ParseEvent};
+use jxl_oxide_common::Bundle;
 
 use super::error::Stated;
 use super::syntax::{codec_for_syntax, Codec};
@@ -71,9 +78,19 @@ pub const J2K_MIN_PACKET_BUDGET: u64 = 65_536;
 /// See [`J2K_MIN_PACKET_BUDGET`].
 pub const J2K_PIXELS_PER_PACKET: u64 = 64;
 
-/// The most bytes of a JPEG XL frame [`declared`] feeds the decoder for it
-/// to read the image header (which holds an embedded colour profile).
-pub const JXL_HEADER_MAX_BYTES: usize = 4 * 1024 * 1024 + 65_536;
+/// The message of the decode error for a JPEG XL frame that carries an
+/// embedded colour profile. The viewer takes colour from the data set and
+/// never reads that profile, so the frame is refused instead of read.
+pub const JXL_EMBEDDED_PROFILE: &str =
+    "JPEG XL frame carries an embedded colour profile, which is not supported";
+
+/// The most bytes of a JPEG XL codestream [`declared`] reads the image
+/// header from.
+pub const JXL_HEADER_MAX_BYTES: usize = 65_536;
+
+/// The most boxes [`declared`] reads of a JPEG XL frame in the box
+/// container before it has the bytes of the image header.
+pub const JXL_MAX_BOXES: usize = 64;
 
 /// What [`decode_jpeg_xl`] lets the decoder allocate whatever the frame:
 /// see [`jxl_decode_limit`].
@@ -165,6 +182,8 @@ pub enum Structure {
         integer_samples: bool,
         /// The image header declares an animation.
         animated: bool,
+        /// The image header says an embedded colour profile follows it.
+        embedded_profile: bool,
     },
 }
 
@@ -172,9 +191,9 @@ pub enum Structure {
 ///
 /// Never panics, whatever `frame` holds: no indexing or slicing that can go
 /// out of range, no arithmetic that can overflow. Allocates nothing whose
-/// size comes from `frame`, except through the JPEG XL decoder's own header
-/// parser as described below. Every failure is an error; none of them is a
-/// mismatch by itself, [`checked`] adds that.
+/// size comes from `frame`, except what the JPEG XL header parser holds as
+/// described below. Every failure is an error; none of them is a mismatch
+/// by itself, [`checked`] adds that.
 ///
 /// All multi-byte numbers below are big endian. "Error" means return `Err`.
 ///
@@ -268,24 +287,34 @@ pub enum Structure {
 ///
 /// # `JpegXl`
 ///
-/// The header is read by the decoder this crate links (`jxl-oxide`): build
-/// an uninitialized image with an allocation tracker limited to
-/// [`JXL_DECODE_BASE_BYTES`]
-/// (`JxlImage::builder().alloc_tracker(AllocTracker::with_limit(..))
-/// .build_uninit()`), feed it at most the first [`JXL_HEADER_MAX_BYTES`] of
-/// the frame (`feed_bytes`) and ask it to initialize (`try_init`). A
-/// decoder error is an error; so is a decoder that still needs more data
-/// after those bytes. Then `columns = image.width()`,
-/// `rows = image.height()`, `components` is the channel count of
-/// `image.pixel_format()` (colour and alpha), and from
-/// `image.image_header().metadata`: `precision` and `integer_samples` from
-/// `bit_depth` (bits per sample; integer or floating point), `animated`
-/// when `animation` is present.
+/// The image header is read by the header parser the decoder is built from
+/// (`jxl-image`, over `jxl-bitstream`), and the decoder itself (`jxl-oxide`)
+/// is not started: nothing here reads past the image header, so an embedded
+/// colour profile, which follows it, is never read.
 ///
-/// One part of this read is bounded by the decoder and not here: a header
-/// that declares an embedded colour profile has it read by the decoder,
-/// which caps the profile at 256 MiB encoded and 256 MiB decoded and does
-/// not count it against the tracker.
+/// 1. Find the codestream with the decoder's container parser
+///    (`jxl_bitstream::ContainerParser::feed_bytes` over the whole frame):
+///    a bare codestream is the frame itself; in the box container it is the
+///    contents of the `jxlc` box, or of the `jxlp` boxes in order. The
+///    parser steps over every other box by its length without reading it.
+///    Copy the codestream bytes it reports, stopping at
+///    [`JXL_HEADER_MAX_BYTES`]. A parser error is an error; so is reading
+///    more than [`JXL_MAX_BOXES`] boxes (codestream boxes included) before
+///    that many bytes or the end of the frame.
+/// 2. Parse the image header from those bytes
+///    (`ImageHeader::parse(&mut Bitstream::new(bytes), ())`). A parser
+///    error is an error, and so is a header that does not end within the
+///    bytes. The parser holds what the header spells out and no more: at
+///    most 4,096 extra channel descriptions, each with a name of at most
+///    1,071 bytes that must be present in the bytes read.
+/// 3. `columns` and `rows` are the header's size with its orientation
+///    applied (`width_with_orientation`, `height_with_orientation`).
+///    `components` is 1 when the colour encoding's colour space is gray,
+///    else 3, plus 1 when any extra channel is alpha: the channels the
+///    decoder returns. From `metadata`: `precision` and `integer_samples`
+///    from `bit_depth` (bits per sample; integer or floating point),
+///    `animated` when `animation` is present, `embedded_profile` from
+///    `colour_encoding.want_icc()`.
 pub fn declared(kind: CodestreamKind, frame: &[u8]) -> Result<Declared> {
     match kind {
         CodestreamKind::Jpeg | CodestreamKind::JpegLs => read_jpeg(frame, kind),
@@ -644,42 +673,102 @@ fn ceil_shift(value: u64, exponent: u8) -> u64 {
 }
 
 fn read_jpeg_xl(frame: &[u8]) -> Result<Declared> {
-    let mut uninit = jxl_oxide::JxlImage::builder()
-        .alloc_tracker(jxl_oxide::AllocTracker::with_limit(
-            usize::try_from(JXL_DECODE_BASE_BYTES).unwrap_or(usize::MAX),
-        ))
-        .build_uninit();
-    let header = frame
-        .get(..frame.len().min(JXL_HEADER_MAX_BYTES))
-        .ok_or_else(|| anyhow!("invalid JPEG XL header range"))?;
-    uninit
-        .feed_bytes(header)
-        .map_err(|error| anyhow!("{error}"))?;
-    let image = match uninit.try_init().map_err(|error| anyhow!("{error}"))? {
-        jxl_oxide::InitializeResult::Initialized(image) => image,
-        jxl_oxide::InitializeResult::NeedMoreData(_) => {
-            return Err(anyhow!(
-                "JPEG XL header needs more bytes than available within the limit"
-            ));
+    let codestream = jxl_codestream_start(frame)?;
+    let mut bitstream = Bitstream::new(&codestream);
+    let header = jxl_oxide::ImageHeader::parse(&mut bitstream, ()).map_err(|error| {
+        if error.unexpected_eof() {
+            anyhow!("JPEG XL image header does not end within the bytes read for it")
+        } else {
+            anyhow!("{error}")
         }
-    };
-    let metadata = &image.image_header().metadata;
+    })?;
+    let metadata = &header.metadata;
     let (precision, integer_samples) = match metadata.bit_depth {
         jxl_oxide::image::BitDepth::IntegerSample { bits_per_sample } => (bits_per_sample, true),
         jxl_oxide::image::BitDepth::FloatSample {
             bits_per_sample, ..
         } => (bits_per_sample, false),
     };
+    let colour = if metadata.grayscale() { 1 } else { 3 };
+    let alpha = u32::from(metadata.alpha().is_some());
     Ok(Declared {
-        columns: image.width(),
-        rows: image.height(),
-        components: u32::try_from(image.pixel_format().channels())?,
+        columns: header.width_with_orientation(),
+        rows: header.height_with_orientation(),
+        components: colour + alpha,
         precision,
         structure: Structure::JpegXl {
             integer_samples,
             animated: metadata.animation.is_some(),
+            embedded_profile: metadata.colour_encoding.want_icc(),
         },
     })
+}
+
+/// The first bytes of the JPEG XL codestream in `frame`, at most
+/// [`JXL_HEADER_MAX_BYTES`] of them: step 1 of [`declared`] for `JpegXl`.
+fn jxl_codestream_start(frame: &[u8]) -> Result<Vec<u8>> {
+    let mut start = Vec::with_capacity(frame.len().min(JXL_HEADER_MAX_BYTES));
+    let mut parser = ContainerParser::new();
+    let mut boxes = 0;
+    for event in parser.feed_bytes(frame) {
+        let bytes = match event.map_err(|error| anyhow!("{error}"))? {
+            ParseEvent::Codestream(bytes) => bytes,
+            ParseEvent::AuxBoxStart { .. } => &[],
+            _ => continue,
+        };
+        if boxes == JXL_MAX_BOXES {
+            return Err(anyhow!(
+                "no JPEG XL image header within the container box limit"
+            ));
+        }
+        boxes += 1;
+        let wanted = JXL_HEADER_MAX_BYTES.saturating_sub(start.len());
+        start.extend_from_slice(bytes.get(..wanted.min(bytes.len())).unwrap_or_default());
+        if start.len() >= JXL_HEADER_MAX_BYTES {
+            break;
+        }
+    }
+    Ok(start)
+}
+
+/// The whole JPEG XL codestream in `frame`, which is all the decoder is
+/// given: the frame itself when it is a bare codestream, the contents of
+/// the one box that holds it, or the contents of its `jxlp` boxes joined in
+/// order, in a buffer reserved once at the frame's length. Found with the
+/// container parser that [`declared`] reads the image header through, so
+/// the header that was checked is the header that is decoded. Every other
+/// box is stepped over by its length and never read.
+fn jxl_codestream(frame: &[u8]) -> Result<Cow<'_, [u8]>> {
+    let mut first: Option<&[u8]> = None;
+    let mut joined = Vec::new();
+    let mut parser = ContainerParser::new();
+    for event in parser.feed_bytes(frame) {
+        let ParseEvent::Codestream(part) = event.map_err(|error| anyhow!("{error}"))? else {
+            continue;
+        };
+        if part.is_empty() {
+            continue;
+        }
+        match first {
+            None => first = Some(part),
+            Some(start) => {
+                if joined.is_empty() {
+                    joined.try_reserve_exact(frame.len())?;
+                    joined.extend_from_slice(start);
+                }
+                joined.extend_from_slice(part);
+            }
+        }
+    }
+    let codestream = if joined.is_empty() {
+        Cow::Borrowed(first.unwrap_or_default())
+    } else {
+        Cow::Owned(joined)
+    };
+    if !codestream.starts_with(&[0xFF, 0x0A]) {
+        return Err(anyhow!("JPEG XL frame holds no codestream"));
+    }
+    Ok(codestream)
 }
 
 /// Whether what a frame declares is what the entry says, so that decoding
@@ -700,11 +789,16 @@ fn read_jpeg_xl(frame: &[u8]) -> Result<Declared> {
 /// | JPEG | `scans <= JPEG_MAX_SCANS` |
 /// | JPEG-LS (process `F7`) | `precision` 2 to 8 and `file.bits_allocated == 8`; or `precision` 9 to 16 and `file.bits_allocated == 16` |
 /// | JPEG 2000 | `uniform`; `1 <= precision <= file.bits_allocated`; `tiles <= J2K_MAX_TILES`; `packets <= max(J2K_MIN_PACKET_BUDGET, tile_pixels / J2K_PIXELS_PER_PACKET)` |
-/// | JPEG XL | `integer_samples`; `1 <= precision <= file.bits_allocated`; not `animated` |
+/// | JPEG XL | not `embedded_profile`; `integer_samples`; `1 <= precision <= file.bits_allocated`; not `animated` |
 ///
 /// The error says which rule failed and both values; it does not need to
-/// contain [`CODESTREAM_MISMATCH`], [`checked`] adds it.
+/// contain [`CODESTREAM_MISMATCH`], [`checked`] adds it. An embedded colour
+/// profile is compared before anything else, and its error is
+/// [`JXL_EMBEDDED_PROFILE`].
 pub fn agrees(file: &FileEntry, declared: &Declared) -> Result<()> {
+    if embeds_profile(declared) {
+        return Err(anyhow!(JXL_EMBEDDED_PROFILE));
+    }
     for (rule, actual, expected) in [
         ("columns", declared.columns, file.columns),
         ("rows", declared.rows, file.rows),
@@ -773,6 +867,7 @@ pub fn agrees(file: &FileEntry, declared: &Declared) -> Result<()> {
         Structure::JpegXl {
             integer_samples,
             animated,
+            ..
         } => {
             if !integer_samples {
                 return Err(anyhow!(
@@ -797,10 +892,23 @@ fn precision_fits(precision: u32, allocated: u32) -> Result<()> {
     Ok(())
 }
 
+fn embeds_profile(declared: &Declared) -> bool {
+    matches!(
+        declared.structure,
+        Structure::JpegXl {
+            embedded_profile: true,
+            ..
+        }
+    )
+}
+
 /// What `frame` declares, once it is known to agree with `file`.
 ///
 /// Every decoder calls this (directly or through
 /// `pixeldata_frame::decode_object`) before a codec library sees the frame.
+/// The error of a JPEG XL frame with an embedded colour profile is
+/// [`JXL_EMBEDDED_PROFILE`] alone; every other error starts with
+/// [`CODESTREAM_MISMATCH`].
 pub(crate) fn checked(file: &FileEntry, kind: CodestreamKind, frame: &[u8]) -> Result<Declared> {
     // The header reader's own reason may be a library's, so it stays below
     // the stated one; `agrees` writes rule names and numbers only.
@@ -809,6 +917,9 @@ pub(crate) fn checked(file: &FileEntry, kind: CodestreamKind, frame: &[u8]) -> R
             "{CODESTREAM_MISMATCH}: its own header cannot be read"
         )))
     })?;
+    if embeds_profile(&declared) {
+        return Err(Stated::error(JXL_EMBEDDED_PROFILE));
+    }
     agrees(file, &declared)
         .map_err(|error| Stated::error(format!("{CODESTREAM_MISMATCH}: {error:#}")))?;
     Ok(declared)
@@ -854,15 +965,15 @@ pub(crate) fn header_agrees(file: &FileEntry, object: &DefaultDicomObject) -> Re
     Ok(())
 }
 
-/// The most bytes the JPEG XL decoder may allocate for one frame of `file`:
-/// [`JXL_DECODE_BASE_BYTES`] plus [`JXL_DECODE_BYTES_PER_SAMPLE`] for each
+/// The limit the JPEG XL decoder's allocation tracker is given for one
+/// frame of `file`: [`JXL_DECODE_BASE_BYTES`] plus [`JXL_DECODE_BYTES_PER_SAMPLE`] for each
 /// of the frame's `rows * columns * samples_per_pixel` samples, saturating.
 ///
 /// A lossless frame decodes in about five bytes a sample at 8 bits and
-/// eleven at 16, so an honest frame is far inside this; a frame whose own
-/// frame header, extra channels or reference frames ask for more than the
-/// entry's image is stopped by it. An embedded colour profile is outside
-/// it: see [`declared`].
+/// eleven at 16, so an honest frame is far inside this. The limit bounds
+/// what the decoder accounts for with its tracker. Beside it, the decoder
+/// is handed only the codestream ([`decode_jpeg_xl`]), and a frame with an
+/// embedded colour profile is refused ([`checked`]).
 pub fn jxl_decode_limit(file: &FileEntry) -> u64 {
     u64::from(file.rows)
         .saturating_mul(u64::from(file.columns))
@@ -877,8 +988,11 @@ pub fn jxl_decode_limit(file: &FileEntry) -> u64 {
 ///
 /// The decoder (`jxl-oxide`) is built with an allocation tracker limited to
 /// [`jxl_decode_limit`] (`JxlImage::builder().alloc_tracker(
-/// AllocTracker::with_limit(..))`), reads the whole frame, and renders its
-/// first keyframe (`render_frame(0)`); the samples are taken from the
+/// AllocTracker::with_limit(..))`), reads the frame's codestream and
+/// nothing else of the frame (a frame in the box container is not handed
+/// over as it is: the decoder would read its metadata and JPEG
+/// reconstruction boxes, decompressing them, outside the limit), and
+/// renders its first keyframe (`render_frame(0)`); the samples are taken from the
 /// render's stream (`stream()`, then `write_to_buffer` into a `u8` or `u16`
 /// buffer of `channels * width * height` samples), as the data set adapter
 /// did before. Errors, never panics: the decoder's own errors (running out
@@ -886,7 +1000,11 @@ pub fn jxl_decode_limit(file: &FileEntry) -> u64 {
 /// is not the entry's columns, rows and samples per pixel; a
 /// `file.bits_allocated` other than 8 or 16; a short write. The output
 /// buffer is sized from the entry, never from the stream.
-pub(crate) fn decode_jpeg_xl(file: &FileEntry, frame: &[u8]) -> Result<Vec<u8>> {
+///
+/// Public so that `tests/codestream_cost` can count what the limit alone
+/// holds a frame to; the decoders reach it through
+/// `pixeldata_frame::decode_object`, after [`checked`].
+pub fn decode_jpeg_xl(file: &FileEntry, frame: &[u8]) -> Result<Vec<u8>> {
     if !matches!(file.bits_allocated, 8 | 16) {
         return Err(anyhow!(
             "JPEG XL output Bits Allocated is {}, expected 8 or 16",
@@ -897,7 +1015,7 @@ pub(crate) fn decode_jpeg_xl(file: &FileEntry, frame: &[u8]) -> Result<Vec<u8>> 
         .alloc_tracker(jxl_oxide::AllocTracker::with_limit(
             usize::try_from(jxl_decode_limit(file)).unwrap_or(usize::MAX),
         ))
-        .read(frame)
+        .read(&*jxl_codestream(frame)?)
         .map_err(|error| anyhow!("{error}"))?;
     let render = image.render_frame(0).map_err(|error| anyhow!("{error}"))?;
     let mut stream = render.stream();
