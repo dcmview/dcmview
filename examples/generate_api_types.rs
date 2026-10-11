@@ -4,14 +4,15 @@
 //! it exits non-zero when the committed file differs from the Rust contract.
 
 use dcmview::api::contracts::{
-    endpoints, AnnotationOpQuery, AnnotationOpResponse, DoseOverlayQuery, EmbedRoiAnnotations,
-    ErrorResponse, FilesQuery, FilesResponse, FrameInfo, FrameQuery, FrameValueMapping,
-    FrameWindowApplied, GraphicAnnotationsQuery, GraphicAnnotationsResponse, HealthResponse,
-    ParametricMapOverlayQuery, PixelQuery, RawFrameMetadata, RedactionSeriesResponse,
-    ReferenceCatalogResponse, SemanticContextResponse, SeriesCatalogResponse, TagNode, TagQuery,
-    ThumbnailQuery, ThumbnailSource, WsiFrameContextResponse, API_PREFIX, API_RESPONSE_HEADERS,
-    DISPLAY_FRAME_HEADERS, FILE_KEY_HEADER, RAW_FRAME_HEADERS, THUMBNAIL_DEFAULT_SIZE,
-    THUMBNAIL_HEADERS, THUMBNAIL_SIZE_BUCKETS,
+    endpoints, AnnotationImportResponse, AnnotationOpQuery, AnnotationOpResponse, DoseOverlayQuery,
+    EmbedRoiAnnotations, ErrorResponse, FilesQuery, FilesResponse, FrameInfo, FrameQuery,
+    FrameValueMapping, FrameWindowApplied, GraphicAnnotationsQuery, GraphicAnnotationsResponse,
+    HealthResponse, ParametricMapOverlayQuery, PixelQuery, RawFrameMetadata,
+    RedactionSeriesResponse, ReferenceCatalogResponse, SemanticContextResponse,
+    SeriesCatalogResponse, TagNode, TagQuery, ThumbnailQuery, ThumbnailSource,
+    WsiFrameContextResponse, API_PREFIX, API_RESPONSE_HEADERS, DISPLAY_FRAME_HEADERS,
+    FILE_KEY_HEADER, RAW_FRAME_HEADERS, THUMBNAIL_DEFAULT_SIZE, THUMBNAIL_HEADERS,
+    THUMBNAIL_SIZE_BUCKETS,
 };
 use std::any::TypeId;
 use std::collections::{BTreeMap, HashSet};
@@ -81,6 +82,7 @@ fn render() -> String {
     declarations.visit::<EmbedRoiAnnotations>();
     declarations.visit::<AnnotationOpResponse>();
     declarations.visit::<AnnotationOpQuery>();
+    declarations.visit::<AnnotationImportResponse>();
     declarations.visit::<ErrorResponse>();
 
     let mut out = String::from(

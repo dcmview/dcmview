@@ -15,6 +15,8 @@ pub const PNG_MEDIA_TYPE: &str = "image/png";
 pub const JPEG_MEDIA_TYPE: &str = "image/jpeg";
 pub const OCTET_STREAM_MEDIA_TYPE: &str = "application/octet-stream";
 pub const CSV_MEDIA_TYPE: &str = "text/csv; charset=utf-8";
+/// JSON Lines: one JSON value per line.
+pub const JSONL_MEDIA_TYPE: &str = "application/jsonl";
 
 /// Unix-millisecond server start identity on every API response, including errors.
 pub const SERVER_INSTANCE_HEADER: &str = "X-Server-Instance";
@@ -58,6 +60,12 @@ pub const CACHE_MISS: &str = "MISS";
 pub const EXPORT_CONTENT_DISPOSITION_HEADER: &str = "Content-Disposition";
 pub const EXPORT_CONTENT_DISPOSITION_VALUE: &str =
     "attachment; filename=\"dcmview-annotations.csv\"";
+/// [`EXPORT_CONTENT_DISPOSITION_HEADER`] of `endpoints::ANNOTATIONS_EXPORT_JSON`.
+pub const EXPORT_JSON_CONTENT_DISPOSITION_VALUE: &str =
+    "attachment; filename=\"dcmview-annotations.json\"";
+/// [`EXPORT_CONTENT_DISPOSITION_HEADER`] of `endpoints::ANNOTATIONS_EXPORT_JSONL`.
+pub const EXPORT_JSONL_CONTENT_DISPOSITION_VALUE: &str =
+    "attachment; filename=\"dcmview-annotations.jsonl\"";
 
 pub const RAW_FRAME_HEADER_ROWS: &str = "X-Frame-Rows";
 pub const RAW_FRAME_HEADER_COLUMNS: &str = "X-Frame-Columns";
@@ -206,7 +214,8 @@ pub enum ResponseHeaders {
     RawFrame,
     /// [`CACHE_HEADER`] plus [`THUMBNAIL_HEADERS`].
     Thumbnail,
-    /// [`EXPORT_CONTENT_DISPOSITION_HEADER`].
+    /// [`EXPORT_CONTENT_DISPOSITION_HEADER`], naming a file with the
+    /// endpoint's extension.
     Export,
 }
 
@@ -226,8 +235,8 @@ pub struct Endpoint {
 
 pub mod endpoints {
     use super::{
-        ApiMethod, Endpoint, ResponseHeaders, CSV_MEDIA_TYPE, JPEG_MEDIA_TYPE, JSON_MEDIA_TYPE,
-        OCTET_STREAM_MEDIA_TYPE, PNG_MEDIA_TYPE,
+        ApiMethod, Endpoint, ResponseHeaders, CSV_MEDIA_TYPE, JPEG_MEDIA_TYPE, JSONL_MEDIA_TYPE,
+        JSON_MEDIA_TYPE, OCTET_STREAM_MEDIA_TYPE, PNG_MEDIA_TYPE,
     };
 
     const fn json(id: &'static str, method: ApiMethod, path: &'static str) -> Endpoint {
@@ -417,13 +426,35 @@ pub mod endpoints {
         ApiMethod::Put,
         "/file/{index}/redactions/series",
     );
-    /// EMBED-style CSV of every in-memory annotation.
+    /// EMBED-style CSV of every in-memory annotation, rows sorted by path.
     pub const ANNOTATIONS_EXPORT: Endpoint = binary(
         "annotationsExport",
         "/annotations/export.csv",
         CSV_MEDIA_TYPE,
         ResponseHeaders::Export,
     );
+    /// Every annotation, label and layer of the session as one
+    /// `dcmview.annotations` JSON document (`Document` of
+    /// `frontend/src/generated/annotation-types.ts`), with a `FileRef` for
+    /// each file a record names.
+    pub const ANNOTATIONS_EXPORT_JSON: Endpoint = binary(
+        "annotationsExportJson",
+        "/annotations/export.json",
+        JSON_MEDIA_TYPE,
+        ResponseHeaders::Export,
+    );
+    /// The same document in its JSON Lines form: a header line, then one
+    /// line for each file, layer, annotation and label.
+    pub const ANNOTATIONS_EXPORT_JSONL: Endpoint = binary(
+        "annotationsExportJsonl",
+        "/annotations/export.jsonl",
+        JSONL_MEDIA_TYPE,
+        ResponseHeaders::Export,
+    );
+    /// `AnnotationImportResponse`: where the session's `--annotations`
+    /// import stands and what it reported. Answers at once.
+    pub const ANNOTATIONS_IMPORT: Endpoint =
+        json("annotationsImport", ApiMethod::Get, "/annotations/import");
     /// One annotation operation; query `AnnotationOpQuery`. The body is one
     /// `OpEnvelope` of the annotation model as JSON, at most [`super::ANNOTATION_OP_MAX_BYTES`]
     /// long, and the answer is an `AnnotationOpResponse`. See that type for
@@ -479,6 +510,9 @@ pub mod endpoints {
         FILE_REDACTIONS_UPDATE,
         FILE_REDACTIONS_APPLY_TO_SERIES,
         ANNOTATIONS_EXPORT,
+        ANNOTATIONS_EXPORT_JSON,
+        ANNOTATIONS_EXPORT_JSONL,
+        ANNOTATIONS_IMPORT,
         ANNOTATION_OPS,
     ];
 }
@@ -1475,6 +1509,11 @@ pub enum ApiErrorCode {
     /// was drawn on (`AnnotationOpQuery::file`). Status 409, a plain
     /// `ErrorResponse`. Nothing was applied.
     FileKeyAmbiguous,
+    /// The session's annotations do not fit one JSON document
+    /// (268,435,456 bytes). Status 422, on
+    /// `endpoints::ANNOTATIONS_EXPORT_JSON` only. The JSON Lines export has
+    /// no such bound.
+    AnnotationExportTooLarge,
     /// A request body longer than its endpoint reads. Status 413.
     PayloadTooLarge,
     /// The request lacks the session's bearer token. Status 401 with
@@ -1508,6 +1547,38 @@ pub struct ErrorResponse {
 #[ts(optional_fields)]
 pub struct AnnotationOpQuery {
     pub file: Option<usize>,
+}
+
+/// Where a session's `--annotations` import stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum AnnotationImportState {
+    /// The session was started without `--annotations`.
+    None,
+    /// The file is still being read; the EMBED reads wait for it.
+    Loading,
+    /// The import ended and what it read is in the session.
+    Ready,
+    /// The import failed and nothing of it is in the session.
+    Failed,
+}
+
+/// The answer of `endpoints::ANNOTATIONS_IMPORT`.
+///
+/// `report` is there when `state` is `ready`: what the import's adapter
+/// did, in fixed codes, counts and row numbers. It holds no path, file
+/// key, UID or other text of the file, in any session. `error` is there
+/// when `state` is `failed`: the import's message, which the EMBED reads
+/// and the CSV export of that session also answer with.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct AnnotationImportResponse {
+    pub state: AnnotationImportState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub report: Option<dcmview_adapters::Report>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub error: Option<String>,
 }
 
 /// The longest body `endpoints::ANNOTATION_OPS` reads, in bytes: the

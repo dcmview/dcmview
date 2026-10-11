@@ -4,14 +4,36 @@
 use super::memory::{MemoryBackend, MemoryConfig};
 use super::{AnnotationIndexMap, EmbedRoiAnnotations};
 use anyhow::{anyhow, Result};
+use dcmview_adapters::Report;
 use dcmview_annotation::Author;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use tokio::sync::Notify;
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
 /// Who the rows of an EMBED CSV are authored by
 /// (`docs/design/annotation-model.md` 9.2).
 pub const EMBED_IMPORT_AUTHOR: &str = "import:embed";
+
+/// Who the records of a native `--annotations` document are authored by:
+/// `import:` and the id of the adapter that read them
+/// (`docs/design/output-adapters.md` 8).
+pub const NATIVE_IMPORT_AUTHOR: &str = "import:native";
+
+/// Where a session's `--annotations` import stands
+/// ([`AnnotationStore::import_status`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImportStatus {
+    /// The session was started without `--annotations`.
+    None,
+    /// The file is being read.
+    Loading,
+    /// The import ended and its records or rows are in the session. The
+    /// report is what the import's adapter answered.
+    Ready(Option<Report>),
+    /// The import failed, with its message, and nothing of it is in the
+    /// session.
+    Failed(String),
+}
 
 /// The author a standalone session stamps on what its user writes:
 /// `user:<name>`, the name from the environment variable `USER`, else
@@ -35,7 +57,11 @@ enum LoadState {
 
 #[derive(Debug)]
 struct EmbedImport {
+    /// Whether the session has an `--annotations` file at all.
+    expected: bool,
     state: LoadState,
+    /// What the import's adapter answered, once it has ended well.
+    report: Option<Report>,
     /// The files whose ROIs the EMBED endpoint has replaced. The import
     /// leaves them alone.
     edited: HashSet<usize>,
@@ -79,12 +105,21 @@ struct EmbedImport {
 ///
 /// Staged rows are in no snapshot and in no exported document: those hold
 /// records. Whoever exports a document settles and takes the staged rows
-/// first.
+/// first (`server::annotations::export_native`).
+///
+/// # Document exports
+///
+/// A document export copies every record and then holds its text, so the
+/// store lets one run at a time ([`AnnotationStore::export_permit`]): a
+/// second waits, holding nothing, until the first has been sent or
+/// dropped. What exports make the process hold is therefore one document
+/// and its text, however many are asked for.
 #[derive(Clone)]
 pub struct AnnotationStore {
     backend: Arc<MemoryBackend>,
     import: Arc<Mutex<EmbedImport>>,
     ready: Arc<Notify>,
+    exports: Arc<Semaphore>,
     /// Run by [`AnnotationStore::before_embed_write`], so a test can make a
     /// second write at exactly the point between a save's read of the view
     /// and its write.
@@ -97,11 +132,14 @@ impl AnnotationStore {
         Self {
             backend: Arc::new(backend),
             import: Arc::new(Mutex::new(EmbedImport {
+                expected: state == LoadState::Loading,
                 state,
+                report: None,
                 edited: HashSet::new(),
                 staged: HashMap::new(),
             })),
             ready: Arc::new(Notify::new()),
+            exports: Arc::new(Semaphore::new(1)),
             #[cfg(test)]
             before_embed_write: None,
         }
@@ -154,6 +192,43 @@ impl AnnotationStore {
                 LoadState::Loading => notified.await,
             }
         }
+    }
+
+    /// Keeps `report` as what the import's adapter answered. Call it
+    /// before the call that ends the import
+    /// ([`AnnotationStore::stage_rows`], [`AnnotationStore::finish_loading`]),
+    /// so that whoever sees the import ended sees its report.
+    pub fn record_import_report(&self, report: Report) -> Result<()> {
+        self.import
+            .lock()
+            .map_err(|_| anyhow!("annotations store lock poisoned"))?
+            .report = Some(report);
+        Ok(())
+    }
+
+    /// Where the import stands, without waiting for it.
+    pub fn import_status(&self) -> Result<ImportStatus> {
+        let import = self
+            .import
+            .lock()
+            .map_err(|_| anyhow!("annotations store lock poisoned"))?;
+        Ok(match &import.state {
+            _ if !import.expected => ImportStatus::None,
+            LoadState::Loading => ImportStatus::Loading,
+            LoadState::Ready => ImportStatus::Ready(import.report.clone()),
+            LoadState::Failed(message) => ImportStatus::Failed(message.clone()),
+        })
+    }
+
+    /// Waits for the session's one document export permit ("Document
+    /// exports"). Whoever holds it is the only document export running;
+    /// dropping it lets the next one start.
+    pub async fn export_permit(&self) -> Result<OwnedSemaphorePermit> {
+        self.exports
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| anyhow!("annotations store is closed"))
     }
 
     /// Ends the import: readers stop waiting. A store that already failed

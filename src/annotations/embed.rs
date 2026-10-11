@@ -7,6 +7,12 @@
 //! between the two, as pure functions: it holds no state and touches neither
 //! the store nor the registry. `server::annotations` puts them together.
 //!
+//! What a box is as a rectangle, and what rectangles are as boxes, is the
+//! EMBED adapter's rule (`dcmview_adapters::embed`), so that the viewer's
+//! view and every other reader and writer of the format agree; it is
+//! repeated here because the view depends on every word of it. This module
+//! adds the operations.
+//!
 //! # A ROI as a record
 //!
 //! - `[ymin, xmin, ymax, xmax]` is the rectangle `x0 = xmin`, `y0 = ymin`,
@@ -49,13 +55,8 @@
 //! stand first, because the CSV was read before anything was drawn.
 
 use crate::api::contracts::EmbedRoiAnnotations;
-use anyhow::Result;
-use dcmview_annotation::{
-    new_id, Annotation, Author, FileKey, FrameScope, Geometry, LayerId, Op, Patch, RecordMeta,
-    Timestamp, IMPLICIT_CLASS_ID,
-};
-use std::borrow::Cow;
-use std::collections::BTreeMap;
+use dcmview_adapters::embed::{annotation_of, rectangle, scope_at};
+use dcmview_annotation::{Annotation, Author, FileKey, FrameScope, LayerId, Op, Patch, Timestamp};
 
 /// What the EMBED endpoints show for `records`, the view of one file in
 /// view order, by the rules in the module documentation. `frame_count` is
@@ -64,35 +65,11 @@ pub(crate) fn rois_of<'a>(
     records: impl IntoIterator<Item = &'a Annotation>,
     frame_count: u32,
 ) -> EmbedRoiAnnotations {
-    let mut roi_coords = Vec::new();
-    let mut scopes = Vec::new();
-    for record in records {
-        if let Geometry::Rect { x0, y0, x1, y1 } = record.geometry {
-            roi_coords.push([
-                edge(y0.floor()),
-                edge(x0.floor()),
-                edge(y1.ceil()),
-                edge(x1.ceil()),
-            ]);
-            scopes.push(&record.frames);
-        }
-    }
-    let roi_frames = if scopes.iter().all(|scope| **scope == FrameScope::All) {
-        Vec::new()
-    } else {
-        scopes
-            .into_iter()
-            .map(|scope| {
-                scope
-                    .written()
-                    .map_or_else(|| (0..frame_count).collect(), <[u32]>::to_vec)
-            })
-            .collect()
-    };
+    let rois = dcmview_adapters::embed::rois_of(records, frame_count);
     EmbedRoiAnnotations {
-        num_roi: roi_coords.len(),
-        roi_coords,
-        roi_frames,
+        num_roi: rois.roi_coords.len(),
+        roi_coords: rois.roi_coords,
+        roi_frames: rois.roi_frames,
     }
 }
 
@@ -112,7 +89,16 @@ pub(crate) fn rows_as_creates(
     rows.roi_coords
         .iter()
         .enumerate()
-        .map(|(i, coords)| create_roi(*coords, scope_at(rows, i), file, layer, author, stamp))
+        .map(|(i, coords)| {
+            create_roi(
+                *coords,
+                scope_at(&rows.roi_frames, i),
+                file,
+                layer,
+                author,
+                stamp,
+            )
+        })
         .collect()
 }
 
@@ -159,7 +145,7 @@ pub(crate) fn replacement_ops(
             before.geometry = Some(record.geometry.clone());
             after.geometry = Some(rectangle(*coords));
         }
-        let frames = scope_at(wanted, i);
+        let frames = scope_at(&wanted.roi_frames, i);
         if frames != record.frames {
             before.frames = Some(record.frames.clone());
             after.frames = Some(frames);
@@ -191,56 +177,17 @@ pub(crate) fn replacement_ops(
             .enumerate()
             .skip(current.len())
             .map(|(i, coords)| {
-                create_roi(*coords, scope_at(wanted, i), file, layer, author, stamp)
+                create_roi(
+                    *coords,
+                    scope_at(&wanted.roi_frames, i),
+                    file,
+                    layer,
+                    author,
+                    stamp,
+                )
             }),
     );
     ops
-}
-
-/// The EMBED CSV of `rows`, each a path and that file's ROIs, in the order
-/// given: the header `anon_dicom_path,num_ROI,ROI_coords,ROI_frames`, then
-/// one record per row with `num_roi` in decimal and `roi_coords` and
-/// `roi_frames` as compact JSON (`serde_json::to_string`), written by a
-/// `csv::Writer` with its default settings (a field is quoted only when it
-/// needs to be, and records end with a line feed). A row is written as
-/// given, one with no ROI included; the caller leaves those out.
-pub(crate) fn write_embed_csv<'a>(
-    rows: impl IntoIterator<Item = (Cow<'a, str>, &'a EmbedRoiAnnotations)>,
-) -> Result<String> {
-    let mut writer = csv::Writer::from_writer(Vec::new());
-    writer.write_record(["anon_dicom_path", "num_ROI", "ROI_coords", "ROI_frames"])?;
-    for (path, rois) in rows {
-        writer.write_record([
-            path.as_ref(),
-            &rois.num_roi.to_string(),
-            &serde_json::to_string(&rois.roi_coords)?,
-            &serde_json::to_string(&rois.roi_frames)?,
-        ])?;
-    }
-    Ok(String::from_utf8(writer.into_inner()?)?)
-}
-
-fn edge(value: f64) -> u32 {
-    if value.is_nan() {
-        0
-    } else {
-        value.clamp(0.0, u32::MAX as f64) as u32
-    }
-}
-
-fn rectangle([ymin, xmin, ymax, xmax]: [u32; 4]) -> Geometry {
-    Geometry::Rect {
-        x0: f64::from(xmin),
-        y0: f64::from(ymin),
-        x1: f64::from(xmax),
-        y1: f64::from(ymax),
-    }
-}
-
-fn scope_at(rows: &EmbedRoiAnnotations, i: usize) -> FrameScope {
-    rows.roi_frames.get(i).map_or(FrameScope::All, |frames| {
-        FrameScope::from_written(frames.clone())
-    })
 }
 
 fn create_roi(
@@ -252,25 +199,6 @@ fn create_roi(
     stamp: &Timestamp,
 ) -> Op {
     Op::CreateAnnotation {
-        annotation: Box::new(Annotation {
-            id: new_id(),
-            file: file.clone(),
-            layer: layer.clone(),
-            class: IMPLICIT_CLASS_ID.to_string(),
-            geometry: rectangle(coords),
-            frames,
-            attributes: BTreeMap::new(),
-            extensions: BTreeMap::new(),
-            unknown: BTreeMap::new(),
-            meta: RecordMeta {
-                rev: 1,
-                created_by: author.clone(),
-                created_at: stamp.clone(),
-                modified_by: author.clone(),
-                modified_at: stamp.clone(),
-                derived_from: None,
-                score: None,
-            },
-        }),
+        annotation: Box::new(annotation_of(coords, frames, file, layer, author, stamp)),
     }
 }

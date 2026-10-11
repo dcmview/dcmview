@@ -12,12 +12,17 @@
 //! | `memory` | [`MemoryBackend`]: the default store. Records by id, in server memory for the session; one transaction per envelope |
 //! | `embed` | The EMBED compatibility view: ROI rows as rectangle records and back, the operations a replaced ROI list amounts to, and the CSV export |
 //! | `store` | [`AnnotationStore`]: what a session holds, the backend and the state of the `--annotations` import |
-//! | this file | The EMBED CSV reader ([`AnnotationSource`]) and the check a replaced ROI list must pass ([`canonicalize_annotations`]) |
+//! | this file | The `--annotations` file ([`AnnotationInput`]): which format it is, the EMBED CSV matched to the loaded files by path ([`AnnotationSource`]), and the check a replaced ROI list must pass ([`canonicalize_annotations`]) |
 //!
 //! Nothing here knows the file registry: records are addressed by file key
 //! and the caller says which files exist and how large they are. Joining a
 //! request to the registry (settling a file's key, translating the keys a
 //! masked session shows) is `server::annotations`.
+//!
+//! The formats themselves (reading and writing EMBED ROI CSV and the native
+//! JSON and JSON Lines documents, and the report each import and export
+//! leaves) are the `dcmview-adapters` crate. This module and
+//! `server::annotations` hand it the session's files and store.
 //!
 //! Redaction boxes are not annotations and are not in this store
 //! (`crate::redactions`).
@@ -33,28 +38,133 @@ pub use memory::{
     MemoryBackend, MemoryConfig, DEFAULT_LAYER_ID, DEFAULT_LAYER_NAME, DELETED_BYTES,
     REMEMBERED_OPS, REMEMBERED_REVS,
 };
-pub use store::{session_author, AnnotationStore, EMBED_IMPORT_AUTHOR};
+pub use store::{
+    session_author, AnnotationStore, ImportStatus, EMBED_IMPORT_AUTHOR, NATIVE_IMPORT_AUTHOR,
+};
 
 use crate::types::FileEntry;
-use anyhow::{anyhow, bail, Context, Result};
-use csv::{ReaderBuilder, StringRecord};
+use anyhow::{bail, Context, Result};
+use dcmview_adapters::{FileResolver, Registry, Report, Resolved};
+use dcmview_annotation::ImageSize;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::env;
+use std::fs::File;
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct PathKey(PathBuf);
 
+/// A loaded file as a row of an EMBED CSV can name it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PathTarget {
+    index: usize,
+    size: ImageSize,
+    size_bytes: u64,
+}
+
 /// The ROI rows an EMBED CSV holds for the loaded files, by file index, as
 /// the CSV wrote them.
 pub type AnnotationIndexMap = HashMap<usize, EmbedRoiAnnotations>;
 
+/// The format of an `--annotations` file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AnnotationFormat {
+    /// EMBED ROI CSV (`dcmview_adapters::embed`).
+    Embed,
+    /// A `dcmview.annotations` document, as JSON or as JSON Lines
+    /// (`dcmview_adapters::native`).
+    Native,
+}
+
+/// The `--annotations` file of a session, checked as far as it can be
+/// before the viewer serves.
+#[derive(Debug, Clone)]
+pub enum AnnotationInput {
+    Embed(AnnotationSource),
+    Native(NativeSource),
+}
+
+impl AnnotationInput {
+    /// Opens the `--annotations` file at `path`.
+    ///
+    /// The format is `format` when one is given (`--annotations-format`).
+    /// Otherwise the start of the file decides
+    /// (`dcmview_adapters::Registry::sniff` over the built-in adapters, on
+    /// at most `dcmview_adapters::limits::SNIFF_BYTES`): a file the native
+    /// adapter is the most confident about is [`AnnotationFormat::Native`],
+    /// and every other file is [`AnnotationFormat::Embed`], so anything
+    /// that is not recognizably a native document is read, and refused, as
+    /// the EMBED CSV it always was.
+    ///
+    /// An EMBED CSV has its header checked here
+    /// ([`AnnotationSource::from_path`]). A native file is only opened: it
+    /// is read after discovery, and what is wrong with it fails the import
+    /// then, with the viewer serving.
+    pub fn from_path(path: &Path, format: Option<AnnotationFormat>) -> Result<Self> {
+        let format = match format {
+            Some(format) => format,
+            None => sniff_format(path)?,
+        };
+        match format {
+            AnnotationFormat::Embed => AnnotationSource::from_path(path).map(Self::Embed),
+            AnnotationFormat::Native => NativeSource::from_path(path).map(Self::Native),
+        }
+    }
+}
+
+fn sniff_format(path: &Path) -> Result<AnnotationFormat> {
+    let mut head = Vec::new();
+    File::open(path)
+        .and_then(|file| {
+            file.take(dcmview_adapters::limits::SNIFF_BYTES as u64)
+                .read_to_end(&mut head)
+        })
+        .with_context(|| format!("failed to open annotations file: {}", path.display()))?;
+    let native = Registry::builtin()
+        .sniff(&head)
+        .is_some_and(|(adapter, _)| {
+            adapter.info().id == dcmview_adapters::native::NATIVE_ADAPTER_ID
+        });
+    Ok(if native {
+        AnnotationFormat::Native
+    } else {
+        AnnotationFormat::Embed
+    })
+}
+
+/// A native `--annotations` file: where it is. It is read by
+/// `server::annotations::import_native`.
+#[derive(Debug, Clone)]
+pub struct NativeSource {
+    path: PathBuf,
+}
+
+impl NativeSource {
+    /// Checks that the file at `path` can be opened and remembers its
+    /// absolute path.
+    pub fn from_path(path: &Path) -> Result<Self> {
+        let working_directory =
+            env::current_dir().context("failed to resolve current directory")?;
+        let path = absolute_path(path, &working_directory);
+        File::open(&path)
+            .with_context(|| format!("failed to open annotations file: {}", path.display()))?;
+        Ok(Self { path })
+    }
+
+    /// The file's absolute path.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+/// An EMBED CSV whose header was checked.
 #[derive(Debug, Clone)]
 pub struct AnnotationSource {
     csv_path: PathBuf,
     working_directory: PathBuf,
-    indexes: ColumnIndexes,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,24 +173,30 @@ pub struct AnnotationLoadReport {
     pub unmatched_rows: usize,
 }
 
-#[derive(Debug, Clone)]
-struct ColumnIndexes {
-    path: usize,
-    roi_coords: usize,
-    num_roi: Option<usize>,
-    roi_frames: Option<usize>,
+/// What an EMBED CSV holds for the loaded files.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnnotationRead {
+    /// The rows by file index, as the import reads them
+    /// (`dcmview_adapters::embed::read_rows`, "Lenient coordinates").
+    pub rows: AnnotationIndexMap,
+    /// What the import did, corrected and kept as read.
+    pub report: Report,
 }
 
 impl AnnotationSource {
+    /// Opens the CSV at `csv_path` and checks its header
+    /// (`dcmview_adapters::embed::check_header`): the file must exist and
+    /// hold the columns `anon_dicom_path` and `ROI_coords`.
     pub fn from_path(csv_path: &Path) -> Result<Self> {
         let working_directory =
             env::current_dir().context("failed to resolve current directory")?;
         let csv_path = absolute_path(csv_path, &working_directory);
-        let indexes = read_column_indexes(&csv_path)?;
+        let mut file = File::open(&csv_path)
+            .with_context(|| format!("failed to open annotations CSV: {}", csv_path.display()))?;
+        dcmview_adapters::embed::check_header(&mut file)?;
         Ok(Self {
             csv_path,
             working_directory,
-            indexes,
         })
     }
 
@@ -92,59 +208,75 @@ impl AnnotationSource {
     pub fn load_for_files_with_check<F>(
         &self,
         files: &[Arc<FileEntry>],
-        mut check_active: F,
+        check_active: F,
     ) -> Result<(AnnotationIndexMap, AnnotationLoadReport)>
     where
         F: FnMut() -> Result<()>,
     {
-        let file_lookup = build_file_lookup(files, &self.working_directory)?;
-        let mut reader = ReaderBuilder::new()
-            .flexible(false)
-            .from_path(&self.csv_path)
-            .with_context(|| {
-                format!(
-                    "failed to open annotations CSV: {}",
-                    self.csv_path.display()
-                )
-            })?;
-        let mut annotations_by_file = HashMap::new();
-        let mut matched_at_row = HashMap::<usize, usize>::new();
-        let mut matched_rows = 0_usize;
-        let mut unmatched_rows = 0_usize;
-
-        for (idx, row_result) in reader.records().enumerate() {
-            check_active()?;
-            let row_number = idx + 2;
-            let row = row_result
-                .with_context(|| format!("annotations CSV row {row_number} could not be parsed"))?;
-            let path_key =
-                parse_path_key(&row, &self.indexes, row_number, &self.working_directory)?;
-            let Some(file_targets) = matching_file_targets(&file_lookup, &path_key) else {
-                unmatched_rows += 1;
-                continue;
-            };
-
-            let annotations = parse_annotations(&row, &self.indexes, row_number)?;
-            for &(file_index, frame_count) in file_targets {
-                if let Some(previous_row) = matched_at_row.insert(file_index, row_number) {
-                    bail!(
-                        "annotations CSV row {row_number}: duplicate matching anon_dicom_path for loaded file (already matched at row {previous_row})"
-                    );
-                }
-                validate_frames_in_range(&annotations, frame_count, row_number)?;
-                annotations_by_file.insert(file_index, annotations.clone());
+        let check_active = RefCell::new(check_active);
+        let stopped = RefCell::new(None);
+        let read = self.read_for_files(files, &|| match (check_active.borrow_mut())() {
+            Ok(()) => true,
+            Err(error) => {
+                *stopped.borrow_mut() = Some(error);
+                false
             }
-            matched_rows += 1;
+        });
+        if let Some(error) = stopped.into_inner() {
+            return Err(error);
         }
-        check_active()?;
+        let read = read?;
+        let report = AnnotationLoadReport {
+            matched_rows: read
+                .report
+                .matched_by
+                .map_or(0, |matched| matched.path as usize),
+            unmatched_rows: read.report.counts.unmatched as usize,
+        };
+        Ok((read.rows, report))
+    }
 
-        Ok((
-            annotations_by_file,
-            AnnotationLoadReport {
-                matched_rows,
-                unmatched_rows,
-            },
-        ))
+    /// Reads the CSV for `files`: the rows whose path names one of them,
+    /// by file index, and the import's report. All or nothing.
+    ///
+    /// A row names a file by its normalized absolute path, a relative one
+    /// resolved against the working directory the viewer was started in,
+    /// or by the canonical form of either side (a link and its target are
+    /// one file). A path can name several loaded files; each gets the
+    /// row. Reading, the lenient coordinates and every bound are
+    /// `dcmview_adapters::embed::read_rows`; its error is returned with its
+    /// own text. `keep_going` is asked for each row; `false` ends the read.
+    pub fn read_for_files(
+        &self,
+        files: &[Arc<FileEntry>],
+        keep_going: &dyn Fn() -> bool,
+    ) -> Result<AnnotationRead> {
+        let lookup = FileLookup::new(files, self.working_directory.clone())?;
+        let mut file = File::open(&self.csv_path).with_context(|| {
+            format!(
+                "failed to open annotations CSV: {}",
+                self.csv_path.display()
+            )
+        })?;
+        let read = dcmview_adapters::embed::read_rows(&mut file, &lookup, keep_going)?;
+        let rows = read
+            .files
+            .into_iter()
+            .map(|file| {
+                (
+                    file.slot,
+                    EmbedRoiAnnotations {
+                        num_roi: file.rois.roi_coords.len(),
+                        roi_coords: file.rois.roi_coords,
+                        roi_frames: file.rois.roi_frames,
+                    },
+                )
+            })
+            .collect();
+        Ok(AnnotationRead {
+            rows,
+            report: read.report,
+        })
     }
 }
 
@@ -155,146 +287,88 @@ pub fn load_annotations_for_files(
     AnnotationSource::from_path(csv_path)?.load_for_files(files)
 }
 
-fn read_column_indexes(csv_path: &Path) -> Result<ColumnIndexes> {
-    let mut reader = ReaderBuilder::new()
-        .flexible(false)
-        .from_path(csv_path)
-        .with_context(|| format!("failed to open annotations CSV: {}", csv_path.display()))?;
-
-    let headers = reader
-        .headers()
-        .with_context(|| {
-            format!(
-                "failed to read annotations CSV header: {}",
-                csv_path.display()
-            )
-        })?
-        .clone();
-    build_column_indexes(&headers)
+/// The loaded files by the paths that name them: each by its normalized
+/// absolute path and by the canonical form of that path, so a link and its
+/// target are one file.
+pub(crate) struct FileLookup {
+    targets: HashMap<PathKey, Vec<PathTarget>>,
+    /// What a relative path is resolved against.
+    base: PathBuf,
 }
 
-fn build_column_indexes(headers: &StringRecord) -> Result<ColumnIndexes> {
-    let find = |name: &str| headers.iter().position(|h| h == name);
-
-    let path = find("anon_dicom_path")
-        .ok_or_else(|| anyhow!("annotations CSV missing required column `anon_dicom_path`"))?;
-    let roi_coords = find("ROI_coords")
-        .ok_or_else(|| anyhow!("annotations CSV missing required column `ROI_coords`"))?;
-
-    Ok(ColumnIndexes {
-        path,
-        roi_coords,
-        num_roi: find("num_ROI"),
-        roi_frames: find("ROI_frames"),
-    })
-}
-
-fn parse_path_key(
-    row: &StringRecord,
-    indexes: &ColumnIndexes,
-    row_number: usize,
-    working_directory: &Path,
-) -> Result<PathKey> {
-    let raw_path = row.get(indexes.path).ok_or_else(|| {
-        anyhow!("annotations CSV row {row_number}: missing value for `anon_dicom_path`")
-    })?;
-    if raw_path.trim().is_empty() {
-        bail!("annotations CSV row {row_number}: anon_dicom_path must not be empty");
-    }
-    Ok(PathKey(absolute_path(
-        Path::new(raw_path.trim()),
-        working_directory,
-    )))
-}
-
-fn parse_annotations(
-    row: &StringRecord,
-    indexes: &ColumnIndexes,
-    row_number: usize,
-) -> Result<EmbedRoiAnnotations> {
-    let raw_roi_coords = row.get(indexes.roi_coords).ok_or_else(|| {
-        anyhow!("annotations CSV row {row_number}: missing value for `ROI_coords`")
-    })?;
-    let roi_coords = parse_roi_coords(raw_roi_coords.trim(), row_number)?;
-
-    let num_roi = if let Some(num_roi_idx) = indexes.num_roi {
-        let raw = row.get(num_roi_idx).ok_or_else(|| {
-            anyhow!("annotations CSV row {row_number}: missing value for `num_ROI`")
-        })?;
-        let parsed = raw.trim().parse::<usize>().map_err(|error| {
-            anyhow!("annotations CSV row {row_number}: num_ROI must be an integer: {error}")
-        })?;
-        if parsed != roi_coords.len() {
-            bail!(
-                "annotations CSV row {row_number}: len(ROI_coords) must equal num_ROI ({} != {})",
-                roi_coords.len(),
-                parsed
-            );
-        }
-        parsed
-    } else {
-        roi_coords.len()
-    };
-
-    let roi_frames = if let Some(roi_frames_idx) = indexes.roi_frames {
-        let raw = row.get(roi_frames_idx).ok_or_else(|| {
-            anyhow!("annotations CSV row {row_number}: missing value for `ROI_frames`")
-        })?;
-        let frames = parse_roi_frames(raw.trim(), row_number)?;
-        if !frames.is_empty() && frames.len() != num_roi {
-            bail!(
-				"annotations CSV row {row_number}: len(ROI_frames) must equal num_ROI when ROI_frames is not empty ({} != {})",
-				frames.len(),
-				num_roi
-			);
-        }
-        frames
-    } else {
-        vec![]
-    };
-
-    Ok(EmbedRoiAnnotations {
-        num_roi,
-        roi_coords,
-        roi_frames,
-    })
-}
-
-fn parse_roi_coords(raw: &str, row_number: usize) -> Result<Vec<[u32; 4]>> {
-    let parsed: Vec<Vec<u32>> = serde_json::from_str(raw).map_err(|error| {
-		anyhow!(
-			"annotations CSV row {row_number}: ROI_coords must be a JSON list of [ymin, xmin, ymax, xmax] arrays: {error}"
-		)
-	})?;
-
-    let mut coords = Vec::with_capacity(parsed.len());
-    for (idx, coord) in parsed.into_iter().enumerate() {
-        if coord.len() != 4 {
-            bail!(
-				"annotations CSV row {row_number}: ROI_coords[{idx}] must contain exactly 4 integers [ymin, xmin, ymax, xmax]"
-			);
-        }
-        coords.push([coord[0], coord[1], coord[2], coord[3]]);
+impl FileLookup {
+    /// A lookup over `files`, in which a relative path is taken below
+    /// `base`.
+    pub(crate) fn new(files: &[Arc<FileEntry>], base: PathBuf) -> Result<Self> {
+        Ok(Self {
+            targets: build_file_lookup(files, &base)?,
+            base,
+        })
     }
 
-    Ok(coords)
+    fn targets(&self, path: &str) -> &[PathTarget] {
+        let key = PathKey(absolute_path(Path::new(path), &self.base));
+        matching_file_targets(&self.targets, &key).map_or(&[], Vec::as_slice)
+    }
+
+    /// The catalog indexes of the files `path` names, in the order the
+    /// files were loaded; empty when it names none.
+    #[cfg_attr(not(test), expect(dead_code, reason = "not called yet"))]
+    pub(crate) fn indexes(&self, path: &str) -> Vec<usize> {
+        self.targets(path)
+            .iter()
+            .map(|target| target.index)
+            .collect()
+    }
 }
 
-fn parse_roi_frames(raw: &str, row_number: usize) -> Result<Vec<Vec<u32>>> {
-    serde_json::from_str(raw).map_err(|error| {
-        anyhow!(
-			"annotations CSV row {row_number}: ROI_frames must be a JSON list of frame-index lists: {error}"
-		)
-    })
+impl FileResolver for FileLookup {
+    fn by_path(&self, path: &str, out: &mut Vec<Resolved>) {
+        out.extend(self.targets(path).iter().map(|target| Resolved {
+            slot: target.index,
+            // The rows are staged by index: no key is settled for them.
+            key: None,
+            size: target.size,
+            size_bytes: target.size_bytes,
+        }));
+    }
+}
+
+/// The directory a document's file paths are relative to: the deepest
+/// directory that contains every one of `files`, by the components of the
+/// paths as the registry holds them (`Path::components`, nothing resolved).
+/// With one file it is that file's directory. `None` when `files` is empty
+/// or the paths share no first component.
+#[cfg_attr(not(test), expect(dead_code, reason = "not called yet"))]
+pub(crate) fn common_directory(files: &[Arc<FileEntry>]) -> Option<PathBuf> {
+    let _ = files;
+    todo!("ADP1")
+}
+
+/// `path` as a document names it (`FileRef::path`): its components below
+/// `root`, each as text (`to_string_lossy`), joined with `/`, when `root`
+/// is given and `path` is below it; otherwise the whole path as text.
+#[cfg_attr(not(test), expect(dead_code, reason = "not called yet"))]
+pub(crate) fn document_path(root: Option<&Path>, path: &Path) -> String {
+    let _ = (root, path);
+    todo!("ADP1")
 }
 
 fn build_file_lookup(
     files: &[Arc<FileEntry>],
     working_directory: &Path,
-) -> Result<HashMap<PathKey, Vec<(usize, u32)>>> {
-    let mut lookup = HashMap::<PathKey, Vec<(usize, u32)>>::new();
+) -> Result<HashMap<PathKey, Vec<PathTarget>>> {
+    let mut lookup = HashMap::<PathKey, Vec<PathTarget>>::new();
     for file in files {
-        let target = (file.index, file.frame_count);
+        let target = PathTarget {
+            index: file.index,
+            size: ImageSize {
+                columns: file.columns,
+                rows: file.rows,
+                frames: file.frame_count,
+            },
+            size_bytes: file.size_bytes,
+        };
         let lexical = PathKey(absolute_path(&file.path, working_directory));
         push_unique_target(&mut lookup, lexical, target);
         if let Ok(canonical) = file.path.canonicalize() {
@@ -305,9 +379,9 @@ fn build_file_lookup(
 }
 
 fn push_unique_target(
-    lookup: &mut HashMap<PathKey, Vec<(usize, u32)>>,
+    lookup: &mut HashMap<PathKey, Vec<PathTarget>>,
     key: PathKey,
-    target: (usize, u32),
+    target: PathTarget,
 ) {
     let targets = lookup.entry(key).or_default();
     if !targets.contains(&target) {
@@ -316,9 +390,9 @@ fn push_unique_target(
 }
 
 fn matching_file_targets<'a>(
-    lookup: &'a HashMap<PathKey, Vec<(usize, u32)>>,
+    lookup: &'a HashMap<PathKey, Vec<PathTarget>>,
     path_key: &PathKey,
-) -> Option<&'a Vec<(usize, u32)>> {
+) -> Option<&'a Vec<PathTarget>> {
     lookup.get(path_key).or_else(|| {
         path_key
             .0
@@ -326,28 +400,6 @@ fn matching_file_targets<'a>(
             .ok()
             .and_then(|canonical| lookup.get(&PathKey(normalize_path(&canonical))))
     })
-}
-
-fn validate_frames_in_range(
-    annotations: &EmbedRoiAnnotations,
-    frame_count: u32,
-    row_number: usize,
-) -> Result<()> {
-    if annotations.roi_frames.is_empty() {
-        return Ok(());
-    }
-
-    for (roi_idx, frames) in annotations.roi_frames.iter().enumerate() {
-        for frame in frames {
-            if *frame >= frame_count {
-                bail!(
-					"annotations CSV row {row_number}: ROI_frames[{roi_idx}] contains frame {frame}, but matched DICOM has {frame_count} frame(s)"
-				);
-            }
-        }
-    }
-
-    Ok(())
 }
 
 pub fn canonicalize_annotations(
@@ -807,6 +859,67 @@ mod tests {
         let error = canonicalize_annotations(annotations, 1, 1, 1).expect_err("bounds should fail");
 
         assert!(error.to_string().contains("exceeds image bounds"));
+    }
+
+    #[test]
+    fn the_common_directory_is_the_deepest_one_that_holds_every_file() {
+        let at = |paths: &[&str]| {
+            let files: Vec<Arc<FileEntry>> = paths
+                .iter()
+                .enumerate()
+                .map(|(index, path)| file_entry(index, PathBuf::from(path), 1))
+                .collect();
+            super::common_directory(&files)
+        };
+        assert_eq!(at(&[]), None);
+        assert_eq!(at(&["/data/a/one.dcm"]), Some(PathBuf::from("/data/a")));
+        assert_eq!(
+            at(&[
+                "/data/a/one.dcm",
+                "/data/a/deep/two.dcm",
+                "/data/b/three.dcm"
+            ]),
+            Some(PathBuf::from("/data"))
+        );
+        // Whole components are compared, not characters.
+        assert_eq!(
+            at(&["/data/ab/one.dcm", "/data/abc/two.dcm"]),
+            Some(PathBuf::from("/data"))
+        );
+        // A directory is not below itself: a file never counts as one.
+        assert_eq!(
+            at(&["/data/a/one.dcm", "/data/a/one.dcm"]),
+            Some(PathBuf::from("/data/a"))
+        );
+        // Relative and absolute paths share no first component.
+        assert_eq!(at(&["/data/one.dcm", "data/one.dcm"]), None);
+    }
+
+    #[test]
+    fn a_document_path_is_written_below_the_root_with_slashes() {
+        let root = PathBuf::from("/data").join("set");
+        let below = root.join("case 1").join("lcc.dcm");
+        assert_eq!(super::document_path(Some(&root), &below), "case 1/lcc.dcm");
+        // Not below the root, or no root: the path as it is.
+        let elsewhere = PathBuf::from("/other").join("lcc.dcm");
+        assert_eq!(
+            super::document_path(Some(&root), &elsewhere),
+            elsewhere.to_string_lossy()
+        );
+        assert_eq!(super::document_path(None, &below), below.to_string_lossy());
+    }
+
+    #[test]
+    fn a_lookup_takes_a_relative_path_below_its_base() {
+        let base = PathBuf::from("/data/set");
+        let files = vec![
+            file_entry(0, base.join("a").join("one.dcm"), 1),
+            file_entry(1, base.join("b").join("one.dcm"), 1),
+        ];
+        let lookup = super::FileLookup::new(&files, base.clone()).expect("lookup");
+        assert_eq!(lookup.indexes("b/one.dcm"), vec![1]);
+        assert_eq!(lookup.indexes("/data/set/a/../a/one.dcm"), vec![0]);
+        assert!(lookup.indexes("c/one.dcm").is_empty());
     }
 
     fn file_entry(index: usize, path: PathBuf, frame_count: u32) -> Arc<FileEntry> {

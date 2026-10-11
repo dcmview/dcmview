@@ -49,18 +49,22 @@
 use super::{FileRegistry, KeyError};
 use crate::annotations::{
     canonicalize_annotations,
-    embed::{replacement_ops, rows_as_creates, write_embed_csv},
+    embed::{replacement_ops, rows_as_creates},
     memory::{now, Checking, ViewCheck, Write},
-    AnnotationBackend, AnnotationIndexMap, AnnotationStore, EmbedRoiAnnotations,
-    EMBED_IMPORT_AUTHOR,
+    AnnotationBackend, AnnotationIndexMap, AnnotationStore, EmbedRoiAnnotations, ImportStatus,
+    NativeSource, EMBED_IMPORT_AUTHOR,
 };
-use crate::api::contracts::FileKeyError;
+use crate::api::contracts::{AnnotationImportResponse, AnnotationImportState, FileKeyError};
 use crate::types::FileEntry;
+use dcmview_adapters::embed::EmbedRow;
+use dcmview_adapters::Report;
 use dcmview_annotation::{
     new_id, ApplyResult, Author, Current, FileKey, ImageSize, KeyScheme, LabelTarget, Op,
     OpEnvelope, Violation, ViolationCode,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
+use tokio::sync::OwnedSemaphorePermit;
 
 /// Why an annotation request could not be served. A refused operation is
 /// not one of these: it is an [`ApplyResult`] inside [`OpOutcome`].
@@ -104,6 +108,12 @@ pub enum AnnotationError {
     /// import's own.
     #[error("{0}")]
     ImportFailed(String),
+    /// The session's records do not fit one JSON document
+    /// (`dcmview_annotation::limits::MAX_DOCUMENT_BYTES`).
+    #[error(
+        "the annotations do not fit one JSON document of {limit} bytes; export them as JSON Lines"
+    )]
+    ExportTooLarge { limit: u64 },
     /// The viewer is shutting down (`KeyError::Stopped`).
     #[error("the viewer is shutting down")]
     Stopped,
@@ -294,12 +304,13 @@ pub async fn replace_embed_rois(
 /// `GET /api/annotations/export.csv`: the EMBED CSV of every file's view.
 ///
 /// Waits for the import as [`embed_rois`] does. Then one row for each
-/// loaded file whose view shows at least one ROI, in the registry's file
-/// order (`FileRegistry::files_snapshot`), with the file's path exactly as
-/// the registry holds it (`FileEntry::path`, `to_string_lossy`), through
-/// `write_embed_csv`. Two files with the same key are two rows, each with
-/// its own view. The bytes are those the export had before the store held
-/// records; `tests/fixtures/embed-goldens/` freezes them.
+/// loaded file whose view shows at least one ROI, with the file's path
+/// exactly as the registry holds it (`FileEntry::path`,
+/// `to_string_lossy`), through the EMBED adapter's writer
+/// (`dcmview_adapters::embed::write_csv`), which sorts the rows by path.
+/// Two files with the same key are two rows, each with its own view. Each
+/// row's bytes are those the export always wrote;
+/// `tests/fixtures/embed-goldens/` freezes them.
 ///
 /// A file's view is read as in [`embed_rois`], so the export hashes
 /// nothing: a file whose key is not settled is written from its staged
@@ -334,9 +345,9 @@ pub async fn export_embed_csv(
             if backend.holds_no_annotation().map_err(store_error)? {
                 let rows = files.iter().filter_map(|file| {
                     let rois = staged.get(&file.index)?;
-                    (rois.num_roi > 0).then(|| (file.path.to_string_lossy(), rois))
+                    (rois.num_roi > 0).then(|| embed_row(file.path.to_string_lossy(), rois))
                 });
-                return write_embed_csv(rows).map_err(store_error);
+                return embed_csv(rows);
             }
             // Rows staged for a file whose key is settled become records
             // first, as a read of that file's view would make them.
@@ -377,11 +388,10 @@ pub async fn export_embed_csv(
                         .collect()
                 })
                 .map_err(store_error)?;
-            write_embed_csv(
+            embed_csv(
                 rows.iter()
-                    .map(|(path, rois)| (path.clone(), rois.as_ref())),
+                    .map(|(path, rois)| embed_row(path.clone(), rois.as_ref())),
             )
-            .map_err(store_error)
         })
         .map_err(store_error)?
 }
@@ -411,6 +421,230 @@ pub fn import_embed_rows(
     Ok(EmbedImportReport {
         files_loaded,
         files_edited,
+    })
+}
+
+/// Which native form an export writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeForm {
+    /// One JSON document (`dcmview_adapters::NativeJson`).
+    Json,
+    /// JSON Lines (`dcmview_adapters::NativeJsonLines`).
+    JsonLines,
+}
+
+/// A native export, ready to send.
+pub struct NativeExport {
+    pub bytes: Vec<u8>,
+    /// What the adapter wrote.
+    pub report: Report,
+    /// The session's document export permit
+    /// (`AnnotationStore::export_permit`). Keep it until the bytes have
+    /// been sent or dropped.
+    pub permit: OwnedSemaphorePermit,
+}
+
+/// `GET /api/annotations/export.json` and `export.jsonl`: every record of
+/// the session as a `dcmview.annotations` document.
+///
+/// In this order:
+///
+/// 1. Waits for the `--annotations` import, as [`embed_rois`] does
+///    ([`AnnotationError::ImportFailed`]).
+/// 2. Takes the session's document export permit
+///    (`AnnotationStore::export_permit`), before anything else is read or
+///    copied, and hands it back in the result. So one document export runs
+///    at a time, and a second waits here holding nothing.
+/// 3. **Staged rows become records first.** A document holds records, and
+///    a record holds a settled key. For every loaded file, in index order,
+///    that has rows staged (`AnnotationStore::staged_rows`): its key is
+///    settled with `FileRegistry::ensure_key`, which is where the export
+///    waits while a file is hashed, and its rows are made records exactly
+///    as a read of its view makes them ([`embed_rois`], step 2). A file
+///    that cannot be given a key fails the export with
+///    [`AnnotationError::KeyUnavailable`] for that file
+///    ([`AnnotationError::Stopped`] when the viewer is stopping), and
+///    nothing is written out: an export never leaves rows out silently.
+///    Rows that became records before the failure stay records, which
+///    changes nothing any view shows. A file without staged rows is not
+///    settled and not read.
+/// 4. One read of the store, `AnnotationBackend::export`: every layer,
+///    annotation and label at one moment. A write that comes after it is
+///    not in the document; one that came before it is there whole.
+/// 5. **Files.** For each file key the document's annotations name, then
+///    each a label names in a `file` or `frame` target, in the order first
+///    named, one `FileRef` in `files`, for the loaded file with the lowest
+///    index whose settled key it is (`FileRegistry::key_status`; no key is
+///    settled here). A record whose key no loaded file has is
+///    [`AnnotationError::Store`]. The reference holds:
+///    - `key`: the key as the session shows it
+///      (`FileRegistry::shown_key_of`);
+///    - `kind` and `format`: `dicom`, or `raster` with the file's format
+///      name (`FileFormat::as_str`);
+///    - `sop_instance_uid`, `sop_class_uid`, `study_instance_uid`,
+///      `series_instance_uid`, `patient_id`: the file's, `None` for an
+///      empty one. A masked session (`FileRegistry::masker`) writes the
+///      patient id and the three instance UIDs as its catalog shows them
+///      (`Masker::summary`), never the file's own;
+///    - `path`: `annotations::document_path` below
+///      `annotations::common_directory` of the files loaded when the
+///      export reads them;
+///    - `size_bytes`, `rows`, `columns`, `frames` (the frame count): the
+///      file's;
+///    - `digest`: `b3:` and the 64 lowercase hex digits of the file's
+///      digest when the registry has computed it
+///      (`FileKeyStatus::digest`), else `None`;
+///    - `space`: `stored`, with the raster's EXIF or TIFF orientation when
+///      it is not 1;
+///    - `pixel_digest` empty; `frame_source`, `external_id` and `spacing`
+///      `None`.
+/// 6. **Keys go out in the session's form.** Every annotation's `file` and
+///    every `file` or `frame` label target is rewritten with
+///    `FileRegistry::shown_key_of`. A patient, study, series or folder
+///    target is written as it is held.
+/// 7. The document is written by the adapter for `form` with no path
+///    lookup and no bound of the caller's
+///    (`ExportContext::max_bytes` is `u64::MAX`), into memory.
+///    `ExportError::TooLarge` is [`AnnotationError::ExportTooLarge`] with
+///    its limit; any other failure is [`AnnotationError::Store`].
+///
+/// Steps 4 to 7 copy every record and write every one, so they run on a
+/// blocking thread (`tokio::task::spawn_blocking`), never on the runtime's
+/// own; a thread that fails is [`AnnotationError::Store`].
+///
+/// What an export makes the process hold: the copy of the records and the
+/// text, once each, for one export at a time. Nothing a record holds is
+/// checked, clamped or left out, so a rectangle the EMBED import kept as
+/// read is written as it is held. Redaction boxes are in another store and
+/// are never in a document.
+pub async fn export_native(
+    registry: &FileRegistry,
+    store: &AnnotationStore,
+    form: NativeForm,
+) -> Result<NativeExport, AnnotationError> {
+    let _ = (registry, store, form);
+    todo!("ADP1")
+}
+
+/// Ends the store's import with a native `--annotations` document
+/// (`dcmview_adapters::native`): reads it, places its records on the
+/// loaded files and applies them as one transaction. All or nothing.
+///
+/// # Reading
+///
+/// The file is opened and read on a blocking thread
+/// (`tokio::task::spawn_blocking`) by `dcmview_adapters::NativeJson`, with
+/// this context: the session's resolver (below); the store's label schema
+/// (`MemoryConfig::schema`); the store's default layer; the author
+/// [`NATIVE_IMPORT_AUTHOR`] and `now()`; and `keep_going`.
+///
+/// # Which file a record lands on
+///
+/// The resolver answers for one `FileRef` of the document, over the files
+/// loaded when the import starts (`FileRegistry::files_snapshot`, taken
+/// once). It finds a candidate by the first of these that names one:
+///
+/// 1. **The key**, as this session shows keys:
+///    `FileRegistry::file_for_shown_key`. A `sop:` key whose UID more than
+///    one loaded file carries (`FileRegistry::shares_uid`) names none of
+///    them here: a shared key cannot say which file is meant.
+/// 2. **The SOP Instance UID**, when the reference has one that can be a
+///    key (`FileKey::sop`): as step 1 with that key. So a masked session
+///    matches a UID in the form it shows and never a file's real UID.
+/// 3. **The path**: a relative path below
+///    `annotations::common_directory` of the loaded files (the directory
+///    an export of this session writes paths below), an absolute one as it
+///    is, each also by its canonical form (`annotations::FileLookup`); of
+///    several files the one with the lowest index.
+///
+/// No candidate is `Resolution::Unmatched`. A candidate is then checked,
+/// in this order:
+///
+/// - when the reference and the file both have a SOP Instance UID (the
+///   file's as this session shows it) and they differ:
+///   `Refusal::EvidenceConflict`;
+/// - the file's key is settled with `FileRegistry::ensure_key`, waited for
+///   from the blocking thread (`tokio::runtime::Handle::block_on`), which
+///   may hash the file. A file that cannot be given a key, or a viewer that
+///   is stopping, is `Refusal::KeyUnavailable`;
+/// - when the reference has a `b3:` digest and the registry has computed
+///   the file's (`FileKeyStatus::digest`) and they differ:
+///   `Refusal::EvidenceConflict`. Nothing is hashed to find out.
+///
+/// What is left is `Resolution::Matched` with the file's index as the
+/// slot, its **settled** key, its columns, rows and frame count, its size
+/// in bytes, and the step that found it. The adapter refuses a file whose
+/// size differs. So a record lands on the file its reference names, under
+/// that file's settled key, or on no file; byte-identical copies share a
+/// key, and a record on that key shows on each of them, as one an
+/// operation made does.
+///
+/// # Applying
+///
+/// The fragment is applied as **one transaction**
+/// (`MemoryBackend::transact`): one `Batch` of a `create_layer` for each
+/// layer, a `create_annotation` for each annotation and a `set_label`
+/// (`base_rev: null`, `before: null`, `after` the value) for each label,
+/// in the fragment's order, under a new `op_id`, with
+/// `Checking::AsLoaded` (the adapter has checked every record; a batch of
+/// an import is not bound by the envelope's 10,000 operations), the
+/// author [`NATIVE_IMPORT_AUTHOR`], no EMBED slot, `import: false` and no
+/// view check. An empty fragment is no transaction.
+///
+/// The store stamps the records and gives each `rev` 1. A label keeps its
+/// id, target, field, layer and value; the report counts the labels that
+/// carried anything else (`extensions`, unknown members, `derived_from`,
+/// `score`) as `label_members_dropped`.
+///
+/// The transaction is what makes the import all or nothing: the store
+/// refuses it whole when a record's id or a layer's id is already taken, a
+/// layer is missing, or two labels are one. Nothing is read from the store
+/// beforehand, so there is no moment between a check and the write.
+///
+/// # How it ends
+///
+/// - Applied: the adapter's report is kept
+///   (`AnnotationStore::record_import_report`), then the import is ended
+///   (`AnnotationStore::finish_loading`), and the report is returned.
+/// - Anything else: the import is ended as failed
+///   (`AnnotationStore::fail_loading`) with the message of the
+///   [`AnnotationError::ImportFailed`] returned, and no record of the
+///   document is in the store. The message is the adapter's error text
+///   (`ImportError`, which holds no text of the file); or
+///   `the annotations file could not be opened` with the
+///   `std::io::ErrorKind`; or, for a refused transaction,
+///   `the annotation store refused the import: ` and the first
+///   violation's code (`{code:?}`), or `conflict`.
+///
+/// While the import runs the EMBED reads wait, as for a CSV; writes do
+/// not, and a record a client makes meanwhile is kept. Records are added
+/// to the files they name whether or not the EMBED endpoint wrote to a
+/// file meanwhile.
+///
+/// [`NATIVE_IMPORT_AUTHOR`]: crate::annotations::NATIVE_IMPORT_AUTHOR
+pub async fn import_native(
+    registry: &FileRegistry,
+    store: &AnnotationStore,
+    source: &NativeSource,
+    keep_going: Arc<dyn Fn() -> bool + Send + Sync>,
+) -> Result<Report, AnnotationError> {
+    let _ = (registry, store, source.path(), keep_going());
+    todo!("ADP1")
+}
+
+/// `GET /api/annotations/import`: where the session's `--annotations`
+/// import stands, without waiting for it.
+pub fn import_status(store: &AnnotationStore) -> Result<AnnotationImportResponse, AnnotationError> {
+    let (state, report, error) = match store.import_status().map_err(store_error)? {
+        ImportStatus::None => (AnnotationImportState::None, None, None),
+        ImportStatus::Loading => (AnnotationImportState::Loading, None, None),
+        ImportStatus::Ready(report) => (AnnotationImportState::Ready, report, None),
+        ImportStatus::Failed(message) => (AnnotationImportState::Failed, None, Some(message)),
+    };
+    Ok(AnnotationImportResponse {
+        state,
+        report,
+        error,
     })
 }
 
@@ -563,6 +797,20 @@ pub async fn apply_op(
 
 fn store_error(error: impl std::fmt::Display) -> AnnotationError {
     AnnotationError::Store(error.to_string())
+}
+
+fn embed_row<'a>(path: std::borrow::Cow<'a, str>, rois: &'a EmbedRoiAnnotations) -> EmbedRow<'a> {
+    EmbedRow {
+        path,
+        roi_coords: &rois.roi_coords,
+        roi_frames: &rois.roi_frames,
+    }
+}
+
+fn embed_csv<'a>(rows: impl IntoIterator<Item = EmbedRow<'a>>) -> Result<String, AnnotationError> {
+    let mut csv = Vec::new();
+    dcmview_adapters::embed::write_csv(rows, &mut csv).map_err(store_error)?;
+    String::from_utf8(csv).map_err(store_error)
 }
 
 async fn settle_key(registry: &FileRegistry, index: usize) -> Result<FileKey, AnnotationError> {
