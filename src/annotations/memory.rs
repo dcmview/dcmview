@@ -424,10 +424,12 @@ impl MemoryBackend {
 
     /// [`MemoryBackend::transact`] of an envelope that is given up: a
     /// record an operation of it creates is moved into the store, not
-    /// copied, so an import holds its records once. The store's lists and
-    /// indexes are given room for a whole batch first, so none of them
-    /// grows while it is applied, and when the batch is refused that room
-    /// is given back with everything else.
+    /// copied, so an import holds its records once. The lists of
+    /// annotations and of labels and their indexes by id are given room
+    /// for a whole batch first, so those do not grow while it is applied,
+    /// and when the batch is refused that room is given back. The index
+    /// of labels by target and the lists of records by file grow as
+    /// records arrive, and keep the room they grew to after a refusal.
     ///
     /// For `Checking::AsLoaded` only: the envelope is not validated.
     pub(crate) fn transact_owned(
@@ -1599,7 +1601,9 @@ impl Transaction<'_> {
                 Undo::CreatedLayer => {
                     if let Some(entry) = self.state.layers.pop() {
                         self.state.layer_ids.remove(&entry.record.id);
-                        self.state.live_layers -= 1;
+                        // A layer the same batch deleted again was
+                        // already taken from the count.
+                        self.state.live_layers -= usize::from(!entry.deleted);
                     }
                 }
             }
@@ -1712,6 +1716,59 @@ mod tests {
         )]);
         backend.apply(vec![lent], &sizes).expect("store");
         assert_eq!(backend.copied_records().expect("count"), 1);
+    }
+
+    /// A refused batch that created a layer and deleted it again leaves
+    /// the count of layers as it was, however often: a layer can still be
+    /// created afterwards, and the count is what a recount gives.
+    #[test]
+    fn a_refused_batch_leaves_the_count_of_layers_exact() {
+        let backend = MemoryBackend::new(MemoryConfig {
+            author: Author::parse("user:test").expect("author"),
+            schema: None,
+        });
+        let sizes = BTreeMap::<FileKey, dcmview_annotation::ImageSize>::new();
+        let envelope = |op: serde_json::Value| -> OpEnvelope {
+            serde_json::from_value(serde_json::json!({
+                "op_id": dcmview_annotation::new_id(), "actor": "user:test",
+                "ts": "2026-10-10T08:00:00.000Z", "op": op,
+            }))
+            .expect("envelope")
+        };
+        let layer = |id: &str| serde_json::json!({ "id": id, "name": "Layer", "kind": "user" });
+        let create = |id: &str| serde_json::json!({ "type": "create_layer", "layer": layer(id) });
+        let recount = |backend: &MemoryBackend| {
+            let state = backend.state.lock().expect("state");
+            let live = state.layers.iter().filter(|layer| !layer.deleted).count();
+            assert_eq!(state.live_layers, live);
+            assert_eq!(state.layer_ids.len(), state.layers.len());
+            live
+        };
+        for round in 0..5 {
+            let refused = envelope(serde_json::json!({ "type": "batch", "ops": [
+                create("made"),
+                { "type": "delete_layer", "id": "made", "base_rev": 1, "snapshot": {
+                    "id": "made", "name": "Layer", "kind": "user", "exclusive_masks": false,
+                    "readonly": false, "source": {}, "rev": 1 } },
+                { "type": "delete_layer", "id": "missing", "base_rev": 1, "snapshot": layer("missing") },
+            ]}));
+            let result = backend
+                .apply(vec![refused], &sizes)
+                .expect("store")
+                .remove(0);
+            assert!(
+                !matches!(result, ApplyResult::Ok { .. }),
+                "round {round}: {result:?}"
+            );
+            assert_eq!(recount(&backend), 1 + round, "round {round}");
+            let kept = envelope(create(&format!("kept-{round}")));
+            let result = backend.apply(vec![kept], &sizes).expect("store").remove(0);
+            assert!(
+                matches!(result, ApplyResult::Ok { .. }),
+                "round {round}: {result:?}"
+            );
+            assert_eq!(recount(&backend), 2 + round);
+        }
     }
 
     /// A batch that is refused leaves nothing behind, the room made for it
