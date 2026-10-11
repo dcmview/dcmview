@@ -31,7 +31,8 @@ dcmview [OPTIONS] <PATH> [PATH ...]
 | `--cache-budget <BYTES>` | `768MiB` | Total memory for cached display, raw, overlay and thumbnail frame bodies; minimum `16MiB`. |
 | `--decode-memory <BYTES>` | a quarter of physical memory, from `1GiB` to `4GiB` | Memory that frames being decoded may use between them; minimum `256MiB`. See [Decode memory](#decode-memory). |
 | `--no-recursive` | `false` | Scan only the top level of input directories. |
-| `--annotations <CSV>` | none | Load EMBED-style ROI annotations from CSV without modifying the file. |
+| `--annotations <FILE>` | none | Load annotations without modifying the file: an EMBED-style ROI CSV, or a `dcmview.annotations` document as JSON or JSON Lines. The start of the file decides which. |
+| `--annotations-format <FORMAT>` | decided from the file | Read `--annotations` as `embed` (EMBED-style ROI CSV) or `native` (a `dcmview.annotations` document). |
 | `--formats <NAMES>` | all five formats | Comma-separated `dicom,png,jpeg,tiff,webp`; narrows directory walks only. |
 | `--filter <FIELD=VALUE>` | none | Include only files matching a metadata, format, or path filter; repeatable. |
 | `--mask` | `false` | Replace patient identifiers in everything the viewer displays, for screen sharing. Display only: files are not modified and this is not de-identification. Fixed for the session. |
@@ -324,7 +325,7 @@ single path-like value or an iterable of path-like values.
 | `block` | `True` | When `True`, waits for `dcmview` to exit and returns `None`; when `False`, returns a handle with `.url`, `.stop()`, and context-manager support. |
 | `recursive` | `True` | When `False`, forwards `--no-recursive`. |
 | `timeout` | `None` | Forwards to `--timeout` when set. |
-| `annotations` | `None` | Path to an EMBED-style ROI CSV; forwards `--annotations` when set. |
+| `annotations` | `None` | Path to an EMBED-style ROI CSV or a `dcmview.annotations` document; forwards `--annotations` when set. |
 | `filters` | `None` | Iterable of `FIELD=VALUE` filters; each value forwards as `--filter`. |
 | `mask` | `False` | When `True`, forwards `--mask`. |
 | `vscode_bridge` | `True` | When `True`, the viewer opens in VS Code when launched from a VS Code terminal or inside an open workspace folder. |

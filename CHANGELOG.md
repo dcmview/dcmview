@@ -35,6 +35,24 @@ diagnostic viewer.
   `?file=<index>`; under a key that is not that file's settled key it
   answers `409 file_key_replaced`, and without an index under a key several
   files carry, `409 file_key_ambiguous`.
+- A session's annotations can be downloaded as a `dcmview.annotations`
+  document, with every shape, layer and label and a description of each
+  annotated file: `GET /api/annotations/export.json`, or
+  `GET /api/annotations/export.jsonl` for the same records a line each.
+  `--annotations` loads either form again, as well as an EMBED-style CSV;
+  the start of the file decides which it is, and
+  `--annotations-format embed|native` forces one. A document's files are
+  matched by key, then SOP Instance UID, then path, and loading is all or
+  nothing. A document export needs the key of every file that has ROIs and
+  answers `422 file_key_unavailable` for one that cannot be read; a JSON
+  document past 256 MiB answers `422 annotation_export_too_large`.
+- `GET /api/annotations/import` reports where the `--annotations` import
+  stands and what it did: rows matched and unmatched, and every box that was
+  corrected or kept although it is unusual, by row. The report holds no
+  path or value of the file.
+- The `dcmview-adapters` workspace crate holds the annotation file formats
+  (EMBED ROI CSV, native JSON and JSON Lines) for other programs that read
+  or write them.
 - Catalog entries carry stable session file keys through `file_key`,
   `alias_of` and `key_error`. `GET /api/files` accepts `since` and `limit`
   and reports `revision`, `reset`, `more`, `keys_hashing` and `rekeys`.
@@ -120,6 +138,19 @@ diagnostic viewer.
 
 ### Changed
 
+- **Export ROIs** and `GET /api/annotations/export.csv` write their rows
+  sorted by path (the byte order of the path as written). The order used to
+  follow the order discovery happened to find the files in and could differ
+  between two runs. Each row's bytes are unchanged.
+- An EMBED-style CSV with a negative coordinate or one that is not a whole
+  number no longer fails to load. The negative value is read as 0 and the
+  other is rounded to the nearest pixel, and the import's report lists each
+  such box. A box past the image edge is still kept and exported exactly as
+  written.
+- An annotation CSV is read within fixed bounds: a row of at most 16 MiB,
+  65,536 ROIs in a row, 65,536 frames for a ROI and 16,777,216 rows. A file
+  past one fails to load like any invalid file. The messages of a failed
+  load no longer end with the JSON or number parser's own text.
 - A DICOM or raster frame whose decode estimate exceeds the budget is now
   refused with `422 decode_memory_exceeded` instead of being attempted.
   The default is a quarter of physical memory, from 1 GiB to 4 GiB;

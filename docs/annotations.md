@@ -1,8 +1,9 @@
 # dcmview Annotation Reference
 
 `dcmview` can load, edit, and export rectangular ROI annotations in an
-EMBED-style CSV format. Annotations are kept in memory only: the input CSV and
-source DICOM files are never modified.
+EMBED-style CSV format, and can write and reload everything a session holds
+as a `dcmview.annotations` document. Annotations are kept in memory only: the
+input file and source DICOM files are never modified.
 
 `dcmview` is intended for research and development inspection, not clinical
 diagnosis. Annotation CSVs can contain local paths and case identifiers; do not
@@ -11,11 +12,19 @@ use.
 
 ## Loading Annotations
 
-Pass an annotation CSV with `--annotations`:
+Pass an annotation file with `--annotations`:
 
 ```bash
 dcmview --annotations ./embed_annotations.csv ./study_dir
+dcmview --annotations ./dcmview-annotations.json ./study_dir
 ```
+
+The file is an EMBED-style CSV (below) or a
+[`dcmview.annotations` document](#documents), as JSON or JSON Lines. The
+start of the file decides which: a file that begins like a document is read
+as one, and every other file as a CSV, whatever it is named.
+`--annotations-format embed` or `--annotations-format native` reads it as the
+format named instead.
 
 Python wrapper usage:
 
@@ -55,11 +64,17 @@ Extra columns are ignored when loading and are not preserved when exporting.
 [[120, 340, 220, 430], [400, 510, 480, 590]]
 ```
 
-Coordinates are image pixel indices and must be non-negative integers. A box
-should be inside image bounds with `ymax`/`xmax` greater than `ymin`/`xmin`:
-loading does not check this, and such a box is kept and exported as written,
-but the viewer refuses to save an edit to a file whose boxes break either
-rule.
+Coordinates are image pixel indices: non-negative whole numbers. Two kinds
+of value are corrected on load, and each corrected box is listed in the
+[import's report](#the-imports-report): a negative coordinate is read as 0,
+and a coordinate that is not a whole number is rounded to the nearest pixel
+(halves away from zero). A whole number written as `20.0` or `2e1` is that
+number.
+
+A box should be inside image bounds with `ymax`/`xmax` greater than
+`ymin`/`xmin`. Loading does not enforce this: such a box is kept and
+exported exactly as written and listed in the report, but the viewer refuses
+to save an edit to a file whose boxes break either rule.
 
 `ROI_frames` is a JSON array with one frame-index list per ROI:
 
@@ -101,13 +116,67 @@ background ingestion. Common failures include:
 - Missing `anon_dicom_path` or `ROI_coords`.
 - Invalid JSON in `ROI_coords` or `ROI_frames`.
 - `num_ROI` not matching the number of coordinate boxes.
-- A negative or non-integer coordinate.
+- A coordinate that is not a number, or is above 4,294,967,295.
 - A frame index outside the file's frame range.
 - A different number of `ROI_coords` and `ROI_frames` entries.
 
 If a matching row is invalid, no CSV annotations are committed. Image viewing
 continues, while annotation reads and export return the validation error. Bad
 ROI payloads on unmatched dataset-level rows are intentionally ignored.
+
+A CSV is read within fixed bounds, and one past a bound fails the same way: a
+row of at most 16 MiB, at most 65,536 ROIs in a row and 65,536 frames for a
+ROI, and at most 16,777,216 rows.
+
+## The Import's Report
+
+Every import leaves a report of what it did, at
+`GET /api/annotations/import`: how many rows matched a loaded file and how
+many did not, and, by CSV row and position in the row, every box that was
+corrected (`negative_coordinate`, `non_integer_coordinate`) or kept although
+it is unusual (`out_of_range`, `zero_area`, `corners_out_of_order`,
+`frames_empty`). The viewer also prints one line for each kind to standard
+error. The report holds row numbers and counts, never a path or a value of
+the file.
+
+## Exported Row Order
+
+**Export ROIs** writes one row for each file that has a ROI, sorted by path
+(the byte order of the path as written), so two exports of the same
+annotations are the same file.
+
+## Documents
+
+A session's annotations can also be downloaded as one document of the
+annotation model, which holds everything the CSV cannot: every shape, layer
+and label, and a description of each annotated file.
+
+- `GET /api/annotations/export.json`: one JSON document.
+- `GET /api/annotations/export.jsonl`: the same, a record a line, for large
+  sessions (a JSON document is limited to 256 MiB).
+
+A document names each file by its key, its SOP Instance UID and its path
+below the directory that holds every loaded file, so it can be loaded again
+with `--annotations` after the files have moved together or the viewer runs
+on another machine. A file of the document is matched to a loaded file by
+key, then by UID, then by path; it is refused when the loaded file has other
+dimensions or another UID, and its annotations are then counted in the
+report and left out, as are those of a file that is not loaded.
+
+Loading a document is all or nothing: a record that breaks a rule of the
+annotation model fails the whole import and the report names its line. One
+exception keeps a session reloadable: a box that an EMBED CSV import kept as
+written (past the image edge, without area, corners out of order) is taken
+back as written, and listed in the report.
+
+Loaded records keep their ids, layers, classes, shapes, frames and
+attributes. The session that loads them stamps them as its own import
+(`import:native`), so the original author and times are not kept.
+
+Exporting a document needs the key of every file that has ROIs. For a file
+that must be hashed first the download waits; when a file can no longer be
+read, the document export answers an error naming it, and the CSV export
+still works.
 
 For symptom-oriented fixes, see the
 [troubleshooting guide](troubleshooting.md#annotation-csv-fails-to-load).
