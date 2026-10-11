@@ -92,8 +92,9 @@
 //!    may share a key (`duplicate_file_key`, at the second). Each is then
 //!    resolved (`context.resolver.resolve`):
 //!    - no match: `file_unmatched` at its row;
-//!    - a refusal: `evidence_conflict`, `file_unverified` or
-//!      `key_unavailable` at its row, by the [`Refusal`];
+//!    - a refusal: `evidence_conflict`, `file_unverified`,
+//!      `file_ambiguous` or `key_unavailable` at its row, by the
+//!      [`Refusal`];
 //!    - a match whose rows, columns or frame count are not the
 //!      reference's: refused, `size_mismatch`;
 //!    - a match without a key ([`crate::Resolved::key`]): refused,
@@ -147,42 +148,57 @@
 //!
 //! # Cost
 //!
-//! **For any input, an import holds at most nine times the length of the
-//! text and 64 MiB.** A document a session wrote holds within four times
-//! its text, the records it leaves included.
+//! **For any input, reading holds at most the budget and the transient**
+//! (and, for a JSON document or a first line, its text in a buffer that
+//! grows by doubling: up to three times its length while it grows):
 //!
-//! The model keeps `extensions` and members it does not know as JSON
-//! values, and reads an object that has such members through a buffered
-//! form of it; both cost many times the text of a value of one or two
-//! bytes. Three budgets, checked on the text before a value of it is
-//! parsed ([`crate::limits`]), keep that bounded whatever the text is made
-//! of:
+//! - **The budget** is [`crate::limits::HELD_TEXT_MULTIPLE`] (8) bytes
+//!   for every byte of text read, and [`crate::limits::HELD_BASE_BYTES`]
+//!   (16 MiB). It is what everything the import keeps may hold.
+//! - **The transient** is [`crate::limits::UNIT_TRANSIENT_BYTES`]
+//!   (256 MiB): what building one record, or the header, may hold before
+//!   it is counted.
 //!
-//! - **Values of one unit:** at most [`crate::limits::MAX_UNIT_VALUES`]
-//!   JSON values (objects, arrays, strings, member names, numbers, `true`,
-//!   `false`, `null`) in one record, and as many in everything of a
-//!   document that is not a record (its header: `schema`, `extensions`,
-//!   unknown members). More is [`ImportError::TooLarge`] with
-//!   `Bound::UnitValues`. This bounds what is buffered at once: the 64 MiB.
-//! - **Depth:** arrays and objects nest at most
-//!   [`crate::limits::MAX_DEPTH`] deep; deeper is
-//!   [`ImportError::Malformed`] at its row.
-//! - **Kept values:** the JSON values the records keep as they found them
-//!   (the `extensions` and unknown members of files, layers, annotations
-//!   and labels, counted after each record is read) may number
-//!   [`crate::limits::MAX_KEPT_VALUES`] and one more for every
-//!   [`crate::limits::KEPT_VALUE_BYTES`] bytes of text read so far. More
-//!   is [`ImportError::TooLarge`] with `Bound::KeptValues`. This bounds
-//!   what stays held by the length of the text.
+//! So a JSON document of `n` bytes is read within `11 n` + 272 MiB, and a
+//! JSON Lines file within `8 n` + 272 MiB and two of its lines.
 //!
-//! A JSON document is read member by member, and each of its four lists an
-//! element at a time, so that only one record is in the buffered form at
-//! once; a JSON Lines file is read a line at a time. A record a session
-//! writes has some 40 values and keeps none, or six when it says which
-//! copy a row is of: one value for nine bytes of text, against budgets of
-//! 524,288 values a record and one kept value for 16 bytes.
-//! `tests/raster_cost/annotations.rs` pins the bound with texts made to
-//! cost the most for their length.
+//! **The budget is charged, not predicted.** What a value costs to hold
+//! cannot be told from its text: the model keeps `extensions` and members
+//! it does not know as JSON values, and a member of two bytes can be a
+//! map node of several hundred. So after each file reference, layer,
+//! annotation and label is built, and after the header's members are,
+//! the reader counts on the thing itself what it holds ([`crate::held`]:
+//! the capacity of every string and vector, every map node, every kept
+//! value) and the room it takes in its list, adds that to a running
+//! total, and stops when the total is past the budget for the text read
+//! so far: [`ImportError::TooLarge`] with `Bound::HeldBytes`, and nothing
+//! is handed on. A list grows by a quarter, not by doubling, and an item
+//! is counted at nine quarters of its size for the room the list keeps
+//! free and copies from. A document a session wrote is counted at three
+//! bytes for a byte of text.
+//!
+//! **The transient is bounded by construction.** One unit (a record, or
+//! everything of a document that is not a record) is in the parser's
+//! buffered form and in its kept form at once, before it can be counted.
+//! One pass over the text that allocates nothing, before any value of it
+//! is parsed, holds a unit to [`crate::limits::MAX_UNIT_VALUES`] JSON
+//! values (objects, arrays, strings, member names, numbers, `true`,
+//! `false`, `null`), to [`crate::limits::MAX_UNIT_CONTAINERS`] objects and
+//! arrays among them, and to [`crate::limits::MAX_DEPTH`] levels of
+//! nesting ([`ImportError::TooLarge`] with `Bound::UnitValues` or
+//! `Bound::UnitContainers`; deeper nesting is [`ImportError::Malformed`]
+//! at its row). The two counts times what a value and an object cost at
+//! worst are the transient (derived at
+//! [`crate::limits::UNIT_TRANSIENT_BYTES`]). The bounds are set from the
+//! model's: the largest mask (262,144 tiles in 65,536 frames) and the
+//! largest polygon (100,000 points) are within them.
+//!
+//! A JSON document is read member by member, and each of its four lists
+//! an element at a time, so that only one record is in the buffered form
+//! at once; a JSON Lines file is read a line at a time.
+//! `tests/raster_cost/annotations.rs` holds texts made to cost the most
+//! for their length to the budget, the costliest units to the transient,
+//! and what is counted to what the allocator gave out.
 //!
 //! An import looks at each record a fixed number of times and finds a
 //! file, a layer and an id through a map, not by scanning a list for each
@@ -193,6 +209,7 @@ use crate::adapter::{
     ImportAdapter, ImportContext, Imported, Matcher, Refusal, Resolution,
 };
 use crate::error::{Bound, ExportError, ImportError};
+use crate::held::Held;
 use crate::limits::Limits;
 use crate::report::{AdapterRef, Direction, Report, RowRef, WarningCode};
 use dcmview_annotation::{
@@ -583,9 +600,15 @@ fn check_values(text: &[u8], whole: bool, bounds: &Limits, row: u64) -> Result<(
         bound: Bound::UnitValues,
         limit: bounds.unit_values,
     };
+    let too_many_containers = ImportError::TooLarge {
+        bound: Bound::UnitContainers,
+        limit: bounds.unit_containers,
+    };
     let mut depth = 0_u32;
-    let mut header = 0_u64;
-    let mut unit = 0_u64;
+    // Values, and the objects and arrays among them, of the header and of
+    // the record being read.
+    let mut header = [0_u64; 2];
+    let mut unit = [0_u64; 2];
     // Inside one of the four lists of a document.
     let mut in_list = false;
     // The name of the top-level member being read, once it is complete.
@@ -612,6 +635,7 @@ fn check_values(text: &[u8], whole: bool, bounds: &Limits, row: u64) -> Result<(
             continue;
         }
         let mut value = false;
+        let mut container = false;
         match byte {
             b'"' => {
                 string_start = Some(at);
@@ -621,6 +645,7 @@ fn check_values(text: &[u8], whole: bool, bounds: &Limits, row: u64) -> Result<(
             b'{' | b'[' => {
                 bare = false;
                 value = true;
+                container = true;
                 depth += 1;
                 if depth > bounds.depth {
                     return Err(ImportError::Malformed { row });
@@ -629,11 +654,12 @@ fn check_values(text: &[u8], whole: bool, bounds: &Limits, row: u64) -> Result<(
                     expect_name = *byte == b'{';
                 } else if whole && depth == 2 {
                     in_list = list_next && *byte == b'[';
-                    unit = 0;
+                    unit = [0; 2];
                     // The list itself is the header's; its elements are
                     // units of their own.
                     if in_list {
-                        header += 1;
+                        header[0] += 1;
+                        header[1] += 1;
                         value = false;
                     }
                 }
@@ -651,7 +677,7 @@ fn check_values(text: &[u8], whole: bool, bounds: &Limits, row: u64) -> Result<(
                     expect_name = true;
                     list_next = false;
                 } else if in_list && depth == 2 {
-                    unit = 0;
+                    unit = [0; 2];
                 }
             }
             b':' => {
@@ -668,93 +694,69 @@ fn check_values(text: &[u8], whole: bool, bounds: &Limits, row: u64) -> Result<(
         }
         if value {
             let counted = if in_list { &mut unit } else { &mut header };
-            *counted += 1;
-            if *counted > bounds.unit_values {
+            counted[0] += 1;
+            counted[1] += u64::from(container);
+            if counted[0] > bounds.unit_values {
                 return Err(too_many);
+            }
+            if counted[1] > bounds.unit_containers {
+                return Err(too_many_containers);
             }
         }
     }
     Ok(())
 }
 
-/// The JSON values a record keeps as it found them.
-trait KeptValues {
-    fn kept_values(&self) -> u64;
-}
-
-fn value_nodes(value: &serde_json::Value) -> u64 {
-    1 + match value {
-        serde_json::Value::Array(items) => items.iter().map(value_nodes).sum(),
-        serde_json::Value::Object(members) => {
-            members.values().map(|value| 1 + value_nodes(value)).sum()
-        }
-        _ => 0,
-    }
-}
-
-fn member_nodes(members: &std::collections::BTreeMap<String, serde_json::Value>) -> u64 {
-    members.values().map(|value| 1 + value_nodes(value)).sum()
-}
-
-impl KeptValues for FileRef {
-    fn kept_values(&self) -> u64 {
-        member_nodes(&self.unknown) + member_nodes(&self.space.unknown)
-    }
-}
-
-impl KeptValues for Layer {
-    fn kept_values(&self) -> u64 {
-        member_nodes(&self.unknown) + member_nodes(&self.source.unknown)
-    }
-}
-
-impl KeptValues for Annotation {
-    fn kept_values(&self) -> u64 {
-        member_nodes(&self.extensions) + member_nodes(&self.unknown)
-    }
-}
-
-impl KeptValues for Label {
-    fn kept_values(&self) -> u64 {
-        member_nodes(&self.extensions) + member_nodes(&self.unknown)
-    }
-}
-
-/// What the records read so far keep as they found it, against what the
-/// text read so far allows ([`Limits::kept_values`]).
-struct Kept {
-    values: u64,
+/// What the things read so far hold ([`crate::held`]), against what the
+/// text read so far allows ([`Limits::held_text_multiple`]).
+struct HeldTotal {
+    bytes: u64,
     exceeded: bool,
 }
 
-impl Kept {
-    /// Counts what `record` keeps. `false` when that is more than `bytes`
-    /// of text allow.
-    fn add(&mut self, record: &impl KeptValues, bytes: u64, bounds: &Limits) -> bool {
-        self.values += record.kept_values();
-        let allowed = bounds.kept_values + bytes / bounds.kept_value_bytes.max(1);
-        self.exceeded |= self.values > allowed;
+impl HeldTotal {
+    /// Adds `bytes`. `false` when the total is more than `text` bytes of
+    /// text allow.
+    fn add(&mut self, bytes: u64, text: u64, bounds: &Limits) -> bool {
+        self.bytes = self.bytes.saturating_add(bytes);
+        let allowed = bounds
+            .held_base_bytes
+            .saturating_add(text.saturating_mul(bounds.held_text_multiple));
+        self.exceeded |= self.bytes > allowed;
         !self.exceeded
     }
 
     fn error(bounds: &Limits) -> ImportError {
         ImportError::TooLarge {
-            bound: Bound::KeptValues,
-            limit: bounds.kept_values,
+            bound: Bound::HeldBytes,
+            limit: bounds.held_text_multiple,
         }
     }
+}
+
+/// Puts `item` at the end of `list`, which grows by a quarter when it is
+/// full, and returns what the item is counted as holding: what it owns,
+/// and nine quarters of its own size, for the room the list keeps free
+/// and the room it copies from while it grows.
+fn keep<T: Held>(list: &mut Vec<T>, item: T) -> u64 {
+    let held = item.held_bytes() + (std::mem::size_of::<T>() as u64 * 9).div_ceil(4);
+    if list.len() == list.capacity() {
+        list.reserve_exact((list.capacity() / 4).max(16));
+    }
+    list.push(item);
+    held
 }
 
 /// One of a document's four lists, read an element at a time, so that no
 /// more than one element is held in the parser's own form at once.
 struct List<'a, T> {
     into: &'a mut Vec<T>,
-    kept: &'a std::cell::RefCell<Kept>,
+    kept: &'a std::cell::RefCell<HeldTotal>,
     bytes: u64,
     bounds: &'a Limits,
 }
 
-impl<'de, T: Deserialize<'de> + KeptValues> serde::de::DeserializeSeed<'de> for List<'_, T> {
+impl<'de, T: Deserialize<'de> + Held> serde::de::DeserializeSeed<'de> for List<'_, T> {
     type Value = ();
 
     fn deserialize<D: serde::Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
@@ -762,7 +764,7 @@ impl<'de, T: Deserialize<'de> + KeptValues> serde::de::DeserializeSeed<'de> for 
     }
 }
 
-impl<'de, T: Deserialize<'de> + KeptValues> serde::de::Visitor<'de> for List<'_, T> {
+impl<'de, T: Deserialize<'de> + Held> serde::de::Visitor<'de> for List<'_, T> {
     type Value = ();
 
     fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -771,10 +773,10 @@ impl<'de, T: Deserialize<'de> + KeptValues> serde::de::Visitor<'de> for List<'_,
 
     fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut items: A) -> Result<(), A::Error> {
         while let Some(item) = items.next_element::<T>()? {
-            if !self.kept.borrow_mut().add(&item, self.bytes, self.bounds) {
-                return Err(serde::de::Error::custom("too many kept values"));
+            let held = keep(self.into, item);
+            if !self.kept.borrow_mut().add(held, self.bytes, self.bounds) {
+                return Err(serde::de::Error::custom("too much held"));
             }
-            self.into.push(item);
         }
         Ok(())
     }
@@ -785,7 +787,7 @@ impl<'de, T: Deserialize<'de> + KeptValues> serde::de::Visitor<'de> for List<'_,
 /// [`check_values`] has bounded.
 struct Members<'a> {
     document: &'a mut Lists,
-    kept: &'a std::cell::RefCell<Kept>,
+    kept: &'a std::cell::RefCell<HeldTotal>,
     bytes: u64,
     bounds: &'a Limits,
 }
@@ -848,9 +850,9 @@ impl<'de> serde::de::Visitor<'de> for Members<'_> {
 
 /// Reads one document from `text`, which [`check_values`] has passed: the
 /// lists an element at a time, the rest through `Document::from_json_str`.
-fn parse_document(text: &str, bounds: &Limits) -> Result<Document, ParseError> {
-    let kept = std::cell::RefCell::new(Kept {
-        values: 0,
+fn parse_document(text: &str, bounds: &Limits) -> Result<(Document, u64), ParseError> {
+    let kept = std::cell::RefCell::new(HeldTotal {
+        bytes: 0,
         exceeded: false,
     });
     let mut lists = Lists::default();
@@ -866,9 +868,15 @@ fn parse_document(text: &str, bounds: &Limits) -> Result<Document, ParseError> {
     )
     .and_then(|rest| deserializer.end().map(|()| rest));
     if kept.borrow().exceeded {
-        return Err(ParseError::Kept);
+        return Err(ParseError::Held);
     }
     let rest = rest.map_err(|_| ParseError::Document(DocumentError::Malformed(String::new())))?;
+    if !kept
+        .borrow_mut()
+        .add(rest.held_bytes(), text.len() as u64, bounds)
+    {
+        return Err(ParseError::Held);
+    }
     let header = serde_json::to_string(&rest)
         .map_err(|_| ParseError::Document(DocumentError::Malformed(String::new())))?;
     drop(rest);
@@ -877,12 +885,13 @@ fn parse_document(text: &str, bounds: &Limits) -> Result<Document, ParseError> {
     document.layers = lists.layers;
     document.annotations = lists.annotations;
     document.labels = lists.labels;
-    Ok(document)
+    let held = kept.borrow().bytes;
+    Ok((document, held))
 }
 
 enum ParseError {
     Document(DocumentError),
-    Kept,
+    Held,
 }
 
 fn document_error(error: DocumentError, bounds: &Limits) -> ImportError {
@@ -932,11 +941,11 @@ fn read_document(
         check_values(buffer, true, bounds, 1)?;
         match parse_document(text_at(buffer, 1)?, bounds) {
             Ok(document) => Ok(Ok(document)),
-            Err(ParseError::Kept) => Err(Kept::error(bounds)),
+            Err(ParseError::Held) => Err(HeldTotal::error(bounds)),
             Err(ParseError::Document(error)) => Ok(Err(error)),
         }
     };
-    let mut document = match parsed(&buffer)? {
+    let (mut document, held) = match parsed(&buffer)? {
         Ok(document) => document,
         Err(DocumentError::Malformed(_)) => {
             buffer.push(b'\n');
@@ -951,7 +960,7 @@ fn read_document(
                     limit: bounds.document_bytes,
                 });
             }
-            let document = parsed(&buffer)?.map_err(|error| document_error(error, bounds))?;
+            let (document, _) = parsed(&buffer)?.map_err(|error| document_error(error, bounds))?;
             let rows = document_rows(&document);
             return Ok((document, rows));
         }
@@ -962,8 +971,8 @@ fn read_document(
     drop(buffer);
     let mut buffer = Vec::new();
     let mut rows = RecordRows::default();
-    let mut kept = Kept {
-        values: 0,
+    let mut kept = HeldTotal {
+        bytes: held,
         exceeded: false,
     };
     let mut has_lines = false;
@@ -996,27 +1005,18 @@ fn read_document(
         check_values(&buffer, false, bounds, row)?;
         let line: InputLine = serde_json::from_str(text_at(&buffer, row)?)
             .map_err(|_| ImportError::Malformed { row })?;
-        let within = match &line {
-            InputLine::End(_) => true,
-            InputLine::File(file) => kept.add(file, read, bounds),
-            InputLine::Layer(layer) => kept.add(layer, read, bounds),
-            InputLine::Annotation(annotation) => kept.add(annotation, read, bounds),
-            InputLine::Label(label) => kept.add(label, read, bounds),
-        };
-        if !within {
-            return Err(Kept::error(bounds));
-        }
-        match line {
+        let held = match line {
             InputLine::End(counts) => {
                 if counts != EndCounts::of(&document) {
                     return Err(ImportError::Truncated);
                 }
                 ended = true;
+                0
             }
             InputLine::File(file) => {
                 check_count(document.files.len() + 1, bounds.files, Bound::Files)?;
-                document.files.push(file);
                 rows.files.push(row);
+                keep(&mut document.files, file)
             }
             InputLine::Layer(layer) => {
                 if document.layers.len() >= dcmview_annotation::limits::MAX_SCHEMA_ITEMS {
@@ -1025,8 +1025,8 @@ fn read_document(
                         code: ViolationCode::TooManyItems,
                     });
                 }
-                document.layers.push(layer);
                 rows.layers.push(row);
+                keep(&mut document.layers, layer)
             }
             InputLine::Annotation(annotation) => {
                 check_count(
@@ -1034,8 +1034,8 @@ fn read_document(
                     bounds.records,
                     Bound::Records,
                 )?;
-                document.annotations.push(annotation);
                 rows.annotations.push(row);
+                keep(&mut document.annotations, annotation)
             }
             InputLine::Label(label) => {
                 check_count(
@@ -1043,9 +1043,12 @@ fn read_document(
                     bounds.records,
                     Bound::Records,
                 )?;
-                document.labels.push(label);
                 rows.labels.push(row);
+                keep(&mut document.labels, label)
             }
+        };
+        if !kept.add(held, read, bounds) {
+            return Err(HeldTotal::error(bounds));
         }
     }
     if !has_lines {
@@ -1137,6 +1140,7 @@ fn place_document(
                         Refusal::EvidenceConflict => WarningCode::EvidenceConflict,
                         Refusal::KeyUnavailable => WarningCode::KeyUnavailable,
                         Refusal::Unverified => WarningCode::FileUnverified,
+                        Refusal::Ambiguous => WarningCode::FileAmbiguous,
                     },
                     at,
                 );

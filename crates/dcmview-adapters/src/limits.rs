@@ -54,28 +54,48 @@ pub const MAX_FILES: usize = 1_048_576;
 /// Most annotations and labels together one native import reads: 1,048,576.
 pub const MAX_RECORDS: usize = 1_048_576;
 
-/// Most JSON values one unit of a native document may hold: 524,288. A
+/// Most JSON values one unit of a native document may hold: 1,048,576. A
 /// unit is one record (a file, layer, annotation or label), or everything
 /// of a document that is not one of its records (its header). A value is
 /// an object, an array, a string (a member's name included), a number,
-/// `true`, `false` or `null`. A polygon of the model's 100,000 points is
-/// 300,003 values. It bounds what reading one unit holds beside its text,
-/// whatever the text is made of.
-pub const MAX_UNIT_VALUES: u64 = 524_288;
+/// `true`, `false` or `null`. The largest records the model allows are a
+/// mask of 262,144 tiles in 65,536 frames, some 720,000 values, and a
+/// polygon of 100,000 points, some 500,000.
+pub const MAX_UNIT_VALUES: u64 = 1_048_576;
+
+/// Most objects and arrays one unit may hold: 131,072. A polygon of
+/// 100,000 points has 100,003 and the largest mask 65,540. Objects and
+/// arrays are what costs most to hold as read, so they have a bound of
+/// their own beside [`MAX_UNIT_VALUES`]; together the two bound what
+/// building one unit holds ([`UNIT_TRANSIENT_BYTES`]).
+pub const MAX_UNIT_CONTAINERS: u64 = 131_072;
+
+/// What building one unit may hold beside what is already counted, for
+/// any text: 256 MiB. A unit is in the parser's buffered form and in the
+/// form it is kept in at once, each value in vectors that may be twice
+/// as large as they need. Measured at the bounds, a number or a string
+/// costs up to 130 bytes and an object of one member 960, most of it
+/// the map node it is kept in. 131,072 such objects (393,216 values with
+/// their members) are 120 MiB and the 655,360 values left to the bound
+/// 81 MiB: 201 MiB, and 203 MiB as measured for that unit, the costliest
+/// found (`tests/raster_cost/annotations.rs` holds each shape to this).
+pub const UNIT_TRANSIENT_BYTES: u64 = 256 * 1024 * 1024;
 
 /// Deepest nesting of arrays and objects in a native document: 64.
 pub const MAX_DEPTH: u32 = 64;
 
-/// How many JSON values a native import keeps as it found them (in
-/// `extensions` and in members this version does not know, of every file,
-/// layer, annotation and label) before the text read so far has to
-/// account for them: 65,536. Past these, one value for every
-/// [`KEPT_VALUE_BYTES`] bytes read.
-pub const MAX_KEPT_VALUES: u64 = 65_536;
+/// How many bytes the things a native import keeps may hold for every
+/// byte of text read: 8. What they hold is counted on them after each is
+/// built ([`crate::held`]), not predicted from the text. A document a
+/// session writes is counted at 2 to 4 bytes for a byte of text: a
+/// rectangle at some 2, and one that says which copy it is a row of,
+/// whose two small maps are a node each, at some 4.
+pub const HELD_TEXT_MULTIPLE: u64 = 8;
 
-/// Bytes of text that allow one more kept value: 16. A record a session
-/// writes has one kept value for over a hundred bytes.
-pub const KEPT_VALUE_BYTES: u64 = 16;
+/// What the things a native import keeps may hold beside
+/// [`HELD_TEXT_MULTIPLE`] times the text: 16 MiB, so that a short
+/// document is not held to its few bytes.
+pub const HELD_BASE_BYTES: u64 = 16 * 1024 * 1024;
 
 /// How many row references one entry of a `Report` keeps: the first 16. The
 /// entry's `count` still counts every occurrence.
@@ -111,10 +131,12 @@ pub struct Limits {
     pub unit_values: u64,
     /// [`MAX_DEPTH`].
     pub depth: u32,
-    /// [`MAX_KEPT_VALUES`].
-    pub kept_values: u64,
-    /// [`KEPT_VALUE_BYTES`].
-    pub kept_value_bytes: u64,
+    /// [`MAX_UNIT_CONTAINERS`].
+    pub unit_containers: u64,
+    /// [`HELD_TEXT_MULTIPLE`].
+    pub held_text_multiple: u64,
+    /// [`HELD_BASE_BYTES`].
+    pub held_base_bytes: u64,
 }
 
 impl Limits {
@@ -131,8 +153,9 @@ impl Limits {
         records: MAX_RECORDS,
         unit_values: MAX_UNIT_VALUES,
         depth: MAX_DEPTH,
-        kept_values: MAX_KEPT_VALUES,
-        kept_value_bytes: KEPT_VALUE_BYTES,
+        unit_containers: MAX_UNIT_CONTAINERS,
+        held_text_multiple: HELD_TEXT_MULTIPLE,
+        held_base_bytes: HELD_BASE_BYTES,
     };
 }
 

@@ -976,9 +976,10 @@ fn a_document_is_held_to_its_value_budgets() {
             "{name}, in the header"
         );
     }
-    // Many records of few values each are not one unit, and what they
-    // keep is counted against the text: 40 kept values a record of some
-    // 450 bytes is more than a value for every 16 bytes.
+    // Many records of few values each are not one unit. What they hold
+    // is counted on them once they are built and held to the text: a
+    // record of some 500 bytes that keeps an array of 40 numbers in a
+    // member the model does not read holds more than eight times that.
     let kept: Vec<Value> = (0..200)
         .map(|n| {
             let mut annotation = record(n, "default", json!("all"), rect(1.0, 1.0, 2.0, 2.0));
@@ -987,16 +988,37 @@ fn a_document_is_held_to_its_value_budgets() {
         })
         .collect();
     let text = small(json!([]), kept);
+    let lines = {
+        let document = Document::from_json_str(&text).expect("document");
+        export(&NativeJsonLines, &document).0
+    };
+    for text in [&text, &lines] {
+        assert_eq!(
+            read_in(&plain, text, &|limits| limits.held_base_bytes = 0),
+            Err(too_large(Bound::HeldBytes, 8))
+        );
+        assert_eq!(
+            read_in(&plain, text, &|limits| {
+                limits.held_base_bytes = 0;
+                limits.held_text_multiple = 40;
+            }),
+            Ok(200)
+        );
+        assert_eq!(read_in(&plain, text, &|_| ()), Ok(200), "a short text");
+    }
+    // What a session writes is held within the multiple alone.
     assert_eq!(
-        read_in(&plain, &text, &|limits| {
-            limits.unit_values = 500;
-            limits.kept_values = 64;
-        }),
-        Err(too_large(Bound::KeptValues, 64))
+        read(&json_text, &|limits| limits.held_base_bytes = 0),
+        Ok(8)
     );
+    // Objects and arrays have a bound of their own.
+    let mut annotation = record(1, "default", json!("all"), rect(1.0, 1.0, 2.0, 2.0));
+    annotation["extensions"] = json!({ "x": vec![json!({}); 300] });
     assert_eq!(
-        read_in(&plain, &text, &|limits| limits.unit_values = 500),
-        Ok(200)
+        read_in(&plain, &small(json!([]), vec![annotation]), &|limits| {
+            limits.unit_containers = 200
+        }),
+        Err(too_large(Bound::UnitContainers, 200))
     );
 
     // Nesting past the bound is not read.
@@ -1017,6 +1039,68 @@ fn a_document_is_held_to_its_value_budgets() {
         read_in(&plain, &nested(40), &|limits| limits.depth = 16),
         Err(ImportError::Malformed { row: 1 })
     );
+}
+
+/// The largest records the model allows are within what one record may
+/// hold: a mask of 262,144 tiles over 65,536 frames, and a polygon of
+/// 100,000 points, in both forms.
+#[test]
+fn the_largest_valid_records_are_read() {
+    const BIG: &str = "sop:1.2.826.0.1.3680043.8.498.9";
+    let pool = Pool(vec![Loaded {
+        path: "big.dcm",
+        key: Some(key(BIG)),
+        size: size(4096, 4096, 65_536),
+        size_bytes: 1,
+        refusal: None,
+    }]);
+    let session = Session::new(None);
+    let frames: Vec<u32> = (0..65_536).collect();
+    let tiles: serde_json::Map<String, Value> = frames
+        .iter()
+        .map(|frame| {
+            (
+                frame.to_string(),
+                json!({ "0,0": "AAAA", "1,0": "AAAA", "0,1": "AAAA", "1,1": "AAAA" }),
+            )
+        })
+        .collect();
+    let mask = json!({
+        "type": "mask", "encoding": "tiles-v1", "tile": 64, "depth": 1, "frames": tiles,
+    });
+    let points: Vec<Value> = (0..100_000)
+        .map(|n| json!({ "x": n % 4096, "y": n / 4096 }))
+        .collect();
+    let polygon = json!({ "type": "polygon", "points": points });
+    for (what, frames, geometry) in [
+        ("the largest mask", json!({ "set": frames }), mask),
+        ("the largest polygon", json!("all"), polygon),
+    ] {
+        let mut annotation = record(1, "default", frames, geometry);
+        annotation["file"] = json!(BIG);
+        let text = json!({
+            "format": "dcmview.annotations", "version": "1.0",
+            "files": [{
+                "key": BIG, "kind": "dicom", "sop_instance_uid": "1.2.826.0.1.3680043.8.498.9",
+                "path": "big.dcm", "size_bytes": 1,
+                "rows": 4096, "columns": 4096, "frames": 65_536, "format": "dicom",
+            }],
+            "layers": [],
+            "annotations": [annotation],
+        })
+        .to_string();
+        let read =
+            import_in(&session, &pool, &text).unwrap_or_else(|error| panic!("{what}: {error}"));
+        assert_eq!(read.report.counts.annotations_out, 1, "{what}");
+        assert!(read.report.warnings.is_empty(), "{what}");
+        let lines = {
+            let document = Document::from_json_str(&text).expect("document");
+            export(&NativeJsonLines, &document).0
+        };
+        let read = import_in(&session, &pool, &lines)
+            .unwrap_or_else(|error| panic!("{what}, as lines: {error}"));
+        assert_eq!(read.report.counts.annotations_out, 1, "{what}");
+    }
 }
 
 /// Two labels of a document cannot share an id, as two annotations cannot.

@@ -46,6 +46,7 @@
 pub mod adapter;
 pub mod embed;
 pub mod error;
+pub mod held;
 pub mod limits;
 pub mod native;
 pub mod registry;

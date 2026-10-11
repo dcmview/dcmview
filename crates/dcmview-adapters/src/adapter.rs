@@ -109,6 +109,9 @@ pub enum Refusal {
     /// could not be read to compare. Nothing is placed on a file that was
     /// not compared.
     Unverified,
+    /// The reference's path or UID names more loaded files than a
+    /// resolver compares, and nothing else of the reference finds a file.
+    Ambiguous,
 }
 
 /// What a resolver answers for one file reference.

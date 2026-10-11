@@ -557,24 +557,350 @@ mod documents {
         assert_eq!(registry.key_stats().files_hashed, 0);
     }
 
-    /// Whatever a document is made of, reading it holds at most
-    /// `MULTIPLE` times its text and `CONSTANT` bytes, because one unit
-    /// of it holds a bounded number of JSON values and the values kept as
-    /// they were read are bounded by the text
-    /// (`dcmview_adapters::native`, "Cost"). A text of several megabytes
-    /// is held to the multiple alone, and a small text that is one record
-    /// of as many values as a unit may hold to the constant alone. The shapes are the ones that
-    /// cost the most for their length: values of one or two bytes, in
-    /// members the model keeps, reads and ignores; nesting; empty objects;
-    /// the same member again and again; and one line as long as a line
-    /// may be.
+    /// Texts made to cost the most for their length, as documents and as
+    /// JSON Lines. `per_record` gives one record of a kind: `(list, text)`.
+    fn hostile(text: usize) -> Vec<(String, String)> {
+        let head = r#""format":"dcmview.annotations","version":"1.0""#;
+        let file = r#"{"key":"sop:1.2.3","kind":"dicom","sop_instance_uid":"1.2.3","path":"a.dcm","size_bytes":1,"rows":4096,"columns":4096,"frames":4,"format":"dicom"}"#;
+        let meta = r#""rev":1,"created_by":"user:a","created_at":"2026-10-10T08:00:00.000Z","modified_by":"user:a","modified_at":"2026-10-10T08:00:00.000Z""#;
+        let rect = r#"{"type":"rect","x0":1,"y0":1,"x1":2,"y1":2}"#;
+        let annotation = |n: usize, geometry: &str, attributes: &str, more: &str| {
+            format!(
+                r#"{{"id":"0199c0de-0000-7000-8000-{n:012x}","file":"sop:1.2.3","frames":"all","layer":"default","class":"roi","geometry":{geometry},"attributes":{attributes},"extensions":{{}},{meta}{more}}}"#
+            )
+        };
+        let label = |n: usize, value: &str| {
+            format!(
+                r#"{{"id":"0199c0de-0000-7000-9000-{n:012x}","target":{{"file":"sop:1.2.3"}},"field":"f","value":{value},"layer":"default",{meta}}}"#
+            )
+        };
+        let filled = |open: &str, item: &str, close: &str, length: usize| {
+            let count = (length.saturating_sub(open.len() + close.len())) / item.len();
+            format!("{open}{}{close}", item.repeat(count))
+        };
+        let repeated = |item: &str, count: usize| {
+            filled(
+                &format!("[{item}"),
+                &format!(",{item}"),
+                "]",
+                (item.len() + 1) * count + 1,
+            )
+        };
+        let nested = |depth: usize| format!("{}0{}", r#"{"a":"#.repeat(depth), "}".repeat(depth));
+        type Make<'a> = Box<dyn Fn(usize) -> (&'static str, String) + 'a>;
+        let kinds: Vec<(&str, Make)> = vec![
+            (
+                "minimal files",
+                Box::new(|n| {
+                    (
+                        "file",
+                        format!(
+                            r#"{{"key":"sop:1.{n}","kind":"dicom","sop_instance_uid":"1.{n}","path":"a","size_bytes":1,"rows":1,"columns":1,"frames":1,"format":"dicom"}}"#
+                        ),
+                    )
+                }),
+            ),
+            (
+                "files with digests of every frame",
+                Box::new(|n| {
+                    (
+                        "file",
+                        format!(
+                            r#"{{"key":"sop:1.{n}","kind":"dicom","sop_instance_uid":"1.{n}","path":"a","size_bytes":1,"rows":1,"columns":1,"frames":1,"format":"dicom","pixel_digest":{}}}"#,
+                            repeated("null", 2000)
+                        ),
+                    )
+                }),
+            ),
+            (
+                "files with spacings of every frame",
+                Box::new(|n| {
+                    (
+                        "file",
+                        format!(
+                            r#"{{"key":"sop:1.{n}","kind":"dicom","sop_instance_uid":"1.{n}","path":"a","size_bytes":1,"rows":1,"columns":1,"frames":1,"format":"dicom","spacing":{}}}"#,
+                            repeated(r#"{"row_mm":1,"col_mm":1,"source":""}"#, 500)
+                        ),
+                    )
+                }),
+            ),
+            (
+                "files with unknown one-member objects",
+                Box::new(|n| {
+                    (
+                        "file",
+                        format!(
+                            r#"{{"key":"sop:1.{n}","kind":"dicom","sop_instance_uid":"1.{n}","path":"a","size_bytes":1,"rows":1,"columns":1,"frames":1,"format":"dicom","x":{}}}"#,
+                            repeated(r#"{"a":0}"#, 200)
+                        ),
+                    )
+                }),
+            ),
+            (
+                "minimal annotations",
+                Box::new(|n| ("annotation", annotation(n, rect, "{}", ""))),
+            ),
+            (
+                "annotations whose attributes are arrays of empty strings",
+                Box::new(|n| {
+                    (
+                        "annotation",
+                        annotation(
+                            n,
+                            rect,
+                            &format!(r#"{{"a":{}}}"#, repeated(r#""""#, 1000)),
+                            "",
+                        ),
+                    )
+                }),
+            ),
+            (
+                "annotations with many attributes",
+                Box::new(|n| {
+                    (
+                        "annotation",
+                        annotation(
+                            n,
+                            rect,
+                            &format!(
+                                "{{{}}}",
+                                (0..200)
+                                    .map(|k| format!(r#""{k}":0"#))
+                                    .collect::<Vec<_>>()
+                                    .join(",")
+                            ),
+                            "",
+                        ),
+                    )
+                }),
+            ),
+            (
+                "annotations that keep nested one-member objects",
+                Box::new(|n| {
+                    (
+                        "annotation",
+                        annotation(
+                            n,
+                            rect,
+                            "{}",
+                            &format!(r#","x":{}"#, repeated(&nested(40), 20)),
+                        ),
+                    )
+                }),
+            ),
+            (
+                "annotations that keep arrays of small numbers",
+                Box::new(|n| {
+                    (
+                        "annotation",
+                        annotation(n, rect, "{}", &format!(r#","x":{}"#, repeated("0", 1000))),
+                    )
+                }),
+            ),
+            (
+                "annotations that keep arrays of empty objects and strings",
+                Box::new(|n| {
+                    (
+                        "annotation",
+                        annotation(
+                            n,
+                            rect,
+                            "{}",
+                            &format!(
+                                r#","x":{},"y":{}"#,
+                                repeated("{}", 500),
+                                repeated(r#""""#, 500)
+                            ),
+                        ),
+                    )
+                }),
+            ),
+            (
+                "annotations with a member again and again",
+                Box::new(|n| {
+                    (
+                        "annotation",
+                        annotation(n, rect, "{}", &r#","x":{"a":0}"#.repeat(100)),
+                    )
+                }),
+            ),
+            (
+                "annotations with long escaped strings",
+                Box::new(|n| {
+                    (
+                        "annotation",
+                        annotation(n, rect, "{}", &format!(r#","x":"{}""#, r"A".repeat(2000))),
+                    )
+                }),
+            ),
+            (
+                "polygons of 1,000 points",
+                Box::new(|n| {
+                    (
+                        "annotation",
+                        annotation(
+                            n,
+                            &format!(
+                                r#"{{"type":"polygon","points":{}}}"#,
+                                repeated(r#"{"x":0,"y":0}"#, 1000)
+                            ),
+                            "{}",
+                            "",
+                        ),
+                    )
+                }),
+            ),
+            (
+                "geometry with members it ignores",
+                Box::new(|n| {
+                    (
+                        "annotation",
+                        annotation(
+                            n,
+                            &format!(
+                                r#"{{"type":"rect","x0":1,"y0":1,"x1":2,"y1":2,"more":{}}}"#,
+                                repeated(r#"{"a":0}"#, 300)
+                            ),
+                            "{}",
+                            "",
+                        ),
+                    )
+                }),
+            ),
+            ("minimal labels", Box::new(|n| ("label", label(n, "true")))),
+            (
+                "labels whose value is an array of empty strings",
+                Box::new(|n| ("label", label(n, &repeated(r#""""#, 1000)))),
+            ),
+        ];
+        let mut cases = Vec::new();
+        for (what, make) in &kinds {
+            let mut records = Vec::new();
+            let mut length = 0;
+            while length < text {
+                let (kind, record) = make(records.len());
+                length += record.len();
+                records.push((kind, record));
+            }
+            let of = |kind: &str| -> Vec<&str> {
+                records
+                    .iter()
+                    .filter(|(k, _)| *k == kind)
+                    .map(|(_, record)| record.as_str())
+                    .collect()
+            };
+            let mut files = of("file");
+            if files.is_empty() {
+                files.push(file);
+            }
+            cases.push((
+                format!("{what}, JSON"),
+                format!(
+                    r#"{{{head},"files":[{}],"layers":[],"annotations":[{}],"labels":[{}]}}"#,
+                    files.join(","),
+                    of("annotation").join(","),
+                    of("label").join(",")
+                ),
+            ));
+            let mut lines = format!("{{{head}}}\n");
+            for (kind, records) in [
+                ("file", files),
+                ("annotation", of("annotation")),
+                ("label", of("label")),
+            ] {
+                for record in records {
+                    lines.push_str(&format!("{{\"{kind}\":{record}}}\n"));
+                }
+            }
+            lines.push_str(&format!(
+                "{{\"end\":{{\"files\":{},\"layers\":0,\"annotations\":{},\"labels\":{}}}}}\n",
+                of("file").len().max(1),
+                of("annotation").len(),
+                of("label").len()
+            ));
+            cases.push((format!("{what}, JSON Lines"), lines));
+        }
+        cases
+    }
+
+    /// One unit of as many values, and of as many objects, as a unit may
+    /// hold, of the shapes that cost the most to build: in a header member
+    /// and in a record, in a text of a megabyte or two.
+    fn largest_units() -> Vec<(String, String)> {
+        let head = r#""format":"dcmview.annotations","version":"1.0""#;
+        let repeated =
+            |item: &str, count: usize| format!("[{}{item}]", format!("{item},").repeat(count - 1));
+        let record = |more: &str| {
+            format!(
+                r#"{{"id":"0199c0de-0000-7000-8000-000000000001","file":"sop:1.2.3","frames":"all","layer":"default","class":"roi","geometry":{{"type":"rect","x0":1,"y0":1,"x1":2,"y1":2}},"attributes":{{}},"extensions":{{}},"rev":1,"created_by":"user:a","created_at":"2026-10-10T08:00:00.000Z","modified_by":"user:a","modified_at":"2026-10-10T08:00:00.000Z","x":{more}}}"#
+            )
+        };
+        let mut cases = Vec::new();
+        for (what, member) in [
+            ("one-member objects", repeated(r#"{"a":0}"#, 131_000)),
+            (
+                "nested one-member objects",
+                repeated(
+                    &format!("{}0{}", r#"{"a":"#.repeat(60), "}".repeat(60)),
+                    2_180,
+                ),
+            ),
+            ("small numbers", repeated("0", 1_040_000)),
+            ("empty strings", repeated(r#""""#, 1_040_000)),
+            (
+                "empty objects and numbers",
+                format!(
+                    r#"[{},{}]"#,
+                    repeated("{}", 131_000),
+                    repeated("0", 900_000)
+                ),
+            ),
+            (
+                "one-member objects and numbers",
+                format!(
+                    r#"[{},{}]"#,
+                    repeated(r#"{"a":0}"#, 131_000),
+                    repeated("0", 650_000)
+                ),
+            ),
+        ] {
+            cases.push((
+                format!("a header member of {what}"),
+                format!(r#"{{{head},"x":{member}}}"#),
+            ));
+            cases.push((
+                format!("a record that keeps {what}, JSON"),
+                format!(
+                    r#"{{{head},"files":[],"layers":[],"annotations":[{}]}}"#,
+                    record(&member)
+                ),
+            ));
+            cases.push((
+                format!("a record that keeps {what}, JSON Lines"),
+                format!("{{{head}}}\n{{\"annotation\":{}}}\n{{\"end\":{{\"files\":0,\"layers\":0,\"annotations\":1,\"labels\":0}}}}\n", record(&member)),
+            ));
+        }
+        cases
+    }
+
+    /// For any text, reading a document holds at most `MULTIPLE` times the
+    /// text, `BASE` and `TRANSIENT` (`dcmview_adapters::native`, "Cost"):
+    /// what the import keeps is counted on it as it is built and held to
+    /// a budget of the text read, and what building one record or the
+    /// header holds is bounded by how many values it may have. Texts of
+    /// records made to cost the most for their length are held to the
+    /// multiple, at a size where the constants are small beside it; and
+    /// the units that cost the most to build, in a short text, to the
+    /// transient.
     #[test]
     fn a_hostile_document_holds_a_bounded_multiple_of_its_text() {
+        use dcmview_adapters::limits::{HELD_BASE_BYTES, HELD_TEXT_MULTIPLE, UNIT_TRANSIENT_BYTES};
         use dcmview_adapters::{ImportAdapter, ImportContext, Limits, NativeJson};
 
-        const MULTIPLE: u64 = 9;
-        const CONSTANT: u64 = 64 * 1024 * 1024;
-        const TEXT: usize = 8 * 1024 * 1024;
+        // The text itself, in a buffer that grows by doubling while it is
+        // read (three times), and what is kept, by its budget.
+        const MULTIPLE: u64 = 3 + HELD_TEXT_MULTIPLE;
+        const TEXT: usize = 24 * 1024 * 1024;
 
         struct Any;
         impl dcmview_adapters::FileResolver for Any {
@@ -594,146 +920,10 @@ mod documents {
                 )
             }
         }
-        let head = r#""format":"dcmview.annotations","version":"1.0""#;
-        let file = r#"{"key":"sop:1.2.3","kind":"dicom","sop_instance_uid":"1.2.3","path":"a.dcm","size_bytes":1,"rows":4096,"columns":4096,"frames":4,"format":"dicom"}"#;
-        // A record with `more` put before its closing brace.
-        let record = |n: usize, geometry: &str, more: &str| {
-            format!(
-                r#"{{"id":"0199c0de-0000-7000-8000-{n:012x}","file":"sop:1.2.3","frames":"all","layer":"default","class":"roi","geometry":{geometry},"attributes":{{}},"extensions":{{}},"rev":1,"created_by":"user:a","created_at":"2026-10-10T08:00:00.000Z","modified_by":"user:a","modified_at":"2026-10-10T08:00:00.000Z"{more}}}"#
-            )
-        };
-        let rect = r#"{"type":"rect","x0":1,"y0":1,"x1":2,"y1":2}"#;
-        // Records until the text is `TEXT` long, in both forms.
-        let both = |what: &str, make: &dyn Fn(usize) -> String| {
-            let mut records = Vec::new();
-            let mut length = 0;
-            while length < TEXT {
-                let record = make(records.len());
-                length += record.len();
-                records.push(record);
-            }
-            let json = format!(
-                r#"{{{head},"files":[{file}],"layers":[],"annotations":[{}]}}"#,
-                records.join(",")
-            );
-            let mut lines = format!("{{{head}}}\n{{\"file\":{file}}}\n");
-            for record in &records {
-                lines.push_str(&format!("{{\"annotation\":{record}}}\n"));
-            }
-            lines.push_str(&format!(
-                "{{\"end\":{{\"files\":1,\"layers\":0,\"annotations\":{},\"labels\":0}}}}\n",
-                records.len()
-            ));
-            vec![
-                (format!("{what}, JSON"), json),
-                (format!("{what}, JSON Lines"), lines),
-            ]
-        };
-        let filled = |open: &str, item: &str, close: &str, length: usize| {
-            let count = (length - open.len() - close.len()) / item.len();
-            format!("{open}{}{close}", item.repeat(count))
-        };
-        let zeros = |count: usize| filled("[0", ",0", "]", 2 * count + 1);
-        let mut cases = Vec::new();
-        // In the header, where everything is one unit.
-        for (what, member) in [
-            (
-                "an unknown member of small numbers",
-                filled("[0", ",0", "]", TEXT),
-            ),
-            (
-                "an unknown member of empty objects",
-                filled("[{}", ",{}", "]", TEXT),
-            ),
-            (
-                "an unknown member of empty strings",
-                filled("[\"\"", ",\"\"", "]", TEXT),
-            ),
-            (
-                "extensions of small numbers",
-                filled("{\"x\":[0", ",0", "]}", TEXT),
-            ),
-            (
-                "a member again and again",
-                filled("0", r#","x":0"#, "", TEXT),
-            ),
-            ("one long string", filled("\"", "a", "\"", TEXT)),
-            (
-                "nesting",
-                format!("{}{}", "[".repeat(TEXT / 2), "]".repeat(TEXT / 2)),
-            ),
-        ] {
-            let name = if what.starts_with("extensions") {
-                "extensions"
-            } else {
-                "x"
-            };
-            cases.push((
-                format!("{what}, in the header"),
-                format!(r#"{{{head},"{name}":{member}}}"#),
-            ));
-        }
-        // In records: as many kept values as the text allows and more,
-        // members the model reads, members it ignores, and the largest
-        // single record.
-        cases.extend(both("records that keep 20 values each", &|n| {
-            record(n, rect, &format!(r#","x":{}"#, zeros(20)))
-        }));
-        cases.extend(both("records that keep 200 values each", &|n| {
-            record(n, rect, &format!(r#","x":{}"#, zeros(200)))
-        }));
-        cases.extend(both("records with a member again and again", &|n| {
-            record(n, rect, &r#","x":0"#.repeat(50))
-        }));
-        cases.extend(both("polygons of 1,000 points", &|n| {
-            let points = filled("[[0,0]", ",[0,0]", "]", 6 * 1000);
-            record(n, &format!(r#"{{"type":"polygon","points":{points}}}"#), "")
-        }));
-        cases.extend(both("geometry with members it ignores", &|n| {
-            let geometry = format!(
-                r#"{{"type":"rect","x0":1,"y0":1,"x1":2,"y1":2,"more":{}}}"#,
-                zeros(1000)
-            );
-            record(n, &geometry, "")
-        }));
-        cases.extend(both("frame lists of 60,000 frames", &|n| {
-            record(n, rect, "").replace(
-                r#""frames":"all""#,
-                &format!(r#""frames":{}"#, zeros(60_000)),
-            )
-        }));
-        cases.extend(both("a record of as many values as a unit holds", &|n| {
-            record(n, rect, &format!(r#","x":{}"#, zeros(520_000)))
-        }));
-        cases.extend(both("a record as long as a line may be", &|n| {
-            record(
-                n,
-                rect,
-                &format!(r#","x":{}"#, filled("\"", "a", "\"", 15 * 1024 * 1024)),
-            )
-        }));
-
-        // One record of as many values as a unit holds, and nothing else.
-        let largest = record(0, rect, &format!(r#","x":{}"#, zeros(520_000)));
-        let alone = vec![
-            (
-                "the largest record alone, JSON".to_string(),
-                format!(r#"{{{head},"files":[{file}],"layers":[],"annotations":[{largest}]}}"#),
-            ),
-            (
-                "the largest record alone, JSON Lines".to_string(),
-                format!(
-                    "{{{head}}}\n{{\"file\":{file}}}\n{{\"annotation\":{largest}}}\n{{\"end\":{{\"files\":1,\"layers\":0,\"annotations\":1,\"labels\":0}}}}\n"
-                ),
-            ),
-        ];
-        let small = alone.len();
-        cases.splice(0..0, alone);
-
         let author = dcmview_annotation::Author::parse("import:native").expect("author");
         let layer = dcmview_annotation::LayerId::parse("default").expect("layer");
         let stamp = dcmview_annotation::Timestamp::parse("2026-10-10T08:00:00.000Z").expect("time");
-        for (at, (what, text)) in cases.into_iter().enumerate() {
+        let held = |text: &str| {
             let context = ImportContext {
                 resolver: &Any,
                 schema: Option::None,
@@ -743,27 +933,66 @@ mod documents {
                 keep_going: &|| true,
                 limits: Limits::DEFAULT,
             };
-            let (result, peak) = heap::peak_during(|| {
+            heap::peak_during(|| {
                 NativeJson
                     .import(&mut text.as_bytes(), &context)
                     .map(|imported| imported.report.counts.annotations_out)
-            });
-            if std::env::var_os("RASTER_COST_REPORT").is_some() {
+            })
+        };
+        let said = std::env::var_os("RASTER_COST_REPORT").is_some();
+        for (what, text) in hostile(TEXT) {
+            let (result, peak) = held(&text);
+            if said {
                 eprintln!(
                     "{what}: {:.2} times {} bytes, {result:?}",
                     peak as f64 / text.len() as f64,
                     text.len()
                 );
             }
-            let allowed = if at < small {
-                CONSTANT
-            } else {
-                MULTIPLE * text.len() as u64
-            };
             assert!(
-                peak <= allowed,
+                peak <= MULTIPLE * text.len() as u64 + HELD_BASE_BYTES,
                 "{what}: {} bytes of text held {peak}",
                 text.len()
+            );
+        }
+        for (what, text) in largest_units() {
+            let (result, peak) = held(&text);
+            if said {
+                eprintln!(
+                    "{what}: {} MiB for {} bytes, {result:?}",
+                    peak / (1024 * 1024),
+                    text.len()
+                );
+            }
+            assert!(
+                peak <= UNIT_TRANSIENT_BYTES + HELD_BASE_BYTES,
+                "{what}: {} bytes of text held {peak}",
+                text.len()
+            );
+        }
+    }
+
+    /// What a document is counted as holding is at least what the
+    /// allocator gave out for it, and no more than three times that, for
+    /// each kind of thing a document keeps and the shapes of it that cost
+    /// the most.
+    #[test]
+    fn what_a_document_is_counted_as_holding_is_what_it_holds() {
+        use dcmview_adapters::held::Held;
+        for (what, text) in hostile(2 * 1024 * 1024) {
+            if !what.ends_with(", JSON") {
+                continue;
+            }
+            let before = heap::held();
+            let document = dcmview_annotation::Document::from_json_str(&text);
+            let actual = (heap::held() - before).max(0) as u64;
+            let Ok(document) = document else {
+                panic!("{what}: not a document");
+            };
+            let counted = document.held_bytes();
+            assert!(
+                actual <= counted && counted <= 3 * actual,
+                "{what}: counted {counted} for {actual} held"
             );
         }
     }

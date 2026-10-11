@@ -100,6 +100,10 @@ pub enum LossCode {
     /// Imported labels lost members a label operation cannot carry
     /// (`extensions`, unknown members, `derived_from`, `score`).
     LabelMembersDropped,
+    /// Rows that were each on one of several byte-identical files came
+    /// from a document that does not say on which (a masked session's):
+    /// they were put on one copy, and which copy each was on is not kept.
+    CopyPlacementNotKept,
 }
 
 /// Something a reader of the result should know. Variants are only added;
@@ -142,6 +146,10 @@ pub enum WarningCode {
     /// content, and the loaded file found for it could not be read to
     /// compare the two.
     FileUnverified,
+    /// Native import, a refusal: the path or the UID a file of the
+    /// document is named by names more loaded files than are compared, and
+    /// nothing else finds it.
+    FileAmbiguous,
 }
 
 impl WarningCode {
@@ -161,6 +169,7 @@ impl WarningCode {
             Self::FileSizeDiffers => "file_size_differs",
             Self::SchemaNotApplied => "schema_not_applied",
             Self::FileUnverified => "file_unverified",
+            Self::FileAmbiguous => "file_ambiguous",
         }
     }
 }

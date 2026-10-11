@@ -32,9 +32,12 @@ pub enum Bound {
     Records,
     /// [`crate::limits::MAX_UNIT_VALUES`].
     UnitValues,
-    /// [`crate::limits::MAX_KEPT_VALUES`] and what the text allows beyond
-    /// them. The limit reported is `MAX_KEPT_VALUES`.
-    KeptValues,
+    /// [`crate::limits::MAX_UNIT_CONTAINERS`].
+    UnitContainers,
+    /// What the import keeps holds more than the text read allows
+    /// ([`crate::limits::HELD_TEXT_MULTIPLE`]). The limit reported is the
+    /// multiple.
+    HeldBytes,
 }
 
 impl std::fmt::Display for Bound {
@@ -49,7 +52,10 @@ impl std::fmt::Display for Bound {
             Self::Files => "the files of a document",
             Self::Records => "the annotations and labels of a document",
             Self::UnitValues => "the JSON values of one record or of a document's header",
-            Self::KeptValues => "the JSON values kept as they were read, for its length",
+            Self::UnitContainers => {
+                "the objects and arrays of one record or of a document's header"
+            }
+            Self::HeldBytes => "the memory its records hold for each byte of it",
         })
     }
 }
