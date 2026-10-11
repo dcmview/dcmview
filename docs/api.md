@@ -856,7 +856,10 @@ of the session as one document of the annotation model
 `GET /api/annotations/export.jsonl` answers the same document a record a
 line: a header line (the document with its four lists empty), then one line
 for each file, layer, annotation and label, each an object with one member
-named `file`, `layer`, `annotation` or `label`.
+named `file`, `layer`, `annotation` or `label`, then an end line that
+counts them: `{"end":{"files":1,"layers":1,"annotations":1,"labels":0}}`.
+A JSON Lines file that has record lines and does not end with that line, or
+whose counts are not its lines, was cut off or altered and is not loaded.
 
 - `files` has one `FileRef` for each file a record names, for the loaded
   file with the lowest index that has that key. `path` is relative to the
@@ -870,15 +873,46 @@ named `file`, `layer`, `annotation` or `label`.
   is hashed, and answers `422 file_key_unavailable` when one cannot be given
   a key. Rows are never left out. The CSV export has no such need.
 - A document of more than 268,435,456 bytes answers
-  `422 annotation_export_too_large`; the JSON Lines form has no bound.
-- One document export runs at a time; a second waits for the first to be
-  sent.
+  `422 annotation_export_too_large`; the JSON Lines form has no bound on
+  its bytes. Either form answers the same for a session with more than
+  1,048,576 annotated files, or more than 1,048,576 annotations and labels:
+  what an export writes, an import can read.
+- One document is built at a time; a second export waits until the first
+  is ready to send. A download that is read slowly holds up no other.
+- Files with the same bytes share a key and each keeps its own ROIs. A
+  record that is one such file's ROI says so in
+  `"extensions": { "embed": { "row_of": "<path>", "imported": true } }`,
+  and a later session puts it back on the file that path names.
+- A session started with `--mask` names files by content: each `key` and
+  `digest` is `b3:` and the BLAKE3 digest of the file's bytes, the three
+  instance UIDs and the patient id are absent, and the document's
+  `extensions` hold `"dcmview": { "masked": true }`. The annotated files
+  are read for it; one that cannot be read answers
+  `422 file_key_unavailable`. Paths are written as everywhere. The
+  document loads into any later session, masked or not.
 - Both wait for the `--annotations` import, and answer `500` with its
   message when it failed, as the CSV export does.
 - Redaction boxes are never in a document.
 
 Either form can be given to `--annotations` of a later session; see
 [annotations](annotations.md).
+
+#### How `--annotations` decides what a file is
+
+Without `--annotations-format`, the first 4,096 bytes decide. A file is a
+document when, after an optional UTF-8 byte order mark and whitespace, it
+starts with `{` and those bytes hold `"dcmview.annotations"`. Every other
+file is read as an EMBED-style CSV, other JSON included.
+
+| The file | Without the flag | `--annotations-format native` | `--annotations-format embed` |
+|---|---|---|---|
+| A document, with or without a byte order mark | Loaded after discovery; the status says how it went. | The same. | Exit status 1 before serving. |
+| An EMBED-style CSV | Loaded. | The viewer serves, the import is `failed`. | Loaded. |
+| Anything else (other JSON, a CSV without the required columns) | Exit status 1 before serving. | The viewer serves, the import is `failed`. | Exit status 1 before serving. |
+
+A document that cannot be loaded (not valid, cut off, a record that breaks
+a rule) never stops the viewer: the import ends `failed` with a message,
+and the EMBED reads and the exports answer `500` with it.
 
 ### The import's status
 
@@ -898,7 +932,7 @@ Either form can be given to `--annotations` of a later session; see
 | `state` | Meaning |
 |---|---|
 | `none` | The session was started without `--annotations`. |
-| `loading` | The file is still being read. |
+| `loading` | The file is still being read, or its files are being matched to the loaded ones, which may hash some. |
 | `ready` | The import ended; `report` says what it did. |
 | `failed` | The import failed and brought nothing; `error` is its message, which the EMBED reads and the exports also answer with. |
 
@@ -908,6 +942,16 @@ row with the header as row 1 (for a document, the line the record has in
 the JSON Lines form) and `roi` the position of a box in that row. It holds no
 path, file key, UID or other text of the file. The codes are listed with
 `Report` in `frontend/src/generated/api-types.ts`.
+
+For a document, `counts.unmatched` counts the records of files that are
+not loaded and `counts.refused` those of files that were found and not
+accepted, each with a warning at the file's row: `evidence_conflict` (the
+files found hold other bytes, or have another key, than the document
+names), `file_unverified` (a file found could not be read to compare),
+`size_mismatch` (other rows, columns or frame count) and `key_unavailable`.
+`matched_by` says how the accepted files were found. A file is accepted
+only after it was compared with the key the document names it by, so a
+path or a UID alone never puts a record on a file.
 
 ### Annotation operations
 

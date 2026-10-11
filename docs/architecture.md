@@ -2077,8 +2077,22 @@ text.
 A JSON document is one `dcmview.annotations` document, compact. The JSON
 Lines form holds the same document a record a line: a header (the document
 with its four lists empty), then `{"file": ...}`, `{"layer": ...}`,
-`{"annotation": ...}` and `{"label": ...}` lines. `NativeJson` reads both,
-and a document written over several lines, without being told which it is.
+`{"annotation": ...}` and `{"label": ...}` lines, then an end line that
+counts them, `{"end":{"files":2,"layers":1,"annotations":5,"labels":0}}`.
+`NativeJson` reads both, and a document written over several lines,
+without being told which it is, and passes over a UTF-8 byte order mark
+before either.
+
+The end line is what tells a whole JSON Lines file from one that was cut
+off at a line. A file with record lines and no end line, or with an end
+line whose counts are not the lines read, is refused whole
+(`ImportError::Truncated`), and a line after the end line is malformed. A
+header alone is a whole file: a document without a record.
+
+An export refuses a document with more files or records than an import
+reads (`ExportError::TooMany`), so nothing is written that cannot be read
+back for its size. The bounds are a value (`Limits`, `Limits::DEFAULT` in
+the table above) that both contexts carry.
 
 The import is strict: every file reference, layer, annotation and label
 must pass the model's `validate`, against the label schema in force where
@@ -2096,12 +2110,14 @@ that does, fails the import. A document the viewer wrote can therefore be
 loaded by it, and nothing is changed or dropped without a line in the
 report.
 
-Each file of a document is placed through the caller's `FileResolver`: by
-key, then SOP Instance UID, then path. A file that matches nothing has its
-records counted as unmatched; one that matches a loaded file of another
-size, with contradicting evidence, or without a key is refused and its
-records counted as refused. Every other record is handed on under the key
-the resolver gave.
+Each file of a document is placed through the caller's `FileResolver`,
+which finds candidates by key, then SOP Instance UID, then path, and
+answers with one it has compared with the reference. A file that matches
+nothing has its records counted as unmatched; one whose candidates hold
+other bytes or another key (`evidence_conflict`), could not be read to
+compare (`file_unverified`), have another size (`size_mismatch`) or have
+no key is refused and its records counted as refused. Every other record
+is handed on under the key the resolver gave.
 
 ### In A Session
 
@@ -2109,9 +2125,11 @@ the resolver gave.
 session's files and store.
 
 - **`--annotations FILE`** is an EMBED CSV or a native document. The start
-  of the file decides (`AnnotationInput::from_path`): a file the native
-  adapter recognizes is native, and every other file is read, and refused,
-  as the EMBED CSV it always was. `--annotations-format embed|native`
+  of the file decides (`AnnotationInput::from_path`): a file whose first
+  byte after an optional byte order mark and whitespace is `{` and whose
+  first 4,096 bytes hold `"dcmview.annotations"` is native, and every
+  other file, other JSON included, is read, and refused with exit status
+  1, as the EMBED CSV it always was. `--annotations-format embed|native`
   forces one. An EMBED header is checked before the viewer serves; a native
   file is read after discovery, and what is wrong with it fails the import
   with the viewer serving.
@@ -2125,17 +2143,29 @@ session's files and store.
   given a key fails the export (`422 file_key_unavailable`): rows are never
   left out silently. While a file is hashed the request waits. A `FileRef`
   describes the loaded file with the lowest index that has the key; its
-  `path` is below the deepest directory that holds every loaded file, with
-  `/` between components, and its `digest` is set when the registry has
-  computed one. The copy and the writing run on a blocking thread.
+  `path` is below the deepest directory that holds every loaded file
+  (`common_directory`), with `/` between components, and its `digest` is
+  set when the registry has computed one. The copy and the writing run on
+  a blocking thread. A session that holds more files or records than a
+  document may answers `422 annotation_export_too_large`.
 - **A native import** (`import_native`) reads the document on a blocking
-  thread and places its files with the session's resolver: by the key as
-  the session shows keys (a `sop:` key more than one loaded file carries
-  names none), then the UID in the same form, then the path, relative ones
-  below the directory an export writes paths below. The candidate's key is
-  settled, which may hash it; a file that cannot be given a key is refused.
-  So a record lands on the file its reference names, under that file's
-  settled key, or on no file. The records are then applied as **one
+  thread and places its files with the session's resolver. **A record is
+  placed on a loaded file only when that file was compared with the key
+  its reference names it by.** Candidates are found by the key as the
+  session shows keys, then by the UID in the same form (every loaded file
+  that carries it), then by the path. A relative path names every loaded
+  file whose own path ends with all of its components (`PathSuffixes`; one
+  component is enough), so a document finds its files when a subfolder or
+  a parent of the exported folder is loaded, or the folder was moved. Each
+  candidate in turn has its key settled; for a `sop:` reference that key
+  must be the reference's, and for a `b3:` reference the file's bytes are
+  hashed, if they have not been, and their digest must be the key's. The
+  first candidate that passes takes the records. When none passes the
+  reference is refused: `file_unverified` when a candidate could not be
+  read, `evidence_conflict` otherwise. A UID or a path never places a
+  record by itself, and only the candidates of a reference are hashed. The
+  import's state is `loading` until this has ended. The records are then
+  applied as **one
   transaction** (`Checking::AsLoaded`, author `import:native`): layers the
   document has and the session lacks are created, a record keeps its id,
   layer, class, geometry, frames, attributes and extensions, and the store
@@ -2145,20 +2175,44 @@ session's files and store.
 - **`GET /api/annotations/import`** answers at once with where the import
   stands (`none`, `loading`, `ready`, `failed`), its report or its message.
 
-**What a session holds for it.** One document export runs at a time: a
-second waits, holding nothing, until the first one's body has been sent or
-dropped. An export holds a copy of the records and their text once; a
+**Rows of byte-identical files.** Files with the same bytes share a key
+and each shows the rows written for it. A document says which: a record
+that is one copy's row carries
+`"extensions": { "embed": { "row_of": <path>, "imported": <bool> } }` when
+more than one loaded file has its key. An import takes the member out and
+binds the record to the loaded file that path names and that has the
+record's key; when that copy is not loaded the record is left out and
+counted as unmatched. A record without the member shows on every copy. An
+import also settles the key of every loaded file that shares a UID with a
+file it matched, so what a copy shows does not depend on which copies were
+looked at.
+
+**What a session holds for it.** One document is built at a time: a
+second export waits, holding nothing, until the first one's text is
+written, and a client that reads its download slowly holds up no other
+export. An export holds a copy of the records and their text once, and
+the text of each export still being sent; a
 native import holds what it read once beside the records it leaves; reading
 a CSV holds the rows it hands on, within 400 bytes a ROI.
-`tests/raster_cost/annotations.rs` counts all three for 200,000 ROIs.
+`tests/raster_cost/annotations.rs` counts the CSV read for 200,000 ROIs
+and the documents for 50,000.
 
-**Masked sessions.** A document is written in the form the session shows:
-keys, the three instance UIDs and the patient id as the catalog shows them;
-paths, as everywhere, are not masked. An import takes a key and a UID in
-that form only, so a file's real UID names nothing; a document that an
-unmasked session wrote is placed by its paths. A patient, study, series or
-folder label target is text a client chose and is written and read as it is
-held.
+**Masked sessions (OWNER).** The masks of a session are drawn for one
+process, so a key or a UID it shows names nothing anywhere else, and a
+real one must not leave it. A masked session's document therefore names
+each file by its content and its path only: `key` and `digest` are the
+`b3:` digest of the file's bytes (annotated files are hashed for the
+export, and one that cannot be read fails it with
+`422 file_key_unavailable`), the three instance UIDs and the patient id
+are absent, and the document's `extensions` say
+`"dcmview": { "masked": true }`. Paths, as everywhere, are not masked,
+nor is a layer's or a record's author (the name of the user who ran the
+viewer, not of a patient). Such a document loads into any session, masked
+or not, by its paths and digests. An import into a masked session finds
+candidates by a key or a UID in the form the session shows only, so a
+document that an unmasked session wrote is found by its paths and checked
+against the files' real keys. A patient, study, series or folder label
+target is text a client chose and is written and read as it is held.
 
 Redaction boxes are in no document and no export.
 

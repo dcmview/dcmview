@@ -956,18 +956,33 @@ is cached between requests.
 - Only a settled file key is in a document or in a record an import makes.
   `export_native` settles and stores the staged rows of every file that has
   some before it reads the store, and fails for a file without a key
-  instead of leaving its rows out; `import_native` settles the key of each
-  file it places and puts a record on the file its reference names or on
-  none. A key several loaded files carry names none of them.
+  instead of leaving its rows out. `import_native` puts a record on a
+  loaded file only after comparing that file with the key the reference
+  names it by (the settled key for `sop:`, the digest of its bytes for
+  `b3:`, hashing a candidate when needed); a key, a UID or a path finds
+  candidates and never places a record alone. A candidate that could not
+  be read is `file_unverified`, never a match. A relative path names the
+  files whose path ends with it (`PathSuffixes`), not a path below some
+  directory.
+- Byte-identical files keep their own rows through a document: export
+  marks a bound record with `extensions.embed.row_of` when several loaded
+  files have its key, and import binds it to that copy or leaves it out.
+  Do not let what a copy shows depend on which copies were viewed.
+- A JSON Lines document ends with its `end` line and is refused whole
+  without it. An export refuses what an import's bounds (`Limits`) would
+  refuse.
 - A native import changes the store with one transaction, and reads
   nothing from the store to decide what to write.
-- One document export runs at a time (`AnnotationStore::export_permit`),
-  and its response body holds the permit until it is sent.
-  `tests/raster_cost/annotations.rs` counts what the exports, a native
-  import and a CSV read hold for 200,000 ROIs; a new format gets a case.
-- A document leaves a masked session in the form the session shows (keys,
-  instance UIDs, patient id); an import takes a key or a UID in that form
-  only. `tests/integration/annotation_documents.rs` asserts both.
+- One document is built at a time (`AnnotationStore::export_permit`); the
+  permit is let go of when the text is written, never held while a client
+  reads. `tests/raster_cost/annotations.rs` counts what the exports, a
+  native import and a CSV read hold; a new format gets a case.
+- A masked session's document holds no key, UID or patient id, real or
+  masked: masks are drawn per process and mean nothing elsewhere. It names
+  files by the `b3:` digest of their bytes and their paths and says
+  `extensions.dcmview.masked`. An import into a masked session finds
+  candidates by a key or a UID in the form the session shows only.
+  `tests/integration/annotation_documents.rs` asserts both.
 
 **Annotation model (`crates/dcmview-annotation`)**
 
@@ -1252,8 +1267,11 @@ default suite.
   golden's import reports what it corrected or kept as read.
 - A session exported as a JSON or JSON Lines document and loaded again shows
   the same views and writes the same CSV; an import is applied whole or not
-  at all; a record lands on the file its reference names or on no file; a
-  masked session's documents, reports and errors hold no real identifier.
+  at all; a record lands on a file that was compared with its reference or
+  on no file, also when a subfolder, a parent or a copy of the folder is
+  loaded; byte-identical files show after a reload what they showed
+  before; a masked session's document loads under other masks, and its
+  documents, reports and errors hold no real identifier.
 - An importer returns for every mutation of the committed goldens, refuses
   input past a bound without reading it whole, and no report or error
   repeats a word of its input.

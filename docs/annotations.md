@@ -21,8 +21,13 @@ dcmview --annotations ./dcmview-annotations.json ./study_dir
 
 The file is an EMBED-style CSV (below) or a
 [`dcmview.annotations` document](#documents), as JSON or JSON Lines. The
-start of the file decides which: a file that begins like a document is read
-as one, and every other file as a CSV, whatever it is named.
+start of the file decides which, whatever it is named: a file that starts
+with `{` (after an optional byte order mark) and names the
+`dcmview.annotations` format in its first 4,096 bytes is read as a
+document, and every other file as a CSV. A file that is neither stops the
+viewer with exit status 1 before it serves, as a CSV without the required
+columns always has; a document that turns out not to be loadable does not
+stop the viewer, and `GET /api/annotations/import` says why it failed.
 `--annotations-format embed` or `--annotations-format native` reads it as the
 format named instead.
 
@@ -69,7 +74,7 @@ of value are corrected on load, and each corrected box is listed in the
 [import's report](#the-imports-report): a negative coordinate is read as 0,
 and a coordinate that is not a whole number is rounded to the nearest pixel
 (halves away from zero). A whole number written as `20.0` or `2e1` is that
-number.
+number, and `-0` and `-0.0` are 0 and are not listed.
 
 A box should be inside image bounds with `ymax`/`xmax` greater than
 `ymin`/`xmin`. Loading does not enforce this: such a box is kept and
@@ -156,12 +161,45 @@ and label, and a description of each annotated file.
   sessions (a JSON document is limited to 256 MiB).
 
 A document names each file by its key, its SOP Instance UID and its path
-below the directory that holds every loaded file, so it can be loaded again
-with `--annotations` after the files have moved together or the viewer runs
-on another machine. A file of the document is matched to a loaded file by
-key, then by UID, then by path; it is refused when the loaded file has other
-dimensions or another UID, and its annotations are then counted in the
-report and left out, as are those of a file that is not loaded.
+below the deepest directory that holds every loaded file, so it can be
+loaded again with `--annotations` after the files have moved or the viewer
+runs on another machine.
+
+**What a reload promises.** An annotation is put on a loaded file only
+after that file was compared with the key the document names it by: its
+SOP Instance UID for a `sop:` key, the BLAKE3 digest of its bytes for a
+`b3:` key. The key, the UID and the path only find the files to compare:
+
+- by path, a file is found when its own path ends with the document's
+  path, so loading a subfolder of the exported folder, a parent of it, or
+  a copy of it elsewhere finds the same files. One path component (the
+  file name) is enough to find a file; of several files a path finds, the
+  one that passes the comparison takes the annotations;
+- a file found that holds other bytes, or carries another UID, is refused
+  (`evidence_conflict`), and so is one that can no longer be read to
+  compare (`file_unverified`) or has other dimensions (`size_mismatch`).
+  Its annotations are counted in the report and left out, as are those of
+  a file that is not loaded (`file_unmatched`);
+- comparing a `b3:` key hashes the file, which a large file takes a moment
+  for; the import's state is `loading` meanwhile. Only files a document
+  names are hashed.
+
+A document path longer than 4,096 bytes is not valid and fails the import.
+A path in an EMBED CSV that is longer than that names no file and is
+counted as unmatched.
+
+**Files with the same bytes** share a key, and each keeps the ROIs that
+were written for it: the document marks such a record with the path of its
+copy (`extensions.embed.row_of`), and a reload shows on each copy what it
+showed before. When that copy is not loaded, its ROIs are left out and
+counted as unmatched. An annotation that was drawn on the image shows on
+every copy, before and after a reload.
+
+**Masked sessions.** A session started with `--mask` writes a document
+that names files by the digest of their bytes and their paths, with no
+UID or patient id, real or masked, because the masks are different in
+every run. It can be loaded into any session, masked or not. The annotated
+files are read to make it.
 
 Loading a document is all or nothing: a record that breaks a rule of the
 annotation model fails the whole import and the report names its line. One

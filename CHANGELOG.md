@@ -40,12 +40,20 @@ diagnostic viewer.
   annotated file: `GET /api/annotations/export.json`, or
   `GET /api/annotations/export.jsonl` for the same records a line each.
   `--annotations` loads either form again, as well as an EMBED-style CSV;
-  the start of the file decides which it is, and
-  `--annotations-format embed|native` forces one. A document's files are
-  matched by key, then SOP Instance UID, then path, and loading is all or
-  nothing. A document export needs the key of every file that has ROIs and
+  the start of the file decides which it is (a `{` and the format's name;
+  any other file is read as CSV), and
+  `--annotations-format embed|native` forces one. An annotation is put on
+  a loaded file only after that file was compared with the key the
+  document names it by, its bytes hashed when the key is a digest; the key,
+  the SOP Instance UID and the path, matched from its end so that a
+  subfolder, a parent or a moved copy of the folder still fits, find the
+  files to compare. Loading is all or nothing, and a JSON Lines file that
+  was cut off is refused. Files with the same bytes keep their own ROIs
+  through a document. A `--mask` session's document names files by content
+  digest and path only and loads into any session. A document export needs the key of every file that has ROIs and
   answers `422 file_key_unavailable` for one that cannot be read; a JSON
-  document past 256 MiB answers `422 annotation_export_too_large`.
+  document past 256 MiB, or a session with more files or records than a
+  document may hold, answers `422 annotation_export_too_large`.
 - `GET /api/annotations/import` reports where the `--annotations` import
   stands and what it did: rows matched and unmatched, and every box that was
   corrected or kept although it is unusual, by row. The report holds no
