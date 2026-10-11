@@ -110,6 +110,19 @@ memory, but not less than 1 GiB and not more than 4 GiB.
 | 16 GiB or more | 4 GiB |
 | not known | 4 GiB |
 
+The budget for annotation documents follows the machine the same way,
+and has no flag: the memory the records of one `dcmview.annotations`
+document may be charged, when it is loaded with `--annotations` and when
+it is exported, is one quarter of physical memory, not less than 1 GiB
+and not more than 4 GiB (the table above), and 4 GiB where physical
+memory is not known. A document past it is not loaded, and
+`GET /api/annotations/import` gives the message, which names the bound
+and its value ("the bytes of memory its records hold are limited to
+2147483648"); a session past it is refused the export with
+`422 annotation_export_too_large` and a message that names them too. A rectangle is
+charged about 1,900 bytes and an annotated file about 1,300. See
+[annotations](annotations.md#documents).
+
 Physical memory is read on Linux and macOS. On Windows and other platforms
 it is not read, and the default is 4 GiB whatever the machine has. It is the
 machine's memory, not the limit of a container or cgroup, and an operating

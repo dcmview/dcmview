@@ -864,18 +864,24 @@ A JSON Lines file that does not end with that line, or whose counts are not
 its lines, was cut off or altered and is not loaded; that includes a header
 line alone, with or without a line feed after it.
 
-Loading a document is bounded whatever the text is, and so is writing one,
-by the same count. The records of a document are charged for the memory
-they hold as they are built (the lengths of their strings and lists, the
-number of their members) and the total may be 4 GiB; it does not depend on
-the length of the text. One record, or everything outside the records, may
-hold 1,048,576 JSON values, 131,072 of them objects or arrays, nested at
-most 64 deep. A document past one of these fails its import, and a session
-whose document would be past the 4 GiB is refused its export with
-`422 annotation_export_too_large`, whose message names the bound: what a
-session can export, the same viewer can import. A rectangle is charged
-about 1,900 bytes and a file about 1,300, so the bound is met by sessions
-of about a million of each, or by fewer records with very large contents.
+Loading a document is bounded whatever the text is, and writing one is
+held to the same bounds by the same checks: the numbers of files and of
+records; for one record, or everything outside the records, 1,048,576
+JSON values, 131,072 of them objects or arrays, nested at most 64 deep;
+256 MiB for a JSON document and 16 MiB for one line of JSON Lines; and a
+budget for the memory the records are charged as they are built (the
+lengths of their strings and lists, the number of their members), which
+does not depend on the length of the text. The budget is a quarter of the
+machine's physical memory, between 1 GiB and 4 GiB, and 4 GiB where that
+is not known. A document past a bound fails its import, and a session
+past one is refused that export with `422 annotation_export_too_large`;
+both messages name the bound and its value. What a session can export in
+a form, the same viewer can import. A rectangle is charged about 1,900
+bytes and a file about 1,300.
+
+The store's revision counts the envelopes this session applied. A
+document is loaded as one envelope, so the revision after a reload is not
+the revision of the session that wrote it, and is not part of a document.
 
 - `files` has one `FileRef` for each file a record names, for the loaded
   file that has that key, of several the one whose path sorts first.

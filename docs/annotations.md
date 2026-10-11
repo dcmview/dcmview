@@ -233,15 +233,28 @@ from a session that is not masked.
 
 A JSON Lines file that was cut off, at any line, is not loaded.
 
-A document is read within bounds: 1,048,576 JSON values in one annotation
-(the largest mask and the largest polygon the model allows are within
-that), 131,072 of them objects or arrays, 64 levels of nesting, and 4 GiB
-for the memory all its records are charged, whatever the size of the file.
-A file past one of them fails to load and the import's message says
-which. The viewer counts the same way when it writes: a session whose
-document would be past the 4 GiB is refused its export, so whatever the
-viewer exports it can load again. A rectangle is charged about 1,900 bytes
-and an annotated file about 1,300.
+A document is read within bounds, and written within the same ones:
+
+- 1,048,576 annotated files, and 1,048,576 annotations and labels;
+- in one annotation, 1,048,576 JSON values (the largest mask and the
+  largest polygon the model allows are within that), 131,072 of them
+  objects or arrays, nested at most 64 levels;
+- 256 MiB for a JSON document, and 16 MiB for one record of a JSON Lines
+  file, which has no bound on its whole length;
+- a budget for the memory all its records are charged, whatever the size
+  of the file: a quarter of the machine's memory, not less than 1 GiB and
+  not more than 4 GiB (4 GiB where the memory cannot be read, as on
+  Windows). A rectangle is charged about 1,900 bytes and an annotated
+  file about 1,300, so 4 GiB is about a million of each.
+
+A file past one of them fails to load, and the import's message names
+the bound and its value, for example "the bytes of memory its records
+hold are limited to 4294967296". The viewer checks every one of them when it
+writes: a session past a bound is refused that export with an error that
+names the bound and its value, so whatever the viewer exports it can load
+again on a machine with the same budget. A session too large for one form
+can fit the other: one very large annotation fits a JSON document and not
+a JSON Lines record, and a very large session the other way round.
 
 One rule about empty documents: a document on a single line that holds no
 file, layer, annotation or label is taken for a JSON Lines file that was

@@ -2036,7 +2036,7 @@ start of a file is for.
 | Annotations and labels of a document | 1,048,576 |
 | Layers of a document | 4,096 |
 | JSON values of one record, or of a document's header | 1,048,576, of which 131,072 objects and arrays |
-| Memory the records of one document are charged | 4 GiB |
+| Memory the records of one document are charged | 4 GiB in the library; in the viewer a quarter of physical memory, from 1 GiB to 4 GiB |
 | JSON nesting | 64 levels |
 
 ### EMBED ROI CSV
@@ -2234,32 +2234,46 @@ sent; a document that would pass it is dropped when built and answered
 `503 annotation_export_busy` with `Retry-After`.
 
 **What a document import holds, from the file to the store,** is at most
-5 GiB for any input: a budget of 4 GiB for what its records are charged
-(`Limits::held_bytes`), 256 MiB for building one record or the header
-before it is charged, and the text in its buffer (up to three times a
-JSON document of 256 MiB; two lines of a JSON Lines file). None of these
-depends on what the text is made of, and the budget is not a multiple of
-the text: the model is expensive for small things (a map of one member is
-a node of several hundred bytes; a mask of one tile a frame is charged
-ten times its text), so a multiple would refuse documents the viewer
-itself wrote. The number is set from the other bounds: 1,048,576
+5 GiB for any input: a budget for what its records are charged
+(`Limits::held_bytes`, at most 4 GiB), 256 MiB for building one record or
+the header before it is charged, and the text in its buffer (up to three
+times a JSON document of 256 MiB; up to three times one line of a JSON
+Lines file). None of these depends on what the text is made of, and the
+budget is not a multiple of the text: the model is expensive for small
+things (a map of one member is a node of several hundred bytes; a mask
+of one tile a frame is charged many times its text), so a multiple would
+refuse documents the viewer itself wrote. The library's number
+(`Limits::DEFAULT`, 4 GiB) is set from the other bounds: 1,048,576
 rectangles on 1,048,576 files, the largest session of the common kind
-they allow, are charged 3.1 GiB.
+they allow, are charged 3.1 GiB. **The viewer's budget follows the
+machine (OWNER):** a quarter of its physical memory, not less than 1 GiB
+and not more than 4 GiB, and 4 GiB where the memory is not read
+(`default_document_budget`, set on the store at startup), because a
+document charged all of it is held for the session.
+
+Beside the document, an import holds its indexes of the loaded files (by
+UID, by size and by path) while it runs: about 600 bytes for each loaded
+file, which grows with the session and not with the document.
 
 - **Charged, not predicted.** After each file reference, layer,
   annotation and label is built, the reader adds its charge (`held`: what
   the item holds, counted on the item by the lengths of its strings and
   lists and the number of its members, and the room an import needs for
   it on the way into the store) and stops past the budget.
-- **Export and import agree.** The writers refuse a session whose
-  document is charged past the budget (`422 annotation_export_too_large`,
-  naming the bound), by the same count on the same records. A document is
-  written exactly when it would be read: whatever a session can export,
-  the same viewer can import.
-- **Nothing is copied whole.** The reader's lists grow by a quarter;
+- **Export and import agree, on every bound.** The writers hold a
+  document to what a reader holds it to, with the reader's own
+  functions: the numbers of files and records, the charge, and for each
+  record and the header the JSON values, the objects and arrays, the
+  depth, and in the JSON Lines form the length of each line. A session
+  past one is refused that export (`422 annotation_export_too_large`,
+  naming the bound and its value). A document is written exactly when it
+  would be read: whatever a session can export in a form, the same viewer
+  can import. The forms differ in one bound each (a JSON document's whole
+  length; a JSON Lines record's length).
+- **Nothing is copied.** The reader's lists grow by a quarter;
   placement makes each per-record structure once at its final size; and
-  the store takes the import's batch an operation at a time, letting go
-  of each record's first copy as it keeps its own
+  the store takes the import's batch an operation at a time and moves
+  each record in, on the thread that read it
   (`MemoryBackend::transact_owned`), with room for the whole batch made
   first. The charge of an annotation covers the moments it is in two
   lists at once.
