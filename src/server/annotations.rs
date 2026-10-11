@@ -457,7 +457,7 @@ pub struct NativeExport {
 ///    at a time, and a second waits here holding nothing.
 /// 3. **Staged rows become records first.** A document holds records, and
 ///    a record holds a settled key. For every loaded file, in index order,
-///    that has rows staged (`AnnotationStore::staged_rows`): its key is
+///    that has rows staged (`AnnotationStore::with_staged` says which): its key is
 ///    settled with `FileRegistry::ensure_key`, which is where the export
 ///    waits while a file is hashed, and its rows are made records exactly
 ///    as a read of its view makes them ([`embed_rois`], step 2). A file
@@ -560,9 +560,11 @@ pub async fn export_native(
 /// No candidate is `Resolution::Unmatched`. A candidate is then checked,
 /// in this order:
 ///
-/// - when the reference and the file both have a SOP Instance UID (the
-///   file's as this session shows it) and they differ:
-///   `Refusal::EvidenceConflict`;
+/// - when the reference and the file both have a SOP Instance UID and the
+///   reference's is neither the file's own nor the one this session shows
+///   for it (`Masker::uid`): `Refusal::EvidenceConflict`. So a document
+///   that a session without masking wrote loads into a masked one, its
+///   files found by their paths;
 /// - the file's key is settled with `FileRegistry::ensure_key`, waited for
 ///   from the blocking thread (`tokio::runtime::Handle::block_on`), which
 ///   may hash the file. A file that cannot be given a key, or a viewer that
