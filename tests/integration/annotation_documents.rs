@@ -959,6 +959,10 @@ async fn rows_of_a_file_that_is_not_loaded_do_not_land_on_one_with_its_uid() {
     let document: Value = serde_json::from_str(&text).expect("document");
     assert_eq!(document["files"][0]["key"], content_key(&[1; 64]));
     assert_eq!(document["files"][1]["key"], content_key(&[2; 64]));
+    // Each row is on a key one file has, so none says which file it is of.
+    for record in document["annotations"].as_array().expect("annotations") {
+        assert_eq!(record["extensions"], json!({}));
+    }
 
     // Only the first file is loaded. Its UID is its own here, so nothing
     // made the viewer hash it: the import does, to compare.
@@ -980,6 +984,37 @@ async fn rows_of_a_file_that_is_not_loaded_do_not_land_on_one_with_its_uid() {
         report["matched_by"],
         json!({ "key": 0, "sop_instance_uid": 1, "path": 0 })
     );
+
+    // A reference that names the file by its UID and also says what its
+    // bytes were is held to both.
+    let naming = |digest: &[u8; 64]| {
+        let mut named = reference("sop:1.2.3.9", Some("1.2.3.9"), "one.dcm");
+        named["size_bytes"] = json!(64);
+        named["digest"] = json!(content_key(digest));
+        document_of(
+            vec![named],
+            vec![],
+            vec![annotation(1, "sop:1.2.3.9", "default", rect(7, 7, 9, 9))],
+        )
+    };
+    let other = Session::loading(vec![written(dir.path(), "one.dcm", "1.2.3.9", &[1; 64])]);
+    let report = other
+        .import(dir.path(), &naming(&[2; 64]))
+        .await
+        .expect("import");
+    assert_eq!(report["counts"]["refused"], 1);
+    assert_eq!(report["warnings"][0]["code"], "evidence_conflict");
+    assert_eq!(other.rois(0).await.num_roi, 0);
+    let same = Session::loading(vec![written(dir.path(), "one.dcm", "1.2.3.9", &[1; 64])]);
+    let report = same
+        .import(dir.path(), &naming(&[1; 64]))
+        .await
+        .expect("import");
+    assert_eq!(
+        report["matched_by"],
+        json!({ "key": 1, "sop_instance_uid": 0, "path": 0 })
+    );
+    assert_eq!(same.rois(0).await.roi_coords, [[7, 7, 9, 9]]);
 }
 
 /// A document's paths are below the folder its session loaded. They find
@@ -1143,6 +1178,20 @@ async fn copies_keep_their_own_rows_through_a_document() {
     assert_eq!(second.csv().await, csv);
     // And written again, it is the same document but for its stamps.
     assert_eq!(told(&second.document().await), written_first);
+
+    // What a copy shows does not wait for another copy to be looked at:
+    // a rectangle drawn on the first of three shows on the third at once.
+    let drawn = Session::plain(copies(&["a.dcm", "b.dcm", "c.dcm"]));
+    drawn
+        .op(
+            Some(0),
+            create(2, "sop:1.2.3.8", "default", rect(4, 4, 8, 8)),
+        )
+        .await;
+    let only = drawn.text("/api/annotations/export.json").await;
+    let third = Session::loading(copies(&["a.dcm", "b.dcm", "c.dcm"]));
+    third.import(dir.path(), &only).await.expect("import");
+    assert_eq!(third.rois(2).await.roi_coords, [[4, 4, 8, 8]]);
 
     // Only the third and the first copy are loaded: the second copy's rows
     // are for a file that is not here.
