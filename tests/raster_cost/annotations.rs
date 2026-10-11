@@ -398,3 +398,228 @@ fn imported_rows_are_held_as_rows() {
     );
     assert_eq!(registry.key_stats().files_hashed, 0);
 }
+
+/// What reading and writing annotation files may hold, for a session of
+/// 100,000 files with two ROIs each.
+mod documents {
+    use super::{entry, heap};
+    use dcmview::annotations::{AnnotationSource, AnnotationStore, NativeSource};
+    use dcmview::server::annotations::{
+        export_embed_csv, export_native, import_embed_rows, import_native, NativeForm,
+    };
+    use dcmview::server::FileRegistry;
+    use std::io::Write;
+    use std::sync::Arc;
+
+    const FILES: usize = 100_000;
+    const ROIS: u64 = 2 * FILES as u64;
+
+    /// `RASTER_COST_REPORT=1 ... -- --nocapture` prints what each case held.
+    fn report(what: &str, peak: u64, of: u64) {
+        if std::env::var_os("RASTER_COST_REPORT").is_some() {
+            eprintln!("{what}: held {peak} bytes for {of}");
+        }
+    }
+
+    fn registry(dir: &std::path::Path) -> FileRegistry {
+        FileRegistry::from_files(
+            (0..FILES)
+                .map(|n| entry(dir.join(format!("{n}.dcm")), format!("1.2.3.{n}")))
+                .collect(),
+        )
+    }
+
+    /// An EMBED CSV with a row of two ROIs for every file, and as many rows
+    /// again for files that are not loaded, whose long payload is never
+    /// read.
+    fn write_csv(dir: &std::path::Path) -> std::path::PathBuf {
+        let path = dir.join("rois.csv");
+        let mut csv = std::io::BufWriter::new(std::fs::File::create(&path).expect("create CSV"));
+        writeln!(csv, "anon_dicom_path,num_ROI,ROI_coords,ROI_frames").expect("write");
+        let junk = "9,".repeat(200);
+        for n in 0..FILES {
+            writeln!(
+                csv,
+                "{},2,\"[[1,2,3,4],[5,6,7,8]]\",\"[[0],[0]]\"",
+                dir.join(format!("{n}.dcm")).display()
+            )
+            .expect("write");
+            writeln!(csv, "/elsewhere/{n}.dcm,2,\"[{junk}]\",[]").expect("write");
+        }
+        csv.flush().expect("flush");
+        path
+    }
+
+    /// A CSV is read at the cost of the rows it hands on: what the read
+    /// holds is within 400 bytes a ROI, the lookup of 100,000 files by
+    /// path included, and no file is hashed for it.
+    #[test]
+    fn a_large_csv_is_read_and_staged_at_the_cost_of_its_rows() {
+        const BYTES_PER_ROI: u64 = 400;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let registry = registry(dir.path());
+        let source = AnnotationSource::from_path(&write_csv(dir.path())).expect("source");
+        let files = registry.files_snapshot();
+        let store = AnnotationStore::loading();
+
+        let (report, peak) = heap::peak_during(|| {
+            let read = source.read_for_files(&files, &|| true).expect("read");
+            assert_eq!(read.report.counts.unmatched, FILES as u64);
+            assert_eq!(read.report.counts.annotations_out, ROIS);
+            import_embed_rows(&registry, &store, read.rows).expect("stage")
+        });
+
+        assert_eq!(report.files_loaded, FILES);
+        self::report("CSV import, ROIs", peak, ROIS);
+        assert!(
+            peak <= ROIS * BYTES_PER_ROI,
+            "{ROIS} ROIs held {peak} bytes, more than {BYTES_PER_ROI} each"
+        );
+        assert_eq!(registry.key_stats().files_hashed, 0);
+    }
+
+    /// The exports hold the session's records once more and their text
+    /// once, and a native import holds what it read once beside the
+    /// records it leaves: each within a fixed multiple of the text.
+    #[test]
+    fn documents_of_a_large_session_are_written_and_read_at_a_multiple_of_their_text() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let registry = registry(dir.path());
+        let store = AnnotationStore::loading();
+        let rows = (0..FILES)
+            .map(|n| {
+                (
+                    n,
+                    dcmview::annotations::EmbedRoiAnnotations {
+                        num_roi: 2,
+                        roi_coords: vec![[1, 2, 3, 4], [5, 6, 7, 8]],
+                        roi_frames: vec![vec![0], vec![0]],
+                    },
+                )
+            })
+            .collect();
+        import_embed_rows(&registry, &store, rows).expect("stage");
+        let runtime = heap::CountedRuntime::new();
+
+        // The first export makes the staged rows records, which the store
+        // then holds for the session. The exports after it are measured.
+        let first = runtime
+            .peak_during(export_native(&registry, &store, NativeForm::JsonLines))
+            .0
+            .expect("the first export");
+        assert_eq!(first.report.counts.annotations_out, ROIS);
+        let text = first.bytes.len() as u64;
+        let path = dir.path().join("session.jsonl");
+        std::fs::write(&path, &first.bytes).expect("write document");
+        drop(first);
+
+        for form in [NativeForm::JsonLines, NativeForm::Json] {
+            let (export, peak) = runtime.peak_during(export_native(&registry, &store, form));
+            let export = export.expect("export");
+            report(&format!("{form:?} export, bytes of text"), peak, text);
+            assert!(
+                peak <= 5 * text,
+                "{form:?}: an export of {text} bytes held {peak}"
+            );
+            drop(export);
+        }
+        let (csv, peak) = runtime.peak_during(export_embed_csv(&registry, &store));
+        let csv = csv.expect("CSV");
+        assert_eq!(csv.lines().count(), FILES + 1);
+        report("CSV export, bytes of text", peak, csv.len() as u64);
+        assert!(
+            peak <= 7 * csv.len() as u64,
+            "a CSV of {} bytes held {peak}",
+            csv.len()
+        );
+        drop(csv);
+
+        // The document, loaded into a session of its own.
+        let source = NativeSource::from_path(&path).expect("source");
+        let second = AnnotationStore::loading();
+        let (report, peak) = runtime.peak_during(import_native(
+            &registry,
+            &second,
+            &source,
+            Arc::new(|| true),
+        ));
+        let report = report.expect("import");
+        assert_eq!(report.counts.annotations_out, ROIS);
+        assert_eq!(report.counts.files, FILES as u64);
+        self::report("native import, bytes of text", peak, text);
+        assert!(
+            peak <= 5 * text,
+            "an import of {text} bytes held {peak}, the records it left included"
+        );
+        assert_eq!(registry.key_stats().files_hashed, 0);
+    }
+
+    /// One row cannot make the reader hold more than a few rows' worth,
+    /// whatever its fields claim.
+    #[test]
+    fn a_hostile_row_holds_a_bounded_multiple_of_one_row() {
+        use dcmview_adapters::embed::read_rows;
+        use dcmview_adapters::limits::MAX_CSV_ROW_BYTES;
+        use dcmview_adapters::{FileResolver, Resolved};
+
+        struct One;
+        impl FileResolver for One {
+            fn by_path(&self, _: &str, out: &mut Vec<Resolved>) {
+                out.push(Resolved {
+                    slot: 0,
+                    key: None,
+                    size: dcmview_annotation::ImageSize {
+                        columns: 16,
+                        rows: 16,
+                        frames: 1,
+                    },
+                    size_bytes: 0,
+                });
+            }
+        }
+        let row = MAX_CSV_ROW_BYTES as usize - 64;
+        let filled = |open: &str, item: &str, close: &str| {
+            let count = (row - open.len() - close.len()) / item.len();
+            format!("{open}{}{close}", item.repeat(count))
+        };
+        let cases = [
+            (
+                "millions of empty boxes",
+                filled("\"[[]", ",[]", "]\""),
+                "[]".to_string(),
+            ),
+            (
+                "one box of millions of numbers",
+                filled("\"[[1", ",1", "]]\""),
+                "[]".to_string(),
+            ),
+            (
+                "millions of boxes",
+                filled("\"[[1,2,3,4]", ",[1,2,3,4]", "]\""),
+                "[]".to_string(),
+            ),
+            (
+                "millions of frames for one box",
+                "\"[[1,2,3,4]]\"".to_string(),
+                filled("\"[[0", ",0", "]]\""),
+            ),
+            (
+                "millions of frame lists",
+                "\"[[1,2,3,4]]\"".to_string(),
+                filled("\"[[]", ",[]", "]\""),
+            ),
+        ];
+        for (what, coords, frames) in cases {
+            let csv = format!("anon_dicom_path,ROI_coords,ROI_frames\na.dcm,{coords},{frames}\n");
+            let (result, peak) =
+                heap::peak_during(|| read_rows(&mut csv.as_bytes(), &One, &|| true));
+            assert!(result.is_err(), "{what}");
+            report(what, peak, csv.len() as u64);
+            assert!(
+                peak <= 3 * MAX_CSV_ROW_BYTES,
+                "{what}: one row of {} bytes held {peak}",
+                csv.len()
+            );
+        }
+    }
+}
