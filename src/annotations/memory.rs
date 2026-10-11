@@ -65,7 +65,9 @@ pub(crate) enum Checking {
     /// EMBED endpoint accepted, both already checked by the rule EMBED
     /// has, which the model's rule would narrow
     /// (`docs/design/annotation-model.md` 2.1: "A record loaded this way
-    /// stays as loaded until edited").
+    /// stays as loaded until edited"). Also for the records of a native
+    /// import, each of which its adapter has checked and quantized, in one
+    /// batch that the envelope's bound on operations does not apply to.
     AsLoaded,
 }
 
