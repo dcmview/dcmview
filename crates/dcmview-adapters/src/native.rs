@@ -129,7 +129,7 @@
 //! `counts.annotations_in` and `labels_in` count what the input held;
 //! `annotations_out` and `labels_out` what the fragment holds.
 //!
-//! ## A box an EMBED import kept as read (OWNER)
+//! ## A box an EMBED import kept as read
 //!
 //! A record the lenient EMBED import read is held unchanged, so a native
 //! export can hold a rectangle the strict check refuses

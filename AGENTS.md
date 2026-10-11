@@ -959,9 +959,8 @@ is cached between requests.
   edge, without area or with its corners out of order is kept as read. The
   EMBED writer sorts rows by path. `tests/fixtures/embed-goldens/` holds
   both; a change that moves a byte needs the owner's sign-off.
-- The native import is strict, with one stated exception (awaiting the
-  owner's confirmation): a rectangle whose only violations are
-  `out_of_bounds`, `degenerate` or `frames_empty` is taken back as read and
+- The native import is strict, with one stated exception: a rectangle
+  whose only violations are `out_of_bounds`, `degenerate` or `frames_empty` is taken back as read and
   reported, so that a document the viewer wrote can be loaded by it.
 - Only a settled file key is in a document or in a record an import makes.
   `export_native` settles and stores the staged rows of every file that has

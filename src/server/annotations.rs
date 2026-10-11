@@ -571,7 +571,7 @@ pub struct NativeExport {
 ///    path (step 5) of the file at the binding's slot, and the binding's
 ///    import mark. A reader binds the record to the file that path names
 ///    ([`import_native`]), so each copy shows its own rows again, in the
-///    same order. **A masked session does not record which copy** (OWNER):
+///    same order. **A masked session does not record which copy**:
 ///    its document holds no path, byte-identical files have nothing else
 ///    to tell them apart, and the order files are found in differs from
 ///    run to run. It writes `"embed": { "copies": <n>, "imported": <bool> }`,

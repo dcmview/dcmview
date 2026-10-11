@@ -2119,7 +2119,7 @@ must pass the model's `validate`, against the label schema in force where
 the records will live (a schema the document carries is not taken, and the
 report says so). A failure names the row and the first rule broken.
 
-**A box the EMBED import kept as read (OWNER).** A record that was loaded
+**A box the EMBED import kept as read.** A record that was loaded
 leniently is held unchanged, and a native export writes records as they are
 held, so a document can hold a rectangle the strict check refuses. The
 native import takes it back as it is: a rectangle whose only violations are
@@ -2222,8 +2222,8 @@ that is one copy's row carries
 more than one loaded file has its key. An import takes the member out and
 binds the record to the loaded file that path names and that has the
 record's key; when that copy is not loaded the record is left out and
-counted as unmatched. **A masked document does not say which copy
-(OWNER).** It holds no path, byte-identical files differ in nothing else,
+counted as unmatched. **A masked document does not say which copy.**
+It holds no path, byte-identical files differ in nothing else,
 and the order discovery finds files in differs from run to run, so a place
 in that order would name another file each time. It writes
 `"copies": <n>` in place of `row_of`: the row was on one of `n` copies.
@@ -2259,7 +2259,7 @@ refuse documents the viewer itself wrote. The library's number
 (`Limits::DEFAULT`, 4 GiB) is set from the other bounds: 1,048,576
 rectangles on 1,048,576 files, the largest session of the common kind
 they allow, are charged 3.1 GiB. **The viewer's budget follows the
-machine (OWNER):** a quarter of its physical memory, not less than 1 GiB
+machine:** a quarter of its physical memory, not less than 1 GiB
 and not more than 4 GiB, and 4 GiB where the memory is not read
 (`default_document_budget`, set on the store at startup), because a
 document charged all of it is held for the session.
@@ -2304,7 +2304,7 @@ of record, each under a budget of exactly its charge and of one byte
 less, and holds the peak to the charge; builds the costliest records
 within the transient; and compares what is counted with the allocator.
 
-**Masked sessions (OWNER).** The masks of a session are drawn for one
+**Masked sessions.** The masks of a session are drawn for one
 process, so a key or a UID it shows names nothing anywhere else, and a
 real one must not leave it. A masked session shows a file as `File N`
 without its folder, because folder and file names often say whose the
