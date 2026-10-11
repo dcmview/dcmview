@@ -545,7 +545,7 @@ rows: Array<RowRef>, };
  * Something an export could not carry, or an import could not keep.
  * Variants are only added; the wire strings are the snake-case names.
  */
-export type LossCode = "type_skipped" | "rounded_outward" | "classes_merged" | "attributes_dropped" | "scores_dropped" | "labels_dropped" | "label_members_dropped";
+export type LossCode = "type_skipped" | "rounded_outward" | "classes_merged" | "attributes_dropped" | "scores_dropped" | "labels_dropped" | "label_members_dropped" | "copy_placement_not_kept";
 
 /**
  * How the files an import placed were found.
@@ -1010,7 +1010,7 @@ rows: Array<RowRef>, };
  * Something a reader of the result should know. Variants are only added;
  * the wire strings are the snake-case names.
  */
-export type WarningCode = "negative_coordinate" | "non_integer_coordinate" | "out_of_range" | "zero_area" | "corners_out_of_order" | "frames_empty" | "file_unmatched" | "size_mismatch" | "evidence_conflict" | "key_unavailable" | "file_size_differs" | "schema_not_applied" | "file_unverified";
+export type WarningCode = "negative_coordinate" | "non_integer_coordinate" | "out_of_range" | "zero_area" | "corners_out_of_order" | "frames_empty" | "file_unmatched" | "size_mismatch" | "evidence_conflict" | "key_unavailable" | "file_size_differs" | "schema_not_applied" | "file_unverified" | "file_ambiguous";
 
 export type WindowMode = "default" | "full_dynamic";
 

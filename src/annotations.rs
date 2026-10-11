@@ -538,8 +538,15 @@ impl DocumentPaths {
             })
             .map(|common| common.into_iter().collect::<PathBuf>())
             .filter(|root| {
-                home.map(normalize_path)
-                    .is_none_or(|home| home == *root || !home.starts_with(root))
+                // Above the home directory by the paths as written, or by
+                // where they lead: a home directory reached through a link
+                // is the same directory.
+                let above = |home: &Path, root: &Path| home != root && home.starts_with(root);
+                let led =
+                    |path: &Path| path.canonicalize().unwrap_or_else(|_| normalize_path(path));
+                home.is_none_or(|home| {
+                    !above(&normalize_path(home), root) && !above(&led(home), &led(root))
+                })
             });
         Self {
             root,
@@ -1275,6 +1282,36 @@ mod tests {
                 "{path}"
             );
         }
+    }
+
+    /// A home directory that is reached through a link is still the home
+    /// directory: files in two users' folders, loaded by the path the link
+    /// leads to, share only a directory above it.
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_home_directory_is_the_directory_it_leads_to() {
+        let dir = tempdir().expect("temp dir");
+        let base = dir.path().canonicalize().expect("canonical");
+        let users = base.join("volume").join("users");
+        fs::create_dir_all(users.join("reader").join("x")).expect("folders");
+        fs::create_dir_all(users.join("other").join("y")).expect("folders");
+        fs::create_dir_all(base.join("home")).expect("folder");
+        let home = base.join("home").join("reader");
+        std::os::unix::fs::symlink(users.join("reader"), &home).expect("link");
+        let files = vec![
+            file_entry(0, users.join("reader").join("x").join("one.dcm"), 1),
+            file_entry(1, users.join("other").join("y").join("two.dcm"), 1),
+        ];
+        let names = super::DocumentPaths::new(&files, &base, Some(&home));
+        assert_eq!(names.path(&files[0].path), "one.dcm");
+        assert_eq!(names.path(&files[1].path), "two.dcm");
+        // Below the home directory itself, by either path, there is a root.
+        let files = vec![
+            file_entry(0, users.join("reader").join("x").join("one.dcm"), 1),
+            file_entry(1, users.join("reader").join("two.dcm"), 1),
+        ];
+        let names = super::DocumentPaths::new(&files, &base, Some(&home));
+        assert_eq!(names.path(&files[0].path), "x/one.dcm");
     }
 
     #[test]

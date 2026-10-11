@@ -1430,6 +1430,34 @@ async fn references_and_rows_are_held_to_what_they_say() {
         "{report}"
     );
 
+    // A path that names more files than are compared finds none of them,
+    // and the report says that this is why.
+    let alike = Session::loading(
+        (0..70)
+            .map(|n| {
+                entry(
+                    &dir.path().join(format!("study-{n}")),
+                    "image.dcm",
+                    &format!("1.2.3.{n}"),
+                )
+            })
+            .collect(),
+    );
+    let vague = document_of(
+        vec![reference("sop:9.9.9", Some("9.9.9"), "image.dcm")],
+        vec![],
+        vec![annotation(1, "sop:9.9.9", "default", rect(1, 1, 2, 2))],
+    );
+    let report = alike.import(dir.path(), &vague).await.expect("import");
+    assert_eq!(
+        report["warnings"],
+        json!([{ "code": "file_ambiguous", "count": 1, "rows": [{ "row": 2 }] }])
+    );
+    assert_eq!(
+        (&report["counts"]["refused"], &report["counts"]["unmatched"]),
+        (&json!(1), &json!(0))
+    );
+
     // A masked session shows keys of its own, and takes them back.
     let registry = FileRegistry::masked(Arc::new(Masker::new()));
     registry.insert(entry(
@@ -1481,19 +1509,21 @@ async fn references_and_rows_are_held_to_what_they_say() {
         ],
         vec![],
         vec![
-            // Bound to the second copy, by its path and by its place.
+            // Bound to the second copy by its path; and to one of two
+            // copies, which is the one whose path sorts first.
             record(1, json!({ "row_of": "b.dcm", "imported": true })),
-            record(2, json!({ "copy": 1 })),
+            record(2, json!({ "copies": 2 })),
             // Names a loaded file that does not have the record's key, a
-            // file that is not loaded, a place no copy has: left out.
+            // file that is not loaded: left out.
             record(3, json!({ "row_of": "alone.dcm" })),
             record(4, json!({ "row_of": "c.dcm" })),
+            // Not the member's shape: kept as it is, on every copy.
             record(5, json!({ "copy": 2 })),
             // Not the member's shape: kept as it is, on every copy.
             record(6, json!({ "row_of": "b.dcm", "more": 1 })),
             record(7, json!({ "row_of": 3 })),
-            record(8, json!({ "row_of": "b.dcm", "copy": 1 })),
-            record(9, json!({ "copy": -1 })),
+            record(8, json!({ "row_of": "b.dcm", "copies": 2 })),
+            record(9, json!({ "copies": -1 })),
             record(10, json!("b.dcm")),
         ],
     );
@@ -1504,19 +1534,31 @@ async fn references_and_rows_are_held_to_what_they_say() {
             &report["counts"]["annotations_out"],
             &report["counts"]["unmatched"]
         ),
-        (&json!(7), &json!(3)),
+        (&json!(8), &json!(2)),
         "{report}"
+    );
+    assert_eq!(
+        report["losses"],
+        json!([{ "code": "copy_placement_not_kept", "count": 1, "rows": [] }])
     );
     let boxes = |n: u32| [n, n, n + 5, n + 5];
     assert_eq!(
         session.rois(0).await.roi_coords,
-        [boxes(6), boxes(7), boxes(8), boxes(9), boxes(10)]
+        [
+            boxes(2),
+            boxes(5),
+            boxes(6),
+            boxes(7),
+            boxes(8),
+            boxes(9),
+            boxes(10)
+        ]
     );
     assert_eq!(
         session.rois(1).await.roi_coords,
         [
             boxes(1),
-            boxes(2),
+            boxes(5),
             boxes(6),
             boxes(7),
             boxes(8),
@@ -1557,11 +1599,12 @@ async fn references_and_rows_are_held_to_what_they_say() {
         extensions,
         [
             &bound(true),
-            &bound(false),
+            &json!({ "embed": { "row_of": "a.dcm", "imported": false }, "other": { "kept": true } }),
+            &unbound(json!({ "copy": 2 })),
             &unbound(json!({ "row_of": "b.dcm", "more": 1 })),
             &unbound(json!({ "row_of": 3 })),
-            &unbound(json!({ "row_of": "b.dcm", "copy": 1 })),
-            &unbound(json!({ "copy": -1 })),
+            &unbound(json!({ "row_of": "b.dcm", "copies": 2 })),
+            &unbound(json!({ "copies": -1 })),
             &unbound(json!("b.dcm")),
         ]
     );
@@ -1673,66 +1716,72 @@ async fn exports_are_refused_past_their_bounds() {
     small.text("/api/annotations/export.jsonl").await;
 }
 
-/// A masked session's document holds no path to say which copy a row is
-/// of: it says which of the copies, in the order they were loaded, and a
-/// session that loads the copies in that order shows on each what the
-/// first one showed.
+/// A masked session's document holds no path, and byte-identical files
+/// have nothing else to tell them apart, so it does not say which copy a
+/// row was on: only that it was on one of so many. A session that loads
+/// it puts such rows on the copy whose path sorts first, whatever order
+/// the files were found in, and its report says that which copy each row
+/// was on is not kept.
 #[tokio::test]
-async fn copies_keep_their_own_rows_through_a_masked_document() {
+async fn a_masked_document_does_not_say_which_copy_a_row_was_on() {
     let dir = tempdir().expect("temp dir");
     for name in ["a.dcm", "b.dcm", "c.dcm"] {
         written(dir.path(), name, "1.2.3.8", &[3; 64]);
     }
-    let masked = || {
+    let masked = |order: [&str; 3]| {
         let registry = FileRegistry::masked(Arc::new(Masker::new()));
-        for name in ["a.dcm", "b.dcm", "c.dcm"] {
+        for name in order {
             registry.insert(entry(dir.path(), name, "1.2.3.8"));
         }
         registry.mark_scan_complete();
         Session::over(registry, AnnotationStore::loading())
     };
-    let first = masked();
+    let first = masked(["a.dcm", "b.dcm", "c.dcm"]);
     first.stage(HashMap::from([
-        (0, rows(&[[1, 2, 3, 4]], &[])),
+        (1, rows(&[[1, 2, 3, 4]], &[])),
         (2, rows(&[[5, 6, 7, 8], [9, 9, 12, 12]], &[])),
     ]));
     let document = first.document().await;
-    let views = [
-        first.rois(0).await,
-        first.rois(1).await,
-        first.rois(2).await,
-    ];
-    assert_eq!(views[1].num_roi, 0);
     let copies: Vec<&Value> = document["annotations"]
         .as_array()
         .expect("annotations")
         .iter()
         .map(|record| &record["extensions"]["embed"])
         .collect();
-    assert_eq!(
-        copies,
-        [
-            &json!({ "copy": 0, "imported": true }),
-            &json!({ "copy": 2, "imported": true }),
-            &json!({ "copy": 2, "imported": true }),
-        ]
-    );
+    assert_eq!(copies, [&json!({ "copies": 3, "imported": true }); 3]);
     assert_eq!(document["files"].as_array().expect("files").len(), 1);
 
-    let second = masked();
-    let report = second
-        .import(dir.path(), &document.to_string())
-        .await
-        .expect("import");
-    assert_eq!(report["counts"]["annotations_out"], 3, "{report}");
-    assert_eq!(
-        [
-            second.rois(0).await,
-            second.rois(1).await,
-            second.rois(2).await
-        ],
-        views
-    );
+    // The same folder, its files found in every order: the rows are on
+    // the same file each time, and the report says what was not kept.
+    for order in [
+        ["a.dcm", "b.dcm", "c.dcm"],
+        ["c.dcm", "b.dcm", "a.dcm"],
+        ["b.dcm", "c.dcm", "a.dcm"],
+    ] {
+        let second = masked(order);
+        let report = second
+            .import(dir.path(), &document.to_string())
+            .await
+            .expect("import");
+        assert_eq!(report["counts"]["annotations_out"], 3, "{report}");
+        assert_eq!(
+            report["losses"],
+            json!([{ "code": "copy_placement_not_kept", "count": 3, "rows": [] }]),
+            "{order:?}"
+        );
+        for (index, name) in order.into_iter().enumerate() {
+            let shown = second.rois(index).await.roi_coords;
+            if name == "a.dcm" {
+                assert_eq!(
+                    shown,
+                    [[1, 2, 3, 4], [5, 6, 7, 8], [9, 9, 12, 12]],
+                    "{order:?}"
+                );
+            } else {
+                assert!(shown.is_empty(), "{name} in {order:?}: {shown:?}");
+            }
+        }
+    }
 }
 
 /// What a copy shows after a reload does not wait for the copy to be

@@ -508,8 +508,8 @@ pub struct NativeExport {
 ///    that came before it is there whole.
 /// 5. **Files.** For each file key the document's annotations name, then
 ///    each a label names in a `file` or `frame` target, in the order first
-///    named, one `FileRef` in `files`, for the loaded file with the lowest
-///    index whose settled key it is (`FileRegistry::key_status`; no key is
+///    named, one `FileRef` in `files`, for the loaded file whose settled
+///    key it is, of several the one whose path sorts first (`FileRegistry::key_status`; no key is
 ///    settled here). A record whose key no loaded file has is
 ///    [`AnnotationError::Store`]. The reference holds:
 ///    - `key`: the file's settled key;
@@ -566,13 +566,15 @@ pub struct NativeExport {
 ///    one loaded file has its settled key, the record's `extensions` gain
 ///    `"embed": { "row_of": <path>, "imported": <bool> }`: the document
 ///    path (step 5) of the file at the binding's slot, and the binding's
-///    import mark. A masked session, whose document holds no path, writes
-///    `"embed": { "copy": <n>, "imported": <bool> }` instead: the place of
-///    that file among the loaded files with that key, in index order,
-///    counted from 0. A reader binds the record to the file so named
+///    import mark. A reader binds the record to the file that path names
 ///    ([`import_native`]), so each copy shows its own rows again, in the
-///    same order. An annotation without a binding, or on a key one file
-///    has, gets no such member.
+///    same order. **A masked session does not record which copy** (OWNER):
+///    its document holds no path, byte-identical files have nothing else
+///    to tell them apart, and the order files are found in differs from
+///    run to run. It writes `"embed": { "copies": <n>, "imported": <bool> }`,
+///    `n` the number of loaded files with that key: the row was on one of
+///    them. An annotation without a binding, or on a key one file has,
+///    gets no such member.
 /// 9. The document is written by the adapter for `form` with no path
 ///    lookup, no bound of the caller's (`ExportContext::max_bytes` is
 ///    `u64::MAX`) and `Limits::DEFAULT`, into memory.
@@ -654,13 +656,11 @@ pub async fn export_native_within(
             if copies.len() < 2 {
                 continue;
             }
-            // A masked document holds no path: the copy is named by its
-            // place among the copies.
+            // A masked document holds no path, and nothing else tells
+            // byte-identical files apart: it says only that the row was on
+            // one of so many copies.
             let copy = if masked {
-                copies
-                    .iter()
-                    .position(|index| *index == binding.slot)
-                    .map(|place| ("copy", serde_json::json!(place)))
+                Some(("copies", serde_json::json!(copies.len())))
             } else {
                 files
                     .get(binding.slot)
@@ -720,10 +720,16 @@ pub async fn export_native_within(
                 *key = replacement.clone();
                 return Ok(());
             }
+            // Of several copies, the one whose path sorts first: the
+            // order files were found in differs from run to run.
             let file = by_key
                 .get(key)
-                .and_then(|indexes| indexes.first())
-                .and_then(|index| files.get(*index))
+                .and_then(|indexes| {
+                    indexes
+                        .iter()
+                        .filter_map(|index| files.get(*index))
+                        .min_by(|a, b| a.path.cmp(&b.path))
+                })
                 .ok_or_else(|| {
                     AnnotationError::Store("The store names a file that is not loaded.".to_string())
                 })?;
@@ -896,7 +902,9 @@ fn document_file_ref(
 ///    (`Matcher::Key`);
 /// 2. by UID: every loaded file whose SOP Instance UID, as this session
 ///    shows it, is the reference's `sop_instance_uid`, in index order
-///    (`Matcher::SopInstanceUid`). A masked session shows masked UIDs, so
+///    (`Matcher::SopInstanceUid`), **unless** more than
+///    [`PATH_CANDIDATES`] carry it: then the UID is too vague to be
+///    evidence and names none. A masked session shows masked UIDs, so
 ///    a file's real UID finds nothing in it;
 /// 3. by path (`Matcher::Path`): for a relative path, every loaded file
 ///    whose path ends with it (`annotations::PathSuffixes`), so a document
@@ -946,7 +954,9 @@ fn document_file_ref(
 /// The first candidate that passes is `Resolution::Matched`, with its
 /// index as the slot, its settled key, its columns, rows and frame count,
 /// its size in bytes, and the step that found it. When none passes the
-/// answer is `Resolution::Unmatched` when there was no candidate,
+/// answer is `Resolution::Unmatched` when there was no candidate
+/// (`Refusal::Ambiguous`, reported as `file_ambiguous`, when that is
+/// because its path or UID named too many files),
 /// `Refusal::Unverified` when a candidate could not be read, and
 /// `Refusal::EvidenceConflict` otherwise. The adapter refuses a matched
 /// file whose size differs.
@@ -970,21 +980,25 @@ fn document_file_ref(
 /// An annotation whose `extensions` hold an `embed` member of the shape
 /// an export writes was a row of one of several files with the same bytes
 /// ([`export_native`], step 8). The member has that shape when it is an
-/// object with exactly one of `row_of` (a string) and `copy` (an unsigned
+/// object with exactly one of `row_of` (a string) and `copies` (an unsigned
 /// integer), an `imported` that is a boolean or absent, and no other
 /// member. After the adapter has placed the document, each such record
 /// has that member taken out of its `extensions` and is bound (`Binding`,
 /// through `Write::bindings`), with `imported` as its import mark (`false`
 /// when absent), to:
 ///
-/// - `row_of`: the first file `annotations::PathSuffixes` gives for the
-///   path (none when it names more than [`PATH_CANDIDATES`]) whose settled
-///   key (`FileRegistry::ensure_key`) is the record's key;
-/// - `copy`: the file at that place, counted from 0, among the loaded
-///   files whose settled key is the record's key, in index order. Those
-///   are looked for among the file the record's reference was matched to,
-///   the files that share its SOP Instance UID, and, for a content key,
-///   the files of its size and shape with its digest.
+/// - `row_of`: of the files `annotations::PathSuffixes` gives for the
+///   path (none when it names more than [`PATH_CANDIDATES`]), the first
+///   in the order of their own paths whose settled key
+///   (`FileRegistry::ensure_key`) is the record's key;
+/// - `copies`: the document does not say which copy. The record is bound
+///   to the loaded file with the record's key whose path sorts first
+///   (by `Path`'s ordering, the same in every run, which the order files
+///   are found in is not), and the report counts it as a
+///   `copy_placement_not_kept` loss. The files with the key are looked
+///   for among the file the record's reference was matched to, the files
+///   that share its SOP Instance UID, and, for a content key, the files
+///   of its size and shape with its digest.
 ///
 /// When no loaded file is that copy, the record is left out: it is taken
 /// from `counts.annotations_out` and added to `counts.unmatched`. An
@@ -1149,6 +1163,7 @@ async fn read_native_into_store(
             .map_err(|error| AnnotationError::ImportFailed(error.to_string()))?;
         let mut bindings = HashMap::new();
         let mut copies = HashMap::<FileKey, Vec<usize>>::new();
+        let mut placement_not_kept = 0_u64;
         imported.fragment.annotations.retain_mut(|annotation| {
             let Some((copy, imported_row)) =
                 annotation.extensions.get("embed").and_then(row_binding)
@@ -1161,16 +1176,19 @@ async fn read_native_into_store(
                     .is_ok_and(|key| key == annotation.file)
             };
             let slot = match copy {
-                RowOf::Path(path) => suffixes
-                    .at_most(&path, PATH_CANDIDATES)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .find(has_key),
-                RowOf::Copy(place) => copies
-                    .entry(annotation.file.clone())
-                    .or_insert_with(|| resolver.holders(&annotation.file))
-                    .get(place)
-                    .copied(),
+                RowOf::Path(path) => {
+                    let mut named = suffixes.at_most(&path, PATH_CANDIDATES).unwrap_or_default();
+                    named.sort_by(|a, b| files[*a].path.cmp(&files[*b].path));
+                    named.into_iter().find(has_key)
+                }
+                RowOf::OneOfCopies => {
+                    placement_not_kept += 1;
+                    copies
+                        .entry(annotation.file.clone())
+                        .or_insert_with(|| resolver.holders(&annotation.file))
+                        .first()
+                        .copied()
+                }
             };
             annotation.extensions.remove("embed");
             if let Some(slot) = slot {
@@ -1188,6 +1206,12 @@ async fn read_native_into_store(
                 false
             }
         });
+        imported.report.lose(
+            LossCode::CopyPlacementNotKept,
+            None,
+            placement_not_kept,
+            None,
+        );
         Ok::<_, AnnotationError>((imported, bindings))
     })
     .await
@@ -1275,9 +1299,9 @@ async fn read_native_into_store(
 enum RowOf {
     /// By the path a document gives the file.
     Path(String),
-    /// By its place among the loaded files with those bytes, counted from
-    /// 0 in index order: what a masked document, which holds no path, says.
-    Copy(usize),
+    /// Not said: a masked document, which holds no path, says only that
+    /// the row was on one of several copies.
+    OneOfCopies,
 }
 
 /// What an `embed` extension member of the shape an export writes says,
@@ -1292,9 +1316,12 @@ fn row_binding(value: &serde_json::Value) -> Option<(RowOf, bool)> {
     if object.len() != known {
         return None;
     }
-    let copy = match (object.get("row_of"), object.get("copy")) {
+    let copy = match (object.get("row_of"), object.get("copies")) {
         (Some(path), None) => RowOf::Path(path.as_str()?.to_string()),
-        (None, Some(place)) => RowOf::Copy(usize::try_from(place.as_u64()?).ok()?),
+        (None, Some(count)) => {
+            count.as_u64()?;
+            RowOf::OneOfCopies
+        }
         _ => return None,
     };
     Some((copy, imported))
@@ -1328,6 +1355,11 @@ struct NativeResolver<'a> {
     matched: RefCell<Vec<(usize, FileKey)>>,
     handle: &'a tokio::runtime::Handle,
 }
+
+/// How many candidates imports have compared with a reference.
+#[cfg(test)]
+pub(crate) static CANDIDATE_CHECKS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 
 /// What comparing one candidate with a reference found.
 enum Checked {
@@ -1400,7 +1432,9 @@ impl NativeResolver<'_> {
             .collect()
     }
 
-    /// The loaded files whose settled key is `key`, in index order: the
+    /// The loaded files whose settled key is `key`, in the order of their
+    /// paths, which unlike the order they were found in is the same in
+    /// every run: the
     /// file a reference with that key was matched to, and the files that
     /// share its SOP Instance UID or its bytes.
     fn holders(&self, key: &FileKey) -> Vec<usize> {
@@ -1441,6 +1475,7 @@ impl NativeResolver<'_> {
                 .block_on(self.registry.ensure_key(*index))
                 .is_ok_and(|settled| settled == *key)
         });
+        group.sort_by(|a, b| self.files[*a].path.cmp(&self.files[*b].path));
         group
     }
 
@@ -1478,6 +1513,7 @@ impl FileResolver for NativeResolver<'_> {
     fn resolve(&self, reference: &FileRef) -> Resolution {
         let mut seen = Vec::<usize>::new();
         let mut unreadable = false;
+        let mut vague = false;
         // Compares the candidates of one step, in order, with the
         // reference; the first that passes is the match.
         let mut first = |indexes: &[usize], matcher: Matcher| {
@@ -1489,6 +1525,8 @@ impl FileResolver for NativeResolver<'_> {
                 let Some(file) = self.files.get(*index) else {
                     continue;
                 };
+                #[cfg(test)]
+                CANDIDATE_CHECKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 match self.check(reference, file) {
                     Checked::Passed(key) => {
                         self.matched.borrow_mut().push((*index, key.clone()));
@@ -1523,7 +1561,9 @@ impl FileResolver for NativeResolver<'_> {
             .as_ref()
             .and_then(|uid| self.by_uid.get(uid))
         {
-            if let Some(matched) = first(indexes, Matcher::SopInstanceUid) {
+            if indexes.len() > PATH_CANDIDATES {
+                vague = true;
+            } else if let Some(matched) = first(indexes, Matcher::SopInstanceUid) {
                 return matched;
             }
         }
@@ -1532,9 +1572,13 @@ impl FileResolver for NativeResolver<'_> {
             indexes.sort_unstable();
             indexes
         } else {
-            self.suffixes
-                .at_most(&reference.path, PATH_CANDIDATES)
-                .unwrap_or_default()
+            match self.suffixes.at_most(&reference.path, PATH_CANDIDATES) {
+                Some(indexes) => indexes,
+                None => {
+                    vague = true;
+                    Vec::new()
+                }
+            }
         };
         if let Some(matched) = first(&by_path, Matcher::Path) {
             return matched;
@@ -1545,7 +1589,11 @@ impl FileResolver for NativeResolver<'_> {
             }
         }
         if seen.is_empty() {
-            Resolution::Unmatched
+            if vague {
+                Resolution::Refused(Refusal::Ambiguous)
+            } else {
+                Resolution::Unmatched
+            }
         } else if unreadable {
             Resolution::Refused(Refusal::Unverified)
         } else {
@@ -1929,6 +1977,61 @@ mod tests {
     /// at the one point where it could do harm, after the first has read
     /// the view (empty) and before it writes. The first save must notice,
     /// read again and replace what the second left.
+    /// A UID that thousands of loaded files carry is no evidence of which
+    /// file a reference means: references that name files by it are not
+    /// compared with every one of them. Counted, for 100 references and
+    /// 3,000 files of one UID.
+    #[tokio::test]
+    async fn a_uid_many_files_carry_finds_no_candidates() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/golden-jpeg-baseline-single-frame.dcm");
+        let one = crate::loader::test_entry(&fixture);
+        let dir = tempfile::tempdir().expect("temp dir");
+        let files = (0..3_000)
+            .map(|n| {
+                let mut file = one.clone();
+                file.path = dir.path().join(format!("copy-{n}.dcm"));
+                file.sop_instance_uid = "1.2.3.4".to_string();
+                file
+            })
+            .collect();
+        let registry = FileRegistry::from_files(files);
+        let store = AnnotationStore::loading();
+        let references: Vec<serde_json::Value> = (0..100)
+            .map(|n| {
+                serde_json::json!({
+                    "key": format!("b3:{n:064x}"), "kind": "dicom", "sop_instance_uid": "1.2.3.4",
+                    "path": format!("elsewhere-{n}.dcm"), "size_bytes": 7, "rows": 3,
+                    "columns": 3, "frames": 1, "format": "dicom",
+                })
+            })
+            .collect();
+        let document = serde_json::json!({
+            "format": "dcmview.annotations", "version": "1.0", "files": references,
+        });
+        let path = dir.path().join("document.json");
+        std::fs::write(&path, document.to_string()).expect("write");
+        let source = NativeSource::from_path(&path).expect("source");
+        let before = CANDIDATE_CHECKS.load(Ordering::Relaxed);
+        let report = import_native(&registry, &store, &source, Arc::new(|| true))
+            .await
+            .expect("import");
+        let compared = CANDIDATE_CHECKS.load(Ordering::Relaxed) - before;
+        // Other tests of this binary may compare a few candidates
+        // meanwhile; every file for every reference is 300,000.
+        assert!(
+            compared <= 100 * PATH_CANDIDATES as u64,
+            "{compared} comparisons"
+        );
+        assert_eq!(report.counts.files, 0);
+        let codes: Vec<_> = report
+            .warnings
+            .iter()
+            .map(|warning| (warning.code.as_str(), warning.count))
+            .collect();
+        assert_eq!(codes, [("file_ambiguous", 100)]);
+    }
+
     #[tokio::test]
     async fn of_two_saves_of_one_file_the_one_applied_last_decides_the_whole_view() {
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
