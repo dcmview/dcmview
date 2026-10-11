@@ -7,7 +7,11 @@ before the annotation store is replaced
 
 - `<case>.input.csv` is passed to `--annotations`.
 - `<case>.expected.csv` is what `GET /api/annotations/export.csv` must then
-  return, byte for byte, with rows in any order.
+  return, byte for byte. Rows are sorted by path, in the byte order of the
+  path as written.
+- A `corrected-*` input holds coordinates the import changes on load (a
+  negative one becomes 0, one that is not whole is rounded); its expected
+  file holds them as changed.
 - A `rejected-*` input has no expected file: its import fails and export
   answers 500.
 - A `startup-*` input has none either: the process exits before it serves.

@@ -735,13 +735,14 @@ async fn csv_rows_are_shown_as_written_without_a_file_being_read() {
         format!(
             "anon_dicom_path,num_ROI,ROI_coords,ROI_frames\n\
              {},1,\"[[500,600,700,800]]\",\"[[2,0,0]]\"\n\
-             {},1,\"[[1,2,3,4]]\",\"[[2,0,0]]\"\n\
              {},1,\"[[9,9,10,10]]\",[]\n\
+             {},1,\"[[1,2,3,4]]\",\"[[2,0,0]]\"\n\
              {},1,\"[[11,12,13,14]]\",\"[[2,0,0]]\"\n\
              {},1,\"[[21,22,23,24]]\",\"[[2,0,0]]\"\n",
+            // Rows are in path order, not in catalog order.
             path("a.dcm"),
-            path("gone.dcm"),
             path("edited.dcm"),
+            path("gone.dcm"),
             path("shared-first.dcm"),
             path("shared-second.dcm"),
         )
@@ -1105,10 +1106,11 @@ async fn csv_rows_of_a_copy_stay_first_in_its_view() {
         export,
         format!(
             "anon_dicom_path,num_ROI,ROI_coords,ROI_frames\n\
-             {},2,\"[[1,2,3,4],[9,9,12,12]]\",[]\n\
-             {},2,\"[[5,6,7,8],[9,9,12,12]]\",[]\n",
-            dir.path().join("first.dcm").display(),
+             {},2,\"[[5,6,7,8],[9,9,12,12]]\",[]\n\
+             {},2,\"[[1,2,3,4],[9,9,12,12]]\",[]\n",
+            // Rows are in path order, not in catalog order.
             dir.path().join("copy.dcm").display(),
+            dir.path().join("first.dcm").display(),
         )
     );
 }
