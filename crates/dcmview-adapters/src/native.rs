@@ -40,7 +40,12 @@
 //! `Document::from_json_str`:
 //!
 //! - when that reads it and nothing but whitespace follows, the line is
-//!   the document;
+//!   the document, **unless** the line was ended by a line feed and its
+//!   four lists are all empty: that is a JSON Lines header whose lines,
+//!   the end line with them, are missing, and it is
+//!   [`ImportError::Truncated`]. (A document without a record that is not
+//!   followed by a line feed is a document. No export of a session is
+//!   one: a session always has a layer.);
 //! - when that reads it and more follows, the line is a header and the
 //!   rest is record lines, each at most [`crate::limits::MAX_LINE_BYTES`];
 //!   a line of whitespace only is skipped and still counted; the header's
@@ -140,10 +145,26 @@
 //!
 //! An import holds the records it read once, and the text of the document
 //! or of one line at a time while it is read, in a buffer that grows as
-//! it reads: within three times the text's length, which is the bound a
-//! caller can rely on. It looks at each record a fixed number of times and finds a file, a layer and an id through a map, not
-//! by scanning a list for each record. The resolver is asked once for each
-//! file of the input.
+//! it reads. What that comes to depends on the text, because the model
+//! keeps members it does not know, `attributes` and `extensions` as JSON
+//! values, and reads an object that has such members through them:
+//!
+//! - a document a session wrote (rectangles, a few members a record):
+//!   within **five times** the text's length, the records it leaves
+//!   included;
+//! - text made to be costly: up to **44 times** its length while it is
+//!   read. The worst found is an unknown member that is an array of
+//!   one-digit numbers (41 times); a long string holds 8 times, and text
+//!   that is no document less than twice.
+//!
+//! So a JSON document or a first line of the bound's 256 MiB can make the
+//! reader hold about 11 GiB, and one record line of 16 MiB about 0.7 GiB:
+//! the JSON Lines form is the one to use for large or untrusted files.
+//! `tests/raster_cost/annotations.rs` pins these multiples.
+//!
+//! It looks at each record a fixed number of times and finds a file, a
+//! layer and an id through a map, not by scanning a list for each record.
+//! The resolver is asked once for each file of the input.
 
 use crate::adapter::{
     AdapterInfo, Capabilities, Confidence, Directions, ExportAdapter, ExportContext, Fragment,
@@ -505,21 +526,30 @@ fn read_line(
     buffer: &mut Vec<u8>,
     limit: u64,
     bound: Bound,
-) -> Result<bool, ImportError> {
+) -> Result<Option<LineEnd>, ImportError> {
     buffer.clear();
     let count = reader
         .take(limit + 1)
         .read_until(b'\n', buffer)
         .map_err(import_io)?;
     if count == 0 {
-        return Ok(false);
+        return Ok(None);
     }
     if buffer.last() == Some(&b'\n') {
         buffer.pop();
-    } else if buffer.len() as u64 > limit {
+        return Ok(Some(LineEnd::LineFeed));
+    }
+    if buffer.len() as u64 > limit {
         return Err(ImportError::TooLarge { bound, limit });
     }
-    Ok(true)
+    Ok(Some(LineEnd::Input))
+}
+
+/// What ended a line that was read: a line feed, or the input.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LineEnd {
+    LineFeed,
+    Input,
 }
 
 fn document_error(error: DocumentError, bounds: &Limits) -> ImportError {
@@ -554,14 +584,15 @@ fn read_document(
 ) -> Result<(Document, RecordRows), ImportError> {
     let mut reader = BufReader::new(input);
     let mut buffer = Vec::new();
-    if !read_line(
+    let Some(first_end) = read_line(
         &mut reader,
         &mut buffer,
         bounds.document_bytes,
         Bound::DocumentBytes,
-    )? {
+    )?
+    else {
         return Err(ImportError::Malformed { row: 1 });
-    }
+    };
     if buffer.starts_with(b"\xef\xbb\xbf") {
         buffer.drain(..3);
     }
@@ -599,7 +630,9 @@ fn read_document(
         &mut buffer,
         bounds.line_bytes,
         Bound::LineBytes,
-    )? {
+    )?
+    .is_some()
+    {
         row += 1;
         if buffer.iter().all(u8::is_ascii_whitespace) {
             continue;
@@ -662,6 +695,16 @@ fn read_document(
         }
     }
     if !has_lines {
+        // A line of its own that holds no record is a JSON Lines header
+        // whose lines are missing, the end line with them.
+        if first_end == LineEnd::LineFeed
+            && document.files.is_empty()
+            && document.layers.is_empty()
+            && document.annotations.is_empty()
+            && document.labels.is_empty()
+        {
+            return Err(ImportError::Truncated);
+        }
         rows = document_rows(&document);
     } else if !ended {
         return Err(ImportError::Truncated);

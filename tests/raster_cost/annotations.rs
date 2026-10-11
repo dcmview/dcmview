@@ -557,6 +557,74 @@ mod documents {
         assert_eq!(registry.key_stats().files_hashed, 0);
     }
 
+    /// What reading a document may hold for text that is not a document
+    /// the viewer wrote. The model keeps what it does not know as JSON
+    /// values, and a value costs far more than its text: an unknown member
+    /// that is an array of one-digit numbers holds 41 times its length
+    /// while it is read. A string holds 8 times, and text that is no
+    /// document at all less than twice. The multiples are pinned as
+    /// measured, so that a change that makes one worse is seen, and the
+    /// documentation states them.
+    #[test]
+    fn a_hostile_document_holds_a_bounded_multiple_of_its_text() {
+        use dcmview_adapters::{ImportAdapter, ImportContext, Limits, NativeJson};
+
+        struct None;
+        impl dcmview_adapters::FileResolver for None {}
+        const TEXT: usize = 4 * 1024 * 1024;
+        let filled = |open: &str, item: &str, close: &str| {
+            let count = (TEXT - open.len() - close.len()) / item.len();
+            format!("{open}{}{close}", item.repeat(count))
+        };
+        let head = r#"{"format":"dcmview.annotations","version":"1.0""#;
+        let cases = [
+            (
+                "an unknown member of small numbers",
+                filled(&format!("{head},\"x\":[0"), ",0", "]}"),
+                44,
+            ),
+            (
+                "an unknown member of empty arrays",
+                filled(&format!("{head},\"x\":[[]"), ",[]", "]}"),
+                44,
+            ),
+            (
+                "a first line that is not a document",
+                filled("[0", ",0", "]"),
+                2,
+            ),
+            (
+                "a first line that ends in the middle of a document",
+                filled(&format!("{head},\"x\":[0"), ",0", "\n]}"),
+                44,
+            ),
+            ("one long string", filled("\"", "a", "\""), 9),
+        ];
+        let author = dcmview_annotation::Author::parse("import:native").expect("author");
+        let layer = dcmview_annotation::LayerId::parse("default").expect("layer");
+        let stamp = dcmview_annotation::Timestamp::parse("2026-10-10T08:00:00.000Z").expect("time");
+        for (what, text, allowed) in cases {
+            let context = ImportContext {
+                resolver: &None,
+                schema: Option::None,
+                layer: &layer,
+                author: &author,
+                now: &stamp,
+                keep_going: &|| true,
+                limits: Limits::DEFAULT,
+            };
+            let (result, peak) =
+                heap::peak_during(|| NativeJson.import(&mut text.as_bytes(), &context).map(drop));
+            let _ = result;
+            report(what, peak, text.len() as u64);
+            assert!(
+                peak <= allowed * text.len() as u64,
+                "{what}: {} bytes of text held {peak}",
+                text.len()
+            );
+        }
+    }
+
     /// One row cannot make the reader hold more than a few rows' worth,
     /// whatever its fields claim.
     #[test]

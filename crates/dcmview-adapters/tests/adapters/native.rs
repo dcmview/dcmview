@@ -668,6 +668,10 @@ fn a_native_file_is_read_within_its_bounds() {
     }
 }
 
+fn end_at(lines: &[&str]) -> usize {
+    lines.len() - 1
+}
+
 /// A JSON Lines file that was cut off at a line is not a smaller document:
 /// without its last line, or with one that counts other lines than were
 /// read, nothing of it is taken.
@@ -679,9 +683,8 @@ fn a_json_lines_file_without_its_end_is_refused_whole() {
     let end = lines.len() - 1;
     assert!(lines[end].starts_with("{\"end\":"));
 
-    // Cut off after any line but the last. Only the header alone is still
-    // a whole file: a document without a record.
-    for kept in 2..=end {
+    // Cut off after any line but the last, the header included.
+    for kept in 1..=end {
         let cut = format!("{}\n", lines[..kept].join("\n"));
         assert_eq!(
             import(&pool, &cut).err(),
@@ -689,8 +692,10 @@ fn a_json_lines_file_without_its_end_is_refused_whole() {
             "cut off after line {kept}"
         );
     }
-    let header_only = import(&pool, &format!("{}\n", lines[0])).expect("a header alone");
-    assert_eq!(header_only.fragment, Fragment::default());
+    // The same text with no line feed after it is a JSON document that
+    // holds no record, which no session writes and anyone may.
+    let alone = import(&pool, lines[0]).expect("a document without a record");
+    assert_eq!(alone.fragment, Fragment::default());
 
     // A line was taken out, or put in twice, and the end still counts the
     // lines that were written.
@@ -708,6 +713,23 @@ fn a_json_lines_file_without_its_end_is_refused_whole() {
             row: lines.len() as u64 + 1
         })
     );
+    // An end line holds its four counts and nothing else.
+    for end in [
+        r#"{"end":{"files":3,"layers":4,"annotations":8,"labels":8,"more":0}}"#,
+        r#"{"end":{"files":3,"layers":4,"annotations":8}}"#,
+        r#"{"end":{"files":3,"layers":4,"annotations":8,"labels":"8"}}"#,
+        r#"{"end":{"files":3,"layers":4,"annotations":8,"labels":8},"layer":null}"#,
+    ] {
+        let mut other = lines.clone();
+        other[end_at(&lines)] = end;
+        assert_eq!(
+            import(&pool, &other.join("\n")).err(),
+            Some(ImportError::Malformed {
+                row: lines.len() as u64
+            }),
+            "{end}"
+        );
+    }
     // An end is not a record of a document that has none of its own.
     assert_eq!(
         import(
