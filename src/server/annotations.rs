@@ -51,14 +51,16 @@ use crate::annotations::{
     canonicalize_annotations, common_directory, document_path,
     embed::{replacement_ops, rows_as_creates},
     memory::{now, Checking, ViewCheck, Write},
-    AnnotationBackend, AnnotationIndexMap, AnnotationStore, EmbedRoiAnnotations, ImportStatus,
-    NativeSource, EMBED_IMPORT_AUTHOR,
+    AnnotationBackend, AnnotationIndexMap, AnnotationStore, EmbedRoiAnnotations, FileLookup,
+    ImportStatus, NativeSource, EMBED_IMPORT_AUTHOR, NATIVE_IMPORT_AUTHOR,
 };
 use crate::api::contracts::{AnnotationImportResponse, AnnotationImportState, FileKeyError};
 use crate::types::FileEntry;
 use dcmview_adapters::embed::EmbedRow;
 use dcmview_adapters::{
-    ExportAdapter, ExportContext, ExportError, NativeJson, NativeJsonLines, Report,
+    ExportAdapter, ExportContext, ExportError, FileResolver, ImportAdapter, ImportContext,
+    ImportError, LossCode, Matcher, NativeJson, NativeJsonLines, Refusal, Report, Resolution,
+    Resolved,
 };
 use dcmview_annotation::{
     new_id, ApplyResult, Author, Current, FileKey, FileKind, FileRef, ImageSize, KeyScheme,
@@ -776,8 +778,239 @@ pub async fn import_native(
     source: &NativeSource,
     keep_going: Arc<dyn Fn() -> bool + Send + Sync>,
 ) -> Result<Report, AnnotationError> {
-    let _ = (registry, store, source.path(), keep_going());
-    todo!("ADP1")
+    let result = read_native_into_store(registry, store, source, keep_going).await;
+    match result {
+        Ok(report) => {
+            let finish = store
+                .record_import_report(report.clone())
+                .and_then(|()| store.finish_loading());
+            if finish.is_err() {
+                let error = native_store_failure();
+                store
+                    .fail_loading(error.to_string())
+                    .map_err(|_| native_store_failure())?;
+                return Err(error);
+            }
+            Ok(report)
+        }
+        Err(error) => {
+            store
+                .fail_loading(error.to_string())
+                .map_err(|_| native_store_failure())?;
+            Err(error)
+        }
+    }
+}
+
+fn native_store_failure() -> AnnotationError {
+    AnnotationError::ImportFailed("the annotation store refused the import: conflict".to_string())
+}
+
+async fn read_native_into_store(
+    registry: &FileRegistry,
+    store: &AnnotationStore,
+    source: &NativeSource,
+    keep_going: Arc<dyn Fn() -> bool + Send + Sync>,
+) -> Result<Report, AnnotationError> {
+    let handle = tokio::runtime::Handle::current();
+    let registry = registry.clone();
+    let backend = store.backend().clone();
+    let source = source.clone();
+    let author = Author::parse(NATIVE_IMPORT_AUTHOR).map_err(|_| native_store_failure())?;
+    let import_author = author.clone();
+    let imported = tokio::task::spawn_blocking(move || {
+        let files = registry.files_snapshot();
+        let base = match common_directory(&files) {
+            Some(base) => base,
+            None => std::env::current_dir().map_err(|error| {
+                AnnotationError::ImportFailed(
+                    ImportError::Io {
+                        kind: error.kind().to_string(),
+                    }
+                    .to_string(),
+                )
+            })?,
+        };
+        let lookup = FileLookup::new(&files, base).map_err(|_| native_store_failure())?;
+        let resolver = NativeResolver {
+            registry: &registry,
+            files: &files,
+            lookup: &lookup,
+            handle: &handle,
+        };
+        let mut file = std::fs::File::open(source.path()).map_err(|error| {
+            AnnotationError::ImportFailed(format!(
+                "the annotations file could not be opened: {}",
+                error.kind()
+            ))
+        })?;
+        let stamp = now();
+        let context = ImportContext {
+            resolver: &resolver,
+            schema: backend.config().schema.as_ref(),
+            layer: backend.default_layer(),
+            author: &import_author,
+            now: &stamp,
+            keep_going: &*keep_going,
+        };
+        NativeJson
+            .import(&mut file, &context)
+            .map_err(|error| AnnotationError::ImportFailed(error.to_string()))
+    })
+    .await
+    .map_err(|_| native_store_failure())??;
+    let dcmview_adapters::Imported {
+        fragment,
+        mut report,
+    } = imported;
+    let dropped = fragment
+        .labels
+        .iter()
+        .filter(|label| {
+            !label.extensions.is_empty()
+                || !label.unknown.is_empty()
+                || label.meta.derived_from.is_some()
+                || label.meta.score.is_some()
+        })
+        .count();
+    report.lose(LossCode::LabelMembersDropped, None, dropped as u64, None);
+    let mut ops = Vec::with_capacity(
+        fragment.layers.len() + fragment.annotations.len() + fragment.labels.len(),
+    );
+    ops.extend(
+        fragment
+            .layers
+            .into_iter()
+            .map(|layer| Op::CreateLayer { layer }),
+    );
+    ops.extend(
+        fragment
+            .annotations
+            .into_iter()
+            .map(|annotation| Op::CreateAnnotation {
+                annotation: Box::new(annotation),
+            }),
+    );
+    ops.extend(fragment.labels.into_iter().map(|label| Op::SetLabel {
+        id: label.id,
+        base_rev: None,
+        target: label.target,
+        field: label.field,
+        layer: label.layer,
+        before: None,
+        after: Some(label.value),
+    }));
+    if !ops.is_empty() {
+        let envelope = OpEnvelope {
+            op_id: new_id(),
+            actor: author.clone(),
+            ts: now(),
+            op: Op::Batch { ops },
+        };
+        let transacted = store
+            .backend()
+            .transact(
+                &envelope,
+                &BTreeMap::<FileKey, ImageSize>::new(),
+                Write {
+                    checking: Checking::AsLoaded,
+                    author: &author,
+                    embed_slot: None,
+                    import: false,
+                    view: None,
+                },
+            )
+            .map_err(|_| native_store_failure())?;
+        match transacted.result {
+            ApplyResult::Ok { .. } => {}
+            ApplyResult::Invalid { violations } => {
+                let code = violations
+                    .first()
+                    .map_or(ViolationCode::TooManyItems, |violation| violation.code);
+                return Err(AnnotationError::ImportFailed(format!(
+                    "the annotation store refused the import: {code:?}"
+                )));
+            }
+            ApplyResult::Conflict { .. } => return Err(native_store_failure()),
+        }
+    }
+    Ok(report)
+}
+
+struct NativeResolver<'a> {
+    registry: &'a FileRegistry,
+    files: &'a [Arc<FileEntry>],
+    lookup: &'a FileLookup,
+    handle: &'a tokio::runtime::Handle,
+}
+
+impl FileResolver for NativeResolver<'_> {
+    fn resolve(&self, reference: &FileRef) -> Resolution {
+        let by_key = |key: &FileKey| {
+            self.registry
+                .file_for_shown_key(key.as_str())
+                .filter(|index| key.scheme() != KeyScheme::Sop || !self.registry.shares_uid(*index))
+        };
+        let candidate = by_key(&reference.key)
+            .map(|index| (index, Matcher::Key))
+            .or_else(|| {
+                reference
+                    .sop_instance_uid
+                    .as_deref()
+                    .and_then(|uid| FileKey::sop(uid).ok())
+                    .and_then(|key| by_key(&key))
+                    .map(|index| (index, Matcher::SopInstanceUid))
+            })
+            .or_else(|| {
+                self.lookup
+                    .indexes(&reference.path)
+                    .into_iter()
+                    .min()
+                    .map(|index| (index, Matcher::Path))
+            });
+        let Some((index, matcher)) = candidate else {
+            return Resolution::Unmatched;
+        };
+        let Some(file) = self.files.get(index) else {
+            return Resolution::Unmatched;
+        };
+        if reference.sop_instance_uid.as_ref().is_some_and(|uid| {
+            !file.sop_instance_uid.is_empty()
+                && uid != &file.sop_instance_uid
+                && self
+                    .registry
+                    .masker()
+                    .is_none_or(|masker| uid != &masker.uid(&file.sop_instance_uid))
+        }) {
+            return Resolution::Refused(Refusal::EvidenceConflict);
+        }
+        let key = match self.handle.block_on(self.registry.ensure_key(index)) {
+            Ok(key) => key,
+            Err(_) => return Resolution::Refused(Refusal::KeyUnavailable),
+        };
+        if let (Some(recorded), Some(digest)) = (
+            reference
+                .digest
+                .as_ref()
+                .filter(|digest| digest.starts_with("b3:")),
+            self.registry
+                .key_status(index)
+                .and_then(|status| status.digest),
+        ) {
+            if recorded != FileKey::blake3(&digest).as_str() {
+                return Resolution::Refused(Refusal::EvidenceConflict);
+            }
+        }
+        Resolution::Matched(
+            Resolved {
+                slot: index,
+                key: Some(key),
+                size: image_size(file),
+                size_bytes: file.size_bytes,
+            },
+            matcher,
+        )
+    }
 }
 
 /// `GET /api/annotations/import`: where the session's `--annotations`

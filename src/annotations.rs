@@ -313,7 +313,6 @@ impl FileLookup {
 
     /// The catalog indexes of the files `path` names, in the order the
     /// files were loaded; empty when it names none.
-    #[cfg_attr(not(test), expect(dead_code, reason = "not called yet"))]
     pub(crate) fn indexes(&self, path: &str) -> Vec<usize> {
         self.targets(path)
             .iter()
