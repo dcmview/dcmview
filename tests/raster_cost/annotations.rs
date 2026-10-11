@@ -557,55 +557,185 @@ mod documents {
         assert_eq!(registry.key_stats().files_hashed, 0);
     }
 
-    /// What reading a document may hold for text that is not a document
-    /// the viewer wrote. The model keeps what it does not know as JSON
-    /// values, and a value costs far more than its text: an unknown member
-    /// that is an array of one-digit numbers holds 41 times its length
-    /// while it is read. A string holds 8 times, and text that is no
-    /// document at all less than twice. The multiples are pinned as
-    /// measured, so that a change that makes one worse is seen, and the
-    /// documentation states them.
+    /// Whatever a document is made of, reading it holds at most
+    /// `MULTIPLE` times its text and `CONSTANT` bytes, because one unit
+    /// of it holds a bounded number of JSON values and the values kept as
+    /// they were read are bounded by the text
+    /// (`dcmview_adapters::native`, "Cost"). A text of several megabytes
+    /// is held to the multiple alone, and a small text that is one record
+    /// of as many values as a unit may hold to the constant alone. The shapes are the ones that
+    /// cost the most for their length: values of one or two bytes, in
+    /// members the model keeps, reads and ignores; nesting; empty objects;
+    /// the same member again and again; and one line as long as a line
+    /// may be.
     #[test]
     fn a_hostile_document_holds_a_bounded_multiple_of_its_text() {
         use dcmview_adapters::{ImportAdapter, ImportContext, Limits, NativeJson};
 
-        struct None;
-        impl dcmview_adapters::FileResolver for None {}
-        const TEXT: usize = 4 * 1024 * 1024;
-        let filled = |open: &str, item: &str, close: &str| {
-            let count = (TEXT - open.len() - close.len()) / item.len();
+        const MULTIPLE: u64 = 9;
+        const CONSTANT: u64 = 64 * 1024 * 1024;
+        const TEXT: usize = 8 * 1024 * 1024;
+
+        struct Any;
+        impl dcmview_adapters::FileResolver for Any {
+            fn resolve(&self, file: &dcmview_annotation::FileRef) -> dcmview_adapters::Resolution {
+                dcmview_adapters::Resolution::Matched(
+                    dcmview_adapters::Resolved {
+                        slot: 0,
+                        key: Some(file.key.clone()),
+                        size: dcmview_annotation::ImageSize {
+                            columns: file.columns,
+                            rows: file.rows,
+                            frames: file.frames,
+                        },
+                        size_bytes: file.size_bytes,
+                    },
+                    dcmview_adapters::Matcher::Key,
+                )
+            }
+        }
+        let head = r#""format":"dcmview.annotations","version":"1.0""#;
+        let file = r#"{"key":"sop:1.2.3","kind":"dicom","sop_instance_uid":"1.2.3","path":"a.dcm","size_bytes":1,"rows":4096,"columns":4096,"frames":4,"format":"dicom"}"#;
+        // A record with `more` put before its closing brace.
+        let record = |n: usize, geometry: &str, more: &str| {
+            format!(
+                r#"{{"id":"0199c0de-0000-7000-8000-{n:012x}","file":"sop:1.2.3","frames":"all","layer":"default","class":"roi","geometry":{geometry},"attributes":{{}},"extensions":{{}},"rev":1,"created_by":"user:a","created_at":"2026-10-10T08:00:00.000Z","modified_by":"user:a","modified_at":"2026-10-10T08:00:00.000Z"{more}}}"#
+            )
+        };
+        let rect = r#"{"type":"rect","x0":1,"y0":1,"x1":2,"y1":2}"#;
+        // Records until the text is `TEXT` long, in both forms.
+        let both = |what: &str, make: &dyn Fn(usize) -> String| {
+            let mut records = Vec::new();
+            let mut length = 0;
+            while length < TEXT {
+                let record = make(records.len());
+                length += record.len();
+                records.push(record);
+            }
+            let json = format!(
+                r#"{{{head},"files":[{file}],"layers":[],"annotations":[{}]}}"#,
+                records.join(",")
+            );
+            let mut lines = format!("{{{head}}}\n{{\"file\":{file}}}\n");
+            for record in &records {
+                lines.push_str(&format!("{{\"annotation\":{record}}}\n"));
+            }
+            lines.push_str(&format!(
+                "{{\"end\":{{\"files\":1,\"layers\":0,\"annotations\":{},\"labels\":0}}}}\n",
+                records.len()
+            ));
+            vec![
+                (format!("{what}, JSON"), json),
+                (format!("{what}, JSON Lines"), lines),
+            ]
+        };
+        let filled = |open: &str, item: &str, close: &str, length: usize| {
+            let count = (length - open.len() - close.len()) / item.len();
             format!("{open}{}{close}", item.repeat(count))
         };
-        let head = r#"{"format":"dcmview.annotations","version":"1.0""#;
-        let cases = [
+        let zeros = |count: usize| filled("[0", ",0", "]", 2 * count + 1);
+        let mut cases = Vec::new();
+        // In the header, where everything is one unit.
+        for (what, member) in [
             (
                 "an unknown member of small numbers",
-                filled(&format!("{head},\"x\":[0"), ",0", "]}"),
-                44,
+                filled("[0", ",0", "]", TEXT),
             ),
             (
-                "an unknown member of empty arrays",
-                filled(&format!("{head},\"x\":[[]"), ",[]", "]}"),
-                44,
+                "an unknown member of empty objects",
+                filled("[{}", ",{}", "]", TEXT),
             ),
             (
-                "a first line that is not a document",
-                filled("[0", ",0", "]"),
-                2,
+                "an unknown member of empty strings",
+                filled("[\"\"", ",\"\"", "]", TEXT),
             ),
             (
-                "a first line that ends in the middle of a document",
-                filled(&format!("{head},\"x\":[0"), ",0", "\n]}"),
-                44,
+                "extensions of small numbers",
+                filled("{\"x\":[0", ",0", "]}", TEXT),
             ),
-            ("one long string", filled("\"", "a", "\""), 9),
+            (
+                "a member again and again",
+                filled("0", r#","x":0"#, "", TEXT),
+            ),
+            ("one long string", filled("\"", "a", "\"", TEXT)),
+            (
+                "nesting",
+                format!("{}{}", "[".repeat(TEXT / 2), "]".repeat(TEXT / 2)),
+            ),
+        ] {
+            let name = if what.starts_with("extensions") {
+                "extensions"
+            } else {
+                "x"
+            };
+            cases.push((
+                format!("{what}, in the header"),
+                format!(r#"{{{head},"{name}":{member}}}"#),
+            ));
+        }
+        // In records: as many kept values as the text allows and more,
+        // members the model reads, members it ignores, and the largest
+        // single record.
+        cases.extend(both("records that keep 20 values each", &|n| {
+            record(n, rect, &format!(r#","x":{}"#, zeros(20)))
+        }));
+        cases.extend(both("records that keep 200 values each", &|n| {
+            record(n, rect, &format!(r#","x":{}"#, zeros(200)))
+        }));
+        cases.extend(both("records with a member again and again", &|n| {
+            record(n, rect, &r#","x":0"#.repeat(50))
+        }));
+        cases.extend(both("polygons of 1,000 points", &|n| {
+            let points = filled("[[0,0]", ",[0,0]", "]", 6 * 1000);
+            record(n, &format!(r#"{{"type":"polygon","points":{points}}}"#), "")
+        }));
+        cases.extend(both("geometry with members it ignores", &|n| {
+            let geometry = format!(
+                r#"{{"type":"rect","x0":1,"y0":1,"x1":2,"y1":2,"more":{}}}"#,
+                zeros(1000)
+            );
+            record(n, &geometry, "")
+        }));
+        cases.extend(both("frame lists of 60,000 frames", &|n| {
+            record(n, rect, "").replace(
+                r#""frames":"all""#,
+                &format!(r#""frames":{}"#, zeros(60_000)),
+            )
+        }));
+        cases.extend(both("a record of as many values as a unit holds", &|n| {
+            record(n, rect, &format!(r#","x":{}"#, zeros(520_000)))
+        }));
+        cases.extend(both("a record as long as a line may be", &|n| {
+            record(
+                n,
+                rect,
+                &format!(r#","x":{}"#, filled("\"", "a", "\"", 15 * 1024 * 1024)),
+            )
+        }));
+
+        // One record of as many values as a unit holds, and nothing else.
+        let largest = record(0, rect, &format!(r#","x":{}"#, zeros(520_000)));
+        let alone = vec![
+            (
+                "the largest record alone, JSON".to_string(),
+                format!(r#"{{{head},"files":[{file}],"layers":[],"annotations":[{largest}]}}"#),
+            ),
+            (
+                "the largest record alone, JSON Lines".to_string(),
+                format!(
+                    "{{{head}}}\n{{\"file\":{file}}}\n{{\"annotation\":{largest}}}\n{{\"end\":{{\"files\":1,\"layers\":0,\"annotations\":1,\"labels\":0}}}}\n"
+                ),
+            ),
         ];
+        let small = alone.len();
+        cases.splice(0..0, alone);
+
         let author = dcmview_annotation::Author::parse("import:native").expect("author");
         let layer = dcmview_annotation::LayerId::parse("default").expect("layer");
         let stamp = dcmview_annotation::Timestamp::parse("2026-10-10T08:00:00.000Z").expect("time");
-        for (what, text, allowed) in cases {
+        for (at, (what, text)) in cases.into_iter().enumerate() {
             let context = ImportContext {
-                resolver: &None,
+                resolver: &Any,
                 schema: Option::None,
                 layer: &layer,
                 author: &author,
@@ -613,12 +743,25 @@ mod documents {
                 keep_going: &|| true,
                 limits: Limits::DEFAULT,
             };
-            let (result, peak) =
-                heap::peak_during(|| NativeJson.import(&mut text.as_bytes(), &context).map(drop));
-            let _ = result;
-            report(what, peak, text.len() as u64);
+            let (result, peak) = heap::peak_during(|| {
+                NativeJson
+                    .import(&mut text.as_bytes(), &context)
+                    .map(|imported| imported.report.counts.annotations_out)
+            });
+            if std::env::var_os("RASTER_COST_REPORT").is_some() {
+                eprintln!(
+                    "{what}: {:.2} times {} bytes, {result:?}",
+                    peak as f64 / text.len() as f64,
+                    text.len()
+                );
+            }
+            let allowed = if at < small {
+                CONSTANT
+            } else {
+                MULTIPLE * text.len() as u64
+            };
             assert!(
-                peak <= allowed * text.len() as u64,
+                peak <= allowed,
                 "{what}: {} bytes of text held {peak}",
                 text.len()
             );

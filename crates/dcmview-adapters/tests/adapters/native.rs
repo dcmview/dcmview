@@ -692,10 +692,15 @@ fn a_json_lines_file_without_its_end_is_refused_whole() {
             "cut off after line {kept}"
         );
     }
-    // The same text with no line feed after it is a JSON document that
-    // holds no record, which no session writes and anyone may.
-    let alone = import(&pool, lines[0]).expect("a document without a record");
-    assert_eq!(alone.fragment, Fragment::default());
+    // With or without a line feed after it: a text on one line that
+    // holds no record is a header, and a header alone is cut off.
+    assert_eq!(import(&pool, lines[0]).err(), Some(ImportError::Truncated));
+    // A document without a record, written over several lines, is one.
+    let empty = "{\n\"format\": \"dcmview.annotations\",\n\"version\": \"1.0\"\n}\n";
+    assert_eq!(
+        import(&pool, empty).expect("no record").fragment,
+        Fragment::default()
+    );
 
     // A line was taken out, or put in twice, and the end still counts the
     // lines that were written.
@@ -890,6 +895,127 @@ fn documents_are_read_and_written_within_the_bounds_handed_over() {
             within(&|limits| limits.line_bytes = longest - 1)
         ),
         Err(too_large(Bound::LineBytes, longest - 1))
+    );
+}
+
+/// Whatever a document is made of, reading it is held to budgets that are
+/// checked before a value is parsed: the JSON values of one record, or of
+/// everything that is not a record; how deep values nest; and how many
+/// values the records keep as they found them for the length of the text.
+#[test]
+fn a_document_is_held_to_its_value_budgets() {
+    let pool = pool();
+    let document = fixture();
+    let session = Session::new(document.schema.clone());
+    let (json_text, _) = export(&NativeJson, &document);
+    let (lines_text, _) = export(&NativeJsonLines, &document);
+    let read_in = |session: &Session, text: &str, change: &dyn Fn(&mut Limits)| {
+        let mut context = session.context(&pool);
+        change(&mut context.limits);
+        NativeJson
+            .import(&mut text.as_bytes(), &context)
+            .map(|imported| imported.report.counts.annotations_out)
+    };
+    let read = |text: &str, change: &dyn Fn(&mut Limits)| read_in(&session, text, change);
+    let too_large = |bound, limit| ImportError::TooLarge { bound, limit };
+    // The smallest budget each form of the fixture is read within.
+    let least = |text: &str, change: &dyn Fn(&mut Limits, u64)| {
+        (0..100_000_u64)
+            .find(|limit| read(text, &|limits| change(limits, *limit)).is_ok())
+            .expect("a budget the fixture fits")
+    };
+    for (form, text) in [("JSON", &json_text), ("JSON Lines", &lines_text)] {
+        let unit = least(text, &|limits, limit| limits.unit_values = limit);
+        assert!((20..5_000).contains(&unit), "{form}: {unit}");
+        assert_eq!(
+            read(text, &|limits| limits.unit_values = unit - 1),
+            Err(too_large(Bound::UnitValues, unit - 1)),
+            "{form}"
+        );
+    }
+
+    // One record with more values than a unit may hold, wherever they are:
+    // in a member the model keeps, in one it reads, in one it ignores.
+    let plain = Session::new(None);
+    let many = "0,".repeat(600);
+    let hostile = [
+        format!(r#""more":{{"x":[{many}0]}}"#),
+        format!(r#""unknown":[{many}0]"#),
+        format!(r#""also":[{}{{}}]"#, "{},".repeat(600)),
+        format!(
+            r#""again":{{{}"z":0}}"#,
+            (0..300)
+                .map(|n| format!(r#""a{n}":0,"#))
+                .collect::<String>()
+        ),
+    ];
+    for member in &hostile {
+        let member: Value = serde_json::from_str(&format!("{{{member}}}")).expect("a member");
+        let (name, value) = member
+            .as_object()
+            .and_then(|members| members.iter().next())
+            .expect("one member");
+        // In a record.
+        let mut annotation = record(1, "default", json!("all"), rect(1.0, 1.0, 2.0, 2.0));
+        annotation[name.as_str()] = value.clone();
+        let text = small(json!([]), vec![annotation]);
+        assert_eq!(
+            read_in(&plain, &text, &|limits| limits.unit_values = 500),
+            Err(too_large(Bound::UnitValues, 500)),
+            "{name}"
+        );
+        // And beside the lists, where it is the header's.
+        let mut document: Value =
+            serde_json::from_str(&small(json!([]), vec![])).expect("a document");
+        document[name.as_str()] = value.clone();
+        assert_eq!(
+            read_in(&plain, &document.to_string(), &|limits| limits
+                .unit_values =
+                500),
+            Err(too_large(Bound::UnitValues, 500)),
+            "{name}, in the header"
+        );
+    }
+    // Many records of few values each are not one unit, and what they
+    // keep is counted against the text: 40 kept values a record of some
+    // 450 bytes is more than a value for every 16 bytes.
+    let kept: Vec<Value> = (0..200)
+        .map(|n| {
+            let mut annotation = record(n, "default", json!("all"), rect(1.0, 1.0, 2.0, 2.0));
+            annotation["extensions"] = json!({ "x": vec![0; 40] });
+            annotation
+        })
+        .collect();
+    let text = small(json!([]), kept);
+    assert_eq!(
+        read_in(&plain, &text, &|limits| {
+            limits.unit_values = 500;
+            limits.kept_values = 64;
+        }),
+        Err(too_large(Bound::KeptValues, 64))
+    );
+    assert_eq!(
+        read_in(&plain, &text, &|limits| limits.unit_values = 500),
+        Ok(200)
+    );
+
+    // Nesting past the bound is not read.
+    let nested = |depth: usize| {
+        let mut annotation = record(1, "default", json!("all"), rect(1.0, 1.0, 2.0, 2.0));
+        let value: Value =
+            serde_json::from_str(&format!("{}{}", "[".repeat(depth), "]".repeat(depth)))
+                .expect("nested arrays");
+        annotation["extensions"] = json!({ "x": value });
+        small(json!([]), vec![annotation])
+    };
+    assert_eq!(read_in(&plain, &nested(40), &|_| ()), Ok(1));
+    assert_eq!(
+        read_in(&plain, &nested(70), &|_| ()),
+        Err(ImportError::Malformed { row: 1 })
+    );
+    assert_eq!(
+        read_in(&plain, &nested(40), &|limits| limits.depth = 16),
+        Err(ImportError::Malformed { row: 1 })
     );
 }
 

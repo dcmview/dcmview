@@ -54,6 +54,29 @@ pub const MAX_FILES: usize = 1_048_576;
 /// Most annotations and labels together one native import reads: 1,048,576.
 pub const MAX_RECORDS: usize = 1_048_576;
 
+/// Most JSON values one unit of a native document may hold: 524,288. A
+/// unit is one record (a file, layer, annotation or label), or everything
+/// of a document that is not one of its records (its header). A value is
+/// an object, an array, a string (a member's name included), a number,
+/// `true`, `false` or `null`. A polygon of the model's 100,000 points is
+/// 300,003 values. It bounds what reading one unit holds beside its text,
+/// whatever the text is made of.
+pub const MAX_UNIT_VALUES: u64 = 524_288;
+
+/// Deepest nesting of arrays and objects in a native document: 64.
+pub const MAX_DEPTH: u32 = 64;
+
+/// How many JSON values a native import keeps as it found them (in
+/// `extensions` and in members this version does not know, of every file,
+/// layer, annotation and label) before the text read so far has to
+/// account for them: 65,536. Past these, one value for every
+/// [`KEPT_VALUE_BYTES`] bytes read.
+pub const MAX_KEPT_VALUES: u64 = 65_536;
+
+/// Bytes of text that allow one more kept value: 16. A record a session
+/// writes has one kept value for over a hundred bytes.
+pub const KEPT_VALUE_BYTES: u64 = 16;
+
 /// How many row references one entry of a `Report` keeps: the first 16. The
 /// entry's `count` still counts every occurrence.
 pub const MAX_REPORT_ROWS: usize = 16;
@@ -84,6 +107,14 @@ pub struct Limits {
     pub files: usize,
     /// [`MAX_RECORDS`].
     pub records: usize,
+    /// [`MAX_UNIT_VALUES`].
+    pub unit_values: u64,
+    /// [`MAX_DEPTH`].
+    pub depth: u32,
+    /// [`MAX_KEPT_VALUES`].
+    pub kept_values: u64,
+    /// [`KEPT_VALUE_BYTES`].
+    pub kept_value_bytes: u64,
 }
 
 impl Limits {
@@ -98,6 +129,10 @@ impl Limits {
         line_bytes: MAX_LINE_BYTES,
         files: MAX_FILES,
         records: MAX_RECORDS,
+        unit_values: MAX_UNIT_VALUES,
+        depth: MAX_DEPTH,
+        kept_values: MAX_KEPT_VALUES,
+        kept_value_bytes: KEPT_VALUE_BYTES,
     };
 }
 
