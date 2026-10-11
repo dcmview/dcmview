@@ -307,9 +307,10 @@ pub fn check_header(input: &mut dyn Read) -> Result<(), ImportError> {
 /// The adapter is [`EMBED_ADAPTER_ID`] version 1, the direction import.
 /// `counts.unmatched` is the rows that named no file;
 /// `matched_by.path` the rows that named one; `counts.annotations_in` the
-/// boxes of those rows; `counts.files` the files that were given boxes and
-/// `counts.annotations_out` the boxes they were given (a row that names
-/// two files gives its boxes to both).
+/// boxes of those rows; `counts.files` the files those rows named (a file
+/// is counted for a row without a box too) and `counts.annotations_out`
+/// the boxes they were given (a row that names two files gives its boxes
+/// to both).
 ///
 /// # Bounds and cost
 ///
