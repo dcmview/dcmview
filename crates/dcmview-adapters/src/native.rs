@@ -132,13 +132,19 @@
 //! file of the input.
 
 use crate::adapter::{
-    AdapterInfo, Capabilities, Confidence, Directions, ExportAdapter, ExportContext, ImportAdapter,
-    ImportContext, Imported,
+    AdapterInfo, Capabilities, Confidence, Directions, ExportAdapter, ExportContext, Fragment,
+    ImportAdapter, ImportContext, Imported, Matcher, Refusal, Resolution,
 };
-use crate::error::{ExportError, ImportError};
-use crate::report::Report;
-use dcmview_annotation::{Document, GeometryType};
-use std::io::{Read, Write};
+use crate::error::{Bound, ExportError, ImportError};
+use crate::limits;
+use crate::report::{AdapterRef, Direction, Report, RowRef, WarningCode};
+use dcmview_annotation::{
+    Annotation, Context, Document, DocumentError, FileKey, FileRef, FrameScope, Geometry,
+    GeometryType, ImageSize, Invalid, Label, LabelSchema, LabelTarget, Layer, ViolationCode,
+};
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
+use std::io::{BufRead, BufReader, Read, Write};
 
 /// The id of the native JSON adapter.
 pub const NATIVE_ADAPTER_ID: &str = "native";
@@ -199,8 +205,18 @@ impl ExportAdapter for NativeJson {
         context: &ExportContext<'_>,
         out: &mut dyn Write,
     ) -> Result<Report, ExportError> {
-        let _ = (document, context.max_bytes, out);
-        todo!("ADP1")
+        let limit = context.max_bytes.min(limits::MAX_DOCUMENT_BYTES);
+        let mut writer = LimitedWriter {
+            out,
+            remaining: limit,
+            exceeded: false,
+        };
+        let result = serde_json::to_writer(&mut writer, document).map_err(json_export_error);
+        if writer.exceeded {
+            return Err(ExportError::TooLarge { limit });
+        }
+        result?;
+        Ok(export_report(document, NATIVE_ADAPTER_ID))
     }
 }
 
@@ -214,8 +230,16 @@ impl ImportAdapter for NativeJson {
     /// holds the bytes `"dcmview.annotations"` (with the quotes), else
     /// [`Confidence::Possible`].
     fn sniff(&self, head: &[u8]) -> Confidence {
-        let _ = head;
-        todo!("ADP1")
+        if head.iter().find(|byte| !byte.is_ascii_whitespace()) != Some(&b'{') {
+            Confidence::None
+        } else if head
+            .windows(b"\"dcmview.annotations\"".len())
+            .any(|window| window == b"\"dcmview.annotations\"")
+        {
+            Confidence::Certain
+        } else {
+            Confidence::Possible
+        }
     }
 
     /// Reads a native document in either form, by the module
@@ -226,8 +250,8 @@ impl ImportAdapter for NativeJson {
         input: &mut dyn Read,
         context: &ImportContext<'_>,
     ) -> Result<Imported, ImportError> {
-        let _ = (input, context.layer);
-        todo!("ADP1")
+        let (document, rows) = read_document(input)?;
+        place_document(document, rows, context)
     }
 }
 
@@ -263,7 +287,536 @@ impl ExportAdapter for NativeJsonLines {
         context: &ExportContext<'_>,
         out: &mut dyn Write,
     ) -> Result<Report, ExportError> {
-        let _ = (document, context.max_bytes, out);
-        todo!("ADP1")
+        let header = Document {
+            format: document.format.clone(),
+            version: document.version.clone(),
+            schema: document.schema.clone(),
+            extensions: document.extensions.clone(),
+            unknown: document.unknown.clone(),
+            files: Vec::new(),
+            layers: Vec::new(),
+            annotations: Vec::new(),
+            labels: Vec::new(),
+        };
+        let mut writer = LimitedWriter {
+            out,
+            remaining: context.max_bytes,
+            exceeded: false,
+        };
+        let result = (|| {
+            write_line(&mut writer, &header)?;
+            for file in &document.files {
+                write_line(&mut writer, &OutputLine::File(file))?;
+            }
+            for layer in &document.layers {
+                write_line(&mut writer, &OutputLine::Layer(layer))?;
+            }
+            for annotation in &document.annotations {
+                write_line(&mut writer, &OutputLine::Annotation(annotation))?;
+            }
+            for label in &document.labels {
+                write_line(&mut writer, &OutputLine::Label(label))?;
+            }
+            Ok(())
+        })();
+        if writer.exceeded {
+            return Err(ExportError::TooLarge {
+                limit: context.max_bytes,
+            });
+        }
+        result?;
+        Ok(export_report(document, NATIVE_JSONL_ADAPTER_ID))
+    }
+}
+
+struct LimitedWriter<'a> {
+    out: &'a mut dyn Write,
+    remaining: u64,
+    exceeded: bool,
+}
+impl Write for LimitedWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if bytes.len() as u64 > self.remaining {
+            self.exceeded = true;
+            return Err(std::io::ErrorKind::Other.into());
+        }
+        let written = self.out.write(bytes)?;
+        self.remaining -= written as u64;
+        Ok(written)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.out.flush()
+    }
+}
+
+fn json_export_error(error: serde_json::Error) -> ExportError {
+    ExportError::Io {
+        kind: error
+            .io_error_kind()
+            .unwrap_or(std::io::ErrorKind::Other)
+            .to_string(),
+    }
+}
+
+fn export_report(document: &Document, id: &str) -> Report {
+    let mut report = Report::new(
+        AdapterRef {
+            id: id.to_string(),
+            version: 1,
+        },
+        Direction::Export,
+    );
+    report.counts.files = document.files.len() as u64;
+    report.counts.annotations_in = document.annotations.len() as u64;
+    report.counts.annotations_out = report.counts.annotations_in;
+    report.counts.labels_in = document.labels.len() as u64;
+    report.counts.labels_out = report.counts.labels_in;
+    report
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+enum OutputLine<'a> {
+    File(&'a FileRef),
+    Layer(&'a Layer),
+    Annotation(&'a Annotation),
+    Label(&'a Label),
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum InputLine {
+    File(FileRef),
+    Layer(Layer),
+    Annotation(Annotation),
+    Label(Label),
+}
+
+fn write_line(writer: &mut dyn Write, value: &impl Serialize) -> Result<(), ExportError> {
+    serde_json::to_writer(&mut *writer, value).map_err(json_export_error)?;
+    writer.write_all(b"\n").map_err(|error| ExportError::Io {
+        kind: error.kind().to_string(),
+    })
+}
+
+#[derive(Default)]
+struct RecordRows {
+    files: Vec<u64>,
+    layers: Vec<u64>,
+    annotations: Vec<u64>,
+    labels: Vec<u64>,
+}
+
+fn import_io(error: std::io::Error) -> ImportError {
+    ImportError::Io {
+        kind: error.kind().to_string(),
+    }
+}
+
+fn read_line(
+    reader: &mut impl BufRead,
+    buffer: &mut Vec<u8>,
+    limit: u64,
+    bound: Bound,
+) -> Result<bool, ImportError> {
+    buffer.clear();
+    let count = reader
+        .take(limit + 1)
+        .read_until(b'\n', buffer)
+        .map_err(import_io)?;
+    if count == 0 {
+        return Ok(false);
+    }
+    if buffer.last() == Some(&b'\n') {
+        buffer.pop();
+    } else if buffer.len() as u64 > limit {
+        return Err(ImportError::TooLarge { bound, limit });
+    }
+    Ok(true)
+}
+
+fn document_error(error: DocumentError) -> ImportError {
+    match error {
+        DocumentError::TooLarge { .. } => ImportError::TooLarge {
+            bound: Bound::DocumentBytes,
+            limit: limits::MAX_DOCUMENT_BYTES,
+        },
+        DocumentError::WrongFormat { .. } => ImportError::WrongFormat,
+        DocumentError::UnsupportedVersion { .. } => ImportError::UnsupportedVersion,
+        DocumentError::Malformed(_) => ImportError::Malformed { row: 1 },
+    }
+}
+
+fn text_at(buffer: &[u8], row: u64) -> Result<&str, ImportError> {
+    std::str::from_utf8(buffer).map_err(|_| ImportError::Malformed { row })
+}
+
+fn document_rows(document: &Document) -> RecordRows {
+    let mut row = 2..;
+    RecordRows {
+        files: row.by_ref().take(document.files.len()).collect(),
+        layers: row.by_ref().take(document.layers.len()).collect(),
+        annotations: row.by_ref().take(document.annotations.len()).collect(),
+        labels: row.take(document.labels.len()).collect(),
+    }
+}
+
+fn read_document(input: &mut dyn Read) -> Result<(Document, RecordRows), ImportError> {
+    let mut reader = BufReader::new(input);
+    let mut buffer = Vec::new();
+    if !read_line(
+        &mut reader,
+        &mut buffer,
+        limits::MAX_DOCUMENT_BYTES,
+        Bound::DocumentBytes,
+    )? {
+        return Err(ImportError::Malformed { row: 1 });
+    }
+    let mut document = match Document::from_json_str(text_at(&buffer, 1)?) {
+        Ok(document) => document,
+        Err(DocumentError::Malformed(_)) => {
+            buffer.push(b'\n');
+            let remaining = limits::MAX_DOCUMENT_BYTES.saturating_sub(buffer.len() as u64);
+            reader
+                .take(remaining + 1)
+                .read_to_end(&mut buffer)
+                .map_err(import_io)?;
+            if buffer.len() as u64 > limits::MAX_DOCUMENT_BYTES {
+                return Err(ImportError::TooLarge {
+                    bound: Bound::DocumentBytes,
+                    limit: limits::MAX_DOCUMENT_BYTES,
+                });
+            }
+            let document = Document::from_json_str(text_at(&buffer, 1)?).map_err(document_error)?;
+            let rows = document_rows(&document);
+            return Ok((document, rows));
+        }
+        Err(error) => return Err(document_error(error)),
+    };
+    // Release the possibly document-sized first line before reading records.
+    drop(buffer);
+    let mut buffer = Vec::new();
+    let mut rows = RecordRows::default();
+    let mut has_lines = false;
+    let mut row = 1;
+    while read_line(
+        &mut reader,
+        &mut buffer,
+        limits::MAX_LINE_BYTES,
+        Bound::LineBytes,
+    )? {
+        row += 1;
+        if buffer.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
+        if !has_lines {
+            if !document.files.is_empty()
+                || !document.layers.is_empty()
+                || !document.annotations.is_empty()
+                || !document.labels.is_empty()
+            {
+                return Err(ImportError::Malformed { row: 1 });
+            }
+            has_lines = true;
+        }
+        let line: InputLine = serde_json::from_str(text_at(&buffer, row)?)
+            .map_err(|_| ImportError::Malformed { row })?;
+        match line {
+            InputLine::File(file) => {
+                check_count(document.files.len() + 1, limits::MAX_FILES, Bound::Files)?;
+                document.files.push(file);
+                rows.files.push(row);
+            }
+            InputLine::Layer(layer) => {
+                if document.layers.len() >= dcmview_annotation::limits::MAX_SCHEMA_ITEMS {
+                    return Err(ImportError::Invalid {
+                        row,
+                        code: ViolationCode::TooManyItems,
+                    });
+                }
+                document.layers.push(layer);
+                rows.layers.push(row);
+            }
+            InputLine::Annotation(annotation) => {
+                check_count(
+                    document.annotations.len() + document.labels.len() + 1,
+                    limits::MAX_RECORDS,
+                    Bound::Records,
+                )?;
+                document.annotations.push(annotation);
+                rows.annotations.push(row);
+            }
+            InputLine::Label(label) => {
+                check_count(
+                    document.annotations.len() + document.labels.len() + 1,
+                    limits::MAX_RECORDS,
+                    Bound::Records,
+                )?;
+                document.labels.push(label);
+                rows.labels.push(row);
+            }
+        }
+    }
+    if !has_lines {
+        rows = document_rows(&document);
+    }
+    Ok((document, rows))
+}
+
+fn check_count(count: usize, limit: usize, bound: Bound) -> Result<(), ImportError> {
+    if count > limit {
+        Err(ImportError::TooLarge {
+            bound,
+            limit: limit as u64,
+        })
+    } else {
+        Ok(())
+    }
+}
+
+fn invalid_at(row: u64, invalid: Invalid) -> ImportError {
+    ImportError::Invalid {
+        row,
+        code: invalid
+            .violations
+            .first()
+            .map_or(ViolationCode::TooManyItems, |violation| violation.code),
+    }
+}
+
+enum Placement {
+    Matched(FileKey, ImageSize),
+    Unmatched,
+    Refused,
+}
+
+fn place_document(
+    document: Document,
+    rows: RecordRows,
+    context: &ImportContext<'_>,
+) -> Result<Imported, ImportError> {
+    check_count(document.files.len(), limits::MAX_FILES, Bound::Files)?;
+    check_count(
+        document.annotations.len() + document.labels.len(),
+        limits::MAX_RECORDS,
+        Bound::Records,
+    )?;
+    let mut report = Report::new(
+        AdapterRef {
+            id: NATIVE_ADAPTER_ID.to_string(),
+            version: 1,
+        },
+        Direction::Import,
+    );
+    if document.schema.is_some() && document.schema.as_ref() != context.schema {
+        report.warn(WarningCode::SchemaNotApplied, RowRef { row: 1, roi: None });
+    }
+    let implicit = LabelSchema::implicit();
+    let schema = context.schema.unwrap_or(&implicit);
+    let mut files = HashMap::new();
+    for (file, row) in document.files.into_iter().zip(rows.files) {
+        file.validate().map_err(|error| invalid_at(row, error))?;
+        if files.contains_key(&file.key) {
+            return Err(ImportError::Invalid {
+                row,
+                code: ViolationCode::DuplicateFileKey,
+            });
+        }
+        let at = RowRef { row, roi: None };
+        let placement = match context.resolver.resolve(&file) {
+            Resolution::Unmatched => {
+                report.warn(WarningCode::FileUnmatched, at);
+                Placement::Unmatched
+            }
+            Resolution::Refused(reason) => {
+                report.warn(
+                    match reason {
+                        Refusal::EvidenceConflict => WarningCode::EvidenceConflict,
+                        Refusal::KeyUnavailable => WarningCode::KeyUnavailable,
+                    },
+                    at,
+                );
+                Placement::Refused
+            }
+            Resolution::Matched(target, matcher) => {
+                if file.size() != target.size {
+                    report.warn(WarningCode::SizeMismatch, at);
+                    Placement::Refused
+                } else if let Some(key) = target.key {
+                    report.counts.files += 1;
+                    if let Some(matched) = &mut report.matched_by {
+                        match matcher {
+                            Matcher::Key => matched.key += 1,
+                            Matcher::SopInstanceUid => matched.sop_instance_uid += 1,
+                            Matcher::Path => matched.path += 1,
+                        }
+                    }
+                    if file.size_bytes != target.size_bytes {
+                        report.warn(WarningCode::FileSizeDiffers, at);
+                    }
+                    Placement::Matched(key, target.size)
+                } else {
+                    report.warn(WarningCode::KeyUnavailable, at);
+                    Placement::Refused
+                }
+            }
+        };
+        files.insert(file.key, placement);
+    }
+    let mut fragment = Fragment::default();
+    let mut layers = HashSet::new();
+    for (i, (layer, row)) in document.layers.into_iter().zip(rows.layers).enumerate() {
+        if i >= dcmview_annotation::limits::MAX_SCHEMA_ITEMS {
+            return Err(ImportError::Invalid {
+                row,
+                code: ViolationCode::TooManyItems,
+            });
+        }
+        layer.validate().map_err(|error| invalid_at(row, error))?;
+        if !layers.insert(layer.id.clone()) {
+            return Err(ImportError::Invalid {
+                row,
+                code: ViolationCode::DuplicateId,
+            });
+        }
+        if &layer.id != context.layer {
+            fragment.layers.push(layer);
+        }
+    }
+    layers.insert(context.layer.clone());
+    let mut ids = HashSet::new();
+    for (mut annotation, row) in document.annotations.into_iter().zip(rows.annotations) {
+        if !(context.keep_going)() {
+            return Err(ImportError::Cancelled);
+        }
+        report.counts.annotations_in += 1;
+        let Some((key, size)) = placed_file(&files, &annotation.file, row, &mut report)? else {
+            continue;
+        };
+        annotation.file = key.clone();
+        if !layers.contains(&annotation.layer) {
+            return Err(ImportError::Invalid {
+                row,
+                code: ViolationCode::UnknownLayer,
+            });
+        }
+        if !ids.insert(annotation.id) {
+            return Err(ImportError::Invalid {
+                row,
+                code: ViolationCode::DuplicateId,
+            });
+        }
+        annotation.geometry = annotation.geometry.quantized();
+        let sizes = |candidate: &FileKey| (candidate == key).then_some(size);
+        if let Err(error) = annotation.validate(&Context {
+            files: &sizes,
+            schema,
+        }) {
+            if !matches!(annotation.geometry, Geometry::Rect { .. })
+                || !error.violations.iter().all(|violation| {
+                    matches!(
+                        violation.code,
+                        ViolationCode::OutOfBounds
+                            | ViolationCode::Degenerate
+                            | ViolationCode::FramesEmpty
+                    )
+                })
+            {
+                return Err(invalid_at(row, error));
+            }
+            report_box(&mut report, &annotation, size, row);
+        }
+        report.counts.annotations_out += 1;
+        fragment.annotations.push(annotation);
+    }
+    let mut ids = HashSet::new();
+    for (mut label, row) in document.labels.into_iter().zip(rows.labels) {
+        if !(context.keep_going)() {
+            return Err(ImportError::Cancelled);
+        }
+        report.counts.labels_in += 1;
+        let matched = match &mut label.target {
+            LabelTarget::File { file } | LabelTarget::Frame { frame: file, .. } => {
+                let Some((key, size)) = placed_file(&files, file, row, &mut report)? else {
+                    continue;
+                };
+                *file = key.clone();
+                Some((key, size))
+            }
+            _ => None,
+        };
+        if !layers.contains(&label.layer) {
+            return Err(ImportError::Invalid {
+                row,
+                code: ViolationCode::UnknownLayer,
+            });
+        }
+        if !ids.insert(label.id) {
+            return Err(ImportError::Invalid {
+                row,
+                code: ViolationCode::DuplicateId,
+            });
+        }
+        let sizes = |candidate: &FileKey| {
+            matched.and_then(|(key, size)| (candidate == key).then_some(size))
+        };
+        label
+            .validate(&Context {
+                files: &sizes,
+                schema,
+            })
+            .map_err(|error| invalid_at(row, error))?;
+        report.counts.labels_out += 1;
+        fragment.labels.push(label);
+    }
+    Ok(Imported { fragment, report })
+}
+
+fn placed_file<'a>(
+    files: &'a HashMap<FileKey, Placement>,
+    file: &FileKey,
+    row: u64,
+    report: &mut Report,
+) -> Result<Option<(&'a FileKey, ImageSize)>, ImportError> {
+    match files.get(file) {
+        None => Err(ImportError::Invalid {
+            row,
+            code: ViolationCode::UnknownFile,
+        }),
+        Some(Placement::Unmatched) => {
+            report.counts.unmatched += 1;
+            Ok(None)
+        }
+        Some(Placement::Refused) => {
+            report.counts.refused += 1;
+            Ok(None)
+        }
+        Some(Placement::Matched(key, size)) => Ok(Some((key, *size))),
+    }
+}
+
+fn report_box(report: &mut Report, annotation: &Annotation, size: ImageSize, row: u64) {
+    let Geometry::Rect { x0, y0, x1, y1 } = annotation.geometry else {
+        return;
+    };
+    for (applies, code) in [
+        (
+            [x0, y0, x1, y1].iter().any(|value| *value < 0.0)
+                || x0 > f64::from(size.columns)
+                || x1 > f64::from(size.columns)
+                || y0 > f64::from(size.rows)
+                || y1 > f64::from(size.rows),
+            WarningCode::OutOfRange,
+        ),
+        (x0 == x1 || y0 == y1, WarningCode::ZeroArea),
+        (x0 > x1 || y0 > y1, WarningCode::CornersOutOfOrder),
+        (
+            matches!(&annotation.frames, FrameScope::Set(frames) if frames.set.is_empty()),
+            WarningCode::FramesEmpty,
+        ),
+    ] {
+        if applies {
+            report.warn(code, RowRef { row, roi: None });
+        }
     }
 }
