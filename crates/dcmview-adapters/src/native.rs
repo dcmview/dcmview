@@ -15,19 +15,26 @@
 //! - **Line 1, the header:** the document with its `files`, `layers`,
 //!   `annotations` and `labels` empty. It carries `format`, `version`,
 //!   `schema`, `extensions` and the members this version does not know.
-//! - **Every later line:** an object with exactly one member, whose name
+//! - **Every line between:** an object with exactly one member, whose name
 //!   says what the value is: `{"file": <FileRef>}`, `{"layer": <Layer>}`,
 //!   `{"annotation": <Annotation>}` or `{"label": <Label>}`.
+//! - **The last line, the end:**
+//!   `{"end":{"files":2,"layers":1,"annotations":5,"labels":0}}`, the
+//!   number of lines of each kind before it. It is what tells a whole file
+//!   from one that was cut off at a line, so it is always written, also
+//!   for a document without a record.
 //!
 //! A writer puts the files first, then the layers, the annotations and the
-//! labels, each in the document's order. A reader takes the lines in any
-//! order. The two forms hold the same document: reading either gives the
-//! same result, the same report and the same row numbers
-//! ([`crate::RowRef`]).
+//! labels, each in the document's order, then the end. A reader takes the
+//! lines between header and end in any order. The two forms hold the same
+//! document: reading either gives the same result, the same report and the
+//! same row numbers ([`crate::RowRef`]).
 //!
 //! # Reading either form
 //!
-//! [`NativeJson`] reads both, so a file need not say which it is. It reads
+//! [`NativeJson`] reads both, so a file need not say which it is. A UTF-8
+//! byte order mark at the very start of the input (`EF BB BF`) is passed
+//! over, here and in [`ImportAdapter::sniff`]. It reads
 //! the first line (to the first line feed or the end, at most
 //! [`crate::limits::MAX_DOCUMENT_BYTES`]) and hands it to
 //! `Document::from_json_str`:
@@ -38,7 +45,12 @@
 //!   rest is record lines, each at most [`crate::limits::MAX_LINE_BYTES`];
 //!   a line of whitespace only is skipped and still counted; the header's
 //!   own four lists must be empty ([`ImportError::Malformed`] at row 1),
-//!   and a line that is not one of the four record objects is
+//!   and a line that is neither one of the four record objects nor the
+//!   end is [`ImportError::Malformed`] at its row. **The lines must end
+//!   with the end line**, and its four counts must be the numbers of
+//!   lines of each kind read before it: an input that stops without one,
+//!   or whose counts differ, is [`ImportError::Truncated`], and nothing of
+//!   it is handed on. A line that holds anything after the end line is
 //!   [`ImportError::Malformed`] at its row;
 //! - when that answers `Malformed` and more follows, the whole input, at
 //!   most [`crate::limits::MAX_DOCUMENT_BYTES`], is read as one document
@@ -125,9 +137,10 @@
 //!
 //! # Cost
 //!
-//! An import holds the input's text once (the document, or one line at a
-//! time) and the records it read once; it looks at each record a fixed
-//! number of times and finds a file, a layer and an id through a map, not
+//! An import holds the records it read once, and the text of the document
+//! or of one line at a time while it is read, in a buffer that grows as
+//! it reads: within three times the text's length, which is the bound a
+//! caller can rely on. It looks at each record a fixed number of times and finds a file, a layer and an id through a map, not
 //! by scanning a list for each record. The resolver is asked once for each
 //! file of the input.
 
@@ -191,8 +204,12 @@ impl ExportAdapter for NativeJson {
     /// exactly as it is: nothing is checked, clamped or left out, and a
     /// record that was loaded leniently is written as it is held.
     ///
-    /// Output past `context.max_bytes` or past
-    /// [`crate::limits::MAX_DOCUMENT_BYTES`], whichever is smaller, is
+    /// A document with more files than `context.limits.files`, or more
+    /// annotations and labels together than `context.limits.records`, is
+    /// [`ExportError::TooMany`] with that bound and number, before anything
+    /// is written: an export never writes what an import within the same
+    /// bounds refuses for its size. Output past `context.max_bytes` or past
+    /// `context.limits.document_bytes`, whichever is smaller, is
     /// [`ExportError::TooLarge`] with that limit. The bytes are counted as
     /// they are written, and nothing is buffered beyond what `out` buffers.
     ///
@@ -226,7 +243,8 @@ impl ImportAdapter for NativeJson {
     }
 
     /// [`Confidence::None`] unless the first byte of `head` that is not
-    /// ASCII whitespace is `{`; then [`Confidence::Certain`] when `head`
+    /// ASCII whitespace, after a byte order mark when `head` starts with
+    /// one, is `{`; then [`Confidence::Certain`] when `head`
     /// holds the bytes `"dcmview.annotations"` (with the quotes), else
     /// [`Confidence::Possible`].
     fn sniff(&self, head: &[u8]) -> Confidence {
@@ -278,8 +296,13 @@ impl ExportAdapter for NativeJsonLines {
     /// it is. The header is made without copying the document's four
     /// lists.
     ///
-    /// Output past `context.max_bytes` is [`ExportError::TooLarge`]; the
-    /// form has no bound of its own. The report is [`NativeJson`]'s, under
+    /// After the last record comes the end line, with the number of lines
+    /// of each kind written.
+    ///
+    /// A document with more files or records than `context.limits` allows
+    /// is [`ExportError::TooMany`], as for [`NativeJson`]. Output past
+    /// `context.max_bytes` is [`ExportError::TooLarge`]; the form has no
+    /// bound on its bytes of its own. The report is [`NativeJson`]'s, under
     /// [`NATIVE_JSONL_ADAPTER_ID`].
     fn export(
         &self,
