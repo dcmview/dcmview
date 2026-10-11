@@ -2265,8 +2265,8 @@ and not more than 4 GiB, and 4 GiB where the memory is not read
 document charged all of it is held for the session.
 
 Beside the document, an import holds its indexes of the loaded files (by
-UID, by size and by path) while it runs: about 600 bytes for each loaded
-file, which grows with the session and not with the document.
+UID, by size and by path) while it runs: a few hundred bytes for each
+loaded file, which grows with the session and not with the document.
 
 - **Charged, not predicted.** After each file reference, layer,
   annotation and label is built, the reader adds its charge (`held`: what
@@ -2281,8 +2281,10 @@ file, which grows with the session and not with the document.
   past one is refused that export (`422 annotation_export_too_large`,
   naming the bound and its value). A document is written exactly when it
   would be read: whatever a session can export in a form, the same viewer
-  can import. The forms differ in one bound each (a JSON document's whole
-  length; a JSON Lines record's length).
+  can import. The forms do not have the same bounds (a JSON document has
+  one on its whole length, a JSON Lines file on each line, and a record
+  stands at another depth in each), so a session can fit one form and
+  not the other.
 - **Nothing is copied.** The reader's lists grow by a quarter;
   placement makes each per-record structure once at its final size; and
   the store takes the import's batch an operation at a time and moves
