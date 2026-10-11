@@ -39,8 +39,8 @@ pub use memory::{
     REMEMBERED_OPS, REMEMBERED_REVS,
 };
 pub use store::{
-    session_author, AnnotationStore, DownloadHold, ImportStatus, DOWNLOAD_BUDGET_BYTES,
-    EMBED_IMPORT_AUTHOR, NATIVE_IMPORT_AUTHOR,
+    default_document_budget, session_author, AnnotationStore, DownloadHold, ImportStatus,
+    DOWNLOAD_BUDGET_BYTES, EMBED_IMPORT_AUTHOR, NATIVE_IMPORT_AUTHOR,
 };
 
 use crate::types::FileEntry;

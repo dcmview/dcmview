@@ -160,14 +160,14 @@
 //!   it is charged.
 //! - **The text**: a JSON document or a first line is read into a buffer
 //!   that grows by doubling, up to three times its length while it grows
-//!   (768 MiB for the largest document); a JSON Lines file has two of its
-//!   lines at most (48 MiB).
+//!   (768 MiB for the largest document); a JSON Lines file has one line
+//!   in such a buffer, up to three times the longest line (48 MiB).
 //!
 //! **The budget is charged, not predicted, and is not a multiple of the
 //! text.** What a value costs to hold cannot be told from its text: the
 //! model keeps `extensions` and members it does not know as JSON values,
 //! a member of two bytes can be a map node of several hundred, and a
-//! mask of one tile a frame is charged ten times its text. So after each
+//! mask of one tile a frame is charged many times its text. So after each
 //! file reference, layer, annotation and label is built, and after the
 //! header is, the reader adds its charge ([`crate::held`]: what the item
 //! holds, counted on the item, and the room an import needs for it on
@@ -178,13 +178,29 @@
 //! keeping a second copy of them all, so a caller that hands the records
 //! on one at a time holds no more than was charged.
 //!
-//! **A writer counts the same way.** [`NativeJson`] and
-//! [`NativeJsonLines`] refuse a document whose charge
-//! ([`crate::held::document_charge`]) is past the budget
-//! ([`ExportError::TooMany`] with `Bound::HeldBytes`), and the charge is
-//! a function of what the records say, so it is the same before a
-//! document is written and after it is read: **a document is written
-//! exactly when it would be read.**
+//! **A writer holds a document to everything a reader does**, with the
+//! same functions, and refuses it ([`ExportError::TooMany`] naming the
+//! bound) before or while it writes:
+//!
+//! - the numbers of files and of records ([`crate::Limits::files`],
+//!   [`crate::Limits::records`]);
+//! - the charge ([`crate::held::document_charge`], `Bound::HeldBytes`),
+//!   which is a function of what the records say and so is the same
+//!   before a document is written and after it is read;
+//! - for each unit as it will be read (the header; each record, alone in
+//!   the JSON form and in its line in the JSON Lines form), the values,
+//!   the objects and arrays, and the depth (`Bound::UnitValues`,
+//!   `Bound::UnitContainers`, `Bound::Depth`), by the pass the reader
+//!   makes over the same text;
+//! - the length: of the JSON document ([`ExportError::TooLarge`]), and in
+//!   the JSON Lines form of the first line and of each record line
+//!   (`Bound::DocumentBytes`, `Bound::LineBytes`).
+//!
+//! **So a document is written exactly when the same bounds would read
+//! it.** The two forms differ in one bound each: a JSON document has a
+//! bound on its whole length and none on one record's, and a JSON Lines
+//! file the other way round, so a session can be past one form's bound
+//! and within the other's.
 //!
 //! **The transient is bounded by construction.** One unit (a record, or
 //! everything of a document that is not a record) is in the parser's
@@ -298,6 +314,7 @@ impl ExportAdapter for NativeJson {
         out: &mut dyn Write,
     ) -> Result<Report, ExportError> {
         check_export_counts(document, &context.limits)?;
+        check_export_units(document, &context.limits)?;
         let limit = context.max_bytes.min(context.limits.document_bytes);
         let mut writer = LimitedWriter {
             out,
@@ -388,37 +405,49 @@ impl ExportAdapter for NativeJsonLines {
         out: &mut dyn Write,
     ) -> Result<Report, ExportError> {
         check_export_counts(document, &context.limits)?;
-        let header = Document {
-            format: document.format.clone(),
-            version: document.version.clone(),
-            schema: document.schema.clone(),
-            extensions: document.extensions.clone(),
-            unknown: document.unknown.clone(),
-            files: Vec::new(),
-            layers: Vec::new(),
-            annotations: Vec::new(),
-            labels: Vec::new(),
-        };
+        let header = header_of(document);
+        let limits = &context.limits;
+        let mut scratch = Vec::new();
         let mut writer = LimitedWriter {
             out,
             remaining: context.max_bytes,
             exceeded: false,
         };
         let result = (|| {
-            write_line(&mut writer, &header)?;
+            write_line(&mut writer, &mut scratch, &header, true, limits)?;
             for file in &document.files {
-                write_line(&mut writer, &OutputLine::File(file))?;
+                write_line(
+                    &mut writer,
+                    &mut scratch,
+                    &OutputLine::File(file),
+                    false,
+                    limits,
+                )?;
             }
             for layer in &document.layers {
-                write_line(&mut writer, &OutputLine::Layer(layer))?;
+                write_line(
+                    &mut writer,
+                    &mut scratch,
+                    &OutputLine::Layer(layer),
+                    false,
+                    limits,
+                )?;
             }
             for annotation in &document.annotations {
-                write_line(&mut writer, &OutputLine::Annotation(annotation))?;
+                let line = OutputLine::Annotation(annotation);
+                write_line(&mut writer, &mut scratch, &line, false, limits)?;
             }
             for label in &document.labels {
-                write_line(&mut writer, &OutputLine::Label(label))?;
+                write_line(
+                    &mut writer,
+                    &mut scratch,
+                    &OutputLine::Label(label),
+                    false,
+                    limits,
+                )?;
             }
-            write_line(&mut writer, &OutputLine::End(EndCounts::of(document)))?;
+            let end = OutputLine::End(EndCounts::of(document));
+            write_line(&mut writer, &mut scratch, &end, false, limits)?;
             Ok(())
         })();
         if writer.exceeded {
@@ -559,11 +588,100 @@ fn read_end_counts<'de, D: serde::Deserializer<'de>>(
     deserializer.deserialize_map(EndVisitor)
 }
 
-fn write_line(writer: &mut dyn Write, value: &impl Serialize) -> Result<(), ExportError> {
-    serde_json::to_writer(&mut *writer, value).map_err(json_export_error)?;
-    writer.write_all(b"\n").map_err(|error| ExportError::Io {
+/// Writes `value` as one line, after holding the line to what a reader
+/// holds a line to: the first line as a document's header, any other as
+/// one unit, and each to its length.
+fn write_line(
+    writer: &mut dyn Write,
+    scratch: &mut Vec<u8>,
+    value: &impl Serialize,
+    header: bool,
+    limits: &Limits,
+) -> Result<(), ExportError> {
+    scratch.clear();
+    serde_json::to_writer(&mut *scratch, value).map_err(json_export_error)?;
+    let (bound, limit) = if header {
+        (Bound::DocumentBytes, limits.document_bytes)
+    } else {
+        (Bound::LineBytes, limits.line_bytes)
+    };
+    if scratch.len() as u64 > limit {
+        return Err(ExportError::TooMany { bound, limit });
+    }
+    check_values(scratch, header, 0, limits, 0).map_err(|error| unit_refusal(error, limits))?;
+    scratch.push(b'\n');
+    writer.write_all(scratch).map_err(|error| ExportError::Io {
         kind: error.kind().to_string(),
     })
+}
+
+/// What [`check_values`] refused, as a writer says it.
+fn unit_refusal(error: ImportError, limits: &Limits) -> ExportError {
+    match error {
+        ImportError::TooLarge { bound, limit } => ExportError::TooMany { bound, limit },
+        _ => ExportError::TooMany {
+            bound: Bound::Depth,
+            limit: u64::from(limits.depth),
+        },
+    }
+}
+
+/// Holds every unit of `document` to what a reader of the JSON form holds
+/// it to ([`check_values`]): the header, and each element of the four
+/// lists, which stands two levels down in the document.
+fn check_export_units(document: &Document, limits: &Limits) -> Result<(), ExportError> {
+    let mut scratch = Vec::new();
+    let mut check = |value: &dyn erased::Unit, whole: bool| {
+        scratch.clear();
+        value.write(&mut scratch)?;
+        check_values(&scratch, whole, if whole { 0 } else { 2 }, limits, 0)
+            .map_err(|error| unit_refusal(error, limits))
+    };
+    check(&header_of(document), true)?;
+    for file in &document.files {
+        check(file, false)?;
+    }
+    for layer in &document.layers {
+        check(layer, false)?;
+    }
+    for annotation in &document.annotations {
+        check(annotation, false)?;
+    }
+    for label in &document.labels {
+        check(label, false)?;
+    }
+    Ok(())
+}
+
+/// The document without its four lists: what a JSON Lines file has as its
+/// first line.
+fn header_of(document: &Document) -> Document {
+    Document {
+        format: document.format.clone(),
+        version: document.version.clone(),
+        schema: document.schema.clone(),
+        extensions: document.extensions.clone(),
+        unknown: document.unknown.clone(),
+        files: Vec::new(),
+        layers: Vec::new(),
+        annotations: Vec::new(),
+        labels: Vec::new(),
+    }
+}
+
+mod erased {
+    use super::{json_export_error, ExportError};
+
+    /// Something that can be written as JSON, whatever it is.
+    pub(super) trait Unit {
+        fn write(&self, out: &mut Vec<u8>) -> Result<(), ExportError>;
+    }
+
+    impl<T: serde::Serialize> Unit for T {
+        fn write(&self, out: &mut Vec<u8>) -> Result<(), ExportError> {
+            serde_json::to_writer(out, self).map_err(json_export_error)
+        }
+    }
 }
 
 #[derive(Default)]
@@ -615,7 +733,13 @@ fn read_line(
 /// The pass does not check that the text is JSON: text that is not fails
 /// when it is parsed. It only has to count no fewer values than a parser
 /// would make of the text, and it counts every token.
-fn check_values(text: &[u8], whole: bool, bounds: &Limits, row: u64) -> Result<(), ImportError> {
+fn check_values(
+    text: &[u8],
+    whole: bool,
+    outer: u32,
+    bounds: &Limits,
+    row: u64,
+) -> Result<(), ImportError> {
     let too_many = ImportError::TooLarge {
         bound: Bound::UnitValues,
         limit: bounds.unit_values,
@@ -624,7 +748,9 @@ fn check_values(text: &[u8], whole: bool, bounds: &Limits, row: u64) -> Result<(
         bound: Bound::UnitContainers,
         limit: bounds.unit_containers,
     };
-    let mut depth = 0_u32;
+    // `outer` is how deep the text itself is nested: an element of a
+    // list of a document is two levels down.
+    let mut depth = outer;
     // Values, and the objects and arrays among them, of the header and of
     // the record being read.
     let mut header = [0_u64; 2];
@@ -946,7 +1072,7 @@ fn read_document(
         buffer.drain(..3);
     }
     let parsed = |buffer: &[u8]| {
-        check_values(buffer, true, bounds, 1)?;
+        check_values(buffer, true, 0, bounds, 1)?;
         match parse_document(text_at(buffer, 1)?, bounds) {
             Ok(document) => Ok(Ok(document)),
             Err(ParseError::Held) => Err(HeldTotal::error(bounds)),
@@ -1008,7 +1134,7 @@ fn read_document(
             }
             has_lines = true;
         }
-        check_values(&buffer, false, bounds, row)?;
+        check_values(&buffer, false, 0, bounds, row)?;
         let line: InputLine = serde_json::from_str(text_at(&buffer, row)?)
             .map_err(|_| ImportError::Malformed { row })?;
         let held = match line {

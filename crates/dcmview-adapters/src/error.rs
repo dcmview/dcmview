@@ -34,6 +34,8 @@ pub enum Bound {
     UnitValues,
     /// [`crate::limits::MAX_UNIT_CONTAINERS`].
     UnitContainers,
+    /// [`crate::limits::MAX_DEPTH`].
+    Depth,
     /// [`crate::limits::MAX_HELD_BYTES`]: what the document's records are
     /// charged for the memory they hold.
     HeldBytes,
@@ -54,6 +56,7 @@ impl std::fmt::Display for Bound {
             Self::UnitContainers => {
                 "the objects and arrays of one record or of a document's header"
             }
+            Self::Depth => "the levels its values nest",
             Self::HeldBytes => "the bytes of memory its records hold",
         })
     }
@@ -158,9 +161,10 @@ pub enum ExportError {
     /// The output would be longer than the context or the format allows.
     #[error("the export is larger than {limit} bytes")]
     TooLarge { limit: u64 },
-    /// The document holds more files, or more annotations and labels, than
-    /// an import reads ([`crate::Limits::files`], [`crate::Limits::records`]).
-    /// Nothing was written.
+    /// The document is past a bound an import holds it to: its files or
+    /// records, the memory its records are charged, or the values, the
+    /// objects and arrays, the depth or the line length of one unit
+    /// ([`crate::native`], "Cost"). What was written is not a document.
     #[error("the export holds more than {limit} of {bound}")]
     TooMany { bound: Bound, limit: u64 },
     /// The document cannot be written in this format: an annotation names

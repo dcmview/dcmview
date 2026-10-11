@@ -92,7 +92,8 @@ pub(crate) async fn run_local_viewer(options: LocalViewerOptions) -> Result<Loca
         AnnotationStore::loading()
     } else {
         AnnotationStore::empty()
-    };
+    }
+    .with_document_budget(memory::document_budget());
     let (decode_limits, decode_memory_source) = memory::decode_limits(options.decode_limits);
     let mut state =
         AppState::new(registry.clone(), annotation_store.clone()).with_decode_limits(decode_limits);

@@ -956,12 +956,13 @@ mod documents {
         dir: &std::path::Path,
         text: &str,
         held_bytes: u64,
+        store: &dyn Fn() -> AnnotationStore,
     ) -> (Result<u64, String>, u64) {
         let path = dir.join("document");
         std::fs::write(&path, text).expect("write document");
         let source = NativeSource::from_path(&path).expect("source");
         let registry = one_file(dir);
-        let store = AnnotationStore::loading();
+        let store = store();
         let (result, peak) = runtime.peak_during(import_native_within(
             &registry,
             &store,
@@ -972,9 +973,11 @@ mod documents {
                 ..dcmview_adapters::Limits::DEFAULT
             },
         ));
+        // An import moves its records into the store: it copies none.
+        assert_eq!(store.backend().copied_records().expect("count"), 0);
         (
             result
-                .map(|report| report.counts.annotations_out)
+                .map(|report| report.counts.annotations_out + report.counts.labels_out)
                 .map_err(|error| error.to_string()),
             peak,
         )
@@ -1006,8 +1009,21 @@ mod documents {
                     dcmview_annotation::Document::from_json_str(&text).expect("a document");
                 charge = dcmview_adapters::held::document_charge(&document);
             }
-            let allowed = charge + 3 * text.len() as u64 + SLACK;
-            let (result, peak) = import_peak(&runtime, dir.path(), &text, charge);
+            // A JSON document is in a buffer that grows by doubling; a
+            // JSON Lines file is read a line at a time.
+            let buffer = if what.ends_with(", JSON") {
+                3 * text.len() as u64
+            } else {
+                0
+            };
+            let allowed = charge + buffer + SLACK;
+            let (result, peak) = import_peak(
+                &runtime,
+                dir.path(),
+                &text,
+                charge,
+                &AnnotationStore::loading,
+            );
             if said {
                 eprintln!(
                     "{what}: peak {:.1} MiB, charge {:.1} MiB, text {:.1} MiB, {result:?}",
@@ -1022,7 +1038,13 @@ mod documents {
             );
             taken += u64::from(result.is_ok_and(|records| records > 0));
             assert!(peak <= allowed, "{what}: held {peak}, charged {charge}");
-            let (result, peak) = import_peak(&runtime, dir.path(), &text, charge - 1);
+            let (result, peak) = import_peak(
+                &runtime,
+                dir.path(),
+                &text,
+                charge - 1,
+                &AnnotationStore::loading,
+            );
             assert!(
                 result
                     .as_ref()
@@ -1033,6 +1055,69 @@ mod documents {
         }
         // Enough of the shapes are valid records that reach the store.
         assert!(taken >= 12, "{taken} shapes were stored");
+    }
+
+    /// A label is charged what a store keeps of it: the label, and its
+    /// target, field and layer a second time in the store's index. Labels
+    /// on folders with long names, imported into a store that takes
+    /// labels, hold no more than they were charged.
+    #[test]
+    fn labels_are_charged_what_the_store_keeps() {
+        const LABELS: usize = 20_000;
+        const SLACK: u64 = 8 * 1024 * 1024;
+        let store = || {
+            let mut schema = dcmview_annotation::LabelSchema::implicit();
+            schema.fields = serde_json::from_value(serde_json::json!([{
+                "id": "quality", "name": "Quality", "type": "category",
+                "options": [{ "id": "good", "name": "Good" }],
+                "applies_to": ["folder"],
+            }]))
+            .expect("field");
+            AnnotationStore::with_backend(dcmview::annotations::MemoryBackend::new(
+                dcmview::annotations::MemoryConfig {
+                    author: dcmview_annotation::Author::parse("user:reader").expect("author"),
+                    schema: Some(schema),
+                },
+            ))
+        };
+        let head = r#""format":"dcmview.annotations","version":"1.0""#;
+        let labels: Vec<String> = (0..LABELS)
+            .map(|n| {
+                format!(
+                    r#"{{"id":"0199c0de-0000-7000-9000-{n:012x}","target":{{"folder":"{}/case-{n}","root":"data"}},"field":"quality","value":"good","layer":"default","rev":1,"created_by":"user:a","created_at":"2026-10-10T08:00:00.000Z","modified_by":"user:a","modified_at":"2026-10-10T08:00:00.000Z"}}"#,
+                    ["a-folder-of-some-length"; 12].join("/")
+                )
+            })
+            .collect();
+        let json = format!(r#"{{{head},"labels":[{}]}}"#, labels.join(","));
+        let mut lines = format!("{{{head}}}\n");
+        for label in &labels {
+            lines.push_str(&format!("{{\"label\":{label}}}\n"));
+        }
+        lines.push_str(&format!(
+            "{{\"end\":{{\"files\":0,\"layers\":0,\"annotations\":0,\"labels\":{LABELS}}}}}\n"
+        ));
+        let document = dcmview_annotation::Document::from_json_str(&json).expect("document");
+        let charge = dcmview_adapters::held::document_charge(&document);
+        drop(document);
+        let dir = tempfile::tempdir().expect("temp dir");
+        let runtime = heap::CountedRuntime::new();
+        for (what, text, buffer) in [
+            ("JSON", &json, 3 * json.len() as u64),
+            ("JSON Lines", &lines, 0),
+        ] {
+            let (result, peak) = import_peak(&runtime, dir.path(), text, charge, &store);
+            report(
+                &format!("{LABELS} folder labels as {what}, charged {charge}"),
+                peak,
+                text.len() as u64,
+            );
+            assert_eq!(result, Ok(LABELS as u64), "{what}");
+            assert!(
+                peak <= charge + buffer + SLACK,
+                "{what}: held {peak}, charged {charge}"
+            );
+        }
     }
 
     /// What building one unit holds before it can be charged is within

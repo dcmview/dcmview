@@ -2066,6 +2066,75 @@ async fn what_a_session_can_write_it_can_read() {
             );
         }
     }
+
+    // A reader holds one record to more than the charge: to a number of
+    // JSON values, of objects and arrays, to a depth, and in the JSON
+    // Lines form to a length of line. A record past one of those is in
+    // the session, and the session is refused the export that would write
+    // it, naming the bound; it is never written and then not read.
+    use dcmview_adapters::Bound;
+    let nested = (0..70).fold(json!(0), |inner, _| json!([inner]));
+    let shapes: [(&str, Value, [Option<Bound>; 2]); 4] = [
+        (
+            "more values than a record may have",
+            json!({ "x": vec![0; 1_100_000] }),
+            [Some(Bound::UnitValues), Some(Bound::UnitValues)],
+        ),
+        (
+            "more arrays than a record may have",
+            json!({ "x": vec![json!([]); 140_000] }),
+            [Some(Bound::UnitContainers), Some(Bound::UnitContainers)],
+        ),
+        (
+            "deeper than values may nest",
+            json!({ "x": nested }),
+            [Some(Bound::Depth), Some(Bound::Depth)],
+        ),
+        (
+            "longer than a line may be",
+            json!({ "x": "a".repeat(17 * 1024 * 1024) }),
+            [None, Some(Bound::LineBytes)],
+        ),
+    ];
+    for (what, extensions, refused) in shapes {
+        let session = Session::plain(file());
+        session.registry.ensure_key(0).await.expect("key");
+        let mut record = annotation(1, "sop:1.2.3.1", "default", rect(1, 1, 9, 9));
+        record["extensions"] = extensions;
+        let envelope: OpEnvelope = serde_json::from_value(json!({
+            "op_id": id(900_000), "actor": "user:test", "ts": "2026-10-10T08:00:00.000Z",
+            "op": { "type": "create_annotation", "annotation": record },
+        }))
+        .expect("envelope");
+        let results = session
+            .store
+            .backend()
+            .apply(vec![envelope], &BTreeMap::from([(key.clone(), size)]))
+            .expect("store");
+        assert!(matches!(results[0], ApplyResult::Ok { .. }), "{what}");
+        for (form, refused) in [NativeForm::Json, NativeForm::JsonLines]
+            .into_iter()
+            .zip(refused)
+        {
+            let export =
+                export_native_within(&session.registry, &session.store, form, limits).await;
+            match (export, refused) {
+                (Err(AnnotationError::ExportTooMany { bound, .. }), Some(expected)) => {
+                    assert_eq!(bound, expected, "{what}, {form:?}");
+                }
+                (Ok(export), None) => {
+                    let text = String::from_utf8(export.bytes).expect("text");
+                    let second = Session::loading(file());
+                    let report = second.import(dir.path(), &text).await.expect("import");
+                    assert_eq!(report["counts"]["annotations_out"], 1, "{what}, {form:?}");
+                }
+                (other, expected) => panic!(
+                    "{what}, {form:?}: {:?}, expected {expected:?}",
+                    other.map(|export| export.bytes.len())
+                ),
+            }
+        }
+    }
 }
 
 /// A store that takes labels: a schema with one field for files and frames.

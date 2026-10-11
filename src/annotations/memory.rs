@@ -317,6 +317,9 @@ pub struct MemoryBackend {
 
 /// Everything the store holds, under its one lock.
 struct State {
+    /// How many records creating operations have been copied from, an
+    /// operation that was lent keeping its own.
+    copied_records: u64,
     revision: u64,
     layers: Vec<LayerEntry>,
     layer_ids: HashMap<LayerId, usize>,
@@ -362,6 +365,7 @@ impl MemoryBackend {
             config,
             default_layer,
             state: Mutex::new(State {
+                copied_records: 0,
                 revision: 0,
                 layer_ids: HashMap::from([(layer.id.clone(), 0)]),
                 layers: vec![LayerEntry {
@@ -418,12 +422,12 @@ impl MemoryBackend {
         )
     }
 
-    /// [`MemoryBackend::transact`] of an envelope that is given up: each
-    /// operation of a batch is let go of as soon as it is applied, so the
-    /// records it carries are never held beside the store's copies of all
-    /// of them, only beside the copy of the one being applied. The store's
-    /// lists and indexes are given room for the whole batch first, so none
-    /// of them grows while it is applied.
+    /// [`MemoryBackend::transact`] of an envelope that is given up: a
+    /// record an operation of it creates is moved into the store, not
+    /// copied, so an import holds its records once. The store's lists and
+    /// indexes are given room for a whole batch first, so none of them
+    /// grows while it is applied, and when the batch is refused that room
+    /// is given back with everything else.
     ///
     /// For `Checking::AsLoaded` only: the envelope is not validated.
     pub(crate) fn transact_owned(
@@ -507,6 +511,7 @@ impl MemoryBackend {
             revs: Vec::new(),
             rev_places: HashMap::new(),
         };
+        let made_room = matches!(&op, Given::Owned(Op::Batch { .. }));
         let outcome = match op {
             Given::Borrowed(Op::Batch { ops }) => ops
                 .iter()
@@ -518,13 +523,20 @@ impl MemoryBackend {
                 // Each operation is dropped when it has been applied.
                 ops.into_iter()
                     .enumerate()
-                    .try_for_each(|(i, op)| transaction.apply(&op, &format!("/op/ops/{i}")))
+                    .try_for_each(|(i, op)| transaction.apply_owned(op, &format!("/op/ops/{i}")))
             }
-            Given::Owned(op) => transaction.apply(&op, "/op"),
+            Given::Owned(op) => transaction.apply_owned(op, "/op"),
         };
         let outcome = outcome.and_then(|()| transaction.validate_annotations());
         if let Err(refusal) = outcome {
             transaction.rollback();
+            if made_room {
+                // The room made for a batch that was refused is given back.
+                state.annotations.shrink_to_fit();
+                state.annotation_ids.shrink_to_fit();
+                state.labels.shrink_to_fit();
+                state.label_ids.shrink_to_fit();
+            }
             return Ok(Transacted {
                 result: refusal,
                 revision: state.revision,
@@ -735,6 +747,13 @@ impl AnnotationBackend for MemoryBackend {
 }
 
 impl MemoryBackend {
+    /// How many records this store has copied out of creating operations
+    /// that were lent to it (`apply`, and every operation of a client). An
+    /// import gives its operations up and copies none.
+    pub fn copied_records(&self) -> Result<u64, BackendError> {
+        Ok(self.state.lock().map_err(lock_error)?.copied_records)
+    }
+
     /// [`AnnotationBackend::export`], and beside it, for each annotation of
     /// the document in its order, the [`Binding`] it was created with
     /// (`None` for one that every file with its key shows). Both are read
@@ -1147,48 +1166,137 @@ impl Transaction<'_> {
         self.rev_places.reserve(ops.len());
     }
 
+    /// Makes `record` a record of the store, or refuses it. The record is
+    /// moved in: nothing of it is copied.
+    fn create_annotation(&mut self, mut record: Annotation, path: &str) -> Result<(), ApplyResult> {
+        if self.state.annotation_ids.contains_key(&record.id) {
+            return Err(invalid(
+                ViolationCode::DuplicateId,
+                &format!("{path}/annotation/id"),
+                "The annotation id already exists.",
+            ));
+        }
+        self.require_layer(&record.layer, &format!("{path}/annotation/layer"))?;
+        self.stamp_create(&mut record.meta);
+        if self.write.checking == Checking::Strict {
+            record.geometry = record.geometry.quantized();
+        }
+        let place = self.state.annotations.len();
+        self.state.annotation_ids.insert(record.id, place);
+        self.state
+            .files
+            .entry(record.file.clone())
+            .or_default()
+            .push(place);
+        self.changed(RevisionKind::Annotation, record.id, record.meta.rev);
+        self.count_record(self.state.layer_ids[&record.layer], true);
+        let binding = self
+            .write
+            .bindings
+            .and_then(|bindings| bindings.get(&record.id))
+            .copied();
+        self.state.annotations.push(AnnotationEntry {
+            record,
+            deleted: false,
+            embed_slot: binding
+                .map(|binding| binding.slot)
+                .or(self.write.embed_slot),
+            imported: binding.map_or(self.write.import, |binding| binding.imported),
+            deleted_bytes: 0,
+            dropped: false,
+        });
+        self.saved_annotations.insert(place);
+        self.undo.push(Undo::CreatedAnnotation);
+        Ok(())
+    }
+
+    /// Makes a label of these parts, or refuses it. The parts are moved
+    /// in; the store's index of targets keeps its own key.
+    fn create_label(
+        &mut self,
+        id: Uuid,
+        target: LabelTarget,
+        field: String,
+        layer: LayerId,
+        value: LabelValue,
+        path: &str,
+    ) -> Result<(), ApplyResult> {
+        if self.state.label_ids.contains_key(&id) {
+            return Err(invalid(
+                ViolationCode::DuplicateId,
+                &format!("{path}/id"),
+                "The label id already exists.",
+            ));
+        }
+        self.require_layer(&layer, &format!("{path}/layer"))?;
+        let key = (
+            target.canonical_id(),
+            field.clone(),
+            layer.clone(),
+            self.write.author.clone(),
+        );
+        if self.state.label_targets.contains_key(&key) {
+            return Err(invalid(
+                ViolationCode::DuplicateLabel,
+                &format!("{path}/id"),
+                "A label already exists for this target, field, layer and author.",
+            ));
+        }
+        let counted = self.state.layer_ids[&layer];
+        let record = Label {
+            id,
+            target,
+            field,
+            value,
+            layer,
+            meta: RecordMeta {
+                rev: 1,
+                created_by: self.write.author.clone(),
+                created_at: self.stamp.clone(),
+                modified_by: self.write.author.clone(),
+                modified_at: self.stamp.clone(),
+                derived_from: None,
+                score: None,
+            },
+            extensions: BTreeMap::new(),
+            unknown: BTreeMap::new(),
+        };
+        self.state.label_ids.insert(id, self.state.labels.len());
+        self.state.label_targets.insert(key, id);
+        self.count_record(counted, true);
+        self.saved_labels.insert(self.state.labels.len());
+        self.state.labels.push(LabelEntry {
+            record,
+            cleared: false,
+        });
+        self.changed(RevisionKind::Label, id, 1);
+        self.undo.push(Undo::CreatedLabel);
+        Ok(())
+    }
+
+    /// [`Transaction::apply`] of an operation that is given up: a record
+    /// it creates is moved into the store, not copied.
+    fn apply_owned(&mut self, op: Op, path: &str) -> Result<(), ApplyResult> {
+        match op {
+            Op::CreateAnnotation { annotation } => self.create_annotation(*annotation, path),
+            Op::SetLabel {
+                id,
+                base_rev: None,
+                target,
+                field,
+                layer,
+                after: Some(value),
+                ..
+            } => self.create_label(id, target, field, layer, value, path),
+            other => self.apply(&other, path),
+        }
+    }
+
     fn apply(&mut self, op: &Op, path: &str) -> Result<(), ApplyResult> {
         match op {
             Op::CreateAnnotation { annotation } => {
-                if self.state.annotation_ids.contains_key(&annotation.id) {
-                    return Err(invalid(
-                        ViolationCode::DuplicateId,
-                        &format!("{path}/annotation/id"),
-                        "The annotation id already exists.",
-                    ));
-                }
-                self.require_layer(&annotation.layer, &format!("{path}/annotation/layer"))?;
-                let mut record = annotation.as_ref().clone();
-                self.stamp_create(&mut record.meta);
-                if self.write.checking == Checking::Strict {
-                    record.geometry = record.geometry.quantized();
-                }
-                let place = self.state.annotations.len();
-                self.state.annotation_ids.insert(record.id, place);
-                self.state
-                    .files
-                    .entry(record.file.clone())
-                    .or_default()
-                    .push(place);
-                self.changed(RevisionKind::Annotation, record.id, record.meta.rev);
-                self.count_record(self.state.layer_ids[&record.layer], true);
-                let binding = self
-                    .write
-                    .bindings
-                    .and_then(|bindings| bindings.get(&record.id))
-                    .copied();
-                self.state.annotations.push(AnnotationEntry {
-                    record,
-                    deleted: false,
-                    embed_slot: binding
-                        .map(|binding| binding.slot)
-                        .or(self.write.embed_slot),
-                    imported: binding.map_or(self.write.import, |binding| binding.imported),
-                    deleted_bytes: 0,
-                    dropped: false,
-                });
-                self.saved_annotations.insert(place);
-                self.undo.push(Undo::CreatedAnnotation);
+                self.state.copied_records += 1;
+                self.create_annotation(annotation.as_ref().clone(), path)?;
             }
             Op::UpdateAnnotation {
                 id,
@@ -1349,62 +1457,30 @@ impl Transaction<'_> {
                         self.count_record(self.state.layer_ids[layer], after.is_some());
                     }
                 } else {
-                    if self.state.label_ids.contains_key(id) {
-                        return Err(invalid(
-                            ViolationCode::DuplicateId,
-                            &format!("{path}/id"),
-                            "The label id already exists.",
-                        ));
-                    }
                     let value = after.as_ref().ok_or_else(|| {
-                        invalid(
-                            ViolationCode::EmptyPatch,
-                            &format!("{path}/after"),
-                            "A new label needs a value.",
-                        )
+                        if self.state.label_ids.contains_key(id) {
+                            invalid(
+                                ViolationCode::DuplicateId,
+                                &format!("{path}/id"),
+                                "The label id already exists.",
+                            )
+                        } else {
+                            invalid(
+                                ViolationCode::EmptyPatch,
+                                &format!("{path}/after"),
+                                "A new label needs a value.",
+                            )
+                        }
                     })?;
-                    self.require_layer(layer, &format!("{path}/layer"))?;
-                    let key = (
-                        target.canonical_id(),
+                    self.state.copied_records += 1;
+                    self.create_label(
+                        *id,
+                        target.clone(),
                         field.clone(),
                         layer.clone(),
-                        self.write.author.clone(),
-                    );
-                    if self.state.label_targets.contains_key(&key) {
-                        return Err(invalid(
-                            ViolationCode::DuplicateLabel,
-                            &format!("{path}/id"),
-                            "A label already exists for this target, field, layer and author.",
-                        ));
-                    }
-                    let record = Label {
-                        id: *id,
-                        target: target.clone(),
-                        field: field.clone(),
-                        value: value.clone(),
-                        layer: layer.clone(),
-                        meta: RecordMeta {
-                            rev: 1,
-                            created_by: self.write.author.clone(),
-                            created_at: self.stamp.clone(),
-                            modified_by: self.write.author.clone(),
-                            modified_at: self.stamp.clone(),
-                            derived_from: None,
-                            score: None,
-                        },
-                        extensions: BTreeMap::new(),
-                        unknown: BTreeMap::new(),
-                    };
-                    self.state.label_ids.insert(*id, self.state.labels.len());
-                    self.state.label_targets.insert(key, *id);
-                    self.count_record(self.state.layer_ids[layer], true);
-                    self.saved_labels.insert(self.state.labels.len());
-                    self.state.labels.push(LabelEntry {
-                        record,
-                        cleared: false,
-                    });
-                    self.changed(RevisionKind::Label, id, 1);
-                    self.undo.push(Undo::CreatedLabel);
+                        value.clone(),
+                        path,
+                    )?;
                 }
             }
             Op::CreateLayer { layer } => {
@@ -1561,5 +1637,101 @@ mod tests {
 
         assert!(held, "a write could get in while the views are read");
         assert!(backend.state.try_lock().is_ok());
+    }
+
+    fn rectangle(n: u32, layer: &str) -> Op {
+        serde_json::from_value(serde_json::json!({
+            "type": "create_annotation",
+            "annotation": {
+                "id": format!("0199c0de-0000-7000-8000-{n:012x}"), "file": "sop:1.2.3",
+                "frames": "all", "layer": layer, "class": "roi",
+                "geometry": { "type": "rect", "x0": 1, "y0": 1, "x1": 2, "y1": 2 },
+                "attributes": {}, "extensions": {}, "rev": 1,
+                "created_by": "user:a", "created_at": "2026-10-10T08:00:00.000Z",
+                "modified_by": "user:a", "modified_at": "2026-10-10T08:00:00.000Z",
+            },
+        }))
+        .expect("operation")
+    }
+
+    fn given(backend: &MemoryBackend, ops: Vec<Op>) -> ApplyResult {
+        let author = Author::parse("import:native").expect("author");
+        let envelope = OpEnvelope {
+            op_id: dcmview_annotation::new_id(),
+            actor: author.clone(),
+            ts: now(),
+            op: Op::Batch { ops },
+        };
+        backend
+            .transact_owned(
+                envelope,
+                &BTreeMap::<FileKey, dcmview_annotation::ImageSize>::new(),
+                Write {
+                    checking: Checking::AsLoaded,
+                    author: &author,
+                    embed_slot: None,
+                    import: false,
+                    view: None,
+                    bindings: None,
+                },
+            )
+            .expect("store")
+            .result
+    }
+
+    /// A batch that is given up is moved into the store: room for all of
+    /// it is made once, exactly, and no record is copied. A batch that is
+    /// lent is copied from.
+    #[test]
+    fn a_batch_given_up_is_moved_in_with_room_made_once() {
+        let backend = MemoryBackend::new(MemoryConfig {
+            author: Author::parse("user:test").expect("author"),
+            schema: None,
+        });
+        let ops: Vec<Op> = (0..1_000).map(|n| rectangle(n, DEFAULT_LAYER_ID)).collect();
+        assert!(matches!(given(&backend, ops), ApplyResult::Ok { .. }));
+        {
+            let state = backend.state.lock().expect("state");
+            assert_eq!(state.annotations.len(), 1_000);
+            // Grown a push at a time, the list would have room for 1,024.
+            assert_eq!(state.annotations.capacity(), 1_000);
+            assert_eq!(state.copied_records, 0);
+        }
+        let lent: OpEnvelope = serde_json::from_value(serde_json::json!({
+            "op_id": dcmview_annotation::new_id(), "actor": "user:test",
+            "ts": "2026-10-10T08:00:00.000Z", "op": rectangle(5_000, DEFAULT_LAYER_ID),
+        }))
+        .expect("envelope");
+        let sizes = BTreeMap::from([(
+            FileKey::parse("sop:1.2.3").expect("key"),
+            dcmview_annotation::ImageSize {
+                columns: 16,
+                rows: 16,
+                frames: 1,
+            },
+        )]);
+        backend.apply(vec![lent], &sizes).expect("store");
+        assert_eq!(backend.copied_records().expect("count"), 1);
+    }
+
+    /// A batch that is refused leaves nothing behind, the room made for it
+    /// included.
+    #[test]
+    fn a_refused_batch_gives_its_room_back() {
+        let backend = MemoryBackend::new(MemoryConfig {
+            author: Author::parse("user:test").expect("author"),
+            schema: None,
+        });
+        let mut ops: Vec<Op> = (0..10_000)
+            .map(|n| rectangle(n, DEFAULT_LAYER_ID))
+            .collect();
+        // The last one names a layer the store does not have.
+        ops.push(rectangle(10_000, "missing"));
+        assert!(matches!(given(&backend, ops), ApplyResult::Invalid { .. }));
+        let state = backend.state.lock().expect("state");
+        assert_eq!(state.annotations.len(), 0);
+        assert_eq!(state.annotations.capacity(), 0);
+        assert!(state.annotation_ids.capacity() < 64);
+        assert_eq!(state.revision, 0);
     }
 }

@@ -48,6 +48,20 @@ pub fn session_author() -> Author {
         .unwrap_or_else(|| Author::parse("user:local").expect("a valid author"))
 }
 
+/// What the records of one document may be charged in a viewer on a
+/// machine with `physical` bytes of memory: a quarter of it, but not less
+/// than 1 GiB and not more than 4 GiB, and 4 GiB
+/// (`dcmview_adapters::limits::MAX_HELD_BYTES`) where the physical memory
+/// is not known. A document that is charged all of it is held for the
+/// session, and a flat 4 GiB is the whole of a small machine's memory.
+/// The budget of the largest machines is the one the format's other
+/// bounds are sized for.
+pub fn default_document_budget(physical: Option<u64>) -> u64 {
+    const FLOOR: u64 = 1024 * 1024 * 1024;
+    let most = dcmview_adapters::limits::MAX_HELD_BYTES;
+    physical.map_or(most, |physical| (physical / 4).clamp(FLOOR, most))
+}
+
 /// How many bytes of document text the downloads being sent may hold
 /// together: 512 MiB. A download that would pass it while another is being
 /// sent is refused, and can be asked for again.
@@ -147,6 +161,8 @@ pub struct AnnotationStore {
     /// how many they may hold together.
     downloads: Arc<Mutex<u64>>,
     download_budget: u64,
+    /// What the records of one document may be charged, written or read.
+    document_budget: u64,
     /// Run by [`AnnotationStore::before_embed_write`], so a test can make a
     /// second write at exactly the point between a save's read of the view
     /// and its write.
@@ -169,6 +185,7 @@ impl AnnotationStore {
             exports: Arc::new(Semaphore::new(1)),
             downloads: Arc::new(Mutex::new(0)),
             download_budget: DOWNLOAD_BUDGET_BYTES,
+            document_budget: dcmview_adapters::Limits::DEFAULT.held_bytes,
             #[cfg(test)]
             before_embed_write: None,
         }
@@ -266,6 +283,22 @@ impl AnnotationStore {
     pub fn with_download_budget(mut self, bytes: u64) -> Self {
         self.download_budget = bytes;
         self
+    }
+
+    /// The same store with `bytes` as what the records of one document may
+    /// be charged ("Document exports"), in place of the adapters' fixed
+    /// default. The viewer sets [`default_document_budget`] for the
+    /// machine it runs on.
+    pub fn with_document_budget(mut self, bytes: u64) -> Self {
+        self.document_budget = bytes;
+        self
+    }
+
+    /// What the records of one document may be charged in this session:
+    /// `dcmview_adapters::Limits::held_bytes` for its exports and its
+    /// import.
+    pub fn document_budget(&self) -> u64 {
+        self.document_budget
     }
 
     /// Takes `bytes` of the session's download budget for a document text
@@ -425,5 +458,28 @@ impl AnnotationStore {
     pub(crate) fn with_before_embed_write(mut self, hook: Arc<dyn Fn() + Send + Sync>) -> Self {
         self.before_embed_write = Some(hook);
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::default_document_budget;
+
+    /// A document's budget follows the machine: a quarter of its memory,
+    /// between 1 GiB and 4 GiB, and 4 GiB where its memory is not known.
+    #[test]
+    fn a_documents_budget_is_a_quarter_of_the_machine_within_bounds() {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        for (physical, budget) in [
+            (Some(2 * GIB), GIB),
+            (Some(4 * GIB), GIB),
+            (Some(8 * GIB), 2 * GIB),
+            (Some(10 * GIB), 5 * GIB / 2),
+            (Some(16 * GIB), 4 * GIB),
+            (Some(512 * GIB), 4 * GIB),
+            (None, 4 * GIB),
+        ] {
+            assert_eq!(default_document_budget(physical), budget, "{physical:?}");
+        }
     }
 }

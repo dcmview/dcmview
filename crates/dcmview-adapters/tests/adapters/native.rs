@@ -857,13 +857,26 @@ fn documents_are_read_and_written_within_the_bounds_handed_over() {
         ),
         Err(ExportError::TooLarge { limit: bytes - 1 })
     );
+    // The lines have no bound on their bytes together: that bound is the
+    // first line's, as it is for a reader.
+    let first = lines_text.lines().next().expect("header").len() as u64;
+    assert!(first < bytes / 2);
     assert_eq!(
         write(
             &NativeJsonLines,
-            within(&|limits| limits.document_bytes = 10)
+            within(&|limits| limits.document_bytes = first)
         ),
-        Ok(()),
-        "the lines have no bound on their bytes together"
+        Ok(())
+    );
+    assert_eq!(
+        write(
+            &NativeJsonLines,
+            within(&|limits| limits.document_bytes = first - 1)
+        ),
+        Err(ExportError::TooMany {
+            bound: Bound::DocumentBytes,
+            limit: first - 1
+        })
     );
     assert_eq!(
         read(&json_text, within(&|limits| limits.document_bytes = bytes)),
@@ -896,6 +909,52 @@ fn documents_are_read_and_written_within_the_bounds_handed_over() {
         ),
         Err(too_large(Bound::LineBytes, longest - 1))
     );
+    // And a writer does not write a line a reader would not read.
+    assert_eq!(
+        write(
+            &NativeJsonLines,
+            within(&|limits| limits.line_bytes = longest)
+        ),
+        Ok(())
+    );
+    assert_eq!(
+        write(
+            &NativeJsonLines,
+            within(&|limits| limits.line_bytes = longest - 1)
+        ),
+        Err(ExportError::TooMany {
+            bound: Bound::LineBytes,
+            limit: longest - 1
+        })
+    );
+    // Nor a record with more values, or nested deeper, than one reads.
+    for (change, bound) in [
+        (
+            (&|limits: &mut Limits| limits.unit_values = 10) as &dyn Fn(&mut Limits),
+            Bound::UnitValues,
+        ),
+        (
+            &|limits: &mut Limits| limits.unit_containers = 1,
+            Bound::UnitContainers,
+        ),
+        (&|limits: &mut Limits| limits.depth = 2, Bound::Depth),
+    ] {
+        for adapter in [&NativeJson as &dyn ExportAdapter, &NativeJsonLines] {
+            assert!(
+                matches!(
+                    write(adapter, within(change)),
+                    Err(ExportError::TooMany { bound: refused, .. }) if refused == bound
+                ),
+                "{bound:?}"
+            );
+            let text = if adapter.info().id == "native" {
+                &json_text
+            } else {
+                &lines_text
+            };
+            assert!(read(text, within(change)).is_err(), "{bound:?}");
+        }
+    }
 }
 
 /// Whatever a document is made of, reading it is held to budgets that are

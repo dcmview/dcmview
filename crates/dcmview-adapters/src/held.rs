@@ -218,18 +218,20 @@ impl Held for Annotation {
     }
 }
 
+/// What a label's target holds.
+fn target(label: &Label) -> u64 {
+    match &label.target {
+        LabelTarget::Patient { patient: id }
+        | LabelTarget::Study { study: id }
+        | LabelTarget::Series { series: id } => text(id),
+        LabelTarget::File { file } | LabelTarget::Frame { frame: file, .. } => text(file.as_str()),
+        LabelTarget::Folder { folder, root } => text(folder) + text(root),
+    }
+}
+
 impl Held for Label {
     fn held_bytes(&self) -> u64 {
-        let target = match &self.target {
-            LabelTarget::Patient { patient: id }
-            | LabelTarget::Study { study: id }
-            | LabelTarget::Series { series: id } => text(id),
-            LabelTarget::File { file } | LabelTarget::Frame { frame: file, .. } => {
-                text(file.as_str())
-            }
-            LabelTarget::Folder { folder, root } => text(folder) + text(root),
-        };
-        target
+        target(self)
             + text(&self.field)
             + self.value.held_bytes()
             + text(self.layer.as_str())
@@ -307,6 +309,18 @@ impl Charged for Annotation {
 
 impl Charged for Label {
     const ROOM: u64 = size_of::<Label>() as u64 * 3 + 448;
+
+    /// A store finds a label by what it is on: its index holds the
+    /// label's target, field and layer a second time, with the author,
+    /// so those are charged twice and 128 bytes more.
+    fn charge(&self) -> u64 {
+        self.held_bytes()
+            + Self::ROOM
+            + target(self)
+            + text(&self.field)
+            + text(self.layer.as_str())
+            + 128
+    }
 }
 
 /// What the members of a document that are not in its four lists are

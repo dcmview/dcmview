@@ -615,7 +615,7 @@ pub async fn export_native(
     store: &AnnotationStore,
     form: NativeForm,
 ) -> Result<NativeExport, AnnotationError> {
-    export_native_within(registry, store, form, dcmview_adapters::Limits::DEFAULT).await
+    export_native_within(registry, store, form, session_limits(store)).await
 }
 
 /// [`export_native`] under the bounds given, which are `Limits::DEFAULT`
@@ -1076,14 +1076,17 @@ pub async fn import_native(
     source: &NativeSource,
     keep_going: Arc<dyn Fn() -> bool + Send + Sync>,
 ) -> Result<Report, AnnotationError> {
-    import_native_within(
-        registry,
-        store,
-        source,
-        keep_going,
-        dcmview_adapters::Limits::DEFAULT,
-    )
-    .await
+    import_native_within(registry, store, source, keep_going, session_limits(store)).await
+}
+
+/// The bounds a session's documents are written and read within:
+/// `Limits::DEFAULT`, with the session's budget for what one document's
+/// records may be charged (`AnnotationStore::document_budget`).
+fn session_limits(store: &AnnotationStore) -> dcmview_adapters::Limits {
+    dcmview_adapters::Limits {
+        held_bytes: store.document_budget(),
+        ..dcmview_adapters::Limits::DEFAULT
+    }
 }
 
 /// [`import_native`] under the bounds given, which are `Limits::DEFAULT`
@@ -1136,7 +1139,7 @@ async fn read_native_into_store(
     let source = source.clone();
     let author = Author::parse(NATIVE_IMPORT_AUTHOR).map_err(|_| native_store_failure())?;
     let import_author = author.clone();
-    let (imported, bindings) = tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         let files = registry.files_snapshot();
         let base = match common_directory(&files) {
             Some(base) => base,
@@ -1247,87 +1250,88 @@ async fn read_native_into_store(
             placement_not_kept,
             None,
         );
-        Ok::<_, AnnotationError>((imported, bindings))
+        // The records are handed to the store here, on the thread that
+        // read them, so what is freed on the way is freed where it was
+        // allocated.
+        let dcmview_adapters::Imported {
+            fragment,
+            mut report,
+        } = imported;
+        let dropped = fragment
+            .labels
+            .iter()
+            .filter(|label| {
+                !label.extensions.is_empty()
+                    || !label.unknown.is_empty()
+                    || label.meta.derived_from.is_some()
+                    || label.meta.score.is_some()
+            })
+            .count();
+        report.lose(LossCode::LabelMembersDropped, None, dropped as u64, None);
+        let mut ops = Vec::with_capacity(
+            fragment.layers.len() + fragment.annotations.len() + fragment.labels.len(),
+        );
+        ops.extend(
+            fragment
+                .layers
+                .into_iter()
+                .map(|layer| Op::CreateLayer { layer }),
+        );
+        ops.extend(
+            fragment
+                .annotations
+                .into_iter()
+                .map(|annotation| Op::CreateAnnotation {
+                    annotation: Box::new(annotation),
+                }),
+        );
+        ops.extend(fragment.labels.into_iter().map(|label| Op::SetLabel {
+            id: label.id,
+            base_rev: None,
+            target: label.target,
+            field: label.field,
+            layer: label.layer,
+            before: None,
+            after: Some(label.value),
+        }));
+        if !ops.is_empty() {
+            let envelope = OpEnvelope {
+                op_id: new_id(),
+                actor: import_author.clone(),
+                ts: now(),
+                op: Op::Batch { ops },
+            };
+            let transacted = backend
+                .transact_owned(
+                    envelope,
+                    &BTreeMap::<FileKey, ImageSize>::new(),
+                    Write {
+                        checking: Checking::AsLoaded,
+                        author: &import_author,
+                        embed_slot: None,
+                        import: false,
+                        view: None,
+                        bindings: Some(&bindings),
+                    },
+                )
+                .map_err(|_| native_store_failure())?;
+            match transacted.result {
+                ApplyResult::Ok { .. } => {}
+                ApplyResult::Invalid { violations } => {
+                    let code = violations
+                        .first()
+                        .map_or(ViolationCode::TooManyItems, |violation| violation.code);
+                    return Err(AnnotationError::ImportFailed(format!(
+                        "the annotation store refused the import: {code:?}"
+                    )));
+                }
+                ApplyResult::Conflict { .. } => return Err(native_store_failure()),
+            }
+        }
+        Ok::<_, AnnotationError>(report)
     })
     .await
-    .map_err(|_| native_store_failure())??;
-    let dcmview_adapters::Imported {
-        fragment,
-        mut report,
-    } = imported;
-    let dropped = fragment
-        .labels
-        .iter()
-        .filter(|label| {
-            !label.extensions.is_empty()
-                || !label.unknown.is_empty()
-                || label.meta.derived_from.is_some()
-                || label.meta.score.is_some()
-        })
-        .count();
-    report.lose(LossCode::LabelMembersDropped, None, dropped as u64, None);
-    let mut ops = Vec::with_capacity(
-        fragment.layers.len() + fragment.annotations.len() + fragment.labels.len(),
-    );
-    ops.extend(
-        fragment
-            .layers
-            .into_iter()
-            .map(|layer| Op::CreateLayer { layer }),
-    );
-    ops.extend(
-        fragment
-            .annotations
-            .into_iter()
-            .map(|annotation| Op::CreateAnnotation {
-                annotation: Box::new(annotation),
-            }),
-    );
-    ops.extend(fragment.labels.into_iter().map(|label| Op::SetLabel {
-        id: label.id,
-        base_rev: None,
-        target: label.target,
-        field: label.field,
-        layer: label.layer,
-        before: None,
-        after: Some(label.value),
-    }));
-    if !ops.is_empty() {
-        let envelope = OpEnvelope {
-            op_id: new_id(),
-            actor: author.clone(),
-            ts: now(),
-            op: Op::Batch { ops },
-        };
-        let transacted = store
-            .backend()
-            .transact_owned(
-                envelope,
-                &BTreeMap::<FileKey, ImageSize>::new(),
-                Write {
-                    checking: Checking::AsLoaded,
-                    author: &author,
-                    embed_slot: None,
-                    import: false,
-                    view: None,
-                    bindings: Some(&bindings),
-                },
-            )
-            .map_err(|_| native_store_failure())?;
-        match transacted.result {
-            ApplyResult::Ok { .. } => {}
-            ApplyResult::Invalid { violations } => {
-                let code = violations
-                    .first()
-                    .map_or(ViolationCode::TooManyItems, |violation| violation.code);
-                return Err(AnnotationError::ImportFailed(format!(
-                    "the annotation store refused the import: {code:?}"
-                )));
-            }
-            ApplyResult::Conflict { .. } => return Err(native_store_failure()),
-        }
-    }
-    Ok(report)
+    .map_err(|_| native_store_failure())?
 }
 
 /// Which of several byte-identical files a row was written for.
