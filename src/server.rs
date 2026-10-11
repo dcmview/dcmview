@@ -1,3 +1,4 @@
+pub mod annotations;
 mod api;
 mod catalog;
 pub mod lifecycle;

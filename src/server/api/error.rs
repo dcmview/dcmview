@@ -2,7 +2,8 @@ use crate::api::contracts::{
     ApiErrorCode, ErrorResponse, DECODE_BUSY_RETRY_AFTER_SECONDS, UNAUTHORIZED_CHALLENGE,
 };
 use crate::pixels::{self, PixelError};
-use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
+use crate::server::annotations::AnnotationError;
+use axum::extract::rejection::{BytesRejection, JsonRejection, PathRejection, QueryRejection};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -71,6 +72,23 @@ impl ApiError {
             StatusCode::UNAUTHORIZED,
             ApiErrorCode::Unauthorized,
             "missing or invalid access token: send Authorization: Bearer <token>",
+        )
+    }
+
+    /// A body that is not the JSON its endpoint reads.
+    pub(super) fn invalid_json(message: impl Into<String>) -> Self {
+        Self::coded(StatusCode::BAD_REQUEST, ApiErrorCode::InvalidJson, message)
+    }
+
+    /// A body longer than the operation endpoint reads.
+    pub(super) fn payload_too_large() -> Self {
+        Self::coded(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            ApiErrorCode::PayloadTooLarge,
+            format!(
+                "an annotation operation is at most {} bytes",
+                crate::api::contracts::ANNOTATION_OP_MAX_BYTES
+            ),
         )
     }
 
@@ -152,6 +170,43 @@ pub(super) fn query_rejection(error: QueryRejection) -> ApiError {
 
 pub(super) fn json_rejection(error: JsonRejection) -> ApiError {
     ApiError::from_rejection(error.status(), ApiErrorCode::InvalidJson, error.body_text())
+}
+
+/// A body the operation endpoint could not take whole: longer than the
+/// endpoint reads, or cut short.
+pub(super) fn body_rejection(error: BytesRejection) -> ApiError {
+    if error.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        ApiError::payload_too_large()
+    } else {
+        ApiError::from_rejection(error.status(), ApiErrorCode::BadRequest, error.body_text())
+    }
+}
+
+/// The answer for an annotation request that could not be served. A ROI
+/// list the EMBED endpoint refuses is the 400 it always was, with the
+/// reason unchanged, and a failed import the 500 with the import's message.
+pub(super) fn annotation_error(error: AnnotationError) -> ApiError {
+    let message = error.to_string();
+    match error {
+        AnnotationError::NotFound(_) => ApiError::not_found(message),
+        AnnotationError::Rejected(_) => ApiError::bad_request(message),
+        AnnotationError::KeyUnavailable { .. } => ApiError::coded(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            ApiErrorCode::FileKeyUnavailable,
+            message,
+        ),
+        AnnotationError::KeyAmbiguous { .. } => ApiError::coded(
+            StatusCode::CONFLICT,
+            ApiErrorCode::FileKeyAmbiguous,
+            message,
+        ),
+        AnnotationError::KeyReplaced { .. } => {
+            ApiError::coded(StatusCode::CONFLICT, ApiErrorCode::FileKeyReplaced, message)
+        }
+        AnnotationError::ImportFailed(_) | AnnotationError::Stopped | AnnotationError::Store(_) => {
+            ApiError::internal(message)
+        }
+    }
 }
 
 pub(super) fn pixel_error(error: PixelError) -> ApiError {
