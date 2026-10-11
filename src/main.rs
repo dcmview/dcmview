@@ -111,7 +111,14 @@ struct Cli {
         long = "annotations",
         value_name = "FILE",
         help = "Load annotations without modifying the file: an EMBED-style ROI CSV, or a \
-                dcmview.annotations document as JSON or JSON Lines"
+                dcmview.annotations document as JSON or JSON Lines",
+        long_help = "Load annotations without modifying the file: an EMBED-style ROI CSV, or a \
+                     dcmview.annotations document as JSON or JSON Lines.\n\nA file that starts \
+                     with { (after an optional byte order mark) and names the dcmview.annotations \
+                     format in its first 4,096 bytes is read as a document; every other file is \
+                     read as CSV. A file that is neither stops dcmview with exit status 1 before \
+                     it serves. A document that cannot be loaded does not: the viewer serves and \
+                     GET /api/annotations/import says why."
     )]
     annotations: Option<PathBuf>,
 

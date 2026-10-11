@@ -789,7 +789,9 @@ fn document_file_ref(
 /// record's key, with `imported` as its import mark (`false` when
 /// absent). When no loaded file is that copy, the record is left out: it
 /// is taken from `counts.annotations_out` and added to `counts.unmatched`.
-/// An `embed` member of another shape is left where it is and binds
+/// The member has that shape when it is an object with a string `row_of`,
+/// an `imported` that is a boolean or absent, and no other member. An
+/// `embed` member of any other shape is left where it is and binds
 /// nothing.
 ///
 /// A record without that member shows on every file that has its key. So

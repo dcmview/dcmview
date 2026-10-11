@@ -32,7 +32,7 @@ dcmview [OPTIONS] <PATH> [PATH ...]
 | `--decode-memory <BYTES>` | a quarter of physical memory, from `1GiB` to `4GiB` | Memory that frames being decoded may use between them; minimum `256MiB`. See [Decode memory](#decode-memory). |
 | `--no-recursive` | `false` | Scan only the top level of input directories. |
 | `--annotations <FILE>` | none | Load annotations without modifying the file: an EMBED-style ROI CSV, or a `dcmview.annotations` document as JSON or JSON Lines. The start of the file decides which. |
-| `--annotations-format <FORMAT>` | decided from the file | Read `--annotations` as `embed` (EMBED-style ROI CSV) or `native` (a `dcmview.annotations` document). |
+| `--annotations-format <FORMAT>` | decided from the file | Read `--annotations` as `embed` (EMBED-style ROI CSV) or `native` (a `dcmview.annotations` document). Without it, a file that starts with `{` and names the `dcmview.annotations` format in its first 4,096 bytes is a document and every other file is read as CSV; a file that is neither stops `dcmview` with exit status 1. |
 | `--formats <NAMES>` | all five formats | Comma-separated `dicom,png,jpeg,tiff,webp`; narrows directory walks only. |
 | `--filter <FIELD=VALUE>` | none | Include only files matching a metadata, format, or path filter; repeatable. |
 | `--mask` | `false` | Replace patient identifiers in everything the viewer displays, for screen sharing. Display only: files are not modified and this is not de-identification. Fixed for the session. |

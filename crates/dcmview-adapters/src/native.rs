@@ -83,7 +83,8 @@
 //!    may share a key (`duplicate_file_key`, at the second). Each is then
 //!    resolved (`context.resolver.resolve`):
 //!    - no match: `file_unmatched` at its row;
-//!    - a refusal: `evidence_conflict` or `key_unavailable` at its row;
+//!    - a refusal: `evidence_conflict`, `file_unverified` or
+//!      `key_unavailable` at its row, by the [`Refusal`];
 //!    - a match whose rows, columns or frame count are not the
 //!      reference's: refused, `size_mismatch`;
 //!    - a match without a key ([`crate::Resolved::key`]): refused,
