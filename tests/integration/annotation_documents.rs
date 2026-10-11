@@ -1766,6 +1766,52 @@ async fn an_import_leaves_no_copy_of_a_matched_file_without_its_key() {
     assert_eq!(session.rois(3).await.roi_coords, [[4, 4, 8, 8]]);
 }
 
+/// A client that asks for a compressed download gets the document it
+/// gets without: both forms, a document of one piece and one of several.
+#[tokio::test]
+async fn a_compressed_download_is_the_same_document() {
+    use std::io::Read;
+    let dir = tempdir().expect("temp dir");
+    for files in [2_usize, 4_000] {
+        let session = Session::loading(
+            (0..files)
+                .map(|n| entry(dir.path(), &format!("{n}.dcm"), &format!("1.2.3.{n}")))
+                .collect(),
+        );
+        session.stage(
+            (0..files)
+                .map(|n| (n, rows(&[[1, 2, 3, 4]], &[])))
+                .collect(),
+        );
+        for path in [
+            "/api/annotations/export.json",
+            "/api/annotations/export.jsonl",
+            "/api/annotations/export.csv",
+        ] {
+            let plain = session.server.get(path).await;
+            plain.assert_status_ok();
+            let plain = plain.as_bytes().to_vec();
+            assert_eq!(
+                plain.len() > 1024 * 1024,
+                files > 2 && !path.ends_with("csv")
+            );
+            let packed = session
+                .server
+                .get(path)
+                .add_header("accept-encoding", "gzip")
+                .await;
+            packed.assert_status_ok();
+            assert_eq!(packed.header("content-encoding"), "gzip", "{path}");
+            let mut unpacked = Vec::new();
+            flate2::read::GzDecoder::new(packed.as_bytes().as_ref())
+                .read_to_end(&mut unpacked)
+                .unwrap_or_else(|error| panic!("{path}, {files} files: {error}"));
+            // Ids and stamps are the store's, so two exports are one text.
+            assert_eq!(unpacked, plain, "{path}, {files} files");
+        }
+    }
+}
+
 /// A store that takes labels: a schema with one field for files and frames.
 fn labelled_store() -> AnnotationStore {
     let mut schema = LabelSchema::implicit();

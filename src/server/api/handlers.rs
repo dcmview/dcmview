@@ -613,6 +613,9 @@ async fn native_export(
             Some((Ok::<_, std::convert::Infallible>(piece), (rest, hold)))
         },
     );
+    // A layer that compresses the body may ask for more after the last
+    // piece; a fused stream answers that with the end again.
+    let body = futures::StreamExt::fuse(body);
     let mut response = Response::new(axum::body::Body::from_stream(body));
     let headers = response.headers_mut();
     headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(media_type));
