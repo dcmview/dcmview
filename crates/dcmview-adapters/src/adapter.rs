@@ -9,6 +9,7 @@
 //! registry. The same adapter therefore gives the same bytes in both.
 
 use crate::error::{ExportError, ImportError};
+use crate::limits::Limits;
 use crate::report::Report;
 use dcmview_annotation::{
     Annotation, Author, Document, FileKey, FileRef, GeometryType, ImageSize, Label, LabelSchema,
@@ -104,6 +105,10 @@ pub enum Refusal {
     EvidenceConflict,
     /// The file has no key and cannot be given one.
     KeyUnavailable,
+    /// The reference names its file by content, and a file found for it
+    /// could not be read to compare. Nothing is placed on a file that was
+    /// not compared.
+    Unverified,
 }
 
 /// What a resolver answers for one file reference.
@@ -163,6 +168,9 @@ pub struct ImportContext<'a> {
     /// Asked between records; `false` ends the import with
     /// [`ImportError::Cancelled`].
     pub keep_going: &'a dyn Fn() -> bool,
+    /// The bounds the import reads within ([`Limits::DEFAULT`] outside
+    /// tests).
+    pub limits: Limits,
 }
 
 /// What an import read, ready to be applied as operations. Every
@@ -212,6 +220,10 @@ pub struct ExportContext<'a> {
     /// The most bytes the export may write. One more is
     /// [`ExportError::TooLarge`]. A format's own bound applies as well.
     pub max_bytes: u64,
+    /// The bounds of the formats ([`Limits::DEFAULT`] outside tests). An
+    /// export writes nothing an import within the same bounds refuses to
+    /// read for its size.
+    pub limits: Limits,
 }
 
 /// Writes a document in one format.

@@ -2,9 +2,12 @@
 //!
 //! An error ends the whole import or export: nothing of it is handed on.
 //! Like a [`crate::Report`], an error is fixed words and numbers. Its text
-//! never holds bytes of the input (not a path, a value, nor the message of
-//! a parser that quotes what it read), so it can be shown, logged and sent
-//! in a session that masks identifiers.
+//! never holds text of the input: not a path, a key, a name, nor the
+//! message of a parser that quotes what it read. The numbers are row
+//! numbers, positions, bounds and, where a variant has one, a count or a
+//! frame index the file states (`num_ROI`, an entry of `ROI_frames`), which
+//! are whole numbers that parsed and nothing else. So an error can be
+//! shown, logged and sent in a session that masks identifiers.
 
 use dcmview_annotation::ViolationCode;
 
@@ -79,10 +82,12 @@ pub enum ImportError {
     /// `ROI_coords` is not a JSON list of lists of numbers.
     #[error("annotations CSV row {row}: ROI_coords must be a JSON list of [ymin, xmin, ymax, xmax] arrays")]
     RoiCoords { row: u64 },
-    /// One box has other than four numbers, or a number that is past
-    /// 4,294,967,295 once corrected.
+    /// One box has other than four numbers.
     #[error("annotations CSV row {row}: ROI_coords[{roi}] must contain exactly 4 integers [ymin, xmin, ymax, xmax]")]
     RoiCoordsEntry { row: u64, roi: usize },
+    /// One box has a number that is above 4,294,967,295 once corrected.
+    #[error("annotations CSV row {row}: ROI_coords[{roi}] holds a coordinate above 4294967295")]
+    CoordinateTooLarge { row: u64, roi: usize },
     #[error("annotations CSV row {row}: num_ROI must be an integer")]
     NumRoi { row: u64 },
     #[error(
@@ -115,6 +120,10 @@ pub enum ImportError {
     /// expected shape; or a JSON Lines first line holds records of its own.
     #[error("annotations record {row} is not JSON of the dcmview.annotations format")]
     Malformed { row: u64 },
+    /// A JSON Lines file does not end with its last line: it was cut off,
+    /// or records were added after it was written.
+    #[error("the annotations file is incomplete: its last line is missing or does not count its records")]
+    Truncated,
     /// The `format` member is not `dcmview.annotations`.
     #[error("the annotations file is not a dcmview.annotations document")]
     WrongFormat,
@@ -137,6 +146,11 @@ pub enum ExportError {
     /// The output would be longer than the context or the format allows.
     #[error("the export is larger than {limit} bytes")]
     TooLarge { limit: u64 },
+    /// The document holds more files, or more annotations and labels, than
+    /// an import reads ([`crate::Limits::files`], [`crate::Limits::records`]).
+    /// Nothing was written.
+    #[error("the export holds more than {limit} of {bound}")]
+    TooMany { bound: Bound, limit: u64 },
     /// The document cannot be written in this format: an annotation names
     /// a file the document has no `FileRef` for.
     #[error("the document names a file it does not describe")]

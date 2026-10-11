@@ -288,7 +288,7 @@ fn an_invalid_matched_row_fails_the_whole_import() {
         (
             "a coordinate past what a box can hold",
             "m.dcm,1,\"[[10,20,50,4294967295.5]]\",[]\n",
-            ImportError::RoiCoordsEntry { row: 3, roi: 0 },
+            ImportError::CoordinateTooLarge { row: 3, roi: 0 },
         ),
         (
             "an empty path",

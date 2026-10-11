@@ -57,3 +57,52 @@ pub const MAX_RECORDS: usize = 1_048_576;
 /// How many row references one entry of a `Report` keeps: the first 16. The
 /// entry's `count` still counts every occurrence.
 pub const MAX_REPORT_ROWS: usize = 16;
+
+/// The bounds an import or an export runs within, as one value a caller
+/// hands over. [`Limits::DEFAULT`] is every constant of this module, and is
+/// what the viewer uses; a test hands over smaller ones, so that a bound
+/// is met with an input of a few lines.
+///
+/// An error that reports a bound gives the number that applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limits {
+    /// [`MAX_CSV_ROW_BYTES`].
+    pub csv_row_bytes: u64,
+    /// [`MAX_CSV_ROWS`].
+    pub csv_rows: u64,
+    /// [`MAX_ROIS_PER_ROW`].
+    pub rois_per_row: usize,
+    /// [`MAX_FRAMES_PER_ROI`].
+    pub frames_per_roi: usize,
+    /// [`MAX_CSV_PATH_BYTES`].
+    pub csv_path_bytes: usize,
+    /// [`MAX_DOCUMENT_BYTES`].
+    pub document_bytes: u64,
+    /// [`MAX_LINE_BYTES`].
+    pub line_bytes: u64,
+    /// [`MAX_FILES`].
+    pub files: usize,
+    /// [`MAX_RECORDS`].
+    pub records: usize,
+}
+
+impl Limits {
+    /// The constants of this module.
+    pub const DEFAULT: Limits = Limits {
+        csv_row_bytes: MAX_CSV_ROW_BYTES,
+        csv_rows: MAX_CSV_ROWS,
+        rois_per_row: MAX_ROIS_PER_ROW,
+        frames_per_roi: MAX_FRAMES_PER_ROI,
+        csv_path_bytes: MAX_CSV_PATH_BYTES,
+        document_bytes: MAX_DOCUMENT_BYTES,
+        line_bytes: MAX_LINE_BYTES,
+        files: MAX_FILES,
+        records: MAX_RECORDS,
+    };
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}

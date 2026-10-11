@@ -39,7 +39,7 @@ use crate::adapter::{
     Fragment, ImportAdapter, ImportContext, Imported, Resolved,
 };
 use crate::error::{Bound, ExportError, ImportError};
-use crate::limits;
+use crate::limits::{self, Limits};
 use crate::report::{AdapterRef, Direction, LossCode, Report, RowRef, WarningCode};
 use dcmview_annotation::{
     new_id, Annotation, Author, Document, FileKey, FrameScope, Geometry, GeometryType, LayerId,
@@ -238,8 +238,9 @@ pub fn write_csv<'a>(
 /// [`ImportError::TooLarge`] for a header past
 /// [`crate::limits::MAX_CSV_ROW_BYTES`].
 pub fn check_header(input: &mut dyn Read) -> Result<(), ImportError> {
-    let (mut reader, budget) = csv_reader(input);
-    read_header(&mut reader, &budget).map(|_| ())
+    let bounds = &Limits::DEFAULT;
+    let (mut reader, budget) = csv_reader(input, bounds);
+    read_header(&mut reader, &budget, bounds).map(|_| ())
 }
 
 /// Reads an EMBED CSV as rows for the loaded files its paths name.
@@ -299,12 +300,13 @@ pub fn check_header(input: &mut dyn Read) -> Result<(), ImportError> {
 /// numbers:
 ///
 /// - a number below zero is read as 0, and the box is reported once as
-///   `negative_coordinate`;
+///   `negative_coordinate`. Negative zero (`-0`, `-0.0`) is zero and is
+///   not below it: it is read as 0 without a report;
 /// - otherwise a number that is not whole is rounded to the nearest whole
 ///   number, halves away from zero (`f64::round`), and the box is reported
 ///   once as `non_integer_coordinate`;
 /// - a number that is then above 4,294,967,295 is
-///   [`ImportError::RoiCoordsEntry`];
+///   [`ImportError::CoordinateTooLarge`];
 /// - a whole number written with a fraction or an exponent (`20.0`, `2e1`)
 ///   is that number, without a report.
 ///
@@ -363,8 +365,20 @@ pub fn read_rows(
     resolver: &dyn FileResolver,
     keep_going: &dyn Fn() -> bool,
 ) -> Result<EmbedRead, ImportError> {
-    let (mut reader, budget) = csv_reader(input);
-    let columns = read_header(&mut reader, &budget)?;
+    read_rows_within(input, resolver, keep_going, &Limits::DEFAULT)
+}
+
+/// [`read_rows`] within `bounds` instead of the constants of
+/// [`crate::limits`]: every bound the reader's contract names is the member
+/// of `bounds` that stands for it, and an error gives that number.
+pub fn read_rows_within(
+    input: &mut dyn Read,
+    resolver: &dyn FileResolver,
+    keep_going: &dyn Fn() -> bool,
+    bounds: &Limits,
+) -> Result<EmbedRead, ImportError> {
+    let (mut reader, budget) = csv_reader(input, bounds);
+    let columns = read_header(&mut reader, &budget, bounds)?;
     let mut report = Report::new(
         AdapterRef {
             id: EMBED_ADAPTER_ID.to_string(),
@@ -384,8 +398,8 @@ pub fn read_rows(
         budget.reset();
         let start = reader.position().byte();
         let read = reader.read_record(&mut record);
-        if budget.exceeded.get() || reader.position().byte() - start > limits::MAX_CSV_ROW_BYTES {
-            return Err(csv_row_too_large());
+        if budget.exceeded.get() || reader.position().byte() - start > bounds.csv_row_bytes {
+            return Err(csv_row_too_large(bounds));
         }
         let has_record = read.map_err(|error| match error.kind() {
             csv::ErrorKind::Io(error) => ImportError::Io {
@@ -397,10 +411,10 @@ pub fn read_rows(
             break;
         }
         row += 1;
-        if row - 1 > limits::MAX_CSV_ROWS {
+        if row - 1 > bounds.csv_rows {
             return Err(ImportError::TooLarge {
                 bound: Bound::CsvRows,
-                limit: limits::MAX_CSV_ROWS,
+                limit: bounds.csv_rows,
             });
         }
         let path = record.get(columns.path).unwrap_or_default().trim();
@@ -408,7 +422,7 @@ pub fn read_rows(
             return Err(ImportError::EmptyPath { row });
         }
         targets.clear();
-        if path.len() <= limits::MAX_CSV_PATH_BYTES {
+        if path.len() <= bounds.csv_path_bytes {
             resolver.by_path(path, &mut targets);
         }
         let Some(first) = targets.first() else {
@@ -419,7 +433,7 @@ pub fn read_rows(
         let text = record.get(columns.coords).unwrap_or_default().trim();
         let count: Vec<IgnoredAny> =
             serde_json::from_str(text).map_err(|_| ImportError::RoiCoords { row })?;
-        check_roi_count(count.len())?;
+        check_roi_count(count.len(), bounds)?;
         let shapes: Vec<Vec<IgnoredAny>> =
             serde_json::from_str(text).map_err(|_| ImportError::RoiCoords { row })?;
         if let Some(roi) = shapes.iter().position(|shape| shape.len() != 4) {
@@ -444,7 +458,7 @@ pub fn read_rows(
                     rounded
                 };
                 if value > f64::from(u32::MAX) {
-                    return Err(ImportError::RoiCoordsEntry { row, roi });
+                    return Err(ImportError::CoordinateTooLarge { row, roi });
                 }
                 *place = value as u32;
             }
@@ -470,16 +484,16 @@ pub fn read_rows(
             let text = record.get(column).unwrap_or_default().trim();
             let count: Vec<IgnoredAny> =
                 serde_json::from_str(text).map_err(|_| ImportError::RoiFrames { row })?;
-            check_roi_count(count.len())?;
+            check_roi_count(count.len(), bounds)?;
             let shapes: Vec<Vec<IgnoredAny>> =
                 serde_json::from_str(text).map_err(|_| ImportError::RoiFrames { row })?;
             if shapes
                 .iter()
-                .any(|shape| shape.len() > limits::MAX_FRAMES_PER_ROI)
+                .any(|shape| shape.len() > bounds.frames_per_roi)
             {
                 return Err(ImportError::TooLarge {
                     bound: Bound::FramesPerRoi,
-                    limit: limits::MAX_FRAMES_PER_ROI as u64,
+                    limit: bounds.frames_per_roi as u64,
                 });
             }
             drop(shapes);
@@ -768,7 +782,8 @@ impl ImportAdapter for EmbedAdapter {
             inner: context.resolver,
             keys: RefCell::new(HashMap::new()),
         };
-        let EmbedRead { files, mut report } = read_rows(input, &resolver, context.keep_going)?;
+        let EmbedRead { files, mut report } =
+            read_rows_within(input, &resolver, context.keep_going, &context.limits)?;
         let keys = resolver.keys.into_inner();
         let mut fragment = Fragment::default();
         for file in files {
@@ -836,14 +851,15 @@ impl Write for LimitedWriter<'_> {
 
 #[derive(Clone)]
 struct RowBudget {
+    /// What one record may take from the input.
+    allowed: u64,
     remaining: Rc<Cell<u64>>,
     exceeded: Rc<Cell<bool>>,
 }
 
 impl RowBudget {
     fn reset(&self) {
-        self.remaining
-            .set(limits::MAX_CSV_ROW_BYTES + limits::CSV_READ_AHEAD_BYTES);
+        self.remaining.set(self.allowed);
         self.exceeded.set(false);
     }
 }
@@ -867,8 +883,12 @@ impl Read for BudgetReader<'_> {
     }
 }
 
-fn csv_reader(input: &mut dyn Read) -> (csv::Reader<BudgetReader<'_>>, RowBudget) {
+fn csv_reader<'a>(
+    input: &'a mut dyn Read,
+    bounds: &Limits,
+) -> (csv::Reader<BudgetReader<'a>>, RowBudget) {
     let budget = RowBudget {
+        allowed: bounds.csv_row_bytes + limits::CSV_READ_AHEAD_BYTES,
         remaining: Rc::new(Cell::new(0)),
         exceeded: Rc::new(Cell::new(false)),
     };
@@ -891,12 +911,13 @@ struct Columns {
 fn read_header(
     reader: &mut csv::Reader<BudgetReader<'_>>,
     budget: &RowBudget,
+    bounds: &Limits,
 ) -> Result<Columns, ImportError> {
     budget.reset();
     let start = reader.position().byte();
     let headers = reader.headers().map_err(|_| {
         if budget.exceeded.get() {
-            csv_row_too_large()
+            csv_row_too_large(bounds)
         } else {
             ImportError::CsvHeader
         }
@@ -905,8 +926,8 @@ fn read_header(
     let coords = headers.iter().position(|field| field == "ROI_coords");
     let count = headers.iter().position(|field| field == "num_ROI");
     let frames = headers.iter().position(|field| field == "ROI_frames");
-    if reader.position().byte() - start > limits::MAX_CSV_ROW_BYTES {
-        return Err(csv_row_too_large());
+    if reader.position().byte() - start > bounds.csv_row_bytes {
+        return Err(csv_row_too_large(bounds));
     }
     Ok(Columns {
         path: path.ok_or(ImportError::MissingColumn {
@@ -920,18 +941,18 @@ fn read_header(
     })
 }
 
-fn csv_row_too_large() -> ImportError {
+fn csv_row_too_large(bounds: &Limits) -> ImportError {
     ImportError::TooLarge {
         bound: Bound::CsvRowBytes,
-        limit: limits::MAX_CSV_ROW_BYTES,
+        limit: bounds.csv_row_bytes,
     }
 }
 
-fn check_roi_count(count: usize) -> Result<(), ImportError> {
-    if count > limits::MAX_ROIS_PER_ROW {
+fn check_roi_count(count: usize, bounds: &Limits) -> Result<(), ImportError> {
+    if count > bounds.rois_per_row {
         Err(ImportError::TooLarge {
             bound: Bound::RoisPerRow,
-            limit: limits::MAX_ROIS_PER_ROW as u64,
+            limit: bounds.rois_per_row as u64,
         })
     } else {
         Ok(())

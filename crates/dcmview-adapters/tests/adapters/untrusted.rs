@@ -6,7 +6,7 @@ use super::support::{
     embed_golden_inputs, fixture_document_text, key, loaded, report_json, size, Pool, Session,
 };
 use dcmview_adapters::embed::read_rows;
-use dcmview_adapters::{EmbedAdapter, ImportAdapter, NativeJson, Registry};
+use dcmview_adapters::{EmbedAdapter, ImportAdapter, Limits, NativeJson, Registry};
 use dcmview_annotation::Document;
 
 /// A small generator with a fixed seed, so every run mutates the same way.
@@ -177,6 +177,7 @@ fn a_mutated_native_document_is_read_or_refused_and_never_more() {
         &dcmview_adapters::ExportContext {
             paths: &std::collections::BTreeMap::new(),
             max_bytes: u64::MAX,
+            limits: Limits::DEFAULT,
         },
         &mut lines,
     )

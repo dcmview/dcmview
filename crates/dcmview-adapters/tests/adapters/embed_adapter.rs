@@ -3,7 +3,7 @@
 use super::support::{key, loaded, report_json, size, Pool, Session};
 use dcmview_adapters::{
     Confidence, Directions, EmbedAdapter, ExportAdapter, ExportContext, ExportError, ImportAdapter,
-    Registry,
+    Limits, Registry,
 };
 use dcmview_annotation::{Document, FileKey, FrameScope, Geometry};
 use serde_json::{json, Value};
@@ -100,6 +100,7 @@ fn a_document_is_written_as_embed_rows_and_what_embed_cannot_hold_is_reported() 
             &ExportContext {
                 paths: &paths,
                 max_bytes: u64::MAX,
+                limits: Limits::DEFAULT,
             },
             &mut out,
         )
@@ -146,6 +147,7 @@ fn an_export_is_held_to_its_byte_bound_and_to_a_whole_document() {
     let context = |max_bytes| ExportContext {
         paths: &paths,
         max_bytes,
+        limits: Limits::DEFAULT,
     };
     EmbedAdapter
         .export(&document, &context(u64::MAX), &mut whole)

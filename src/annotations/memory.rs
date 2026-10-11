@@ -87,6 +87,23 @@ pub(crate) struct Write<'a> {
     /// What an EMBED view must still show for the write to go ahead, or
     /// `None` for a write that depends on no view.
     pub view: Option<ViewCheck<'a>>,
+    /// The binding of single annotations this write creates, by id, for a
+    /// write whose records belong to several files' views (a native import
+    /// that brings back the rows of byte-identical copies). An annotation
+    /// in it takes its slot and its import mark from there; any other
+    /// takes `embed_slot` and `import`.
+    pub bindings: Option<&'a HashMap<Uuid, Binding>>,
+}
+
+/// Where a record stands in the EMBED views: the file index whose view
+/// alone shows it, and whether it stands with the rows of the
+/// `--annotations` import, first in that view
+/// ([`MemoryBackend::embed_records`]). Bound when the record is created,
+/// for good.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Binding {
+    pub slot: usize,
+    pub imported: bool,
 }
 
 /// The EMBED view a write was planned against. A transaction with one is
@@ -645,6 +662,7 @@ impl AnnotationBackend for MemoryBackend {
                         embed_slot: None,
                         import: false,
                         view: None,
+                        bindings: None,
                     },
                 )
                 .map(|transacted| transacted.result)
@@ -653,7 +671,32 @@ impl AnnotationBackend for MemoryBackend {
     }
 
     fn export(&self) -> Result<Document, BackendError> {
+        self.export_bound().map(|(document, _)| document)
+    }
+
+    fn revision(&self) -> Result<u64, BackendError> {
+        Ok(self.state.lock().map_err(lock_error)?.revision)
+    }
+}
+
+impl MemoryBackend {
+    /// [`AnnotationBackend::export`], and beside it, for each annotation of
+    /// the document in its order, the [`Binding`] it was created with
+    /// (`None` for one that every file with its key shows). Both are read
+    /// at one moment.
+    pub(crate) fn export_bound(&self) -> Result<(Document, Vec<Option<Binding>>), BackendError> {
         let state = self.state.lock().map_err(lock_error)?;
+        let bindings = state
+            .annotations
+            .iter()
+            .filter(|entry| !entry.deleted)
+            .map(|entry| {
+                entry.embed_slot.map(|slot| Binding {
+                    slot,
+                    imported: entry.imported,
+                })
+            })
+            .collect();
         let mut document = Document::new();
         document.schema = self.config.schema.clone();
         document.layers = state
@@ -674,11 +717,7 @@ impl AnnotationBackend for MemoryBackend {
             .filter(|entry| !entry.cleared)
             .map(|entry| entry.record.clone())
             .collect();
-        Ok(document)
-    }
-
-    fn revision(&self) -> Result<u64, BackendError> {
-        Ok(self.state.lock().map_err(lock_error)?.revision)
+        Ok((document, bindings))
     }
 }
 
@@ -1056,11 +1095,18 @@ impl Transaction<'_> {
                     .push(place);
                 self.changed(RevisionKind::Annotation, record.id, record.meta.rev);
                 self.count_record(self.state.layer_ids[&record.layer], true);
+                let binding = self
+                    .write
+                    .bindings
+                    .and_then(|bindings| bindings.get(&record.id))
+                    .copied();
                 self.state.annotations.push(AnnotationEntry {
                     record,
                     deleted: false,
-                    embed_slot: self.write.embed_slot,
-                    imported: self.write.import,
+                    embed_slot: binding
+                        .map(|binding| binding.slot)
+                        .or(self.write.embed_slot),
+                    imported: binding.map_or(self.write.import, |binding| binding.imported),
                     deleted_bytes: 0,
                     dropped: false,
                 });

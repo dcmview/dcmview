@@ -1,7 +1,7 @@
 //! A file registry for the tests: loaded files an input can name.
 
 use dcmview_adapters::{
-    FileResolver, ImportContext, Matcher, Refusal, Report, Resolution, Resolved,
+    FileResolver, ImportContext, Limits, Matcher, Refusal, Report, Resolution, Resolved,
 };
 use dcmview_annotation::{Author, FileKey, FileRef, ImageSize, LabelSchema, LayerId, Timestamp};
 use std::path::PathBuf;
@@ -117,6 +117,7 @@ impl Session {
             author: &self.author,
             now: &self.now,
             keep_going: &|| true,
+            limits: Limits::DEFAULT,
         }
     }
 }

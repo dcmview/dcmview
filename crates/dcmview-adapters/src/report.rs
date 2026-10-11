@@ -138,6 +138,10 @@ pub enum WarningCode {
     /// Native import: the document carries a label schema, which was not
     /// taken; the records were checked against the schema in force.
     SchemaNotApplied,
+    /// Native import, a refusal: a file of the document names its file by
+    /// content, and the loaded file found for it could not be read to
+    /// compare the two.
+    FileUnverified,
 }
 
 impl WarningCode {
@@ -156,6 +160,7 @@ impl WarningCode {
             Self::KeyUnavailable => "key_unavailable",
             Self::FileSizeDiffers => "file_size_differs",
             Self::SchemaNotApplied => "schema_not_applied",
+            Self::FileUnverified => "file_unverified",
         }
     }
 }
@@ -185,7 +190,7 @@ pub struct Warning {
     pub code: WarningCode,
     /// How many boxes, files or documents it applies to: one for each box
     /// for the six codes about a box (a box with two bad coordinates counts
-    /// once), one for each file of the document for the five about a file,
+    /// once), one for each file of the document for the six about a file,
     /// and 1 for `schema_not_applied`.
     pub count: u64,
     /// The first places it happened, at most

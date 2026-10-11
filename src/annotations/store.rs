@@ -109,11 +109,13 @@ struct EmbedImport {
 ///
 /// # Document exports
 ///
-/// A document export copies every record and then holds its text, so the
-/// store lets one run at a time ([`AnnotationStore::export_permit`]): a
-/// second waits, holding nothing, until the first has been sent or
-/// dropped. What exports make the process hold is therefore one document
-/// and its text, however many are asked for.
+/// A document export copies every record and writes its text, so the
+/// store lets one be built at a time ([`AnnotationStore::export_permit`]):
+/// a second waits, holding nothing, until the first one's text is
+/// written. The permit is not held while a text is sent: a client that
+/// reads slowly must not hold up every later export. What exports make the
+/// process hold is one copy of the records, and the texts that are being
+/// built or sent.
 #[derive(Clone)]
 pub struct AnnotationStore {
     backend: Arc<MemoryBackend>,

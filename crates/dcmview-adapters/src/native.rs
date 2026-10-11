@@ -136,7 +136,7 @@ use crate::adapter::{
     ImportAdapter, ImportContext, Imported, Matcher, Refusal, Resolution,
 };
 use crate::error::{Bound, ExportError, ImportError};
-use crate::limits;
+use crate::limits::Limits;
 use crate::report::{AdapterRef, Direction, Report, RowRef, WarningCode};
 use dcmview_annotation::{
     Annotation, Context, Document, DocumentError, FileKey, FileRef, FrameScope, Geometry,
@@ -205,7 +205,7 @@ impl ExportAdapter for NativeJson {
         context: &ExportContext<'_>,
         out: &mut dyn Write,
     ) -> Result<Report, ExportError> {
-        let limit = context.max_bytes.min(limits::MAX_DOCUMENT_BYTES);
+        let limit = context.max_bytes.min(context.limits.document_bytes);
         let mut writer = LimitedWriter {
             out,
             remaining: limit,
@@ -250,7 +250,7 @@ impl ImportAdapter for NativeJson {
         input: &mut dyn Read,
         context: &ImportContext<'_>,
     ) -> Result<Imported, ImportError> {
-        let (document, rows) = read_document(input)?;
+        let (document, rows) = read_document(input, &context.limits)?;
         place_document(document, rows, context)
     }
 }
@@ -435,11 +435,11 @@ fn read_line(
     Ok(true)
 }
 
-fn document_error(error: DocumentError) -> ImportError {
+fn document_error(error: DocumentError, bounds: &Limits) -> ImportError {
     match error {
         DocumentError::TooLarge { .. } => ImportError::TooLarge {
             bound: Bound::DocumentBytes,
-            limit: limits::MAX_DOCUMENT_BYTES,
+            limit: bounds.document_bytes,
         },
         DocumentError::WrongFormat { .. } => ImportError::WrongFormat,
         DocumentError::UnsupportedVersion { .. } => ImportError::UnsupportedVersion,
@@ -461,13 +461,16 @@ fn document_rows(document: &Document) -> RecordRows {
     }
 }
 
-fn read_document(input: &mut dyn Read) -> Result<(Document, RecordRows), ImportError> {
+fn read_document(
+    input: &mut dyn Read,
+    bounds: &Limits,
+) -> Result<(Document, RecordRows), ImportError> {
     let mut reader = BufReader::new(input);
     let mut buffer = Vec::new();
     if !read_line(
         &mut reader,
         &mut buffer,
-        limits::MAX_DOCUMENT_BYTES,
+        bounds.document_bytes,
         Bound::DocumentBytes,
     )? {
         return Err(ImportError::Malformed { row: 1 });
@@ -476,22 +479,23 @@ fn read_document(input: &mut dyn Read) -> Result<(Document, RecordRows), ImportE
         Ok(document) => document,
         Err(DocumentError::Malformed(_)) => {
             buffer.push(b'\n');
-            let remaining = limits::MAX_DOCUMENT_BYTES.saturating_sub(buffer.len() as u64);
+            let remaining = bounds.document_bytes.saturating_sub(buffer.len() as u64);
             reader
                 .take(remaining + 1)
                 .read_to_end(&mut buffer)
                 .map_err(import_io)?;
-            if buffer.len() as u64 > limits::MAX_DOCUMENT_BYTES {
+            if buffer.len() as u64 > bounds.document_bytes {
                 return Err(ImportError::TooLarge {
                     bound: Bound::DocumentBytes,
-                    limit: limits::MAX_DOCUMENT_BYTES,
+                    limit: bounds.document_bytes,
                 });
             }
-            let document = Document::from_json_str(text_at(&buffer, 1)?).map_err(document_error)?;
+            let document = Document::from_json_str(text_at(&buffer, 1)?)
+                .map_err(|error| document_error(error, bounds))?;
             let rows = document_rows(&document);
             return Ok((document, rows));
         }
-        Err(error) => return Err(document_error(error)),
+        Err(error) => return Err(document_error(error, bounds)),
     };
     // Release the possibly document-sized first line before reading records.
     drop(buffer);
@@ -502,7 +506,7 @@ fn read_document(input: &mut dyn Read) -> Result<(Document, RecordRows), ImportE
     while read_line(
         &mut reader,
         &mut buffer,
-        limits::MAX_LINE_BYTES,
+        bounds.line_bytes,
         Bound::LineBytes,
     )? {
         row += 1;
@@ -523,7 +527,7 @@ fn read_document(input: &mut dyn Read) -> Result<(Document, RecordRows), ImportE
             .map_err(|_| ImportError::Malformed { row })?;
         match line {
             InputLine::File(file) => {
-                check_count(document.files.len() + 1, limits::MAX_FILES, Bound::Files)?;
+                check_count(document.files.len() + 1, bounds.files, Bound::Files)?;
                 document.files.push(file);
                 rows.files.push(row);
             }
@@ -540,7 +544,7 @@ fn read_document(input: &mut dyn Read) -> Result<(Document, RecordRows), ImportE
             InputLine::Annotation(annotation) => {
                 check_count(
                     document.annotations.len() + document.labels.len() + 1,
-                    limits::MAX_RECORDS,
+                    bounds.records,
                     Bound::Records,
                 )?;
                 document.annotations.push(annotation);
@@ -549,7 +553,7 @@ fn read_document(input: &mut dyn Read) -> Result<(Document, RecordRows), ImportE
             InputLine::Label(label) => {
                 check_count(
                     document.annotations.len() + document.labels.len() + 1,
-                    limits::MAX_RECORDS,
+                    bounds.records,
                     Bound::Records,
                 )?;
                 document.labels.push(label);
@@ -595,10 +599,11 @@ fn place_document(
     rows: RecordRows,
     context: &ImportContext<'_>,
 ) -> Result<Imported, ImportError> {
-    check_count(document.files.len(), limits::MAX_FILES, Bound::Files)?;
+    let bounds = &context.limits;
+    check_count(document.files.len(), bounds.files, Bound::Files)?;
     check_count(
         document.annotations.len() + document.labels.len(),
-        limits::MAX_RECORDS,
+        bounds.records,
         Bound::Records,
     )?;
     let mut report = Report::new(
@@ -633,6 +638,7 @@ fn place_document(
                     match reason {
                         Refusal::EvidenceConflict => WarningCode::EvidenceConflict,
                         Refusal::KeyUnavailable => WarningCode::KeyUnavailable,
+                        Refusal::Unverified => WarningCode::FileUnverified,
                     },
                     at,
                 );

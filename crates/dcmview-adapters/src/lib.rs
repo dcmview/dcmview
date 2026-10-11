@@ -58,6 +58,7 @@ pub use adapter::{
 };
 pub use embed::{EmbedAdapter, EmbedFileRois, EmbedRead, EmbedRois, EmbedRow};
 pub use error::{Bound, ExportError, ImportError};
+pub use limits::Limits;
 pub use native::{NativeJson, NativeJsonLines};
 pub use registry::Registry;
 pub use report::{

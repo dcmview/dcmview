@@ -4,7 +4,7 @@ use super::support::{fixture_document_text, key, report_json, size, Loaded, Pool
 use dcmview_adapters::limits::{MAX_DOCUMENT_BYTES, MAX_LINE_BYTES};
 use dcmview_adapters::{
     Bound, ExportAdapter, ExportContext, ExportError, Fragment, ImportAdapter, ImportError,
-    Imported, NativeJson, NativeJsonLines, Refusal,
+    Imported, Limits, NativeJson, NativeJsonLines, Refusal,
 };
 use dcmview_annotation::{Document, FileKey, Geometry, ViolationCode};
 use serde_json::{json, Value};
@@ -57,6 +57,7 @@ fn export(adapter: &dyn ExportAdapter, document: &Document) -> (String, Value) {
             &ExportContext {
                 paths: &BTreeMap::<FileKey, Vec<String>>::new(),
                 max_bytes: u64::MAX,
+                limits: Limits::DEFAULT,
             },
             &mut out,
         )
@@ -649,6 +650,7 @@ fn a_native_file_is_read_within_its_bounds() {
                     &ExportContext {
                         paths: &BTreeMap::<FileKey, Vec<String>>::new(),
                         max_bytes,
+                        limits: Limits::DEFAULT,
                     },
                     &mut Vec::new(),
                 )

@@ -996,7 +996,7 @@ export type Warning = { code: WarningCode,
 /**
  * How many boxes, files or documents it applies to: one for each box
  * for the six codes about a box (a box with two bad coordinates counts
- * once), one for each file of the document for the five about a file,
+ * once), one for each file of the document for the six about a file,
  * and 1 for `schema_not_applied`.
  */
 count: number, 
@@ -1010,7 +1010,7 @@ rows: Array<RowRef>, };
  * Something a reader of the result should know. Variants are only added;
  * the wire strings are the snake-case names.
  */
-export type WarningCode = "negative_coordinate" | "non_integer_coordinate" | "out_of_range" | "zero_area" | "corners_out_of_order" | "frames_empty" | "file_unmatched" | "size_mismatch" | "evidence_conflict" | "key_unavailable" | "file_size_differs" | "schema_not_applied";
+export type WarningCode = "negative_coordinate" | "non_integer_coordinate" | "out_of_range" | "zero_area" | "corners_out_of_order" | "frames_empty" | "file_unmatched" | "size_mismatch" | "evidence_conflict" | "key_unavailable" | "file_size_differs" | "schema_not_applied" | "file_unverified";
 
 export type WindowMode = "default" | "full_dynamic";
 

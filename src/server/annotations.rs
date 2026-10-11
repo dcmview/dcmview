@@ -68,7 +68,6 @@ use dcmview_annotation::{
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
-use tokio::sync::OwnedSemaphorePermit;
 
 /// Why an annotation request could not be served. A refused operation is
 /// not one of these: it is an [`ApplyResult`] inside [`OpOutcome`].
@@ -286,6 +285,7 @@ pub async fn replace_embed_rois(
                         slot: index,
                         records: &current,
                     }),
+                    bindings: None,
                 },
             )
             .map_err(store_error)?
@@ -442,10 +442,6 @@ pub struct NativeExport {
     pub bytes: Vec<u8>,
     /// What the adapter wrote.
     pub report: Report,
-    /// The session's document export permit
-    /// (`AnnotationStore::export_permit`). Keep it until the bytes have
-    /// been sent or dropped.
-    pub permit: OwnedSemaphorePermit,
 }
 
 /// `GET /api/annotations/export.json` and `export.jsonl`: every record of
@@ -457,8 +453,10 @@ pub struct NativeExport {
 ///    ([`AnnotationError::ImportFailed`]).
 /// 2. Takes the session's document export permit
 ///    (`AnnotationStore::export_permit`), before anything else is read or
-///    copied, and hands it back in the result. So one document export runs
-///    at a time, and a second waits here holding nothing.
+///    copied, and holds it until the text is written (step 7), not while
+///    the text is sent. So one document is built at a time, a second export
+///    waits here holding nothing, and a client that reads its download
+///    slowly holds up no other export.
 /// 3. **Staged rows become records first.** A document holds records, and
 ///    a record holds a settled key. For every loaded file, in index order,
 ///    that has rows staged (`AnnotationStore::with_staged` says which): its key is
@@ -516,8 +514,9 @@ pub struct NativeExport {
 /// blocking thread (`tokio::task::spawn_blocking`), never on the runtime's
 /// own; a thread that fails is [`AnnotationError::Store`].
 ///
-/// What an export makes the process hold: the copy of the records and the
-/// text, once each, for one export at a time. Nothing a record holds is
+/// What exports make the process hold: the copy of the records and the
+/// text for the one export being built, and the text of each export that
+/// is being sent. Nothing a record holds is
 /// checked, clamped or left out, so a rectangle the EMBED import kept as
 /// read is written as it is held. Redaction boxes are in another store and
 /// are never in a document.
@@ -588,6 +587,7 @@ pub async fn export_native(
         let context = ExportContext {
             paths: &paths,
             max_bytes: u64::MAX,
+            limits: dcmview_adapters::Limits::DEFAULT,
         };
         let mut bytes = Vec::new();
         let report = match form {
@@ -598,11 +598,10 @@ pub async fn export_native(
             ExportError::TooLarge { limit } => AnnotationError::ExportTooLarge { limit },
             error => store_error(error),
         })?;
-        Ok(NativeExport {
-            bytes,
-            report,
-            permit,
-        })
+        // The permit is held to here: while the records are copied and
+        // their text is written, and no longer.
+        drop(permit);
+        Ok(NativeExport { bytes, report })
     })
     .await
     .map_err(|_| AnnotationError::Store("The annotation export thread failed.".to_string()))?
@@ -852,6 +851,7 @@ async fn read_native_into_store(
             author: &import_author,
             now: &stamp,
             keep_going: &*keep_going,
+            limits: dcmview_adapters::Limits::DEFAULT,
         };
         NativeJson
             .import(&mut file, &context)
@@ -918,6 +918,7 @@ async fn read_native_into_store(
                     embed_slot: None,
                     import: false,
                     view: None,
+                    bindings: None,
                 },
             )
             .map_err(|_| native_store_failure())?;
@@ -1162,6 +1163,7 @@ pub async fn apply_op(
                 embed_slot: None,
                 import: false,
                 view: None,
+                bindings: None,
             },
         )
         .map_err(store_error)?;
@@ -1289,6 +1291,7 @@ fn make_records(
                 embed_slot: Some(file.index),
                 import: true,
                 view: None,
+                bindings: None,
             },
         )
         .map_err(store_error)?;
@@ -1472,9 +1475,8 @@ mod tests {
             "the view is what the save answered, the moved ROI included"
         );
     }
-    /// One document export runs at a time. One that has to wait has read
-    /// and changed nothing yet, and its own result holds the permit until
-    /// it is let go of.
+    /// One document is built at a time. An export that has to wait has
+    /// read and changed nothing yet, and a finished one holds nothing up.
     #[tokio::test]
     async fn a_second_document_export_waits_for_the_first() {
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1500,13 +1502,10 @@ mod tests {
         assert_eq!(export.report.counts.annotations_out, 1);
         assert!(store.staged_rows(0).expect("staged rows").is_none());
 
-        let mut next = Box::pin(export_native(&registry, &store, NativeForm::JsonLines));
-        assert!(
-            futures::poll!(next.as_mut()).is_pending(),
-            "the result of an export holds the permit"
-        );
+        // The result holds no permit: sending it holds up no other export.
+        let next = export_native(&registry, &store, NativeForm::JsonLines).await;
+        assert!(next.is_ok());
         drop(export);
-        assert!(next.await.is_ok());
     }
 
     /// A row the import read past the image edge is held as loaded, and an
