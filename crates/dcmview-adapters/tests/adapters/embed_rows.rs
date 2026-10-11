@@ -446,3 +446,59 @@ fn a_row_holds_a_bounded_number_of_boxes_and_frames() {
         })
     );
 }
+
+/// The bounds a caller hands over apply exactly: a file with as many rows
+/// as the bound is read, and one with a row more is not; a path as long
+/// as the bound names its file, and a longer one names none, which makes
+/// its row unmatched and not an error.
+#[test]
+fn rows_and_paths_are_held_to_the_bounds_handed_over() {
+    use dcmview_adapters::embed::read_rows_within;
+    use dcmview_adapters::Limits;
+
+    let csv =
+        "anon_dicom_path,ROI_coords\na.dcm,\"[[1,2,3,4]]\"\nnowhere.dcm,x\nb.dcm,\"[[1,2,3,4]]\"\n";
+    let within = |limits: Limits| {
+        read_rows_within(&mut csv.as_bytes(), &pool(), &|| true, &limits)
+            .map(|read| (read.files.len(), read.report.counts.unmatched))
+    };
+    let rows = |csv_rows| Limits {
+        csv_rows,
+        ..Limits::DEFAULT
+    };
+    assert_eq!(within(rows(3)), Ok((2, 1)));
+    assert_eq!(
+        within(rows(2)),
+        Err(ImportError::TooLarge {
+            bound: Bound::CsvRows,
+            limit: 2,
+        })
+    );
+
+    let path = |csv_path_bytes| Limits {
+        csv_path_bytes,
+        ..Limits::DEFAULT
+    };
+    assert_eq!(within(path("a.dcm".len())), Ok((2, 1)));
+    assert_eq!(
+        within(path("a.dcm".len() - 1)),
+        Ok((0, 3)),
+        "a path past the bound names no file"
+    );
+}
+
+/// A box has its corners out of order when either pair is, not only when
+/// both are.
+#[test]
+fn corners_out_of_order_on_one_axis_are_reported() {
+    let read = read(concat!(
+        "anon_dicom_path,ROI_coords\n",
+        "a.dcm,\"[[9,1,3,5],[1,9,5,3],[1,1,5,5]]\"\n",
+    ))
+    .expect("read");
+    assert_eq!(
+        report_json(&read.report)["warnings"],
+        json!([{ "code": "corners_out_of_order", "count": 2,
+                 "rows": [{ "row": 2, "roi": 0 }, { "row": 2, "roi": 1 }] }])
+    );
+}

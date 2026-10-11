@@ -6,13 +6,17 @@
 use super::support;
 use axum::http::StatusCode;
 use axum_test::TestServer;
-use dcmview::annotations::{AnnotationBackend, AnnotationStore, EmbedRoiAnnotations, NativeSource};
+use dcmview::annotations::{
+    AnnotationBackend, AnnotationStore, EmbedRoiAnnotations, MemoryBackend, MemoryConfig,
+    NativeSource,
+};
 use dcmview::masking::Masker;
 use dcmview::server::annotations::{import_embed_rows, import_native, AnnotationError};
 use dcmview::server::{self, AppState, FileRegistry};
 use dcmview::types::FileEntry;
+use dcmview_annotation::{ApplyResult, Author, FileKey, ImageSize, LabelSchema, OpEnvelope};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::Arc;
 use tempfile::tempdir;
@@ -386,6 +390,7 @@ async fn a_session_is_written_as_a_document_and_read_back_as_the_same_records() 
             expected.push(json!({ name: item }));
         }
     }
+    expected.push(json!({ "end": { "files": 2, "layers": 2, "annotations": 5, "labels": 0 } }));
     assert_eq!(lines[1..], expected[..]);
 
     // A new session over the same files, started with either form.
@@ -594,9 +599,9 @@ async fn an_import_is_applied_whole_or_not_at_all() {
     assert_eq!(status, json!({ "state": "loading" }));
 }
 
-/// Which loaded file a record of a document is put on: the one its file
-/// reference names, by key, then UID, then path, under that file's settled
-/// key; or none.
+/// Which loaded file a record of a document is put on: one that was
+/// checked against the key its reference names it by, found by key, UID
+/// or path, under that file's settled key; or none.
 #[tokio::test]
 async fn a_record_lands_on_the_file_its_reference_names_or_on_no_file() {
     let dir = tempdir().expect("temp dir");
@@ -617,6 +622,7 @@ async fn a_record_lands_on_the_file_its_reference_names_or_on_no_file() {
         entry(dir.path(), "renumbered.dcm", "1.2.3.5"),
     ];
     let session = Session::loading(files);
+    let second_bytes = format!("b3:{}", blake3::hash(&[2; 64]).to_hex());
     let mut smaller = reference("sop:1.2.3.6", Some("1.2.3.6"), "sized.dcm");
     smaller["rows"] = json!(99);
     let of_64_bytes = |mut reference: Value| {
@@ -624,11 +630,12 @@ async fn a_record_lands_on_the_file_its_reference_names_or_on_no_file() {
         reference
     };
     let references = vec![
-        // Row 2: a shared key; the path says which file.
-        of_64_bytes(reference("sop:1.2.3.9", Some("1.2.3.9"), "second.dcm")),
+        // Row 2: named by its content. Two files carry its UID; the one
+        // with those bytes is it.
+        of_64_bytes(reference(&second_bytes, Some("1.2.3.9"), "elsewhere.dcm")),
         // Row 3: a copy, by its path.
         of_64_bytes(reference("sop:1.2.3.8", Some("1.2.3.8"), "copy-b.dcm")),
-        // Row 4: a file that cannot be given a key.
+        // Row 4: files that cannot be read, so cannot be checked.
         reference("sop:1.2.3.7", Some("1.2.3.7"), "gone-twin.dcm"),
         // Row 5: found by its key, whatever its path says.
         reference("sop:1.2.3.1", Some("1.2.3.1"), "elsewhere/renamed.dcm"),
@@ -638,11 +645,11 @@ async fn a_record_lands_on_the_file_its_reference_names_or_on_no_file() {
         reference("sop:5.5.5", Some("5.5.5"), "nowhere.dcm"),
         // Row 8: another size than the loaded file.
         smaller,
-        // Row 9: keyed by content where it was written, and neither that
-        // key nor its path is known here: its UID finds it.
+        // Row 9: named by its content, and the file its UID finds cannot
+        // be read to compare: a UID alone places nothing.
         reference(OTHER_BYTES, Some("1.2.3.5"), "moved/away.dcm"),
-        // Row 10: found by its path, but the bytes it was written for are
-        // not the bytes of the file here, which had to be hashed.
+        // Row 10: found by its path and its UID, but the bytes it was
+        // written for are not the bytes of either file here.
         {
             let mut changed = of_64_bytes(reference(CHANGED_BYTES, Some("1.2.3.9"), "first.dcm"));
             changed["digest"] = json!(CHANGED_BYTES);
@@ -650,7 +657,7 @@ async fn a_record_lands_on_the_file_its_reference_names_or_on_no_file() {
         },
     ];
     let records: Vec<Value> = [
-        "sop:1.2.3.9",
+        second_bytes.as_str(),
         "sop:1.2.3.8",
         "sop:1.2.3.7",
         "sop:1.2.3.1",
@@ -676,14 +683,14 @@ async fn a_record_lands_on_the_file_its_reference_names_or_on_no_file() {
     assert_eq!(
         report["counts"],
         json!({
-            "files": 4, "annotations_in": 9, "annotations_out": 4,
-            "labels_in": 0, "labels_out": 0, "unmatched": 1, "refused": 4,
+            "files": 3, "annotations_in": 9, "annotations_out": 3,
+            "labels_in": 0, "labels_out": 0, "unmatched": 1, "refused": 5,
         })
     );
     assert_eq!(
         report["warnings"],
         json!([
-            { "code": "key_unavailable", "count": 1, "rows": [{ "row": 4 }] },
+            { "code": "file_unverified", "count": 2, "rows": [{ "row": 4 }, { "row": 9 }] },
             { "code": "evidence_conflict", "count": 2, "rows": [{ "row": 6 }, { "row": 10 }] },
             { "code": "file_unmatched", "count": 1, "rows": [{ "row": 7 }] },
             { "code": "size_mismatch", "count": 1, "rows": [{ "row": 8 }] },
@@ -691,7 +698,7 @@ async fn a_record_lands_on_the_file_its_reference_names_or_on_no_file() {
     );
     assert_eq!(
         report["matched_by"],
-        json!({ "key": 1, "sop_instance_uid": 1, "path": 2 })
+        json!({ "key": 2, "sop_instance_uid": 1, "path": 0 })
     );
 
     let shown = |n: u32| rows(&[[n, n, n + 10, n + 10]], &[]);
@@ -703,8 +710,7 @@ async fn a_record_lands_on_the_file_its_reference_names_or_on_no_file() {
     assert_eq!(session.rois(2).await, shown(2));
     assert_eq!(session.rois(3).await, shown(2));
     assert_eq!(session.rois(6).await, shown(4));
-    assert_eq!(session.rois(8).await, shown(8));
-    for index in [4, 5, 7] {
+    for index in [4, 5, 7, 8] {
         assert_eq!(session.rois(index).await.num_roi, 0, "file {index}");
     }
 
@@ -719,6 +725,7 @@ async fn a_record_lands_on_the_file_its_reference_names_or_on_no_file() {
         .expect("the second file");
     let key = second["key"].as_str().expect("key");
     assert!(key.starts_with("b3:"), "{key}");
+    assert_eq!(key, second_bytes);
     assert_eq!(second["digest"], key);
     assert_eq!(document["annotations"][0]["file"], key);
     let paths: Vec<&str> = document["files"]
@@ -728,21 +735,35 @@ async fn a_record_lands_on_the_file_its_reference_names_or_on_no_file() {
         .filter_map(|file| file["path"].as_str())
         .collect();
     // A shared key is described once, by the first file that has it.
-    assert_eq!(
-        paths,
-        ["second.dcm", "copy-a.dcm", "alone.dcm", "renumbered.dcm"]
-    );
+    assert_eq!(paths, ["second.dcm", "copy-a.dcm", "alone.dcm"]);
 }
 
-/// A masked session writes a document in the form it shows, and reads one
-/// in that form; no real identifier is in anything it answers.
+/// A file without a SOP Instance UID, as a raster is: keyed by its bytes.
+fn unnamed(directory: &Path, name: &str, bytes: &[u8]) -> FileEntry {
+    let path = directory.join(name);
+    std::fs::create_dir_all(path.parent().expect("parent")).expect("directory");
+    written(directory, name, "", bytes)
+}
+
+fn content_key(bytes: &[u8]) -> String {
+    format!("b3:{}", blake3::hash(bytes).to_hex())
+}
+
+/// The masks of a session are drawn for one process, so nothing a masked
+/// session shows for a file means anything to another. Its document names
+/// files by their bytes and their paths and by nothing else, and loads
+/// into any session: masked by other masks, or not masked.
 #[tokio::test]
-async fn a_masked_session_writes_and_reads_documents_in_the_form_it_shows() {
+async fn a_masked_sessions_document_names_files_by_content_and_loads_anywhere() {
     let dir = tempdir().expect("temp dir");
     let real = [
         "1.2.826.0.1.3680043.10.777.5",
         "1.2.826.0.1.3680043.10.777.6",
     ];
+    // Written once: a file that changes after a session loaded it cannot
+    // be compared by that session.
+    written(dir.path(), "a.dcm", real[0], b"the bytes of a");
+    written(dir.path(), "b.dcm", real[1], b"the bytes of b");
     let files = || {
         let mut files = vec![
             entry(dir.path(), "a.dcm", real[0]),
@@ -756,14 +777,7 @@ async fn a_masked_session_writes_and_reads_documents_in_the_form_it_shows() {
         }
         files
     };
-    let secrets = [
-        real[0],
-        real[1],
-        "MRN-0042",
-        "DOE^JANE",
-        "1.2.826.0.1.3680043.10.777.1",
-        "1.2.826.0.1.3680043.10.777.2",
-    ];
+    // A masked session of its own, as another process is.
     let masked = || {
         let registry = FileRegistry::masked(Arc::new(Masker::new()));
         for file in files() {
@@ -772,26 +786,47 @@ async fn a_masked_session_writes_and_reads_documents_in_the_form_it_shows() {
         registry.mark_scan_complete();
         registry
     };
-    let clean = |what: &str, text: &str| {
-        for secret in secrets {
-            assert!(!text.contains(secret), "{what} holds {secret}: {text}");
-        }
+    let staged = || {
+        HashMap::from([
+            (0, rows(&[[10, 20, 30, 40]], &[])),
+            (1, rows(&[[1, 2, 3, 4]], &[])),
+        ])
     };
 
-    let registry = masked();
-    let first = Session::over(registry.clone(), AnnotationStore::loading());
-    first.stage(HashMap::from([
-        (0, rows(&[[10, 20, 30, 40]], &[])),
-        (1, rows(&[[1, 2, 3, 4]], &[])),
-    ]));
-    let catalog: Value = first.server.get("/api/files").await.json();
-    let shown_uid = |index: usize| {
-        catalog["files"][index]["sop_instance_uid"]
-            .as_str()
-            .expect("masked UID")
-            .to_string()
+    let first = Session::over(masked(), AnnotationStore::loading());
+    first.stage(staged());
+    let catalog = first.text("/api/files").await;
+    let shown: Value = serde_json::from_str(&catalog).expect("catalog");
+    let mut secrets: Vec<String> = [
+        real[0],
+        real[1],
+        "MRN-0042",
+        "DOE^JANE",
+        "1.2.826.0.1.3680043.10.777.1",
+        "1.2.826.0.1.3680043.10.777.2",
+    ]
+    .map(str::to_string)
+    .to_vec();
+    // What this session shows in their place is no use anywhere else, and
+    // is not written either.
+    for file in shown["files"].as_array().expect("files") {
+        for member in [
+            "sop_instance_uid",
+            "study_instance_uid",
+            "series_instance_uid",
+            "patient_id",
+        ] {
+            secrets.push(file[member].as_str().expect("shown").to_string());
+        }
+    }
+    let clean = |what: &str, text: &str| {
+        for secret in &secrets {
+            assert!(
+                !text.contains(secret.as_str()),
+                "{what} holds {secret}: {text}"
+            );
+        }
     };
-    let shown_key = |index: usize| format!("sop:{}", shown_uid(index));
 
     let text = first.text("/api/annotations/export.json").await;
     clean("the JSON document", &text);
@@ -800,54 +835,78 @@ async fn a_masked_session_writes_and_reads_documents_in_the_form_it_shows() {
         &first.text("/api/annotations/export.jsonl").await,
     );
     let document: Value = serde_json::from_str(&text).expect("document");
-    for index in 0..2 {
+    assert_eq!(document["extensions"]["dcmview"], json!({ "masked": true }));
+    for (index, bytes) in [&b"the bytes of a"[..], b"the bytes of b"]
+        .into_iter()
+        .enumerate()
+    {
         let file = &document["files"][index];
-        assert_eq!(file["key"], shown_key(index));
-        assert_eq!(file["sop_instance_uid"], shown_uid(index));
-        assert_eq!(file["patient_id"], catalog["files"][index]["patient_id"]);
+        assert_eq!(file["key"], content_key(bytes));
+        assert_eq!(file["digest"], file["key"]);
+        assert_eq!(file["path"], ["a.dcm", "b.dcm"][index]);
+        for member in [
+            "sop_instance_uid",
+            "study_instance_uid",
+            "series_instance_uid",
+            "patient_id",
+        ] {
+            assert!(file[member].is_null(), "{member}: {file}");
+        }
+        assert_eq!(document["annotations"][index]["file"], file["key"]);
+    }
+    let views = [first.rois(0).await, first.rois(1).await];
+
+    // Loaded by another masked session and by one that is not masked: the
+    // files are found by their paths and matched by their bytes.
+    for (what, registry) in [
+        ("other masks", masked()),
+        ("no masks", FileRegistry::from_files(files())),
+    ] {
+        let second = Session::over(registry, AnnotationStore::loading());
+        let report = second
+            .import(dir.path(), &text)
+            .await
+            .unwrap_or_else(|error| panic!("{what}: {error}"));
         assert_eq!(
-            file["study_instance_uid"],
-            catalog["files"][index]["study_instance_uid"]
+            report["matched_by"],
+            json!({ "key": 0, "sop_instance_uid": 0, "path": 2 }),
+            "{what}: {report}"
         );
-        assert_eq!(document["annotations"][index]["file"], shown_key(index));
+        assert_eq!(report["counts"]["refused"], 0, "{what}");
+        assert_eq!(report["warnings"], json!([]), "{what}");
+        assert_eq!(
+            [second.rois(0).await, second.rois(1).await],
+            views,
+            "{what}"
+        );
     }
 
-    // The same session's form reads back by key.
-    let second = Session::over(registry.clone(), AnnotationStore::loading());
-    let report = second.import(dir.path(), &text).await.expect("import");
-    assert_eq!(
-        report["matched_by"],
-        json!({ "key": 2, "sop_instance_uid": 0, "path": 0 })
+    // A session without masking writes keys and UIDs, and no such mark.
+    let open = Session::over(
+        FileRegistry::from_files(files()),
+        AnnotationStore::loading(),
     );
-    assert_eq!(second.rois(0).await, first.rois(0).await);
-    assert_eq!(second.rois(1).await, first.rois(1).await);
+    open.stage(staged());
+    let unmasked_text = open.text("/api/annotations/export.json").await;
+    let unmasked: Value = serde_json::from_str(&unmasked_text).expect("document");
+    assert_eq!(unmasked["files"][0]["key"], format!("sop:{}", real[0]));
+    assert_eq!(unmasked["files"][0]["sop_instance_uid"], real[0]);
+    assert!(unmasked["extensions"].get("dcmview").is_none());
 
-    // A document that names the files by their real keys and UIDs, as a
-    // session without masking writes it: the real key and the real UID
-    // name nothing here, so its files are found by their paths.
-    let unmasked = document_of(
-        vec![
-            reference(&format!("sop:{}", real[0]), Some(real[0]), "a.dcm"),
-            reference(&format!("sop:{}", real[1]), Some(real[1]), "b.dcm"),
-        ],
-        vec![],
-        vec![
-            annotation(1, &format!("sop:{}", real[0]), "default", rect(1, 2, 3, 4)),
-            annotation(
-                2,
-                &format!("sop:{}", real[1]),
-                "default",
-                rect(5, 6, 700, 8),
-            ),
-        ],
-    );
-    let third = Session::over(registry.clone(), AnnotationStore::loading());
-    let report = third.import(dir.path(), &unmasked).await.expect("import");
+    // Its document loads into a masked session, where a real key and a
+    // real UID find nothing: by its paths, each file checked against the
+    // key the document names it by. Nothing the session then answers
+    // holds what the document said.
+    let third = Session::over(masked(), AnnotationStore::loading());
+    let report = third
+        .import(dir.path(), &unmasked_text)
+        .await
+        .expect("import");
     assert_eq!(
         report["matched_by"],
         json!({ "key": 0, "sop_instance_uid": 0, "path": 2 })
     );
-    assert_eq!(report["counts"]["annotations_out"], 2);
+    assert_eq!([third.rois(0).await, third.rois(1).await], views);
     clean("the report", &report.to_string());
     clean(
         "the import status",
@@ -857,9 +916,8 @@ async fn a_masked_session_writes_and_reads_documents_in_the_form_it_shows() {
         "the document",
         &third.text("/api/annotations/export.json").await,
     );
-    assert_eq!(third.rois(0).await.roi_coords, [[2, 1, 4, 3]]);
 
-    // And when the import fails, its message says nothing the file said.
+    // And when an import fails, its message says nothing the file said.
     let mut named = annotation(1, &format!("sop:{}", real[0]), "default", rect(1, 2, 3, 4));
     named["class"] = json!("DOE^JANE");
     let invalid = document_of(
@@ -871,7 +929,7 @@ async fn a_masked_session_writes_and_reads_documents_in_the_form_it_shows() {
         vec![],
         vec![named],
     );
-    let fourth = Session::over(registry, AnnotationStore::loading());
+    let fourth = Session::over(masked(), AnnotationStore::loading());
     let error = fourth
         .import(dir.path(), &invalid)
         .await
@@ -880,6 +938,345 @@ async fn a_masked_session_writes_and_reads_documents_in_the_form_it_shows() {
     let status = fourth.server.get("/api/annotations/import").await.text();
     assert!(status.contains("\"failed\""), "{status}");
     clean("the failed status", &status);
+}
+
+/// The reviewer's case: two files with one UID and one size and different
+/// bytes, each with its own ROI, written to a document and loaded over one
+/// of them alone. The other file's ROIs name bytes that are not here, and
+/// land on no file.
+#[tokio::test]
+async fn rows_of_a_file_that_is_not_loaded_do_not_land_on_one_with_its_uid() {
+    let dir = tempdir().expect("temp dir");
+    let first = Session::loading(vec![
+        written(dir.path(), "one.dcm", "1.2.3.9", &[1; 64]),
+        written(dir.path(), "other.dcm", "1.2.3.9", &[2; 64]),
+    ]);
+    first.stage(HashMap::from([
+        (0, rows(&[[1, 1, 2, 2]], &[])),
+        (1, rows(&[[3, 3, 4, 4], [5, 5, 6, 6]], &[])),
+    ]));
+    let text = first.text("/api/annotations/export.json").await;
+    let document: Value = serde_json::from_str(&text).expect("document");
+    assert_eq!(document["files"][0]["key"], content_key(&[1; 64]));
+    assert_eq!(document["files"][1]["key"], content_key(&[2; 64]));
+
+    // Only the first file is loaded. Its UID is its own here, so nothing
+    // made the viewer hash it: the import does, to compare.
+    let alone = Session::loading(vec![written(dir.path(), "one.dcm", "1.2.3.9", &[1; 64])]);
+    let report = alone.import(dir.path(), &text).await.expect("import");
+    assert_eq!(alone.rois(0).await, rows(&[[1, 1, 2, 2]], &[]));
+    assert_eq!(
+        report["counts"],
+        json!({
+            "files": 1, "annotations_in": 3, "annotations_out": 1,
+            "labels_in": 0, "labels_out": 0, "unmatched": 0, "refused": 2,
+        })
+    );
+    assert_eq!(
+        report["warnings"],
+        json!([{ "code": "evidence_conflict", "count": 1, "rows": [{ "row": 3 }] }])
+    );
+    assert_eq!(
+        report["matched_by"],
+        json!({ "key": 0, "sop_instance_uid": 1, "path": 0 })
+    );
+}
+
+/// A document's paths are below the folder its session loaded. They find
+/// their files when a subfolder of it, a parent of it or a copy of it
+/// elsewhere is loaded, because a file is named by the end of its path and
+/// matched by its bytes; and of several files a path could name, the one
+/// with those bytes is the one.
+#[tokio::test]
+async fn a_document_finds_its_files_in_a_subfolder_a_parent_or_a_copy() {
+    let dir = tempdir().expect("temp dir");
+    let root = dir.path().join("data");
+    let tree = |root: &Path| {
+        vec![
+            unnamed(root, "sub/a.png", b"bytes of a"),
+            unnamed(root, "sub/deep/b.png", b"bytes of b"),
+            unnamed(root, "other/c.png", b"bytes of c"),
+        ]
+    };
+    let first = Session::loading(tree(&root));
+    first.stage(HashMap::from([
+        (0, rows(&[[1, 1, 2, 2]], &[])),
+        (1, rows(&[[3, 3, 4, 4]], &[])),
+        (2, rows(&[[5, 5, 6, 6]], &[])),
+    ]));
+    let text = first.text("/api/annotations/export.json").await;
+    let document: Value = serde_json::from_str(&text).expect("document");
+    let paths: Vec<&str> = document["files"]
+        .as_array()
+        .expect("files")
+        .iter()
+        .filter_map(|file| file["path"].as_str())
+        .collect();
+    assert_eq!(paths, ["sub/a.png", "sub/deep/b.png", "other/c.png"]);
+    assert_eq!(document["files"][0]["key"], content_key(b"bytes of a"));
+    let csv_rows = |session_csv: String| session_csv.lines().count() - 1;
+
+    // A subfolder: two of the three files, whose common folder is deeper.
+    let sub = Session::loading(vec![
+        unnamed(&root, "sub/a.png", b"bytes of a"),
+        unnamed(&root, "sub/deep/b.png", b"bytes of b"),
+    ]);
+    let report = sub.import(dir.path(), &text).await.expect("a subfolder");
+    assert_eq!(
+        report["matched_by"],
+        json!({ "key": 0, "sop_instance_uid": 0, "path": 2 })
+    );
+    assert_eq!(report["counts"]["unmatched"], 1);
+    assert_eq!(sub.rois(0).await, rows(&[[1, 1, 2, 2]], &[]));
+    assert_eq!(sub.rois(1).await, rows(&[[3, 3, 4, 4]], &[]));
+
+    // A parent: the same tree and a file beside it.
+    let mut wider = tree(&root);
+    wider.push(unnamed(dir.path(), "beside/d.png", b"bytes of d"));
+    let parent = Session::loading(wider);
+    let report = parent.import(dir.path(), &text).await.expect("a parent");
+    assert_eq!(
+        report["matched_by"],
+        json!({ "key": 0, "sop_instance_uid": 0, "path": 3 })
+    );
+    assert_eq!(csv_rows(parent.csv().await), 3);
+
+    // A copy elsewhere, beside a folder whose file of the same name holds
+    // other bytes and is loaded first: the path names both, and the record
+    // is on the one with its bytes.
+    let elsewhere = dir.path().join("moved");
+    let mut mixed = vec![unnamed(
+        &dir.path().join("decoy"),
+        "sub/a.png",
+        b"other bytes!",
+    )];
+    mixed.extend(tree(&elsewhere));
+    let moved = Session::loading(mixed);
+    let report = moved.import(dir.path(), &text).await.expect("a copy");
+    assert_eq!(
+        report["matched_by"],
+        json!({ "key": 0, "sop_instance_uid": 0, "path": 3 })
+    );
+    assert_eq!(report["warnings"], json!([]));
+    assert_eq!(moved.rois(0).await.num_roi, 0, "the file of the same name");
+    assert_eq!(moved.rois(1).await, rows(&[[1, 1, 2, 2]], &[]));
+
+    // The file is there and its bytes are not the ones the document was
+    // written for: found, compared, refused.
+    let changed = Session::loading(vec![unnamed(&root, "sub/a.png", b"edited ..")]);
+    let report = changed.import(dir.path(), &text).await.expect("changed");
+    assert_eq!(report["counts"]["annotations_out"], 0);
+    assert_eq!(report["warnings"][0]["code"], "evidence_conflict");
+}
+
+/// Byte-identical files each keep the rows written for them through a
+/// document: a reload shows on each copy what the first session showed, in
+/// the same order, whichever copies have been looked at, and a copy that is
+/// not loaded takes its rows with it.
+#[tokio::test]
+async fn copies_keep_their_own_rows_through_a_document() {
+    let dir = tempdir().expect("temp dir");
+    let copies = |names: &[&str]| -> Vec<FileEntry> {
+        names
+            .iter()
+            .map(|name| written(dir.path(), name, "1.2.3.8", &[3; 64]))
+            .collect()
+    };
+    let first = Session::loading(copies(&["a.dcm", "b.dcm", "c.dcm"]));
+    first.stage(HashMap::from([
+        (0, rows(&[[1, 2, 3, 4]], &[])),
+        (1, rows(&[[5, 6, 7, 8], [9, 9, 12, 12]], &[&[0], &[1]])),
+    ]));
+    // A rectangle drawn on the second copy before any row is a record: it
+    // belongs to the image, shows on every copy, and stands after each
+    // copy's own rows.
+    first
+        .op(
+            Some(1),
+            create(1, "sop:1.2.3.8", "default", rect(20, 20, 30, 30)),
+        )
+        .await;
+    let views = [
+        first.rois(0).await,
+        first.rois(1).await,
+        first.rois(2).await,
+    ];
+    assert_eq!(views[0].roi_coords, [[1, 2, 3, 4], [20, 20, 30, 30]]);
+    assert_eq!(views[2].roi_coords, [[20, 20, 30, 30]]);
+    let csv = first.csv().await;
+    let text = first.text("/api/annotations/export.jsonl").await;
+    // What a record is, apart from its stamps.
+    let told = |document: &Value| -> Vec<Value> {
+        document["annotations"]
+            .as_array()
+            .expect("annotations")
+            .iter()
+            .map(|record| json!([record["file"], record["geometry"], record["extensions"]]))
+            .collect()
+    };
+    let written_first = told(&first.document().await);
+    let rows_of: Vec<&Value> = written_first.iter().map(|record| &record[2]).collect();
+    // The second copy's rows became records when it was drawn on, the
+    // first copy's when the document was written.
+    assert_eq!(
+        rows_of,
+        [
+            &json!({ "embed": { "row_of": "b.dcm", "imported": true } }),
+            &json!({ "embed": { "row_of": "b.dcm", "imported": true } }),
+            &json!({}),
+            &json!({ "embed": { "row_of": "a.dcm", "imported": true } }),
+        ]
+    );
+
+    // All three copies, none of them looked at.
+    let second = Session::loading(copies(&["a.dcm", "b.dcm", "c.dcm"]));
+    let report = second.import(dir.path(), &text).await.expect("import");
+    assert_eq!(report["counts"]["annotations_out"], 4);
+    assert_eq!(
+        [
+            second.rois(0).await,
+            second.rois(1).await,
+            second.rois(2).await
+        ],
+        views
+    );
+    assert_eq!(second.csv().await, csv);
+    // And written again, it is the same document but for its stamps.
+    assert_eq!(told(&second.document().await), written_first);
+
+    // Only the third and the first copy are loaded: the second copy's rows
+    // are for a file that is not here.
+    let fewer = Session::loading(copies(&["c.dcm", "a.dcm"]));
+    let report = fewer.import(dir.path(), &text).await.expect("import");
+    assert_eq!(
+        (
+            &report["counts"]["annotations_out"],
+            &report["counts"]["unmatched"]
+        ),
+        (&json!(2), &json!(2))
+    );
+    assert_eq!(fewer.rois(0).await.roi_coords, [[20, 20, 30, 30]]);
+    assert_eq!(
+        fewer.rois(1).await.roi_coords,
+        [[1, 2, 3, 4], [20, 20, 30, 30]]
+    );
+}
+
+/// A store that takes labels: a schema with one field for files and frames.
+fn labelled_store() -> AnnotationStore {
+    let mut schema = LabelSchema::implicit();
+    schema.fields = serde_json::from_value(json!([{
+        "id": "quality", "name": "Quality", "type": "category",
+        "options": [{ "id": "good", "name": "Good" }, { "id": "bad", "name": "Bad" }],
+        "applies_to": ["file", "frame"],
+    }]))
+    .expect("field");
+    AnnotationStore::with_backend(MemoryBackend::new(MemoryConfig {
+        author: Author::parse("user:reader").expect("author"),
+        schema: Some(schema),
+    }))
+}
+
+/// Labels go through a document as annotations do: each names its file by
+/// the key of that file's reference, which in a masked session's document
+/// is not the key the store holds, and is put on the file that reference
+/// finds. A label's `score` and `derived_from` are not kept, and the
+/// report says of how many.
+#[tokio::test]
+async fn labels_go_through_a_document_with_the_files_they_are_on() {
+    let dir = tempdir().expect("temp dir");
+    let files = || {
+        vec![
+            written(dir.path(), "a.dcm", "1.2.3.1", b"the bytes of a"),
+            written(dir.path(), "b.dcm", "1.2.3.2", b"the bytes of b"),
+        ]
+    };
+    let registry = FileRegistry::masked(Arc::new(Masker::new()));
+    for file in files() {
+        registry.insert(file);
+    }
+    registry.mark_scan_complete();
+    let first = Session::over(registry, labelled_store());
+    let label = |n: u32, target: Value, value: &str| -> OpEnvelope {
+        serde_json::from_value(json!({
+            "op_id": id(1_000 + n), "actor": "user:test", "ts": "2026-10-10T08:00:00.000Z",
+            "op": {
+                "type": "set_label", "id": id(n), "base_rev": null, "target": target,
+                "field": "quality", "layer": "default", "before": null, "after": value,
+            },
+        }))
+        .expect("envelope")
+    };
+    let size = ImageSize {
+        columns: 120,
+        rows: 100,
+        frames: 4,
+    };
+    let key = |text: &str| FileKey::parse(text).expect("file key");
+    // A label is made on a file whose key is settled, as a door does it.
+    for index in 0..2 {
+        first.registry.ensure_key(index).await.expect("key");
+    }
+    let results = first
+        .store
+        .backend()
+        .apply(
+            vec![
+                label(1, json!({ "file": "sop:1.2.3.1" }), "good"),
+                label(2, json!({ "frame": "sop:1.2.3.2", "index": 3 }), "bad"),
+            ],
+            &BTreeMap::from([(key("sop:1.2.3.1"), size), (key("sop:1.2.3.2"), size)]),
+        )
+        .expect("store");
+    assert!(
+        results
+            .iter()
+            .all(|result| matches!(result, ApplyResult::Ok { .. })),
+        "{results:?}"
+    );
+
+    let mut document = first.document().await;
+    assert_eq!(document["files"].as_array().expect("files").len(), 2);
+    let of = |document: &Value, n: usize| document["labels"][n]["target"].clone();
+    assert_eq!(
+        of(&document, 0),
+        json!({ "file": content_key(b"the bytes of a") })
+    );
+    assert_eq!(
+        of(&document, 1),
+        json!({ "frame": content_key(b"the bytes of b"), "index": 3 })
+    );
+
+    // Loaded where nothing is masked, with a score on one label.
+    document["labels"][1]["score"] = json!(0.5);
+    let second = Session::over(FileRegistry::from_files(files()), labelled_store());
+    let report = second
+        .import(dir.path(), &document.to_string())
+        .await
+        .expect("import");
+    assert_eq!(
+        (
+            &report["counts"]["labels_in"],
+            &report["counts"]["labels_out"]
+        ),
+        (&json!(2), &json!(2))
+    );
+    assert_eq!(
+        report["losses"],
+        json!([{ "code": "label_members_dropped", "count": 1, "rows": [] }])
+    );
+    let again = second.document().await;
+    assert_eq!(of(&again, 0), json!({ "file": "sop:1.2.3.1" }));
+    assert_eq!(of(&again, 1), json!({ "frame": "sop:1.2.3.2", "index": 3 }));
+    for n in 0..2 {
+        for member in ["id", "field", "layer", "value"] {
+            assert_eq!(
+                again["labels"][n][member], document["labels"][n][member],
+                "{member}"
+            );
+        }
+        assert!(again["labels"][n].get("score").is_none_or(Value::is_null));
+    }
 }
 
 /// A document holds records, and a record holds a settled key: the rows of
@@ -951,6 +1348,20 @@ async fn a_document_export_needs_a_key_for_every_file_with_rows() {
         .map(|record| &record["geometry"])
         .collect();
     assert_eq!(boxes, [&rect(2, 1, 4, 3), &rect(6, 5, 8, 7)]);
+    // Each record says which copy's row it is.
+    let rows_of: Vec<&Value> = document["annotations"]
+        .as_array()
+        .expect("annotations")
+        .iter()
+        .map(|record| &record["extensions"]["embed"])
+        .collect();
+    assert_eq!(
+        rows_of,
+        [
+            &json!({ "row_of": "copy-a.dcm", "imported": true }),
+            &json!({ "row_of": "copy-b.dcm", "imported": true }),
+        ]
+    );
     assert_eq!(session.rois(0).await, rows(&[[1, 2, 3, 4]], &[]));
     assert_eq!(session.rois(1).await, rows(&[[5, 6, 7, 8]], &[]));
     assert_eq!(session.csv().await, csv);
@@ -985,7 +1396,7 @@ async fn redaction_boxes_are_in_no_document() {
     assert_eq!(document["files"], json!([]));
     assert_eq!(document["labels"], json!([]));
     let lines = session.text("/api/annotations/export.jsonl").await;
-    // The header, and the default layer every session has.
-    assert_eq!(lines.lines().count(), 2, "{lines}");
+    // The header, the default layer every session has, and the end.
+    assert_eq!(lines.lines().count(), 3, "{lines}");
     assert!(!lines.contains("\"annotation\""));
 }

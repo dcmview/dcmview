@@ -399,8 +399,9 @@ fn imported_rows_are_held_as_rows() {
     assert_eq!(registry.key_stats().files_hashed, 0);
 }
 
-/// What reading and writing annotation files may hold, for a session of
-/// 100,000 files with two ROIs each.
+/// What reading and writing annotation files may hold: a CSV for a session
+/// of 100,000 files with two ROIs each, and documents for a quarter of
+/// that, which shows the same proportions for a quarter of the memory.
 mod documents {
     use super::{entry, heap};
     use dcmview::annotations::{AnnotationSource, AnnotationStore, NativeSource};
@@ -421,9 +422,9 @@ mod documents {
         }
     }
 
-    fn registry(dir: &std::path::Path) -> FileRegistry {
+    fn registry(dir: &std::path::Path, files: usize) -> FileRegistry {
         FileRegistry::from_files(
-            (0..FILES)
+            (0..files)
                 .map(|n| entry(dir.join(format!("{n}.dcm")), format!("1.2.3.{n}")))
                 .collect(),
         )
@@ -457,7 +458,7 @@ mod documents {
     fn a_large_csv_is_read_and_staged_at_the_cost_of_its_rows() {
         const BYTES_PER_ROI: u64 = 400;
         let dir = tempfile::tempdir().expect("temp dir");
-        let registry = registry(dir.path());
+        let registry = registry(dir.path(), FILES);
         let source = AnnotationSource::from_path(&write_csv(dir.path())).expect("source");
         let files = registry.files_snapshot();
         let store = AnnotationStore::loading();
@@ -483,8 +484,10 @@ mod documents {
     /// records it leaves: each within a fixed multiple of the text.
     #[test]
     fn documents_of_a_large_session_are_written_and_read_at_a_multiple_of_their_text() {
+        const FILES: usize = 25_000;
+        const ROIS: u64 = 2 * FILES as u64;
         let dir = tempfile::tempdir().expect("temp dir");
-        let registry = registry(dir.path());
+        let registry = registry(dir.path(), FILES);
         let store = AnnotationStore::loading();
         let rows = (0..FILES)
             .map(|n| {

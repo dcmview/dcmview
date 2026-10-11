@@ -360,8 +360,11 @@ async fn rejected_imports_fail_export_and_keep_the_viewer_serving() {
 #[tokio::test]
 async fn a_session_reloaded_from_its_document_exports_the_same_csv() {
     // (golden case, export to take, name to load it under, extra arguments)
-    let cases: [(&str, &str, &str, &[&str]); 4] = [
+    let cases: [(&str, &str, &str, &[&str]); 6] = [
         ("unchecked-geometry", "export.json", "annotations.json", &[]),
+        // Files with the same bytes each keep the rows written for them.
+        ("identical-copies", "export.json", "annotations.json", &[]),
+        ("identical-copies", "export.jsonl", "annotations.jsonl", &[]),
         ("frames-unsorted", "export.jsonl", "annotations.jsonl", &[]),
         // The name says nothing: the start of the file does.
         ("frames-empty-for-one-roi", "export.json", "rois.csv", &[]),
@@ -455,6 +458,56 @@ async fn a_forced_format_is_the_format_the_file_is_read_as() {
         viewer.get("/api/annotations/export.csv").await.status(),
         200
     );
+}
+
+/// Without `--annotations-format`, a file is a document when it starts as
+/// one: a `{`, after an optional byte order mark, and the format's name in
+/// its first bytes. Any other file is EMBED CSV, and one that is not stops
+/// the process as it always has.
+#[tokio::test]
+async fn a_file_is_a_document_only_when_it_starts_as_one() {
+    let case = "frames-unsorted";
+    let first = Viewer::start(case, Launch::Root).await;
+    let document = first.get("/api/annotations/export.json").await;
+    let document = document.bytes().await.expect("document");
+    drop(first);
+
+    let mut marked = b"\xEF\xBB\xBF".to_vec();
+    marked.extend_from_slice(&document);
+    let files = CaseFiles::with_annotations("annotations.json", &marked, &[]);
+    let second = Viewer::over(case, files, Launch::Root).await;
+    let exported = second.get("/api/annotations/export.csv").await;
+    assert_eq!(exported.status(), 200, "after a byte order mark");
+    assert_eq!(
+        exported.text().await.expect("export body"),
+        second.files.golden(&format!("{case}.expected.csv"))
+    );
+    let import: Value = second
+        .get("/api/annotations/import")
+        .await
+        .json()
+        .await
+        .expect("import status");
+    assert_eq!(import["report"]["adapter"]["id"], "native", "{import}");
+    drop(second);
+
+    // JSON that is not a document is not read as one.
+    for other in [&br#"{"images":[]}"#[..], b"[]"] {
+        let files = CaseFiles::with_annotations("annotations.json", other, &[]);
+        let output = tokio::time::timeout(
+            Duration::from_secs(30),
+            files
+                .command(Launch::Root)
+                .spawn()
+                .expect("spawn dcmview")
+                .wait_with_output(),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("dcmview kept running\n{}", files.stderr()))
+        .expect("dcmview output");
+        assert_eq!(output.status.code(), Some(1), "{}", files.stderr());
+        assert!(!String::from_utf8_lossy(&output.stdout).contains(STARTUP_EVENT));
+    }
 }
 
 /// A CSV without a required column stops the process before it serves:

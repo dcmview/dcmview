@@ -120,6 +120,9 @@ fn a_document_is_written_whole_in_both_forms() {
             .map(|annotation| line("annotation", annotation)),
     );
     expected.extend(document.labels.iter().map(|label| line("label", label)));
+    // The last line counts the lines before it, so that a file cut off at
+    // a line can be told from a whole one.
+    expected.push(r#"{"end":{"files":3,"layers":4,"annotations":8,"labels":8}}"#.to_string());
     assert_eq!(lines, expected);
 }
 
@@ -178,7 +181,8 @@ fn both_forms_and_a_pretty_document_read_back_as_the_same_records() {
     // Blank lines between records, and records in another order, change
     // nothing but the rows a report would name.
     let mut shuffled: Vec<&str> = lines_text.lines().collect();
-    shuffled[1..].reverse();
+    let end = shuffled.len() - 1;
+    shuffled[1..end].reverse();
     let shuffled = shuffled.join("\n\n");
     let read = import(&pool, &shuffled).expect("lines in another order");
     assert_eq!(read.report, from_json.report);
@@ -662,4 +666,224 @@ fn a_native_file_is_read_within_its_bounds() {
             Err(ExportError::TooLarge { limit: whole - 1 })
         );
     }
+}
+
+/// A JSON Lines file that was cut off at a line is not a smaller document:
+/// without its last line, or with one that counts other lines than were
+/// read, nothing of it is taken.
+#[test]
+fn a_json_lines_file_without_its_end_is_refused_whole() {
+    let pool = pool();
+    let (text, _) = export(&NativeJsonLines, &fixture());
+    let lines: Vec<&str> = text.lines().collect();
+    let end = lines.len() - 1;
+    assert!(lines[end].starts_with("{\"end\":"));
+
+    // Cut off after any line but the last. Only the header alone is still
+    // a whole file: a document without a record.
+    for kept in 2..=end {
+        let cut = format!("{}\n", lines[..kept].join("\n"));
+        assert_eq!(
+            import(&pool, &cut).err(),
+            Some(ImportError::Truncated),
+            "cut off after line {kept}"
+        );
+    }
+    let header_only = import(&pool, &format!("{}\n", lines[0])).expect("a header alone");
+    assert_eq!(header_only.fragment, Fragment::default());
+
+    // A line was taken out, or put in twice, and the end still counts the
+    // lines that were written.
+    let mut shorter = lines.clone();
+    shorter.remove(end - 1);
+    assert_eq!(
+        import(&pool, &shorter.join("\n")).err(),
+        Some(ImportError::Truncated)
+    );
+    // Two files joined: lines after an end.
+    let joined = format!("{text}{}\n", lines[1]);
+    assert_eq!(
+        import(&pool, &joined).err(),
+        Some(ImportError::Malformed {
+            row: lines.len() as u64 + 1
+        })
+    );
+    // An end is not a record of a document that has none of its own.
+    assert_eq!(
+        import(
+            &pool,
+            &format!(
+                "{}\n{}\n",
+                lines[0], r#"{"end":{"files":0,"layers":0,"annotations":0,"labels":0}}"#
+            )
+        )
+        .expect("a header and its end")
+        .fragment,
+        Fragment::default()
+    );
+}
+
+/// A byte order mark before a document is passed over, by the sniff and by
+/// the reader, in both forms.
+#[test]
+fn a_byte_order_mark_before_a_document_is_passed_over() {
+    let pool = pool();
+    let (json_text, _) = export(&NativeJson, &fixture());
+    let (lines_text, _) = export(&NativeJsonLines, &fixture());
+    let plain = import(&pool, &json_text).expect("without a mark");
+    for text in [&json_text, &lines_text, &fixture_document_text()] {
+        let marked = format!("\u{feff}{text}");
+        assert_eq!(
+            NativeJson.sniff(marked.as_bytes()),
+            dcmview_adapters::Confidence::Certain
+        );
+        assert_eq!(import(&pool, &marked).expect("with a mark"), plain);
+    }
+    // A mark anywhere else is not passed over.
+    assert!(import(&pool, &format!(" \u{feff}{json_text}")).is_err());
+}
+
+/// The bounds a caller hands over are the bounds that apply, each exactly:
+/// what is at a bound is read or written, and one more is refused with the
+/// bound and its number. An export refuses what an import within the same
+/// bounds would refuse for its size, and labels count as records.
+#[test]
+fn documents_are_read_and_written_within_the_bounds_handed_over() {
+    let pool = pool();
+    let document = fixture();
+    let session = Session::new(document.schema.clone());
+    let (json_text, _) = export(&NativeJson, &document);
+    let (lines_text, _) = export(&NativeJsonLines, &document);
+    let read = |text: &str, limits: Limits| {
+        let mut context = session.context(&pool);
+        context.limits = limits;
+        NativeJson
+            .import(&mut text.as_bytes(), &context)
+            .map(|imported| imported.report.counts.annotations_out)
+    };
+    let write = |adapter: &dyn ExportAdapter, limits: Limits| {
+        adapter
+            .export(
+                &document,
+                &ExportContext {
+                    paths: &BTreeMap::<FileKey, Vec<String>>::new(),
+                    max_bytes: u64::MAX,
+                    limits,
+                },
+                &mut Vec::new(),
+            )
+            .map(|_| ())
+    };
+    let within = |change: &dyn Fn(&mut Limits)| {
+        let mut limits = Limits::DEFAULT;
+        change(&mut limits);
+        limits
+    };
+    let too_large = |bound, limit| ImportError::TooLarge { bound, limit };
+
+    // The fixture has 3 files, and 8 annotations and 8 labels: 16 records.
+    for text in [&json_text, &lines_text] {
+        assert_eq!(read(text, within(&|limits| limits.files = 3)), Ok(8));
+        assert_eq!(
+            read(text, within(&|limits| limits.files = 2)),
+            Err(too_large(Bound::Files, 2))
+        );
+        assert_eq!(read(text, within(&|limits| limits.records = 16)), Ok(8));
+        assert_eq!(
+            read(text, within(&|limits| limits.records = 15)),
+            Err(too_large(Bound::Records, 15)),
+            "labels are records too"
+        );
+    }
+    for adapter in [&NativeJson as &dyn ExportAdapter, &NativeJsonLines] {
+        assert_eq!(write(adapter, within(&|limits| limits.files = 3)), Ok(()));
+        assert_eq!(
+            write(adapter, within(&|limits| limits.files = 2)),
+            Err(ExportError::TooMany {
+                bound: Bound::Files,
+                limit: 2
+            })
+        );
+        assert_eq!(
+            write(adapter, within(&|limits| limits.records = 16)),
+            Ok(())
+        );
+        assert_eq!(
+            write(adapter, within(&|limits| limits.records = 15)),
+            Err(ExportError::TooMany {
+                bound: Bound::Records,
+                limit: 15
+            })
+        );
+    }
+
+    // A JSON document has a bound on its bytes, on the way out and in.
+    let bytes = json_text.len() as u64;
+    assert_eq!(
+        write(&NativeJson, within(&|limits| limits.document_bytes = bytes)),
+        Ok(())
+    );
+    assert_eq!(
+        write(
+            &NativeJson,
+            within(&|limits| limits.document_bytes = bytes - 1)
+        ),
+        Err(ExportError::TooLarge { limit: bytes - 1 })
+    );
+    assert_eq!(
+        write(
+            &NativeJsonLines,
+            within(&|limits| limits.document_bytes = 10)
+        ),
+        Ok(()),
+        "the lines have no bound on their bytes together"
+    );
+    assert_eq!(
+        read(&json_text, within(&|limits| limits.document_bytes = bytes)),
+        Ok(8)
+    );
+    assert_eq!(
+        read(
+            &json_text,
+            within(&|limits| limits.document_bytes = bytes - 1)
+        ),
+        Err(too_large(Bound::DocumentBytes, bytes - 1))
+    );
+
+    // A line of the JSON Lines form has one of its own, its line feed not
+    // counted.
+    let longest = lines_text
+        .lines()
+        .skip(1)
+        .map(str::len)
+        .max()
+        .expect("lines") as u64;
+    assert_eq!(
+        read(&lines_text, within(&|limits| limits.line_bytes = longest)),
+        Ok(8)
+    );
+    assert_eq!(
+        read(
+            &lines_text,
+            within(&|limits| limits.line_bytes = longest - 1)
+        ),
+        Err(too_large(Bound::LineBytes, longest - 1))
+    );
+}
+
+/// Two labels of a document cannot share an id, as two annotations cannot.
+#[test]
+fn a_label_id_used_twice_fails_the_import() {
+    let pool = pool();
+    let mut document: Value = serde_json::from_str(&fixture_document_text()).expect("JSON");
+    let first = document["labels"][0]["id"].clone();
+    document["labels"][2]["id"] = first;
+    // Rows: the document, 3 files, 4 layers, 8 annotations, then labels.
+    assert_eq!(
+        import(&pool, &document.to_string()).err(),
+        Some(ImportError::Invalid {
+            row: 19,
+            code: ViolationCode::DuplicateId
+        })
+    );
 }
