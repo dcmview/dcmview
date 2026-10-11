@@ -4,6 +4,7 @@
 use super::support;
 use axum::http::StatusCode;
 use axum_test::TestServer;
+use chrono::{Duration, NaiveDate};
 use dcmview::loader::DiscoverOptions;
 use dcmview::masking::Masker;
 use dcmview::server::{self, FileRegistry};
@@ -16,7 +17,8 @@ const PATIENT_A_2: &str = "golden-masking-patient-a-us-2.dcm";
 const PATIENT_B: &str = "golden-masking-patient-b-us.dcm";
 const SLIDE_LABEL: &str = "golden-masking-wsi-label.dcm";
 
-/// Every identifier the masking fixtures carry in their headers.
+/// Every identifier the masking fixtures carry in their headers, except
+/// their dates, which are in `FIXTURE_DATES`.
 const IDENTIFIERS: &[&str] = &[
     "Rivera",
     "Alma",
@@ -32,13 +34,30 @@ const IDENTIFIERS: &[&str] = &[
     "US-ROOM-3",
     "SN-558213",
     "ward 5",
-    "19300214",
-    "19810903",
-    "20260520",
-    "20260811",
     "096Y",
     "2.25.20008",
 ];
+
+/// The dates in the header of one masking fixture.
+#[derive(Debug, PartialEq)]
+struct FixtureDates {
+    study: &'static str,
+    birth: &'static str,
+}
+
+const PATIENT_A_DATES: FixtureDates = FixtureDates {
+    study: "20260520",
+    birth: "19300214",
+};
+const PATIENT_B_DATES: FixtureDates = FixtureDates {
+    study: "20260811",
+    birth: "19810903",
+};
+const FIXTURE_DATES: &[&FixtureDates] = &[&PATIENT_A_DATES, &PATIENT_B_DATES];
+
+/// A masked session moves a patient's dates by at most this many days, and
+/// never by none.
+const MAX_DATE_SHIFT_DAYS: i64 = 365;
 
 /// A masked server over `names`, which are served in that order.
 async fn serve_masked(names: &[&str]) -> TestServer {
@@ -75,14 +94,82 @@ async fn serve_masked(names: &[&str]) -> TestServer {
     TestServer::new(server::router(support::app_state_with_registry(registry)))
 }
 
-fn assert_no_identifiers(what: &str, text: &str) {
+fn date(digits: &str) -> Option<NaiveDate> {
+    NaiveDate::parse_from_str(digits, "%Y%m%d").ok()
+}
+
+/// The first identifier `text` shows, if it shows any.
+///
+/// `about` is given for text that is about one fixture and so may show its
+/// dates, moved: the fixture's real dates, and the study date the session
+/// shows for it. The offset is random for each session and patient, so a
+/// moved date can be the real date of another patient (the two study dates
+/// are 83 days apart). That is no leak, and such a date is passed over; a
+/// real date of the fixture itself never is, and neither is an offset of no
+/// days. Text that is about no one fixture may show none of these dates.
+fn identifier_shown(text: &str, about: Option<(&FixtureDates, &str)>) -> Option<String> {
     let text = without_hashed_uids(text);
-    for identifier in IDENTIFIERS {
-        assert!(
-            !text.contains(identifier),
-            "{what} shows {identifier}: {text}"
+    if let Some(identifier) = IDENTIFIERS.iter().find(|name| text.contains(**name)) {
+        return Some(identifier.to_string());
+    }
+    let mut moved = Vec::new();
+    if let Some((real, shown_study_date)) = about {
+        let Some(shown) = date(shown_study_date) else {
+            return Some(format!("{shown_study_date:?} for a study date"));
+        };
+        let days = (shown - date(real.study).expect("fixture study date")).num_days();
+        if days == 0 || days.abs() > MAX_DATE_SHIFT_DAYS {
+            return Some(format!("a study date moved by {days} days"));
+        }
+        let birth = date(real.birth).expect("fixture birth date") + Duration::days(days);
+        moved = vec![
+            shown_study_date.to_string(),
+            birth.format("%Y%m%d").to_string(),
+        ];
+    }
+    for fixture in FIXTURE_DATES {
+        let own = about.is_some_and(|(real, _)| real == *fixture);
+        for real in [fixture.study, fixture.birth] {
+            let coincidence = !own && moved.iter().any(|date| date == real);
+            if !coincidence && text.contains(real) {
+                return Some(real.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Text that is about no one fixture: it shows no identifier and no date.
+fn assert_no_identifiers(what: &str, text: &str) {
+    if let Some(identifier) = identifier_shown(text, None) {
+        panic!("{what} shows {identifier}: {text}");
+    }
+}
+
+/// Text about the fixture whose dates are `real`, in a session that shows
+/// `shown_study_date` for it.
+fn assert_no_identifiers_of(what: &str, text: &str, real: &FixtureDates, shown_study_date: &str) {
+    if let Some(identifier) = identifier_shown(text, Some((real, shown_study_date))) {
+        panic!("{what} shows {identifier}: {text}");
+    }
+}
+
+/// A masked catalog whose files are, in order, the fixtures of `dates`:
+/// each entry against its own fixture, and the rest against them all.
+fn assert_catalog_masked(catalog: &Value, dates: &[&FixtureDates]) {
+    let files = catalog["files"].as_array().expect("files");
+    assert_eq!(files.len(), dates.len());
+    for (index, (entry, real)) in files.iter().zip(dates).enumerate() {
+        assert_no_identifiers_of(
+            &format!("catalog entry {index}"),
+            &without_paths(entry.clone()).to_string(),
+            real,
+            entry["study_date"].as_str().expect("study date"),
         );
     }
+    let mut rest = catalog.clone();
+    rest["files"] = Value::Null;
+    assert_no_identifiers("catalog", &rest.to_string());
 }
 
 /// `text` with each hashed UID replaced by a marker. A masked session
@@ -128,6 +215,51 @@ fn without_paths(mut value: Value) -> Value {
     value
 }
 
+/// The date check without a session: what one patient's entry shows when its
+/// dates moved onto the other patient's study date, and when they did not
+/// move as they should have.
+#[test]
+fn a_date_moved_onto_another_fixtures_date_is_not_a_leak_and_a_real_one_is() {
+    let shown =
+        |text: &str, study_date: &str| identifier_shown(text, Some((&PATIENT_A_DATES, study_date)));
+    let leak = |date: &str| Some(date.to_string());
+
+    // Patient A's study date, 83 days later, is patient B's.
+    let entry = r#"{"label":"MASKED-0001 US 20260811","study_date":"20260811"}"#;
+    assert_eq!(shown(entry, "20260811"), None);
+    assert_eq!(identifier_shown(entry, None), leak("20260811"));
+    // In patient B's own entry the same text is the real date, unmoved.
+    assert_eq!(
+        identifier_shown(entry, Some((&PATIENT_B_DATES, "20260811"))),
+        Some("a study date moved by 0 days".to_string())
+    );
+
+    // The coincidence excuses that one date and nothing else.
+    for real in ["20260520", "19300214", "19810903"] {
+        let entry = format!(r#"{{"study_date":"20260811","other":"{real}101742.25"}}"#);
+        assert_eq!(shown(&entry, "20260811"), leak(real));
+    }
+    assert_eq!(
+        shown(r#"{"study_date":"20260811","name":"Rivera"}"#, "20260811"),
+        leak("Rivera")
+    );
+    // Without the coincidence, the other patient's date is a leak too.
+    let entry = r#"{"study_date":"20260601","other":"20260811"}"#;
+    assert_eq!(shown(entry, "20260601"), leak("20260811"));
+
+    // A date must move, by a year at most, and be a date.
+    let moved_by = |days: i64| Some(format!("a study date moved by {days} days"));
+    assert_eq!(
+        shown(r#"{"study_date":"20260520"}"#, "20260520"),
+        moved_by(0)
+    );
+    assert_eq!(shown("{}", "20270521"), moved_by(366));
+    assert_eq!(shown("{}", "20250519"), moved_by(-366));
+    assert_eq!(shown("{}", "20270520"), None);
+    assert_eq!(shown("{}", "20250520"), None);
+    assert!(shown("{}", "[masked]").is_some());
+}
+
 #[tokio::test]
 async fn catalog_shows_pseudonyms_shifted_dates_and_hashed_uids() {
     let server = serve_masked(&[PATIENT_A_1, PATIENT_A_2, PATIENT_B]).await;
@@ -137,7 +269,10 @@ async fn catalog_shows_pseudonyms_shifted_dates_and_hashed_uids() {
 
     let catalog: Value = server.get("/api/files").await.json();
     assert_eq!(catalog["masked"], true);
-    assert_no_identifiers("catalog", &without_paths(catalog.clone()).to_string());
+    assert_catalog_masked(
+        &catalog,
+        &[&PATIENT_A_DATES, &PATIENT_A_DATES, &PATIENT_B_DATES],
+    );
     let files = catalog["files"].as_array().expect("files");
     assert_eq!(files[0]["patient_name"], "Patient 0001");
     assert_eq!(files[0]["patient_id"], "MASKED-0001");
@@ -189,7 +324,12 @@ async fn tag_tree_masks_identifiers_and_keeps_what_the_rules_keep() {
 
     let tags: Value = server.get("/api/file/0/tags").await.json();
     let text = tags.to_string();
-    assert_no_identifiers("tag tree", &text);
+    assert_no_identifiers_of(
+        "tag tree",
+        &text,
+        &PATIENT_A_DATES,
+        file["study_date"].as_str().expect("study date"),
+    );
     let value = |tag: &str| {
         tags.as_array()
             .expect("tag list")
@@ -403,7 +543,10 @@ async fn file_keys_carry_the_masked_uid_and_never_the_real_one() {
         registry.ensure_key(index).await.expect("content key");
     }
     let catalog: Value = server.get("/api/files").await.json();
-    assert_no_identifiers("catalog", &without_paths(catalog.clone()).to_string());
+    assert_catalog_masked(
+        &catalog,
+        &[&PATIENT_A_DATES, &PATIENT_B_DATES, &PATIENT_A_DATES],
+    );
     let rekeys = catalog["rekeys"].as_array().expect("rekeys");
     assert_eq!(rekeys.len(), 1, "{rekeys:?}");
     assert_eq!(rekeys[0]["old_key"], shown_keys[0].as_str());
