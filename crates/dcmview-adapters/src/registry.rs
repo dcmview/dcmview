@@ -94,7 +94,16 @@ impl Registry {
     /// one registered first wins. `head` is cut to
     /// [`crate::limits::SNIFF_BYTES`] before any importer sees it.
     pub fn sniff(&self, head: &[u8]) -> Option<(&dyn ImportAdapter, Confidence)> {
-        let _ = head;
-        todo!("ADP1")
+        let head = &head[..head.len().min(crate::limits::SNIFF_BYTES)];
+        let mut best = None;
+        let mut confidence = Confidence::None;
+        for importer in &self.importers {
+            let candidate = importer.sniff(head);
+            if candidate > confidence {
+                best = Some((&**importer, candidate));
+                confidence = candidate;
+            }
+        }
+        best
     }
 }

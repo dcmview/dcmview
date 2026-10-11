@@ -253,8 +253,24 @@ impl Report {
     /// `rows` while it holds fewer than
     /// [`crate::limits::MAX_REPORT_ROWS`].
     pub fn warn(&mut self, code: WarningCode, at: RowRef) {
-        let _ = (code, at);
-        todo!("ADP1")
+        let warning = match self.warnings.iter_mut().find(|entry| entry.code == code) {
+            Some(warning) => warning,
+            None => {
+                self.warnings.push(Warning {
+                    code,
+                    count: 0,
+                    rows: vec![],
+                });
+                let Some(warning) = self.warnings.last_mut() else {
+                    return;
+                };
+                warning
+            }
+        };
+        warning.count += 1;
+        if warning.rows.len() < crate::limits::MAX_REPORT_ROWS {
+            warning.rows.push(at);
+        }
     }
 
     /// Counts `count` more occurrences of the loss `code` for `detail`
@@ -273,7 +289,45 @@ impl Report {
         count: u64,
         at: Option<RowRef>,
     ) {
-        let _ = (code, detail, count, at);
-        todo!("ADP1")
+        if count == 0 {
+            return;
+        }
+        let detail = detail.map(|kind| {
+            match kind {
+                GeometryType::Point => "point",
+                GeometryType::Line => "line",
+                GeometryType::Polyline => "polyline",
+                GeometryType::Polygon => "polygon",
+                GeometryType::Rect => "rect",
+                GeometryType::Ellipse => "ellipse",
+                GeometryType::Mask => "mask",
+            }
+            .to_string()
+        });
+        let loss = match self
+            .losses
+            .iter_mut()
+            .find(|entry| entry.code == code && entry.detail == detail)
+        {
+            Some(loss) => loss,
+            None => {
+                self.losses.push(Loss {
+                    code,
+                    detail,
+                    count: 0,
+                    rows: vec![],
+                });
+                let Some(loss) = self.losses.last_mut() else {
+                    return;
+                };
+                loss
+            }
+        };
+        loss.count += count;
+        if let Some(at) = at {
+            if loss.rows.len() < crate::limits::MAX_REPORT_ROWS {
+                loss.rows.push(at);
+            }
+        }
     }
 }
