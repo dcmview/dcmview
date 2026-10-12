@@ -842,8 +842,8 @@ window_mode?: WindowMode, };
 
 /**
  * The step that produced a thumbnail, reported in
- * [`THUMBNAIL_HEADER_SOURCE`]. `ThumbnailCache` and `FullDecode` are sent
- * today; the others are reserved for the cheaper sources that follow.
+ * [`THUMBNAIL_HEADER_SOURCE`]. `ThumbnailCache`, `ReducedDecode` and
+ * `FullDecode` are sent; `DisplayCache` and `RawCache` are reserved.
  */
 export type ThumbnailSource = "thumbnail_cache" | "display_cache" | "raw_cache" | "reduced_decode" | "full_decode";
 
