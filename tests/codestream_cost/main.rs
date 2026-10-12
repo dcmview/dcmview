@@ -185,6 +185,7 @@ fn j2k(
     tiles: u64,
     tile_pixels: u64,
     packets: u64,
+    levels: u8,
 ) -> Structure {
     Structure::Jpeg2000 {
         codestream,
@@ -192,6 +193,8 @@ fn j2k(
         tiles,
         tile_pixels,
         packets,
+        levels,
+        at_origin: true,
     }
 }
 
@@ -278,7 +281,7 @@ fn a_frame_s_own_header_is_read_as_its_format_defines_it() {
         (
             Jpeg2000,
             files::J2K_GRAY8,
-            says(16, 16, 1, 8, j2k(j2k_len(files::J2K_GRAY8), 1, 256, 5)),
+            says(16, 16, 1, 8, j2k(j2k_len(files::J2K_GRAY8), 1, 256, 5, 4)),
         ),
         (
             Jpeg2000,
@@ -288,13 +291,19 @@ fn a_frame_s_own_header_is_read_as_its_format_defines_it() {
                 16,
                 1,
                 8,
-                j2k(j2k_len(files::J2K_GRAY8_ONE_RESOLUTION), 1, 256, 1),
+                j2k(j2k_len(files::J2K_GRAY8_ONE_RESOLUTION), 1, 256, 1, 0),
             ),
         ),
         (
             Jpeg2000,
             files::J2K_GRAY8_TILED,
-            says(16, 16, 1, 8, j2k(j2k_len(files::J2K_GRAY8_TILED), 4, 64, 2)),
+            says(
+                16,
+                16,
+                1,
+                8,
+                j2k(j2k_len(files::J2K_GRAY8_TILED), 4, 64, 2, 1),
+            ),
         ),
         (
             Jpeg2000,
@@ -304,7 +313,7 @@ fn a_frame_s_own_header_is_read_as_its_format_defines_it() {
                 16,
                 1,
                 8,
-                j2k(j2k_len(files::J2K_GRAY8_LAYERS), 1, 256, 15),
+                j2k(j2k_len(files::J2K_GRAY8_LAYERS), 1, 256, 15, 4),
             ),
         ),
         (
@@ -315,7 +324,7 @@ fn a_frame_s_own_header_is_read_as_its_format_defines_it() {
                 64,
                 1,
                 8,
-                j2k(j2k_len(files::J2K_GRAY8_PRECINCTS), 1, 4096, 12),
+                j2k(j2k_len(files::J2K_GRAY8_PRECINCTS), 1, 4096, 12, 2),
             ),
         ),
         (
@@ -326,7 +335,7 @@ fn a_frame_s_own_header_is_read_as_its_format_defines_it() {
                 64,
                 1,
                 8,
-                j2k(j2k_len(files::J2K_GRAY8_TILE_PARTS), 4, 1024, 3),
+                j2k(j2k_len(files::J2K_GRAY8_TILE_PARTS), 4, 1024, 3, 2),
             ),
         ),
         (
@@ -337,23 +346,35 @@ fn a_frame_s_own_header_is_read_as_its_format_defines_it() {
                 16,
                 1,
                 8,
-                j2k(85..hex(files::J2K_GRAY8_JP2).len(), 1, 256, 5),
+                j2k(85..hex(files::J2K_GRAY8_JP2).len(), 1, 256, 5, 4),
             ),
         ),
         (
             Jpeg2000,
             files::J2K_RGB8_RCT,
-            says(16, 16, 3, 8, j2k(j2k_len(files::J2K_RGB8_RCT), 1, 256, 5)),
+            says(
+                16,
+                16,
+                3,
+                8,
+                j2k(j2k_len(files::J2K_RGB8_RCT), 1, 256, 5, 4),
+            ),
         ),
         (
             Jpeg2000,
             files::J2K_GRAY12,
-            says(16, 16, 1, 12, j2k(j2k_len(files::J2K_GRAY12), 1, 256, 3)),
+            says(16, 16, 1, 12, j2k(j2k_len(files::J2K_GRAY12), 1, 256, 3, 2)),
         ),
         (
             Jpeg2000,
             files::J2K_GRAY8_ODD,
-            says(15, 9, 1, 8, j2k(j2k_len(files::J2K_GRAY8_ODD), 1, 135, 4)),
+            says(
+                15,
+                9,
+                1,
+                8,
+                j2k(j2k_len(files::J2K_GRAY8_ODD), 1, 135, 4, 3),
+            ),
         ),
         (JpegXl, files::JXL_GRAY8, says(16, 16, 1, 8, JXL_STILL)),
         (JpegXl, files::JXL_RGB8, says(16, 16, 3, 8, JXL_STILL)),
@@ -574,8 +595,10 @@ fn a_frame_agrees_with_its_entry_exactly_by_the_accept_table() {
         tiles: 1,
         tile_pixels: 256,
         packets: 6,
+        levels: 5,
+        at_origin: true,
     };
-    let one_tile = |packets| j2k(0..0, 1, 256, packets);
+    let one_tile = |packets| j2k(0..0, 1, 256, packets, 5);
     let floor = J2K_MIN_PACKET_BUDGET;
     let wide_budget = 1024 * 1024 / J2K_PIXELS_PER_PACKET;
     assert!(
@@ -789,13 +812,13 @@ fn a_frame_agrees_with_its_entry_exactly_by_the_accept_table() {
         (
             "j2k, as many tiles as are allowed",
             &gray8,
-            says(16, 16, 1, 8, j2k(0..0, J2K_MAX_TILES, 1, 1)),
+            says(16, 16, 1, 8, j2k(0..0, J2K_MAX_TILES, 1, 1, 5)),
             true,
         ),
         (
             "j2k, a tile more",
             &gray8,
-            says(16, 16, 1, 8, j2k(0..0, J2K_MAX_TILES + 1, 1, 1)),
+            says(16, 16, 1, 8, j2k(0..0, J2K_MAX_TILES + 1, 1, 1, 5)),
             false,
         ),
         (
@@ -813,7 +836,7 @@ fn a_frame_agrees_with_its_entry_exactly_by_the_accept_table() {
         (
             "j2k, a megapixel tile within the least budget",
             &wide,
-            says(1024, 1024, 1, 8, j2k(0..0, 1, 1024 * 1024, floor)),
+            says(1024, 1024, 1, 8, j2k(0..0, 1, 1024 * 1024, floor, 5)),
             true,
         ),
         (
@@ -824,7 +847,7 @@ fn a_frame_agrees_with_its_entry_exactly_by_the_accept_table() {
                 1024,
                 1,
                 8,
-                j2k(0..0, 1, 1 << 30, (1 << 30) / J2K_PIXELS_PER_PACKET),
+                j2k(0..0, 1, 1 << 30, (1 << 30) / J2K_PIXELS_PER_PACKET, 5),
             ),
             true,
         ),
@@ -836,7 +859,7 @@ fn a_frame_agrees_with_its_entry_exactly_by_the_accept_table() {
                 1024,
                 1,
                 8,
-                j2k(0..0, 1, 1 << 30, (1 << 30) / J2K_PIXELS_PER_PACKET + 1),
+                j2k(0..0, 1, 1 << 30, (1 << 30) / J2K_PIXELS_PER_PACKET + 1, 5),
             ),
             false,
         ),
@@ -1209,6 +1232,99 @@ fn a_frame_that_disagrees_with_its_header_is_refused_before_anything_is_allocate
                 report(|| format!("{context}: {held} bytes of heap, file {length}"));
             }
         }
+    }
+}
+
+/// How far the decoder may halve a JPEG 2000 image is read from the frame
+/// like everything else it declares: the fewest decomposition levels of any
+/// coding style, in the main header or a tile-part's, and whether the image
+/// starts at the origin of its grid. Neither is compared with the entry.
+#[test]
+fn the_levels_a_reduced_decode_may_use_are_the_fewest_a_frame_states() {
+    let _alone = heap::alone();
+    let reduced = |name: &str| {
+        std::fs::read(files::fixture("reduced-decode").join(name)).expect("the fixture")
+    };
+    let levels = |codestream: &[u8], levels: u8| {
+        files::j2k_u8(codestream, files::j2k_cod(codestream) + 9, levels)
+    };
+    let tile_parts = hex(files::J2K_GRAY8_TILE_PARTS);
+    let large = reduced("gray12-tile-parts-1040x780.j2k");
+    // (name, frame, levels, at the origin)
+    let cases: Vec<(&str, Vec<u8>, u8, bool)> = vec![
+        ("five resolutions", hex(files::J2K_GRAY8), 4, true),
+        (
+            "one resolution",
+            hex(files::J2K_GRAY8_ONE_RESOLUTION),
+            0,
+            true,
+        ),
+        ("in a JP2 file", hex(files::J2K_GRAY8_JP2), 4, true),
+        ("tile-parts", tile_parts.clone(), 2, true),
+        (
+            "a tile-part that states fewer",
+            files::j2k_tile_part_cod(&tile_parts, |codestream| levels(codestream, 1)),
+            1,
+            true,
+        ),
+        (
+            "a tile-part that states none",
+            files::j2k_tile_part_cod(&tile_parts, |codestream| levels(codestream, 0)),
+            0,
+            true,
+        ),
+        (
+            "a tile-part that states more",
+            files::j2k_tile_part_cod(&tile_parts, |codestream| levels(codestream, 9)),
+            2,
+            true,
+        ),
+        (
+            "the main header restated",
+            levels(&tile_parts, 32),
+            32,
+            true,
+        ),
+        ("six resolutions, tiled", large, 5, true),
+        (
+            "an image off the origin",
+            reduced("gray8-offset-517x389.j2k"),
+            5,
+            false,
+        ),
+    ];
+    for (name, frame, expected_levels, expected_origin) in cases {
+        let (read, held) = heap::peak_during(|| declared(CodestreamKind::Jpeg2000, &frame));
+        let read = read.unwrap_or_else(|error| panic!("{name}: {error:#}"));
+        assert!(held <= HEADER_HEAP, "{name}: {held} bytes of heap");
+        let Structure::Jpeg2000 {
+            levels, at_origin, ..
+        } = read.structure
+        else {
+            panic!("{name}: not read as JPEG 2000");
+        };
+        assert_eq!(
+            (levels, at_origin),
+            (expected_levels, expected_origin),
+            "{name}"
+        );
+    }
+
+    // Honest files vary in both, so neither refuses a frame.
+    let runtime = runtime();
+    let gray8 = entry(&runtime, files::JPEG_2000, Layout::gray8(16, 16));
+    for (levels, at_origin) in [(0, true), (5, false), (32, true)] {
+        let structure = Structure::Jpeg2000 {
+            codestream: 0..0,
+            uniform: true,
+            tiles: 1,
+            tile_pixels: 256,
+            packets: 6,
+            levels,
+            at_origin,
+        };
+        agrees(&gray8, &says(16, 16, 1, 8, structure))
+            .unwrap_or_else(|error| panic!("{levels} levels, at origin {at_origin}: {error:#}"));
     }
 }
 

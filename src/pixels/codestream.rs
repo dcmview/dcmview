@@ -175,6 +175,17 @@ pub enum Structure {
         /// layers any coding style in the codestream declares, times the
         /// most precincts any of them gives such a tile.
         packets: u64,
+        /// The fewest decomposition levels any coding style in the
+        /// codestream declares: how many times the decoder can halve the
+        /// image for every tile and component. Not compared with the entry
+        /// ([`agrees`]); a reduced decode for a thumbnail is held to it
+        /// (`pixels::thumbnail_reduction`).
+        levels: u8,
+        /// The image starts at the origin of the reference grid: `XOsiz`
+        /// and `YOsiz` are 0, and so are the tile offsets, which may not
+        /// exceed them. Not compared with the entry either; only such an
+        /// image is decoded at a reduced resolution.
+        at_origin: bool,
     },
     /// [`CodestreamKind::JpegXl`].
     JpegXl {
@@ -252,7 +263,8 @@ pub enum Structure {
 ///    `YRsiz == 1` and the first component's `Ssiz`.
 ///    `tiles = ceil((Xsiz - XTOsiz) / XTsiz) * ceil((Ysiz - YTOsiz) / YTsiz)`
 ///    in `u64`. A nominal tile is `tw = min(XTsiz, columns)` by
-///    `th = min(YTsiz, rows)`; `tile_pixels = tw * th`.
+///    `th = min(YTsiz, rows)`; `tile_pixels = tw * th`. `at_origin` when
+///    `XOsiz` and `YOsiz` are both 0.
 /// 4. Read the main header's marker segments after `SIZ`: marker (2, the
 ///    first byte `FF`, else error), length (2, at least 2, inside the
 ///    codestream, else error). `FF 90` (start of tile-part) ends the main
@@ -283,7 +295,8 @@ pub enum Structure {
 ///    `rw = ceil(tw / 2^(NL - r))` and `rh = ceil(th / 2^(NL - r))`,
 ///    computed in `u64` with saturating arithmetic.
 /// 7. `packets` is the largest layer count of any `COD` times the largest
-///    precinct count of any coding style, saturating.
+///    precinct count of any coding style, saturating. `levels` is the
+///    smallest `NL` of any coding style.
 ///
 /// # `JpegXl`
 ///
@@ -544,6 +557,7 @@ fn read_jpeg2000(frame: &[u8]) -> Result<Declared> {
         height: u64::from(yt.min(rows)),
         layers: 0,
         precincts: 0,
+        levels: u8::MAX,
     };
     let mut marker = read_j2k_header(&mut reader, &mut styles, false)?;
     if styles.layers == 0 {
@@ -591,6 +605,8 @@ fn read_jpeg2000(frame: &[u8]) -> Result<Declared> {
             tiles,
             tile_pixels: styles.width * styles.height,
             packets: styles.layers.saturating_mul(styles.precincts),
+            levels: styles.levels,
+            at_origin: xo == 0 && yo == 0,
         },
     })
 }
@@ -600,6 +616,7 @@ struct J2kStyles {
     height: u64,
     layers: u64,
     precincts: u64,
+    levels: u8,
 }
 
 fn read_j2k_header(
@@ -647,6 +664,7 @@ impl J2kStyles {
         if levels > 32 {
             return Err(anyhow!("JPEG 2000 decomposition levels exceed 32"));
         }
+        self.levels = self.levels.min(levels);
         segment.take(4)?;
         let mut precincts = 0_u64;
         for resolution in 0..=levels {
