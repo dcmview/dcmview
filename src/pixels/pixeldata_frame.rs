@@ -143,10 +143,15 @@ fn checked_fragment<'a>(
 ///    `rows = ceil(file.rows / 2^shift)` each fit 16 bits, and
 ///    `columns * rows * file.samples_per_pixel` does not overflow.
 /// 3. `jpeg_decoder::Decoder::new(checked.encoded)`, the decoder and the
-///    bytes a full decode uses, is limited to that many bytes of output
-///    (`set_max_decoding_buffer_size`) and asked for that size
-///    (`scale(columns, rows)`), and answers exactly `(columns, rows)`: the
+///    bytes a full decode uses, is asked for that size
+///    (`scale(columns, rows)`) and answers exactly `(columns, rows)`: the
 ///    decoder picks the scale itself, and for some sizes it picks another.
+///    It is also told that many bytes of output at most
+///    (`set_max_decoding_buffer_size`), which is a second check on the
+///    result and not what bounds the decode: the decoder consults it only
+///    when it assembles its output, after its planes are allocated. Those
+///    are sized from the frame header, which `checked_fragment` has held to
+///    the entry.
 /// 4. `decode()` succeeds and returns exactly
 ///    `columns * rows * file.samples_per_pixel` bytes.
 ///
