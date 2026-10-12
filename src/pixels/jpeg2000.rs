@@ -77,21 +77,33 @@ pub(crate) async fn render_jp2_thumbnail(
     task::spawn_blocking(move || {
         let fragment = read_encapsulated_fragment_blocking(&file.path, frame)?;
         let checked = checked_codestream(&file, &fragment)?;
-        let shift = reduction.map_or(0, |reduction| reduction.shift.min(checked.levels));
-        let reduced = if shift == 0 {
-            None
-        } else {
-            decode_reduced(&file, &checked, Reduction { shift })
-        };
-        let (image, shift) = match reduced {
-            Some(image) => (image, shift),
-            None => (decode_full(&checked)?, 0),
-        };
+        let (image, shift) = decode_for_thumbnail(&file, &checked, reduction, decode_reduced)?;
         let buffer = render_jp2_image(&file, frame, &image, None, None, window_mode)?;
         Ok(ThumbnailRender { buffer, shift })
     })
     .await
     .context("jp2 thumbnail decode task failed")?
+}
+
+/// Steps 1 to 3 of [`render_jp2_thumbnail`]: the image and the reduction
+/// that was applied to it. `reduce` is [`decode_reduced`]; it is a
+/// parameter so that the fallback can be shown for an attempt that fails.
+fn decode_for_thumbnail(
+    file: &FileEntry,
+    checked: &CheckedCodestream<'_>,
+    reduction: Option<Reduction>,
+    reduce: impl FnOnce(&FileEntry, &CheckedCodestream<'_>, Reduction) -> Option<jpeg2k::Image>,
+) -> Result<(jpeg2k::Image, u8)> {
+    let shift = reduction.map_or(0, |reduction| reduction.shift.min(checked.levels));
+    let reduced = if shift == 0 {
+        None
+    } else {
+        reduce(file, checked, Reduction { shift })
+    };
+    Ok(match reduced {
+        Some(image) => (image, shift),
+        None => (decode_full(checked)?, 0),
+    })
 }
 
 fn render_jp2_fragment_blocking(
@@ -473,8 +485,76 @@ fn encode_raw_jp2_samples(
 
 #[cfg(test)]
 mod tests {
-    use super::{encode_raw_jp2_samples, raw_jp2_sample_layout, RawJp2SampleLayout};
+    use super::{
+        checked_codestream, decode_for_thumbnail, decode_reduced, encode_raw_jp2_samples,
+        raw_jp2_sample_layout, RawJp2SampleLayout,
+    };
+    use crate::pixels::reduced::Reduction;
     use crate::pixels::PixelError;
+    use crate::types::FileEntry;
+
+    /// A reduced attempt that returns nothing is followed by the full
+    /// decode of the same checked codestream, and reported as a full
+    /// decode. No frame an encoder writes makes the linked decoder fail
+    /// reduced and succeed in full, so the attempt is replaced here.
+    #[test]
+    fn a_reduced_attempt_that_fails_is_followed_by_the_full_decode() {
+        let frame = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/reduced-decode/gray8-512x384.j2k"),
+        )
+        .expect("the fixture");
+        let file = FileEntry {
+            format: Default::default(),
+            raster: None,
+            size_bytes: 0,
+            modified: None,
+            index: 0,
+            path: "unread.dcm".into(),
+            label: String::new(),
+            patient_id: String::new(),
+            patient_name: String::new(),
+            study_instance_uid: String::new(),
+            study_date: String::new(),
+            study_description: String::new(),
+            series_instance_uid: String::new(),
+            series_number: String::new(),
+            series_description: String::new(),
+            modality: String::new(),
+            instance_number: String::new(),
+            sop_instance_uid: String::new(),
+            sop_class_uid: String::new(),
+            series_metadata: Default::default(),
+            has_pixels: true,
+            frame_count: 1,
+            rows: 384,
+            columns: 512,
+            bits_allocated: 8,
+            pixel_representation: 0,
+            samples_per_pixel: 1,
+            photometric_interpretation: "MONOCHROME2".to_string(),
+            rescale_slope: 1.0,
+            rescale_intercept: 0.0,
+            transfer_syntax_uid: "1.2.840.10008.1.2.4.90".to_string(),
+            default_window: None,
+        };
+        let checked = checked_codestream(&file, &frame).expect("an honest frame");
+        let asked = Some(Reduction { shift: 1 });
+        let size = |image: &jpeg2k::Image| (image.width(), image.height());
+
+        let (image, shift) =
+            decode_for_thumbnail(&file, &checked, asked, decode_reduced).expect("reduced");
+        assert_eq!((size(&image), shift), ((256, 192), 1));
+
+        let mut attempts = 0;
+        let (image, shift) = decode_for_thumbnail(&file, &checked, asked, |_, _, reduction| {
+            attempts += 1;
+            assert_eq!(reduction.shift, 1);
+            None
+        })
+        .expect("the full decode");
+        assert_eq!((size(&image), shift, attempts), ((512, 384), 0, 1));
+    }
 
     #[test]
     fn raw_sample_layout_accepts_supported_precision_and_signedness_boundaries() {
