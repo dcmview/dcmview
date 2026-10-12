@@ -191,6 +191,8 @@ pub fn thumbnail_reduction(
 /// height)`, each at least 1. Never panics, whatever the numbers; `limit`
 /// is at most 31.
 fn largest_shift(columns: u32, rows: u32, thumbnail: (u32, u32), limit: u8) -> Option<u8> {
-    let _ = (columns, rows, thumbnail, limit);
-    todo!("the largest halving that leaves the frame twice its thumbnail")
+    (1..=limit.min(31)).rev().find(|&shift| {
+        u64::from(columns >> shift) >= 2 * u64::from(thumbnail.0)
+            && u64::from(rows >> shift) >= 2 * u64::from(thumbnail.1)
+    })
 }
