@@ -273,7 +273,7 @@ fn decode_reduced(
     reduction: Reduction,
 ) -> Option<jpeg2k::Image> {
     let _ = (file, checked.bytes, reduction);
-    todo!("GAL2: decode a JPEG 2000 frame at a reduced resolution")
+    todo!("a JPEG 2000 frame at a reduced resolution")
 }
 
 fn decode_jp2_fragment_to_png_blocking(

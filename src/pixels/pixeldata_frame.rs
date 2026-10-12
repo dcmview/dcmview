@@ -160,7 +160,7 @@ fn decode_scaled_jpeg(
     reduction: Reduction,
 ) -> Option<(Vec<u8>, u32, u32)> {
     let _ = (file, checked.encoded, &checked.declared, reduction);
-    todo!("GAL2: decode a JPEG frame through the scaled inverse DCT")
+    todo!("a JPEG frame through the scaled inverse DCT")
 }
 
 fn decode_checked_object(

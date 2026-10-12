@@ -192,5 +192,5 @@ pub fn thumbnail_reduction(
 /// is at most 31.
 fn largest_shift(columns: u32, rows: u32, thumbnail: (u32, u32), limit: u8) -> Option<u8> {
     let _ = (columns, rows, thumbnail, limit);
-    todo!("GAL2: the largest reduction that keeps the frame as large as its thumbnail")
+    todo!("the largest halving that leaves the frame twice its thumbnail")
 }
