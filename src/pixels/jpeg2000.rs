@@ -272,8 +272,31 @@ fn decode_reduced(
     checked: &CheckedCodestream<'_>,
     reduction: Reduction,
 ) -> Option<jpeg2k::Image> {
-    let _ = (file, checked.bytes, reduction);
-    todo!("a JPEG 2000 frame at a reduced resolution")
+    let image = jpeg2k::Image::from_bytes_with(
+        checked.bytes,
+        jpeg2k::DecodeParameters::new().reduce(u32::from(reduction.shift)),
+    )
+    .ok()?;
+    let components = image.components();
+    if components.len() != usize::try_from(file.samples_per_pixel).ok()? {
+        return None;
+    }
+    let first = components.first()?;
+    let (width, height) = (first.width(), first.height());
+    if !reduction.accepts(file, width, height) {
+        return None;
+    }
+    let samples = usize::try_from(width)
+        .ok()?
+        .checked_mul(usize::try_from(height).ok()?)?;
+    if components.iter().any(|component| {
+        component.width() != width
+            || component.height() != height
+            || component.data().len() != samples
+    }) {
+        return None;
+    }
+    Some(image)
 }
 
 fn decode_jp2_fragment_to_png_blocking(
