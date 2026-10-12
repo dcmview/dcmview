@@ -7,10 +7,10 @@ use anyhow::{anyhow, Context, Result};
 use dicom_dictionary_std::tags;
 use dicom_pixeldata::PixelDecoder;
 
-use super::codestream::{self, CodestreamKind, Declared};
+use super::codestream::{self, CodestreamKind, Declared, Structure};
 use super::encapsulated::open_for_frame_decode;
 use super::icc::select_icc_profile;
-use super::reduced::Reduction;
+use super::reduced::{Reduction, JPEG_MAX_REDUCTION_SHIFT};
 
 /// One decoded frame, color-by-pixel, samples little endian.
 pub(super) struct DecodedFrame {
@@ -159,8 +159,32 @@ fn decode_scaled_jpeg(
     checked: &CheckedFragment<'_>,
     reduction: Reduction,
 ) -> Option<(Vec<u8>, u32, u32)> {
-    let _ = (file, checked.encoded, &checked.declared, reduction);
-    todo!("a JPEG frame through the scaled inverse DCT")
+    if !matches!(
+        checked.declared.structure,
+        Structure::Jpeg {
+            process: 0xC0..=0xC2,
+            ..
+        }
+    ) || !(1..=JPEG_MAX_REDUCTION_SHIFT).contains(&reduction.shift)
+    {
+        return None;
+    }
+    let divisor = 1_u64 << reduction.shift;
+    let columns = u16::try_from(u64::from(file.columns).div_ceil(divisor)).ok()?;
+    let rows = u16::try_from(u64::from(file.rows).div_ceil(divisor)).ok()?;
+    let bytes = usize::from(columns)
+        .checked_mul(usize::from(rows))?
+        .checked_mul(usize::try_from(file.samples_per_pixel).ok()?)?;
+    let mut decoder = jpeg_decoder::Decoder::new(checked.encoded);
+    decoder.set_max_decoding_buffer_size(bytes);
+    if decoder.scale(columns, rows).ok()? != (columns, rows) {
+        return None;
+    }
+    let decoded = decoder.decode().ok()?;
+    if decoded.len() != bytes {
+        return None;
+    }
+    Some((decoded, u32::from(columns), u32::from(rows)))
 }
 
 fn decode_checked_object(
