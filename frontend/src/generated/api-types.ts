@@ -31,6 +31,9 @@ export const API_ENDPOINTS = {
 	fileRedactionsUpdate: { method: "PUT", path: "/api/file/{index}/redactions" },
 	fileRedactionsApplyToSeries: { method: "PUT", path: "/api/file/{index}/redactions/series" },
 	annotationsExport: { method: "GET", path: "/api/annotations/export.csv" },
+	annotationsExportJson: { method: "GET", path: "/api/annotations/export.json" },
+	annotationsExportJsonl: { method: "GET", path: "/api/annotations/export.jsonl" },
+	annotationsImport: { method: "GET", path: "/api/annotations/import" },
 	annotationOps: { method: "POST", path: "/api/annotations/ops" },
 } as const;
 
@@ -68,6 +71,27 @@ export const FILE_KEY_HEADER = "X-File-Key";
 
 export const THUMBNAIL_SIZE_BUCKETS = [128, 256, 512, 1024] as const;
 export const THUMBNAIL_DEFAULT_SIZE = 256;
+
+/**
+ * Which adapter wrote a report.
+ */
+export type AdapterRef = { id: string, version: number, };
+
+/**
+ * The answer of `endpoints::ANNOTATIONS_IMPORT`.
+ *
+ * `report` is there when `state` is `ready`: what the import's adapter
+ * did, in fixed codes, counts and row numbers. It holds no path, file
+ * key, UID or other text of the file, in any session. `error` is there
+ * when `state` is `failed`: the import's message, which the EMBED reads
+ * and the CSV export of that session also answer with.
+ */
+export type AnnotationImportResponse = { state: AnnotationImportState, report?: Report, error?: string, };
+
+/**
+ * Where a session's `--annotations` import stands.
+ */
+export type AnnotationImportState = "none" | "loading" | "ready" | "failed";
 
 /**
  * The query of `endpoints::ANNOTATION_OPS`.
@@ -122,9 +146,43 @@ result: ApplyResult,
  */
 revision: number, code?: ApiErrorCode, error?: string, };
 
-export type ApiErrorCode = "invalid_path" | "invalid_query" | "invalid_json" | "bad_request" | "not_found" | "route_not_found" | "asset_not_found" | "method_not_allowed" | "no_pixel_data" | "frame_out_of_range" | "invalid_window" | "unsupported_transfer_syntax" | "unsupported_pixel_layout" | "semantic_mapping_unavailable" | "overlay_not_covering_frame" | "pixel_decode_failed" | "decode_busy" | "decode_memory_exceeded" | "masked" | "annotation_conflict" | "annotation_invalid" | "file_key_unavailable" | "file_key_replaced" | "file_key_ambiguous" | "payload_too_large" | "unauthorized" | "internal_error";
+export type ApiErrorCode = "invalid_path" | "invalid_query" | "invalid_json" | "bad_request" | "not_found" | "route_not_found" | "asset_not_found" | "method_not_allowed" | "no_pixel_data" | "frame_out_of_range" | "invalid_window" | "unsupported_transfer_syntax" | "unsupported_pixel_layout" | "semantic_mapping_unavailable" | "overlay_not_covering_frame" | "pixel_decode_failed" | "decode_busy" | "decode_memory_exceeded" | "masked" | "annotation_conflict" | "annotation_invalid" | "file_key_unavailable" | "file_key_replaced" | "file_key_ambiguous" | "annotation_export_too_large" | "annotation_export_busy" | "payload_too_large" | "unauthorized" | "internal_error";
 
 export type CodedConceptSummary = { value: string, scheme: string, meaning: string, };
+
+/**
+ * What a report counts.
+ */
+export type Counts = { 
+/**
+ * Import: the loaded files that were given records. Export: the files
+ * written (for EMBED, rows).
+ */
+files: number, 
+/**
+ * Annotations read from the input (import; for EMBED, the ROIs of the
+ * rows that matched a file) or held by the document (export).
+ */
+annotations_in: number, 
+/**
+ * Annotations handed on (import) or written (export).
+ */
+annotations_out: number, labels_in: number, labels_out: number, 
+/**
+ * Import: what named no loaded file. For EMBED, rows; for the native
+ * formats, annotations and labels.
+ */
+unmatched: number, 
+/**
+ * Import: annotations and labels of a file that matched and was
+ * refused (see the refusal codes of [`WarningCode`]).
+ */
+refused: number, };
+
+/**
+ * Whether a report is of an import or of an export.
+ */
+export type Direction = "import" | "export";
 
 export type DiscoveryResult = { path: string, disposition: string, reason: string, };
 
@@ -463,6 +521,42 @@ export type HealthResponse = { status: string, viewer: ViewerIdentity, file_coun
 masked: boolean, };
 
 /**
+ * One kind of loss, counted.
+ */
+export type Loss = { code: LossCode, 
+/**
+ * The snake-case name of a geometry type (`polygon`), or absent.
+ * Never text of the input.
+ */
+detail?: string, 
+/**
+ * How many times it happened. What is counted is in the code's
+ * documentation; where that says nothing, annotations.
+ */
+count: number, 
+/**
+ * The first places it happened, at most
+ * [`crate::limits::MAX_REPORT_ROWS`], in the order they were met.
+ * Empty for an export.
+ */
+rows: Array<RowRef>, };
+
+/**
+ * Something an export could not carry, or an import could not keep.
+ * Variants are only added; the wire strings are the snake-case names.
+ */
+export type LossCode = "type_skipped" | "rounded_outward" | "classes_merged" | "attributes_dropped" | "scores_dropped" | "labels_dropped" | "label_members_dropped" | "copy_placement_not_kept";
+
+/**
+ * How the files an import placed were found.
+ */
+export type MatchedBy = { key: number, sop_instance_uid: number, 
+/**
+ * For EMBED, the rows whose path named a loaded file.
+ */
+path: number, };
+
+/**
  * The Modality transform the display pipeline applies to stored values
  * before windowing: the LUT when present, otherwise the rescale.
  */
@@ -686,11 +780,44 @@ export type ReferenceTargetSummary = { sop_class_uid: string | null, sop_instanc
  */
 frame_numbers: Array<number>, segment_numbers: Array<number>, };
 
+/**
+ * What one import or export did.
+ *
+ * ```json
+ * { "adapter": { "id": "embed", "version": 1 }, "direction": "import",
+ *   "counts": { "files": 2, "annotations_in": 3, "annotations_out": 3,
+ *               "labels_in": 0, "labels_out": 0, "unmatched": 1, "refused": 0 },
+ *   "losses": [],
+ *   "warnings": [ { "code": "negative_coordinate", "count": 1,
+ *                   "rows": [ { "row": 3, "roi": 0 } ] } ],
+ *   "matched_by": { "key": 0, "sop_instance_uid": 0, "path": 2 } }
+ * ```
+ *
+ * `losses` and `warnings` hold one entry per code (per code and `detail`
+ * for a loss), in the order each was first met. `matched_by` is present
+ * for an import and absent for an export.
+ */
+export type Report = { adapter: AdapterRef, direction: Direction, counts: Counts, losses: Array<Loss>, warnings: Array<Warning>, matched_by?: MatchedBy, };
+
 export type ResolvedSegmentSourceFrame = { file_index: number, 
 /**
  * Zero-based frame index in the source object.
  */
 frame_index: number, sop_instance_uid: string, };
+
+/**
+ * One place in an input, by number.
+ *
+ * - EMBED CSV: `row` is the record's number in the file, the header being
+ *   row 1, so the first data row is 2 (the number the import's error
+ *   messages use). `roi` is the position of a ROI in that row's
+ *   `ROI_coords`, from 0, when the entry is about one ROI.
+ * - Native JSON Lines: `row` is the line number, from 1 (the header line).
+ * - Native JSON document: `row` is the line the record would be on in the
+ *   JSON Lines form of the same document: 1 for the document itself, then
+ *   every file, layer, annotation and label, in that order.
+ */
+export type RowRef = { row: number, roi?: number, };
 
 export type RtDoseContext = { dose_grid_scaling: number | null, scaling_status: string, 
 /**
@@ -861,6 +988,29 @@ export type ViewerIdentity = { name: string, version: string, build_target: stri
  * `max = 2^bits_per_entry - 1`.
  */
 export type VoiLookupTable = { first_value_mapped: number, bits_per_entry: number, values: Array<number>, };
+
+/**
+ * One kind of warning, counted.
+ */
+export type Warning = { code: WarningCode, 
+/**
+ * How many boxes, files or documents it applies to: one for each box
+ * for the six codes about a box (a box with two bad coordinates counts
+ * once), one for each file of the document for the six about a file,
+ * and 1 for `schema_not_applied`.
+ */
+count: number, 
+/**
+ * The first places it happened, at most
+ * [`crate::limits::MAX_REPORT_ROWS`], in the order they were met.
+ */
+rows: Array<RowRef>, };
+
+/**
+ * Something a reader of the result should know. Variants are only added;
+ * the wire strings are the snake-case names.
+ */
+export type WarningCode = "negative_coordinate" | "non_integer_coordinate" | "out_of_range" | "zero_area" | "corners_out_of_order" | "frames_empty" | "file_unmatched" | "size_mismatch" | "evidence_conflict" | "key_unavailable" | "file_size_differs" | "schema_not_applied" | "file_unverified" | "file_ambiguous";
 
 export type WindowMode = "default" | "full_dynamic";
 

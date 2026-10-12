@@ -1,7 +1,8 @@
-use dcmview::annotations::{AnnotationSource, AnnotationStore};
+use dcmview::annotations::{AnnotationInput, AnnotationSource, AnnotationStore, NativeSource};
 use dcmview::loader;
 use dcmview::server::annotations;
 use dcmview::server::FileRegistry;
+use dcmview_adapters::Report;
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -14,7 +15,7 @@ pub(super) struct DiscoveryInputs {
     pub(super) recursive: bool,
     pub(super) filters: Vec<loader::ScanFilter>,
     pub(super) formats: loader::FormatSelection,
-    pub(super) annotation_source: Option<AnnotationSource>,
+    pub(super) annotation_source: Option<AnnotationInput>,
     pub(super) registry: FileRegistry,
     pub(super) annotation_store: AnnotationStore,
     pub(super) shutdown: CancellationToken,
@@ -161,10 +162,28 @@ fn record_event(event: loader::DiscoveryEvent, registry: &FileRegistry) {
     }
 }
 
-/// Reads the annotation CSV against the files discovery found, then stages
-/// its rows in the annotation store. The read is all or nothing; a failure
-/// leaves the store failed and the viewer serving. No file is read for it.
+/// Loads the `--annotations` file against the files discovery found. The
+/// load is all or nothing; a failure leaves the store failed and the
+/// viewer serving.
 async fn load_annotations(
+    source: AnnotationInput,
+    registry: FileRegistry,
+    store: AnnotationStore,
+    cancellation: loader::DiscoveryCancellation,
+) {
+    match source {
+        AnnotationInput::Embed(source) => {
+            load_embed_annotations(source, registry, store, cancellation).await;
+        }
+        AnnotationInput::Native(source) => {
+            load_native_annotations(source, registry, store, cancellation).await;
+        }
+    }
+}
+
+/// Reads the annotation CSV, then stages its rows in the annotation store.
+/// No image file is read for it.
+async fn load_embed_annotations(
     source: AnnotationSource,
     registry: FileRegistry,
     store: AnnotationStore,
@@ -173,28 +192,33 @@ async fn load_annotations(
     let files = registry.files_snapshot();
     let scan_cancellation = cancellation.clone();
     let result = tokio::task::spawn_blocking(move || {
-        source.load_for_files_with_check(&files, || {
-            if scan_cancellation.is_cancelled() {
-                anyhow::bail!("annotation loading cancelled");
-            }
-            Ok(())
-        })
+        source.read_for_files(&files, &|| !scan_cancellation.is_cancelled())
     })
     .await;
 
     match result {
-        Ok(Ok((rows, report))) => {
-            if let Err(error) = annotations::import_embed_rows(&registry, &store, rows) {
+        Ok(Ok(read)) => {
+            // The report is in place before the rows end the import, so
+            // whoever sees the import ready sees what it did.
+            let committed = store
+                .record_import_report(read.report.clone())
+                .map_err(|error| error.to_string())
+                .and_then(|()| {
+                    annotations::import_embed_rows(&registry, &store, read.rows)
+                        .map_err(|error| error.to_string())
+                });
+            if let Err(error) = committed {
                 eprintln!("dcmview: warning — failed to commit annotations: {error}");
-                let _ = store.fail_loading(error.to_string());
+                let _ = store.fail_loading(error);
                 return;
             }
-            if report.unmatched_rows > 0 {
+            if read.report.counts.unmatched > 0 {
                 eprintln!(
                     "dcmview: warning — {} annotation row(s) did not match discovered files",
-                    report.unmatched_rows
+                    read.report.counts.unmatched
                 );
             }
+            warn_of(&read.report);
         }
         Ok(Err(error)) => {
             if !cancellation.is_cancelled() {
@@ -206,6 +230,48 @@ async fn load_annotations(
             eprintln!("dcmview: warning — annotation loader failed: {error}");
             let _ = store.fail_loading(format!("annotation loader failed: {error}"));
         }
+    }
+}
+
+/// Reads a native annotation document and applies its records
+/// (`annotations::import_native`, which ends the store's import either
+/// way).
+async fn load_native_annotations(
+    source: NativeSource,
+    registry: FileRegistry,
+    store: AnnotationStore,
+    cancellation: loader::DiscoveryCancellation,
+) {
+    let scan_cancellation = cancellation.clone();
+    let keep_going = std::sync::Arc::new(move || !scan_cancellation.is_cancelled());
+    match annotations::import_native(&registry, &store, &source, keep_going).await {
+        Ok(report) => {
+            if report.counts.unmatched > 0 {
+                eprintln!(
+                    "dcmview: warning — {} annotation record(s) did not match discovered files",
+                    report.counts.unmatched
+                );
+            }
+            warn_of(&report);
+        }
+        Err(error) => {
+            if !cancellation.is_cancelled() {
+                eprintln!("dcmview: warning — failed to load annotations: {error}");
+            }
+        }
+    }
+}
+
+/// One line on standard error for each kind of warning an import reported:
+/// its code and how often. A report holds no text of the file, so neither
+/// does the log.
+fn warn_of(report: &Report) {
+    for warning in &report.warnings {
+        eprintln!(
+            "dcmview: warning — annotation import: {} ({})",
+            warning.code.as_str(),
+            warning.count
+        );
     }
 }
 
@@ -367,7 +433,7 @@ mod tests {
                 recursive: true,
                 filters,
                 formats: loader::FormatSelection::all(),
-                annotation_source,
+                annotation_source: annotation_source.map(AnnotationInput::Embed),
                 registry: registry.clone(),
                 annotation_store: annotation_store.clone(),
                 shutdown: shutdown.clone(),

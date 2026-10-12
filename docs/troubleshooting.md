@@ -451,7 +451,11 @@ not match a loaded DICOM path.
 Fix: confirm that the CSV includes `anon_dicom_path` and `ROI_coords`. When
 present, `num_ROI` must equal the number of coordinate boxes. `ROI_coords` must
 be a JSON array of `[ymin, xmin, ymax, xmax]` boxes, and `ROI_frames` must be a
-JSON array of frame-index lists or `[]`. Frame indices are zero-based.
+JSON array of frame-index lists or `[]`. Frame indices are zero-based. A
+negative coordinate or one that is not a whole number is not an error: it is
+corrected on load and listed in the import's report
+(`GET /api/annotations/import`), which also says when a document given to
+`--annotations` failed and why.
 
 Example:
 

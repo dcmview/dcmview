@@ -28,7 +28,7 @@ categories = ["command-line-utilities", "science", "visualization"]
 # No `[workspace.lints]`: the lint policy is `clippy --workspace -D warnings`
 # in `scripts/check.py`, the same for every member.
 [workspace]
-members = ["crates/dcmview-annotation", "crates/dcmview-protocol"]
+members = ["crates/dcmview-adapters", "crates/dcmview-annotation", "crates/dcmview-protocol"]
 resolver = "2"
 
 [workspace.package]
@@ -50,6 +50,9 @@ dcmview-protocol = { path = "crates/dcmview-protocol" }
 # The annotation model: file keys (`FileKey`, `KEY_RULES`), and the records and
 # operations the annotation store holds and applies
 dcmview-annotation = { path = "crates/dcmview-annotation" }
+# Import and export adapters over the model: the EMBED ROI CSV reader and
+# writer and the native JSON and JSON Lines formats
+dcmview-adapters = { path = "crates/dcmview-adapters" }
 # Record, label and operation ids, as the annotation model types them. The
 # model crate already links it; the store names the type.
 uuid = "1"

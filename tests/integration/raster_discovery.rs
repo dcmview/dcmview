@@ -1164,6 +1164,13 @@ async fn every_endpoint_answers_for_a_decodable_raster() {
             "application/json",
         ),
         (&endpoints::ANNOTATIONS_EXPORT, 200, "text/csv"),
+        (&endpoints::ANNOTATIONS_EXPORT_JSON, 200, "application/json"),
+        (
+            &endpoints::ANNOTATIONS_EXPORT_JSONL,
+            200,
+            "application/jsonl",
+        ),
+        (&endpoints::ANNOTATIONS_IMPORT, 200, "application/json"),
         // An operation that names no file is applied whatever is loaded.
         (&endpoints::ANNOTATION_OPS, 200, "application/json"),
     ];
@@ -1199,6 +1206,34 @@ async fn every_endpoint_answers_for_a_decodable_raster() {
             );
         }
     }
+
+    // A ROI saved on the raster is in the document export, on a file
+    // described as the raster it is and named by the key of its bytes.
+    scan.server
+        .put(&format!("/api/file/{index}/annotations"))
+        .json(&json!({ "num_roi": 1, "roi_coords": [[0, 0, 1, 1]], "roi_frames": [] }))
+        .await
+        .assert_status_ok();
+    let document: Value = get(&endpoints::ANNOTATIONS_EXPORT_JSON).await.json();
+    let file = &document["files"][0];
+    assert_eq!(
+        (&file["kind"], &file["format"], &file["sop_instance_uid"]),
+        (&json!("raster"), &json!("png"), &Value::Null)
+    );
+    // `same-size.png` holds the same bytes, and so has the same key.
+    assert!(
+        file["path"] == "image.png" || file["path"] == "same-size.png",
+        "{file}"
+    );
+    assert!(file["key"]
+        .as_str()
+        .is_some_and(|key| key.starts_with("b3:")));
+    assert_eq!(file["digest"], file["key"]);
+    assert_eq!(document["annotations"][0]["file"], file["key"]);
+    assert_eq!(
+        (file["rows"].as_u64(), file["columns"].as_u64()),
+        (Some(2), Some(3))
+    );
 
     let info: Value = get(&endpoints::FILE_INFO).await.json();
     assert_eq!(info["object_kind"], "image");

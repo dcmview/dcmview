@@ -35,6 +35,38 @@ diagnostic viewer.
   `?file=<index>`; under a key that is not that file's settled key it
   answers `409 file_key_replaced`, and without an index under a key several
   files carry, `409 file_key_ambiguous`.
+- A session's annotations can be downloaded as a `dcmview.annotations`
+  document, with every shape, layer and label and a description of each
+  annotated file: `GET /api/annotations/export.json`, or
+  `GET /api/annotations/export.jsonl` for the same records a line each.
+  `--annotations` loads either form again, as well as an EMBED-style CSV;
+  the start of the file decides which it is (a `{` and the format's name;
+  any other file is read as CSV), and
+  `--annotations-format embed|native` forces one. An annotation is put on
+  a loaded file only after that file was compared with the key the
+  document names it by, its bytes hashed when the key is a digest; the key,
+  the SOP Instance UID and the path, matched from its end so that a
+  subfolder, a parent or a moved copy of the folder still fits, find the
+  files to compare, and a file named by a digest is also found by its
+  content among the loaded files of its size. Loading is all or nothing,
+  and a JSON Lines file that was cut off is refused. Files with the same
+  bytes keep their own ROIs through a document. A document never holds an
+  absolute path. A `--mask` session's document names files by content
+  digest alone, with no UID, patient id, folder, file or user name, and
+  loads into any session. A document export needs the key of every file
+  that has ROIs and answers `422 file_key_unavailable` for one that cannot
+  be read; a JSON document past 256 MiB, or a session with more files or
+  records than a document may hold, answers
+  `422 annotation_export_too_large`; and when the documents still being
+  downloaded hold 512 MiB together, another answers
+  `503 annotation_export_busy` with `Retry-After`.
+- `GET /api/annotations/import` reports where the `--annotations` import
+  stands and what it did: rows matched and unmatched, and every box that was
+  corrected or kept although it is unusual, by row. The report holds no
+  path or value of the file.
+- The `dcmview-adapters` workspace crate holds the annotation file formats
+  (EMBED ROI CSV, native JSON and JSON Lines) for other programs that read
+  or write them.
 - Catalog entries carry stable session file keys through `file_key`,
   `alias_of` and `key_error`. `GET /api/files` accepts `since` and `limit`
   and reports `revision`, `reset`, `more`, `keys_hashing` and `rekeys`.
@@ -120,6 +152,19 @@ diagnostic viewer.
 
 ### Changed
 
+- **Export ROIs** and `GET /api/annotations/export.csv` write their rows
+  sorted by path (the byte order of the path as written). The order used to
+  follow the order discovery happened to find the files in and could differ
+  between two runs. Each row's bytes are unchanged.
+- An EMBED-style CSV with a negative coordinate or one that is not a whole
+  number no longer fails to load. The negative value is read as 0 and the
+  other is rounded to the nearest pixel, and the import's report lists each
+  such box. A box past the image edge is still kept and exported exactly as
+  written.
+- An annotation CSV is read within fixed bounds: a row of at most 16 MiB,
+  65,536 ROIs in a row, 65,536 frames for a ROI and 16,777,216 rows. A file
+  past one fails to load like any invalid file. The messages of a failed
+  load no longer end with the JSON or number parser's own text.
 - A DICOM or raster frame whose decode estimate exceeds the budget is now
   refused with `422 decode_memory_exceeded` instead of being attempted.
   The default is a quarter of physical memory, from 1 GiB to 4 GiB;

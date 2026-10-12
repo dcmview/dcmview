@@ -20,6 +20,12 @@ pub(super) fn decode_limits(flag: Option<DecodeLimits>) -> (DecodeLimits, &'stat
     }
 }
 
+/// What the records of one annotation document may be charged on this
+/// machine (`dcmview::annotations::default_document_budget`).
+pub(super) fn document_budget() -> u64 {
+    dcmview::annotations::default_document_budget(physical_memory_bytes())
+}
+
 /// The physical memory of the machine in bytes, or `None` where it cannot
 /// be read: on Linux and macOS the number of physical pages times the page
 /// size. It is the machine's memory, not a container's or a cgroup's limit.

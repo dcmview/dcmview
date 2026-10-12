@@ -93,6 +93,18 @@ pub(crate) fn router(state: AppState) -> Router {
             endpoints::ANNOTATIONS_EXPORT.path,
             get(handlers::export_annotations),
         )
+        .route(
+            endpoints::ANNOTATIONS_EXPORT_JSON.path,
+            get(handlers::export_annotations_json),
+        )
+        .route(
+            endpoints::ANNOTATIONS_EXPORT_JSONL.path,
+            get(handlers::export_annotations_jsonl),
+        )
+        .route(
+            endpoints::ANNOTATIONS_IMPORT.path,
+            get(handlers::annotation_import),
+        )
         // The annotation model bounds an operation envelope, not the
         // extractor's default, which is smaller.
         .route(

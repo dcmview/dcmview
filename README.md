@@ -329,9 +329,12 @@ dcmview --annotations ./embed_annotations.csv ./study_dir
 ```
 
 `dcmview` never modifies the input CSV or DICOM files. Viewer edits stay in
-memory and can be downloaded with **Export ROIs**. For the required columns,
-coordinate format, frame scoping rules, validation behavior, and examples, see
-the [annotation reference](docs/annotations.md).
+memory and can be downloaded with **Export ROIs**, whose rows are sorted by
+path. A session can also be downloaded as a `dcmview.annotations` document
+(`/api/annotations/export.json` or `export.jsonl`) and loaded again with
+`--annotations`. For the required columns, coordinate format, frame scoping
+rules, validation behavior, the import's report, and examples, see the
+[annotation reference](docs/annotations.md).
 
 ## Screen Sharing: Masking And Redaction
 
