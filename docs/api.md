@@ -415,10 +415,15 @@ thumbnail along both axes is decoded at a reduced resolution (halved one or
 more times; JPEG at most three), which is much faster for large frames. The
 thumbnail has the same size, window and geometry either way, and matches a
 full decode except for slightly softer or sharper edges. A frame is decoded
-in full when its window comes from its own samples (no stored window or VOI
-LUT, or `window_mode=full_dynamic`), when it has redaction boxes, or when
-its codestream cannot be reduced (a JPEG 2000 frame without decomposition
-levels or with an image offset, the JPEG lossless process).
+in full when it is grayscale and its window comes from its own samples (no
+stored window or VOI LUT, or `window_mode=full_dynamic`), when it has
+redaction boxes, or when its codestream cannot be reduced (a JPEG 2000 frame
+without decomposition levels or with an image offset, the JPEG lossless
+process). A colour frame has no window, so it is reduced in either window
+mode. A reduced decode reads less of a frame than a full one, so the
+thumbnail of a damaged JPEG 2000 frame can look intact where its display
+frame shows the damage; a thumbnail is a preview and does not show that a
+frame decodes cleanly.
 `X-Thumbnail-Source` says which happened and is diagnostic: clients need not
 read it. The decode memory a thumbnail reserves is the same either way.
 

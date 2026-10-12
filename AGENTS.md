@@ -1250,8 +1250,9 @@ default suite.
   it and matches the shrunk display frame within the tolerance
   `tests/integration/reduced_thumbnails.rs` states, for every layout the
   reduced paths decode; `X-Thumbnail-Source` says which decode ran; a frame
-  with redaction boxes, without a stored window, asked for in full dynamic
-  or not reducible is decoded in full; a damaged frame is served no worse
+  with redaction boxes, a grayscale frame without a stored window or asked
+  for in full dynamic, and a frame that is not reducible are decoded in
+  full (a colour frame has no window and is reduced in either mode); a damaged frame is served no worse
   than the viewer serves it, and no failure is cached. A reduced thumbnail
   reserves the thumbnail estimate under one permit and holds less heap than
   the full decode of the same frame.

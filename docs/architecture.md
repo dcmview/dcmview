@@ -827,9 +827,11 @@ the frame was decoded.
 **Same presentation.** A reduction is asked for only when the frame's
 default presentation is the same function of each sample whatever the rest
 of the frame holds: colour, and grayscale with a stored window or a selected
-VOI LUT. A frame windowed from its own histogram (no stored window) and
-every `full_dynamic` thumbnail are decoded in full, because a reduced image
-has other percentiles and other extremes. So a thumbnail has the window its
+VOI LUT. A grayscale frame windowed from its own histogram (no stored
+window) and every `full_dynamic` thumbnail of a grayscale frame are decoded
+in full, because a reduced image has other percentiles and other extremes.
+A colour frame has no window in either mode, so its `full_dynamic`
+thumbnail is reduced like its default one. So a thumbnail has the window its
 display frame has, whichever path decoded it, and differs from the shrunk
 display frame only by the decoder's own low-pass filter along edges.
 
@@ -858,7 +860,9 @@ reduced is known only once its codestream has been read.
 **Redaction and masking.** A frame with redaction boxes is decoded in full,
 so its boxes are painted on stored pixels before anything is resampled and
 no redacted pixel reaches the thumbnail through a decoder's filter. A masked
-session refuses a thumbnail before any of this.
+session refuses the thumbnails of the files it withholds (slide label and
+overview images) before any of this, and serves the others as any session
+does.
 
 `X-Thumbnail-Source` is `reduced_decode` when the decode that made the
 thumbnail was reduced and `full_decode` otherwise. Reduced thumbnails are
@@ -2248,11 +2252,14 @@ installation and VS Code Electron integration can also use network/cache state;
   have the size its entry gives it, say which decode made it, and match the
   default display frame shrunk within a stated tolerance, edge rows and
   columns included. The same file holds the rule's table
-  (`thumbnail_reduction`), the frames that are decoded in full (no stored
-  window, `full_dynamic`, redaction boxes, no levels, an image off its grid
-  origin, the lossless process), and frames with their bytes replaced or cut
+  (`thumbnail_reduction`), the frames that are decoded in full (grayscale
+  with no stored window or in `full_dynamic`, redaction boxes, no levels,
+  an image off its grid origin along either axis, the lossless process), and frames with their bytes replaced or cut
   off, for which the thumbnail endpoint must answer no worse than the
-  display endpoint and cache no failure. `tests/raster_cost/reduced.rs`
+  display endpoint and cache no failure. No frame an encoder writes
+  fails the reduced JPEG 2000 decode and passes the full one, so a unit
+  test in `pixels/jpeg2000.rs` replaces the attempt to show the full decode
+  that follows it. `tests/raster_cost/reduced.rs`
   counts the heap of reduced JPEG thumbnails, of failed attempts followed by
   a full decode, and of the full decode of the same frames against the one
   reservation; the JPEG 2000 decoder cannot run on the counting allocator,
