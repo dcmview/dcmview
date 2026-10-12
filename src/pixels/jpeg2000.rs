@@ -10,6 +10,7 @@ use super::encapsulated::read_encapsulated_fragment_blocking;
 use super::error::{PixelError, PixelResult};
 use super::header::open_header;
 use super::icc::select_icc_profile;
+use super::reduced::{Reduction, ThumbnailRender};
 use super::render::{
     render_windowed_luminance, DisplayBuffer, DisplayPng, LuminanceRenderOptions, StoredSamples,
 };
@@ -42,6 +43,57 @@ pub(crate) async fn decode_jp2_fragment_to_png(
     .context("jp2 fragment decode task failed")?
 }
 
+/// Renders one JPEG 2000 frame for its thumbnail: its default presentation
+/// in `window_mode`, decoded at a reduced resolution when `reduction` asks
+/// for one and the frame allows it, in full otherwise.
+///
+/// The fragment is read from the file once and checked once
+/// (`codestream::checked`) whichever decode follows; a frame the check
+/// refuses is an error and reaches no decoder. Then:
+///
+/// 1. The reduction applied is `reduction.shift`, or the fewest
+///    decomposition levels the codestream declares if that is less
+///    (`Structure::Jpeg2000::levels`): the decoder can halve the image once
+///    for each level of every tile and component and no further. With no
+///    `reduction`, or no level, or an image that does not start at the
+///    origin of its reference grid (`Structure::Jpeg2000::at_origin`; the
+///    decoder does not place such an image correctly at a reduced
+///    resolution), the frame is decoded in full.
+/// 2. Otherwise [`decode_reduced`] is tried once. An image it returns is
+///    rendered, and [`ThumbnailRender::shift`] says what was applied.
+/// 3. When it returns nothing, the frame is decoded in full exactly as a
+///    display frame is, after the reduced attempt has given back all it
+///    held, and `shift` is 0.
+///
+/// So a frame costs at most one reduced decode and one full decode, never
+/// both at once, and every frame that has a thumbnail from a full decode
+/// has one here.
+pub(crate) async fn render_jp2_thumbnail(
+    file: Arc<FileEntry>,
+    frame: u32,
+    window_mode: WindowMode,
+    reduction: Option<Reduction>,
+) -> Result<ThumbnailRender> {
+    task::spawn_blocking(move || {
+        let fragment = read_encapsulated_fragment_blocking(&file.path, frame)?;
+        let checked = checked_codestream(&file, &fragment)?;
+        let shift = reduction.map_or(0, |reduction| reduction.shift.min(checked.levels));
+        let reduced = if shift == 0 {
+            None
+        } else {
+            decode_reduced(&file, &checked, Reduction { shift })
+        };
+        let (image, shift) = match reduced {
+            Some(image) => (image, shift),
+            None => (decode_full(&checked)?, 0),
+        };
+        let buffer = render_jp2_image(&file, frame, &image, None, None, window_mode)?;
+        Ok(ThumbnailRender { buffer, shift })
+    })
+    .await
+    .context("jp2 thumbnail decode task failed")?
+}
+
 fn render_jp2_fragment_blocking(
     file: &FileEntry,
     frame: u32,
@@ -53,6 +105,26 @@ fn render_jp2_fragment_blocking(
 
     let jp2_image = decode_checked(file, &fragment)?;
 
+    render_jp2_image(
+        file,
+        frame,
+        &jp2_image,
+        requested_wc,
+        requested_ww,
+        window_mode,
+    )
+}
+
+/// Presents a decoded JPEG 2000 image, at whatever resolution it was
+/// decoded: the buffer has the image's own rows and columns.
+fn render_jp2_image(
+    file: &FileEntry,
+    frame: u32,
+    jp2_image: &jpeg2k::Image,
+    requested_wc: Option<f64>,
+    requested_ww: Option<f64>,
+    window_mode: WindowMode,
+) -> Result<DisplayBuffer> {
     let comps = jp2_image.components();
     if comps.is_empty() {
         return Err(anyhow!("JP2 image has no components"));
@@ -133,16 +205,75 @@ fn render_jp2_fragment_blocking(
 /// only place a JPEG 2000 frame may be handed to it; a JP2 file is reduced
 /// to its codestream first, so none of its other boxes takes part.
 fn decode_checked(file: &FileEntry, fragment: &[u8]) -> Result<jpeg2k::Image> {
+    decode_full(&checked_codestream(file, fragment)?)
+}
+
+/// The codestream of one frame that `codestream::checked` has accepted for
+/// its entry. Only [`checked_codestream`] makes one, and the decoders take
+/// nothing else, so no JPEG 2000 decode can skip the check.
+struct CheckedCodestream<'a> {
+    /// The bare codestream: the fragment, or the contents of the codestream
+    /// box of a JP2 file.
+    bytes: &'a [u8],
+    /// How many times the decoder may halve the image:
+    /// `Structure::Jpeg2000::levels`, the fewest decomposition levels any
+    /// coding style of the codestream declares, or 0 for an image that is
+    /// not `at_origin`.
+    levels: u8,
+}
+
+fn checked_codestream<'a>(file: &FileEntry, fragment: &'a [u8]) -> Result<CheckedCodestream<'a>> {
     let declared = codestream::checked(file, CodestreamKind::Jpeg2000, fragment)?;
-    let Structure::Jpeg2000 { codestream, .. } = declared.structure else {
+    let Structure::Jpeg2000 {
+        codestream,
+        levels,
+        at_origin,
+        ..
+    } = declared.structure
+    else {
         return Err(anyhow!("JP2 fragment was not read as JPEG 2000"));
     };
-    let codestream = fragment
+    let bytes = fragment
         .get(codestream)
         .context("JP2 codestream lies outside its fragment")?;
-    jpeg2k::Image::from_bytes(codestream)
+    Ok(CheckedCodestream {
+        bytes,
+        levels: if at_origin { levels } else { 0 },
+    })
+}
+
+fn decode_full(checked: &CheckedCodestream<'_>) -> Result<jpeg2k::Image> {
+    jpeg2k::Image::from_bytes(checked.bytes)
         .map_err(anyhow::Error::from)
         .context("failed to decode JP2 fragment")
+}
+
+/// Decodes `checked` with each axis divided by `2^reduction.shift`, or
+/// returns `None` when that does not give `file`'s frame at that reduction.
+///
+/// The caller passes a shift of at least 1 and at most `checked.levels`.
+/// The decoder is asked for it with
+/// `jpeg2k::Image::from_bytes_with(checked.bytes,
+/// jpeg2k::DecodeParameters::new().reduce(shift))`, the same decoder and
+/// the same bytes as a full decode: it then stops the inverse wavelet
+/// transform `shift` levels early, and allocates its sample buffers at the
+/// reduced size. `None`, never an error and never a panic, when:
+///
+/// - the decoder returns an error (the caller decodes in full instead);
+/// - the image does not have `file.samples_per_pixel` components;
+/// - any component's width and height are not the same as the first's, or
+///   are not accepted by [`Reduction::accepts`] for `file`;
+/// - any component's sample count is not its width times its height.
+///
+/// The image is dropped before `None` is returned, so the full decode that
+/// follows starts with nothing held.
+fn decode_reduced(
+    file: &FileEntry,
+    checked: &CheckedCodestream<'_>,
+    reduction: Reduction,
+) -> Option<jpeg2k::Image> {
+    let _ = (file, checked.bytes, reduction);
+    todo!("GAL2: decode a JPEG 2000 frame at a reduced resolution")
 }
 
 fn decode_jp2_fragment_to_png_blocking(

@@ -23,14 +23,17 @@ use super::deflated_frame::{
 use super::error::{PixelError, PixelResult};
 use super::jpeg::{
     decode_compressed_frame_to_png, decode_raw_jpeg_lossless, read_raw_jpeg_samples,
-    render_compressed_frame,
+    render_compressed_frame, render_compressed_thumbnail,
 };
-use super::jpeg2000::{decode_jp2_fragment_to_png, decode_raw_jp2_samples, render_jp2_fragment};
+use super::jpeg2000::{
+    decode_jp2_fragment_to_png, decode_raw_jp2_samples, render_jp2_fragment, render_jp2_thumbnail,
+};
 use super::jpegls::{decode_jpeg_ls_to_png, decode_raw_jpeg_ls, render_jpeg_ls};
 use super::jpegxl::{decode_jpeg_xl_to_png, decode_raw_jpeg_xl, render_jpeg_xl};
 use super::native::{decode_uncompressed_to_png, read_raw_uncompressed, render_uncompressed};
 use super::raster::{decode_raster_to_png, decode_raw_raster, render_raster};
 use super::redaction::{redact_png, redact_raw, RawLayout, Redaction};
+use super::reduced::{thumbnail_reduction, Reduction, ThumbnailRender};
 use super::render::{
     encode_real_world_windowed_png, encode_windowed_luminance_png, AppliedWindow, DisplayBuffer,
     DisplayPng, LuminanceRenderOptions, StoredSamples,
@@ -38,7 +41,10 @@ use super::render::{
 use super::rle::{decode_raw_rle, decode_rle_to_png, render_rle};
 use super::schedule::{DecodeClass, DecodePermit, DecodeScheduler};
 use super::syntax::{classify_pixel_support, codec_for_file, Codec, PixelSupportReason};
-use super::thumbnail::{encode_thumbnail_jpeg, ThumbnailRequest, ThumbnailResponse};
+use super::thumbnail::{
+    encode_thumbnail_jpeg, encode_thumbnail_jpeg_sized, thumbnail_dimensions, ThumbnailRequest,
+    ThumbnailResponse,
+};
 
 #[derive(Debug, Clone)]
 pub struct RawFrameRequest {
@@ -380,7 +386,8 @@ async fn render_display(
 ///    nothing was started, so no other request shares it. Once it holds the
 ///    permit, the render runs as its own task, keeps the permit until it
 ///    ends, and caches its result whether or not the request is still
-///    there. Source `FullDecode`, a cache miss.
+///    there. A cache miss, whose source is `ReducedDecode` when the frame
+///    was decoded at a reduced resolution and `FullDecode` otherwise.
 ///
 /// The render decodes the frame with its codec's display renderer at the
 /// default window of `request.window_mode` (no explicit center or width, no
@@ -388,6 +395,14 @@ async fn render_display(
 /// ([`DisplayBuffer::redact`]) and encodes it
 /// (`thumbnail::encode_thumbnail_jpeg`, with the file's effective pixel
 /// aspect ratio). It does not draw the display shutter or overlay planes.
+///
+/// A JPEG 2000 or JPEG Baseline frame without redaction boxes is decoded
+/// at the reduced resolution `thumbnail_reduction` asks for, when its
+/// codestream allows it (`pixels/reduced.rs`); its thumbnail has the size
+/// of the stored frame's (`thumbnail::encode_thumbnail_jpeg_sized`). A
+/// frame with boxes is always decoded in full, so the boxes are painted on
+/// stored pixels. Either way the work is one [`DecodeWork::Thumbnail`]
+/// under one permit.
 ///
 /// It never reads or writes the display cache and never writes the raw
 /// cache: those hold the viewer's working set, which a gallery scroll must
@@ -427,6 +442,9 @@ pub async fn load_thumbnail(
         }
         (lock.join_flight(&key), lock.scheduler())
     };
+    // What the render this request starts found it could do; requests that
+    // share it report the cache.
+    let decoded_at = Arc::new(std::sync::OnceLock::new());
     let (flight, cache_hit) = match flight {
         Some(flight) => (flight, true),
         None => {
@@ -449,28 +467,36 @@ pub async fn load_thumbnail(
                     (flight, true)
                 }
                 None => {
+                    let reported = Arc::clone(&decoded_at);
                     let render = async move {
-                        let mut buffer = render_display_frame(
-                            codec,
-                            file.clone(),
-                            DisplayWindow {
-                                frame: request.frame,
-                                center: None,
-                                width: None,
-                                mode: request.window_mode,
-                                redaction: 0,
-                            },
-                        )
-                        .await?;
+                        // Boxes are in stored pixels, and a reduced pixel
+                        // mixes its neighbours: a frame that has boxes is
+                        // decoded in full.
+                        let reduction = if redaction.is_empty() {
+                            reducible(codec, &file, request)
+                        } else {
+                            None
+                        };
+                        let ThumbnailRender { mut buffer, shift } =
+                            render_thumbnail_frame(codec, file.clone(), request, reduction).await?;
+                        let _ = reported.set(shift);
                         tokio::task::spawn_blocking(move || {
-                            buffer.redact(&redaction.boxes);
-                            encode_thumbnail_jpeg(
-                                buffer,
-                                request.bucket,
-                                file.series_metadata
-                                    .native_pixel
-                                    .effective_pixel_aspect_ratio(),
-                            )
+                            let ratio = file
+                                .series_metadata
+                                .native_pixel
+                                .effective_pixel_aspect_ratio();
+                            if shift == 0 {
+                                buffer.redact(&redaction.boxes);
+                                encode_thumbnail_jpeg(buffer, request.bucket, ratio)
+                            } else {
+                                let stored = thumbnail_dimensions(
+                                    file.rows,
+                                    file.columns,
+                                    ratio,
+                                    request.bucket,
+                                );
+                                encode_thumbnail_jpeg_sized(buffer, stored)
+                            }
                         })
                         .await
                         .context("thumbnail encoding task failed")
@@ -489,7 +515,11 @@ pub async fn load_thumbnail(
         }
     };
     let body = flight.result().await.map_err(|error| error.duplicate())?;
-    Ok(thumbnail_response(body, cache_hit))
+    let mut response = thumbnail_response(body, cache_hit);
+    if !cache_hit && decoded_at.get().is_some_and(|shift| *shift > 0) {
+        response.source = ThumbnailSource::ReducedDecode;
+    }
+    Ok(response)
 }
 
 fn thumbnail_response(body: Bytes, cache_hit: bool) -> ThumbnailResponse {
@@ -501,6 +531,52 @@ fn thumbnail_response(body: Bytes, cache_hit: bool) -> ThumbnailResponse {
         } else {
             ThumbnailSource::FullDecode
         },
+    }
+}
+
+/// The reduction a thumbnail asks for, for the codecs that have a reduced
+/// decode; the others are never asked.
+fn reducible(codec: Codec, file: &FileEntry, request: ThumbnailRequest) -> Option<Reduction> {
+    match codec {
+        Codec::Jpeg2000 | Codec::JpegBaseline => {
+            thumbnail_reduction(file, request.bucket, request.window_mode)
+        }
+        _ => None,
+    }
+}
+
+/// Renders a frame for its thumbnail: through the codec's reduced decode
+/// when `reduction` asks for one, otherwise exactly as
+/// [`render_display_frame`] does at the default window.
+async fn render_thumbnail_frame(
+    codec: Codec,
+    file: Arc<FileEntry>,
+    request: ThumbnailRequest,
+    reduction: Option<Reduction>,
+) -> PixelResult<ThumbnailRender> {
+    let (frame, mode) = (request.frame, request.window_mode);
+    match (codec, reduction) {
+        (Codec::Jpeg2000, Some(_)) => render_jp2_thumbnail(file, frame, mode, reduction)
+            .await
+            .map_err(PixelError::frame_decode),
+        (Codec::JpegBaseline, Some(_)) => {
+            render_compressed_thumbnail(codec, file, frame, mode, reduction)
+                .await
+                .map_err(PixelError::frame_decode)
+        }
+        _ => render_display_frame(
+            codec,
+            file,
+            DisplayWindow {
+                frame,
+                center: None,
+                width: None,
+                mode,
+                redaction: 0,
+            },
+        )
+        .await
+        .map(ThumbnailRender::full),
     }
 }
 

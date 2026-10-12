@@ -7,9 +7,10 @@ use anyhow::{anyhow, Context, Result};
 use dicom_dictionary_std::tags;
 use dicom_pixeldata::PixelDecoder;
 
-use super::codestream::{self, CodestreamKind};
+use super::codestream::{self, CodestreamKind, Declared};
 use super::encapsulated::open_for_frame_decode;
 use super::icc::select_icc_profile;
+use super::reduced::Reduction;
 
 /// One decoded frame, color-by-pixel, samples little endian.
 pub(super) struct DecodedFrame {
@@ -27,6 +28,54 @@ pub(super) fn decode_frame(file: &FileEntry, frame: u32, codec: &str) -> Result<
     decode_object(file, &object, frame_in_object, codec)
 }
 
+/// Decodes only `frame` of `file` for its thumbnail: at a reduced
+/// resolution when `reduction` asks for one and the frame allows it, in
+/// full otherwise. Returns the frame and the reduction that was applied (0
+/// for a full decode); a reduced frame's `rows` and `columns` are its own.
+///
+/// The frame is read from the file once and checked once
+/// ([`checked_fragment`]) whichever decode follows; a frame the check
+/// refuses is an error and reaches no decoder. With a `reduction`,
+/// [`decode_scaled_jpeg`] is tried once; when it returns nothing the frame
+/// is decoded in full exactly as [`decode_object`] does, after the reduced
+/// attempt has given back all it held. So a frame costs at most one reduced
+/// decode and one full decode, never both at once.
+pub(super) fn decode_frame_for_thumbnail(
+    file: &FileEntry,
+    frame: u32,
+    codec: &str,
+    reduction: Option<Reduction>,
+) -> Result<(DecodedFrame, u8)> {
+    let (object, frame_in_object) = open_for_frame_decode(file, frame)?;
+    let checked = checked_fragment(file, &object, frame_in_object, codec)?;
+    if let Some(reduction) = reduction {
+        if let Some((bytes, columns, rows)) = decode_scaled_jpeg(file, &checked, reduction) {
+            return Ok((
+                DecodedFrame {
+                    bytes,
+                    rows,
+                    columns,
+                    bits_allocated: file.bits_allocated,
+                    samples_per_pixel: file.samples_per_pixel,
+                    icc_profile: None,
+                },
+                reduction.shift,
+            ));
+        }
+    }
+    decode_checked_object(file, &object, &checked, frame_in_object, codec).map(|frame| (frame, 0))
+}
+
+/// One frame's encoded bytes, once the data set that holds them is known to
+/// say what the entry says and the codestream is known to declare the
+/// entry's image. Only [`checked_fragment`] makes one, and the decoders
+/// below take nothing else.
+struct CheckedFragment<'a> {
+    kind: CodestreamKind,
+    encoded: &'a [u8],
+    declared: Declared,
+}
+
 /// Decodes the one frame `object` holds, as its only fragment.
 ///
 /// The adapters and the codec libraries behind them size their buffers from
@@ -42,6 +91,19 @@ pub(super) fn decode_object(
     frame_in_object: u32,
     codec: &str,
 ) -> Result<DecodedFrame> {
+    let checked = checked_fragment(file, object, frame_in_object, codec)?;
+    decode_checked_object(file, object, &checked, frame_in_object, codec)
+}
+
+/// The checks every decode of `object`'s one frame starts with:
+/// `codestream::header_agrees` for the data set, then `codestream::checked`
+/// for its only fragment.
+fn checked_fragment<'a>(
+    file: &FileEntry,
+    object: &'a dicom_object::DefaultDicomObject,
+    frame_in_object: u32,
+    codec: &str,
+) -> Result<CheckedFragment<'a>> {
     let kind = codestream::kind_of(file)
         .with_context(|| format!("{codec} frames carry no codestream header"))?;
     codestream::header_agrees(file, object)?;
@@ -58,7 +120,57 @@ pub(super) fn decode_object(
     if frame_in_object != 0 {
         return Err(anyhow!("{codec} frame was not prepared as frame 0"));
     }
-    codestream::checked(file, kind, encoded)?;
+    let declared = codestream::checked(file, kind, encoded)?;
+    Ok(CheckedFragment {
+        kind,
+        encoded,
+        declared,
+    })
+}
+
+/// Decodes a JPEG frame with its blocks inverted at `1 / 2^reduction.shift`
+/// of their size, or returns `None` when that does not give `file`'s frame
+/// at that reduction. On success: the samples, color-by-pixel and one byte
+/// each, then the columns and rows of the reduced frame.
+///
+/// `None`, never an error and never a panic, unless all of these hold:
+///
+/// 1. `checked.declared.structure` is `Structure::Jpeg` with `process`
+///    `0xC0`, `0xC1` or `0xC2` (the DCT processes; the lossless process has
+///    no blocks to scale), and `reduction.shift` is 1, 2 or 3
+///    (`JPEG_MAX_REDUCTION_SHIFT`).
+/// 2. `columns = ceil(file.columns / 2^shift)` and
+///    `rows = ceil(file.rows / 2^shift)` each fit 16 bits, and
+///    `columns * rows * file.samples_per_pixel` does not overflow.
+/// 3. `jpeg_decoder::Decoder::new(checked.encoded)`, the decoder and the
+///    bytes a full decode uses, is limited to that many bytes of output
+///    (`set_max_decoding_buffer_size`) and asked for that size
+///    (`scale(columns, rows)`), and answers exactly `(columns, rows)`: the
+///    decoder picks the scale itself, and for some sizes it picks another.
+/// 4. `decode()` succeeds and returns exactly
+///    `columns * rows * file.samples_per_pixel` bytes.
+///
+/// The samples are what a full decode returns for the same frame, at the
+/// reduced size: the decoder applies the same colour transform either way.
+/// Whatever the decoder holds is dropped before `None` is returned, so the
+/// full decode that follows starts with nothing held.
+fn decode_scaled_jpeg(
+    file: &FileEntry,
+    checked: &CheckedFragment<'_>,
+    reduction: Reduction,
+) -> Option<(Vec<u8>, u32, u32)> {
+    let _ = (file, checked.encoded, &checked.declared, reduction);
+    todo!("GAL2: decode a JPEG frame through the scaled inverse DCT")
+}
+
+fn decode_checked_object(
+    file: &FileEntry,
+    object: &dicom_object::DefaultDicomObject,
+    checked: &CheckedFragment<'_>,
+    frame_in_object: u32,
+    codec: &str,
+) -> Result<DecodedFrame> {
+    let (kind, encoded) = (checked.kind, checked.encoded);
     if kind == CodestreamKind::JpegXl {
         // Decoded here, not by the adapter: only this decoder can be told
         // how much it may allocate.

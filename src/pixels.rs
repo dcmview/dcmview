@@ -19,6 +19,7 @@ mod palette;
 mod pixeldata_frame;
 mod raster;
 mod redaction;
+mod reduced;
 mod render;
 mod rle;
 mod schedule;
@@ -64,6 +65,9 @@ pub use raster::{
     RASTER_TAG_TEXT_MAX_CHARS, RASTER_TAG_VALUE_MAX_BYTES,
 };
 pub use redaction::Redaction;
+pub use reduced::{
+    thumbnail_reduction, Reduction, JPEG_2000_MAX_REDUCTION_SHIFT, JPEG_MAX_REDUCTION_SHIFT,
+};
 pub(crate) use render::encode_presentation_layer_png;
 pub use render::AppliedWindow;
 pub use schedule::{
