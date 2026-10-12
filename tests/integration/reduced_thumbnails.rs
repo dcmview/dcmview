@@ -446,44 +446,57 @@ fn source_at(case: &Case, bucket: u32) -> &'static str {
     }
 }
 
-/// Every layout, every frame, every bucket: the thumbnail has the size the
-/// catalog entry gives it, shows the default display frame shrunk, and says
-/// whether it was decoded at a reduced resolution. A second request is
-/// served from the thumbnail cache, byte for byte.
-#[tokio::test]
+/// Every layout and every frame, at each bucket where the frame is reduced
+/// and at the first where it is not: the thumbnail has the size the catalog
+/// entry gives it, shows the default display frame shrunk, and says whether
+/// it was decoded at a reduced resolution. A second request is served from
+/// the thumbnail cache, byte for byte. The layouts are checked side by
+/// side; each has a server of its own.
+#[tokio::test(flavor = "multi_thread")]
 async fn a_reduced_thumbnail_is_the_default_display_frame_shrunk() {
-    for case in reduced_cases() {
-        let dir = tempdir().expect("temp dir");
-        let (server, entry) = serve_case(dir.path(), &case).await;
-        assert_eq!(
-            entry.frame_count as usize,
-            case.frames.len(),
-            "{}",
-            case.name
-        );
-        for bucket in [128, 256, 512, 1024] {
-            let size = thumbnail_dimensions(entry.rows, entry.columns, None, bucket);
-            for frame in 0..entry.frame_count {
-                let context = format!("{}, frame {frame}, {bucket} pixels", case.name);
-                let path = format!("/api/file/0/frame/{frame}/thumbnail?size={bucket}");
-                let (image, cache, source) = thumbnail(&server, &path).await;
-                assert_eq!(image.dimensions(), size, "{context}");
-                assert_eq!(
-                    (cache.as_str(), source.as_str()),
-                    ("MISS", source_at(&case, bucket)),
-                    "{context}"
-                );
-                let expected = shrunk_display(&server, frame, "default", size).await;
-                assert_close(&context, &image, &expected);
+    let checks = reduced_cases().into_iter().map(|case| {
+        tokio::spawn(async move {
+            let dir = tempdir().expect("temp dir");
+            let (server, entry) = serve_case(dir.path(), &case).await;
+            assert_eq!(
+                entry.frame_count as usize,
+                case.frames.len(),
+                "{}",
+                case.name
+            );
+            let full = [128, 256, 512, 1024]
+                .into_iter()
+                .find(|bucket| !case.reduced_at.contains(bucket))
+                .expect("a bucket the frame is not reduced at");
+            for bucket in case.reduced_at.iter().copied().chain([full]) {
+                let size = thumbnail_dimensions(entry.rows, entry.columns, None, bucket);
+                for frame in 0..entry.frame_count {
+                    let context = format!("{}, frame {frame}, {bucket} pixels", case.name);
+                    let path = format!("/api/file/0/frame/{frame}/thumbnail?size={bucket}");
+                    let (image, cache, source) = thumbnail(&server, &path).await;
+                    assert_eq!(image.dimensions(), size, "{context}");
+                    assert_eq!(
+                        (cache.as_str(), source.as_str()),
+                        ("MISS", source_at(&case, bucket)),
+                        "{context}"
+                    );
+                    let expected = shrunk_display(&server, frame, "default", size).await;
+                    assert_close(&context, &image, &expected);
 
-                let (again, cache, source) = thumbnail(&server, &path).await;
-                assert_eq!(
-                    (cache.as_str(), source.as_str()),
-                    ("HIT", "thumbnail_cache"),
-                    "{context}"
-                );
-                assert_eq!(again, image, "{context}");
+                    let (again, cache, source) = thumbnail(&server, &path).await;
+                    assert_eq!(
+                        (cache.as_str(), source.as_str()),
+                        ("HIT", "thumbnail_cache"),
+                        "{context}"
+                    );
+                    assert_eq!(again, image, "{context}");
+                }
             }
+        })
+    });
+    for check in futures::future::join_all(checks).await {
+        if let Err(failed) = check {
+            std::panic::resume_unwind(failed.into_panic());
         }
     }
 }
@@ -588,6 +601,32 @@ async fn a_thumbnail_that_cannot_be_reduced_is_decoded_in_full() {
             "",
             "default",
             "off the origin",
+        ),
+        (
+            case(
+                "JPEG 2000, image off the origin along its columns only",
+                files::JPEG_2000,
+                gray(389, 517, 8, 8),
+                &["gray8-offset-x-517x389.j2k"],
+                WINDOW_8,
+                &[],
+            ),
+            "",
+            "default",
+            "off the origin in X",
+        ),
+        (
+            case(
+                "JPEG 2000, image off the origin along its rows only",
+                files::JPEG_2000,
+                gray(389, 517, 8, 8),
+                &["gray8-offset-y-517x389.j2k"],
+                WINDOW_8,
+                &[],
+            ),
+            "",
+            "default",
+            "off the origin in Y",
         ),
         // The lossless process has no blocks to scale: under the lossless
         // syntax no reduction is asked for, and under the baseline syntax
@@ -720,6 +759,14 @@ fn a_thumbnail_asks_for_the_documented_reduction() {
     assert_eq!(shift(&tall, 512), Some(1));
     tall.series_metadata.native_pixel.normalized_pixel_aspect = Some([1.0, 2.0]);
     assert_eq!(shift(&tall, 128), Some(3));
+    // The physical shape decides, not the stored one. 2048 rows of 4096
+    // square pixels are a thumbnail of 128 x 64 and can be halved four
+    // times; with pixels twice as high as wide the same frame is square on
+    // screen, a thumbnail of 128 x 128, and its rows allow only three.
+    let mut wide = sized(2048, 4096, j2k);
+    assert_eq!(shift(&wide, 128), Some(4));
+    wide.series_metadata.native_pixel.normalized_pixel_aspect = Some([2.0, 1.0]);
+    assert_eq!(shift(&wide, 128), Some(3));
 
     // Only the codecs with a reduced decode, whatever the size.
     for transfer_syntax in [

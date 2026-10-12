@@ -176,6 +176,8 @@ def main() -> int:
 	)
 	jpeg_2000("gray16-signed-512x384.j2k", small, 1, 16, six, signed=True, seed=3)
 	jpeg_2000("gray8-offset-517x389.j2k", (517, 389), 1, 8, [*six, "-d", "7,5"], seed=4)
+	jpeg_2000("gray8-offset-x-517x389.j2k", (517, 389), 1, 8, [*six, "-d", "7,0"], seed=4)
+	jpeg_2000("gray8-offset-y-517x389.j2k", (517, 389), 1, 8, [*six, "-d", "0,5"], seed=4)
 	jpeg_2000("gray8-no-levels-512x384.j2k", small, 1, 8, ["-n", "1"], seed=5)
 	jpeg_2000("rgb8-rct-512x384.j2k", small, 3, 8, [*six, "-mct", "1"], seed=6)
 	jpeg_2000("rgb8-plain-512x384.j2k", small, 3, 8, [*six, "-mct", "0"], seed=7)

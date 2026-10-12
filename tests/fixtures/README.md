@@ -11,7 +11,8 @@ thumbnails decoded at a reduced resolution, which need frames several
 hundred pixels a side that the linked encoders cannot write: JPEG 2000 from
 `opj_compress` of OpenJPEG 2.5.4 (reversible, 8, 12 and 16 bits, signed,
 colour with and without a transform, tiles, precincts, tile-parts, one and
-no decomposition level, an image offset), JPEG from Pillow 12.1.1 over
+no decomposition level, an image offset along both axes and along each
+alone), JPEG from Pillow 12.1.1 over
 libjpeg-turbo (baseline, progressive, restart intervals, 4:2:0 and 4:4:4
 colour) and one lossless-process JPEG from `cjpeg -lossless 1` of
 libjpeg-turbo 3.2.0. `python scripts/generate_reduced_decode_fixtures.py`
