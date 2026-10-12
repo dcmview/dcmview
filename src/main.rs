@@ -3,6 +3,7 @@ mod bridge;
 mod startup;
 
 use clap::Parser;
+use dcmview::annotations::AnnotationFormat;
 use dcmview::loader;
 use dcmview::pixels::{parse_byte_size, CacheBudget, DecodeLimits};
 use std::env;
@@ -108,10 +109,28 @@ struct Cli {
 
     #[arg(
         long = "annotations",
-        value_name = "CSV",
-        help = "Load EMBED-style ROI annotations from CSV without modifying the file"
+        value_name = "FILE",
+        help = "Load annotations without modifying the file: an EMBED-style ROI CSV, or a \
+                dcmview.annotations document as JSON or JSON Lines",
+        long_help = "Load annotations without modifying the file: an EMBED-style ROI CSV, or a \
+                     dcmview.annotations document as JSON or JSON Lines.\n\nA file that starts \
+                     with { (after an optional byte order mark) and names the dcmview.annotations \
+                     format in its first 4,096 bytes is read as a document; every other file is \
+                     read as CSV. A file that is neither stops dcmview with exit status 1 before \
+                     it serves. A document that cannot be loaded does not: the viewer serves and \
+                     GET /api/annotations/import says why."
     )]
     annotations: Option<PathBuf>,
+
+    #[arg(
+        long = "annotations-format",
+        value_name = "FORMAT",
+        value_parser = parse_annotation_format,
+        requires = "annotations",
+        help = "Read --annotations as embed (EMBED-style ROI CSV) or native (a \
+                dcmview.annotations document) instead of deciding from the file"
+    )]
+    annotations_format: Option<AnnotationFormat>,
 
     #[arg(
         long = "filter",
@@ -156,6 +175,14 @@ struct Cli {
 
 fn parse_scan_filter(raw: &str) -> std::result::Result<loader::ScanFilter, String> {
     raw.parse()
+}
+
+fn parse_annotation_format(raw: &str) -> std::result::Result<AnnotationFormat, String> {
+    match raw {
+        "embed" => Ok(AnnotationFormat::Embed),
+        "native" => Ok(AnnotationFormat::Native),
+        _ => Err("expected embed or native".to_string()),
+    }
 }
 
 fn parse_formats(raw: &str) -> std::result::Result<loader::FormatSelection, String> {

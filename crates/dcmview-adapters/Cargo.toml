@@ -1,0 +1,30 @@
+[package]
+name = "dcmview-adapters"
+# Always the viewer's version: other repositories pin this crate by dcmview
+# release tag, and `scripts/check_versions.py` rejects drift.
+version = "0.5.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Import and export adapters over the dcmview annotation model: EMBED ROI CSV and the native JSON and JSON Lines formats"
+publish = false
+
+# Adapters over the model crate: no axum, tokio, DICOM or pixel-pipeline
+# dependency, and no filesystem or network access of their own. An adapter
+# reads the `Read` and writes the `Write` it is handed
+# (docs/design/output-adapters.md, section 13).
+[dependencies]
+dcmview-annotation = { path = "../dcmview-annotation" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+# The EMBED ROI CSV is read and written by the `csv` crate with its default
+# settings; its quoting is part of the released bytes.
+csv = "1"
+# Record ids, as the model types them.
+uuid = "1"
+# TypeScript for the report an import or export leaves, which the viewer's
+# HTTP contract carries. Same features as the model crate.
+ts-rs = { version = "12", features = ["no-serde-warnings", "serde-json-impl", "uuid-impl"] }

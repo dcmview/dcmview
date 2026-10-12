@@ -4,14 +4,36 @@
 use super::memory::{MemoryBackend, MemoryConfig};
 use super::{AnnotationIndexMap, EmbedRoiAnnotations};
 use anyhow::{anyhow, Result};
+use dcmview_adapters::Report;
 use dcmview_annotation::Author;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use tokio::sync::Notify;
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
 /// Who the rows of an EMBED CSV are authored by
 /// (`docs/design/annotation-model.md` 9.2).
 pub const EMBED_IMPORT_AUTHOR: &str = "import:embed";
+
+/// Who the records of a native `--annotations` document are authored by:
+/// `import:` and the id of the adapter that read them
+/// (`docs/design/output-adapters.md` 8).
+pub const NATIVE_IMPORT_AUTHOR: &str = "import:native";
+
+/// Where a session's `--annotations` import stands
+/// ([`AnnotationStore::import_status`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImportStatus {
+    /// The session was started without `--annotations`.
+    None,
+    /// The file is being read.
+    Loading,
+    /// The import ended and its records or rows are in the session. The
+    /// report is what the import's adapter answered.
+    Ready(Option<Report>),
+    /// The import failed, with its message, and nothing of it is in the
+    /// session.
+    Failed(String),
+}
 
 /// The author a standalone session stamps on what its user writes:
 /// `user:<name>`, the name from the environment variable `USER`, else
@@ -26,6 +48,40 @@ pub fn session_author() -> Author {
         .unwrap_or_else(|| Author::parse("user:local").expect("a valid author"))
 }
 
+/// What the records of one document may be charged in a viewer on a
+/// machine with `physical` bytes of memory: a quarter of it, but not less
+/// than 1 GiB and not more than 4 GiB, and 4 GiB
+/// (`dcmview_adapters::limits::MAX_HELD_BYTES`) where the physical memory
+/// is not known. A document that is charged all of it is held for the
+/// session, and a flat 4 GiB is the whole of a small machine's memory.
+/// The budget of the largest machines is the one the format's other
+/// bounds are sized for.
+pub fn default_document_budget(physical: Option<u64>) -> u64 {
+    const FLOOR: u64 = 1024 * 1024 * 1024;
+    let most = dcmview_adapters::limits::MAX_HELD_BYTES;
+    physical.map_or(most, |physical| (physical / 4).clamp(FLOOR, most))
+}
+
+/// How many bytes of document text the downloads being sent may hold
+/// together: 512 MiB. A download that would pass it while another is being
+/// sent is refused, and can be asked for again.
+pub const DOWNLOAD_BUDGET_BYTES: u64 = 512 * 1024 * 1024;
+
+/// A share of the download budget, given back when this is dropped.
+#[derive(Debug)]
+pub struct DownloadHold {
+    held: Arc<Mutex<u64>>,
+    bytes: u64,
+}
+
+impl Drop for DownloadHold {
+    fn drop(&mut self) {
+        if let Ok(mut held) = self.held.lock() {
+            *held = held.saturating_sub(self.bytes);
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum LoadState {
     Loading,
@@ -35,7 +91,11 @@ enum LoadState {
 
 #[derive(Debug)]
 struct EmbedImport {
+    /// Whether the session has an `--annotations` file at all.
+    expected: bool,
     state: LoadState,
+    /// What the import's adapter answered, once it has ended well.
+    report: Option<Report>,
     /// The files whose ROIs the EMBED endpoint has replaced. The import
     /// leaves them alone.
     edited: HashSet<usize>,
@@ -79,12 +139,30 @@ struct EmbedImport {
 ///
 /// Staged rows are in no snapshot and in no exported document: those hold
 /// records. Whoever exports a document settles and takes the staged rows
-/// first.
+/// first (`server::annotations::export_native`).
+///
+/// # Document exports
+///
+/// A document export copies every record and writes its text, so the
+/// store lets one be built at a time ([`AnnotationStore::export_permit`]):
+/// a second waits, holding nothing, until the first one's text is
+/// written. The permit is not held while a text is sent: a client that
+/// reads slowly must not hold up every later export. What exports make the
+/// process hold is one copy of the records, the text that is being built,
+/// and the texts that are being sent, which are bounded together
+/// ([`DOWNLOAD_BUDGET_BYTES`], [`AnnotationStore::hold_download`]).
 #[derive(Clone)]
 pub struct AnnotationStore {
     backend: Arc<MemoryBackend>,
     import: Arc<Mutex<EmbedImport>>,
     ready: Arc<Notify>,
+    exports: Arc<Semaphore>,
+    /// Bytes of document text held by downloads that are being sent, and
+    /// how many they may hold together.
+    downloads: Arc<Mutex<u64>>,
+    download_budget: u64,
+    /// What the records of one document may be charged, written or read.
+    document_budget: u64,
     /// Run by [`AnnotationStore::before_embed_write`], so a test can make a
     /// second write at exactly the point between a save's read of the view
     /// and its write.
@@ -97,11 +175,17 @@ impl AnnotationStore {
         Self {
             backend: Arc::new(backend),
             import: Arc::new(Mutex::new(EmbedImport {
+                expected: state == LoadState::Loading,
                 state,
+                report: None,
                 edited: HashSet::new(),
                 staged: HashMap::new(),
             })),
             ready: Arc::new(Notify::new()),
+            exports: Arc::new(Semaphore::new(1)),
+            downloads: Arc::new(Mutex::new(0)),
+            download_budget: DOWNLOAD_BUDGET_BYTES,
+            document_budget: dcmview_adapters::Limits::DEFAULT.held_bytes,
             #[cfg(test)]
             before_embed_write: None,
         }
@@ -154,6 +238,86 @@ impl AnnotationStore {
                 LoadState::Loading => notified.await,
             }
         }
+    }
+
+    /// Keeps `report` as what the import's adapter answered. Call it
+    /// before the call that ends the import
+    /// ([`AnnotationStore::stage_rows`], [`AnnotationStore::finish_loading`]),
+    /// so that whoever sees the import ended sees its report.
+    pub fn record_import_report(&self, report: Report) -> Result<()> {
+        self.import
+            .lock()
+            .map_err(|_| anyhow!("annotations store lock poisoned"))?
+            .report = Some(report);
+        Ok(())
+    }
+
+    /// Where the import stands, without waiting for it.
+    pub fn import_status(&self) -> Result<ImportStatus> {
+        let import = self
+            .import
+            .lock()
+            .map_err(|_| anyhow!("annotations store lock poisoned"))?;
+        Ok(match &import.state {
+            _ if !import.expected => ImportStatus::None,
+            LoadState::Loading => ImportStatus::Loading,
+            LoadState::Ready => ImportStatus::Ready(import.report.clone()),
+            LoadState::Failed(message) => ImportStatus::Failed(message.clone()),
+        })
+    }
+
+    /// Waits for the session's one document export permit ("Document
+    /// exports"). Whoever holds it is the only document export running;
+    /// dropping it lets the next one start.
+    pub async fn export_permit(&self) -> Result<OwnedSemaphorePermit> {
+        self.exports
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| anyhow!("annotations store is closed"))
+    }
+
+    /// The same store with `bytes` as its download budget in place of
+    /// [`DOWNLOAD_BUDGET_BYTES`], for a session or a test that wants
+    /// another. Holds taken before the change still count.
+    pub fn with_download_budget(mut self, bytes: u64) -> Self {
+        self.download_budget = bytes;
+        self
+    }
+
+    /// The same store with `bytes` as what the records of one document may
+    /// be charged ("Document exports"), in place of the adapters' fixed
+    /// default. The viewer sets [`default_document_budget`] for the
+    /// machine it runs on.
+    pub fn with_document_budget(mut self, bytes: u64) -> Self {
+        self.document_budget = bytes;
+        self
+    }
+
+    /// What the records of one document may be charged in this session:
+    /// `dcmview_adapters::Limits::held_bytes` for its exports and its
+    /// import.
+    pub fn document_budget(&self) -> u64 {
+        self.document_budget
+    }
+
+    /// Takes `bytes` of the session's download budget for a document text
+    /// that is about to be sent, until the hold is dropped. `None` when
+    /// other downloads are being sent and this one would make them hold
+    /// more than the budget together. A text is always admitted when
+    /// no other is being sent, whatever its size, so every session can be
+    /// downloaded.
+    pub fn hold_download(&self, bytes: u64) -> Option<DownloadHold> {
+        let budget = self.download_budget;
+        let mut held = self.downloads.lock().ok()?;
+        if *held > 0 && held.saturating_add(bytes) > budget {
+            return None;
+        }
+        *held = held.saturating_add(bytes);
+        Some(DownloadHold {
+            held: self.downloads.clone(),
+            bytes,
+        })
     }
 
     /// Ends the import: readers stop waiting. A store that already failed
@@ -294,5 +458,28 @@ impl AnnotationStore {
     pub(crate) fn with_before_embed_write(mut self, hook: Arc<dyn Fn() + Send + Sync>) -> Self {
         self.before_embed_write = Some(hook);
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::default_document_budget;
+
+    /// A document's budget follows the machine: a quarter of its memory,
+    /// between 1 GiB and 4 GiB, and 4 GiB where its memory is not known.
+    #[test]
+    fn a_documents_budget_is_a_quarter_of_the_machine_within_bounds() {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        for (physical, budget) in [
+            (Some(2 * GIB), GIB),
+            (Some(4 * GIB), GIB),
+            (Some(8 * GIB), 2 * GIB),
+            (Some(10 * GIB), 5 * GIB / 2),
+            (Some(16 * GIB), 4 * GIB),
+            (Some(512 * GIB), 4 * GIB),
+            (None, 4 * GIB),
+        ] {
+            assert_eq!(default_document_budget(physical), budget, "{physical:?}");
+        }
     }
 }

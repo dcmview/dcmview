@@ -203,6 +203,18 @@ pub(super) fn annotation_error(error: AnnotationError) -> ApiError {
         AnnotationError::KeyReplaced { .. } => {
             ApiError::coded(StatusCode::CONFLICT, ApiErrorCode::FileKeyReplaced, message)
         }
+        AnnotationError::ExportTooLarge { .. } | AnnotationError::ExportTooMany { .. } => {
+            ApiError::coded(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                ApiErrorCode::AnnotationExportTooLarge,
+                message,
+            )
+        }
+        AnnotationError::ExportBusy => ApiError::coded(
+            StatusCode::SERVICE_UNAVAILABLE,
+            ApiErrorCode::AnnotationExportBusy,
+            message,
+        ),
         AnnotationError::ImportFailed(_) | AnnotationError::Stopped | AnnotationError::Store(_) => {
             ApiError::internal(message)
         }
@@ -305,7 +317,11 @@ pub(super) struct ServerErrorDetail(pub(super) String);
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         // A busy answer is the budget working, not a fault to report.
-        let logged = (self.status.is_server_error() && self.code != ApiErrorCode::DecodeBusy)
+        let busy = matches!(
+            self.code,
+            ApiErrorCode::DecodeBusy | ApiErrorCode::AnnotationExportBusy
+        );
+        let logged = (self.status.is_server_error() && !busy)
             .then(|| ServerErrorMessage(self.message.clone()));
         let mut response = (
             self.status,
@@ -321,7 +337,7 @@ impl IntoResponse for ApiError {
                 HeaderValue::from_static(UNAUTHORIZED_CHALLENGE),
             );
         }
-        if self.code == ApiErrorCode::DecodeBusy {
+        if busy {
             response.headers_mut().insert(
                 header::RETRY_AFTER,
                 HeaderValue::from(DECODE_BUSY_RETRY_AFTER_SECONDS),
@@ -355,5 +371,42 @@ mod tests {
         assert!(reported(PixelError::frame_decode(anyhow::anyhow!(
             "corrupt"
         ))));
+    }
+
+    /// An annotation export that met a bound says which: too much for a
+    /// document is the client's to change (422), and downloads that hold
+    /// the budget are over shortly (503 with `Retry-After`, not reported
+    /// as a fault).
+    #[test]
+    fn an_export_past_a_bound_says_which_bound() {
+        for (error, status, code, retry) in [
+            (
+                AnnotationError::ExportTooMany {
+                    bound: dcmview_adapters::Bound::Records,
+                    limit: 2,
+                },
+                StatusCode::UNPROCESSABLE_ENTITY,
+                ApiErrorCode::AnnotationExportTooLarge,
+                false,
+            ),
+            (
+                AnnotationError::ExportTooLarge { limit: 2 },
+                StatusCode::UNPROCESSABLE_ENTITY,
+                ApiErrorCode::AnnotationExportTooLarge,
+                false,
+            ),
+            (
+                AnnotationError::ExportBusy,
+                StatusCode::SERVICE_UNAVAILABLE,
+                ApiErrorCode::AnnotationExportBusy,
+                true,
+            ),
+        ] {
+            let error = annotation_error(error);
+            assert_eq!((error.status, error.code), (status, code));
+            let response = error.into_response();
+            assert_eq!(response.headers().contains_key(header::RETRY_AFTER), retry);
+            assert!(response.extensions().get::<ServerErrorMessage>().is_none());
+        }
     }
 }

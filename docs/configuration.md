@@ -31,7 +31,8 @@ dcmview [OPTIONS] <PATH> [PATH ...]
 | `--cache-budget <BYTES>` | `768MiB` | Total memory for cached display, raw, overlay and thumbnail frame bodies; minimum `16MiB`. |
 | `--decode-memory <BYTES>` | a quarter of physical memory, from `1GiB` to `4GiB` | Memory that frames being decoded may use between them; minimum `256MiB`. See [Decode memory](#decode-memory). |
 | `--no-recursive` | `false` | Scan only the top level of input directories. |
-| `--annotations <CSV>` | none | Load EMBED-style ROI annotations from CSV without modifying the file. |
+| `--annotations <FILE>` | none | Load annotations without modifying the file: an EMBED-style ROI CSV, or a `dcmview.annotations` document as JSON or JSON Lines. The start of the file decides which. |
+| `--annotations-format <FORMAT>` | decided from the file | Read `--annotations` as `embed` (EMBED-style ROI CSV) or `native` (a `dcmview.annotations` document). Without it, a file that starts with `{` and names the `dcmview.annotations` format in its first 4,096 bytes is a document and every other file is read as CSV; a file that is neither stops `dcmview` with exit status 1. |
 | `--formats <NAMES>` | all five formats | Comma-separated `dicom,png,jpeg,tiff,webp`; narrows directory walks only. |
 | `--filter <FIELD=VALUE>` | none | Include only files matching a metadata, format, or path filter; repeatable. |
 | `--mask` | `false` | Replace patient identifiers in everything the viewer displays, for screen sharing. Display only: files are not modified and this is not de-identification. Fixed for the session. |
@@ -108,6 +109,19 @@ memory, but not less than 1 GiB and not more than 4 GiB.
 | 12 GiB | 3 GiB |
 | 16 GiB or more | 4 GiB |
 | not known | 4 GiB |
+
+The budget for annotation documents follows the machine the same way,
+and has no flag: the memory the records of one `dcmview.annotations`
+document may be charged, when it is loaded with `--annotations` and when
+it is exported, is one quarter of physical memory, not less than 1 GiB
+and not more than 4 GiB (the table above), and 4 GiB where physical
+memory is not known. A document past it is not loaded, and
+`GET /api/annotations/import` gives the message, which names the bound
+and its value ("the bytes of memory its records hold are limited to
+2147483648"); a session past it is refused the export with
+`422 annotation_export_too_large` and a message that names them too. A rectangle is
+charged about 1,900 bytes and an annotated file about 1,300. See
+[annotations](annotations.md#documents).
 
 Physical memory is read on Linux and macOS. On Windows and other platforms
 it is not read, and the default is 4 GiB whatever the machine has. It is the
@@ -324,7 +338,7 @@ single path-like value or an iterable of path-like values.
 | `block` | `True` | When `True`, waits for `dcmview` to exit and returns `None`; when `False`, returns a handle with `.url`, `.stop()`, and context-manager support. |
 | `recursive` | `True` | When `False`, forwards `--no-recursive`. |
 | `timeout` | `None` | Forwards to `--timeout` when set. |
-| `annotations` | `None` | Path to an EMBED-style ROI CSV; forwards `--annotations` when set. |
+| `annotations` | `None` | Path to an EMBED-style ROI CSV or a `dcmview.annotations` document; forwards `--annotations` when set. |
 | `filters` | `None` | Iterable of `FIELD=VALUE` filters; each value forwards as `--filter`. |
 | `mask` | `False` | When `True`, forwards `--mask`. |
 | `vscode_bridge` | `True` | When `True`, the viewer opens in VS Code when launched from a VS Code terminal or inside an open workspace folder. |

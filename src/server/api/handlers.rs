@@ -3,14 +3,16 @@ use super::overlays;
 use super::state::AppState;
 use crate::api::contracts::RedactionSeriesResponse;
 use crate::api::contracts::{
-    AnnotationOpQuery, AnnotationOpResponse, ApiErrorCode, DiscoveryResult, EmbedRoiAnnotations,
-    FileSummary, FilesQuery, FilesResponse, FrameInfo, FrameQuery, GraphicAnnotationsQuery,
-    GraphicAnnotationsResponse, HealthResponse, PixelQuery, ReferenceCatalogResponse,
-    SemanticContextResponse, TagNode, TagQuery, ThumbnailQuery, ViewerIdentity, CACHE_HEADER,
-    CACHE_HIT, CACHE_MISS, CSV_MEDIA_TYPE, DISPLAY_FRAME_HEADER_WINDOW_APPLIED,
-    DISPLAY_FRAME_HEADER_WINDOW_CENTER, DISPLAY_FRAME_HEADER_WINDOW_WIDTH,
-    EXPORT_CONTENT_DISPOSITION_HEADER, EXPORT_CONTENT_DISPOSITION_VALUE, FILE_KEY_HEADER,
-    JPEG_MEDIA_TYPE, OCTET_STREAM_MEDIA_TYPE, RAW_FRAME_HEADER_BITS_ALLOCATED,
+    AnnotationImportResponse, AnnotationOpQuery, AnnotationOpResponse, ApiErrorCode,
+    DiscoveryResult, EmbedRoiAnnotations, FileSummary, FilesQuery, FilesResponse, FrameInfo,
+    FrameQuery, GraphicAnnotationsQuery, GraphicAnnotationsResponse, HealthResponse, PixelQuery,
+    ReferenceCatalogResponse, SemanticContextResponse, TagNode, TagQuery, ThumbnailQuery,
+    ViewerIdentity, CACHE_HEADER, CACHE_HIT, CACHE_MISS, CSV_MEDIA_TYPE,
+    DISPLAY_FRAME_HEADER_WINDOW_APPLIED, DISPLAY_FRAME_HEADER_WINDOW_CENTER,
+    DISPLAY_FRAME_HEADER_WINDOW_WIDTH, EXPORT_CONTENT_DISPOSITION_HEADER,
+    EXPORT_CONTENT_DISPOSITION_VALUE, EXPORT_JSONL_CONTENT_DISPOSITION_VALUE,
+    EXPORT_JSON_CONTENT_DISPOSITION_VALUE, FILE_KEY_HEADER, JPEG_MEDIA_TYPE, JSONL_MEDIA_TYPE,
+    JSON_MEDIA_TYPE, OCTET_STREAM_MEDIA_TYPE, RAW_FRAME_HEADER_BITS_ALLOCATED,
     RAW_FRAME_HEADER_COLUMNS, RAW_FRAME_HEADER_DEFAULT_WC, RAW_FRAME_HEADER_DEFAULT_WW,
     RAW_FRAME_HEADER_PADDING_HIGH, RAW_FRAME_HEADER_PADDING_LOW,
     RAW_FRAME_HEADER_PHOTOMETRIC_INTERPRETATION, RAW_FRAME_HEADER_PIXEL_REPRESENTATION,
@@ -553,6 +555,85 @@ pub(super) async fn export_annotations(
         HeaderValue::from_static(EXPORT_CONTENT_DISPOSITION_VALUE),
     );
     Ok(response)
+}
+
+/// The session's annotations as one JSON document
+/// (`endpoints::ANNOTATIONS_EXPORT_JSON`).
+pub(super) async fn export_annotations_json(
+    State(state): State<AppState>,
+) -> Result<Response, ApiError> {
+    native_export(
+        &state,
+        annotations::NativeForm::Json,
+        JSON_MEDIA_TYPE,
+        EXPORT_JSON_CONTENT_DISPOSITION_VALUE,
+    )
+    .await
+}
+
+/// The same document as JSON Lines (`endpoints::ANNOTATIONS_EXPORT_JSONL`).
+pub(super) async fn export_annotations_jsonl(
+    State(state): State<AppState>,
+) -> Result<Response, ApiError> {
+    native_export(
+        &state,
+        annotations::NativeForm::JsonLines,
+        JSONL_MEDIA_TYPE,
+        EXPORT_JSONL_CONTENT_DISPOSITION_VALUE,
+    )
+    .await
+}
+
+/// How much of a document export is handed to the connection at a time.
+const EXPORT_CHUNK_BYTES: usize = 1024 * 1024;
+
+/// A native export as a response. The session's document export permit
+/// is held while the text is built and let go of before it is sent
+/// (`annotations::export_native`), so a client that reads slowly holds up
+/// no other export. The body is sent in pieces and owns the text's share
+/// of the download budget until its last piece has been taken or the
+/// response is dropped.
+async fn native_export(
+    state: &AppState,
+    form: annotations::NativeForm,
+    media_type: &'static str,
+    disposition: &'static str,
+) -> Result<Response, ApiError> {
+    let export = annotations::export_native(state.registry(), state.annotations(), form)
+        .await
+        .map_err(error::annotation_error)?;
+    let length = export.bytes.len();
+    let body = futures::stream::unfold(
+        (Bytes::from(export.bytes), export.hold),
+        |(mut rest, hold)| async move {
+            if rest.is_empty() {
+                return None;
+            }
+            let piece = rest.split_to(rest.len().min(EXPORT_CHUNK_BYTES));
+            Some((Ok::<_, std::convert::Infallible>(piece), (rest, hold)))
+        },
+    );
+    // A layer that compresses the body may ask for more after the last
+    // piece; a fused stream answers that with the end again.
+    let body = futures::StreamExt::fuse(body);
+    let mut response = Response::new(axum::body::Body::from_stream(body));
+    let headers = response.headers_mut();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(media_type));
+    headers.insert(header::CONTENT_LENGTH, HeaderValue::from(length));
+    headers.insert(
+        EXPORT_CONTENT_DISPOSITION_HEADER,
+        HeaderValue::from_static(disposition),
+    );
+    Ok(response)
+}
+
+/// Where the `--annotations` import stands (`endpoints::ANNOTATIONS_IMPORT`).
+pub(super) async fn annotation_import(
+    State(state): State<AppState>,
+) -> Result<Json<AnnotationImportResponse>, ApiError> {
+    annotations::import_status(state.annotations())
+        .map(Json)
+        .map_err(error::annotation_error)
 }
 
 pub(super) async fn frame(
