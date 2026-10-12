@@ -20,6 +20,8 @@ mod agreement;
 mod annotations;
 mod bounds;
 mod caches;
+#[path = "../integration/codestream_files.rs"]
+mod codestream_files;
 mod data_set_files;
 mod data_set_tags;
 mod data_sets;
@@ -32,6 +34,7 @@ mod raster_cases;
 mod raster_files;
 #[path = "../integration/raster_tag_files.rs"]
 mod raster_tag_files;
+mod reduced;
 mod scale;
 mod tags;
 

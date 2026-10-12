@@ -70,6 +70,18 @@ impl Layout {
 /// Writes a file whose header says `layout` over `frames`, one fragment a
 /// frame, with a Basic Offset Table when there is more than one.
 pub fn write(path: &Path, transfer_syntax: &str, layout: Layout, frames: &[Vec<u8>]) {
+    write_with(path, transfer_syntax, layout, frames, &[]);
+}
+
+/// [`write`], with `more` put into the header after everything `layout`
+/// says: further attributes, or other values for the ones it writes.
+pub fn write_with(
+    path: &Path,
+    transfer_syntax: &str,
+    layout: Layout,
+    frames: &[Vec<u8>],
+    more: &[DataElement<InMemDicomObject>],
+) {
     let mut object = InMemDicomObject::from_element_iter([
         DataElement::new(
             tags::SOP_CLASS_UID,
@@ -122,6 +134,9 @@ pub fn write(path: &Path, transfer_syntax: &str, layout: Layout, frames: &[Vec<u
             VR::US,
             PrimitiveValue::from(0_u16),
         ));
+    }
+    for element in more {
+        object.put(element.clone());
     }
     object.put(DataElement::new(
         tags::PIXEL_DATA,

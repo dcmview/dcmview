@@ -1328,6 +1328,147 @@ fn the_levels_a_reduced_decode_may_use_are_the_fewest_a_frame_states() {
     }
 }
 
+/// A thumbnail that asks for a reduced decode refuses a frame that
+/// disagrees with its header exactly as a full decode does: before any
+/// decoder is given it, and without holding more than `REFUSAL_HEAP` for it.
+/// The headers here are large enough that the thumbnail asks for a
+/// reduction; the frames are honest ones with the numbers they declare
+/// replaced.
+#[test]
+fn a_reduced_decode_is_not_tried_on_a_frame_that_disagrees_with_its_header() {
+    use dicom_core::{DataElement, PrimitiveValue, VR};
+    use dicom_dictionary_std::tags;
+
+    let _alone = heap::alone();
+    let runtime = runtime();
+    let dir = tempdir().expect("temp dir");
+    let reduced = |name: &str| {
+        std::fs::read(files::fixture("reduced-decode").join(name)).expect("the fixture")
+    };
+    let j2k = reduced("gray8-512x384.j2k");
+    let jpeg = reduced("gray8-baseline-1040x780.jpg");
+    let j2k_header = Layout::gray8(384, 512);
+    let jpeg_header = Layout::gray8(780, 1040);
+    let cases: Vec<(&str, &str, Layout, Vec<u8>)> = vec![
+        (
+            "jpeg 2000, 32,768 x 32,768",
+            files::JPEG_2000,
+            j2k_header,
+            files::j2k_sized(&j2k, 32_768, 32_768),
+        ),
+        (
+            "jpeg 2000, one row more",
+            files::JPEG_2000,
+            j2k_header,
+            files::j2k_sized(&j2k, 385, 512),
+        ),
+        (
+            "jpeg 2000, half the size",
+            files::JPEG_2000,
+            j2k_header,
+            files::j2k_sized(&j2k, 192, 256),
+        ),
+        (
+            "jpeg 2000, three components",
+            files::JPEG_2000,
+            j2k_header,
+            files::j2k_components(&j2k, 3),
+        ),
+        (
+            "jpeg 2000, a tile for every pixel",
+            files::JPEG_2000,
+            j2k_header,
+            files::j2k_u32(&files::j2k_u32(&j2k, siz::XTSIZ, 1), siz::YTSIZ, 1),
+        ),
+        (
+            "jpeg 2000, 65,535 layers of tiny precincts",
+            files::JPEG_2000,
+            j2k_header,
+            files::j2k_layers(&files::j2k_precincts(&j2k, 1), 65_535),
+        ),
+        (
+            "jpeg 2000, another frame's codestream",
+            files::JPEG_2000,
+            j2k_header,
+            hex(files::J2K_GRAY8),
+        ),
+        (
+            "jpeg, 65,535 x 65,535",
+            files::JPEG_BASELINE,
+            jpeg_header,
+            files::jpeg_sized(&jpeg, 65_535, 65_535),
+        ),
+        (
+            "jpeg, one column more",
+            files::JPEG_BASELINE,
+            jpeg_header,
+            files::jpeg_sized(&jpeg, 780, 1041),
+        ),
+        (
+            "jpeg, an eighth of the size",
+            files::JPEG_BASELINE,
+            jpeg_header,
+            files::jpeg_sized(&jpeg, 98, 130),
+        ),
+        (
+            "jpeg, three components",
+            files::JPEG_BASELINE,
+            jpeg_header,
+            files::jpeg_components(&jpeg, 3),
+        ),
+        (
+            "jpeg, twelve bits",
+            files::JPEG_BASELINE,
+            jpeg_header,
+            files::jpeg_precision(&jpeg, 12),
+        ),
+    ];
+    let window = [
+        DataElement::new(tags::WINDOW_CENTER, VR::DS, PrimitiveValue::from("128")),
+        DataElement::new(tags::WINDOW_WIDTH, VR::DS, PrimitiveValue::from("256")),
+    ];
+    for (number, (name, transfer_syntax, layout, frame)) in cases.into_iter().enumerate() {
+        let path = dir.path().join(format!("reduced-{number}.dcm"));
+        files::write_with(&path, transfer_syntax, layout, &[frame], &window);
+        let length = std::fs::metadata(&path).expect("written").len();
+        let listed = runtime.block_on(files::list(&[path]));
+        assert!(
+            dcmview::pixels::thumbnail_reduction(
+                &listed[0],
+                128,
+                dcmview::api::contracts::WindowMode::Default
+            )
+            .is_some(),
+            "{name}: the thumbnail asks for a reduction"
+        );
+        let server = files::serve(listed);
+        let endpoint = "/api/file/0/frame/0/thumbnail?size=128";
+        // Whatever the first request leaves in caches is not the frame.
+        for attempt in 0..2 {
+            let (response, held) =
+                heap::peak_during(|| runtime.block_on(async { server.get(endpoint).await }));
+            let context = format!("{name}, attempt {attempt}");
+            assert_eq!(
+                response.status_code(),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "{context}: {}",
+                response.text()
+            );
+            assert!(
+                response.text().contains(CODESTREAM_MISMATCH),
+                "{context}: {}",
+                response.text()
+            );
+            let limit = REFUSAL_HEAP + 2 * length;
+            assert!(
+                held <= limit,
+                "{context}: {held} bytes of heap held for a {length}-byte file, the limit is {limit}"
+            );
+            report(|| format!("{context}: {held} bytes of heap, file {length}"));
+        }
+    }
+}
+
 /// A JPEG XL frame that carries an embedded colour profile is refused from
 /// its image header alone: both endpoints answer with the decode error that
 /// says so, the process holds no more than `REFUSAL_HEAP` for it, and the
