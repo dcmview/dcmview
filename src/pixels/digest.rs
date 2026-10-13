@@ -35,6 +35,7 @@ use crate::api::contracts::RawFrameMetadata;
 use crate::types::FileEntry;
 use bytes::Bytes;
 use dcmview_annotation::PixelLayout;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 /// The most frames a session keeps a pixel digest of: 65,536. Recording one
@@ -98,7 +99,12 @@ pub struct PixelDigests {
 
 /// What the table's lock guards.
 #[derive(Default)]
-struct DigestTable {}
+struct DigestTable {
+    digests: HashMap<(usize, u32), [u8; 32]>,
+    order: VecDeque<(usize, u32)>,
+    frames_hashed: u64,
+    bytes_hashed: u64,
+}
 
 impl Default for PixelDigests {
     fn default() -> Self {
@@ -117,8 +123,7 @@ impl PixelDigests {
     /// The digest of frame `frame` of the file at catalog index `file`, when
     /// the table holds one.
     pub fn get(&self, file: usize, frame: u32) -> Option<[u8; 32]> {
-        let _ = (&self.state, file, frame);
-        todo!()
+        self.state.lock().ok()?.digests.get(&(file, frame)).copied()
     }
 
     /// Records `digest` as the digest of frame `frame` of the file at
@@ -126,13 +131,35 @@ impl PixelDigests {
     /// it in [`PixelDigestStats::frames_hashed`] and
     /// [`PixelDigestStats::bytes_hashed`].
     pub fn record(&self, file: usize, frame: u32, digest: [u8; 32], hashed_bytes: u64) {
-        let _ = (file, frame, digest, hashed_bytes);
-        todo!()
+        let Ok(mut table) = self.state.lock() else {
+            return;
+        };
+        table.frames_hashed = table.frames_hashed.saturating_add(1);
+        table.bytes_hashed = table.bytes_hashed.saturating_add(hashed_bytes);
+        let key = (file, frame);
+        if let Some(held) = table.digests.get_mut(&key) {
+            *held = digest;
+            return;
+        }
+        if table.digests.len() == PIXEL_DIGEST_CAPACITY {
+            if let Some(oldest) = table.order.pop_front() {
+                table.digests.remove(&oldest);
+            }
+        }
+        table.order.push_back(key);
+        table.digests.insert(key, digest);
     }
 
     /// What the table has counted and holds.
     pub fn stats(&self) -> PixelDigestStats {
-        todo!()
+        let Ok(table) = self.state.lock() else {
+            return PixelDigestStats::default();
+        };
+        PixelDigestStats {
+            frames_hashed: table.frames_hashed,
+            bytes_hashed: table.bytes_hashed,
+            held: table.digests.len(),
+        }
     }
 
     /// The pixel digests a document states for a file of `frames` frames
@@ -148,8 +175,23 @@ impl PixelDigests {
     /// header says. Otherwise exactly `frames` entries. The work is one
     /// lookup for each frame and file.
     pub fn of_frames(&self, files: &[usize], frames: u32) -> Vec<Option<String>> {
-        let _ = (files, frames);
-        todo!()
+        let Ok(table) = self.state.lock() else {
+            return Vec::new();
+        };
+        if table.digests.is_empty() || frames as usize > PIXEL_DIGEST_FRAMES_STATED {
+            return Vec::new();
+        }
+        let digest_of = |frame| {
+            files
+                .iter()
+                .find_map(|file| table.digests.get(&(*file, frame)))
+        };
+        if !(0..frames).any(|frame| digest_of(frame).is_some()) {
+            return Vec::new();
+        }
+        (0..frames)
+            .map(|frame| digest_of(frame).map(dcmview_annotation::pixel_digest_text))
+            .collect()
     }
 }
 
