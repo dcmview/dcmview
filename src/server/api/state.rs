@@ -59,16 +59,17 @@ impl AppState {
     pub fn new(registry: FileRegistry, annotations: AnnotationStore) -> Self {
         let decode_scheduler = DecodeScheduler::for_host();
         let cache_budget = CacheBudget::DEFAULT;
+        let pixel_digests = registry.pixel_digests().clone();
         Self {
             registry,
             pixel_cache: Arc::new(Mutex::new(FrameCache::with_scheduler(
                 cache_budget.frame_bytes,
                 decode_scheduler.clone(),
             ))),
-            raw_cache: Arc::new(Mutex::new(RawFrameCache::with_scheduler(
-                cache_budget.raw_bytes,
-                decode_scheduler.clone(),
-            ))),
+            raw_cache: Arc::new(Mutex::new(
+                RawFrameCache::with_scheduler(cache_budget.raw_bytes, decode_scheduler.clone())
+                    .with_pixel_digests(pixel_digests),
+            )),
             tag_cache: Arc::new(Mutex::new(LruCache::new(TAG_CACHE_MAX_FILES))),
             semantic_cache: Arc::new(Mutex::new(LruCache::new(SEMANTIC_CACHE_MAX_FILES))),
             value_mapping_cache: Arc::new(Mutex::new(LruCache::new(VALUE_MAPPING_CACHE_MAX_FILES))),
@@ -133,10 +134,10 @@ impl AppState {
             budget.frame_bytes,
             scheduler.clone(),
         )));
-        self.raw_cache = Arc::new(Mutex::new(RawFrameCache::with_scheduler(
-            budget.raw_bytes,
-            scheduler.clone(),
-        )));
+        self.raw_cache = Arc::new(Mutex::new(
+            RawFrameCache::with_scheduler(budget.raw_bytes, scheduler.clone())
+                .with_pixel_digests(self.registry.pixel_digests().clone()),
+        ));
         self.overlay_cache = Arc::new(Mutex::new(OverlayCache::with_scheduler(
             budget.overlay_bytes,
             scheduler.clone(),

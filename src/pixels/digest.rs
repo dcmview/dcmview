@@ -32,11 +32,13 @@
 //! nothing was recorded in holds no heap.
 
 use crate::api::contracts::RawFrameMetadata;
-use crate::types::FileEntry;
+use crate::types::{FileEntry, FileFormat, NativePixelDataKind};
 use bytes::Bytes;
-use dcmview_annotation::PixelLayout;
+use dcmview_annotation::{PixelLayout, SampleFormat, PIXEL_DIGEST_HEADER_BYTES};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
+
+use super::syntax::{codec_for_file, codec_for_syntax, Codec};
 
 /// The most frames a session keeps a pixel digest of: 65,536. Recording one
 /// more forgets the one recorded longest ago.
@@ -210,8 +212,17 @@ impl PixelDigests {
 /// It reads the catalog entry only (`pixels::codec_for_file`,
 /// `FileEntry::format`, `FileEntry::raster`), never the file.
 pub fn exact_samples(file: &FileEntry) -> bool {
-    let _ = file;
-    todo!()
+    if file.format.is_raster() {
+        return match file.format {
+            FileFormat::Png => true,
+            FileFormat::Tiff => file
+                .raster
+                .as_ref()
+                .is_none_or(|raster| !raster.alpha_associated),
+            _ => false,
+        };
+    }
+    codec_for_file(file).is_some_and(|codec| codec != Codec::JpegBaseline)
 }
 
 /// The pixel digest of `samples`, which are a frame's samples already in
@@ -220,8 +231,13 @@ pub fn exact_samples(file: &FileEntry) -> bool {
 ///
 /// `None` when `samples` is not [`PixelLayout::sample_bytes`] bytes long.
 pub fn pixel_digest(layout: &PixelLayout, samples: &[u8]) -> Option<[u8; 32]> {
-    let _ = (layout, samples);
-    todo!()
+    if layout.sample_bytes() != Some(samples.len() as u64) {
+        return None;
+    }
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&layout.header());
+    hasher.update(samples);
+    Some(*hasher.finalize().as_bytes())
 }
 
 /// The pixel digest of one raw frame of `file`, as
@@ -260,8 +276,57 @@ pub fn frame_pixel_digest(
     body: &[u8],
     metadata: &RawFrameMetadata,
 ) -> Option<([u8; 32], u64)> {
-    let _ = (file, body, metadata);
-    todo!()
+    if !exact_samples(file) {
+        return None;
+    }
+    let size = match metadata.bits_allocated {
+        1 | 8 => 1,
+        bits @ (16 | 32 | 64) => bits / 8,
+        _ => return None,
+    };
+    let sample_format = match file.series_metadata.native_pixel.pixel_data_kind {
+        Some(NativePixelDataKind::Float32 | NativePixelDataKind::Float64) => SampleFormat::Float,
+        _ if metadata.pixel_representation == 1 => SampleFormat::Signed,
+        _ => SampleFormat::Unsigned,
+    };
+    let layout = PixelLayout {
+        rows: metadata.rows,
+        columns: metadata.columns,
+        samples_per_pixel: metadata.samples_per_pixel,
+        bits_allocated: size * 8,
+        sample_format,
+    };
+    if layout.sample_bytes() != Some(body.len() as u64) {
+        return None;
+    }
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&layout.header());
+    let planar = metadata.samples_per_pixel > 1
+        && file.series_metadata.native_pixel.planar_configuration == Some(1)
+        && codec_for_syntax(&file.transfer_syntax_uid) == Some(Codec::Native);
+    if planar {
+        // The checked body length also bounds every sample offset below.
+        let size = size as usize;
+        let pixels = metadata.rows as usize * metadata.columns as usize;
+        let mut buffer = Vec::with_capacity(PIXEL_DIGEST_BUFFER_BYTES.min(body.len()));
+        for pixel in 0..pixels {
+            for sample in 0..metadata.samples_per_pixel as usize {
+                let offset = (sample * pixels + pixel) * size;
+                if buffer.len() + size > buffer.capacity() {
+                    hasher.update(&buffer);
+                    buffer.clear();
+                }
+                buffer.extend_from_slice(body.get(offset..offset + size)?);
+            }
+        }
+        hasher.update(&buffer);
+    } else {
+        hasher.update(body);
+    }
+    Some((
+        *hasher.finalize().as_bytes(),
+        PIXEL_DIGEST_HEADER_BYTES as u64 + body.len() as u64,
+    ))
 }
 
 /// Computes the pixel digest of frame `frame` of `file` from the samples a
@@ -287,6 +352,16 @@ pub async fn record_frame_digest(
     body: &Bytes,
     metadata: &RawFrameMetadata,
 ) {
-    let _ = (digests, file, frame, body, metadata);
-    todo!()
+    if !exact_samples(file) {
+        return;
+    }
+    let hashed_file = file.clone();
+    let body = body.clone();
+    let metadata = metadata.clone();
+    let result =
+        tokio::task::spawn_blocking(move || frame_pixel_digest(&hashed_file, &body, &metadata))
+            .await;
+    if let Ok(Some((digest, bytes))) = result {
+        digests.record(file.index, frame, digest, bytes);
+    }
 }
