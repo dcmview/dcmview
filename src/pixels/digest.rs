@@ -255,11 +255,17 @@ pub fn pixel_digest(layout: &PixelLayout, samples: &[u8]) -> Option<[u8; 32]> {
 ///   pixel data is (`NativePixelMetadata::pixel_data_kind` `Float32` or
 ///   `Float64`), else signed when `metadata.pixel_representation` is 1,
 ///   else unsigned;
-/// - the samples are hashed colour-by-pixel. A body that already is (one
-///   sample a pixel, or interleaved colour) is hashed where it lies. A body
-///   stored colour-by-plane (an uncompressed DICOM frame with Planar
-///   Configuration 1) is put in order through a buffer of at most
-///   [`PIXEL_DIGEST_BUFFER_BYTES`]; the frame is never copied whole.
+/// - the samples are hashed colour-by-pixel, each as its value: an
+///   integer sample of a DICOM frame whose Bits Stored is less than the
+///   width it is held in is hashed with the bits above its stored field
+///   clear, or set for a negative signed value, whichever decoder produced
+///   it. A body that already is in that order and holds values (one sample
+///   a pixel or interleaved colour, every bit stored) is hashed where it
+///   lies. Any other (a frame stored colour-by-plane, which only an
+///   uncompressed DICOM frame with Planar Configuration 1 is, or samples
+///   narrower than their cells) passes through one buffer of at most
+///   [`PIXEL_DIGEST_BUFFER_BYTES`], a piece at a time; the frame is never
+///   copied whole.
 ///
 /// `None`, having read no sample, when the frame has no digest:
 ///
@@ -301,32 +307,128 @@ pub fn frame_pixel_digest(
     }
     let mut hasher = blake3::Hasher::new();
     hasher.update(&layout.header());
-    let planar = metadata.samples_per_pixel > 1
+    let size = size as usize;
+    let samples = metadata.samples_per_pixel as usize;
+    let planar = samples > 1
         && file.series_metadata.native_pixel.planar_configuration == Some(1)
         && codec_for_syntax(&file.transfer_syntax_uid) == Some(Codec::Native);
-    if planar {
-        // The checked body length also bounds every sample offset below.
-        let size = size as usize;
-        let pixels = metadata.rows as usize * metadata.columns as usize;
-        let mut buffer = Vec::with_capacity(PIXEL_DIGEST_BUFFER_BYTES.min(body.len()));
-        for pixel in 0..pixels {
-            for sample in 0..metadata.samples_per_pixel as usize {
-                let offset = (sample * pixels + pixel) * size;
-                if buffer.len() + size > buffer.capacity() {
-                    hasher.update(&buffer);
-                    buffer.clear();
-                }
-                buffer.extend_from_slice(body.get(offset..offset + size)?);
-            }
-        }
-        hasher.update(&buffer);
-    } else {
+    let field = stored_field(file, metadata, size, sample_format);
+    if !planar && field.is_none() {
         hasher.update(body);
+    } else {
+        // The checked body length bounds every offset below.
+        let pixel = samples * size;
+        let pixels = body.len() / pixel;
+        let step = (PIXEL_DIGEST_BUFFER_BYTES / pixel).max(1).min(pixels);
+        let mut buffer = vec![0_u8; step * pixel];
+        let mut start = 0;
+        while start < pixels {
+            let count = step.min(pixels - start);
+            let chunk = &mut buffer[..count * pixel];
+            if planar {
+                for sample in 0..samples {
+                    let plane = body.get((sample * pixels + start) * size..)?;
+                    let plane = plane.get(..count * size)?;
+                    if size == 1 {
+                        for (to, from) in chunk.iter_mut().skip(sample).step_by(samples).zip(plane)
+                        {
+                            *to = *from;
+                        }
+                    } else {
+                        for (to, from) in
+                            chunk.chunks_exact_mut(pixel).zip(plane.chunks_exact(size))
+                        {
+                            to[sample * size..(sample + 1) * size].copy_from_slice(from);
+                        }
+                    }
+                }
+            } else {
+                chunk.copy_from_slice(body.get(start * pixel..(start + count) * pixel)?);
+            }
+            if let Some(field) = field {
+                field.keep(chunk, size);
+            }
+            hasher.update(chunk);
+            start += count;
+        }
     }
     Some((
         *hasher.finalize().as_bytes(),
         PIXEL_DIGEST_HEADER_BYTES as u64 + body.len() as u64,
     ))
+}
+
+/// The stored field of an integer sample that is narrower than the cell it
+/// is allocated: what [`frame_pixel_digest`] keeps of each sample.
+#[derive(Clone, Copy)]
+struct StoredField {
+    /// How far above bit 0 the field begins in the samples as they were
+    /// decoded: 0 where the decoder has already moved it down.
+    shift: u32,
+    /// The bits of the field, from bit 0.
+    mask: u64,
+    /// The field's highest bit, when the samples are signed.
+    sign: Option<u64>,
+}
+
+impl StoredField {
+    /// Every `size`-byte little-endian sample of `samples` as its value:
+    /// the field moved down to bit 0, with the bits above it clear, or for
+    /// a negative signed value set.
+    fn keep(self, samples: &mut [u8], size: usize) {
+        for sample in samples.chunks_exact_mut(size) {
+            let mut value = sample
+                .iter()
+                .rev()
+                .fold(0_u64, |value, byte| value << 8 | u64::from(*byte));
+            value = (value >> self.shift) & self.mask;
+            if self.sign.is_some_and(|sign| value & sign != 0) {
+                value |= !self.mask;
+            }
+            for (shift, byte) in sample.iter_mut().enumerate() {
+                *byte = (value >> (shift * 8)) as u8;
+            }
+        }
+    }
+}
+
+/// The field to keep of each sample of a raw frame of `file`, or `None`
+/// when a sample's cell is all field: a floating-point sample, an image
+/// file's, a one-bit frame's byte, and a DICOM sample whose Bits Stored is
+/// its Bits Allocated or is not stated.
+///
+/// The uncompressed and RLE decodes already return values, the field at
+/// bit 0 (`stored_bits`); the decoders of the lossless codecs return the
+/// cells their codestream holds, with the field where High Bit puts it
+/// and the other bits whatever the encoder was given. Keeping the field
+/// here makes the two the same samples.
+fn stored_field(
+    file: &FileEntry,
+    metadata: &RawFrameMetadata,
+    size: usize,
+    sample_format: SampleFormat,
+) -> Option<StoredField> {
+    if file.format.is_raster() || sample_format == SampleFormat::Float {
+        return None;
+    }
+    let cell = u32::try_from(size).ok()?.checked_mul(8)?;
+    let stored = file.series_metadata.native_pixel.bits_stored?;
+    if metadata.bits_allocated == 1 || stored == 0 || stored >= cell {
+        return None;
+    }
+    let moved_down = matches!(
+        codec_for_file(file),
+        Some(Codec::Native | Codec::Rle | Codec::DeflatedImageFrame)
+    );
+    let shift = match file.series_metadata.native_pixel.high_bit {
+        Some(high) if !moved_down && high < cell && high + 1 >= stored => high + 1 - stored,
+        _ => 0,
+    };
+    Some(StoredField {
+        shift,
+        mask: (1_u64 << stored) - 1,
+        sign: (sample_format == SampleFormat::Signed).then_some(1_u64 << (stored - 1)),
+    })
 }
 
 /// Computes the pixel digest of frame `frame` of `file` from the samples a
