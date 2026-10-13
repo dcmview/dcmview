@@ -1595,6 +1595,36 @@ impl NativeResolver<'_> {
             {
                 return Checked::Differs;
             }
+        } else if reference.pixel_digest.iter().any(Option::is_some) {
+            let mut copies = vec![file.index];
+            if !file.sop_instance_uid.is_empty() {
+                let uid = self.registry.masker().map_or_else(
+                    || file.sop_instance_uid.clone(),
+                    |masker| masker.uid(&file.sop_instance_uid),
+                );
+                copies.extend(self.by_uid.get(&uid).into_iter().flatten().copied().filter(
+                    |index| settled_key(self.registry, *index).is_some_and(|other| other == key),
+                ));
+            }
+            copies.sort_by(|a, b| {
+                self.files[*a]
+                    .path
+                    .cmp(&self.files[*b].path)
+                    .then_with(|| a.cmp(b))
+            });
+            copies.dedup();
+            let held = self
+                .registry
+                .pixel_digests()
+                .of_frames(&copies, file.frame_count);
+            if reference
+                .pixel_digest
+                .iter()
+                .zip(&held)
+                .any(|(stated, held)| matches!((stated, held), (Some(a), Some(b)) if a != b))
+            {
+                return Checked::Differs;
+            }
         }
         Checked::Passed(key)
     }
