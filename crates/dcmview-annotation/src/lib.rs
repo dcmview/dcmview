@@ -18,6 +18,7 @@
 //! |---|---|
 //! | [`key`] | [`FileKey`] and [`KEY_RULES`]; the other validated strings ([`LayerId`], [`Author`], [`Timestamp`]) |
 //! | [`mod@file`] | [`FileRef`]: the evidence that identifies a file |
+//! | [`pixel`] | What a pixel digest (`px:`) is a digest of: [`PixelLayout`] |
 //! | [`geometry`] | Coordinates, [`Geometry`] and its invariants, masks, quantization and clamping |
 //! | [`frames`] | [`FrameScope`] |
 //! | [`schema`] | [`LabelSchema`]: classes, fields, options |
@@ -85,6 +86,7 @@ pub mod limits;
 mod model_checks;
 mod number;
 pub mod op;
+pub mod pixel;
 pub mod record;
 pub mod schema;
 pub mod validate;
@@ -104,6 +106,7 @@ pub use layer::{Layer, LayerKind, LayerPatch, LayerSource};
 pub use op::{
     ApplyResult, Current, EnvelopeError, Op, OpEnvelope, Patch, QueueKey, RevEntry, TileChange,
 };
+pub use pixel::{pixel_digest_text, PixelLayout, SampleFormat, PIXEL_DIGEST_HEADER_BYTES};
 pub use record::{new_id, Annotation, RecordMeta};
 pub use schema::{
     ClassDef, Code, FieldDef, FieldType, LabelSchema, OptionDef, TargetKind, IMPLICIT_CLASS_ID,
