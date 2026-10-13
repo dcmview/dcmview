@@ -199,10 +199,11 @@ SOP Instance UID for a `sop:` key, the BLAKE3 digest of its bytes for a
   it, which is then compared too. A digest of another kind (`sha256:`) is
   not compared;
 - a document also states a **pixel digest** for each frame whose stored
-  samples the session that wrote it decoded (a grayscale frame that was
-  viewed, or any frame whose values were read): a digest of those
-  samples, which is the same for the same pixels whatever file holds
-  them. A reload uses them only to refuse: where a file was matched by its
+  samples the session that wrote it decoded (a frame whose raw values
+  were fetched or read out, and a displayed frame of one integer sample
+  a pixel of at most 16 bits that is not JPEG 2000): a digest of those
+  samples, which is the same for the same pixels in every lossless
+  layout that has one. A reload uses them only to refuse: where a file was matched by its
   UID and its bytes were not compared, every frame that the document
   states and that this session has already decoded must have the same
   digest, or the file has other pixels and is refused
@@ -229,7 +230,9 @@ run; no folder or file name, which often say whose the files are (a file
 is `File 1`, as the masked viewer shows it); and no user name. What is
 left of a file is its content digest, byte size, SOP class, format, rows,
 columns and frame count, the pages of its frames and the pixel digests of
-the frames that were decoded. Labels on a patient, study, series or folder are
+the frames that were decoded. A pixel digest is the same for every file
+that holds the same pixels, whatever its headers say, so it shows that two
+files are the same image where the digest of their bytes would not. Labels on a patient, study, series or folder are
 left out. It can be loaded into any session, masked or not:
 each file is found by its content, which hashes the loaded files of the
 same size and dimensions. The annotated files are read to make the

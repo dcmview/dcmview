@@ -1054,8 +1054,11 @@ is cached between requests.
   folder or file name (`path` is `File N`) and no user name (`user:`
   authors become `user:local`). It names files by the `b3:` digest of
   their bytes and says `extensions.dcmview.masked`. It states pixel
-  digests and frame pages like any other document: they say no more of a
-  file than the digest of its bytes. An import into a masked session finds
+  digests and frame pages like any other document. A pixel digest is equal
+  for every file that holds the same samples, whatever its headers, so it
+  links copies of the same pixels that the digest of their bytes does
+  not: that is known and accepted, and nothing else of a file may be
+  added. An import into a masked session finds
   candidates by a key or a UID in the form the session shows only.
   `tests/integration/annotation_documents.rs` asserts both.
 

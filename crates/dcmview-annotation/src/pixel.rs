@@ -49,7 +49,8 @@
 //! - a sample is hashed as its value in the width it is allocated: a
 //!   sample of 12 bits allocated 16 is two bytes, an unsigned value with
 //!   the bits above it zero and a signed value sign-extended. Bits outside
-//!   the stored field are not pixel data and never reach a digest. A frame
+//!   the stored field are not pixel data and never reach a digest,
+//!   whatever a file or its codestream carries there. A frame
 //!   of 8-bit samples has another digest than the same values allocated 16
 //!   bits. A sample narrower than a byte (a one-bit DICOM frame, a 1-, 2-
 //!   or 4-bit PNG) is hashed as one byte holding its value, so
@@ -59,14 +60,24 @@
 //! - a frame stored colour-by-plane is hashed colour-by-pixel, so the
 //!   planar configuration a file uses does not change its digest;
 //! - an image file's samples are the ones the format stores: a PNG palette
-//!   image is hashed as the colours its indices name, an alpha channel is
-//!   a sample like the others, a TIFF `WhiteIsZero` page is hashed as
-//!   stored, and 16-bit samples stored big-endian are hashed
-//!   little-endian.
+//!   image is hashed as the colours its indices name, three samples a
+//!   pixel, or four when the palette has transparency (`tRNS`), the fourth
+//!   being the entry's alpha. The `tRNS` of a gray or RGB PNG names one
+//!   colour as transparent and adds no sample: such an image is hashed as
+//!   its gray or RGB samples alone. An alpha channel is a sample like the
+//!   others, a TIFF `WhiteIsZero` page is hashed as stored, and 16-bit
+//!   samples stored big-endian are hashed little-endian.
 //!
-//! So the same samples have one digest in every lossless encoding of them:
-//! uncompressed in either byte order, deflated, RLE, lossless JPEG, JPEG-LS,
-//! JPEG 2000 or JPEG XL in a DICOM file, and PNG or TIFF.
+//! So the same samples have one digest in each of these, which are the
+//! layouts the viewer serves raw samples of and decodes exactly:
+//!
+//! | Stored as | Layouts |
+//! |---|---|
+//! | DICOM, uncompressed or deflated, little-endian | one sample a pixel of 1, 8, 16, 32 or 64 bits; colour by pixel or by plane |
+//! | DICOM, uncompressed, Explicit VR Big Endian | samples of 16, 32 or 64 bits, which are hashed little-endian. Samples of 8 bits are hashed in the order the viewer's raw frame returns them, which is the order of the bytes in the file |
+//! | DICOM, RLE or JPEG XL Lossless | one sample a pixel, and colour |
+//! | DICOM, JPEG Lossless, JPEG-LS Lossless or JPEG 2000 Lossless | one sample a pixel |
+//! | PNG, TIFF | every layout the viewer decodes |
 //!
 //! # Frames without a digest
 //!
@@ -75,7 +86,10 @@
 //! lossy process (baseline JPEG in a DICOM file, a JPEG or WebP image) has
 //! none: two conforming decoders may differ in the last bit of a sample.
 //! Neither has a frame whose chrominance is stored at half resolution, nor
-//! a TIFF page with associated (premultiplied) alpha. Such a frame's entry
+//! a TIFF page with associated (premultiplied) alpha, nor a frame the
+//! viewer serves no raw samples of: a colour frame coded with JPEG
+//! Lossless or JPEG 2000 has none, although its coding is lossless. Such a
+//! frame's entry
 //! in [`FileRef::pixel_digest`](crate::FileRef) is `null`, like that of a
 //! frame nobody has decoded.
 

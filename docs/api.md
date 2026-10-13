@@ -900,12 +900,18 @@ the revision of the session that wrote it, and is not part of a document.
   little-endian (`crates/dcmview-annotation/src/pixel.rs` has the
   definition). It is of the samples the file stores, before any rescale,
   window, inversion or colour conversion, so the same samples have one
-  digest in every lossless encoding and file format. Frames coded lossily
-  (baseline JPEG, WebP), with chrominance at half resolution or with
-  associated alpha have none. An export only reads what the session
-  already knows: it decodes and hashes nothing, so a frame whose samples
-  were never decoded (through the raw frame endpoint, or for a display
-  frame of one sample a pixel) is `null`. Redaction boxes and windows do not change a digest.
+  digest in every lossless encoding and file format the viewer serves raw
+  samples of. Frames coded lossily (JPEG Baseline, JPEG and WebP files),
+  with chrominance at half resolution or with associated alpha have
+  none, and neither have colour JPEG Lossless and colour JPEG 2000
+  frames, which have no raw frame. A digest is recorded when a frame's
+  raw samples are decoded: by `GET .../frame/{frame}/raw` and
+  `.../raw/pixel`, by an overlay or legend computed from the frame, and
+  by a display frame of one integer sample a pixel of 1, 8 or 16 bits
+  (not JPEG 2000). Any other display frame, and a thumbnail, records
+  none. An export only reads what the session already knows: it decodes
+  and hashes nothing, so every other frame is `null`. Redaction boxes and
+  windows do not change a digest.
 - `frame_source` is, for an image file, the page of each frame (`[0]` for
   a file of one image, the IFD indexes for a TIFF) and `null` for DICOM.
 - Records are written as they are held: nothing is checked, clamped or left
@@ -1007,8 +1013,8 @@ path, file key, UID or other text of the file. The codes are listed with
 For a document, `counts.unmatched` counts the records of files that are
 not loaded and `counts.refused` those of files that were found and not
 accepted, each with a warning at the file's row: `evidence_conflict` (the
-files found hold other bytes, or have another key, than the document
-names), `file_unverified` (a file found could not be read to compare),
+files found hold other bytes, have another key, or have other pixels in a
+frame this session has decoded, than the document names), `file_unverified` (a file found could not be read to compare),
 `file_ambiguous` (its path names more than 64 loaded files, or more than
 64 carry its UID, and nothing else finds it),
 `size_mismatch` (other rows, columns or frame count) and `key_unavailable`.

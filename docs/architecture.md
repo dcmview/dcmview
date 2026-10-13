@@ -1653,10 +1653,10 @@ onto it.
 | Rule | What it means |
 |---|---|
 | The samples are the stored ones | A digest is of what the raw tier holds before a redaction: no rescale, lookup table, window, inversion or colour conversion. Bits outside the stored field are not hashed, a sample narrower than a byte is hashed as one byte, and colour stored by plane is hashed by pixel. |
-| One digest for one image | The same samples have the same digest uncompressed in either byte order, deflated, RLE, lossless JPEG, JPEG-LS, JPEG 2000 or JPEG XL, and as PNG or TIFF. Signedness, sample width, sample count and shape are part of it; the photometric interpretation is not. |
-| Exact decodes only | A frame has a digest only when decoding it gives exactly the stored samples (`pixels::exact_samples`). Baseline JPEG in DICOM, JPEG and WebP files, chrominance at half resolution and TIFF with associated alpha have none. |
-| Computed by the decode | A raw decode hashes the samples it produced before it returns them, on a blocking thread, under its own permit (`record_frame_digest`, called from `raw_frame`). A cache hit, a thumbnail, a display decode that never reaches the raw tier, discovery, an export and an import compute none. |
-| Fixed cost | One pass over the samples and at most 64 KiB beside them (`PIXEL_DIGEST_BUFFER_BYTES`): a frame is never copied to be hashed. |
+| One digest for one image | The same samples have the same digest in every layout that has a raw tier and an exact decode: uncompressed or deflated little-endian DICOM (gray and colour), uncompressed big-endian DICOM with samples of 16 bits or more, RLE and JPEG XL Lossless (gray and colour), JPEG Lossless, JPEG-LS and JPEG 2000 Lossless (one sample a pixel), PNG and TIFF. Bits outside Bits Stored are taken out while hashing, wherever the decoder left the stored field (`StoredField`), so a transcode that carries other bits there keeps the digest. Signedness, sample width, sample count and shape are part of it; the photometric interpretation is not. 8-bit samples of an Explicit VR Big Endian file are hashed in the order the raw frame returns them. |
+| Exact decodes only | A frame has a digest only when decoding it gives exactly the stored samples (`pixels::exact_samples`). Baseline JPEG in DICOM, JPEG and WebP files, chrominance at half resolution and TIFF with associated alpha have none. Neither has a frame the raw tier does not serve: colour JPEG Lossless and colour JPEG 2000. |
+| Computed by the decode | A raw decode hashes the samples it produced before it returns them, on a blocking thread, under its own permit (`record_frame_digest`, called from `raw_frame`). Raw decodes are made by the raw frame and raw pixel endpoints, by overlays and legends computed from frames, and by a display frame that goes through the raw tier (`raw_samples_for_display`: one integer sample a pixel of 1, 8 or 16 bits, except JPEG 2000 shown without a real-world unit). A cache hit, a thumbnail, any other display decode (colour, JPEG 2000, 32-bit and floating-point gray), discovery, an export and an import compute none. |
+| Fixed cost | One pass over the samples and at most 64 KiB beside them (`PIXEL_DIGEST_BUFFER_BYTES`): a frame is never copied to be hashed. Samples in order with every bit stored are hashed where they lie; colour by plane and samples narrower than their cells pass through that buffer. |
 | Bounded table | `PixelDigests`, one a session (`FileRegistry::pixel_digests`), keeps 32 bytes a frame for the last 65,536 frames recorded (`PIXEL_DIGEST_CAPACITY`) in at most 16 MiB, and nothing until a frame is decoded. The session's raw cache names it (`BudgetedLru::with_pixel_digests`); a cache without one records nothing. `PixelDigestStats` counts the digests computed and the bytes they covered. |
 
 Documents carry them as evidence (`FileRef.pixel_digest`, one entry a
@@ -2232,7 +2232,7 @@ session's files and store.
   share a name. Each
   candidate in turn has its key settled; for a `sop:` reference that key
   must be the reference's, and for a `b3:` reference the file's bytes are
-  hashed, if they have not been, and their digest must be the key's. The
+  hashed, if they have not been, and their digest must be the key's.
   A `sop:` reference whose bytes were not compared (it states no `b3:`
   digest) is also held to the [pixel digests](#pixel-digests) both sides
   have: a frame the document states and the session has decoded on a
@@ -2355,9 +2355,11 @@ absent, every `user:` author is written `user:local`, and the document's
 `extensions` say `"dcmview": { "masked": true }`. What a masked document
 holds of a file is its content digest, byte size, SOP class, format,
 rows, columns and frame count, the pages of its frames and the pixel
-digests of the frames that were decoded (which say no more of a file than
-its content digest does), and of a record its id, timestamps, layer,
-class, geometry, attributes and extensions. A label whose target is a
+digests of the frames that were decoded, and of a record its id, timestamps, layer,
+class, geometry, attributes and extensions. A pixel digest says one
+thing the content digest does not: it is equal for every file that holds
+the same samples, whatever its headers, so two masked documents, or a
+masked document and a file, can be told to show the same pixels. A label whose target is a
 patient, study, series or folder is left out and counted as a
 `labels_dropped` loss in the export's report: such a target is text a
 client chose from what the masked session showed, or a folder path. Such a document loads into

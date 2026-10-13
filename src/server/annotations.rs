@@ -559,8 +559,9 @@ pub struct NativeExport {
 ///    `sop_class_uid` as in step 5. Two keys whose files hold
 ///    the same bytes share one reference, the first's, with the pixel
 ///    digests of the first's key. `pixel_digest` and `frame_source` are as
-///    in step 5: a digest of samples says no more of a file than the
-///    digest of its bytes does. A file that cannot
+///    in step 5. A pixel digest is equal for every file that holds the
+///    same samples, whatever its headers, which the digest of a file's
+///    bytes is not; it names no person and no place. A file that cannot
 ///    be read fails the export with [`AnnotationError::KeyUnavailable`]
 ///    for it (`group: false`). The document's `extensions` gain
 ///    `"dcmview": { "masked": true }`. Every author of the kind `user`
