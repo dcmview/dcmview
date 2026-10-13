@@ -873,6 +873,70 @@ async fn a_digest_follows_the_samples_and_their_format_and_nothing_else() {
         .0,
     )
     .expect("write");
+    // One-bit samples of a DICOM frame, packed from the low bit: a byte
+    // each once decoded.
+    let packed_low_first: Vec<u8> = bits
+        .chunks(8)
+        .map(|byte| {
+            byte.iter()
+                .enumerate()
+                .fold(0, |packed, (bit, value)| packed | value << bit)
+        })
+        .collect();
+    write_native(
+        &at("bits.dcm"),
+        Native {
+            bits_stored: 1,
+            ..Native::gray("2.25.5209", (2, 8), 1)
+        },
+        packed_low_first,
+    );
+    // 64-bit floating-point samples.
+    let doubles: Vec<u8> = [0.5_f64, -3.25, 1e300, 7.0]
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect();
+    std::fs::write(
+        at("doubles.tif"),
+        rasters::tiff_file(
+            false,
+            &[TiffPage::strip((2, 2), &[64], 1, doubles.clone())
+                .with(339, TiffValue::Short(vec![3]))],
+        )
+        .0,
+    )
+    .expect("write");
+    // A header that says colour-by-plane over a coding that is not stored
+    // that way: only an uncompressed frame is put in order.
+    let by_plane = Native {
+        samples: 3,
+        planar: 1,
+        photometric: "RGB",
+        ..Native::gray("2.25.5210", (16, 16), 8)
+    };
+    write_native(&at("planes.dcm"), by_plane, planes(&pattern(3), 3));
+    coded::rewrite(
+        &at("planes.dcm"),
+        &at("planes-jxl.dcm"),
+        coded::JPEG_XL,
+        &[coded::hex(coded::JXL_RGB8_PATTERN)],
+    );
+    let colour_planes: Vec<Vec<u8>> = (0..3)
+        .map(|channel| {
+            pattern(3)
+                .iter()
+                .skip(channel)
+                .step_by(3)
+                .copied()
+                .collect()
+        })
+        .collect();
+    coded::rewrite(
+        &at("planes.dcm"),
+        &at("planes-rle.dcm"),
+        RLE,
+        &[rle_frame(&colour_planes)],
+    );
     // Unassociated alpha is a sample like the others.
     let rgba: Vec<u8> = (0..16_u8).map(|i| i * 13 + 5).collect();
     std::fs::write(
@@ -905,6 +969,11 @@ async fn a_digest_follows_the_samples_and_their_format_and_nothing_else() {
             "reals.tif",
             "px:9c247bf6f656594e4f051d4acb60962d6417b4fb0dff36c923e2c7f23c23e134".to_string(),
         ),
+        ("bits.dcm", px((2, 8), 1, 8, 0, &bits)),
+        ("doubles.tif", px((2, 2), 1, 64, 2, &doubles)),
+        ("planes.dcm", PATTERN_RGB.to_string()),
+        ("planes-jxl.dcm", PATTERN_RGB.to_string()),
+        ("planes-rle.dcm", PATTERN_RGB.to_string()),
         ("alpha.tif", px((2, 2), 4, 8, 0, &rgba)),
     ];
     assert_eq!(viewer.files.len(), expected.len());
@@ -927,6 +996,225 @@ async fn a_digest_follows_the_samples_and_their_format_and_nothing_else() {
         ("plain.dcm", "twelve.dcm"),
     ] {
         assert_ne!(of(one), of(other), "{one} and {other}");
+    }
+}
+
+/// The cells of a 16 x 16 frame of 12-bit samples allocated 16 bits: the
+/// sample in bits 0 to 11, and in bits 12 to 15 nothing (`junk` false) or
+/// bits that are not pixel data.
+fn stored_cells(junk: bool) -> Vec<u16> {
+    (0..256_u32)
+        .map(|i| {
+            let sample = (i * 37 + 11) & 0x0fff;
+            let above = if junk { ((i * 5 + 3) & 0xf) << 12 } else { 0 };
+            (sample | above) as u16
+        })
+        .collect()
+}
+
+/// [`stored_cells`] (unsigned, bits 12 to 15 set to other things), coded as 16 bits: `dcmcjpeg +e1` (DCMTK 3.7.0).
+const JPEG_LOSSLESS_U_JUNK: &str = "\
+    ffd8ffe000104a46494600010100000100010000ffc3000b100010001001011100ffc4001600010101000000\
+    000000000000000000000f0a0cffda0008010100010000300a50255025502550255025502550255025502550\
+    2550255025502550255025a50502550255025502550255025502550255025502550255025502550255025a50\
+    502550255025502550255025502550255025502550255025502550255025a505025502550255025502550255\
+    02550255025502550255025502550255025a5050255025502550255025502550255025502550255025502550\
+    2550255025a50502550255025502550255025502550255025502550255025502550255025a50502550255025\
+    502550255025502550255025502550255025502550254025c49ea04aa04aa04aa04aa04aa04aa04aa04aa04a\
+    a04aa04aa04aa04aa04aa04b4a0a04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04b4\
+    a0a04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04b4a0a04aa04aa04aa04aa04aa04\
+    aa04aa04aa04aa04aa04aa04aa04aa04aa04b4a0a04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04a\
+    a04aa04aa04b4a0a04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04b4a0a04aa04aa0\
+    4aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04a804aa04b893d4095409540954095409540954095409540\
+    9540954095409540954095409694140954095409540954095409540954095409540954095409540954095409\
+    7fffffd9\
+";
+
+/// [`stored_cells`] (unsigned, bits 12 to 15 set to other things), coded as 16 bits: `dcmcjpls` (DCMTK 3.7.0).
+const JPEG_LS_U_JUNK: &str = "\
+    ffd8fff7000b100010001001011100fff8000d01ffff0012004301140040ffda000801010000000000000041\
+    50000000000892604730229810d4082a03f501ea80ed4072a037501aa80cd4062a02f5016a5024f24fc0049c\
+    49d80126926e004984964998024a25024924824bc01239256009189270048a4884918048649e48448248f804\
+    8048d8047e48b8047c47a4898047849c47647448780472485804704838046e46c481808d49348d08cc8ff011\
+    911f6023123dc046045e479808b89308b48b08ef011591d6022a239c04524504718089c076903d9c0080072f\
+    802001cb60080072b80402001ca600010013611391a60226233c044a4658089088c8c7022264c221220230c0\
+    87c8bf021e22ec08748708b7021b24b21a21922cc08608af021722ac08588548a7021424a213212228c08448\
+    9f0210226c083c838897020d24920c20b224c082888f0209222c082081c8870206248205204220c080c87f02\
+    0221ec080480087700080300103ffc020037cc04006f780800deb0101001bcc0000000000047ff691ca1c804\
+    8670200218c1ff485f07fcff242d83fc2460ffd9\
+";
+
+/// [`stored_cells`] (signed, bits 12 to 15 clear), coded as 16 bits: `dcmcjpeg +e1` (DCMTK 3.7.0).
+const JPEG_LOSSLESS_S_CLEAN: &str = "\
+    ffd8ffe000104a46494600010100000100010000ffc3000b100010001001011100ffc4001700010101010000\
+    00000000000000000000060a0c0fffda0008010100010000e0014952a54a952a54a952a54a952a5a504a952a\
+    54a952a54a952a54a952d28254a952a54a952a54a952a54a969412a54a952a54a952a54a952a54b4a0952a54\
+    a952a54a952a54a952a5a504a952a54a952a54a952a54a952d28254a952a54a952a54a952a54b8093127a54a\
+    952a54a952a54a952a54a969412a54a952a54a952a54a952a54b4a0952a54a952a54a952a54a952a5a504a95\
+    2a54a952a54a952a54a952d28254a952a54a952a54a952a54a969412a54a952a54a952a54a952a54b4a0952a\
+    54a952a54a952a54a9701225c49e952a54a952a54a952a54a952a5a504a952a54a952a54a952a54a952fffd9\
+";
+
+/// [`stored_cells`] (signed, bits 12 to 15 clear), coded as 16 bits: `dcmcjpls` (DCMTK 3.7.0).
+const JPEG_LS_S_CLEAN: &str = "\
+    ffd8fff7000b100010001001011100fff8000d01ffff0012004301140040ffda000801010000000041589312\
+    624c4791643a0cfe24c4791643a0cfe7a94112a2448d2250a813e9e4ea716d696561129282bab2aaa29a928a\
+    827a7a72d5ab112127ac58ad5aa54a952952a54a850919272850a13a74e9d3a74c993264c91126a64c9932aa\
+    aaaaaaaaaa8a28493145145145144d34d34d34c000000037e07698010040100804020101010101010100127d\
+    28269a69a69a69a6924924922164c5294a5294a5294a4a510125a5294a5294a5294a5287c929294a5294aaaa\
+    aaaa1e2495554444444444447492111111111111100000000000047ffa0001dc602020408102040810204080\
+    127a3849c82828282828282828282828282828d8ffd9\
+";
+
+/// [`stored_cells`] (signed, bits 12 to 15 set to other things), coded as 16 bits: `dcmcjpeg +e1` (DCMTK 3.7.0).
+const JPEG_LOSSLESS_S_JUNK: &str = "\
+    ffd8ffe000104a46494600010100000100010000ffc3000b100010001001011100ffc4001600010101000000\
+    000000000000000000000f0a0cffda0008010100010000300a50255025502550255025502550255025502550\
+    2550255025502550255025a50502550255025502550255025502550255025502550255025502550255025a50\
+    502550255025502550255025502550255025502550255025502550255025a505025502550255025502550255\
+    02550255025502550255025502550255025a5050255025502550255025502550255025502550255025502550\
+    2550255025a50502550255025502550255025502550255025502550255025502550255025a50502550255025\
+    502550255025502550255025502550255025502550254025c49ea04aa04aa04aa04aa04aa04aa04aa04aa04a\
+    a04aa04aa04aa04aa04aa04b4a0a04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04b4\
+    a0a04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04b4a0a04aa04aa04aa04aa04aa04\
+    aa04aa04aa04aa04aa04aa04aa04aa04aa04b4a0a04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04a\
+    a04aa04aa04b4a0a04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04b4a0a04aa04aa0\
+    4aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04a804aa04b893d4095409540954095409540954095409540\
+    9540954095409540954095409694140954095409540954095409540954095409540954095409540954095409\
+    7fffffd9\
+";
+
+/// [`stored_cells`] (signed, bits 12 to 15 set to other things), coded as 16 bits: `dcmcjpls` (DCMTK 3.7.0).
+const JPEG_LS_S_JUNK: &str = "\
+    ffd8fff7000b100010001001011100fff8000d01ffff0012004301140040ffda000801010000000000000041\
+    50000000000892604730229810d4082a03f501ea80ed4072a037501aa80cd4062a02f5016a5024f24fc0049c\
+    49d80126926e004984964998024a25024924824bc01239256009189270048a4884918048649e48448248f804\
+    8048d8047e48b8047c47a4898047849c47647448780472485804704838046e46c481808d49348d08cc8ff011\
+    911f6023123dc046045e479808b89308b48b08ef011591d6022a239c04524504718089c076903d9c0080072f\
+    802001cb60080072b80402001ca600010013611391a60226233c044a4658089088c8c7022264c221220230c0\
+    87c8bf021e22ec08748708b7021b24b21a21922cc08608af021722ac08588548a7021424a213212228c08448\
+    9f0210226c083c838897020d24920c20b224c082888f0209222c082081c8870206248205204220c080c87f02\
+    0221ec080480087700080300103ffc020037cc04006f780800deb0101001bcc0000000000047ff691ca1c804\
+    8670200218c1ff485f07fcff242d83fc2460ffd9\
+";
+
+/// [`stored_cells`] (unsigned, bits 12 to 15 set to other things), coded as 16 bits:
+/// `opj_compress -F 16,16,1,16,u -n 3` (OpenJPEG 2.5.4) of the cells as little-endian words
+/// (`.rawl`).
+const J2K_U_JUNK: &str = "\
+    ff4fff5100290000000000100000001000000000000000000000001000000010000000000000000000010f01\
+    01ff52000c00000001000204040001ff5c000a4080888890888890ff64002500014372656174656420627920\
+    4f70656e4a5045472076657273696f6e20322e352e34ff90000a0000000000c40001ff93c7fe0c3e1c52e988\
+    92164d695c8e4212328a478a6fc38fb23ff1a3e8662f21e5ab83abcffc487a07f811803f60801c2642767276\
+    b085e2b9a4ccb1e2a37b81ee4ae91b8a5c14242668f38f4f00cf325adc0fb6122c896826418106b28f2033c2\
+    de2a2e2e36cffc489607f81980ff008017227d3676dbba4e9e1e4e1b2c41027f2b17c24a65c6ff6d74bae40f\
+    ff5e08bc89fd53c9f800d3120f2bb4f108b4c300f3a2c9735c0da2afcf9247746b6137eb051c265fff7fffd9\
+";
+
+/// [`stored_cells`] (unsigned, bits 12 to 15 set to other things), coded as 16 bits:
+/// `cjxl -d 0` (libjxl 0.11.2) of the cells as a 16-bit PGM.
+const JXL_U_JUNK: &str = "\
+    0000000c4a584c200d0a870a00000014667479706a786c20000000006a786c20000000096a786c6c0a000001\
+    096a786c63ff0a43f00314370208040100cc034b386a18d2e3fb2b6cefafa060222323fa458cc1cd88c10c2b\
+    c660cd182362307a037d19ff7c33ff0f14e0eb4f0225b0fd4aa0043ebdb75f0994c0f60bf22f81122881ed57\
+    029f7825108542a15028140a8542a15028140a8542a15028146aef078542a15028140a8542a15028140a8542\
+    a15028140a8542a15028140a8542a1242b5028140a8542a15028d4b56b2236d7ae5d7b35bf06000a8542a17e\
+    bd5128140a8542a15028140a8542a15028140a8542a15028140a854255bda05028140a8542a15028140a8542\
+    a15028140a8542a15028140a8542a150c753d7ae5d2357b876ed1a6c110028140a8542a15028140a8502\
+";
+
+/// Bits outside the stored field are not pixel data, whichever decoder
+/// hands them over: a frame whose cells carry other things there, and a
+/// signed frame whose cells leave them clear, have the digest of their
+/// values in every lossless coding, the one the uncompressed file has.
+#[tokio::test]
+async fn bits_outside_the_stored_field_reach_no_digest_in_any_coding() {
+    let dir = tempdir().expect("temp dir");
+    let at = |name: &str| dir.path().join(name);
+    let twelve = Native {
+        bits_stored: 12,
+        ..Native::gray("2.25.5251", (16, 16), 16)
+    };
+    let signed = Native {
+        signed: true,
+        ..twelve
+    };
+    // The values: unsigned with the bits above clear, signed with the sign
+    // carried up.
+    let values: Vec<u16> = stored_cells(false);
+    let signed_values: Vec<u16> = values
+        .iter()
+        .map(|value| {
+            if value & 0x0800 != 0 {
+                value | 0xf000
+            } else {
+                *value
+            }
+        })
+        .collect();
+    assert!(signed_values.iter().any(|value| value & 0x8000 != 0));
+    let unsigned_digest = px((16, 16), 1, 16, 0, &le16(&values));
+    let signed_digest = px((16, 16), 1, 16, 1, &le16(&signed_values));
+    assert_ne!(unsigned_digest, signed_digest);
+
+    // Each kind uncompressed, then the same cells in each coding.
+    let kinds: [(&str, Native, bool, &String); 3] = [
+        ("unsigned-junk", twelve, true, &unsigned_digest),
+        ("signed-clean", signed, false, &signed_digest),
+        ("signed-junk", signed, true, &signed_digest),
+    ];
+    let coded_frames: [(&str, &str, &str, &str); 8] = [
+        (
+            "unsigned-junk",
+            "jpeg-lossless",
+            coded::JPEG_LOSSLESS_SV1,
+            JPEG_LOSSLESS_U_JUNK,
+        ),
+        (
+            "signed-clean",
+            "jpeg-lossless",
+            coded::JPEG_LOSSLESS_SV1,
+            JPEG_LOSSLESS_S_CLEAN,
+        ),
+        (
+            "signed-junk",
+            "jpeg-lossless",
+            coded::JPEG_LOSSLESS_SV1,
+            JPEG_LOSSLESS_S_JUNK,
+        ),
+        ("unsigned-junk", "jpeg-ls", coded::JPEG_LS, JPEG_LS_U_JUNK),
+        ("signed-clean", "jpeg-ls", coded::JPEG_LS, JPEG_LS_S_CLEAN),
+        ("signed-junk", "jpeg-ls", coded::JPEG_LS, JPEG_LS_S_JUNK),
+        ("unsigned-junk", "jpeg-2000", coded::JPEG_2000, J2K_U_JUNK),
+        ("unsigned-junk", "jpeg-xl", coded::JPEG_XL, JXL_U_JUNK),
+    ];
+    let mut expected: Vec<(String, &String)> = Vec::new();
+    for (kind, native, junk, digest) in kinds {
+        let source = at(&format!("{kind}.dcm"));
+        write_native(&source, native, le16(&stored_cells(junk)));
+        expected.push((format!("{kind}.dcm"), digest));
+        // RLE: the high bytes, then the low bytes.
+        let cells = stored_cells(junk);
+        let planes = [
+            cells.iter().map(|cell| (cell >> 8) as u8).collect(),
+            cells.iter().map(|cell| *cell as u8).collect(),
+        ];
+        let name = format!("{kind}-rle.dcm");
+        coded::rewrite(&source, &at(&name), RLE, &[rle_frame(&planes)]);
+        expected.push((name, digest));
+        for (_, coding, syntax, frame) in coded_frames.iter().filter(|frame| frame.0 == kind) {
+            let name = format!("{kind}-{coding}.dcm");
+            coded::rewrite(&source, &at(&name), syntax, &[coded::hex(frame)]);
+            expected.push((name, digest));
+        }
+    }
+    assert_eq!(expected.len(), 14);
+
+    let viewer = Viewer::of(dir.path()).await;
+    assert_eq!(viewer.files.len(), expected.len());
+    for (name, digest) in &expected {
+        viewer.raw(name, 0).await;
+        assert_eq!(viewer.held(name, 0).as_ref(), Some(*digest), "{name}");
     }
 }
 
@@ -1611,6 +1899,98 @@ async fn an_import_holds_a_reference_to_the_pixels_decoded_on_any_copy() {
         }
         assert_eq!(viewer.stats(), before);
     }
+}
+
+/// A masked session shows masked UIDs, and its import finds the copies of
+/// a file under the UID it shows: what was decoded on one copy is held
+/// against a reference there too.
+#[tokio::test]
+async fn a_masked_import_holds_a_reference_to_the_pixels_decoded_on_any_copy() {
+    const UID: &str = "2.25.5961";
+    let wrong = format!("px:{}", "4".repeat(64));
+    for (stated, placed) in [(frame_digest(1), 1), (wrong, 0)] {
+        let dir = tempdir().expect("temp dir");
+        for folder in ["a", "b"] {
+            std::fs::create_dir(dir.path().join(folder)).expect("folder");
+            write_three_frames(&dir.path().join(folder).join("copy.dcm"), UID);
+        }
+        let registry = FileRegistry::masked(Arc::new(Masker::new()));
+        for file in Viewer::listed(dir.path()).await {
+            registry.insert(file);
+        }
+        registry.mark_scan_complete();
+        let viewer = Viewer::over(registry, AnnotationStore::loading());
+        viewer.raw("b/copy.dcm", 1).await;
+        let before = viewer.stats();
+        assert_eq!(before.frames_hashed, 1);
+        // The reference as this session shows the file: a key and a UID
+        // that are not the file's own.
+        let key = viewer.key("a/copy.dcm").await;
+        let shown = key.strip_prefix("sop:").expect("a UID key");
+        assert_ne!(shown, UID);
+        let mut file = by_uid(
+            &dir.path().join("a").join("copy.dcm"),
+            shown,
+            json!([null, stated, null]),
+        );
+        file["path"] = json!("a/copy.dcm");
+        let report = viewer.import(dir.path(), &document_of(file)).await;
+        assert_eq!(report["counts"]["files"], placed, "{report}");
+        assert_eq!(warned(&report, "evidence_conflict"), 1 - placed, "{report}");
+        assert_eq!(viewer.rois("a/copy.dcm").await, placed);
+        assert_eq!(viewer.stats(), before);
+    }
+}
+
+/// Only files with the reference's key are its copies. A file that carries
+/// the same UID over other bytes has a key of its own, and what was decoded
+/// on it says nothing of the file the reference names.
+#[tokio::test]
+async fn pixels_decoded_on_a_file_with_another_key_are_not_held_against_a_reference() {
+    const UID: &str = "2.25.5971";
+    let dir = tempdir().expect("temp dir");
+    for folder in ["a", "b"] {
+        std::fs::create_dir(dir.path().join(folder)).expect("folder");
+    }
+    let named = dir.path().join("a").join("volume.dcm");
+    write_three_frames(&named, UID);
+    // The same UID, size and shape over other pixels.
+    write_native(
+        &dir.path().join("b").join("volume.dcm"),
+        Native {
+            frames: 3,
+            ..Native::gray(UID, (4, 4), 16)
+        },
+        le16(&[7; 48]),
+    );
+    // The first file's key is relied on before the second is found, so it
+    // keeps its UID key and the second is keyed by its content.
+    let mut files = Viewer::listed(dir.path()).await.into_iter();
+    let registry = FileRegistry::new();
+    registry.insert(files.next().expect("first"));
+    let key = registry.ensure_key(0).await.expect("key");
+    assert_eq!(key.as_str(), format!("sop:{UID}"));
+    registry.insert(files.next().expect("second"));
+    registry.mark_scan_complete();
+    let viewer = Viewer::over(registry, AnnotationStore::loading());
+    viewer.raw("b/volume.dcm", 0).await;
+    assert_eq!(
+        viewer.held("b/volume.dcm", 0),
+        Some(px((4, 4), 1, 16, 0, &le16(&[7; 16])))
+    );
+
+    // The other file's key is settled too, and is not the UID's.
+    assert_ne!(viewer.key("b/volume.dcm").await, format!("sop:{UID}"));
+
+    // What the document states of frame 0 is true of the file it names and
+    // differs from what was decoded on the other.
+    let mut file = by_uid(&named, UID, json!([frame_digest(0), null, null]));
+    file["path"] = json!("a/volume.dcm");
+    let report = viewer.import(dir.path(), &document_of(file)).await;
+    assert_eq!(report["counts"]["files"], 1, "{report}");
+    assert_eq!(warned(&report, "evidence_conflict"), 0, "{report}");
+    assert_eq!(viewer.rois("a/volume.dcm").await, 1);
+    assert_eq!(viewer.rois("b/volume.dcm").await, 0);
 }
 
 /// A reference by content is compared by its bytes, which decide: its

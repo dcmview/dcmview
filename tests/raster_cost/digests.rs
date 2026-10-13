@@ -126,6 +126,109 @@ fn the_table_holds_its_capacity_and_its_stated_heap_whatever_is_recorded() {
     assert_eq!(heap::held(), before);
 }
 
+/// One frame decoded over and over is one frame held: neither the table
+/// nor the order it forgets in grows with the number of times a digest is
+/// recorded.
+#[test]
+fn recording_one_frame_again_and_again_holds_one_frame() {
+    let table = PixelDigests::new();
+    // A full table, so that a growing order would also show as frames
+    // forgotten that should not be.
+    for n in 0..PIXEL_DIGEST_CAPACITY {
+        table.record(n / 100, (n % 100) as u32, digest_of(n), 56);
+    }
+    let before = heap::held();
+    let (_, peak) = heap::peak_during(|| {
+        for n in 0..1_000_000 {
+            table.record(3, 7, digest_of(n), 56);
+        }
+    });
+    assert_eq!(peak, 0, "recording a held frame allocated");
+    assert_eq!(heap::held(), before);
+    assert_eq!(table.get(3, 7), Some(digest_of(999_999)));
+    assert_eq!(
+        table.stats(),
+        PixelDigestStats {
+            frames_hashed: PIXEL_DIGEST_CAPACITY as u64 + 1_000_000,
+            bytes_hashed: (PIXEL_DIGEST_CAPACITY as u64 + 1_000_000) * 56,
+            held: PIXEL_DIGEST_CAPACITY,
+        }
+    );
+    // Every frame recorded before is still held, and the next new frame
+    // forgets exactly the oldest.
+    assert_eq!(table.get(0, 0), Some(digest_of(0)));
+    table.record(usize::MAX, 0, [1; 32], 56);
+    assert_eq!(table.get(0, 0), None);
+    assert_eq!(table.get(0, 1), Some(digest_of(1)));
+    assert_eq!(table.get(3, 7), Some(digest_of(999_999)));
+    assert_eq!(table.stats().held, PIXEL_DIGEST_CAPACITY);
+}
+
+/// A decoder that hands over cells keeps the stored field where High Bit
+/// puts it; one that hands over values has moved it down. Either way the
+/// digest is of the values, and a sample of 64 bits has one like any other.
+#[test]
+fn the_stored_field_is_hashed_from_wherever_a_decoder_leaves_it() {
+    let scan = listed(16);
+    let native = {
+        let mut entry = scan.entry("image.dcm").clone();
+        entry.bits_allocated = 16;
+        entry.series_metadata.native_pixel.bits_stored = Some(12);
+        entry.series_metadata.native_pixel.high_bit = Some(15);
+        entry
+    };
+    let mut coded = native.clone();
+    coded.transfer_syntax_uid = "1.2.840.10008.1.2.4.80".to_string();
+    let gray16 = metadata(16, 16, 1, "MONOCHROME2");
+    let values: Vec<u16> = (0..256_u32)
+        .map(|i| ((i * 37 + 11) & 0x0fff) as u16)
+        .collect();
+    let bytes =
+        |cells: &[u16]| -> Vec<u8> { cells.iter().flat_map(|cell| cell.to_le_bytes()).collect() };
+    // The uncompressed decode returns the values; the JPEG-LS decoder the
+    // cells, the field in bits 4 to 15 over four bits of something else.
+    let cells: Vec<u16> = values
+        .iter()
+        .map(|value| value << 4 | (value & 0xf) ^ 0x9)
+        .collect();
+    let of_values = frame_pixel_digest(&native, &bytes(&values), &gray16).expect("digest");
+    assert_eq!(
+        frame_pixel_digest(&coded, &bytes(&cells), &gray16),
+        Some(of_values)
+    );
+    // Signed: the sign is carried up from the field's highest bit.
+    let mut signed = gray16.clone();
+    signed.pixel_representation = 1;
+    let extended: Vec<u16> = values
+        .iter()
+        .map(|value| {
+            if value & 0x800 != 0 {
+                value | 0xf000
+            } else {
+                *value
+            }
+        })
+        .collect();
+    assert_eq!(
+        frame_pixel_digest(&coded, &bytes(&cells), &signed),
+        frame_pixel_digest(&native, &bytes(&extended), &signed)
+    );
+    assert_ne!(
+        frame_pixel_digest(&coded, &bytes(&cells), &signed),
+        Some(of_values)
+    );
+
+    // 64-bit samples, every bit stored.
+    let mut wide = scan.entry("image.dcm").clone();
+    wide.bits_allocated = 64;
+    wide.series_metadata.native_pixel.bits_stored = Some(64);
+    wide.series_metadata.native_pixel.high_bit = Some(63);
+    let body: Vec<u8> = (0..256 * 8).map(|i| (i * 7 + i / 255) as u8).collect();
+    let (_, hashed) = frame_pixel_digest(&wide, &body, &metadata(16, 64, 1, "MONOCHROME2"))
+        .expect("a digest of 64-bit samples");
+    assert_eq!(hashed, 24 + 256 * 8);
+}
+
 /// An uncompressed 8-bit DICOM image of `side` rows and columns, as the
 /// production loader lists it under `image.dcm`.
 fn listed(side: u16) -> Listed {
@@ -169,6 +272,13 @@ fn hashing_a_frame_takes_a_fixed_buffer_at_most() {
     let gray = scan.entry("image.dcm").clone();
     let mut gray16 = gray.clone();
     gray16.bits_allocated = 16;
+    gray16.series_metadata.native_pixel.bits_stored = Some(16);
+    gray16.series_metadata.native_pixel.high_bit = Some(15);
+    // Twelve bits of each sample stored: the others are taken out on the
+    // way to the hash.
+    let mut gray12 = gray16.clone();
+    gray12.series_metadata.native_pixel.bits_stored = Some(12);
+    gray12.series_metadata.native_pixel.high_bit = Some(11);
     // The same entry as a colour image stored by plane.
     let mut planar = gray.clone();
     planar.samples_per_pixel = 3;
@@ -180,7 +290,7 @@ fn hashing_a_frame_takes_a_fixed_buffer_at_most() {
         .native_pixel
         .planar_configuration = Some(0);
 
-    let cases: [(&str, &FileEntry, RawFrameMetadata, usize, u64); 4] = [
+    let cases: [(&str, &FileEntry, RawFrameMetadata, usize, u64); 5] = [
         (
             "one byte a pixel",
             &gray,
@@ -194,6 +304,13 @@ fn hashing_a_frame_takes_a_fixed_buffer_at_most() {
             metadata(side, 16, 1, "MONOCHROME2"),
             pixels * 2,
             SLACK,
+        ),
+        (
+            "twelve bits in two bytes",
+            &gray12,
+            metadata(side, 16, 1, "MONOCHROME2"),
+            pixels * 2,
+            PIXEL_DIGEST_BUFFER_BYTES as u64 + SLACK,
         ),
         (
             "colour by pixel",
