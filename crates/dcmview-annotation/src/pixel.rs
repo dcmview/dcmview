@@ -112,7 +112,19 @@ impl PixelLayout {
     /// columns, samples per pixel, bits allocated, the sample format's
     /// value and 0, each as a little-endian `u32`.
     pub fn header(&self) -> [u8; PIXEL_DIGEST_HEADER_BYTES] {
-        todo!()
+        let mut header = [0; PIXEL_DIGEST_HEADER_BYTES];
+        let values = [
+            self.rows,
+            self.columns,
+            self.samples_per_pixel,
+            self.bits_allocated,
+            self.sample_format as u32,
+            0,
+        ];
+        for (bytes, value) in header.chunks_exact_mut(4).zip(values) {
+            bytes.copy_from_slice(&value.to_le_bytes());
+        }
+        header
     }
 
     /// The length of the samples of one frame of this layout, in bytes:
@@ -122,13 +134,26 @@ impl PixelLayout {
     /// `columns` or `samples_per_pixel` is 0, and when the product does not
     /// fit a `u64`. A layout this is `None` for has no digest.
     pub fn sample_bytes(&self) -> Option<u64> {
-        todo!()
+        if !matches!(self.bits_allocated, 8 | 16 | 32 | 64) {
+            return None;
+        }
+        let bytes = u64::from(self.rows)
+            .checked_mul(u64::from(self.columns))?
+            .checked_mul(u64::from(self.samples_per_pixel))?
+            .checked_mul(u64::from(self.bits_allocated / 8))?;
+        (bytes != 0).then_some(bytes)
     }
 }
 
 /// A pixel digest as a document writes it: `px:` and the 32 bytes of the
 /// hash as 64 lowercase hexadecimal characters, first byte first.
 pub fn pixel_digest_text(digest: &[u8; 32]) -> String {
-    let _ = digest;
-    todo!()
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut text = String::with_capacity(67);
+    text.push_str("px:");
+    for byte in digest {
+        text.push(HEX[usize::from(byte >> 4)] as char);
+        text.push(HEX[usize::from(byte & 0x0f)] as char);
+    }
+    text
 }
