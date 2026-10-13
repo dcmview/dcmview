@@ -149,6 +149,19 @@ diagnostic viewer.
   and empty DICOM identity fields. Notes about a listed file, such as a TIFF
   page chain that could not be read to its end, are printed to stderr during
   discovery: at most 16 per file, the last counting any that are not shown.
+- Annotation documents state a pixel digest for each frame whose stored
+  samples were decoded (`pixel_digest`, `px:` and 64 hex characters, one entry a frame
+  and `null` for the others): a BLAKE3 digest of the frame's stored
+  samples that is the same for the same pixels in every lossless encoding
+  and file format, defined in `crates/dcmview-annotation/src/pixel.rs`.
+  Digests are a by-product of decoding a frame's samples; nothing is
+  decoded or hashed for an export. Frames coded lossily (baseline JPEG,
+  WebP), with half-resolution chrominance or with associated alpha have
+  none. A reload refuses a file that was matched by its UID alone when a
+  frame both the document and the session know has other pixels
+  (`evidence_conflict`); it never decodes to check and finds no file by a
+  pixel digest. A document's reference to an image file also names the
+  page of each frame (`frame_source`).
 
 ### Changed
 

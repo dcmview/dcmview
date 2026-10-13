@@ -197,7 +197,18 @@ SOP Instance UID for a `sop:` key, the BLAKE3 digest of its bytes for a
 - a `sop:` key says which UID the file has, so a file named by one is
   matched by its UID, unless the document also records a `b3:` digest for
   it, which is then compared too. A digest of another kind (`sha256:`) is
-  not compared.
+  not compared;
+- a document also states a **pixel digest** for each frame whose stored
+  samples the session that wrote it decoded (a grayscale frame that was
+  viewed, or any frame whose values were read): a digest of those
+  samples, which is the same for the same pixels whatever file holds
+  them. A reload uses them only to refuse: where a file was matched by its
+  UID and its bytes were not compared, every frame that the document
+  states and that this session has already decoded must have the same
+  digest, or the file has other pixels and is refused
+  (`evidence_conflict`). A frame only one side knows is no evidence, bytes
+  that were compared decide alone, and a reload never decodes a frame to
+  find out. A file whose bytes changed is not found by its pixels.
 
 A document path longer than 4,096 bytes is not valid and fails the import.
 A path in an EMBED CSV that is longer than that names no file and is
@@ -217,7 +228,8 @@ or patient id, real or masked, because the masks are different in every
 run; no folder or file name, which often say whose the files are (a file
 is `File 1`, as the masked viewer shows it); and no user name. What is
 left of a file is its content digest, byte size, SOP class, format, rows,
-columns and frame count. Labels on a patient, study, series or folder are
+columns and frame count, the pages of its frames and the pixel digests of
+the frames that were decoded. Labels on a patient, study, series or folder are
 left out. It can be loaded into any session, masked or not:
 each file is found by its content, which hashes the loaded files of the
 same size and dimensions. The annotated files are read to make the

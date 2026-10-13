@@ -891,6 +891,23 @@ the revision of the session that wrote it, and is not part of a document.
   directory below the filesystem root, or only one above the home
   directory, it is the file's name alone. `digest` is set when the file
   has been hashed.
+- `pixel_digest` states the pixel digest of each frame whose stored
+  samples the session has decoded: one entry a frame, `px:` and 64 hex characters or `null`, and
+  an empty list for a file none of whose frames has one, or of more than
+  65,536 frames. A digest is BLAKE3 of the frame's rows, columns, samples
+  per pixel, bits allocated, sample format and a zero, each a little-endian
+  `u32`, followed by the stored samples row by row, colour by pixel,
+  little-endian (`crates/dcmview-annotation/src/pixel.rs` has the
+  definition). It is of the samples the file stores, before any rescale,
+  window, inversion or colour conversion, so the same samples have one
+  digest in every lossless encoding and file format. Frames coded lossily
+  (baseline JPEG, WebP), with chrominance at half resolution or with
+  associated alpha have none. An export only reads what the session
+  already knows: it decodes and hashes nothing, so a frame whose samples
+  were never decoded (through the raw frame endpoint, or for a display
+  frame of one sample a pixel) is `null`. Redaction boxes and windows do not change a digest.
+- `frame_source` is, for an image file, the page of each frame (`[0]` for
+  a file of one image, the IFD indexes for a TIFF) and `null` for DICOM.
 - Records are written as they are held: nothing is checked, clamped or left
   out. A box that `--annotations` read from an EMBED CSV and kept although
   it reaches past the image is in the document as it was read.
@@ -926,7 +943,9 @@ the revision of the session that wrote it, and is not part of a document.
   and the patient id are absent, every `user:` author is `user:local`, and
   the document's `extensions` hold `"dcmview": { "masked": true }`. What
   is left of a file is its content digest, byte size, SOP class, format,
-  rows, columns and frame count; a record keeps its id and timestamps. A
+  rows, columns and frame count, the pages of its frames and the pixel
+  digests of the frames that were decoded; a record keeps its id and
+  timestamps. A
   label on a patient, study, series or folder is left out: it names its
   target by what the masked session showed or by a folder path.
   The annotated files are read for it; one that cannot be read answers
