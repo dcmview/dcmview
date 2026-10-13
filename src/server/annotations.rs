@@ -772,6 +772,17 @@ pub async fn export_native_within(
             if emitted.insert(replacement.clone()) {
                 let mut reference =
                     document_file_ref(&registry, file, replacement.clone(), names.path(&file.path));
+                let mut copies: Vec<_> = by_key
+                    .get(key)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|index| files.get(*index))
+                    .collect();
+                copies.sort_by(|a, b| a.path.cmp(&b.path));
+                let indexes: Vec<_> = copies.iter().map(|file| file.index).collect();
+                reference.pixel_digest = registry
+                    .pixel_digests()
+                    .of_frames(&indexes, file.frame_count);
                 if masked {
                     reference.path = format!("File {}", file.index + 1);
                     reference.digest = Some(replacement.as_str().to_string());
@@ -889,7 +900,10 @@ fn document_file_ref(
             ..Space::default()
         },
         pixel_digest: Vec::new(),
-        frame_source: None,
+        frame_source: file
+            .raster
+            .as_ref()
+            .map(|raster| raster.frame_pages.clone()),
         external_id: None,
         spacing: None,
         unknown: BTreeMap::new(),
