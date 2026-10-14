@@ -37,6 +37,9 @@ The committed corpus is intentionally small and synthetic:
 - `golden-gsps-{conforming,second-state,frames,unscoped,display-units}.dcm`
   with `golden-gsps-target-u8.dcm` and `golden-gsps-target-multiframe-u8.dcm`
 
+- `native-u8-order/golden-native-u8-{gray,rgb,rgb-planar}-{2x4,3x3}-f{1,3}-{le,be-ow,be-ob}.dcm`
+  and `native-u8-order/golden-native-u8-gray-3x3-f3-be-ow-sample-order-nonconforming.dcm`
+
 The goal is stable decoding and contract coverage. The large single-frame JPEG
 fixture keeps file size small while exercising realistic viewport geometry.
 The JPEG Lossless and JPEG 2000 fixtures contain fixed, losslessly encoded
@@ -56,6 +59,22 @@ images repeat the circle (native, with a CIELab shutter color) and the
 triangle (RLE Lossless, with only a gray shutter value) on color frames. The
 three-frame Enhanced XA fixture takes the rectangle of its Shared Functional
 Groups on frame 1 and its per-frame circle and triangle on frames 2 and 3.
+
+The native 8-bit order fixtures hold one set of samples (sample `i` is
+`(7 * i + 13) mod 251`) as native Pixel Data stored three ways: Explicit VR
+Little Endian with VR OW (`le`), Explicit VR Big Endian with VR OW (`be-ow`)
+and Explicit VR Big Endian with VR OB (`be-ob`). A value of VR OW is 16-bit
+words in the byte order of the transfer syntax, so the `be-ow` files store
+every pair of samples exchanged, and the padding byte of a value of odd
+length before its last sample, as a conforming writer does (`dcmconv +tb`
+of an `le` file writes the same Pixel Data bytes). The 2x4 frames have an
+even number of bytes and the 3x3 frames an odd number, so words span the
+frames of the three-frame 3x3 files. The three files of a name must show
+the same pixels. The `sample-order-nonconforming` file is deliberately not
+conforming: big endian, VR OW, samples in order on disk. It stands for
+files written without the word swap and must read with every pair of
+samples exchanged. They live in their own directory so tests that walk the
+top-level fixtures do not pick them up.
 
 The semantic-overlay fixtures pair a value volume with images in its Frame
 of Reference. The RT Dose grid has three 4x4 planes of 4 mm voxels at

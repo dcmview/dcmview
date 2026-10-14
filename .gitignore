@@ -16,6 +16,7 @@ marketing-review/
 
 *.dcm
 *.dicom
+!tests/fixtures/native-u8-order/*.dcm
 !tests/fixtures/golden-jpeg-baseline-multiframe-bot.dcm
 !tests/fixtures/golden-jpeg-baseline-large-single-frame.dcm
 !tests/fixtures/golden-jpeg-baseline-single-frame.dcm
