@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 
 use crate::types::NativePixelDataKind;
-use dicom_core::Tag;
+use dicom_core::{Tag, VR};
 use dicom_dictionary_std::tags;
 use thiserror::Error;
 
@@ -10,6 +10,20 @@ use thiserror::Error;
 pub(crate) enum NativeByteOrder {
     LittleEndian,
     BigEndian,
+}
+
+// Retired, but still readable; dicom-dictionary-std marks the constant deprecated.
+const EXPLICIT_VR_BIG_ENDIAN: &str = "1.2.840.10008.1.2.2";
+
+impl NativeByteOrder {
+    /// The byte order of a native data set in `transfer_syntax_uid`.
+    pub(crate) fn of_transfer_syntax(transfer_syntax_uid: &str) -> Self {
+        if transfer_syntax_uid == EXPLICIT_VR_BIG_ENDIAN {
+            Self::BigEndian
+        } else {
+            Self::LittleEndian
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -340,6 +354,78 @@ fn expand_ybr_full_422(
     Ok(expanded)
 }
 
+/// Whether a native Pixel Data value holds 8-bit samples as 16-bit words in
+/// big-endian byte order, so that on disk the two bytes of every word are
+/// exchanged relative to sample order.
+///
+/// A value of VR OW is a stream of 16-bit words whatever Bits Allocated is,
+/// and each word is written in the transfer syntax's byte order (PS3.5
+/// section 6.2 and section 8.2, and Annex A.3 of the editions that carry
+/// Explicit VR Big Endian). The first 8-bit sample is the low byte of the
+/// first word, so a big-endian file stores the second sample first. A
+/// value of VR OB is a byte stream and is the same in either byte order.
+/// The words run through the whole value: where frames hold an odd number
+/// of bytes, a word spans two frames, and the value's padding byte is the
+/// high byte of the last word and so precedes the last sample.
+///
+/// Samples of 16 bits are the words themselves and are reversed as samples
+/// by [`NativeFrameLayout::extract_raw_frame`]; one-bit data never reaches
+/// this, because it is read as words by the DICOM parser.
+pub(crate) fn stores_swapped_byte_pairs(
+    byte_order: NativeByteOrder,
+    value_representation: VR,
+    bits_allocated: u32,
+) -> bool {
+    byte_order == NativeByteOrder::BigEndian
+        && value_representation == VR::OW
+        && bits_allocated == 8
+}
+
+/// The bytes of a value of swapped byte pairs
+/// ([`stores_swapped_byte_pairs`]) that hold the samples `start..end`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SwappedPairSpan {
+    /// Where to start reading the value: `start`, moved back to its word.
+    pub start: usize,
+    /// Where to stop reading: `end`, moved on to the end of its word, and no
+    /// further than the value.
+    pub end: usize,
+    /// How many of the bytes read precede sample `start`: 0 or 1.
+    lead: usize,
+    samples: usize,
+}
+
+impl SwappedPairSpan {
+    /// `available` is the length of the value. `start <= end <= available`.
+    pub(crate) fn of_samples(start: usize, end: usize, available: usize) -> Self {
+        Self {
+            start: start - start % 2,
+            end: end.saturating_add(end % 2).min(available),
+            lead: start % 2,
+            samples: end - start,
+        }
+    }
+
+    /// Turns the bytes of `self.start..self.end` into the samples the span
+    /// was made for, in the buffer they were read into.
+    pub(crate) fn restore_sample_order(self, bytes: &mut Vec<u8>) {
+        swap_byte_pairs(bytes);
+        if self.lead > 0 {
+            bytes.copy_within(self.lead.., 0);
+        }
+        bytes.truncate(self.samples);
+    }
+}
+
+/// Exchanges the two bytes of every whole 16-bit word of `bytes`. A last
+/// byte without a partner, which only a value of odd length has, is left
+/// where it is.
+pub(crate) fn swap_byte_pairs(bytes: &mut [u8]) {
+    for word in bytes.chunks_exact_mut(2) {
+        word.swap(0, 1);
+    }
+}
+
 fn canonicalize_little_endian(
     bytes: &mut [u8],
     bits_allocated: u32,
@@ -510,6 +596,55 @@ mod tests {
                 .unwrap(),
             [0x34, 0x12, 0xcd, 0xab]
         );
+    }
+
+    #[test]
+    fn only_eight_bit_big_endian_words_store_swapped_byte_pairs() {
+        use NativeByteOrder::{BigEndian, LittleEndian};
+        assert!(stores_swapped_byte_pairs(BigEndian, VR::OW, 8));
+        for (byte_order, vr, bits_allocated) in [
+            (BigEndian, VR::OB, 8),
+            (BigEndian, VR::UN, 8),
+            (LittleEndian, VR::OW, 8),
+            (BigEndian, VR::OW, 1),
+            (BigEndian, VR::OW, 16),
+            (BigEndian, VR::OW, 32),
+        ] {
+            assert!(
+                !stores_swapped_byte_pairs(byte_order, vr, bits_allocated),
+                "{byte_order:?} {vr:?} {bits_allocated}"
+            );
+        }
+    }
+
+    #[test]
+    fn restores_samples_from_words_that_span_frames() {
+        // Samples 1..=9 in three frames of three, as words, with the
+        // padding byte in front of the last sample.
+        let value = [2, 1, 4, 3, 6, 5, 8, 7, 0, 9];
+        let frames = [(0, 3, [1, 2, 3]), (3, 6, [4, 5, 6]), (6, 9, [7, 8, 9])];
+        for (start, end, samples) in frames {
+            let span = SwappedPairSpan::of_samples(start, end, value.len());
+            assert_eq!(span.start % 2, 0);
+            assert!(span.end - span.start <= samples.len() + 2);
+            let mut bytes = value[span.start..span.end].to_vec();
+            span.restore_sample_order(&mut bytes);
+            assert_eq!(bytes, samples, "samples {start}..{end}");
+        }
+
+        // An even span is the same bytes, pair by pair.
+        let span = SwappedPairSpan::of_samples(2, 6, value.len());
+        assert_eq!((span.start, span.end), (2, 6));
+        let mut bytes = value[2..6].to_vec();
+        span.restore_sample_order(&mut bytes);
+        assert_eq!(bytes, [3, 4, 5, 6]);
+
+        // A value of odd length ends in a byte without a partner.
+        let span = SwappedPairSpan::of_samples(0, 3, 3);
+        assert_eq!((span.start, span.end), (0, 3));
+        let mut bytes = vec![2, 1, 3];
+        span.restore_sample_order(&mut bytes);
+        assert_eq!(bytes, [1, 2, 3]);
     }
 
     #[test]

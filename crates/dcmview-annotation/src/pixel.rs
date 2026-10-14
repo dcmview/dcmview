@@ -74,7 +74,7 @@
 //! | Stored as | Layouts |
 //! |---|---|
 //! | DICOM, uncompressed or deflated, little-endian | one sample a pixel of 1, 8, 16, 32 or 64 bits; colour by pixel or by plane |
-//! | DICOM, uncompressed, Explicit VR Big Endian | samples of 16, 32 or 64 bits, which are hashed little-endian. Samples of 8 bits are hashed in the order the viewer's raw frame returns them, which is the order of the bytes in the file |
+//! | DICOM, uncompressed, Explicit VR Big Endian | samples of 8, 16, 32 or 64 bits, hashed in sample order, each sample little-endian |
 //! | DICOM, RLE or JPEG XL Lossless | one sample a pixel, and colour |
 //! | DICOM, JPEG Lossless, JPEG-LS Lossless or JPEG 2000 Lossless | one sample a pixel |
 //! | PNG, TIFF | every layout the viewer decodes |
