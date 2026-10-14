@@ -626,10 +626,21 @@ rule. `read_native_frame` applies it for every reader of native frames: it
 reads the words that hold the frame, at most two bytes more than the frame,
 and puts them in sample order in the buffer they were read into. The
 segmentation sample scan reads the element itself and applies the same
-rule. Values of VR OB, and little-endian values of either VR, are read as
-they are. One-bit Pixel Data and Overlay Data are read through the DICOM
-parser, which reads a value of VR OW as words in the file's byte order. A
-big-endian file that holds 8-bit samples of VR OW in sample order is not
+rule. Pixel Data of VR OB, and little-endian Pixel Data of either VR, is
+read as it is. One-bit Pixel Data is read through the DICOM parser, which
+reads a value of VR OW as words in the file's byte order and a value of VR
+OB as bytes, and its bits are taken from the least significant bit of each
+byte in that order.
+
+Overlay Data (60xx,3000) is read by its VR in the same way
+(`loader/metadata.rs` `overlay_data_words`). A value of VR OW is the
+plane's 16-bit words, each read in the file's byte order. A value of VR
+OB, which files written before the attribute became OW alone carry, is a
+byte stream in either byte order: the first bit of the plane is the least
+significant bit of the first byte, and two bytes make one word with the
+first as its low byte.
+
+A big-endian file that holds 8-bit samples of VR OW in sample order is not
 conforming and shows every pair of samples exchanged, as other conforming
 readers show it.
 

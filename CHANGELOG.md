@@ -312,6 +312,12 @@ diagnostic viewer.
   in 0.3.0 to 0.4.1 and now shows every two samples exchanged, as it does
   in pydicom and DCMTK; see
   [troubleshooting](docs/troubleshooting.md#a-big-endian-8-bit-image-shows-neighbouring-pixels-exchanged).
+- Overlay planes whose Overlay Data (60xx,3000) has VR OB, as older files
+  store it, are drawn as the file holds them, in every transfer syntax.
+  Before, each byte of such a value was read as a whole 16-bit word, so
+  past its first eight pixels the overlay, or a bitmap display shutter,
+  was drawn in the wrong places. Overlay Data with VR OW, which the
+  current standard requires, was and is read correctly.
 
 ## 0.4.1 - 2026-10-09
 
