@@ -669,6 +669,7 @@ dependencies = [
  "futures",
  "getrandom 0.3.4",
  "image",
+ "jpeg-decoder",
  "jpeg2k",
  "jxl-bitstream",
  "jxl-oxide",

@@ -353,7 +353,10 @@ boxes on it, shrinks it and encodes a JPEG. A new decoder returns a
 `DisplayBuffer`; it does not encode. Thumbnails
 (`/api/file/{index}/frame/{frame}/thumbnail`) are gallery previews in the
 stored pixel grid with the default presentation, kept in their own cache and
-never written to the display or raw caches.
+never written to the display or raw caches. A JPEG 2000 or JPEG Baseline
+frame much larger than its thumbnail is decoded at a reduced resolution
+(`pixels/reduced.rs`); `docs/architecture.md`, "Reduced Decodes For
+Thumbnails", is normative.
 
 Every decode takes a permit from its viewer's `DecodeScheduler` (the one its
 cache names) and names its `DecodeClass`: `Background` for thumbnails and
@@ -685,6 +688,16 @@ is cached between requests.
   compare what honest files legitimately vary: colour transform, resolution
   levels, chroma subsampling, restart intervals, point transform, Bits
   Stored, sign.
+- A reduced decode is a decode: it takes the value only
+  `jpeg2000::checked_codestream` or `pixeldata_frame::checked_fragment`
+  makes, so the frame has passed `checked` first. How far it is reduced
+  comes from `pixels::thumbnail_reduction` (the entry and the request); the
+  frame may lower that (fewer decomposition levels, an image off its grid
+  origin, a lossless process) and never raise it, and what comes back must
+  satisfy `Reduction::accepts` for the entry or be discarded. When a reduced
+  decode cannot be done, decode in full under the same permit; never fail a
+  thumbnail that a full decode would serve. Do not reduce a frame that has
+  redaction boxes or whose window is computed from its samples.
 - A new encapsulated transfer syntax gets a `CodestreamKind` and a header
   reader with fixed bounds, or a decoder with a memory limit derived from
   the entry, before it gets a row in the codec table.
@@ -1356,6 +1369,16 @@ default suite.
   is blanked under a redaction box, a cache `MISS` after the boxes change,
   refused for label images in a masked session, and never fills the display
   or raw cache.
+- A thumbnail decoded at a reduced resolution has the size its entry gives
+  it and matches the shrunk display frame within the tolerance
+  `tests/integration/reduced_thumbnails.rs` states, for every layout the
+  reduced paths decode; `X-Thumbnail-Source` says which decode ran; a frame
+  with redaction boxes, a grayscale frame without a stored window or asked
+  for in full dynamic, and a frame that is not reducible are decoded in
+  full (a colour frame has no window and is reduced in either mode); a damaged frame is served no worse
+  than the viewer serves it, and no failure is cached. A reduced thumbnail
+  reserves the thumbnail estimate under one permit and holds less heap than
+  the full decode of the same frame.
 - Interactive decode requests are granted permits before background ones,
   and a request that stops waiting takes none.
 - A redaction box blanks the display and raw frame, is a cache `MISS` after a

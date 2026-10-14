@@ -388,7 +388,7 @@ Every successful response carries these three thumbnail/cache headers:
 | Header | Values |
 |---|---|
 | `X-Cache` | `MISS` for a new render; `HIT` for a cached thumbnail or a shared render already underway. |
-| `X-Thumbnail-Source` | `full_decode` on a miss, `thumbnail_cache` on a hit or shared render. `display_cache`, `raw_cache` and `reduced_decode` are reserved and are not sent today. |
+| `X-Thumbnail-Source` | On a miss, `reduced_decode` when the frame was decoded at a reduced resolution and `full_decode` otherwise; `thumbnail_cache` on a hit or shared render. `display_cache` and `raw_cache` are reserved and are not sent. |
 | `Cache-Control` | `no-store`: file indexes belong to one process, so the same URL after a restart could refer to a different file. |
 
 The thumbnail uses the default window (DICOM window, else VOI LUT, else the
@@ -412,6 +412,23 @@ thumbnail = (max(1, round(width * scale)), max(1, round(height * scale)))
 
 A stored `(row, column)` maps to `(row * thumbnail_height / rows,
 column * thumbnail_width / columns)`, with no offset.
+
+A JPEG 2000 or JPEG Baseline frame that is at least four times its
+thumbnail along both axes is decoded at a reduced resolution (halved one or
+more times; JPEG at most three), which is much faster for large frames. The
+thumbnail has the same size, window and geometry either way, and matches a
+full decode except for slightly softer or sharper edges. A frame is decoded
+in full when it is grayscale and its window comes from its own samples (no
+stored window or VOI LUT, or `window_mode=full_dynamic`), when it has
+redaction boxes, or when its codestream cannot be reduced (a JPEG 2000 frame
+without decomposition levels or with an image offset, the JPEG lossless
+process). A colour frame has no window, so it is reduced in either window
+mode. A reduced decode reads less of a frame than a full one, so the
+thumbnail of a damaged JPEG 2000 frame can look intact where its display
+frame shows the damage; a thumbnail is a preview and does not show that a
+frame decodes cleanly.
+`X-Thumbnail-Source` says which happened and is diagnostic: clients need not
+read it. The decode memory a thumbnail reserves is the same either way.
 
 Thumbnails share concurrent renders and fill only their own cache. The key
 includes file, frame, bucket, window mode and redaction revision, so edits to

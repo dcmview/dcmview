@@ -29,6 +29,7 @@ mod integration {
     mod raster_tag_files;
     mod raster_tags;
     mod redactions;
+    mod reduced_thumbnails;
     mod remote_fixtures;
     mod semantic_context;
     mod semantic_overlays;
