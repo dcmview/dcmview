@@ -46,6 +46,9 @@ The committed corpus is intentionally small and synthetic:
 - `golden-parametric-map-u16-linear.dcm` with
   `golden-parametric-map-mr-source-z{0,1}.dcm`
 - `golden-rwvm-ct-hounsfield.dcm`
+- `native-word-order/golden-native-{u32,s32,u32-stored24}-2x3-f{1,3}-{le,be}.dcm`,
+  `native-word-order/golden-native-{f32,f64}-2x3-f3-{le,be}.dcm` and
+  `native-word-order/golden-native-u32-2x3-f3-be-reversed-samples-nonconforming.dcm`
 - `golden-seg-{binary,binary-valued-fractional,fractional}.dcm`, each with
   its matching `golden-seg-<kind>-source.dcm`
 - `golden-gsps-{conforming,second-state,frames,unscoped,display-units}.dcm`
@@ -134,3 +137,19 @@ redaction.
 - `patient-b-us` is a second patient, aged 45.
 - `wsi-label` is a slide label image (Image Type value 3 `LABEL`) of the
   second patient, whose frames a masked session withholds.
+
+The native word order fixtures hold one set of 2x3 samples as native Pixel
+Data in Explicit VR Little Endian (`le`) and Explicit VR Big Endian (`be`):
+32-bit integer samples of VR OW, unsigned, signed, and unsigned with 24 bits
+stored and the bits above them set, and Float (VR OF) and Double Float (VR
+OD) samples. A value of VR OW is 16-bit words in the byte order of the
+transfer syntax, and a 32-bit sample is two words, the low word first, so
+the `be` integer files store `0x11223344` as `33 44 11 22`; float and
+double float values are whole values in big-endian byte order. `dcmconv
++tb` of an `le` file writes the same data set but for its SOP Instance UID.
+The two files of a name must show the same pixels. The
+`reversed-samples-nonconforming` file is deliberately not conforming: big
+endian, VR OW, the four bytes of each sample reversed, as software writes
+it that treats the samples as 32-bit values. It must read with the two
+words of each sample exchanged. They live in their own directory so tests
+that walk the top-level fixtures do not pick them up.
