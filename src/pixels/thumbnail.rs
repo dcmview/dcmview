@@ -101,8 +101,24 @@ pub(crate) fn encode_thumbnail_jpeg(
     bucket: u32,
     pixel_aspect_ratio: Option<f64>,
 ) -> Result<Bytes> {
-    let (width, height) =
-        thumbnail_dimensions(buffer.rows, buffer.columns, pixel_aspect_ratio, bucket);
+    let dimensions = thumbnail_dimensions(buffer.rows, buffer.columns, pixel_aspect_ratio, bucket);
+    encode_thumbnail_jpeg_sized(buffer, dimensions)
+}
+
+/// [`encode_thumbnail_jpeg`] for a thumbnail of `(width, height)` pixels
+/// whatever the buffer's own size.
+///
+/// A frame decoded at a reduced resolution has fewer rows and columns than
+/// its entry, and how many depends on how its decoder rounds. Its thumbnail
+/// has the size of the stored frame's: the caller computes `dimensions`
+/// with [`thumbnail_dimensions`] from the entry's rows and columns, so the
+/// geometry a client derives from the catalog holds whichever way the
+/// frame was decoded. The buffer is at least twice that large along both
+/// axes (`pixels::thumbnail_reduction`), so nothing is enlarged.
+pub(crate) fn encode_thumbnail_jpeg_sized(
+    buffer: DisplayBuffer,
+    (width, height): (u32, u32),
+) -> Result<Bytes> {
     let pixels = match buffer.pixels {
         DisplayPixels::Gray8(pixels) => {
             let image = GrayImage::from_raw(buffer.columns, buffer.rows, pixels)

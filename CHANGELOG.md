@@ -95,6 +95,15 @@ diagnostic viewer.
   bucketed sizes in physical aspect, with the default or full-dynamic window.
   Thumbnails honour redaction boxes and display masking, omit shutters and
   overlay planes, and use their own cache without evicting viewer frames.
+- Thumbnails of large JPEG 2000 and JPEG Baseline frames are decoded at a
+  reduced resolution: a frame at least four times its thumbnail along both
+  axes is halved as often as leaves it twice the thumbnail's size (JPEG at
+  most three times). The thumbnail has the same size and window as before;
+  `X-Thumbnail-Source: reduced_decode` reports it. Grayscale frames whose
+  window is computed from their own samples (no stored window, or
+  `window_mode=full_dynamic`), frames with redaction boxes and codestreams
+  that cannot be reduced are decoded in full as before; colour frames have
+  no window and are reduced in either mode.
 - Background thumbnail decodes yield to viewer decodes, with a capped share
   of cores and a one-second interactive idle window on one-core hosts.
 - Header-only, content-based discovery of PNG, JPEG, TIFF (including BigTIFF

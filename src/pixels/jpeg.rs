@@ -7,7 +7,8 @@ use tokio::task;
 
 use super::color::color_samples_to_rgb8;
 use super::error::{PixelError, PixelResult};
-use super::pixeldata_frame::decode_frame;
+use super::pixeldata_frame::{decode_frame, decode_frame_for_thumbnail, DecodedFrame};
+use super::reduced::{Reduction, ThumbnailRender};
 use super::render::{
     render_windowed_luminance, DisplayBuffer, DisplayPng, LuminanceRenderOptions, StoredSamples,
 };
@@ -58,6 +59,26 @@ pub(crate) async fn decode_compressed_frame_to_png(
     .context("compressed decode task failed")?
 }
 
+/// Renders one JPEG Baseline or JPEG Lossless frame for its thumbnail: its
+/// default presentation in `window_mode`, decoded at a reduced resolution
+/// when `reduction` asks for one and the frame allows it, in full
+/// otherwise (`pixeldata_frame::decode_frame_for_thumbnail`).
+pub(crate) async fn render_compressed_thumbnail(
+    codec: Codec,
+    file: Arc<FileEntry>,
+    frame: u32,
+    window_mode: WindowMode,
+    reduction: Option<Reduction>,
+) -> Result<ThumbnailRender> {
+    task::spawn_blocking(move || {
+        let (decoded, shift) = decode_frame_for_thumbnail(&file, frame, "JPEG", reduction)?;
+        let buffer = render_decoded_frame(codec, &file, frame, decoded, None, None, window_mode)?;
+        Ok(ThumbnailRender { buffer, shift })
+    })
+    .await
+    .context("compressed thumbnail decode task failed")?
+}
+
 fn render_compressed_frame_blocking(
     codec: Codec,
     file: &FileEntry,
@@ -67,6 +88,28 @@ fn render_compressed_frame_blocking(
     window_mode: WindowMode,
 ) -> Result<DisplayBuffer> {
     let decoded = decode_frame(file, frame, "JPEG")?;
+    render_decoded_frame(
+        codec,
+        file,
+        frame,
+        decoded,
+        requested_wc,
+        requested_ww,
+        window_mode,
+    )
+}
+
+/// Presents a decoded JPEG frame, at whatever resolution it was decoded:
+/// the buffer has the decoded frame's own rows and columns.
+fn render_decoded_frame(
+    codec: Codec,
+    file: &FileEntry,
+    frame: u32,
+    decoded: DecodedFrame,
+    requested_wc: Option<f64>,
+    requested_ww: Option<f64>,
+    window_mode: WindowMode,
+) -> Result<DisplayBuffer> {
     if decoded.samples_per_pixel == 3 {
         if decoded.bits_allocated != 8 {
             return Err(anyhow!(

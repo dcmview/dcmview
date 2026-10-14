@@ -185,6 +185,7 @@ fn j2k(
     tiles: u64,
     tile_pixels: u64,
     packets: u64,
+    levels: u8,
 ) -> Structure {
     Structure::Jpeg2000 {
         codestream,
@@ -192,6 +193,8 @@ fn j2k(
         tiles,
         tile_pixels,
         packets,
+        levels,
+        at_origin: true,
     }
 }
 
@@ -278,7 +281,7 @@ fn a_frame_s_own_header_is_read_as_its_format_defines_it() {
         (
             Jpeg2000,
             files::J2K_GRAY8,
-            says(16, 16, 1, 8, j2k(j2k_len(files::J2K_GRAY8), 1, 256, 5)),
+            says(16, 16, 1, 8, j2k(j2k_len(files::J2K_GRAY8), 1, 256, 5, 4)),
         ),
         (
             Jpeg2000,
@@ -288,13 +291,19 @@ fn a_frame_s_own_header_is_read_as_its_format_defines_it() {
                 16,
                 1,
                 8,
-                j2k(j2k_len(files::J2K_GRAY8_ONE_RESOLUTION), 1, 256, 1),
+                j2k(j2k_len(files::J2K_GRAY8_ONE_RESOLUTION), 1, 256, 1, 0),
             ),
         ),
         (
             Jpeg2000,
             files::J2K_GRAY8_TILED,
-            says(16, 16, 1, 8, j2k(j2k_len(files::J2K_GRAY8_TILED), 4, 64, 2)),
+            says(
+                16,
+                16,
+                1,
+                8,
+                j2k(j2k_len(files::J2K_GRAY8_TILED), 4, 64, 2, 1),
+            ),
         ),
         (
             Jpeg2000,
@@ -304,7 +313,7 @@ fn a_frame_s_own_header_is_read_as_its_format_defines_it() {
                 16,
                 1,
                 8,
-                j2k(j2k_len(files::J2K_GRAY8_LAYERS), 1, 256, 15),
+                j2k(j2k_len(files::J2K_GRAY8_LAYERS), 1, 256, 15, 4),
             ),
         ),
         (
@@ -315,7 +324,7 @@ fn a_frame_s_own_header_is_read_as_its_format_defines_it() {
                 64,
                 1,
                 8,
-                j2k(j2k_len(files::J2K_GRAY8_PRECINCTS), 1, 4096, 12),
+                j2k(j2k_len(files::J2K_GRAY8_PRECINCTS), 1, 4096, 12, 2),
             ),
         ),
         (
@@ -326,7 +335,7 @@ fn a_frame_s_own_header_is_read_as_its_format_defines_it() {
                 64,
                 1,
                 8,
-                j2k(j2k_len(files::J2K_GRAY8_TILE_PARTS), 4, 1024, 3),
+                j2k(j2k_len(files::J2K_GRAY8_TILE_PARTS), 4, 1024, 3, 2),
             ),
         ),
         (
@@ -337,23 +346,35 @@ fn a_frame_s_own_header_is_read_as_its_format_defines_it() {
                 16,
                 1,
                 8,
-                j2k(85..hex(files::J2K_GRAY8_JP2).len(), 1, 256, 5),
+                j2k(85..hex(files::J2K_GRAY8_JP2).len(), 1, 256, 5, 4),
             ),
         ),
         (
             Jpeg2000,
             files::J2K_RGB8_RCT,
-            says(16, 16, 3, 8, j2k(j2k_len(files::J2K_RGB8_RCT), 1, 256, 5)),
+            says(
+                16,
+                16,
+                3,
+                8,
+                j2k(j2k_len(files::J2K_RGB8_RCT), 1, 256, 5, 4),
+            ),
         ),
         (
             Jpeg2000,
             files::J2K_GRAY12,
-            says(16, 16, 1, 12, j2k(j2k_len(files::J2K_GRAY12), 1, 256, 3)),
+            says(16, 16, 1, 12, j2k(j2k_len(files::J2K_GRAY12), 1, 256, 3, 2)),
         ),
         (
             Jpeg2000,
             files::J2K_GRAY8_ODD,
-            says(15, 9, 1, 8, j2k(j2k_len(files::J2K_GRAY8_ODD), 1, 135, 4)),
+            says(
+                15,
+                9,
+                1,
+                8,
+                j2k(j2k_len(files::J2K_GRAY8_ODD), 1, 135, 4, 3),
+            ),
         ),
         (JpegXl, files::JXL_GRAY8, says(16, 16, 1, 8, JXL_STILL)),
         (JpegXl, files::JXL_RGB8, says(16, 16, 3, 8, JXL_STILL)),
@@ -574,8 +595,10 @@ fn a_frame_agrees_with_its_entry_exactly_by_the_accept_table() {
         tiles: 1,
         tile_pixels: 256,
         packets: 6,
+        levels: 5,
+        at_origin: true,
     };
-    let one_tile = |packets| j2k(0..0, 1, 256, packets);
+    let one_tile = |packets| j2k(0..0, 1, 256, packets, 5);
     let floor = J2K_MIN_PACKET_BUDGET;
     let wide_budget = 1024 * 1024 / J2K_PIXELS_PER_PACKET;
     assert!(
@@ -789,13 +812,13 @@ fn a_frame_agrees_with_its_entry_exactly_by_the_accept_table() {
         (
             "j2k, as many tiles as are allowed",
             &gray8,
-            says(16, 16, 1, 8, j2k(0..0, J2K_MAX_TILES, 1, 1)),
+            says(16, 16, 1, 8, j2k(0..0, J2K_MAX_TILES, 1, 1, 5)),
             true,
         ),
         (
             "j2k, a tile more",
             &gray8,
-            says(16, 16, 1, 8, j2k(0..0, J2K_MAX_TILES + 1, 1, 1)),
+            says(16, 16, 1, 8, j2k(0..0, J2K_MAX_TILES + 1, 1, 1, 5)),
             false,
         ),
         (
@@ -813,7 +836,7 @@ fn a_frame_agrees_with_its_entry_exactly_by_the_accept_table() {
         (
             "j2k, a megapixel tile within the least budget",
             &wide,
-            says(1024, 1024, 1, 8, j2k(0..0, 1, 1024 * 1024, floor)),
+            says(1024, 1024, 1, 8, j2k(0..0, 1, 1024 * 1024, floor, 5)),
             true,
         ),
         (
@@ -824,7 +847,7 @@ fn a_frame_agrees_with_its_entry_exactly_by_the_accept_table() {
                 1024,
                 1,
                 8,
-                j2k(0..0, 1, 1 << 30, (1 << 30) / J2K_PIXELS_PER_PACKET),
+                j2k(0..0, 1, 1 << 30, (1 << 30) / J2K_PIXELS_PER_PACKET, 5),
             ),
             true,
         ),
@@ -836,7 +859,7 @@ fn a_frame_agrees_with_its_entry_exactly_by_the_accept_table() {
                 1024,
                 1,
                 8,
-                j2k(0..0, 1, 1 << 30, (1 << 30) / J2K_PIXELS_PER_PACKET + 1),
+                j2k(0..0, 1, 1 << 30, (1 << 30) / J2K_PIXELS_PER_PACKET + 1, 5),
             ),
             false,
         ),
@@ -1208,6 +1231,240 @@ fn a_frame_that_disagrees_with_its_header_is_refused_before_anything_is_allocate
                 );
                 report(|| format!("{context}: {held} bytes of heap, file {length}"));
             }
+        }
+    }
+}
+
+/// How far the decoder may halve a JPEG 2000 image is read from the frame
+/// like everything else it declares: the fewest decomposition levels of any
+/// coding style, in the main header or a tile-part's, and whether the image
+/// starts at the origin of its grid. Neither is compared with the entry.
+#[test]
+fn the_levels_a_reduced_decode_may_use_are_the_fewest_a_frame_states() {
+    let _alone = heap::alone();
+    let reduced = |name: &str| {
+        std::fs::read(files::fixture("reduced-decode").join(name)).expect("the fixture")
+    };
+    let levels = |codestream: &[u8], levels: u8| {
+        files::j2k_u8(codestream, files::j2k_cod(codestream) + 9, levels)
+    };
+    let tile_parts = hex(files::J2K_GRAY8_TILE_PARTS);
+    let large = reduced("gray12-tile-parts-1040x780.j2k");
+    // (name, frame, levels, at the origin)
+    let cases: Vec<(&str, Vec<u8>, u8, bool)> = vec![
+        ("five resolutions", hex(files::J2K_GRAY8), 4, true),
+        (
+            "one resolution",
+            hex(files::J2K_GRAY8_ONE_RESOLUTION),
+            0,
+            true,
+        ),
+        ("in a JP2 file", hex(files::J2K_GRAY8_JP2), 4, true),
+        ("tile-parts", tile_parts.clone(), 2, true),
+        (
+            "a tile-part that states fewer",
+            files::j2k_tile_part_cod(&tile_parts, |codestream| levels(codestream, 1)),
+            1,
+            true,
+        ),
+        (
+            "a tile-part that states none",
+            files::j2k_tile_part_cod(&tile_parts, |codestream| levels(codestream, 0)),
+            0,
+            true,
+        ),
+        (
+            "a tile-part that states more",
+            files::j2k_tile_part_cod(&tile_parts, |codestream| levels(codestream, 9)),
+            2,
+            true,
+        ),
+        (
+            "the main header restated",
+            levels(&tile_parts, 32),
+            32,
+            true,
+        ),
+        ("six resolutions, tiled", large, 5, true),
+        (
+            "an image off the origin",
+            reduced("gray8-offset-517x389.j2k"),
+            5,
+            false,
+        ),
+    ];
+    for (name, frame, expected_levels, expected_origin) in cases {
+        let (read, held) = heap::peak_during(|| declared(CodestreamKind::Jpeg2000, &frame));
+        let read = read.unwrap_or_else(|error| panic!("{name}: {error:#}"));
+        assert!(held <= HEADER_HEAP, "{name}: {held} bytes of heap");
+        let Structure::Jpeg2000 {
+            levels, at_origin, ..
+        } = read.structure
+        else {
+            panic!("{name}: not read as JPEG 2000");
+        };
+        assert_eq!(
+            (levels, at_origin),
+            (expected_levels, expected_origin),
+            "{name}"
+        );
+    }
+
+    // Honest files vary in both, so neither refuses a frame.
+    let runtime = runtime();
+    let gray8 = entry(&runtime, files::JPEG_2000, Layout::gray8(16, 16));
+    for (levels, at_origin) in [(0, true), (5, false), (32, true)] {
+        let structure = Structure::Jpeg2000 {
+            codestream: 0..0,
+            uniform: true,
+            tiles: 1,
+            tile_pixels: 256,
+            packets: 6,
+            levels,
+            at_origin,
+        };
+        agrees(&gray8, &says(16, 16, 1, 8, structure))
+            .unwrap_or_else(|error| panic!("{levels} levels, at origin {at_origin}: {error:#}"));
+    }
+}
+
+/// A thumbnail that asks for a reduced decode refuses a frame that
+/// disagrees with its header exactly as a full decode does: before any
+/// decoder is given it, and without holding more than `REFUSAL_HEAP` for it.
+/// The headers here are large enough that the thumbnail asks for a
+/// reduction; the frames are honest ones with the numbers they declare
+/// replaced.
+#[test]
+fn a_reduced_decode_is_not_tried_on_a_frame_that_disagrees_with_its_header() {
+    use dicom_core::{DataElement, PrimitiveValue, VR};
+    use dicom_dictionary_std::tags;
+
+    let _alone = heap::alone();
+    let runtime = runtime();
+    let dir = tempdir().expect("temp dir");
+    let reduced = |name: &str| {
+        std::fs::read(files::fixture("reduced-decode").join(name)).expect("the fixture")
+    };
+    let j2k = reduced("gray8-512x384.j2k");
+    let jpeg = reduced("gray8-baseline-1040x780.jpg");
+    let j2k_header = Layout::gray8(384, 512);
+    let jpeg_header = Layout::gray8(780, 1040);
+    let cases: Vec<(&str, &str, Layout, Vec<u8>)> = vec![
+        (
+            "jpeg 2000, 32,768 x 32,768",
+            files::JPEG_2000,
+            j2k_header,
+            files::j2k_sized(&j2k, 32_768, 32_768),
+        ),
+        (
+            "jpeg 2000, one row more",
+            files::JPEG_2000,
+            j2k_header,
+            files::j2k_sized(&j2k, 385, 512),
+        ),
+        (
+            "jpeg 2000, half the size",
+            files::JPEG_2000,
+            j2k_header,
+            files::j2k_sized(&j2k, 192, 256),
+        ),
+        (
+            "jpeg 2000, three components",
+            files::JPEG_2000,
+            j2k_header,
+            files::j2k_components(&j2k, 3),
+        ),
+        (
+            "jpeg 2000, a tile for every pixel",
+            files::JPEG_2000,
+            j2k_header,
+            files::j2k_u32(&files::j2k_u32(&j2k, siz::XTSIZ, 1), siz::YTSIZ, 1),
+        ),
+        (
+            "jpeg 2000, 65,535 layers of tiny precincts",
+            files::JPEG_2000,
+            j2k_header,
+            files::j2k_layers(&files::j2k_precincts(&j2k, 1), 65_535),
+        ),
+        (
+            "jpeg 2000, another frame's codestream",
+            files::JPEG_2000,
+            j2k_header,
+            hex(files::J2K_GRAY8),
+        ),
+        (
+            "jpeg, 65,535 x 65,535",
+            files::JPEG_BASELINE,
+            jpeg_header,
+            files::jpeg_sized(&jpeg, 65_535, 65_535),
+        ),
+        (
+            "jpeg, one column more",
+            files::JPEG_BASELINE,
+            jpeg_header,
+            files::jpeg_sized(&jpeg, 780, 1041),
+        ),
+        (
+            "jpeg, an eighth of the size",
+            files::JPEG_BASELINE,
+            jpeg_header,
+            files::jpeg_sized(&jpeg, 98, 130),
+        ),
+        (
+            "jpeg, three components",
+            files::JPEG_BASELINE,
+            jpeg_header,
+            files::jpeg_components(&jpeg, 3),
+        ),
+        (
+            "jpeg, twelve bits",
+            files::JPEG_BASELINE,
+            jpeg_header,
+            files::jpeg_precision(&jpeg, 12),
+        ),
+    ];
+    let window = [
+        DataElement::new(tags::WINDOW_CENTER, VR::DS, PrimitiveValue::from("128")),
+        DataElement::new(tags::WINDOW_WIDTH, VR::DS, PrimitiveValue::from("256")),
+    ];
+    for (number, (name, transfer_syntax, layout, frame)) in cases.into_iter().enumerate() {
+        let path = dir.path().join(format!("reduced-{number}.dcm"));
+        files::write_with(&path, transfer_syntax, layout, &[frame], &window);
+        let length = std::fs::metadata(&path).expect("written").len();
+        let listed = runtime.block_on(files::list(&[path]));
+        assert!(
+            dcmview::pixels::thumbnail_reduction(
+                &listed[0],
+                128,
+                dcmview::api::contracts::WindowMode::Default
+            )
+            .is_some(),
+            "{name}: the thumbnail asks for a reduction"
+        );
+        let server = files::serve(listed);
+        let endpoint = "/api/file/0/frame/0/thumbnail?size=128";
+        // Whatever the first request leaves in caches is not the frame.
+        for attempt in 0..2 {
+            let (response, held) =
+                heap::peak_during(|| runtime.block_on(async { server.get(endpoint).await }));
+            let context = format!("{name}, attempt {attempt}");
+            assert_eq!(
+                response.status_code(),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "{context}: {}",
+                response.text()
+            );
+            assert!(
+                response.text().contains(CODESTREAM_MISMATCH),
+                "{context}: {}",
+                response.text()
+            );
+            let limit = REFUSAL_HEAP + 2 * length;
+            assert!(
+                held <= limit,
+                "{context}: {held} bytes of heap held for a {length}-byte file, the limit is {limit}"
+            );
+            report(|| format!("{context}: {held} bytes of heap, file {length}"));
         }
     }
 }

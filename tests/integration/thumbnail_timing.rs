@@ -1,14 +1,18 @@
-//! Opt-in measurement of the delay gallery thumbnails add to the viewer
-//! (`pixels::INTERACTIVE_LATENCY_TARGET`). It needs a release build to mean
+//! Opt-in measurements of gallery thumbnails: the delay they add to the
+//! viewer (`pixels::INTERACTIVE_LATENCY_TARGET`), and how much faster a
+//! thumbnail decoded at a reduced resolution is than one decoded in full
+//! (`pixels::thumbnail_reduction`). They need a release build to mean
 //! anything:
 //!
 //! ```text
 //! cargo test --release --test integration thumbnail_timing -- --ignored --nocapture
 //! ```
 //!
-//! It always prints what it measured. It fails only in a release build on a
-//! host with at least four cores, which is where the target is defined.
+//! Each always prints what it measured. The latency target fails only in a
+//! release build on a host with at least four cores, which is where it is
+//! defined; the reduced decode only in a release build.
 
+use super::codestream_files as files;
 use super::support;
 use axum_test::TestServer;
 use dcmview::pixels::INTERACTIVE_LATENCY_TARGET;
@@ -191,5 +195,115 @@ async fn interactive_frames_stay_within_the_latency_target_while_thumbnails_load
     assert!(
         extra <= INTERACTIVE_LATENCY_TARGET,
         "thumbnails delayed the viewer by {extra:?} at p95"
+    );
+}
+
+/// Frames timed each way by the reduced-decode measurement.
+const REDUCED_FRAMES: usize = 12;
+
+/// The time of each of `REDUCED_FRAMES` cold thumbnails at 128 pixels of a
+/// file whose frames are all `codestream`, 2080 x 1560 with a stored window:
+/// first decoded at a reduced resolution (the default window), then in full
+/// (`full_dynamic`, which spans the frame's own extremes and so needs every
+/// sample).
+async fn time_reduced_and_full(
+    transfer_syntax: &str,
+    bits: u16,
+    codestream: &str,
+) -> (Vec<Duration>, Vec<Duration>) {
+    use dicom_core::{DataElement, PrimitiveValue, VR};
+    use dicom_dictionary_std::tags;
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("frames.dcm");
+    let frame =
+        std::fs::read(files::fixture("reduced-decode").join(codestream)).expect("the fixture");
+    let full_scale = 1_u32 << bits;
+    files::write_with(
+        &path,
+        transfer_syntax,
+        files::Layout::gray(1560, 2080, if bits > 8 { 16 } else { 8 }, bits),
+        &vec![frame; REDUCED_FRAMES],
+        &[
+            DataElement::new(
+                tags::WINDOW_CENTER,
+                VR::DS,
+                PrimitiveValue::from((full_scale / 2).to_string()),
+            ),
+            DataElement::new(
+                tags::WINDOW_WIDTH,
+                VR::DS,
+                PrimitiveValue::from(full_scale.to_string()),
+            ),
+        ],
+    );
+    let server = files::serve(files::list(&[path]).await);
+    let mut timed = Vec::new();
+    for (mode, source) in [
+        ("default", "reduced_decode"),
+        ("full_dynamic", "full_decode"),
+    ] {
+        let mut latencies = Vec::with_capacity(REDUCED_FRAMES);
+        for frame in 0..REDUCED_FRAMES {
+            let started = Instant::now();
+            let response = server
+                .get(&format!(
+                    "/api/file/0/frame/{frame}/thumbnail?size=128&window_mode={mode}"
+                ))
+                .await;
+            latencies.push(started.elapsed());
+            response.assert_status_ok();
+            assert_eq!(response.header("x-cache"), "MISS");
+            assert_eq!(response.header("x-thumbnail-source"), source, "{mode}");
+        }
+        timed.push(latencies);
+    }
+    let full = timed.pop().expect("full");
+    (timed.pop().expect("reduced"), full)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "timing measurement; run in a release build with --ignored --nocapture"]
+async fn reduced_thumbnails_are_faster_than_full_decodes() {
+    println!(
+        "reduced thumbnail timing: {} build, {REDUCED_FRAMES} cold thumbnails of 2080 x 1560 \
+         frames each way, one at a time",
+        if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        },
+    );
+    let mut ratios = Vec::new();
+    for (codec, transfer_syntax, bits, codestream) in [
+        (
+            "JPEG 2000, five levels, an eighth of the size",
+            files::JPEG_2000,
+            12,
+            "gray12-2080x1560.j2k",
+        ),
+        (
+            "JPEG, an eighth of the size",
+            files::JPEG_BASELINE,
+            8,
+            "gray8-restart-2080x1560.jpg",
+        ),
+    ] {
+        let (reduced, full) = time_reduced_and_full(transfer_syntax, bits, codestream).await;
+        let (reduced, full) = (percentile(&reduced, 50), percentile(&full, 50));
+        let ratio = full.as_secs_f64() / reduced.as_secs_f64().max(1e-9);
+        println!("  {codec}: reduced p50 {reduced:?}, full p50 {full:?}, {ratio:.1} times faster");
+        ratios.push(ratio);
+    }
+
+    if cfg!(debug_assertions) {
+        println!("  not enforced: the comparison is for a release build");
+        return;
+    }
+    assert!(
+        ratios[0] >= 2.0,
+        "a JPEG 2000 thumbnail decoded at an eighth of the size was {:.1} times faster than \
+         one decoded in full",
+        ratios[0]
     );
 }
