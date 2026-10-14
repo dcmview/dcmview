@@ -638,7 +638,7 @@ plane's 16-bit words, each read in the file's byte order. A value of VR
 OB, which files written before the attribute became OW alone carry, is a
 byte stream in either byte order: the first bit of the plane is the least
 significant bit of the first byte, and two bytes make one word with the
-first as its low byte.
+first as its low byte. A value of VR UN is read as OB is.
 
 A big-endian file that holds 8-bit samples of VR OW in sample order is not
 conforming and shows every pair of samples exchanged, as other conforming

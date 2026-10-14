@@ -690,13 +690,15 @@ fn a_dicom_fixture_holds_no_more_heap_than_it_reserved() {
 
 /// 8-bit samples stored as big-endian 16-bit words are put in sample order
 /// in the buffer they were read into: no path holds more for such a frame
-/// than for the same frame in a little-endian file, beyond the one word
-/// that is read whole around a frame of an odd number of bytes, and none
-/// allocates more often.
+/// than for the same frame in a little-endian file, and none allocates more
+/// often.
 #[test]
 fn big_endian_words_cost_what_little_endian_bytes_do() {
     const SIDE: u16 = 1249;
-    const SLACK: u64 = 4096;
+    // The peak is counted over every thread of the runtime, so it moves by
+    // tens of kibibytes with when another thread frees. A second copy of
+    // the frame is about a mebibyte and a half.
+    const SLACK: u64 = 256 * 1024;
     let pixels = usize::from(SIDE) * usize::from(SIDE);
     let plain = tokio::runtime::Runtime::new().expect("runtime");
     let image = |transfer_syntax| {
