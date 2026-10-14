@@ -18,6 +18,7 @@ mod integration {
     mod graphic_annotations;
     mod loader_discovery;
     mod malformed_inputs;
+    mod native_word_order;
     mod pixel_digests;
     mod pixels_jp2_decode;
     mod pixels_jpeg_decode;
