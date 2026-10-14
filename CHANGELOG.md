@@ -326,8 +326,8 @@ diagnostic viewer.
   each sample as two 16-bit words, the low word first, each word high byte
   first, as DCMTK writes it. Versions 0.3.0 to 0.4.1 reversed the four
   bytes of each sample instead, so the display, thumbnails, raw frames, the
-  pixel readout, pixel digests and value overlays had the two words of
-  every sample exchanged. Float and Double Float Pixel Data, 16-bit
+  pixel readout and value overlays had the two words of every sample
+  exchanged. Float and Double Float Pixel Data, 16-bit
   samples and the little-endian transfer syntaxes were never affected. A
   big-endian file whose 32-bit samples of VR OW have their four bytes
   reversed, which is not conforming but is how pydicom reads such samples,
