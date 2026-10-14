@@ -670,6 +670,17 @@ fn a_dicom_fixture_holds_no_more_heap_than_it_reserved() {
     let pixels = usize::from(SIDE) * usize::from(SIDE);
     files.push(("native16.dcm", native_dicom(SIDE, 16, noise(pixels * 2))));
     files.push(("native32.dcm", native_dicom(SIDE, 32, noise(pixels * 4))));
+    // 8-bit samples as big-endian 16-bit words, in a frame of an odd number
+    // of bytes: the word that holds the last sample is read whole, and the
+    // samples are put in order in the buffer they were read into.
+    const ODD_SIDE: u16 = 1249;
+    let odd_pixels = usize::from(ODD_SIDE) * usize::from(ODD_SIDE);
+    files.push((
+        "native8-big-endian-words.dcm",
+        Native::gray(ODD_SIDE, 8)
+            .in_syntax("1.2.840.10008.1.2.2")
+            .file(noise(odd_pixels + 1)),
+    ));
     let scan = listed(&plain, &files);
     let runtime = CountedRuntime::new();
     let mut served = 0;
