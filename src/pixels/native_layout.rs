@@ -450,6 +450,37 @@ fn canonicalize_little_endian(
     Ok(())
 }
 
+/// Whether a native Pixel Data value holds 32-bit integer samples as 16-bit
+/// words in big-endian byte order, low word first.
+///
+/// A value of VR OW is a stream of 16-bit words, each written in the
+/// transfer syntax's byte order, and a pixel cell wider than a word goes on
+/// into the next word, least significant bit first (PS3.5 section 8.2, as
+/// the editions that carry Explicit VR Big Endian state it). So a 32-bit
+/// sample is two words, the low word first, and each word is high byte
+/// first: the sample `0x11223344` is stored `33 44 11 22`, as DCMTK writes
+/// it. Values of VR OF and OD are 32- and 64-bit values in the byte order
+/// of the transfer syntax, and a value of VR OB is not words.
+pub(crate) fn stores_low_word_first(
+    byte_order: NativeByteOrder,
+    value_representation: VR,
+    bits_allocated: u32,
+) -> bool {
+    byte_order == NativeByteOrder::BigEndian
+        && value_representation == VR::OW
+        && bits_allocated == 32
+}
+
+/// Exchanges the two 16-bit words of every 32-bit sample of `bytes`, so
+/// that big-endian words stored low word first
+/// ([`stores_low_word_first`]) become big-endian samples.
+pub(crate) fn exchange_words_of_samples(bytes: &mut [u8]) {
+    for sample in bytes.chunks_exact_mut(4) {
+        let (low, high) = sample.split_at_mut(2);
+        low.swap_with_slice(high);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -668,6 +699,40 @@ mod tests {
         assert_eq!(
             select_native_pixel_element(false, false, false),
             Err(NativeLayoutError::MissingPixelElement)
+        );
+    }
+
+    #[test]
+    fn only_thirty_two_bit_big_endian_words_store_the_low_word_first() {
+        use NativeByteOrder::{BigEndian, LittleEndian};
+        assert!(stores_low_word_first(BigEndian, VR::OW, 32));
+        for (byte_order, vr, bits_allocated) in [
+            (LittleEndian, VR::OW, 32),
+            (BigEndian, VR::OB, 32),
+            (BigEndian, VR::OF, 32),
+            (BigEndian, VR::OD, 64),
+            (BigEndian, VR::UN, 32),
+            (BigEndian, VR::OW, 16),
+            (BigEndian, VR::OW, 8),
+        ] {
+            assert!(
+                !stores_low_word_first(byte_order, vr, bits_allocated),
+                "{byte_order:?} {vr:?} {bits_allocated}"
+            );
+        }
+    }
+
+    #[test]
+    fn reads_thirty_two_bit_big_endian_words_low_word_first() {
+        // 0x11223344 and 0x8899aabb as DCMTK writes them under VR OW.
+        let mut bytes = [0x33, 0x44, 0x11, 0x22, 0xaa, 0xbb, 0x88, 0x99];
+        exchange_words_of_samples(&mut bytes);
+        let mut big_endian = layout("MONOCHROME2");
+        big_endian.bits_allocated = 32;
+        big_endian.byte_order = NativeByteOrder::BigEndian;
+        assert_eq!(
+            big_endian.extract_raw_frame(&bytes, 0).unwrap(),
+            [0x11223344_u32.to_le_bytes(), 0x8899aabb_u32.to_le_bytes()].concat()
         );
     }
 }

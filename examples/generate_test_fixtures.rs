@@ -17,6 +17,7 @@ fn main() {
     fs::create_dir_all(&fixture_dir).expect("create fixture directory");
 
     write_uncompressed_multiframe(&fixture_dir.join("golden-uncompressed-u16-multiframe.dcm"));
+    write_native_word_order_fixtures(&fixture_dir.join("native-word-order"));
     write_jpeg_single_frame(&fixture_dir.join("golden-jpeg-baseline-single-frame.dcm"));
     write_large_jpeg_single_frame(&fixture_dir.join("golden-jpeg-baseline-large-single-frame.dcm"));
     write_jpeg_multiframe_with_bot(&fixture_dir.join("golden-jpeg-baseline-multiframe-bot.dcm"));
@@ -2940,4 +2941,234 @@ fn write_masking_fixtures(fixture_dir: &Path) {
         .expect("build slide label fixture meta")
         .write_to_file(fixture_dir.join("golden-masking-wsi-label.dcm"))
         .expect("write slide label fixture");
+}
+
+/// How a native 32-bit fixture stores its Pixel Data (or Float or Double
+/// Float Pixel Data).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WideSampleEncoding {
+    /// Explicit VR Little Endian: every sample low byte first.
+    LittleEndian,
+    /// Explicit VR Big Endian, VR OW, as a conforming writer stores it: the
+    /// value is 16-bit words, each written high byte first, and a 32-bit
+    /// sample is two words, the low word first (`0x11223344` is
+    /// `33 44 11 22`). Float and double float values are whole values in
+    /// big-endian byte order (`OF` and `OD`).
+    BigEndian,
+    /// Explicit VR Big Endian, VR OW, with the four bytes of each sample
+    /// reversed. This is deliberately not conforming: it is what software
+    /// writes that treats 32-bit samples of VR OW as 32-bit values, and a
+    /// conforming reader shows it with the two words of every sample
+    /// exchanged.
+    BigEndianReversedSamples,
+}
+
+impl WideSampleEncoding {
+    fn suffix(self) -> &'static str {
+        match self {
+            Self::LittleEndian => "le",
+            Self::BigEndian => "be",
+            Self::BigEndianReversedSamples => "be-reversed-samples-nonconforming",
+        }
+    }
+
+    fn transfer_syntax(self) -> &'static str {
+        match self {
+            Self::LittleEndian => uids::EXPLICIT_VR_LITTLE_ENDIAN,
+            // Retired; dicom-dictionary-std marks its constant deprecated.
+            _ => "1.2.840.10008.1.2.2",
+        }
+    }
+}
+
+/// What the samples of a native 32-bit fixture are.
+#[derive(Clone, Copy)]
+enum WideSampleKind {
+    /// Integer Pixel Data of VR OW, with its Bits Stored and Pixel
+    /// Representation.
+    Integer { bits_stored: u16, signed: bool },
+    /// Float Pixel Data, VR OF.
+    Float,
+    /// Double Float Pixel Data, VR OD.
+    Double,
+}
+
+/// Sample `index` of every native 32-bit integer fixture: its two words
+/// differ, and so do its four bytes, so exchanged words or bytes never go
+/// unnoticed. The bits above Bits Stored are not zero.
+fn native_word_order_sample(index: usize) -> u32 {
+    (index as u32).wrapping_mul(0x9e37_79b1).rotate_left(7) ^ 0x5a3c_96e1
+}
+
+/// Sample `index` of the float fixtures, of either width.
+fn native_word_order_float_sample(index: usize) -> f64 {
+    (index as f64 - 7.25) * 1234.5678
+}
+
+/// The same 32-bit integer samples as native Pixel Data in Explicit VR
+/// Little Endian and Explicit VR Big Endian, for one and three frames, and
+/// unsigned, signed and 24-bit-stored samples; float and double float
+/// samples in both byte orders; and one big-endian file that is not
+/// conforming. A file's name gives its kind, rows x columns, frames and
+/// encoding.
+fn write_native_word_order_fixtures(dir: &Path) {
+    fs::create_dir_all(dir).expect("create native word order fixture directory");
+    let mut instance = 0_u32;
+    let mut write = |name: &str, kind: WideSampleKind, frames: u16, encoding| {
+        instance += 1;
+        write_native_word_order_fixture(dir, name, kind, frames, encoding, instance);
+    };
+    for (name, bits_stored, signed) in [
+        ("u32", 32, false),
+        ("s32", 32, true),
+        ("u32-stored24", 24, false),
+    ] {
+        for frames in [1_u16, 3] {
+            for encoding in [
+                WideSampleEncoding::LittleEndian,
+                WideSampleEncoding::BigEndian,
+            ] {
+                let kind = WideSampleKind::Integer {
+                    bits_stored,
+                    signed,
+                };
+                write(name, kind, frames, encoding);
+            }
+        }
+    }
+    for (name, kind) in [
+        ("f32", WideSampleKind::Float),
+        ("f64", WideSampleKind::Double),
+    ] {
+        for encoding in [
+            WideSampleEncoding::LittleEndian,
+            WideSampleEncoding::BigEndian,
+        ] {
+            write(name, kind, 3, encoding);
+        }
+    }
+    write(
+        "u32",
+        WideSampleKind::Integer {
+            bits_stored: 32,
+            signed: false,
+        },
+        3,
+        WideSampleEncoding::BigEndianReversedSamples,
+    );
+}
+
+fn write_native_word_order_fixture(
+    dir: &Path,
+    name: &str,
+    kind: WideSampleKind,
+    frames: u16,
+    encoding: WideSampleEncoding,
+    instance: u32,
+) {
+    let (rows, columns) = (2_u16, 3_u16);
+    let count = usize::from(rows) * usize::from(columns) * usize::from(frames);
+    let (bits_allocated, bits_stored, signed) = match kind {
+        WideSampleKind::Integer {
+            bits_stored,
+            signed,
+        } => (32_u16, bits_stored, signed),
+        WideSampleKind::Float => (32, 32, true),
+        WideSampleKind::Double => (64, 64, true),
+    };
+    let pixel_data = match kind {
+        WideSampleKind::Integer { .. } => {
+            let samples = (0..count).map(native_word_order_sample);
+            match encoding {
+                // dicom-rs writes a 32-bit value in the byte order of the
+                // transfer syntax, so in a big-endian file its four bytes
+                // are reversed.
+                WideSampleEncoding::LittleEndian | WideSampleEncoding::BigEndianReversedSamples => {
+                    PrimitiveValue::U32(samples.collect())
+                }
+                // The low word first; dicom-rs writes each word in the byte
+                // order of the transfer syntax.
+                WideSampleEncoding::BigEndian => PrimitiveValue::U16(
+                    samples
+                        .flat_map(|sample| [sample as u16, (sample >> 16) as u16])
+                        .collect(),
+                ),
+            }
+        }
+        WideSampleKind::Float => PrimitiveValue::F32(
+            (0..count)
+                .map(|index| native_word_order_float_sample(index) as f32)
+                .collect(),
+        ),
+        WideSampleKind::Double => {
+            PrimitiveValue::F64((0..count).map(native_word_order_float_sample).collect())
+        }
+    };
+    let pixel_element = match kind {
+        WideSampleKind::Integer { .. } => DataElement::new(tags::PIXEL_DATA, VR::OW, pixel_data),
+        WideSampleKind::Float => DataElement::new(tags::FLOAT_PIXEL_DATA, VR::OF, pixel_data),
+        WideSampleKind::Double => {
+            DataElement::new(tags::DOUBLE_FLOAT_PIXEL_DATA, VR::OD, pixel_data)
+        }
+    };
+    let sop_instance_uid = format!("2.25.20007{instance:02}");
+    let mut obj = InMemDicomObject::from_element_iter([
+        DataElement::new(
+            tags::SOP_CLASS_UID,
+            VR::UI,
+            uids::SECONDARY_CAPTURE_IMAGE_STORAGE,
+        ),
+        DataElement::new(tags::SOP_INSTANCE_UID, VR::UI, sop_instance_uid.as_str()),
+        DataElement::new(tags::PATIENT_ID, VR::LO, "GOLDEN-NATIVE-WORD-ORDER"),
+        DataElement::new(tags::MODALITY, VR::CS, "OT"),
+        DataElement::new(tags::SAMPLES_PER_PIXEL, VR::US, PrimitiveValue::from(1_u16)),
+        DataElement::new(tags::PHOTOMETRIC_INTERPRETATION, VR::CS, "MONOCHROME2"),
+        DataElement::new(tags::ROWS, VR::US, PrimitiveValue::from(rows)),
+        DataElement::new(tags::COLUMNS, VR::US, PrimitiveValue::from(columns)),
+        DataElement::new(
+            tags::BITS_ALLOCATED,
+            VR::US,
+            PrimitiveValue::from(bits_allocated),
+        ),
+        pixel_element,
+    ]);
+    if let WideSampleKind::Integer { .. } = kind {
+        for element in [
+            DataElement::new(tags::BITS_STORED, VR::US, PrimitiveValue::from(bits_stored)),
+            DataElement::new(
+                tags::HIGH_BIT,
+                VR::US,
+                PrimitiveValue::from(bits_stored - 1),
+            ),
+            DataElement::new(
+                tags::PIXEL_REPRESENTATION,
+                VR::US,
+                PrimitiveValue::from(u16::from(signed)),
+            ),
+        ] {
+            obj.put(element);
+        }
+    }
+    if frames > 1 {
+        obj.put(DataElement::new(
+            tags::NUMBER_OF_FRAMES,
+            VR::IS,
+            frames.to_string(),
+        ));
+    }
+    let name = format!(
+        "golden-native-{name}-{rows}x{columns}-f{frames}-{}.dcm",
+        encoding.suffix()
+    );
+    obj.with_meta(
+        FileMetaTableBuilder::new()
+            .implementation_class_uid(FIXTURE_IMPLEMENTATION_CLASS_UID)
+            .implementation_version_name(FIXTURE_IMPLEMENTATION_VERSION_NAME)
+            .transfer_syntax(encoding.transfer_syntax())
+            .media_storage_sop_class_uid(uids::SECONDARY_CAPTURE_IMAGE_STORAGE)
+            .media_storage_sop_instance_uid(sop_instance_uid.as_str()),
+    )
+    .expect("build native word order fixture meta")
+    .write_to_file(dir.join(name))
+    .expect("write native word order fixture");
 }

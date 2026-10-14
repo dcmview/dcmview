@@ -50,6 +50,7 @@ marketing-review/
 !tests/fixtures/golden-masking-patient-a-us-2.dcm
 !tests/fixtures/golden-masking-patient-b-us.dcm
 !tests/fixtures/golden-masking-wsi-label.dcm
+!tests/fixtures/native-word-order/*.dcm
 
 # python package files
 *.egg-info/

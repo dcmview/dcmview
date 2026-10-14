@@ -19,6 +19,7 @@ mod integration {
     mod loader_discovery;
     mod malformed_inputs;
     mod native_u8_order;
+    mod native_word_order;
     mod overlay_data;
     mod pixel_digests;
     mod pixels_jp2_decode;

@@ -1079,3 +1079,65 @@ fn concurrent_requests_hold_no_more_heap_than_the_budget() {
         "{heap} bytes of heap held under a budget of {budget}"
     );
 }
+
+/// 32-bit samples stored as big-endian 16-bit words, low word first, are
+/// put in sample order in the buffer they were read into: no path holds
+/// more for such a frame than for the same frame in a little-endian file,
+/// and none allocates more often.
+#[test]
+fn big_endian_words_of_wide_samples_cost_what_little_endian_samples_do() {
+    const SIDE: u16 = 1249;
+    // The peak is counted over every thread of the runtime, so it moves by
+    // tens of kibibytes with when another thread frees. A second copy of
+    // the frame is about six mebibytes.
+    const SLACK: u64 = 256 * 1024;
+    let pixels = usize::from(SIDE) * usize::from(SIDE);
+    let plain = tokio::runtime::Runtime::new().expect("runtime");
+    let image = |transfer_syntax| {
+        Native::gray(SIDE, 32)
+            .in_syntax(transfer_syntax)
+            .file(noise(pixels * 4))
+    };
+    let files = vec![
+        ("little.dcm", image(uids::EXPLICIT_VR_LITTLE_ENDIAN)),
+        ("big.dcm", image("1.2.840.10008.1.2.2")),
+    ];
+    let scan = listed(&plain, &files);
+    let runtime = CountedRuntime::new();
+    let mut served = 0;
+    for path in Path::ALL {
+        let peak = |name: &str| {
+            let entry = Arc::new(scan.entry(name).clone());
+            let scheduler = roomy_scheduler();
+            let (ok, heap) = runtime.peak_during(ask(entry, path, scheduler.clone()));
+            runtime.peak_during(scheduler.load_when(|load| load.running == 0));
+            (ok, heap)
+        };
+        let (little_ok, little) = peak("little.dcm");
+        let (big_ok, big) = peak("big.dcm");
+        assert_eq!(big_ok, little_ok, "{path:?}");
+        assert!(
+            big <= little + SLACK,
+            "{path:?}: big-endian words held {big} bytes, little-endian samples {little}"
+        );
+        served += usize::from(big_ok);
+    }
+    assert!(served >= 6, "only {served} paths served a frame");
+
+    // A copy made and dropped while the frame is read would stay under the
+    // peak a raw frame reaches later, so the allocations are counted too:
+    // the words are read with as many as the samples are.
+    let requests = |name: &str| {
+        let entry = Arc::new(scan.entry(name).clone());
+        // Whatever a first request of a runtime sets up is not the frame.
+        runtime.requests_during(ask(entry.clone(), Path::Raw, roomy_scheduler()));
+        let (ok, made) = runtime.requests_during(ask(entry, Path::Raw, roomy_scheduler()));
+        assert!(ok, "{name}");
+        made
+    };
+    let (little, big) = (requests("little.dcm"), requests("big.dcm"));
+    assert_eq!(
+        big, little,
+        "allocations for a raw frame of big-endian words and of little-endian samples"
+    );
+}
