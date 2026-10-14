@@ -3,6 +3,7 @@ use crate::types::{FileEntry, NativePixelDataKind};
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use dicom_dictionary_std::uids;
+use dicom_encoding::transfer_syntax::Endianness;
 use dicom_encoding::TransferSyntaxIndex;
 use dicom_object::{open_file, FileMetaTable};
 use dicom_parser::dataset::lazy_read::LazyDataSetReader;
@@ -375,6 +376,10 @@ fn read_native_frame_bytes(
     let transfer_syntax = TransferSyntaxRegistry
         .get(meta.transfer_syntax())
         .with_context(|| format!("unknown transfer syntax {}", meta.transfer_syntax()))?;
+    let byte_order = match transfer_syntax.endianness() {
+        Endianness::Big => NativeByteOrder::BigEndian,
+        Endianness::Little => NativeByteOrder::LittleEndian,
+    };
     let mut parser = LazyDataSetReader::new_with_ts(reader, transfer_syntax)
         .context("failed to start DICOM data set parser")?;
 
@@ -403,6 +408,12 @@ fn read_native_frame_bytes(
                 decoder.seek(value_start + start as u64)?;
                 let mut bytes = Vec::with_capacity(frame_len);
                 decoder.read_to_vec(u32::try_from(frame_len)?, &mut bytes)?;
+                // 32-bit samples of big-endian words, low word first, become
+                // big-endian samples in the buffer they were read into.
+                use super::native_layout::{exchange_words_of_samples, stores_low_word_first};
+                if stores_low_word_first(byte_order, header.vr, layout.bits_allocated) {
+                    exchange_words_of_samples(&mut bytes);
+                }
                 return Ok(bytes);
             }
             // The lazy reader leaves unread values in the stream; step over
