@@ -741,9 +741,10 @@ position maps to a thumbnail position by one scale per axis.
 presentation is the same whatever produced the image: the frame's default
 window (or `window_mode=full_dynamic`), no shutter, no overlay planes, an
 area filter in display space, JPEG quality 85, no ICC profile.
-`X-Thumbnail-Source` is therefore diagnostic. The sources today are
-`thumbnail_cache` and `full_decode`; `display_cache`, `raw_cache` and
-`reduced_decode` are declared for the cheaper sources that follow.
+`X-Thumbnail-Source` is therefore diagnostic. The sources sent are
+`thumbnail_cache`, `reduced_decode` ("Reduced Decodes For Thumbnails") and
+`full_decode`; `display_cache` and `raw_cache` are declared for sources the
+viewer does not have.
 
 Thumbnails are withheld and redacted exactly where display frames are, so
 the gallery cannot show what the viewer hides:
@@ -804,6 +805,71 @@ the HTTP boundary, on a host with four cores or more. The opt-in measurement
 build on such a host. On a one-core host the bound is one background decode
 that had already started.
 
+### Reduced Decodes For Thumbnails
+
+A thumbnail is at most 1,024 pixels along its longest edge, and two codecs
+can decode a frame at a fraction of its size for a fraction of the work
+(`docs/design/gallery-views.md` section 3.3): JPEG 2000 stops its inverse
+wavelet transform at a lower resolution level, and the JPEG DCT processes
+invert each block at 1/2, 1/4 or 1/8 of its size. `pixels/reduced.rs` states
+when a thumbnail uses them, and its module comment is the rule.
+
+**How far.** `pixels::thumbnail_reduction` gives the reduction a thumbnail
+asks for, from the catalog entry and the request alone: for a JPEG 2000 or
+JPEG Baseline file, the largest number of halvings (at most three for JPEG)
+that leaves the frame at least twice its thumbnail along both axes. Twice,
+so that the area filter that makes the thumbnail still averages four decoded
+pixels or more for each of its own; a frame is therefore reduced when it is
+at least four times its thumbnail (512 pixels for the 128 bucket, 4,096 for
+the 1,024 bucket). The thumbnail of a reduced frame has the size of the
+stored frame's, from `thumbnail_dimensions` of the entry's rows and columns,
+so the geometry a client derives from the catalog does not depend on how
+the frame was decoded.
+
+**Same presentation.** A reduction is asked for only when the frame's
+default presentation is the same function of each sample whatever the rest
+of the frame holds: colour, and grayscale with a stored window or a selected
+VOI LUT. A grayscale frame windowed from its own histogram (no stored
+window) and every `full_dynamic` thumbnail of a grayscale frame are decoded
+in full, because a reduced image has other percentiles and other extremes.
+A colour frame has no window in either mode, so its `full_dynamic`
+thumbnail is reduced like its default one. So a thumbnail has the window its
+display frame has, whichever path decoded it, and differs from the shrunk
+display frame only by the decoder's own low-pass filter along edges.
+
+**Checked first, and held to the entry.** A reduced decode starts where a
+full one does: `codestream::checked` accepts the frame for the entry before
+any decoder sees it (`jpeg2000::render_jp2_thumbnail`,
+`pixeldata_frame::decode_frame_for_thumbnail`), and the decoder is the same
+library given the same bytes with one parameter more. What a frame declares
+can only lower the reduction: a JPEG 2000 frame is halved no more often than
+the fewest decomposition levels any of its coding styles states, and not at
+all when its image does not start at the origin of its reference grid (the
+decoder does not place such an image correctly at a reduced resolution); a
+JPEG frame in the lossless process is not reduced. What a reduced decode
+returns must be the entry's image at the reduction applied, each extent
+divided and rounded up (`Reduction::accepts`); anything else is discarded.
+
+**Never worse than a full decode.** A frame that cannot be reduced as asked
+is reduced less or decoded in full, in the same task and under the same
+permit, after the reduced attempt has given back what it held. A frame
+therefore costs at most one reduced decode and one full decode, never both
+at once, and every frame that has a thumbnail from a full decode has one.
+The reservation does not change: `DecodeWork::Thumbnail` reserves what a
+full decode holds whichever path is taken, because whether a frame can be
+reduced is known only once its codestream has been read.
+
+**Redaction and masking.** A frame with redaction boxes is decoded in full,
+so its boxes are painted on stored pixels before anything is resampled and
+no redacted pixel reaches the thumbnail through a decoder's filter. A masked
+session refuses the thumbnails of the files it withholds (slide label and
+overview images) before any of this, and serves the others as any session
+does.
+
+`X-Thumbnail-Source` is `reduced_decode` when the decode that made the
+thumbnail was reduced and `full_decode` otherwise. Reduced thumbnails are
+written to the thumbnail cache only, like any other.
+
 ### Decode Admission
 
 A decode holds its frame several times over while it runs, so the number of
@@ -852,7 +918,9 @@ reservation is never less than what its decode holds; `tests/raster_cost`
 measures each path against it. The DICOM rows are rules: a compressed
 frame must declare the image of its catalog entry before it is decoded
 ("Compressed Frames Are Held To The Header"), but the heap a DICOM decoder
-holds for that image is not limited the way the raster decoder's is.
+holds for that image is not limited the way the raster decoder's is. A
+thumbnail reserves its row whether its frame is decoded in full or at a
+reduced resolution ("Reduced Decodes For Thumbnails").
 
 A display frame has two stages and reserves the larger. Its decode is over,
 and what the decode held given back, before the frame is encoded; only the
@@ -998,9 +1066,11 @@ entry's image costs whatever its own header declares.
   bytes alone, and allocates nothing that grows with it. `codestream::agrees`
   compares that with the entry by the accept table in its documentation,
   which is the whole rule. `codestream::checked` runs both, and every decoder
-  calls it: `pixels/jpeg2000.rs` `decode_checked` for JPEG 2000, and
-  `pixels/pixeldata_frame.rs` `decode_object` for JPEG, JPEG-LS and JPEG XL.
-  The display, raw, raw-pixel and thumbnail endpoints, the overlay endpoints
+  calls it: `pixels/jpeg2000.rs` `checked_codestream` for JPEG 2000, and
+  `pixels/pixeldata_frame.rs` `checked_fragment` for JPEG, JPEG-LS and JPEG
+  XL. Each returns a value its module's decoders take and nothing else makes,
+  so a decode cannot skip it. The display, raw, raw-pixel and thumbnail
+  endpoints (a thumbnail's reduced decode included), the overlay endpoints
   that decode another object's frames, and discovery's scan of a fractional
   segmentation all decode through those two functions.
 - A frame that fails is a decode error for that frame (`500
@@ -1025,6 +1095,10 @@ What the table does not name is not compared: the colour transform, the
 number of resolution levels, chroma subsampling, restart intervals, a
 lossless point transform, Bits Stored and the sign of the samples differ
 between honest files and their headers, and such files decode as before.
+Two of them are read all the same, because they bound how far a thumbnail's
+decode of a JPEG 2000 frame is reduced: the fewest decomposition levels any
+coding style of the frame states, and whether its image starts at the origin
+of its reference grid (`Structure::Jpeg2000`).
 
 Three more rules close the same gap where there is no header to compare:
 
@@ -2553,6 +2627,29 @@ installation and VS Code Electron integration can also use network/cache state;
   the budget. `overlays.rs` there does the same for a legend and for every
   kind of overlay, through the API, on objects and displayed frames enlarged
   from the committed fixtures and filled with samples that do not compress.
+- Reduced thumbnail tests (`tests/integration/reduced_thumbnails.rs`) take
+  thumbnails of honest JPEG 2000 and JPEG frames written by other encoders
+  (`tests/fixtures/reduced-decode`), one for each layout the reduced paths
+  decode: bit depths, signed samples, MONOCHROME1, colour with and without
+  a transform, tiles, precincts and tile-parts, baseline and progressive
+  JPEG, chroma subsampling, odd sizes, several frames. Each thumbnail must
+  have the size its entry gives it, say which decode made it, and match the
+  default display frame shrunk within a stated tolerance, edge rows and
+  columns included. The same file holds the rule's table
+  (`thumbnail_reduction`), the frames that are decoded in full (grayscale
+  with no stored window or in `full_dynamic`, redaction boxes, no levels,
+  an image off its grid origin along either axis, the lossless process), and frames with their bytes replaced or cut
+  off, for which the thumbnail endpoint must answer no worse than the
+  display endpoint and cache no failure. No frame an encoder writes
+  fails the reduced JPEG 2000 decode and passes the full one, so a unit
+  test in `pixels/jpeg2000.rs` replaces the attempt to show the full decode
+  that follows it. `tests/raster_cost/reduced.rs`
+  counts the heap of reduced JPEG thumbnails, of failed attempts followed by
+  a full decode, and of the full decode of the same frames against the one
+  reservation; the JPEG 2000 decoder cannot run on the counting allocator,
+  so for it `tests/codestream_cost` shows that a frame which disagrees with
+  its header is refused before a reduced decode exactly as before a full
+  one.
 - Codestream tests state the same for compressed DICOM frames.
   `integration::codestream_agreement` decodes honest codestreams written by
   encoders the viewer does not link (OpenJPEG, libjpeg, DCMTK, libjxl; the
@@ -2716,11 +2813,15 @@ installation and VS Code Electron integration can also use network/cache state;
   broader compatibility is manual or reported with de-identified data.
 - Performance targets require explicit timing and memory instrumentation. They
   are not inferred from mocked or ordinary correctness tests.
-- `integration::thumbnail_timing` is such an instrument and is ignored in
-  normal runs: it measures the delay thumbnails add to display frames
-  against `pixels::INTERACTIVE_LATENCY_TARGET` over files it generates. Run
-  it in a release build (`cargo test --release --test integration
-  thumbnail_timing -- --ignored --nocapture`). The `corpus` profile skips it.
+- `integration::thumbnail_timing` holds two such instruments, ignored in
+  normal runs: one measures the delay thumbnails add to display frames
+  against `pixels::INTERACTIVE_LATENCY_TARGET` over files it generates; the
+  other times cold thumbnails of 2080 x 1560 JPEG 2000 and JPEG frames
+  decoded at an eighth of their size against the same frames decoded in
+  full, and fails when the reduced JPEG 2000 ones are not at least twice as
+  fast. Run them in a release build (`cargo test --release --test
+  integration thumbnail_timing -- --ignored --nocapture`). The `corpus`
+  profile skips them.
 - `scripts/startup_timing.py` (the `timing` profile) is the instrument for
   startup and discovery time. It compares two release binaries, so it is
   run on one quiet machine and not in CI.
@@ -2784,6 +2885,12 @@ Not current correctness blockers:
 - Thumbnails write their own cache only, and anything that returns source
   pixels applies the frame's redaction boxes and the masked-session refusal
   before encoding.
+- A thumbnail's decode is reduced only as `pixels::thumbnail_reduction`
+  asks, from the entry and the request; what the frame declares can lower
+  the reduction and never raise it. A frame with redaction boxes, and one
+  whose presentation depends on its own samples, is decoded in full, and a
+  frame that cannot be reduced as asked is decoded in full under the same
+  permit and the same reservation.
 - Treat `src/api/contracts.rs` plus its generated TypeScript as one contract.
 - Keep `crates/dcmview-protocol` free of viewer, server and DICOM
   dependencies, and only add fields to its types.

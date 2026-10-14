@@ -397,6 +397,7 @@ def build_ref(ref: str) -> Path:
 		"DCMVIEW_SKIP_FRONTEND_BUILD": "1",
 		"CARGO_TARGET_DIR": str(timing_root() / "build"),
 	}
+	_forget_workspace_crates(source, environment)
 	subprocess.run(["cargo", "build", "--release", "--locked", "--bin", "dcmview"], cwd=source, check=True, env=environment)
 	shutil.copy2(timing_root() / "build" / "release" / _binary_name(), binary)
 	(directory / "ref.txt").write_text(f"{ref} {commit} rustc {toolchain()}\n")
@@ -404,16 +405,41 @@ def build_ref(ref: str) -> Path:
 	return binary
 
 
+def _forget_workspace_crates(source: Path, environment: dict[str, str]) -> None:
+	"""Drop what the shared `build` directory holds of this workspace's own crates.
+
+	Cargo tells workspace crates apart by their path inside the workspace,
+	which is the same for every ref built here, and judges freshness by file
+	times, which an extracted archive and a checkout do not share. Left
+	alone, a ref can be linked against a crate another ref compiled.
+	Third-party dependencies are kept, so they are still built once.
+	"""
+	metadata = subprocess.run(
+		["cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"],
+		cwd=source,
+		check=True,
+		capture_output=True,
+		text=True,
+		env=environment,
+	)
+	members = sorted({package["name"] for package in json.loads(metadata.stdout)["packages"]})
+	command = ["cargo", "clean", "--release"]
+	for member in members:
+		command += ["-p", member]
+	subprocess.run(command, cwd=source, check=True, env=environment)
+
+
 def build_candidate() -> Path:
 	"""A release binary of this checkout as it is on disk.
 
 	It compiles into the same `build` directory as the baselines, so the
-	dependencies are built once for all of them and the checkout's own
-	`target/release` is neither needed nor touched.
+	third-party dependencies are built once for all of them and the
+	checkout's own `target/release` is neither needed nor touched.
 	"""
 	environment = {**os.environ, "CARGO_TARGET_DIR": str(timing_root() / "build")}
 	if (REPO_ROOT / "frontend" / "dist" / "index.html").is_file():
 		environment["DCMVIEW_SKIP_FRONTEND_BUILD"] = "1"
+	_forget_workspace_crates(REPO_ROOT, environment)
 	subprocess.run(["cargo", "build", "--release", "--locked", "--bin", "dcmview"], cwd=REPO_ROOT, check=True, env=environment)
 	binary = timing_root() / "candidate" / _binary_name()
 	binary.parent.mkdir(parents=True, exist_ok=True)

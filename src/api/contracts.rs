@@ -160,8 +160,8 @@ pub const THUMBNAIL_SIZE_BUCKETS: [u32; 4] = [128, 256, 512, 1024];
 pub const THUMBNAIL_DEFAULT_SIZE: u32 = 256;
 
 /// The step that produced a thumbnail, reported in
-/// [`THUMBNAIL_HEADER_SOURCE`]. `ThumbnailCache` and `FullDecode` are sent
-/// today; the others are reserved for the cheaper sources that follow.
+/// [`THUMBNAIL_HEADER_SOURCE`]. `ThumbnailCache`, `ReducedDecode` and
+/// `FullDecode` are sent; `DisplayCache` and `RawCache` are reserved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ThumbnailSource {
