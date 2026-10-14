@@ -21,7 +21,8 @@ use super::error::Stated;
 use super::header::open_header;
 use super::icc::select_icc_profile;
 use super::native_layout::{
-    native_pixel_element_tag, NativeByteOrder, NativeFrameLayout, NativeLayoutError,
+    exchange_words_of_samples, native_pixel_element_tag, stores_low_word_first, NativeByteOrder,
+    NativeFrameLayout, NativeLayoutError,
 };
 use super::palette::palette_indices_to_rgb8;
 use super::render::{
@@ -410,7 +411,6 @@ fn read_native_frame_bytes(
                 decoder.read_to_vec(u32::try_from(frame_len)?, &mut bytes)?;
                 // 32-bit samples of big-endian words, low word first, become
                 // big-endian samples in the buffer they were read into.
-                use super::native_layout::{exchange_words_of_samples, stores_low_word_first};
                 if stores_low_word_first(byte_order, header.vr, layout.bits_allocated) {
                     exchange_words_of_samples(&mut bytes);
                 }
