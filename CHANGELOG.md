@@ -321,6 +321,19 @@ diagnostic viewer.
   decompressed and kept. The viewer used neither. A frame with an embedded
   profile is now refused (see Changed), and a frame in the box container is
   decoded from its codestream alone; its pixels are unchanged.
+- 32-bit integer images in Explicit VR Big Endian (`1.2.840.10008.1.2.2`)
+  whose Pixel Data has VR OW show their stored values. Such a file stores
+  each sample as two 16-bit words, the low word first, each word high byte
+  first, as DCMTK writes it. Versions 0.3.0 to 0.4.1 reversed the four
+  bytes of each sample instead, so the display, thumbnails, raw frames, the
+  pixel readout, pixel digests and value overlays had the two words of
+  every sample exchanged. Float and Double Float Pixel Data, 16-bit
+  samples and the little-endian transfer syntaxes were never affected. A
+  big-endian file whose 32-bit samples of VR OW have their four bytes
+  reversed, which is not conforming but is how pydicom reads such samples,
+  looked right in 0.3.0 to 0.4.1 and now shows the words of each sample
+  exchanged, as it does in DCMTK; see
+  [troubleshooting](docs/troubleshooting.md#a-big-endian-32-bit-image-shows-wrong-values-or-noise).
 
 ## 0.4.1 - 2026-10-09
 

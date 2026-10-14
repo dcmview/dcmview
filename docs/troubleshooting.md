@@ -385,6 +385,29 @@ or the file metadata was readable but no image frames are present.
 Fix: use the tag panel to inspect metadata, or choose an image object with
 Pixel Data. Non-image DICOM objects may still be useful for tag inspection.
 
+### A big-endian 32-bit image shows wrong values or noise
+
+Symptom: a 32-bit integer image in Explicit VR Big Endian
+(`1.2.840.10008.1.2.2`) looks like noise or has values far from what was
+expected, while pydicom shows it as intended. The tag panel shows Pixel Data
+with VR `OW` and Bits Allocated 32. DCMTK shows the file the same way
+`dcmview` does.
+
+Cause: the file was written by software that stored each 32-bit sample with
+its four bytes reversed. A value of VR OW is 16-bit words, and a 32-bit
+sample is two of them, the low word first, each written high byte first in
+a big-endian file (PS3.5 section 8.2): the sample `0x11223344` is stored
+`33 44 11 22`, as DCMTK writes it. Software that treats such samples as
+32-bit values stores `11 22 33 44` and reads its own files back, and
+pydicom reads them the same way, but in a conforming reader the two words
+of each sample are exchanged. `dcmview` 0.3.0 to 0.4.1 read these files as
+their writer meant them and conforming files with their words exchanged; it
+now reads Pixel Data as the standard defines it.
+
+Fix: write the file again as Explicit VR Little Endian from the original
+pixels. Float and Double Float Pixel Data, 16-bit samples, and files in the
+little-endian transfer syntaxes are not affected.
+
 ## Remote Workflows
 
 ### Cannot access a remote `dcmview` URL locally

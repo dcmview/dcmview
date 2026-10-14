@@ -616,6 +616,23 @@ real-world-value mapping remains a separate semantic capability (the
 value-mapping endpoint, value overlays, and display windows requested in a
 `unit`) rather than an implicit part of the display pipeline.
 
+In Explicit VR Big Endian, 32-bit integer Pixel Data of VR OW is two 16-bit
+words a sample, the low word first, each word high byte first: Pixel Data
+of VR OW is a stream of words in the byte order of the transfer syntax, and
+a pixel cell wider than a word continues, least significant bit first, into
+the next word (PS3.5 section 8.2, in the editions that carry the big-endian
+transfer syntax). DCMTK reads and writes it so: the sample `0x11223344` is
+stored `33 44 11 22`. `native_layout.rs` `stores_low_word_first` states the
+rule, and `read_native_frame_bytes` exchanges the two words of each sample
+in the buffer the frame was read into, so the frame holds big-endian
+samples that are then reversed like any other. Every reader of native
+frames (display, thumbnails, raw frames, the pixel readout, pixel digests
+and value overlays) goes through it. Float Pixel Data (OF) and Double Float
+Pixel Data (OD) are whole 32- and 64-bit values in the byte order of the
+transfer syntax and are reversed as values. A big-endian file whose 32-bit
+samples of VR OW have their four bytes reversed is not conforming and shows
+the two words of each sample exchanged, as DCMTK shows it.
+
 The frontend uses raw frames for local interactive window/level for every
 single-channel frame up to `MAX_RENDER_PIXELS` (20 Mpx): 1-, 8- and 16-bit
 integers through a per-stored-value table, 32-bit integers and float samples
