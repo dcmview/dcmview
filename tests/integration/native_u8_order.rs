@@ -5,7 +5,7 @@
 //! the transfer syntax, so Explicit VR Big Endian stores every pair of 8-bit
 //! samples exchanged; a value of VR OB is a byte stream in sample order. The
 //! fixtures under `tests/fixtures/native-u8-order/` hold one set of samples
-//! each way, and beside them as Explicit VR Little Endian. DCMTK 3.6.9
+//! each way, and beside them as Explicit VR Little Endian. DCMTK 3.7.0
 //! `dcmconv +tb` of each little-endian fixture writes Pixel Data byte for
 //! byte equal to the `be-ow` fixture of the same name, and pydicom 3.0.2 and
 //! DCMTK read all three files of a name as the same pixels. Nothing here
@@ -158,7 +158,7 @@ async fn big_endian_eight_bit_frames_equal_their_little_endian_frames() {
 /// The fixture that is not conforming on purpose: Explicit VR Big Endian,
 /// VR OW, its samples in order on disk. Read as the words its VR says it
 /// holds, every pair of samples is exchanged, across the whole value (a
-/// frame is 9 bytes, so words span frames). pydicom 3.0.2 and DCMTK 3.6.9
+/// frame is 9 bytes, so words span frames). pydicom 3.0.2 and DCMTK 3.7.0
 /// read it the same way.
 #[tokio::test]
 async fn words_written_in_sample_order_show_exchanged_pairs() {

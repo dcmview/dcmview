@@ -670,17 +670,6 @@ fn a_dicom_fixture_holds_no_more_heap_than_it_reserved() {
     let pixels = usize::from(SIDE) * usize::from(SIDE);
     files.push(("native16.dcm", native_dicom(SIDE, 16, noise(pixels * 2))));
     files.push(("native32.dcm", native_dicom(SIDE, 32, noise(pixels * 4))));
-    // 8-bit samples as big-endian 16-bit words, in a frame of an odd number
-    // of bytes: the word that holds the last sample is read whole, and the
-    // samples are put in order in the buffer they were read into.
-    const ODD_SIDE: u16 = 1249;
-    let odd_pixels = usize::from(ODD_SIDE) * usize::from(ODD_SIDE);
-    files.push((
-        "native8-big-endian-words.dcm",
-        Native::gray(ODD_SIDE, 8)
-            .in_syntax("1.2.840.10008.1.2.2")
-            .file(noise(odd_pixels + 1)),
-    ));
     let scan = listed(&plain, &files);
     let runtime = CountedRuntime::new();
     let mut served = 0;
@@ -696,6 +685,66 @@ fn a_dicom_fixture_holds_no_more_heap_than_it_reserved() {
     assert!(
         served >= 6 * files.len(),
         "only {served} paths served a frame"
+    );
+}
+
+/// 8-bit samples stored as big-endian 16-bit words are put in sample order
+/// in the buffer they were read into: no path holds more for such a frame
+/// than for the same frame in a little-endian file, beyond the one word
+/// that is read whole around a frame of an odd number of bytes, and none
+/// allocates more often.
+#[test]
+fn big_endian_words_cost_what_little_endian_bytes_do() {
+    const SIDE: u16 = 1249;
+    const SLACK: u64 = 4096;
+    let pixels = usize::from(SIDE) * usize::from(SIDE);
+    let plain = tokio::runtime::Runtime::new().expect("runtime");
+    let image = |transfer_syntax| {
+        Native::gray(SIDE, 8)
+            .in_syntax(transfer_syntax)
+            .file(noise(pixels + 1))
+    };
+    let files = vec![
+        ("little.dcm", image(uids::EXPLICIT_VR_LITTLE_ENDIAN)),
+        ("big.dcm", image("1.2.840.10008.1.2.2")),
+    ];
+    let scan = listed(&plain, &files);
+    let runtime = CountedRuntime::new();
+    let mut served = 0;
+    for path in Path::ALL {
+        let peak = |name: &str| {
+            let entry = Arc::new(scan.entry(name).clone());
+            let scheduler = roomy_scheduler();
+            let (ok, heap) = runtime.peak_during(ask(entry, path, scheduler.clone()));
+            runtime.peak_during(scheduler.load_when(|load| load.running == 0));
+            (ok, heap)
+        };
+        let (little_ok, little) = peak("little.dcm");
+        let (big_ok, big) = peak("big.dcm");
+        assert_eq!(big_ok, little_ok, "{path:?}");
+        assert!(
+            big <= little + SLACK,
+            "{path:?}: big-endian words held {big} bytes, little-endian bytes {little}"
+        );
+        served += usize::from(big_ok);
+    }
+    assert!(served >= 6, "only {served} paths served a frame");
+
+    // A copy made and dropped while the frame is read would stay under the
+    // peak a raw frame reaches later, so the allocations are counted too:
+    // the words are read with as many as the bytes are.
+    let requests = |name: &str| {
+        let entry = Arc::new(scan.entry(name).clone());
+        // Whatever a first request of a runtime sets up is not the frame.
+        runtime.requests_during(ask(entry.clone(), Path::Raw, roomy_scheduler()));
+        let (ok, made) = runtime.requests_during(ask(entry, Path::Raw, roomy_scheduler()));
+        assert!(ok, "{name}");
+        made
+    };
+    let (little, big) = (requests("little.dcm"), requests("big.dcm"));
+    assert_eq!(
+        big, little,
+        "allocations for a raw frame of big-endian words and of little-endian bytes"
     );
 }
 
