@@ -374,6 +374,28 @@ dozens of named extra channels, is refused too, with "pixel data disagrees
 with the header: its own header cannot be read"; encode it without the
 extra channels.
 
+### A big-endian 8-bit image shows neighbouring pixels exchanged
+
+Symptom: an 8-bit image in Explicit VR Big Endian
+(`1.2.840.10008.1.2.2`) looks combed: along each row, every two
+neighbouring pixels have changed places, and in a colour image the colours
+are wrong as well. The tag panel shows Pixel Data with VR `OW`. pydicom,
+DCMTK and other conforming readers show the file the same way.
+
+Cause: the file was written by software that stored the samples in pixel
+order under VR OW. In a big-endian file a value of VR OW is 16-bit words
+written high byte first, so a conforming writer stores every pair of 8-bit
+samples exchanged, and a reader exchanges them back. Software that changes
+the byte order of a data set without swapping its 8-bit Pixel Data, or
+that writes pixel bytes unchanged under OW, produces such a file. `dcmview`
+0.3.0 to 0.4.1 read these files as their writer meant them and conforming
+files exchanged; it now reads Pixel Data as the standard defines it.
+
+Fix: write the file again as Explicit VR Little Endian from the original
+pixels, or give its Pixel Data VR OB, which is a byte stream in either byte
+order. Files with 16-bit samples, and 8-bit files in the little-endian
+transfer syntaxes, are not affected.
+
 ### Tags load but the image is missing
 
 Symptom: the file appears in the file list, but frame requests return 404 or

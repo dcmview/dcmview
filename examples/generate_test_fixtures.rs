@@ -76,6 +76,310 @@ fn main() {
     write_real_world_value_mapping_instance(&fixture_dir.join("golden-rwvm-ct-hounsfield.dcm"));
     write_presentation_state_fixtures(&fixture_dir);
     write_masking_fixtures(&fixture_dir);
+    write_native_u8_order_fixtures(&fixture_dir.join("native-u8-order"));
+    write_overlay_data_fixtures(&fixture_dir.join("overlay-data"));
+}
+
+/// Whether bit `index` of the overlay data fixtures' 5x7 plane is set.
+fn overlay_data_bit(index: usize) -> bool {
+    index.is_multiple_of(3) || index % 7 == 2
+}
+
+/// One 5x7 overlay plane over a 5x7 gray image, its Overlay Data stored as
+/// VR OW (16-bit words in the byte order of the transfer syntax) and as VR
+/// OB (a byte stream, as files written before the attribute became OW alone
+/// carry it), each in Explicit VR Little Endian and Explicit VR Big Endian.
+/// The plane's 35 bits are 5 bytes, so the last word is half padding.
+fn write_overlay_data_fixtures(dir: &Path) {
+    fs::create_dir_all(dir).expect("create overlay data fixture directory");
+    let (rows, columns) = (5_u16, 7_u16);
+    let pixels = usize::from(rows) * usize::from(columns);
+    // Bit n of the plane is bit n % 8 of byte n / 8.
+    let mut packed = vec![0_u8; pixels.div_ceil(16) * 2];
+    for index in (0..pixels).filter(|index| overlay_data_bit(*index)) {
+        packed[index / 8] |= 1 << (index % 8);
+    }
+    let words = packed
+        .chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .collect::<Vec<_>>();
+    let mut instance = 0_u32;
+    for (byte_order, transfer_syntax) in [
+        ("le", uids::EXPLICIT_VR_LITTLE_ENDIAN),
+        // Retired; dicom-dictionary-std marks its constant deprecated.
+        ("be", "1.2.840.10008.1.2.2"),
+    ] {
+        for vr in [VR::OW, VR::OB] {
+            instance += 1;
+            let sop_instance_uid = format!("2.25.20006{instance:02}");
+            let mut obj = InMemDicomObject::from_element_iter([
+                DataElement::new(
+                    tags::SOP_CLASS_UID,
+                    VR::UI,
+                    uids::SECONDARY_CAPTURE_IMAGE_STORAGE,
+                ),
+                DataElement::new(tags::SOP_INSTANCE_UID, VR::UI, sop_instance_uid.as_str()),
+                DataElement::new(tags::PATIENT_ID, VR::LO, "GOLDEN-OVERLAY-DATA"),
+                DataElement::new(tags::MODALITY, VR::CS, "OT"),
+                DataElement::new(tags::SAMPLES_PER_PIXEL, VR::US, PrimitiveValue::from(1_u16)),
+                DataElement::new(tags::PHOTOMETRIC_INTERPRETATION, VR::CS, "MONOCHROME2"),
+                DataElement::new(tags::ROWS, VR::US, PrimitiveValue::from(rows)),
+                DataElement::new(tags::COLUMNS, VR::US, PrimitiveValue::from(columns)),
+                DataElement::new(tags::BITS_ALLOCATED, VR::US, PrimitiveValue::from(8_u16)),
+                DataElement::new(tags::BITS_STORED, VR::US, PrimitiveValue::from(8_u16)),
+                DataElement::new(tags::HIGH_BIT, VR::US, PrimitiveValue::from(7_u16)),
+                DataElement::new(
+                    tags::PIXEL_REPRESENTATION,
+                    VR::US,
+                    PrimitiveValue::from(0_u16),
+                ),
+                // A byte stream in either byte order.
+                DataElement::new(
+                    tags::PIXEL_DATA,
+                    VR::OB,
+                    PrimitiveValue::from(vec![40_u8; pixels + pixels % 2]),
+                ),
+            ]);
+            for element in overlay_plane_elements(0x6000, [rows, columns], [1, 1], &words) {
+                obj.put(element);
+            }
+            if vr == VR::OB {
+                obj.put(DataElement::new(
+                    Tag(0x6000, 0x3000),
+                    VR::OB,
+                    PrimitiveValue::from(packed.clone()),
+                ));
+            }
+            let name = format!(
+                "golden-overlay-data-5x7-{byte_order}-{}.dcm",
+                if vr == VR::OB { "ob" } else { "ow" }
+            );
+            obj.with_meta(
+                FileMetaTableBuilder::new()
+                    .implementation_class_uid(FIXTURE_IMPLEMENTATION_CLASS_UID)
+                    .implementation_version_name(FIXTURE_IMPLEMENTATION_VERSION_NAME)
+                    .transfer_syntax(transfer_syntax)
+                    .media_storage_sop_class_uid(uids::SECONDARY_CAPTURE_IMAGE_STORAGE)
+                    .media_storage_sop_instance_uid(sop_instance_uid.as_str()),
+            )
+            .expect("build overlay data fixture meta")
+            .write_to_file(dir.join(name))
+            .expect("write overlay data fixture");
+        }
+    }
+}
+
+/// How a native 8-bit fixture stores its Pixel Data.
+#[derive(Clone, Copy)]
+enum NativeU8Encoding {
+    /// Explicit VR Little Endian, VR OW: the samples in order.
+    LittleEndianWords,
+    /// Explicit VR Big Endian, VR OW, as a conforming writer stores it: the
+    /// value is 16-bit words, each written high byte first, so every pair of
+    /// samples is exchanged on disk and the padding byte of a value of odd
+    /// length comes before its last sample.
+    BigEndianWords,
+    /// Explicit VR Big Endian, VR OB: a byte stream, the samples in order.
+    BigEndianBytes,
+    /// Explicit VR Big Endian, VR OW, with the samples in order. This is
+    /// deliberately not conforming: it is what software writes that changes
+    /// the byte order of a data set without swapping 8-bit words, and a
+    /// conforming reader shows it with every pair of samples exchanged.
+    BigEndianWordsInSampleOrder,
+}
+
+impl NativeU8Encoding {
+    fn suffix(self) -> &'static str {
+        match self {
+            Self::LittleEndianWords => "le",
+            Self::BigEndianWords => "be-ow",
+            Self::BigEndianBytes => "be-ob",
+            Self::BigEndianWordsInSampleOrder => "be-ow-sample-order-nonconforming",
+        }
+    }
+
+    fn transfer_syntax(self) -> &'static str {
+        match self {
+            Self::LittleEndianWords => uids::EXPLICIT_VR_LITTLE_ENDIAN,
+            // Retired; dicom-dictionary-std marks its constant deprecated.
+            _ => "1.2.840.10008.1.2.2",
+        }
+    }
+
+    /// The Pixel Data element of `samples`, padded to an even length.
+    fn pixel_data(self, samples: &[u8]) -> DataElement<InMemDicomObject> {
+        let mut padded = samples.to_vec();
+        if padded.len() % 2 == 1 {
+            padded.push(0);
+        }
+        match self {
+            // dicom-rs writes a value of bytes as it is, whatever its VR.
+            Self::LittleEndianWords | Self::BigEndianWordsInSampleOrder => {
+                DataElement::new(tags::PIXEL_DATA, VR::OW, PrimitiveValue::from(padded))
+            }
+            Self::BigEndianBytes => {
+                DataElement::new(tags::PIXEL_DATA, VR::OB, PrimitiveValue::from(padded))
+            }
+            // The first sample is the low byte of the first word; dicom-rs
+            // writes each word in the byte order of the transfer syntax.
+            Self::BigEndianWords => DataElement::new(
+                tags::PIXEL_DATA,
+                VR::OW,
+                PrimitiveValue::U16(
+                    padded
+                        .chunks_exact(2)
+                        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                        .collect(),
+                ),
+            ),
+        }
+    }
+}
+
+/// Sample `index` of every native 8-bit order fixture: no two neighbours are
+/// equal, so exchanged samples never go unnoticed.
+fn native_u8_order_sample(index: usize) -> u8 {
+    ((index * 7 + 13) % 251) as u8
+}
+
+/// The same pixels as 8-bit native Pixel Data in each encoding, for one
+/// and three frames, frames of an even and an odd number of bytes, and gray,
+/// interleaved RGB and planar RGB samples. A file's name gives its layout,
+/// rows x columns, frames and encoding.
+fn write_native_u8_order_fixtures(dir: &Path) {
+    fs::create_dir_all(dir).expect("create native 8-bit order fixture directory");
+    let mut instance = 0_u32;
+    for (layout, samples_per_pixel, planar) in [
+        ("gray", 1_u16, None),
+        ("rgb", 3, Some(0_u16)),
+        ("rgb-planar", 3, Some(1)),
+    ] {
+        for (rows, columns) in [(2_u16, 4_u16), (3, 3)] {
+            for frames in [1_u16, 3] {
+                for encoding in [
+                    NativeU8Encoding::LittleEndianWords,
+                    NativeU8Encoding::BigEndianWords,
+                    NativeU8Encoding::BigEndianBytes,
+                ] {
+                    instance += 1;
+                    write_native_u8_order_fixture(
+                        dir,
+                        NativeU8Order {
+                            layout,
+                            samples_per_pixel,
+                            planar,
+                            rows,
+                            columns,
+                            frames,
+                            encoding,
+                            instance,
+                        },
+                    );
+                }
+            }
+        }
+    }
+    write_native_u8_order_fixture(
+        dir,
+        NativeU8Order {
+            layout: "gray",
+            samples_per_pixel: 1,
+            planar: None,
+            rows: 3,
+            columns: 3,
+            frames: 3,
+            encoding: NativeU8Encoding::BigEndianWordsInSampleOrder,
+            instance: instance + 1,
+        },
+    );
+}
+
+struct NativeU8Order {
+    layout: &'static str,
+    samples_per_pixel: u16,
+    planar: Option<u16>,
+    rows: u16,
+    columns: u16,
+    frames: u16,
+    encoding: NativeU8Encoding,
+    instance: u32,
+}
+
+fn write_native_u8_order_fixture(dir: &Path, spec: NativeU8Order) {
+    let count = usize::from(spec.rows)
+        * usize::from(spec.columns)
+        * usize::from(spec.samples_per_pixel)
+        * usize::from(spec.frames);
+    let samples = (0..count).map(native_u8_order_sample).collect::<Vec<_>>();
+    let sop_instance_uid = format!("2.25.20005{:02}", spec.instance);
+    let mut obj = InMemDicomObject::from_element_iter([
+        DataElement::new(
+            tags::SOP_CLASS_UID,
+            VR::UI,
+            uids::SECONDARY_CAPTURE_IMAGE_STORAGE,
+        ),
+        DataElement::new(tags::SOP_INSTANCE_UID, VR::UI, sop_instance_uid.as_str()),
+        DataElement::new(tags::PATIENT_ID, VR::LO, "GOLDEN-NATIVE-U8-ORDER"),
+        DataElement::new(tags::MODALITY, VR::CS, "OT"),
+        DataElement::new(
+            tags::SAMPLES_PER_PIXEL,
+            VR::US,
+            PrimitiveValue::from(spec.samples_per_pixel),
+        ),
+        DataElement::new(
+            tags::PHOTOMETRIC_INTERPRETATION,
+            VR::CS,
+            if spec.samples_per_pixel == 3 {
+                "RGB"
+            } else {
+                "MONOCHROME2"
+            },
+        ),
+        DataElement::new(tags::ROWS, VR::US, PrimitiveValue::from(spec.rows)),
+        DataElement::new(tags::COLUMNS, VR::US, PrimitiveValue::from(spec.columns)),
+        DataElement::new(tags::BITS_ALLOCATED, VR::US, PrimitiveValue::from(8_u16)),
+        DataElement::new(tags::BITS_STORED, VR::US, PrimitiveValue::from(8_u16)),
+        DataElement::new(tags::HIGH_BIT, VR::US, PrimitiveValue::from(7_u16)),
+        DataElement::new(
+            tags::PIXEL_REPRESENTATION,
+            VR::US,
+            PrimitiveValue::from(0_u16),
+        ),
+        spec.encoding.pixel_data(&samples),
+    ]);
+    if let Some(planar) = spec.planar {
+        obj.put(DataElement::new(
+            tags::PLANAR_CONFIGURATION,
+            VR::US,
+            PrimitiveValue::from(planar),
+        ));
+    }
+    if spec.frames > 1 {
+        obj.put(DataElement::new(
+            tags::NUMBER_OF_FRAMES,
+            VR::IS,
+            spec.frames.to_string(),
+        ));
+    }
+    let name = format!(
+        "golden-native-u8-{}-{}x{}-f{}-{}.dcm",
+        spec.layout,
+        spec.rows,
+        spec.columns,
+        spec.frames,
+        spec.encoding.suffix()
+    );
+    obj.with_meta(
+        FileMetaTableBuilder::new()
+            .implementation_class_uid(FIXTURE_IMPLEMENTATION_CLASS_UID)
+            .implementation_version_name(FIXTURE_IMPLEMENTATION_VERSION_NAME)
+            .transfer_syntax(spec.encoding.transfer_syntax())
+            .media_storage_sop_class_uid(uids::SECONDARY_CAPTURE_IMAGE_STORAGE)
+            .media_storage_sop_instance_uid(sop_instance_uid.as_str()),
+    )
+    .expect("build native 8-bit order fixture meta")
+    .write_to_file(dir.join(name))
+    .expect("write native 8-bit order fixture");
 }
 
 // Semantic-overlay fixtures share one patient and study; each overlay pair

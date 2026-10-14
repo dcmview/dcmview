@@ -21,8 +21,9 @@ use super::error::Stated;
 use super::header::open_header;
 use super::icc::select_icc_profile;
 use super::native_layout::{
-    exchange_words_of_samples, native_pixel_element_tag, stores_low_word_first, NativeByteOrder,
-    NativeFrameLayout, NativeLayoutError,
+    exchange_words_of_samples, native_pixel_element_tag, stores_low_word_first,
+    stores_swapped_byte_pairs, NativeByteOrder, NativeFrameLayout, NativeLayoutError,
+    SwappedPairSpan,
 };
 use super::palette::palette_indices_to_rgb8;
 use super::render::{
@@ -174,9 +175,6 @@ fn native_frame_layout(file: &FileEntry) -> NativeFrameLayout<'_> {
     }
 }
 
-// Retired, but still readable; dicom-dictionary-std marks the constant deprecated.
-const EXPLICIT_VR_BIG_ENDIAN: &str = "1.2.840.10008.1.2.2";
-
 /// Stored bytes for one native frame, plus the layout that interprets them.
 struct NativeFrameSource<'a> {
     bytes: Vec<u8>,
@@ -206,14 +204,18 @@ impl NativeFrameSource<'_> {
 /// the frame, discarding what precedes it: one frame of memory, and time that
 /// grows with the frame's position. One-bit frames need not start on a byte
 /// boundary; they are small in practice and read the whole element.
+///
+/// The bytes returned are in sample order: 8-bit samples a big-endian file
+/// stores as 16-bit words are put back in order here, for every reader of
+/// native frames ([`stores_swapped_byte_pairs`]). The bytes of a sample of
+/// more than 8 bits stay in the file's byte order, which the layout names.
 fn read_native_frame(file: &FileEntry, frame: u32) -> Result<NativeFrameSource<'_>> {
     let layout = native_frame_layout(file);
     if layout.bits_allocated != 1 {
         let deflated = file.transfer_syntax_uid == uids::DEFLATED_EXPLICIT_VR_LITTLE_ENDIAN;
-        let byte_order = if file.transfer_syntax_uid == EXPLICIT_VR_BIG_ENDIAN {
-            NativeByteOrder::BigEndian
-        } else {
-            NativeByteOrder::LittleEndian
+        let layout = NativeFrameLayout {
+            byte_order: NativeByteOrder::of_transfer_syntax(&file.transfer_syntax_uid),
+            ..layout
         };
         let bytes = if deflated {
             read_deflated_frame_bytes(file, layout, frame)?
@@ -223,10 +225,7 @@ fn read_native_frame(file: &FileEntry, frame: u32) -> Result<NativeFrameSource<'
         return Ok(NativeFrameSource {
             bytes,
             frame_in_bytes: 0,
-            layout: NativeFrameLayout {
-                byte_order,
-                ..layout
-            },
+            layout,
         });
     }
 
@@ -237,7 +236,9 @@ fn read_native_frame(file: &FileEntry, frame: u32) -> Result<NativeFrameSource<'
         )
     })?;
     // dicom-object normalizes native primitive values to host order. The
-    // supported release hosts are little-endian, matching the raw API.
+    // supported release hosts are little-endian, matching the raw API. That
+    // is also what puts one-bit data of VR OW in a big-endian file in bit
+    // order: it is read as 16-bit words and laid out low byte first.
     let bytes = object
         .get(native_pixel_element_tag(native_pixel_data_kind(file)))
         .context(Stated::new("missing native pixel data element"))?
@@ -357,8 +358,12 @@ fn read_as_it_arrives(source: &mut impl Read, length: usize) -> Result<Vec<u8>> 
     Ok(bytes)
 }
 
-/// Returns the stored bytes of `frame`, in the file's byte order, by locating
-/// the top-level native pixel element and seeking past the preceding frames.
+/// Returns the stored bytes of `frame`, in sample order and each sample in
+/// the file's byte order, by locating the top-level native pixel element and
+/// seeking past the preceding frames. Where the element stores swapped byte
+/// pairs, the words that hold the frame are read (at most two bytes more
+/// than the frame) and put in sample order in the buffer they were read
+/// into.
 fn read_native_frame_bytes(
     file: &FileEntry,
     layout: NativeFrameLayout<'_>,
@@ -406,6 +411,16 @@ fn read_native_frame_bytes(
                     return Err(NativeLayoutError::FrameOutOfBounds { frame, available }.into());
                 }
                 let value_start = decoder.position();
+                if stores_swapped_byte_pairs(layout.byte_order, header.vr(), layout.bits_allocated)
+                {
+                    let span = SwappedPairSpan::of_samples(start, end, available);
+                    let length = span.end - span.start;
+                    decoder.seek(value_start + span.start as u64)?;
+                    let mut bytes = Vec::with_capacity(length);
+                    decoder.read_to_vec(u32::try_from(length)?, &mut bytes)?;
+                    span.restore_sample_order(&mut bytes);
+                    return Ok(bytes);
+                }
                 decoder.seek(value_start + start as u64)?;
                 let mut bytes = Vec::with_capacity(frame_len);
                 decoder.read_to_vec(u32::try_from(frame_len)?, &mut bytes)?;

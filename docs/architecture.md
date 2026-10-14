@@ -611,7 +611,40 @@ retain stored sample ordering (including planar configuration) while
 normalizing multi-byte values to little endian. Integer sample fields are
 masked to Bits Stored and signed values are extended from High Bit so unused
 allocated bits never affect display or raw consumers; one-bit pixels are
-expanded to one byte per sample. Float and double-float objects are pixel-renderable, but
+expanded to one byte per sample.
+
+Explicit VR Big Endian is retired and stays supported. Pixel Data of VR OW
+is a stream of 16-bit words, each in the byte order of the transfer syntax,
+whatever Bits Allocated is; Pixel Data of VR OB is a byte stream (PS3.5
+sections 6.2 and 8.2). A big-endian file therefore stores 8-bit samples of
+VR OW with the two samples of every word exchanged, and where the value has
+an odd number of samples its padding byte comes before the last sample. The
+words run through the whole value, not through each frame, so a word spans
+two frames where a frame has an odd number of bytes.
+`native_layout.rs` `stores_swapped_byte_pairs` is the one statement of that
+rule. `read_native_frame` applies it for every reader of native frames: it
+reads the words that hold the frame, at most two bytes more than the frame,
+and puts them in sample order in the buffer they were read into. The
+segmentation sample scan reads the element itself and applies the same
+rule. Pixel Data of VR OB, and little-endian Pixel Data of either VR, is
+read as it is. One-bit Pixel Data is read through the DICOM parser, which
+reads a value of VR OW as words in the file's byte order and a value of VR
+OB as bytes, and its bits are taken from the least significant bit of each
+byte in that order.
+
+Overlay Data (60xx,3000) is read by its VR in the same way
+(`loader/metadata.rs` `overlay_data_words`). A value of VR OW is the
+plane's 16-bit words, each read in the file's byte order. A value of VR
+OB, which files written before the attribute became OW alone carry, is a
+byte stream in either byte order: the first bit of the plane is the least
+significant bit of the first byte, and two bytes make one word with the
+first as its low byte. A value of VR UN is read as OB is.
+
+A big-endian file that holds 8-bit samples of VR OW in sample order is not
+conforming and shows every pair of samples exchanged, as other conforming
+readers show it.
+
+Float and double-float objects are pixel-renderable, but
 real-world-value mapping remains a separate semantic capability (the
 value-mapping endpoint, value overlays, and display windows requested in a
 `unit`) rather than an implicit part of the display pipeline.

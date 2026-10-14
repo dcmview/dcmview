@@ -321,6 +321,26 @@ diagnostic viewer.
   decompressed and kept. The viewer used neither. A frame with an embedded
   profile is now refused (see Changed), and a frame in the box container is
   decoded from its codestream alone; its pixels are unchanged.
+- 8-bit images in Explicit VR Big Endian (`1.2.840.10008.1.2.2`) whose
+  Pixel Data has VR OW are shown with their pixels in the right places.
+  Such a file stores its samples as 16-bit words, high byte first, so every
+  two samples are exchanged on disk. Versions 0.3.0 to 0.4.1 did not
+  exchange them back: the display, thumbnails, raw frames and the pixel
+  readout all had every two neighbouring samples swapped (in colour
+  images, across channels too), and the last sample of a frame with an odd
+  number of bytes came from the next frame or from the padding byte. Files
+  with VR OB, 16-bit samples or a little-endian transfer syntax were never
+  affected. A big-endian file written by software that stores 8-bit
+  samples in pixel order under VR OW, which is not conforming, looked right
+  in 0.3.0 to 0.4.1 and now shows every two samples exchanged, as it does
+  in pydicom and DCMTK; see
+  [troubleshooting](docs/troubleshooting.md#a-big-endian-8-bit-image-shows-neighbouring-pixels-exchanged).
+- Overlay planes whose Overlay Data (60xx,3000) has VR OB, as older files
+  store it, are drawn as the file holds them, in every transfer syntax.
+  Before, each byte of such a value was read as a whole 16-bit word, so
+  past its first eight pixels the overlay, or a bitmap display shutter,
+  was drawn in the wrong places. Overlay Data with VR OW, which the
+  current standard requires, was and is read correctly.
 - 32-bit integer images in Explicit VR Big Endian (`1.2.840.10008.1.2.2`)
   whose Pixel Data has VR OW show their stored values. Such a file stores
   each sample as two 16-bit words, the low word first, each word high byte
