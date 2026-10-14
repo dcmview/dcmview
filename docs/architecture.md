@@ -615,22 +615,40 @@ expanded to one byte per sample.
 
 Explicit VR Big Endian is retired and stays supported. Pixel Data of VR OW
 is a stream of 16-bit words, each in the byte order of the transfer syntax,
-whatever Bits Allocated is; Pixel Data of VR OB is a byte stream (PS3.5
-sections 6.2 and 8.2). A big-endian file therefore stores 8-bit samples of
-VR OW with the two samples of every word exchanged, and where the value has
-an odd number of samples its padding byte comes before the last sample. The
-words run through the whole value, not through each frame, so a word spans
-two frames where a frame has an odd number of bytes.
-`native_layout.rs` `stores_swapped_byte_pairs` is the one statement of that
-rule. `read_native_frame` applies it for every reader of native frames: it
-reads the words that hold the frame, at most two bytes more than the frame,
-and puts them in sample order in the buffer they were read into. The
-segmentation sample scan reads the element itself and applies the same
-rule. Pixel Data of VR OB, and little-endian Pixel Data of either VR, is
-read as it is. One-bit Pixel Data is read through the DICOM parser, which
-reads a value of VR OW as words in the file's byte order and a value of VR
-OB as bytes, and its bits are taken from the least significant bit of each
-byte in that order.
+whatever Bits Allocated is, and a pixel cell wider than a word continues,
+least significant bit first, into the next word; Pixel Data of VR OB is a
+byte stream (PS3.5 sections 6.2 and 8.2, in the editions that carry the
+big-endian transfer syntax). Float Pixel Data (OF) and Double Float Pixel
+Data (OD) are whole 32- and 64-bit values in the byte order of the transfer
+syntax. A big-endian file therefore stores:
+
+- 8-bit samples of VR OW with the two samples of every word exchanged, and
+  where the value has an odd number of samples its padding byte comes
+  before the last sample. The words run through the whole value, not
+  through each frame, so a word spans two frames where a frame has an odd
+  number of bytes.
+- 16-bit samples as words, high byte first.
+- 32-bit samples of VR OW as two words, the low word first, each high byte
+  first: the sample `0x11223344` is stored `33 44 11 22`, as DCMTK reads and
+  writes it.
+
+`native_layout.rs` states the two rules for big-endian words, and
+`read_native_frame`, which every reader of native frames goes through
+(display, thumbnails, raw frames, the pixel readout, pixel digests and value
+overlays), applies both while it reads the frame in `read_native_frame_bytes`.
+For `stores_swapped_byte_pairs` it reads the words that hold the frame, at
+most two bytes more than the frame, and puts them in sample order in the
+buffer they were read into; for `stores_low_word_first` it exchanges the two
+words of each sample in the buffer the frame was read into. Either way the
+frame then holds its samples in order, each in the file's byte order, and
+the frame layout reverses every sample of more than 8 bits, float and double
+float values included, into little endian. The segmentation sample scan
+reads the element itself and applies the 8-bit rule; it reads no samples of
+more than 8 bits. 8-bit Pixel Data of VR OB, and little-endian Pixel Data
+of either VR, is read as it is. One-bit Pixel Data is read through the
+DICOM parser, which reads a value of VR OW as words in the file's byte
+order and a value of VR OB as bytes, and its bits are taken from the least
+significant bit of each byte in that order.
 
 Overlay Data (60xx,3000) is read by its VR in the same way
 (`loader/metadata.rs` `overlay_data_words`). A value of VR OW is the
@@ -640,31 +658,15 @@ byte stream in either byte order: the first bit of the plane is the least
 significant bit of the first byte, and two bytes make one word with the
 first as its low byte. A value of VR UN is read as OB is.
 
-A big-endian file that holds 8-bit samples of VR OW in sample order is not
-conforming and shows every pair of samples exchanged, as other conforming
-readers show it.
+Two kinds of big-endian file are not conforming and show as DCMTK shows
+them. One that holds 8-bit samples of VR OW in sample order shows every
+pair of samples exchanged. One whose 32-bit samples of VR OW have their
+four bytes reversed shows the two words of each sample exchanged.
 
 Float and double-float objects are pixel-renderable, but
 real-world-value mapping remains a separate semantic capability (the
 value-mapping endpoint, value overlays, and display windows requested in a
 `unit`) rather than an implicit part of the display pipeline.
-
-In Explicit VR Big Endian, 32-bit integer Pixel Data of VR OW is two 16-bit
-words a sample, the low word first, each word high byte first: Pixel Data
-of VR OW is a stream of words in the byte order of the transfer syntax, and
-a pixel cell wider than a word continues, least significant bit first, into
-the next word (PS3.5 section 8.2, in the editions that carry the big-endian
-transfer syntax). DCMTK reads and writes it so: the sample `0x11223344` is
-stored `33 44 11 22`. `native_layout.rs` `stores_low_word_first` states the
-rule, and `read_native_frame_bytes` exchanges the two words of each sample
-in the buffer the frame was read into, so the frame holds big-endian
-samples that are then reversed like any other. Every reader of native
-frames (display, thumbnails, raw frames, the pixel readout, pixel digests
-and value overlays) goes through it. Float Pixel Data (OF) and Double Float
-Pixel Data (OD) are whole 32- and 64-bit values in the byte order of the
-transfer syntax and are reversed as values. A big-endian file whose 32-bit
-samples of VR OW have their four bytes reversed is not conforming and shows
-the two words of each sample exchanged, as DCMTK shows it.
 
 The frontend uses raw frames for local interactive window/level for every
 single-channel frame up to `MAX_RENDER_PIXELS` (20 Mpx): 1-, 8- and 16-bit
@@ -1777,7 +1779,7 @@ onto it.
 | Rule | What it means |
 |---|---|
 | The samples are the stored ones | A digest is of what the raw tier holds before a redaction: no rescale, lookup table, window, inversion or colour conversion. Bits outside the stored field are not hashed, a sample narrower than a byte is hashed as one byte, and colour stored by plane is hashed by pixel. |
-| One digest for one image | The same samples have the same digest in every layout that has a raw tier and an exact decode: uncompressed or deflated little-endian DICOM (gray and colour), uncompressed big-endian DICOM with samples of 16 bits or more, RLE and JPEG XL Lossless (gray and colour), JPEG Lossless, JPEG-LS and JPEG 2000 Lossless (one sample a pixel), PNG and TIFF. Bits outside Bits Stored are taken out while hashing, wherever the decoder left the stored field (`StoredField`), so a transcode that carries other bits there keeps the digest. Signedness, sample width, sample count and shape are part of it; the photometric interpretation is not. 8-bit samples of an Explicit VR Big Endian file are hashed in the order the raw frame returns them. |
+| One digest for one image | The same samples have the same digest in every layout that has a raw tier and an exact decode: uncompressed or deflated little-endian DICOM (gray and colour), uncompressed big-endian DICOM, RLE and JPEG XL Lossless (gray and colour), JPEG Lossless, JPEG-LS and JPEG 2000 Lossless (one sample a pixel), PNG and TIFF. Bits outside Bits Stored are taken out while hashing, wherever the decoder left the stored field (`StoredField`), so a transcode that carries other bits there keeps the digest. Signedness, sample width, sample count and shape are part of it; the photometric interpretation is not. Samples of an Explicit VR Big Endian file are hashed in sample order, each little-endian. |
 | Exact decodes only | A frame has a digest only when decoding it gives exactly the stored samples (`pixels::exact_samples`). Baseline JPEG in DICOM, JPEG and WebP files, chrominance at half resolution and TIFF with associated alpha have none. Neither has a frame the raw tier does not serve: colour JPEG Lossless and colour JPEG 2000. |
 | Computed by the decode | A raw decode hashes the samples it produced before it returns them, on a blocking thread, under its own permit (`record_frame_digest`, called from `raw_frame`). Raw decodes are made by the raw frame and raw pixel endpoints, by overlays and legends computed from frames, and by a display frame that goes through the raw tier (`raw_samples_for_display`: one integer sample a pixel of 1, 8 or 16 bits, except JPEG 2000 shown without a real-world unit). A cache hit, a thumbnail, any other display decode (colour, JPEG 2000, 32-bit and floating-point gray), discovery, an export and an import compute none. |
 | Fixed cost | One pass over the samples and at most 64 KiB beside them (`PIXEL_DIGEST_BUFFER_BYTES`): a frame is never copied to be hashed. Samples in order with every bit stored are hashed where they lie; colour by plane and samples narrower than their cells pass through that buffer. |
