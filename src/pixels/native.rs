@@ -204,10 +204,12 @@ impl NativeFrameSource<'_> {
 /// grows with the frame's position. One-bit frames need not start on a byte
 /// boundary; they are small in practice and read the whole element.
 ///
-/// The bytes returned are in sample order: 8-bit samples a big-endian file
-/// stores as 16-bit words are put back in order here, for every reader of
-/// native frames ([`stores_swapped_byte_pairs`]). The bytes of a sample of
-/// more than 8 bits stay in the file's byte order, which the layout names.
+/// The bytes returned are in sample order, for every reader of native
+/// frames: 8-bit samples a big-endian file stores as 16-bit words are put
+/// back in order here ([`stores_swapped_byte_pairs`]), and so are the two
+/// words of each 32-bit sample, which such a file stores low word first
+/// ([`stores_low_word_first`]). The bytes of a sample of more than 8 bits
+/// are then in the file's byte order, which the layout names.
 fn read_native_frame(file: &FileEntry, frame: u32) -> Result<NativeFrameSource<'_>> {
     let layout = native_frame_layout(file);
     if layout.bits_allocated != 1 {
@@ -362,7 +364,8 @@ fn read_as_it_arrives(source: &mut impl Read, length: usize) -> Result<Vec<u8>> 
 /// seeking past the preceding frames. Where the element stores swapped byte
 /// pairs, the words that hold the frame are read (at most two bytes more
 /// than the frame) and put in sample order in the buffer they were read
-/// into.
+/// into; where it stores 32-bit samples low word first, the two words of
+/// each sample are exchanged in that buffer.
 fn read_native_frame_bytes(
     file: &FileEntry,
     layout: NativeFrameLayout<'_>,
@@ -419,8 +422,6 @@ fn read_native_frame_bytes(
                 decoder.seek(value_start + start as u64)?;
                 let mut bytes = Vec::with_capacity(frame_len);
                 decoder.read_to_vec(u32::try_from(frame_len)?, &mut bytes)?;
-                // 32-bit samples of big-endian words, low word first, become
-                // big-endian samples in the buffer they were read into.
                 if stores_low_word_first(layout.byte_order, header.vr(), layout.bits_allocated) {
                     exchange_words_of_samples(&mut bytes);
                 }
