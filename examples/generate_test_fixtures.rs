@@ -76,6 +76,96 @@ fn main() {
     write_presentation_state_fixtures(&fixture_dir);
     write_masking_fixtures(&fixture_dir);
     write_native_u8_order_fixtures(&fixture_dir.join("native-u8-order"));
+    write_overlay_data_fixtures(&fixture_dir.join("overlay-data"));
+}
+
+/// Whether bit `index` of the overlay data fixtures' 5x7 plane is set.
+fn overlay_data_bit(index: usize) -> bool {
+    index.is_multiple_of(3) || index % 7 == 2
+}
+
+/// One 5x7 overlay plane over a 5x7 gray image, its Overlay Data stored as
+/// VR OW (16-bit words in the byte order of the transfer syntax) and as VR
+/// OB (a byte stream, as files written before the attribute became OW alone
+/// carry it), each in Explicit VR Little Endian and Explicit VR Big Endian.
+/// The plane's 35 bits are 5 bytes, so the last word is half padding.
+fn write_overlay_data_fixtures(dir: &Path) {
+    fs::create_dir_all(dir).expect("create overlay data fixture directory");
+    let (rows, columns) = (5_u16, 7_u16);
+    let pixels = usize::from(rows) * usize::from(columns);
+    // Bit n of the plane is bit n % 8 of byte n / 8.
+    let mut packed = vec![0_u8; pixels.div_ceil(16) * 2];
+    for index in (0..pixels).filter(|index| overlay_data_bit(*index)) {
+        packed[index / 8] |= 1 << (index % 8);
+    }
+    let words = packed
+        .chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .collect::<Vec<_>>();
+    let mut instance = 0_u32;
+    for (byte_order, transfer_syntax) in [
+        ("le", uids::EXPLICIT_VR_LITTLE_ENDIAN),
+        // Retired; dicom-dictionary-std marks its constant deprecated.
+        ("be", "1.2.840.10008.1.2.2"),
+    ] {
+        for vr in [VR::OW, VR::OB] {
+            instance += 1;
+            let sop_instance_uid = format!("2.25.20006{instance:02}");
+            let mut obj = InMemDicomObject::from_element_iter([
+                DataElement::new(
+                    tags::SOP_CLASS_UID,
+                    VR::UI,
+                    uids::SECONDARY_CAPTURE_IMAGE_STORAGE,
+                ),
+                DataElement::new(tags::SOP_INSTANCE_UID, VR::UI, sop_instance_uid.as_str()),
+                DataElement::new(tags::PATIENT_ID, VR::LO, "GOLDEN-OVERLAY-DATA"),
+                DataElement::new(tags::MODALITY, VR::CS, "OT"),
+                DataElement::new(tags::SAMPLES_PER_PIXEL, VR::US, PrimitiveValue::from(1_u16)),
+                DataElement::new(tags::PHOTOMETRIC_INTERPRETATION, VR::CS, "MONOCHROME2"),
+                DataElement::new(tags::ROWS, VR::US, PrimitiveValue::from(rows)),
+                DataElement::new(tags::COLUMNS, VR::US, PrimitiveValue::from(columns)),
+                DataElement::new(tags::BITS_ALLOCATED, VR::US, PrimitiveValue::from(8_u16)),
+                DataElement::new(tags::BITS_STORED, VR::US, PrimitiveValue::from(8_u16)),
+                DataElement::new(tags::HIGH_BIT, VR::US, PrimitiveValue::from(7_u16)),
+                DataElement::new(
+                    tags::PIXEL_REPRESENTATION,
+                    VR::US,
+                    PrimitiveValue::from(0_u16),
+                ),
+                // A byte stream in either byte order.
+                DataElement::new(
+                    tags::PIXEL_DATA,
+                    VR::OB,
+                    PrimitiveValue::from(vec![40_u8; pixels + pixels % 2]),
+                ),
+            ]);
+            for element in overlay_plane_elements(0x6000, [rows, columns], [1, 1], &words) {
+                obj.put(element);
+            }
+            if vr == VR::OB {
+                obj.put(DataElement::new(
+                    Tag(0x6000, 0x3000),
+                    VR::OB,
+                    PrimitiveValue::from(packed.clone()),
+                ));
+            }
+            let name = format!(
+                "golden-overlay-data-5x7-{byte_order}-{}.dcm",
+                if vr == VR::OB { "ob" } else { "ow" }
+            );
+            obj.with_meta(
+                FileMetaTableBuilder::new()
+                    .implementation_class_uid(FIXTURE_IMPLEMENTATION_CLASS_UID)
+                    .implementation_version_name(FIXTURE_IMPLEMENTATION_VERSION_NAME)
+                    .transfer_syntax(transfer_syntax)
+                    .media_storage_sop_class_uid(uids::SECONDARY_CAPTURE_IMAGE_STORAGE)
+                    .media_storage_sop_instance_uid(sop_instance_uid.as_str()),
+            )
+            .expect("build overlay data fixture meta")
+            .write_to_file(dir.join(name))
+            .expect("write overlay data fixture");
+        }
+    }
 }
 
 /// How a native 8-bit fixture stores its Pixel Data.
