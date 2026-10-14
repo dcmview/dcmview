@@ -20,6 +20,7 @@ use super::deflated_frame::{
     decode_deflated_binary_frame_to_png, decode_raw_deflated_binary_frame,
     render_deflated_binary_frame,
 };
+use super::digest::record_frame_digest;
 use super::error::{PixelError, PixelResult};
 use super::jpeg::{
     decode_compressed_frame_to_png, decode_raw_jpeg_lossless, read_raw_jpeg_samples,
@@ -141,6 +142,7 @@ async fn raw_frame(
 
     let frame = request.frame;
     let decoded_file = file.clone();
+    let digest_cache = cache.clone();
     let decode = async move {
         let file = decoded_file;
         let (body, mut metadata) = match codec {
@@ -163,6 +165,16 @@ async fn raw_frame(
         if let Some([low, high]) = raw_padding_bounds(&file, &metadata) {
             metadata.padding_low = Some(low);
             metadata.padding_high = Some(high);
+        }
+        // The frame's pixel digest, from the samples just decoded and
+        // while this decode's permit still covers them. Read here, so a
+        // frame the cache answers costs nothing more.
+        let digests = digest_cache
+            .lock()
+            .ok()
+            .and_then(|cache| cache.pixel_digests());
+        if let Some(digests) = digests {
+            record_frame_digest(&digests, &file, frame, &body, &metadata).await;
         }
         Ok((body, metadata))
     };

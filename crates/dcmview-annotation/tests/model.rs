@@ -13,6 +13,7 @@ mod model {
     mod geometry;
     mod keys;
     mod operations;
+    mod pixel;
     mod support;
     mod validation;
     mod wire;

@@ -57,7 +57,7 @@ application module:
 | Annotation adapters | `crates/dcmview-adapters` | `ExportAdapter` and `ImportAdapter` with `ExportContext`, `ImportContext` and `FileResolver`; `Registry`; `Report` and its closed codes; `ImportError` and `ExportError`; the bounds in `limits`; `embed::{read_rows, write_csv, rois_of}` and `EmbedAdapter`; `NativeJson` and `NativeJsonLines`. See [Annotation Files](#annotation-files). |
 | File keys | `src/keys/` | `KeyTable`: which key each loaded file has and whether it is settled, as a plain data structure with no I/O that holds no string per file. `FileHasher`: one file's BLAKE3 digest in bounded slices. See [File Keys And The Catalog Cursor](#file-keys-and-the-catalog-cursor). |
 | HTTP runtime | `src/server/` | Listener/runtime, route registration, handlers, state, registry, activity tracking, tags, and embedded assets. `server/catalog.rs` holds the registry with its key table and catalog revisions; `server/catalog/keys.rs` holds background hashing and what a session shows for a key. |
-| Pixel service | `src/pixels/` | Typed display, raw and thumbnail requests, cache behavior, transfer-syntax classification, decoding, the render seam (`render.rs` `DisplayBuffer`), decode classes (`schedule.rs`), and `PixelError`. `raster.rs` decodes PNG, JPEG, TIFF and WebP frames within fixed read and memory limits and renders them; `raster/tags.rs` reads their metadata tree through the same reader, within limits of its own and without reading pixels. |
+| Pixel service | `src/pixels/` | Typed display, raw and thumbnail requests, cache behavior, transfer-syntax classification, decoding, the render seam (`render.rs` `DisplayBuffer`), decode classes (`schedule.rs`), and `PixelError`. `raster.rs` decodes PNG, JPEG, TIFF and WebP frames within fixed read and memory limits and renders them; `raster/tags.rs` reads their metadata tree through the same reader, within limits of its own and without reading pixels. `digest.rs` computes the pixel digest of each frame a raw decode produces and keeps the session's table of them. See [Pixel Digests](#pixel-digests). |
 | Patient geometry | `src/geometry.rs` | Normalized per-frame position, orientation, pixel spacing, coplanarity checks, and target-to-source pixel transforms. |
 | Plane stacks | `src/plane_stack.rs` | RT Dose grids and Parametric Map frames as parallel planes; coverage and bracketing-plane sampling of a displayed frame. |
 | Value mapping | `src/value_mapping.rs` | Per-frame Modality transform and Real World Value Mappings (or Dose Grid Scaling) that convert stored samples. |
@@ -1713,6 +1713,34 @@ nothing else for the response. A response that says `scan_complete` therefore
 lists every file the scan found, which matters because the page stops
 polling when it sees that member.
 
+## Pixel Digests
+
+A file key names bytes. A **pixel digest** names the samples of one frame,
+whatever file stores them: `px:` and the BLAKE3 hash of a 24-byte header
+(rows, columns, samples per pixel, bits allocated, sample format and a
+zero, each a little-endian `u32`) followed by the samples row by row,
+colour by pixel, little-endian. `crates/dcmview-annotation/src/pixel.rs`
+is the definition (`PixelLayout`, `pixel_digest_text`), with test vectors
+computed apart from the viewer; `src/pixels/digest.rs` maps a raw frame
+onto it.
+
+| Rule | What it means |
+|---|---|
+| The samples are the stored ones | A digest is of what the raw tier holds before a redaction: no rescale, lookup table, window, inversion or colour conversion. Bits outside the stored field are not hashed, a sample narrower than a byte is hashed as one byte, and colour stored by plane is hashed by pixel. |
+| One digest for one image | The same samples have the same digest in every layout that has a raw tier and an exact decode: uncompressed or deflated little-endian DICOM (gray and colour), uncompressed big-endian DICOM with samples of 16 bits or more, RLE and JPEG XL Lossless (gray and colour), JPEG Lossless, JPEG-LS and JPEG 2000 Lossless (one sample a pixel), PNG and TIFF. Bits outside Bits Stored are taken out while hashing, wherever the decoder left the stored field (`StoredField`), so a transcode that carries other bits there keeps the digest. Signedness, sample width, sample count and shape are part of it; the photometric interpretation is not. 8-bit samples of an Explicit VR Big Endian file are hashed in the order the raw frame returns them. |
+| Exact decodes only | A frame has a digest only when decoding it gives exactly the stored samples (`pixels::exact_samples`). Baseline JPEG in DICOM, JPEG and WebP files, chrominance at half resolution and TIFF with associated alpha have none. Neither has a frame the raw tier does not serve: colour JPEG Lossless and colour JPEG 2000. |
+| Computed by the decode | A raw decode hashes the samples it produced before it returns them, on a blocking thread, under its own permit (`record_frame_digest`, called from `raw_frame`). Raw decodes are made by the raw frame and raw pixel endpoints, by overlays and legends computed from frames, and by a display frame that goes through the raw tier (`raw_samples_for_display`: one integer sample a pixel of 1, 8 or 16 bits, except JPEG 2000 shown without a real-world unit). A cache hit, a thumbnail, any other display decode (colour, JPEG 2000, 32-bit and floating-point gray), discovery, an export and an import compute none. |
+| Fixed cost | One pass over the samples and at most 64 KiB beside them (`PIXEL_DIGEST_BUFFER_BYTES`): a frame is never copied to be hashed. Samples in order with every bit stored are hashed where they lie; colour by plane and samples narrower than their cells pass through that buffer. |
+| Bounded table | `PixelDigests`, one a session (`FileRegistry::pixel_digests`), keeps 32 bytes a frame for the last 65,536 frames recorded (`PIXEL_DIGEST_CAPACITY`) in at most 16 MiB, and nothing until a frame is decoded. The session's raw cache names it (`BudgetedLru::with_pixel_digests`); a cache without one records nothing. `PixelDigestStats` counts the digests computed and the bytes they covered. |
+
+Documents carry them as evidence (`FileRef.pixel_digest`, one entry a
+frame). An export states what the table holds for the loaded files that
+share a reference's key and decodes nothing; a file of more than 65,536
+frames states none. An import compares them, where a file was matched by
+its UID without its bytes being compared, with what the table holds for
+the files of that key: a frame both know must agree. It never decodes,
+never records a document's digests, and finds no file by them.
+
 ## Annotation Model
 
 `crates/dcmview-annotation` is the one definition of what an annotation is.
@@ -2238,7 +2266,12 @@ session's files and store.
   left out silently. While a file is hashed the request waits. A `FileRef`
   describes the loaded file that has the key, of several the one whose
   path sorts first, and
-  its `digest` is set when the registry has computed one. **A document
+  its `digest` is set when the registry has computed one. Its
+  `pixel_digest` lists the [pixel digests](#pixel-digests) the session
+  holds for the frames of the files with that key, `null` for the others
+  and nothing when it holds none, read from the table without decoding a
+  frame; its `frame_source` names, for an image file, the page of each
+  frame. **A document
   never holds an absolute path** (`DocumentPaths`): every file's path is
   made absolute against the working directory, and a `path` is the
   components below the deepest directory that holds every loaded file,
@@ -2273,7 +2306,12 @@ session's files and store.
   share a name. Each
   candidate in turn has its key settled; for a `sop:` reference that key
   must be the reference's, and for a `b3:` reference the file's bytes are
-  hashed, if they have not been, and their digest must be the key's. The
+  hashed, if they have not been, and their digest must be the key's.
+  A `sop:` reference whose bytes were not compared (it states no `b3:`
+  digest) is also held to the [pixel digests](#pixel-digests) both sides
+  have: a frame the document states and the session has decoded on a
+  loaded file with the candidate's key must have the same digest, or the
+  candidate does not pass. Nothing is decoded for it. The
   first candidate that passes takes the records. When none passes the
   reference is refused: `file_unverified` when a candidate could not be
   read, `evidence_conflict` otherwise. A UID or a path never places a
@@ -2390,8 +2428,12 @@ and one that cannot be read fails it with `422 file_key_unavailable`),
 absent, every `user:` author is written `user:local`, and the document's
 `extensions` say `"dcmview": { "masked": true }`. What a masked document
 holds of a file is its content digest, byte size, SOP class, format,
-rows, columns and frame count, and of a record its id, timestamps, layer,
-class, geometry, attributes and extensions. A label whose target is a
+rows, columns and frame count, the pages of its frames and the pixel
+digests of the frames that were decoded, and of a record its id, timestamps, layer,
+class, geometry, attributes and extensions. A pixel digest says one
+thing the content digest does not: it is equal for every file that holds
+the same samples, whatever its headers, so two masked documents, or a
+masked document and a file, can be told to show the same pixels. A label whose target is a
 patient, study, series or folder is left out and counted as a
 `labels_dropped` loss in the export's report: such a target is text a
 client chose from what the masked session showed, or a folder path. Such a document loads into
@@ -2861,6 +2903,10 @@ Not current correctness blockers:
   one slice per `Background` permit.
 - A key is written into a record or an export only as `ensure_key` returned
   it. The key an entry or a frame header shows may be provisional.
+- A pixel digest is computed only by the raw decode of its frame, under
+  that decode's permit, and only for a frame decoded exactly. Nothing else
+  decodes or hashes for one, and `PixelDigests` stays within its capacity
+  and its stated heap.
 - The key table holds no copy of a UID or a path and builds no key string
   per file; keep `tests/key_table_memory.rs` passing without raising its
   bound.

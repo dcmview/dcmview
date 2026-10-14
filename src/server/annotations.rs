@@ -532,8 +532,20 @@ pub struct NativeExport {
 ///      (`FileKeyStatus::digest`), else `None`;
 ///    - `space`: `stored`, with the raster's EXIF or TIFF orientation when
 ///      it is not 1;
-///    - `pixel_digest` empty; `frame_source`, `external_id` and `spacing`
-///      `None`.
+///    - `pixel_digest`: what the session's table holds of the file's
+///      frames (`FileRegistry::pixel_digests`, `PixelDigests::of_frames`
+///      with the file's frame count), read from the table and never
+///      computed here: an export decodes no frame, hashes no sample and
+///      takes no decode permit. One entry a frame, `None` for a frame the
+///      table has no digest of, and empty when it has none of the file.
+///      Files with the same settled key hold the same bytes, so the
+///      digests are those of every loaded file whose settled key is the
+///      reference's, asked in the order of their paths: a frame that was
+///      decoded on any copy is stated;
+///    - `frame_source`: for a raster, the page each frame is
+///      (`RasterMetadata::frame_pages`, `[0]` for a file of one image);
+///      `None` for a DICOM file;
+///    - `external_id` and `spacing` `None`.
 /// 6. **A masked session names files by content and by nothing else.**
 ///    Its masks are drawn for one process, so a key or a UID it shows
 ///    names nothing anywhere else, and a real one must not leave it. With
@@ -545,7 +557,11 @@ pub struct NativeExport {
 ///    `path` the name the session shows for the file, `File <index + 1>`,
 ///    because folder and file names often say whose the files are;
 ///    `sop_class_uid` as in step 5. Two keys whose files hold
-///    the same bytes share one reference, the first's. A file that cannot
+///    the same bytes share one reference, the first's, with the pixel
+///    digests of the first's key. `pixel_digest` and `frame_source` are as
+///    in step 5. A pixel digest is equal for every file that holds the
+///    same samples, whatever its headers, which the digest of a file's
+///    bytes is not; it names no person and no place. A file that cannot
 ///    be read fails the export with [`AnnotationError::KeyUnavailable`]
 ///    for it (`group: false`). The document's `extensions` gain
 ///    `"dcmview": { "masked": true }`. Every author of the kind `user`
@@ -558,7 +574,8 @@ pub struct NativeExport {
 ///    the export's report counts it in `labels_in` and as a
 ///    `labels_dropped` loss. What a masked document says of a file is then
 ///    its content digest, byte size, SOP class, format, rows, columns and
-///    frame count; of a record, everything but a user's name.
+///    frame count, the pages of its frames and the pixel digests of the
+///    frames that were decoded; of a record, everything but a user's name.
 /// 7. **Keys.** Every annotation's `file` and every `file` or `frame`
 ///    label target is the `key` of its file's reference: the settled key,
 ///    or the content key of step 6. A patient, study, series or folder
@@ -756,6 +773,17 @@ pub async fn export_native_within(
             if emitted.insert(replacement.clone()) {
                 let mut reference =
                     document_file_ref(&registry, file, replacement.clone(), names.path(&file.path));
+                let mut copies: Vec<_> = by_key
+                    .get(key)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|index| files.get(*index))
+                    .collect();
+                copies.sort_by(|a, b| a.path.cmp(&b.path));
+                let indexes: Vec<_> = copies.iter().map(|file| file.index).collect();
+                reference.pixel_digest = registry
+                    .pixel_digests()
+                    .of_frames(&indexes, file.frame_count);
                 if masked {
                     reference.path = format!("File {}", file.index + 1);
                     reference.digest = Some(replacement.as_str().to_string());
@@ -873,7 +901,10 @@ fn document_file_ref(
             ..Space::default()
         },
         pixel_digest: Vec::new(),
-        frame_source: None,
+        frame_source: file
+            .raster
+            .as_ref()
+            .map(|raster| raster.frame_pages.clone()),
         external_id: None,
         spacing: None,
         unknown: BTreeMap::new(),
@@ -957,7 +988,29 @@ fn document_file_ref(
 ///   must be that digest. A `digest` of another scheme (`sha256:`) is not
 ///   compared: the viewer computes no such digest. So a `sop:` reference
 ///   without a `b3:` digest is matched by the file's settled `sop:` key,
-///   which is to say by its UID.
+///   which is to say by its UID;
+/// - **pixel digests**, for a reference whose bytes were not compared
+///   above (a `sop:` reference without a `b3:` `digest`) and that states
+///   at least one: the reference's list is compared, frame by frame, with
+///   the list this session would state for the candidate's settled key
+///   (`PixelDigests::of_frames` with the candidate's frame count, over the
+///   candidate and every loaded file that carries its SOP Instance UID, as
+///   this session shows it, and has that settled key, in the order of
+///   their paths). A frame both state must have the same digest. One that
+///   differs and the candidate does not pass: the key has other pixels
+///   than the document's, on whichever copy they were decoded. A frame
+///   only one side states is no evidence either way. Where the bytes were
+///   compared they decide, and pixel digests are not looked at: equal
+///   bytes are equal pixels.
+///
+/// **Pixel digests find no file and cost no decode.** An import computes
+/// none: it decodes no frame, hashes no sample and takes no decode permit,
+/// whatever the document states, and the comparison above is one lookup
+/// for each frame and copy, for at most the candidates of the reference.
+/// A list for a file of more frames than a document states
+/// (`PIXEL_DIGEST_FRAMES_STATED`) is not compared. A document's digests
+/// are never put into the session's table. A file whose bytes changed is
+/// not found by its pixels: it stays `evidence_conflict`.
 ///
 /// The first candidate that passes is `Resolution::Matched`, with its
 /// index as the slot, its settled key, its columns, rows and frame count,
@@ -1540,6 +1593,36 @@ impl NativeResolver<'_> {
             let digest = FileKey::blake3(&digest);
             if (by_content && reference.key.as_str() != digest.as_str())
                 || recorded.is_some_and(|text| text != digest.as_str())
+            {
+                return Checked::Differs;
+            }
+        } else if reference.pixel_digest.iter().any(Option::is_some) {
+            let mut copies = vec![file.index];
+            if !file.sop_instance_uid.is_empty() {
+                let uid = self.registry.masker().map_or_else(
+                    || file.sop_instance_uid.clone(),
+                    |masker| masker.uid(&file.sop_instance_uid),
+                );
+                copies.extend(self.by_uid.get(&uid).into_iter().flatten().copied().filter(
+                    |index| settled_key(self.registry, *index).is_some_and(|other| other == key),
+                ));
+            }
+            copies.sort_by(|a, b| {
+                self.files[*a]
+                    .path
+                    .cmp(&self.files[*b].path)
+                    .then_with(|| a.cmp(b))
+            });
+            copies.dedup();
+            let held = self
+                .registry
+                .pixel_digests()
+                .of_frames(&copies, file.frame_count);
+            if reference
+                .pixel_digest
+                .iter()
+                .zip(&held)
+                .any(|(stated, held)| matches!((stated, held), (Some(a), Some(b)) if a != b))
             {
                 return Checked::Differs;
             }

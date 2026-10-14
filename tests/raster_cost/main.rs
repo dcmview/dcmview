@@ -25,6 +25,7 @@ mod codestream_files;
 mod data_set_files;
 mod data_set_tags;
 mod data_sets;
+mod digests;
 mod heap;
 mod layout;
 mod overlays;

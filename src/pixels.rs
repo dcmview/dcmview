@@ -4,6 +4,7 @@ pub mod codestream;
 mod color;
 mod colorwash;
 mod deflated_frame;
+mod digest;
 mod encapsulated;
 mod error;
 mod header;
@@ -44,6 +45,11 @@ pub(crate) use color::cielab_to_srgb8;
 pub use colorwash::{
     colormap, encode_colorwash_png, raw_frame_values, ColorScale, ColorwashRequest, COLORMAP_NAME,
     COLORMAP_STOPS,
+};
+pub use digest::{
+    exact_samples, frame_pixel_digest, pixel_digest, record_frame_digest, PixelDigestStats,
+    PixelDigests, PIXEL_DIGESTS_MAX_BYTES, PIXEL_DIGEST_BUFFER_BYTES, PIXEL_DIGEST_CAPACITY,
+    PIXEL_DIGEST_FRAMES_STATED,
 };
 pub use error::{PixelError, PixelResult, Stated};
 pub(crate) use header::open_header;
