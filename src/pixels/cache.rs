@@ -1,3 +1,4 @@
+use super::digest::PixelDigests;
 use super::error::PixelError;
 use super::render::DisplayPng;
 use super::schedule::{decode_scheduler, DecodeScheduler};
@@ -225,6 +226,9 @@ pub struct BudgetedLru<K: Hash + Eq, V> {
     max_bytes: usize,
     in_flight: HashMap<K, Flight<V>>,
     scheduler: Arc<DecodeScheduler>,
+    /// Where the raw decodes that fill this cache record the pixel digest
+    /// of each frame; `None` for a cache whose decodes record none.
+    pixel_digests: Option<Arc<PixelDigests>>,
 }
 
 impl<K: Hash + Eq, V: FrameBody> BudgetedLru<K, V> {
@@ -243,7 +247,24 @@ impl<K: Hash + Eq, V: FrameBody> BudgetedLru<K, V> {
             max_bytes,
             in_flight: HashMap::new(),
             scheduler,
+            pixel_digests: None,
         }
+    }
+
+    /// This cache, with `digests` as the table the raw decodes that fill it
+    /// record each frame's pixel digest in (`pixels::record_frame_digest`).
+    /// Only a raw frame cache is given one: a session's, which gets its
+    /// registry's table (`AppState`). A cache without one computes no
+    /// digest.
+    pub fn with_pixel_digests(mut self, digests: Arc<PixelDigests>) -> Self {
+        self.pixel_digests = Some(digests);
+        self
+    }
+
+    /// The table this cache's raw decodes record pixel digests in, if it
+    /// was given one.
+    pub fn pixel_digests(&self) -> Option<Arc<PixelDigests>> {
+        self.pixel_digests.clone()
     }
 
     /// The scheduler that admits the decodes filling this cache.

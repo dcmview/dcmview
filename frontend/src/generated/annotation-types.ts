@@ -215,9 +215,11 @@ export type FileKind = "dicom" | "raster";
  *   as stored.
  * - `rows`, `columns` and `frames` are a guard: a match that disagrees on
  *   them is refused. They are 0 for a file without pixels.
- * - `pixel_digest` has one entry per frame, `px:<64 lowercase hex>` or
- *   `null` for a frame not decoded yet; it may be empty when none is known.
- * - `frame_source` is the IFD index of each frame of a multi-page TIFF.
+ * - `pixel_digest` has one entry per frame: `px:<64 lowercase hex>`, the
+ *   digest of the frame's samples ([`crate::pixel`] defines it), or `null`
+ *   for a frame whose digest is not known. It is empty when none is known.
+ * - `frame_source` is, for an image file, the index of the page (TIFF
+ *   IFD) each frame is, `[0]` for a file of one image.
  * - `spacing` has one entry per frame, `null` where a frame has none.
  *
  * Invariants, checked by [`FileRef::validate`] (`bad_file_ref` unless

@@ -5,6 +5,7 @@ use crate::api::contracts::{
 use crate::keys::{KeyChanges, KeyRef, KeyTable};
 use crate::loader::{DiscoveryDisposition, DiscoveryRecord};
 use crate::masking::Masker;
+use crate::pixels::PixelDigests;
 use crate::series::{
     FrameOrderingInput, NavigationInput, NavigationKind, OrderingInput, SeriesCatalog,
     SeriesFileInput, SeriesGroup, SeriesStack, SeriesWarning,
@@ -34,6 +35,10 @@ pub struct FileRegistry {
     /// Present in a masked session: the catalog is masked as it is built.
     masker: Option<Arc<Masker>>,
     hashing: Arc<keys::Hashing>,
+    /// The pixel digest of each frame this session has decoded. The
+    /// session's raw frame cache records into it (`AppState`); documents
+    /// read it.
+    pixel_digests: Arc<PixelDigests>,
     /// Called by [`FileRegistry::files_page`] once it has let go of the
     /// registry, so a test can change the registry at exactly the point
     /// where a second read would see something newer than the page.
@@ -81,9 +86,18 @@ impl FileRegistry {
             catalog: Arc::new(Mutex::new(None)),
             masker: None,
             hashing: Arc::new(keys::Hashing::default()),
+            pixel_digests: Arc::new(PixelDigests::new()),
             #[cfg(test)]
             after_page: None,
         }
+    }
+
+    /// The session's table of pixel digests: empty until a raw decode of a
+    /// state built over this registry records one. Holding it costs
+    /// discovery, the catalog and startup nothing: no file is read for it
+    /// and nothing is allocated until a frame is decoded.
+    pub fn pixel_digests(&self) -> &Arc<PixelDigests> {
+        &self.pixel_digests
     }
 
     /// A registry whose catalog and series responses are masked.

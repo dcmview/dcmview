@@ -20,6 +20,7 @@ mod integration {
     mod malformed_inputs;
     mod native_u8_order;
     mod overlay_data;
+    mod pixel_digests;
     mod pixels_jp2_decode;
     mod pixels_jpeg_decode;
     mod pixels_raw_endpoint;

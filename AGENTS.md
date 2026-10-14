@@ -872,6 +872,38 @@ is cached between requests.
 - A `FileRekey` names a file by `index`. Apply it to what is held for that
   file, never to everything held under `old_key`.
 
+**Pixel digests (`crates/dcmview-annotation/src/pixel.rs`, `src/pixels/digest.rs`)**
+
+- What `px:` is a digest of is defined once, in the model crate's `pixel`
+  module, and pinned by the vectors in
+  `tests/integration/pixel_digests.rs`, which were computed apart from the
+  viewer. A change to the header, the sample order or which samples are
+  hashed changes every digest already written into documents: it needs the
+  owner's sign-off and another prefix than `px:`.
+- A digest is a function of the samples a file stores. Give a frame one
+  only when its decode is exact (`exact_samples`); a new codec or format
+  gets a row in that table and a case in
+  `the_same_samples_have_one_digest_however_they_are_stored` or
+  `a_frame_decoded_inexactly_has_no_digest`. Hash the raw tier's samples
+  before any redaction, and never anything made for display.
+- Only the raw decode of a frame computes its digest
+  (`record_frame_digest`, in `raw_frame`'s decode), under that decode's
+  permit and on a blocking thread. Do not decode or hash for a digest
+  anywhere else: not at discovery, not for the catalog, not in an export
+  or an import. A frame nobody decoded has none.
+- Hashing copies no frame: at most `PIXEL_DIGEST_BUFFER_BYTES` beside the
+  samples. `PixelDigests` keeps `PIXEL_DIGEST_CAPACITY` frames within
+  `PIXEL_DIGESTS_MAX_BYTES` and holds nothing before the first record;
+  `tests/raster_cost/digests.rs` counts all three at the allocator. Do not
+  raise a bound to pass it.
+- The table holds digests this session computed and nothing else: never a
+  digest a document stated, never a failure.
+- A document states pixel digests for the files that share a reference's
+  key, and an import compares them for the same files, so byte-identical
+  copies are one image in both. A list is never longer than
+  `PIXEL_DIGEST_FRAMES_STATED`. An import refuses by a pixel digest only
+  where the bytes were not compared, and never matches by one.
+
 **Annotations**
 
 - `--annotations` loads EMBED-style CSV rows, or the records of a
@@ -1034,7 +1066,12 @@ is cached between requests.
   masked (masks are drawn per process and mean nothing elsewhere), no
   folder or file name (`path` is `File N`) and no user name (`user:`
   authors become `user:local`). It names files by the `b3:` digest of
-  their bytes and says `extensions.dcmview.masked`. An import into a masked session finds
+  their bytes and says `extensions.dcmview.masked`. It states pixel
+  digests and frame pages like any other document. A pixel digest is equal
+  for every file that holds the same samples, whatever its headers, so it
+  links copies of the same pixels that the digest of their bytes does
+  not: that is known and accepted, and nothing else of a file may be
+  added. An import into a masked session finds
   candidates by a key or a UID in the form the session shows only.
   `tests/integration/annotation_documents.rs` asserts both.
 
@@ -1329,6 +1366,13 @@ default suite.
 - An importer returns for every mutation of the committed goldens, refuses
   input past a bound without reading it whole, and no report or error
   repeats a word of its input.
+- A frame's pixel digest is the one worked out from the values its file
+  was written from, the same in every lossless encoding and format, and
+  absent for a frame decoded inexactly; one raw decode computes it once,
+  and listing, thumbnails, cache hits, exports and imports compute none;
+  boxes and windows do not change it; a document states the digests of
+  the frames decoded on any copy of a file, and a reload refuses a file
+  matched by its UID whose decoded pixels differ and decodes nothing.
 - An annotation operation envelope is applied whole or not at all, a batch
   included; a stale `base_rev` answers `409` with the current record and an
   invalid operation `422` with its violations; a repeated `op_id` returns
