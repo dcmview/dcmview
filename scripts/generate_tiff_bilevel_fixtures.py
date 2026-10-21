@@ -9,10 +9,10 @@ bytes again:
 - Pillow 12.1.1 over libtiff 4.7.1 writes the image once in each
   compression: none, PackBits, LZW, Deflate and CCITT Group 4, as one strip,
   black is zero;
-- `tiffcp` of libtiff 4.7.1 rewrites the uncompressed file in strips of four
+- `tiffcp` of libtiff 4.7.2 rewrites the uncompressed file in strips of four
   rows (`-r 4`), with `FillOrder` 2 (`-f lsb2msb`) and in 16 x 16 tiles
   (`-t -w 16 -l 16`);
-- `ppm2tiff` of libtiff 4.7.1 writes the image from a PBM file, which makes
+- `ppm2tiff` of libtiff 4.7.2 writes the image from a PBM file, which makes
   it white is zero;
 - Pillow writes one more Group 4 file, of other stripes (`stripes`), for the
   tests that read a Group 4 strip as narrower than it was written.
@@ -23,9 +23,9 @@ from these, by editing a count or a tag. Run from the repository root:
 
     python scripts/generate_tiff_bilevel_fixtures.py
 
-It needs Pillow, and `tiffcp` and `ppm2tiff` on the PATH. It is not part of
-any check profile: the committed files are the fixtures, and this is how
-they were made.
+It needs Pillow (12.1.1 links libtiff 4.7.1), and `tiffcp` and `ppm2tiff`
+on the PATH. It is not part of any check profile: the committed files are
+the fixtures, and this is how they were made.
 """
 
 from __future__ import annotations
