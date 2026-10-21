@@ -1481,9 +1481,12 @@ the file, for a raster that has one.
   no further, and writes the pixels inside the image into the one frame.
   Beside the frame it holds one packed row of a strip or tile, a fixed
   input buffer, a decompressor's fixed state and, for Group 4, two rows of
-  colour changes, which it bounds per row (two bytes of the strip a pixel,
-  and one change more than the width), so what it holds is set by the
-  catalog entry. Every other TIFF page is decoded by the `tiff` crate.
+  colour changes, beside the page's offset and count tables. Each Group 4
+  row may take at most two bytes of the strip a pixel and end with at most
+  one change more than the width; how many changes the decoder collects
+  from those bytes is the pinned `fax` 0.2.7's own (at most one a bit),
+  which keeps a row to a few MiB at the widest strip. Every other TIFF
+  page is decoded by the `tiff` crate.
 - **Not decoded in this version**, each reported with its reason:
   JPEG-compressed TIFF (the linked `tiff` crate hands a tile to a JPEG
   decoder with no limit on the size the tile declares), CCITT Group 3 and

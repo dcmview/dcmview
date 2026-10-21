@@ -143,8 +143,9 @@ diagnostic viewer.
   black and white, inverted once for WhiteIsZero. A Group 4 page wider than
   65,535 pixels, and CCITT Group 3 and Modified Huffman pages, report
   `raster.unsupported_compression`. The decode reads each strip or tile to
-  its byte count only and holds little beside the frame, so a bilevel page
-  reserves no more decode memory than other TIFF.
+  its byte count only, and beside the frame holds the page's strip or tile
+  tables and the decoding of one row, so a bilevel page reserves no more
+  decode memory than other TIFF.
 - The Explorer's Study view lists PNG, JPEG, TIFF and WebP files in an
   "Images" group after the patients, in their folder tree, with their own
   icon and a format chip; DICOM files stay in the patient tree even without

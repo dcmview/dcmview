@@ -141,10 +141,11 @@ pub fn raster_read_budget(file: &FileEntry) -> Option<u64> {
 ///
 /// The first term covers decoder state, the read buffer, the copies made
 /// of a profile of [`RASTER_ICC_MAX_BYTES`] and one partition of a lossy
-/// WebP at the largest length a bitstream can declare for it (the state of
-/// a bilevel TIFF decode, its row and its Group 4 rows included, is under
-/// 5 MiB at the widest Group 4 strip and never held beside a profile or a
-/// WebP partition); the second
+/// WebP at the largest length a bitstream can declare for it (a bilevel
+/// TIFF decode holds no profile or partition; its Group 4 rows, bounded by
+/// the bytes a row may take and by how the pinned `fax` 0.2.7 collects
+/// colour changes from them, take a few MiB at most at the widest Group 4
+/// strip); the second
 /// the frame, the decoder's own copy of it and its working rows, planes or
 /// coefficients; the third an encoded image held in memory while it is
 /// decoded (JPEG and WebP) and what is assembled from its segments. Nothing

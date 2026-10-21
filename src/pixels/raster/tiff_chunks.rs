@@ -10,10 +10,10 @@
 //! through the same budget-charging reader, and writes the pixels that lie
 //! inside the image into one frame of exactly the catalog's size.
 //!
-//! What is held besides the frame is bounded by the catalog entry, never by
-//! a length the file declares: one packed row of a strip or tile, a fixed
+//! Beside the frame it holds one packed row of a strip or tile, a fixed
 //! input buffer, the fixed state of the LZW and Deflate decoders, and for
-//! Group 4 the transitions of two lines, which [`group4`] bounds per line.
+//! Group 4 the transitions of two lines; none of these is sized by a length
+//! the file declares. [`group4`] says what bounds the transitions.
 use super::reader::Reader;
 use anyhow::{bail, ensure, Context, Result};
 use std::cell::Cell;
@@ -318,12 +318,14 @@ impl PackBits<'_, '_, '_> {
 /// `lines`. White runs are stored as 0 and black runs as 1, as libtiff
 /// stores them.
 ///
-/// What a line may hold is bounded twice. A line may consume at most
-/// [`group4_line_bytes`] of the chunk: no honest line comes near it, and the
-/// decoder pushes at most one transition for each bit it reads, so the
-/// transitions a line holds while it is decoded never exceed eight for
-/// each of those bytes. And a decoded line may have at most `chunk_width +
-/// 1` transitions; one with more is an error.
+/// Two limits are enforced here. A line may consume at most
+/// [`group4_line_bytes`] of the chunk (no honest line comes near it), and a
+/// decoded line may have at most `chunk_width + 1` transitions; one with
+/// more is an error. What a line holds while it is decoded is the `fax`
+/// decoder's own: version 0.2.7, which `Cargo.toml` pins, adds at most one
+/// transition for each bit it reads, so with the first limit a line holds
+/// a few MiB at most at a width of 65,535. A newer `fax` must be checked
+/// for the same before the pin moves.
 fn group4<'l>(
     input: &mut ChunkInput<'_, '_>,
     chunk_width: u64,
