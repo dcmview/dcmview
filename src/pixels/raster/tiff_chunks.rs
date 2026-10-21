@@ -594,6 +594,15 @@ pub(super) fn decode_jpeg(
             options = options.jpeg_set_out_colorspace(stored);
             decoder.set_options(options);
         }
+        // The decoder finds markers its own way: it steps over stuffed
+        // bytes to the next marker where the check above steps over a
+        // segment by its length, so the frame it decodes must be shown to
+        // be the one checked. A smaller one would leave the rest of the
+        // buffer as the last strip or tile left it.
+        ensure!(
+            decoder.output_buffer_size() == Some(size),
+            "the JPEG decoder read another frame header than the strip's or tile's"
+        );
         if decoded.len() < size {
             decoded.reserve_exact(size - decoded.len());
             decoded.resize(size, 0);
