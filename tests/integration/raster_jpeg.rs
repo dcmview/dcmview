@@ -65,14 +65,6 @@ async fn jpeg_pages_serve_what_libtiff_decodes() {
         let difference = largest_difference(raw.as_bytes(), &expected);
         if std::env::var_os("RASTER_JPEG_REPORT").is_some() {
             eprintln!("{name}: largest difference from libtiff {difference}");
-            if let Some(dir) = std::env::var_os("RASTER_JPEG_DUMP") {
-                std::fs::write(std::path::Path::new(&dir).join(name), raw.as_bytes()).unwrap();
-                std::fs::write(
-                    std::path::Path::new(&dir).join(format!("{name}.ref")),
-                    &expected,
-                )
-                .unwrap();
-            }
         }
         let tolerance = if name.starts_with("ycbcr") {
             YCBCR_TOLERANCE
@@ -181,4 +173,24 @@ async fn a_jpeg_page_without_shared_tables_decodes() {
         frames.push(raw.as_bytes().to_vec());
     }
     assert_eq!(frames[0], frames[1]);
+}
+
+/// A JPEG-compressed page after an uncompressed one of the same layout is
+/// a frame of the file, decoded to what libtiff decodes it to.
+#[tokio::test]
+async fn a_jpeg_page_after_an_uncompressed_one_decodes() {
+    let dir = tempdir().expect("temp dir");
+    let name = "gray-two-pages-150x133.tif";
+    fs::write(dir.path().join(name), fixture(name)).expect("write");
+    let scan = scan_dir(dir.path()).await;
+    assert_eq!(scan.file(name)["frame_count"], 2);
+    let index = scan.index(name);
+    let raw = scan
+        .server
+        .get(&format!("/api/file/{index}/frame/1/raw"))
+        .await;
+    assert_eq!(raw.status_code(), 200, "{}", raw.text());
+    let difference =
+        largest_difference(raw.as_bytes(), &libtiff_decode("gray-150x133.libtiff.tif"));
+    assert!(difference <= TOLERANCE, "{difference} from libtiff's");
 }

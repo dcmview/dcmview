@@ -6,12 +6,13 @@
 //! one is an honest one with a tag, a count or a frame header byte changed.
 
 use super::bounds::{assert_within_limits, list, Hostile, Outcome, BUFFER, MIB};
-use super::raster_bilevel_files::{tag_values, with_tag};
+use super::raster_bilevel_files::{tag_values, with_tag, with_value};
 use super::raster_files::CountedFile;
 use super::raster_jpeg_files::{
     fixture, frame_header_at, largest_difference, libtiff_decode, small_fixtures, with_count,
     with_frame_precision, with_frame_size,
 };
+use dcmview::pixels;
 
 /// What a JPEG page of these fixtures may hold beside its frame and the
 /// bytes of its longest strip or tile, when its largest strip or tile
@@ -326,10 +327,154 @@ async fn a_strip_declared_taller_than_the_image_decodes_its_rows() {
     let decoded = |name: &str, bytes: &[u8]| {
         let cost = super::bounds::decode(scan.entry(name), 0, CountedFile::new(bytes.to_vec()));
         assert_within_limits(name, scan.entry(name), bytes.len() as u64, &cost);
-        cost.result.unwrap_or_else(|error| panic!("{name}: {error:?}"))
+        cost.result
+            .unwrap_or_else(|error| panic!("{name}: {error:?}"))
     };
     assert_eq!(
         decoded("taller.tif", &taller).bytes,
         decoded("honest.tif", &honest).bytes
+    );
+}
+
+/// What a JPEG page holds beside the frame is what the heap limit's JPEG
+/// term (`raster_decode_heap_limit`) allows for: with the fixed part of
+/// the limit set aside, the rest still covers it. Both pages are one pixel
+/// tall, so the frame's own terms leave no room: a 4,096 x 4,096
+/// progressive gray tile, which decodes to exactly the 16 MiB a strip or
+/// tile may and has the decoder hold its coefficients whole, and a
+/// progressive RGB strip 63,550 pixels wide and 88 rows tall, just as
+/// large, whose decoder's rows of three components and the padding of
+/// their coefficients are what the term's second part is for.
+#[tokio::test]
+async fn the_jpeg_part_of_the_heap_limit_covers_what_a_page_holds() {
+    let tile = fixture("gray-progressive-tile-4096x4096.tif");
+    let tile = with_tag(with_tag(tile, 256, 256, 1), 257, 257, 1);
+    let strip = with_tag(fixture("rgb-progressive-63550x88.tif"), 257, 257, 1);
+    let scan = list(&[("tile.tif", &tile), ("strip.tif", &strip)]).await;
+    for (name, bytes) in [("tile.tif", &tile), ("strip.tif", &strip)] {
+        let entry = scan.entry(name);
+        let length = bytes.len() as u64;
+        let cost = super::bounds::decode(entry, 0, CountedFile::new(bytes.clone()));
+        cost.result
+            .as_ref()
+            .unwrap_or_else(|error| panic!("{name}: {error:?}"));
+        let limit = pixels::raster_decode_heap_limit(entry, length).expect("limit");
+        let beside_the_fixed_part = limit - pixels::RASTER_DECODE_HEAP_BASE_BYTES + MIB;
+        if std::env::var_os("RASTER_COST_REPORT").is_some() {
+            eprintln!("{name}: heap {}, limit {limit}", cost.heap);
+        }
+        assert!(
+            cost.heap <= beside_the_fixed_part,
+            "{name}: {} bytes of heap, {beside_the_fixed_part} without the fixed part",
+            cost.heap
+        );
+    }
+}
+
+/// A strip cut short decodes, as libjpeg decodes one: the rows its bytes
+/// hold are the strip's, and the decoder fills the rest.
+#[tokio::test]
+async fn a_jpeg_strip_cut_short_decodes_what_it_holds() {
+    let honest = fixture("gray-150x133.tif");
+    let count = tag_values(&honest, 279)[0];
+    let cut = with_value(honest.clone(), 279, 0, count / 2);
+    let scan = list(&[("honest.tif", &honest), ("cut.tif", &cut)]).await;
+    let decoded = |name: &str, bytes: &[u8]| {
+        let cost = super::bounds::decode(scan.entry(name), 0, CountedFile::new(bytes.to_vec()));
+        assert_within_limits(name, scan.entry(name), bytes.len() as u64, &cost);
+        cost.result
+            .unwrap_or_else(|error| panic!("{name}: {error:?}"))
+            .bytes
+    };
+    let (honest, cut) = (decoded("honest.tif", &honest), decoded("cut.tif", &cut));
+    let rows = honest.len() / 150;
+    let same = (0..rows)
+        .take_while(|row| honest[row * 150..][..150] == cut[row * 150..][..150])
+        .count();
+    if std::env::var_os("RASTER_COST_REPORT").is_some() {
+        eprintln!(
+            "cut strip: {same} rows as decoded whole; last row {:?}",
+            &cut[cut.len() - 8..]
+        );
+    }
+    assert!(
+        same >= 8 && same < rows,
+        "{same} of {rows} rows as decoded whole"
+    );
+}
+
+/// `bytes` with its `JPEGTables` padded to `size` bytes by repeating their
+/// first Huffman table segment, each a definition the next replaces, as
+/// one more value at the end of the file.
+fn with_padded_tables(mut bytes: Vec<u8>, size: usize) -> Vec<u8> {
+    let little = &bytes[..2] == b"II";
+    let read = |bytes: &[u8], at: usize, size: usize| -> usize {
+        let mut value = 0;
+        for index in 0..size {
+            let byte = usize::from(bytes[at + if little { size - 1 - index } else { index }]);
+            value = (value << 8) | byte;
+        }
+        value
+    };
+    let ifd = read(&bytes, 4, 4);
+    let at = (0..read(&bytes, ifd, 2))
+        .map(|index| ifd + 2 + 12 * index)
+        .find(|&at| read(&bytes, at, 2) == 347)
+        .expect("JPEGTables");
+    let (count, offset) = (read(&bytes, at + 4, 4), read(&bytes, at + 8, 4));
+    let tables = bytes[offset..offset + count].to_vec();
+    let mut segment = 2;
+    while tables[segment + 1] != 0xC4 {
+        segment += 2 + (usize::from(tables[segment + 2]) << 8 | usize::from(tables[segment + 3]));
+    }
+    let length = 2 + (usize::from(tables[segment + 2]) << 8 | usize::from(tables[segment + 3]));
+    let huffman = &tables[segment..segment + length];
+    let mut padded = tables[..count - 2].to_vec();
+    while padded.len() + huffman.len() + 2 <= size {
+        padded.extend_from_slice(huffman);
+    }
+    padded.extend_from_slice(&[0xFF, 0xD9]);
+    let start = bytes.len() as u32;
+    let number = |value: u32| {
+        if little {
+            value.to_le_bytes()
+        } else {
+            value.to_be_bytes()
+        }
+    };
+    bytes[at + 4..at + 8].copy_from_slice(&number(padded.len() as u32));
+    bytes[at + 8..at + 12].copy_from_slice(&number(start));
+    bytes.extend_from_slice(&padded);
+    bytes
+}
+
+/// Tables padded to the 64 KiB a page may have, by repeating one Huffman
+/// table, decode as the tables libtiff wrote, and each of the page's tiles
+/// is joined to the tables once read, not to all of them again: the
+/// decode holds no more than with the honest tables and the padded tables'
+/// own bytes.
+#[tokio::test]
+async fn padded_jpeg_tables_cost_one_reading() {
+    let honest = fixture("ycbcr-tiles-150x133.tif");
+    let padded = with_padded_tables(honest.clone(), 64 * 1024);
+    assert!(padded.len() > honest.len() + 60 * 1024);
+    let scan = list(&[("honest.tif", &honest), ("padded.tif", &padded)]).await;
+    let decoded = |name: &str, bytes: &[u8]| {
+        let cost = super::bounds::decode(scan.entry(name), 0, CountedFile::new(bytes.to_vec()));
+        assert_within_limits(name, scan.entry(name), bytes.len() as u64, &cost);
+        let heap = cost.heap;
+        (
+            cost.result
+                .unwrap_or_else(|error| panic!("{name}: {error:?}"))
+                .bytes,
+            heap,
+        )
+    };
+    let (honest_frame, honest_heap) = decoded("honest.tif", &honest);
+    let (padded_frame, padded_heap) = decoded("padded.tif", &padded);
+    assert_eq!(padded_frame, honest_frame);
+    assert!(
+        padded_heap <= honest_heap + 64 * 1024 + BUFFER,
+        "{padded_heap} bytes of heap with padded tables, {honest_heap} without"
     );
 }

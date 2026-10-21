@@ -457,6 +457,12 @@ pub(super) fn hostile_files() -> Vec<Hostile> {
         false,
         &[small_tiff(1, vec![5; 64]), small_tiff(7, huge_jpeg)],
     );
+    // The same, of 16-bit pages: JPEG is decoded only at 8 bits.
+    let deep_tiff = |compression: u16| {
+        TiffPage::strip((8, 8), &[16], 1, vec![5; 128])
+            .with(259, TiffValue::Short(vec![compression]))
+    };
+    let (deep_jpeg_page, _) = files::tiff_file(false, &[deep_tiff(1), deep_tiff(7)]);
     // A strip that claims to be four gigabytes of deflated data.
     let tiff_claim = files::tiff_file(
         false,
@@ -676,6 +682,15 @@ pub(super) fn hostile_files() -> Vec<Hostile> {
         Hostile {
             frame: 1,
             ..Hostile::new("tiff frame compressed as jpeg", jpeg_page, Fails)
+        }
+        .reading_at_most(2 * BUFFER),
+        Hostile {
+            frame: 1,
+            ..Hostile::new(
+                "tiff 16-bit frame compressed as jpeg",
+                deep_jpeg_page,
+                Refused("raster.unsupported_compression"),
+            )
         }
         .reading_at_most(2 * BUFFER),
         Hostile::new("tiff strip of four gigabytes", tiff_claim, Fails),
