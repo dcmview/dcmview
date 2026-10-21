@@ -1314,11 +1314,13 @@ Discovery lists PNG, JPEG, TIFF and still WebP files beside DICOM
   bands or an extra sample that is not alpha (`color_type` `other`), or is
   palette, CMYK, gray with alpha, YCbCr outside JPEG compression, or colour
   stored as separate planes;
-  `raster.unsupported_sample_format` for a TIFF with 16-bit float, 1-, 2- or
+  `raster.unsupported_sample_format` for a TIFF with 16-bit float, 2- or
   4-bit or 64-bit integer samples, or colour that is not 8- or 16-bit
   unsigned;
   `raster.unsupported_compression` for a TIFF compressed with anything but
-  none, LZW, Deflate or PackBits (JPEG-compressed TIFF included);
+  none, LZW, Deflate or PackBits, or CCITT Group 4 on a bilevel page at most
+  65,535 pixels wide (JPEG-compressed TIFF, CCITT Group 3 and Modified
+  Huffman included);
   `raster.jpeg_unsupported_process` for a JPEG that is not 8-bit baseline,
   extended sequential or progressive Huffman;
   `raster.too_large` for a frame of more than 268,435,456 pixels (16,384 x
@@ -1452,7 +1454,9 @@ the file, for a raster that has one.
 - **Raw frames hold stored sample semantics**, whatever a decoder returns
   (design section 5.2): low-bit PNG samples keep their stored values (a
   one-bit image is 0 and 1) in one byte each; 16-bit and wider samples are
-  little endian; a WhiteIsZero TIFF serves its stored values, floats bit for
+  little endian; a bilevel TIFF serves one byte a pixel, 0 or 1, as stored
+  (a Group 4 page stores white runs as 0 and black runs as 1, as libtiff
+  does); a WhiteIsZero TIFF serves its stored values, floats bit for
   bit, with `MONOCHROME1` so the shared windowing inverts once; palettes are
   expanded to RGB, or RGBA with `tRNS`; TIFF associated alpha is
   un-premultiplied, so alpha in the raw tier is always unassociated; a CMYK
@@ -1467,10 +1471,26 @@ the file, for a raster that has one.
   and colour is never windowed. A colour frame carries the file's ICC
   profile to the browser only when the profile is valid, at most 4 MiB and
   for RGB data; a CMYK JPEG's profile is never used.
+- **Bilevel TIFF is decoded by the viewer's own chunk decoder**
+  (`pixels/raster/tiff_chunks.rs`), since the linked `tiff` crate does not
+  unpack one-bit samples: strips and tiles, with no compression, PackBits,
+  LZW, Deflate or CCITT Group 4 (through the `fax` crate), and `FillOrder`
+  1 or 2. A page goes to it only after every check `pixels/raster/tiff.rs`
+  makes of any page has passed; it reads each strip or tile in index order
+  through the same budget-charging reader, to the end of its byte count and
+  no further, and writes the pixels inside the image into the one frame.
+  Beside the frame it holds one packed row of a strip or tile, a fixed
+  input buffer, a decompressor's fixed state and, for Group 4, two rows of
+  colour changes, beside the page's offset and count tables. Each Group 4
+  row may take at most two bytes of the strip a pixel and end with at most
+  one change more than the width; how many changes the decoder collects
+  from those bytes is the pinned `fax` 0.2.7's own (at most one a bit),
+  which keeps a row to a few MiB at the widest strip. Every other TIFF
+  page is decoded by the `tiff` crate.
 - **Not decoded in this version**, each reported with its reason:
   JPEG-compressed TIFF (the linked `tiff` crate hands a tile to a JPEG
-  decoder with no limit on the size the tile declares), 1-bit TIFF (the
-  crate does not unpack it), palette, CMYK and gray-with-alpha TIFF, and
+  decoder with no limit on the size the tile declares), CCITT Group 3 and
+  Modified Huffman TIFF, palette, CMYK and gray-with-alpha TIFF, and
   planar colour. Animated PNG and WebP show their first frame only.
 
 **Metadata.** `/tags` and `/tags/select` serve a raster's metadata in the

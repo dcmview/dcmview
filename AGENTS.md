@@ -152,10 +152,9 @@ would remove behavior, raise it as a question instead of acting.
 - **The decode memory budget is not a process limit.** Beside it are the
   frame caches and response bodies while they are sent.
 - **Some TIFF layouts the design lists are not decoded.** JPEG-compressed
-  and 1-bit TIFF are reported as `raster.unsupported_compression` and
-  `raster.unsupported_sample_format`: the linked `tiff` crate decodes the
-  first without a limit on what a tile declares and does not unpack the
-  second. Palette, CMYK and gray-with-alpha TIFF are out of scope by design.
+  TIFF is reported as `raster.unsupported_compression`: the linked `tiff`
+  crate decodes it without a limit on what a tile declares. Palette, CMYK
+  and gray-with-alpha TIFF are out of scope by design.
 
 - **VOI LUT Function is not interpreted.** DICOM VOI LUT Function
   (0028,1056), including `LINEAR_EXACT` and `SIGMOID`, is currently ignored.

@@ -741,6 +741,9 @@ pub(super) fn hostile_files() -> Vec<Hostile> {
         Hostile::new("tiff over the tag limit", plain_tiff.clone(), Fails)
             .replaced_by(tagged(RASTER_TIFF_MAX_TAGS + 1)),
     ]
+    .into_iter()
+    .chain(super::bilevel::hostile_bilevel_files())
+    .collect()
 }
 
 /// Whatever a file declares, decoding it reads no more than the entry's

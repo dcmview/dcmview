@@ -20,6 +20,17 @@ wrote them, with the exact options, from test cards it computes with integer
 arithmetic alone; with those versions of the tools it writes the same bytes
 again. The tests wrap the codestreams in DICOM files of their own.
 
+`tiff-bilevel/` holds bilevel (one-bit) TIFF files written by libtiff:
+4.7.1 through Pillow 12.1.1, and 4.7.2 through its own `tiffcp` and
+`ppm2tiff`: one test card in
+every compression the viewer decodes (none, PackBits, LZW, Deflate, CCITT
+Group 4), in one strip, in strips of four rows, with `FillOrder` 2 and in
+16 x 16 tiles, a WhiteIsZero Group 4 page, a 4,096 x 3,072 Group 4 page and
+a Group 4 page of moving stripes. `python scripts/generate_tiff_bilevel_fixtures.py`
+wrote them from images it computes with integer arithmetic alone; the tests
+compute the same images, and make their damaged files by editing a count
+or a tag of these.
+
 The committed corpus is intentionally small and synthetic:
 
 - `golden-uncompressed-u16-multiframe.dcm`

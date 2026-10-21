@@ -135,8 +135,17 @@ diagnostic viewer.
   `raster.unsupported_compression`,
   `raster.jpeg_unsupported_process`, `raster.too_large`, or
   `raster.file_too_large`. JPEG-compressed
-  and 1-, 2- and 4-bit TIFF are not decoded, and gray profiles are not
+  and 2- and 4-bit TIFF are not decoded, and gray profiles are not
   carried.
+- Bilevel (one-bit) TIFF is decoded: strips and tiles with no compression,
+  PackBits, LZW, Deflate or CCITT Group 4, either fill order. Raw frames
+  hold one byte a pixel, 0 or 1 as stored, and the display shows the page
+  black and white, inverted once for WhiteIsZero. A Group 4 page wider than
+  65,535 pixels, and CCITT Group 3 and Modified Huffman pages, report
+  `raster.unsupported_compression`. The decode reads each strip or tile to
+  its byte count only, and beside the frame holds the page's strip or tile
+  tables and the decoding of one row, so a bilevel page reserves no more
+  decode memory than other TIFF.
 - The Explorer's Study view lists PNG, JPEG, TIFF and WebP files in an
   "Images" group after the patients, in their folder tree, with their own
   icon and a format chip; DICOM files stay in the patient tree even without

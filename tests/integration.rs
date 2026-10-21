@@ -26,6 +26,8 @@ mod integration {
     mod pixels_jpeg_decode;
     mod pixels_raw_endpoint;
     mod pixels_uncompressed;
+    mod raster_bilevel;
+    mod raster_bilevel_files;
     mod raster_cases;
     mod raster_decode;
     mod raster_discovery;

@@ -368,6 +368,15 @@ fn frames_to_measure() -> Vec<(&'static str, Vec<u8>)> {
         };
         cases.push((name, files::tiff_file(false, &[page]).0));
     }
+    // Bilevel pages, decoded by the viewer's own chunk decoder.
+    cases.push((
+        "bilevel.tif",
+        super::bilevel::uncompressed(SIDE as usize, SIDE as usize).0,
+    ));
+    cases.push((
+        "bilevel-g4.tif",
+        super::raster_bilevel_files::fixture("g4-4096x3072.tif"),
+    ));
     cases
 }
 

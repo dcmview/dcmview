@@ -665,6 +665,7 @@ dependencies = [
  "dicom-pixeldata",
  "dicom-test-files",
  "dicom-transfer-syntax-registry",
+ "fax",
  "flate2",
  "futures",
  "getrandom 0.3.4",
@@ -698,6 +699,7 @@ dependencies = [
  "urlencoding",
  "uuid",
  "walkdir",
+ "weezl",
 ]
 
 [[package]]
@@ -1072,6 +1074,12 @@ name = "fastrand"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
+
+[[package]]
+name = "fax"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "caf1079563223d5d59d83c85886a56e586cfd5c1a26292e971a0fa266531ac5a"
 
 [[package]]
 name = "fdeflate"
@@ -3003,7 +3011,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.2",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
