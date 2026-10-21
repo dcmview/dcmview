@@ -1194,6 +1194,24 @@ describe("ImageViewport shared gestures", () => {
 		return { ...view, viewport, onnavigationchange, onmanualwindowlevel };
 	}
 
+	/** A 60-frame file in `activeTool` whose navigation follows the viewer's requests. */
+	async function renderFrames(activeTool: ActiveTool) {
+		let position = 0;
+		const view = renderViewport({
+			activeTool,
+			file: fileSummary(5, { frame_count: 60 }),
+			onnavigationchange: (next) => { position = Math.max(0, Math.min(59, next)); },
+		});
+		const viewport = await screen.findByRole("application");
+		await shown(5, 0);
+		/** A wheel event, then the frame it asked for shown. */
+		const wheel = async (event: Wheel) => {
+			await wheelAt(viewport, event);
+			await view.rerender({ currentFrame: position, navigationPosition: position });
+		};
+		return { viewport, wheel, position: () => position };
+	}
+
 	it.each([
 		...TOOL_ORDER.map((tool) => [tool, "middle", 1, true] as const),
 		["pan", "left", 0, true] as const,
@@ -1313,24 +1331,39 @@ describe("ImageViewport shared gestures", () => {
 		// against these.
 		["momentum that falls by 5% an event overruns by five frames", [...fingers, ...slowTail(0.95)], 16, 8],
 		["momentum that falls by 3% an event overruns by eight frames", [...fingers, ...slowTail(0.97)], 16, 11],
-	] as const)("Scroll tool wheel: %s", async (_name, steps, everyMs, endsOn) => {
-		const file = fileSummary(5, { frame_count: 60 });
-		let position = 0;
-		const view = renderViewport({
-			activeTool: "scroll",
-			file,
-			onnavigationchange: (next) => { position = Math.max(0, Math.min(59, next)); },
-		});
-		const viewport = await screen.findByRole("application");
-		await shown(5, 0);
+	] as const)("Alt+wheel frame steps: %s", async (_name, steps, everyMs, endsOn) => {
+		const { wheel, position } = await renderFrames("pan");
 
-		for (const [index, deltaY] of steps.entries()) {
-			await wheelAt(viewport, { deltaY, at: index * everyMs });
-			await view.rerender({ currentFrame: position, navigationPosition: position });
-		}
+		for (const [index, deltaY] of steps.entries()) await wheel({ deltaY, altKey: true, at: index * everyMs });
 
-		expect(position).toBe(endsOn);
+		expect(position()).toBe(endsOn);
 		expectTransform({ scale: 1, tx: 0, ty: 0 });
+	});
+
+	it("Scroll tool: a mouse wheel steps one frame per notch", async () => {
+		const { wheel, position } = await renderFrames("scroll");
+
+		for (const [index, deltaY] of [100, 100, 100].entries()) await wheel({ deltaY, at: index * 60 });
+
+		expect(position()).toBe(3);
+		expectTransform({ scale: 1, tx: 0, ty: 0 });
+	});
+
+	it("Scroll tool: a two-finger swipe pans and steps no frame, and a left drag steps frames", async () => {
+		const { viewport, wheel, position } = await renderFrames("scroll");
+
+		for (const [index, deltaY] of fingers.entries()) await wheel({ deltaY, at: index * 16 });
+		expect(position()).toBe(0);
+		expectTransform({ scale: 1, tx: 0, ty: -115 });
+
+		// One frame per 10 / 0.7 px of travel from the press.
+		await fireEvent.pointerDown(viewport, { button: 0, clientX: 10, clientY: 10, pointerId: 1 });
+		await fireEvent.pointerMove(viewport, { clientX: 10, clientY: 10 + 3 * (10 / 0.7), pointerId: 1 });
+		expect(position()).toBe(3);
+		await fireEvent.pointerMove(viewport, { clientX: 10, clientY: 10 + 10 / 0.7, pointerId: 1 });
+		expect(position()).toBe(1);
+		await fireEvent.pointerUp(viewport, { button: 0, clientX: 10, clientY: 24, pointerId: 1 });
+		expectTransform({ scale: 1, tx: 0, ty: -115 });
 	});
 
 	// Wheel events under 150 ms apart are one gesture, which keeps the device it began as;

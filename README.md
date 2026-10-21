@@ -320,16 +320,16 @@ Mouse and trackpad, in every tool:
 
 | Action | Mouse | Trackpad |
 |---|---|---|
-| Pan | Middle-drag | Two-finger scroll |
+| Pan | Middle-drag | Two-finger scroll, in the Scroll tool too |
 | Zoom | Wheel, or right-drag (up to zoom in) | Pinch |
-| Step frames | Alt+wheel, or the wheel in the Scroll tool | Alt+two-finger scroll, or a two-finger scroll in the Scroll tool |
+| Step frames | Alt+wheel, or the wheel in the Scroll tool | Alt+two-finger scroll, or a vertical drag in the Scroll tool |
 | Draw a ROI or redaction box | Drag, or click two corners (Esc cancels) | Click two corners, or drag |
 
 The viewer tells the two devices apart by their wheel events, one gesture at
 a time, and keeps to what it last saw: after a couple of scrolls with the
-other device it switches. A mouse wheel steps one frame per notch; a trackpad
-scroll steps one frame per 30 px of travel, and stepping slows to a stop as
-the momentum after the fingers lift decays. That stop is tuned on constructed
+other device it switches. A mouse wheel steps one frame per notch; an
+Alt+two-finger scroll steps one frame per 30 px of travel, and stepping slows
+to a stop as the momentum after the fingers lift decays. That stop is tuned on constructed
 traces, not recorded ones, so some trackpads may run a few frames further.
 Ctrl/Cmd+wheel zooms like a pinch.
 

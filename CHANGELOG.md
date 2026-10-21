@@ -281,10 +281,13 @@ diagnostic viewer.
   and a wheel that reports small steps zooms instead of panning once the
   viewer has seen it is a wheel. After changing device, the first two
   gestures may still act as the previous one.
-- In the Scroll tool a trackpad scroll steps one frame per 30 px of travel
-  instead of one per wheel event, and stepping slows to a stop as the
-  momentum after the fingers lift decays instead of running on through all of
-  it. The stop is tuned on constructed traces, not recorded ones, so some
+- A two-finger scroll pans in the Scroll tool too, as in every other tool,
+  instead of stepping frames. With a trackpad, step frames in the Scroll tool
+  by dragging up and down (one frame per 14 px, as with a mouse), or with
+  Alt+two-finger scroll in any tool.
+- An Alt+two-finger scroll steps one frame per 30 px of travel instead of
+  one per wheel event, and stepping slows to a stop as the momentum after
+  the fingers lift decays instead of running on through all of it. The stop is tuned on constructed traces, not recorded ones, so some
   trackpads may run a few frames further. A mouse wheel still steps one frame
   per notch.
 - In the trackpad profile a rectangle's handles are grabbed from 10 screen

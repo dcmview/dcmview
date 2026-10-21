@@ -14,6 +14,7 @@ type Step =
 	| ["down", number, number]
 	| ["move", number, number]
 	| ["wheel", number]
+	| ["trackpad wheel", number]
 	| ["up"]
 	| ["cancel"];
 
@@ -98,6 +99,9 @@ function run(tool: Tool, ctx: ToolContext, steps: Step[]): unknown[] {
 		if (step[0] === "down") answers.push(tool.pointerDown({ clientX: step[1], clientY: step[2] }, ctx));
 		else if (step[0] === "move") tool.pointerMove({ clientX: step[1], clientY: step[2] }, ctx);
 		else if (step[0] === "wheel") answers.push(tool.wheel?.({ dx: 0, dy: step[1], device: "mouse", gestureStart: true }, ctx) ?? false);
+		else if (step[0] === "trackpad wheel") {
+			answers.push(tool.wheel?.({ dx: 0, dy: step[1], device: "trackpad", gestureStart: true }, ctx) ?? false);
+		}
 		else if (step[0] === "up") tool.pointerUp(ctx);
 		else tool.cancel(ctx);
 	}
@@ -134,6 +138,14 @@ const cases: { name: string; tool: () => Tool; viewport?: Viewport; steps: Step[
 		steps: [["wheel", 120], ["wheel", -3], ["wheel", 0]],
 		answers: [true, true, false],
 		effects: [["go", 5], ["go", 3]],
+	},
+	{
+		name: "scroll leaves a trackpad scroll to the viewport, which pans with it",
+		tool: () => new ScrollTool(),
+		viewport: { images: 10, position: 4, trackpad: true },
+		steps: [["trackpad wheel", 60], ["trackpad wheel", 60]],
+		answers: [false, false],
+		effects: [],
 	},
 	{
 		name: "scroll leaves a single image's drags and wheel to the viewport",

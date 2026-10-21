@@ -124,11 +124,11 @@ export class ToolHost {
 		}
 		// Alt+wheel steps frames in every tool, and does nothing else on a single image.
 		if (event.altKey) {
-			this.#scroll.wheel(wheel, this.#ctx);
+			this.#scroll.stepFrames(wheel, this.#ctx);
 			return;
 		}
 		if (this.#tools[view.activeTool].wheel?.(wheel, this.#ctx)) return;
-		// Two fingers pan; so does a wheel that only moves sideways (a tilt wheel, Shift+wheel).
+		// Two fingers pan in every tool; so does a wheel that only moves sideways (a tilt wheel, Shift+wheel).
 		if (device === "trackpad" || dy === 0) {
 			view.setTransform({
 				...view.transform,

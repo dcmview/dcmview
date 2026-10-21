@@ -223,20 +223,23 @@ varied small steps are a trackpad. The session profile is set by the first
 confident gesture and switches after two confident gestures of the other
 device in a row. A gesture whose first event decides nothing acts as the
 profile, or by the per-event rule (a pixel step under 50 px pans) while the
-session has shown nothing. A mouse gesture zooms and a trackpad gesture pans;
-Ctrl or Meta plus wheel is a pinch and zooms in every tool. The host exposes
-the profile (`inputProfile`) and an Auto, Mouse or Trackpad override
-(`inputProfileSetting`) as state; no control sets the override yet. Tools
-receive the gesture's device with each wheel step and the profile as
-`ToolContext.inputProfile`, and never read wheel events: the Scroll tool
-steps one frame per mouse notch and one per 30 px of trackpad travel, and
-the rectangle tool grabs handles within 10 screen pixels in the trackpad
-profile and 8 otherwise. Browsers do not report when the fingers lift, so
-the Scroll tool takes three steps that each fall, down to 70% of the size
-the run began at, for the momentum tail and stops stepping until a step
-grows again. Those thresholds are tuned on constructed traces: on a tail
-that keeps 95 to 97% of each step they let five to eight frames through,
-and they await a recorded trace.
+session has shown nothing. A mouse gesture zooms and a trackpad gesture
+pans, in every tool; Ctrl or Meta plus wheel is a pinch and zooms in every
+tool. The host exposes the profile (`inputProfile`) and an Auto, Mouse or
+Trackpad override (`inputProfileSetting`) as state; no control sets the
+override yet. Tools receive the gesture's device with each wheel step and
+the profile as `ToolContext.inputProfile`, and never read wheel events: the
+Scroll tool steps one frame per mouse notch and leaves a trackpad scroll to
+the host, which pans; its drag steps one frame per 10 / 0.7 px of vertical
+travel from the press with either device. Alt+wheel goes to the Scroll
+tool's `stepFrames` in every tool, one frame per mouse notch and one per 30
+px of trackpad travel. The rectangle tool grabs handles within 10 screen
+pixels in the trackpad profile and 8 otherwise. Browsers do not report when
+the fingers lift, so Alt+wheel stepping takes three steps that each fall,
+down to 70% of the size the run began at, for the momentum tail and stops
+stepping until a step grows again. Those thresholds are tuned on constructed
+traces: on a tail that keeps 95 to 97% of each step they let five to eight
+frames through, and they await a recorded trace.
 
 Decision: the classifier reads one piece of evidence beyond the list in
 `docs/design/annotation-tools-ux.md` section 3.5, the legacy

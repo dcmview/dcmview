@@ -77,8 +77,11 @@ type ScrollState =
 	| { phase: "scrolling"; startY: number; baseFrame: number };
 
 /**
- * Steps through the frames by dragging vertically or by the wheel: one frame
- * per notch of a mouse wheel, one per 30 px of a trackpad scroll.
+ * Steps through the frames by dragging vertically: one frame per 10 / 0.7
+ * px of travel from the press, down for later frames. A mouse wheel steps
+ * one frame per notch here too; a trackpad scroll is left to the host,
+ * which pans with it. The host's Alt+wheel goes to `stepFrames` in every
+ * tool and with either device.
  */
 export class ScrollTool implements Tool {
 	readonly id = "scroll";
@@ -109,7 +112,18 @@ export class ScrollTool implements Tool {
 		this.reset();
 	}
 
+	/** Two fingers pan in every tool, this one included; a mouse wheel steps frames. */
 	wheel(wheel: ToolWheel, ctx: ToolContext): boolean {
+		if (wheel.device === "trackpad") return false;
+		return this.stepFrames(wheel, ctx);
+	}
+
+	/**
+	 * Steps frames for a wheel step: one per notch of a mouse wheel, one per
+	 * 30 px of a trackpad scroll. True when the step was taken as frames,
+	 * even if it moved none.
+	 */
+	stepFrames(wheel: ToolWheel, ctx: ToolContext): boolean {
 		if (ctx.navigation.count <= 1 || wheel.dy === 0) return false;
 		if (wheel.device === "mouse") {
 			ctx.navigation.go(ctx.navigation.position + (wheel.dy > 0 ? 1 : -1));
