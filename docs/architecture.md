@@ -228,22 +228,26 @@ pans, in every tool; Ctrl or Meta plus wheel is a pinch and zooms in every
 tool. A gesture also keeps the meaning its first event gave it: the host
 decides pinch (Ctrl or Meta), frame steps (Alt) or the active tool once, at
 the gesture's start, and holds it until the gesture ends, because the
-momentum after a fast swipe keeps arriving after the key is let go. The host
-exposes the profile (`inputProfile`) and an Auto, Mouse or Trackpad override
-(`inputProfileSetting`) as state; no control sets the override yet. Tools
-receive the gesture's device with each wheel step and the profile as
-`ToolContext.inputProfile`, and never read wheel events: the Scroll tool
-steps one frame per mouse notch and leaves a trackpad scroll to the host,
-which pans; its drag steps one frame per 10 / 0.7 px of vertical travel from
-the press with either device. Alt+wheel goes to the Scroll tool's
-`stepFrames` in every tool, one frame per mouse notch and one per 30 px of
-trackpad travel. The rectangle tool grabs handles within 10 screen pixels in
-the trackpad profile and 8 otherwise. Browsers do not report when the
-fingers lift, so Alt+wheel stepping takes three steps that each fall, down
-to 70% of the size the run began at, for the momentum tail and stops
-stepping until a step grows again. Those thresholds are tuned on constructed
-traces: on a tail that keeps 95 to 97% of each step they let five to eight
-frames through, and they await a recorded trace.
+momentum after a fast swipe keeps arriving after the key is let go. The one
+change is towards a pinch: a Ctrl or Meta event turns the rest of a gesture
+into one, since a pinch can begin within 150 ms of a swipe's momentum. A
+fast-spinning mouse wheel is held the same way: Ctrl released mid-spin keeps
+zooming at pinch sensitivity, and Alt pressed mid-spin keeps zooming until
+the wheel pauses. The host exposes the profile (`inputProfile`) and an Auto,
+Mouse or Trackpad override (`inputProfileSetting`) as state; no control sets
+the override yet. Tools receive the gesture's device with each wheel step
+and the profile as `ToolContext.inputProfile`, and never read wheel events:
+the Scroll tool steps one frame per mouse notch and leaves a trackpad scroll
+to the host, which pans; its drag steps one frame per 10 / 0.7 px of
+vertical travel from the press with either device. Alt+wheel goes to the
+Scroll tool's `stepFrames` in every tool, one frame per mouse notch and one
+per 30 px of trackpad travel. The rectangle tool grabs handles within 10
+screen pixels in the trackpad profile and 8 otherwise. Browsers do not
+report when the fingers lift, so Alt+wheel stepping takes three steps that
+each fall, down to 70% of the size the run began at, for the momentum tail
+and stops stepping until a step grows again. Those thresholds are tuned on
+constructed traces: on a tail that keeps 95 to 97% of each step they let
+five to eight frames through, and they await a recorded trace.
 
 Decision: the classifier reads one piece of evidence beyond the list in
 `docs/design/annotation-tools-ux.md` section 3.5, the legacy

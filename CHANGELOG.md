@@ -290,9 +290,9 @@ diagnostic viewer.
   Alt+two-finger scroll in any tool.
 - An Alt+two-finger scroll steps one frame per 30 px of travel instead of
   one per wheel event, and stepping slows to a stop as the momentum after
-  the fingers lift decays instead of running on through all of it. The stop is tuned on constructed traces, not recorded ones, so some
-  trackpads may run a few frames further. A mouse wheel still steps one frame
-  per notch.
+  the fingers lift decays instead of running on through all of it. The stop
+  is tuned on constructed traces, not recorded ones, so some trackpads may
+  run a few frames further. A mouse wheel still steps one frame per notch.
 - In the trackpad profile a rectangle's handles are grabbed from 10 screen
   pixels away instead of 8.
 
@@ -383,9 +383,11 @@ diagnostic viewer.
   [troubleshooting](docs/troubleshooting.md#a-big-endian-32-bit-image-shows-wrong-values-or-noise).
 - A trackpad pinch in the Scroll tool zooms instead of stepping frames.
 - Letting go of Alt during the momentum of a fast Alt+two-finger swipe no
-  longer pans the image with the rest of it, and the end of a pinch no
-  longer pans either. A wheel gesture keeps what its first event's
-  modifiers made it until it pauses for 150 ms.
+  longer pans the image with the rest of it, and letting go of Ctrl or Cmd
+  before the last events of a Ctrl/Cmd+wheel zoom no longer pans with them.
+  A wheel gesture keeps what its first event's modifiers made it until it
+  pauses for 150 ms; a pinch, or Ctrl/Cmd pressed, takes it over from that
+  event on.
 - A ROI moved or resized while a second pointer pressed its middle button is
   saved where it was dropped; it used to stay drawn there unsaved.
 

@@ -123,6 +123,17 @@ describe("ToolHost wheel gestures keep the meaning they began with", () => {
 		expect(position()).toBe(0);
 	});
 
+	it("a pinch that begins in a swipe's momentum zooms from its first Ctrl event", () => {
+		const { host, shown } = hostOverViewport({ frames: 60 });
+
+		for (const [index, deltaY] of fingers.entries()) host.wheel(wheelEvent(deltaY, index * 16));
+		host.wheel(wheelEvent(-10, fingers.length * 16 + 84, { ctrlKey: true }));
+		host.wheel(wheelEvent(-10, fingers.length * 16 + 100, { ctrlKey: true }));
+		host.wheel(wheelEvent(-5, fingers.length * 16 + 116));
+
+		expect(shown()).toEqual({ scale: Number(Math.exp(0.25).toFixed(3)), tx: 0, ty: -115 });
+	});
+
 	it("a swipe that began without Alt keeps panning when Alt goes down", () => {
 		const { host, shown, position } = hostOverViewport({ frames: 60 });
 

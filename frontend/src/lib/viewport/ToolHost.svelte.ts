@@ -144,6 +144,9 @@ export class ToolHost {
 		// The modifiers held when a gesture began say what it does until it
 		// ends: the momentum after a fast swipe arrives after the key is let go.
 		if (gestureStart || !this.#wheelMeaning) this.#wheelMeaning = this.#meaningOf(event);
+		// A pinch can begin before the momentum of a swipe has paused: from its
+		// first Ctrl or Meta event on, the rest of that gesture zooms.
+		else if (event.ctrlKey || event.metaKey) this.#wheelMeaning = { kind: "pinch" };
 		const meaning = this.#wheelMeaning;
 		if (meaning.kind === "pinch") {
 			this.#zoomByWheelDelta(dy, event.clientX, event.clientY, PINCH_ZOOM_SENSITIVITY);
