@@ -498,12 +498,23 @@ pub(super) fn decode_jpeg(
         layout.chunk_width <= JPEG_MAX_SIDE && tallest <= JPEG_MAX_SIDE,
         "a TIFF JPEG strip or tile is larger than a JPEG frame can be"
     );
-    let largest = layout.chunk_width * tallest * samples;
-    ensure!(
-        largest <= jpeg.chunk_bytes,
-        "a TIFF JPEG strip or tile decodes to more than {} bytes",
-        jpeg.chunk_bytes
-    );
+    // Every tile decodes to its whole size; a strip need not decode to
+    // more rows than the image has, so a page whose one strip is declared
+    // a few rows taller is refused only if that strip declares them.
+    let rows = if layout.tiled {
+        tallest
+    } else {
+        tallest.min(u64::from(layout.height))
+    };
+    let too_large = || {
+        anyhow::anyhow!(
+            "a TIFF JPEG strip or tile decodes to more than {} bytes",
+            jpeg.chunk_bytes
+        )
+    };
+    if layout.chunk_width * rows * samples > jpeg.chunk_bytes {
+        return Err(too_large());
+    }
     // The bytes of the longest strip or tile the file holds, joined to the
     // tables: never more than exist.
     let longest = layout
@@ -514,7 +525,8 @@ pub(super) fn decode_jpeg(
         .max()
         .unwrap_or(0);
     let mut stream = Vec::with_capacity(usize::try_from(tables.len() as u64 + longest)?);
-    let mut decoded = vec![0_u8; usize::try_from(largest)?];
+    // One decoded strip or tile, grown to the largest decoded so far.
+    let mut decoded = Vec::new();
     let mut frame = vec![0_u8; usize::try_from(expected)?];
     let row_bytes = (u64::from(layout.width) * samples) as usize;
     layout.each_chunk(reader, false, |chunk, input| {
@@ -550,7 +562,11 @@ pub(super) fn decode_jpeg(
             "a JPEG frame header declares {} components for {samples} samples",
             header.components
         );
-        let size = (layout.chunk_width * height * samples) as usize;
+        let size = layout.chunk_width * height * samples;
+        if size > jpeg.chunk_bytes {
+            return Err(too_large());
+        }
+        let size = size as usize;
         let mut options = DecoderOptions::default()
             .set_strict_mode(false)
             .set_max_width(layout.chunk_width as usize)
@@ -587,6 +603,10 @@ pub(super) fn decode_jpeg(
                 && decoder.output_buffer_size() == Some(size),
             "the JPEG decoder read another frame header"
         );
+        if decoded.len() < size {
+            decoded.reserve_exact(size - decoded.len());
+            decoded.resize(size, 0);
+        }
         decoder
             .decode_into(&mut decoded[..size])
             .context("the JPEG decoder could not decode the strip or tile")?;

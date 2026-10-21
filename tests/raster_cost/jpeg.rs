@@ -313,3 +313,23 @@ async fn a_hostile_jpeg_page_is_refused_by_its_own_check() {
         assert!(cost.heap <= MIB, "{}: heap {}", case.name, cost.heap);
     }
 }
+
+/// A page whose one strip is declared taller than the image, within the
+/// tile margin, holds no more than the rows the image has when its strip
+/// declares those: here a 2,048 x 2,048 RGB strip under a `RowsPerStrip`
+/// of 2,848, which would decode to more than 16 MiB at that height.
+#[tokio::test]
+async fn a_strip_declared_taller_than_the_image_decodes_its_rows() {
+    let honest = fixture("rgb-progressive-2048x2048.tif");
+    let taller = with_tag(honest.clone(), 278, 278, 2_848);
+    let scan = list(&[("honest.tif", &honest), ("taller.tif", &taller)]).await;
+    let decoded = |name: &str, bytes: &[u8]| {
+        let cost = super::bounds::decode(scan.entry(name), 0, CountedFile::new(bytes.to_vec()));
+        assert_within_limits(name, scan.entry(name), bytes.len() as u64, &cost);
+        cost.result.unwrap_or_else(|error| panic!("{name}: {error:?}"))
+    };
+    assert_eq!(
+        decoded("taller.tif", &taller).bytes,
+        decoded("honest.tif", &honest).bytes
+    );
+}
