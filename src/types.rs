@@ -206,12 +206,15 @@ pub const RASTER_MAX_FRAME_PIXELS: u64 = 268_435_456;
 pub enum RasterUnsupported {
     /// The colour layout. TIFF: CIELab, more than four bands, an extra
     /// sample that is not alpha (`color_type` `Other`); palette; CMYK; gray
-    /// with alpha; YCbCr; more than one sample stored as separate planes.
+    /// with alpha; YCbCr outside JPEG compression; more than one sample
+    /// stored as separate planes.
     Color,
     /// The sample format at this depth. TIFF: 16-bit float; 1-, 2- and 4-bit
     /// samples; 64-bit integers; colour that is not 8- or 16-bit unsigned.
     SampleFormat,
-    /// TIFF compression other than none, LZW, Deflate or PackBits.
+    /// TIFF compression other than none, LZW, Deflate or PackBits, CCITT
+    /// Group 4 on a bilevel page, or JPEG on an 8-bit gray, RGB or YCbCr
+    /// page with interleaved samples.
     Compression,
     /// A JPEG that is not 8-bit baseline, extended sequential or progressive
     /// Huffman: 12-bit, lossless, hierarchical or arithmetic-coded.

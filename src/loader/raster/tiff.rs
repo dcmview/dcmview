@@ -126,7 +126,14 @@ impl Page {
         } else if !(matches!(self.compression, 1 | 5 | 8 | 32946 | 32773)
             // CCITT Group 4, for bilevel pages; its decoder counts pixel
             // positions in 16 bits.
-            || (self.compression == 4 && depth == 1 && self.width <= u32::from(u16::MAX)))
+            || (self.compression == 4 && depth == 1 && self.width <= u32::from(u16::MAX))
+            // JPEG, for 8-bit unsigned gray and colour (RGB or YCbCr) whose
+            // samples are interleaved.
+            || (jpeg
+                && depth == 8
+                && sample_format == RasterSampleFormat::Uint
+                && matches!(color, RasterColorType::Gray | RasterColorType::Rgb)
+                && self.planar == 1))
         {
             Some(RasterUnsupported::Compression)
         } else {
