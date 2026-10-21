@@ -213,8 +213,7 @@ impl Page {
         );
         ensure!(
             entry.count <= RASTER_TIFF_JPEG_TABLES_MAX_BYTES as u64,
-            "TIFF JPEG tables exceed {} bytes",
-            RASTER_TIFF_JPEG_TABLES_MAX_BYTES
+            "TIFF JPEG tables exceed {RASTER_TIFF_JPEG_TABLES_MAX_BYTES} bytes"
         );
         let inline = if self.wide { 8 } else { 4 };
         if entry.count <= inline {
