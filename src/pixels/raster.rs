@@ -17,6 +17,7 @@ mod png;
 mod reader;
 mod tags;
 mod tiff;
+mod tiff_chunks;
 
 use super::error::{PixelError, PixelResult, Stated};
 use super::render::{DisplayBuffer, DisplayPng};
@@ -140,7 +141,10 @@ pub fn raster_read_budget(file: &FileEntry) -> Option<u64> {
 ///
 /// The first term covers decoder state, the read buffer, the copies made
 /// of a profile of [`RASTER_ICC_MAX_BYTES`] and one partition of a lossy
-/// WebP at the largest length a bitstream can declare for it; the second
+/// WebP at the largest length a bitstream can declare for it (the state of
+/// a bilevel TIFF decode, its row and its Group 4 rows included, is under
+/// 5 MiB at the widest Group 4 strip and never held beside a profile or a
+/// WebP partition); the second
 /// the frame, the decoder's own copy of it and its working rows, planes or
 /// coefficients; the third an encoded image held in memory while it is
 /// decoded (JPEG and WebP) and what is assembled from its segments. Nothing
@@ -268,6 +272,16 @@ impl<T: Read + Seek> RasterSource for T {}
 ///   stream goes on to say.
 /// - **TIFF photometric interpretation** may be stored as a SHORT or a
 ///   LONG; discovery reads both, so a decode does.
+/// - **Bilevel TIFF.** A page of one one-bit sample is decoded here, not by
+///   the `tiff` crate, once every check above has passed. `FillOrder` must
+///   be 1 or 2 and `Predictor` 1 (the format allows no other for bilevel
+///   data); any other value is a decode error. A Group 4 strip or tile must
+///   be at most 65,535 pixels across. Each of its rows is decoded for
+///   exactly the strip's or tile's width, may take at most two bytes a
+///   pixel of it plus 64 while it is decoded, and must end with at most one
+///   colour change more than that width; a strip that ends, or reaches its
+///   end-of-block code, before its last row inside the image is a decode
+///   error.
 ///
 /// # What a decode may cost
 ///
@@ -323,7 +337,11 @@ impl<T: Read + Seek> RasterSource for T {}
 ///   chunk that inflates past [`RASTER_ICC_MAX_BYTES`] or names a length
 ///   beyond the file is never allocated at its declared size, and a
 ///   compressed strip, tile or chunk is never buffered at a declared length
-///   larger than the read budget. One allocation is sized by the file
+///   larger than the read budget. A bilevel TIFF page holds, beside its
+///   frame, one packed row of a strip or tile (at most the image's width and
+///   the tile margin, in bits), an 8 KiB input buffer, the LZW or Deflate
+///   decoder's fixed state and, for Group 4, the colour changes of two rows,
+///   each bounded by the bytes a row may take. One allocation is sized by the file
 ///   unchecked, and the limit has room for it: a partition of a lossy
 ///   WebP's coefficients, at the length its bitstream declares, which is
 ///   less than 16 MiB. The decoder stops at the first partition the file
@@ -339,6 +357,7 @@ impl<T: Read + Seek> RasterSource for T {}
 /// | PNG | every colour type and bit depth, Adam7 interlacing | the `png` crate with no output transformation; only the image itself (`IDAT`) of an animated file |
 /// | JPEG | 8-bit baseline, extended sequential and progressive Huffman; one, three or four components | `image`'s JPEG decoder; never rotated by EXIF |
 /// | TIFF | gray of 8, 16 or 32 bits unsigned or signed, or 32- or 64-bit float; RGB and RGB with alpha of 8 or 16 bits unsigned. Strips and tiles; none, LZW, Deflate (8 and 32946) and PackBits; predictors 1, 2 and 3; classic and BigTIFF, either byte order | the `tiff` crate, on the frame's own page. JPEG compression (7) is not decoded: the crate hands a strip or tile to a JPEG decoder with no limit on the size that stream declares |
+/// | TIFF bilevel | gray of one bit unsigned; strips and tiles; none, LZW, Deflate (8 and 32946), PackBits and CCITT Group 4; `FillOrder` 1 and 2 | the viewer's own chunk decoder (`tiff_chunks.rs`), with `weezl` for LZW, `flate2` for Deflate and `fax` for Group 4. CCITT Group 3 and Modified Huffman (3 and 2) are not decoded |
 /// | WebP | lossy and lossless stills, with or without alpha; the first frame of an animation, composed on the canvas | `image`'s WebP decoder |
 ///
 /// # Samples
@@ -349,6 +368,7 @@ impl<T: Read + Seek> RasterSource for T {}
 /// | Stored | `samples_per_pixel`, `bits_allocated` | `bytes` holds |
 /// |---|---|---|
 /// | PNG gray, 1, 2 or 4 bits | 1, 8 | one byte per sample with the stored value, `0..=2^depth - 1`; never scaled to `0..=255` |
+/// | TIFF bilevel | 1, 8 | one byte per pixel with the stored bit, 0 or 1; a Group 4 page stores a white run as 0 and a black run as 1, as libtiff does. WhiteIsZero keeps the stored bit, as below |
 /// | PNG, TIFF gray 8 or 16 bits | 1, 8 or 16 | the stored value |
 /// | TIFF gray 32-bit integer, 32- or 64-bit float | 1, 32 or 64 | the stored value, bit for bit, signed as stored |
 /// | TIFF WhiteIsZero | as its depth | the stored value: the decoder's inversion is not in the result (floats included, bit for bit). `photometric_interpretation` is `MONOCHROME1` and display inverts once |

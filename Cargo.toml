@@ -94,6 +94,10 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 png = "0.17"
 tiff = "0.9"
 flate2 = "1.1"
+# The LZW decoder `tiff` already links, and a CCITT Group 4 decoder, for the
+# bilevel TIFF pages `pixels/raster/tiff_chunks.rs` decodes itself.
+weezl = "0.1.12"
+fax = "=0.2.7"
 jpeg2k = { version = "0.10", default-features = false, features = ["openjp2"] }
 # The JPEG decoder dicom-pixeldata already links, named so that a thumbnail
 # can ask it for a frame at a fraction of its size (docs/architecture.md,

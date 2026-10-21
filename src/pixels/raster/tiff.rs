@@ -1,4 +1,7 @@
 //! Read one recorded IFD, then present that page as the decoder's first page.
+//! A bilevel page is checked the same way and then decoded by
+//! `tiff_chunks.rs`, which the `tiff` crate's decoder never sees.
+use super::tiff_chunks::{self, Bilevel, Layout};
 use super::{
     checked_profile, reader::Reader, PixelError, PixelResult, RasterFrame, RASTER_ICC_MAX_BYTES,
     RASTER_TIFF_MAX_CHUNKS, RASTER_TIFF_MAX_TAGS, RASTER_TIFF_TILE_MARGIN,
@@ -276,7 +279,8 @@ fn decode_page(
         .context("missing TIFF frame offset")?;
     let page = Page::read(reader, offset, length)?;
     let compression = page.scalar(reader, 259, 1, length)?;
-    if !matches!(compression, 1 | 5 | 8 | 32946 | 32773) {
+    // Group 4 is decided once the depth is known: it is for bilevel pages.
+    if !matches!(compression, 1 | 4 | 5 | 8 | 32946 | 32773) {
         return Err(unsupported("raster.unsupported_compression"));
     }
     let samples = page.scalar(reader, 277, 1, length)?;
@@ -297,10 +301,14 @@ fn decode_page(
         || !formats.iter().all(|&f| f == format)
         || !matches!(
             (samples, format, depth),
-            (1, 1 | 2, 8 | 16 | 32) | (1, 3, 32 | 64) | (3 | 4, 1, 8 | 16)
+            (1, 1, 1) | (1, 1 | 2, 8 | 16 | 32) | (1, 3, 32 | 64) | (3 | 4, 1, 8 | 16)
         )
     {
         return Err(unsupported("raster.unsupported_sample_format"));
+    }
+    let bilevel = depth == 1;
+    if compression == 4 && (!bilevel || u64::from(file.columns) > u64::from(u16::MAX)) {
+        return Err(unsupported("raster.unsupported_compression"));
     }
     let expected_format = match raster.sample_format {
         RasterSampleFormat::Uint => 1,
@@ -317,7 +325,7 @@ fn decode_page(
         page.scalar(reader, 256, 0, length)? == u64::from(file.columns)
             && page.scalar(reader, 257, 0, length)? == u64::from(file.rows)
             && samples == u64::from(file.samples_per_pixel)
-            && depth == u64::from(file.bits_allocated)
+            && depth.next_power_of_two().max(8) == u64::from(file.bits_allocated)
             && depth == u64::from(raster.bit_depth)
             && format == expected_format
             && photometric == expected_photometric
@@ -326,7 +334,8 @@ fn decode_page(
     );
     // read_image iterates the offset table, leaving missing chunks as zeros.
     // Require complete coverage rather than accepting a partially filled frame.
-    let (offset_tag, count_tag, chunks) = if page.entry(324).is_some() {
+    let tiled = page.entry(324).is_some();
+    let (offset_tag, count_tag, chunk_width, chunk_height, chunks) = if tiled {
         let width = page.scalar(reader, 322, 0, length)?;
         let height = page.scalar(reader, 323, 0, length)?;
         ensure!(width > 0 && height > 0, "invalid TIFF tile dimensions");
@@ -338,12 +347,20 @@ fn decode_page(
         (
             324,
             325,
+            width,
+            height,
             u64::from(file.columns).div_ceil(width) * u64::from(file.rows).div_ceil(height),
         )
     } else {
         let rows = page.scalar(reader, 278, u64::from(file.rows), length)?;
         ensure!(rows > 0, "invalid TIFF strip height");
-        (273, 279, u64::from(file.rows).div_ceil(rows))
+        (
+            273,
+            279,
+            u64::from(file.columns),
+            rows,
+            u64::from(file.rows).div_ceil(rows),
+        )
     };
     ensure!(
         page.entry(offset_tag)
@@ -374,6 +391,32 @@ fn decode_page(
     let profile = page.profile(reader, length)?;
     let icc_profile = checked_profile(file, profile.as_deref());
     drop(profile);
+    if bilevel {
+        // Every check above has passed; the `tiff` crate does not unpack
+        // one-bit samples, so these pages are decoded here.
+        let fill_order = page.scalar(reader, 266, 1, length)?;
+        ensure!(
+            matches!(fill_order, 1 | 2),
+            "TIFF fill order is neither 1 nor 2"
+        );
+        ensure!(
+            page.scalar(reader, 317, 1, length)? == 1,
+            "a bilevel TIFF page declares a predictor"
+        );
+        let compression = Bilevel::of(compression).context("unsupported bilevel compression")?;
+        let layout = Layout {
+            width: file.columns,
+            height: file.rows,
+            chunk_width,
+            chunk_height,
+            tiled,
+            offsets,
+            counts,
+        };
+        let bytes =
+            tiff_chunks::decode_bilevel(reader, &layout, compression, fill_order == 2, expected)?;
+        return Ok(RasterFrame { bytes, icc_profile });
+    }
     let mut patches = vec![Patch {
         offset: if page.wide { 8 } else { 4 },
         bytes: page.order.bytes(offset, if page.wide { 8 } else { 4 }),
