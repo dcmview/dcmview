@@ -183,9 +183,10 @@ The file's support reason identifies what prevents decoding:
 - `raster.unsupported_sample_format`: a TIFF sample type outside supported
   depths, such as 2- or 4-bit, 16-bit float, or 64-bit integer.
 - `raster.unsupported_compression`: TIFF compression other than none, LZW,
-  Deflate, or PackBits, and for bilevel TIFF other than CCITT Group 4 (at
-  most 65,535 pixels wide); JPEG-compressed TIFF and CCITT Group 3 are
-  included.
+  Deflate, PackBits, or JPEG on 8-bit gray, RGB or YCbCr with interleaved
+  samples, and for bilevel TIFF other than CCITT Group 4 (at most 65,535
+  pixels wide); old-style JPEG, JPEG on 16-bit or planar pages, and CCITT
+  Group 3 are included.
 - `raster.jpeg_unsupported_process`: JPEG other than 8-bit baseline,
   extended sequential, or progressive Huffman.
 - `raster.too_large`: a frame exceeds 268,435,456 pixels.
@@ -193,8 +194,8 @@ The file's support reason identifies what prevents decoding:
   four times its decoded frame, usually because a large payload was appended.
   It is listed as unsupported; frame requests do not attempt to decode it.
 
-Convert a copy to a supported layout: for example, re-encode JPEG-compressed
-TIFF using LZW, re-encode Group 3 fax TIFF as Group 4, expand 2- or 4-bit
+Convert a copy to a supported layout: for example, re-encode old-style JPEG
+or 16-bit JPEG TIFF using LZW, re-encode Group 3 fax TIFF as Group 4, expand 2- or 4-bit
 TIFF to 8-bit gray, or convert separate color
 planes to interleaved RGB. Resize or split images above the pixel limit.
 Keep the source if its precision or metadata matters to your work.
@@ -213,6 +214,13 @@ is built in a way the viewer refuses to follow:
 - a bilevel TIFF with a `Predictor`, or a `FillOrder` other than 1 or 2, or
   a Group 4 strip whose rows hold more colour changes or codes than their
   width allows;
+- a JPEG-compressed TIFF strip or tile whose JPEG frame header declares
+  another size than the strip or tile, other components than the page's
+  samples, samples other than 8-bit, or chroma sampled more than once; a
+  page whose `JPEGTables` is larger than 64 KiB; a page whose strips or
+  tiles would each decode to more than the frame or 16 MiB, whichever is
+  more; or a JPEG-compressed page in a file that had none when it was
+  listed;
 - a TIFF frame whose data takes more than 64 MiB plus four times its
   decoded frame to read;
 - a raster file that has grown since discovery listed it. The message says
