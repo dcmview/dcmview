@@ -60,8 +60,10 @@ export class ToolHost {
 	// The element holding the pointer capture.
 	#surface: HTMLElement | null = null;
 	#draft = $state.raw<DraftRect | null>(null);
-	// The cursor the active tool asked for where the pointer last moved, and that tool.
-	#hover = $state.raw<{ tool: Tool; cursor: string } | null>(null);
+	// Where the pointer last moved over the image with no button held; null off it.
+	#hoverPointer = $state.raw<ToolPointer | null>(null);
+	// The cursor the tool holding the pointer showed where its press landed.
+	#grab = $state.raw<{ tool: Tool; cursor: string | null } | null>(null);
 	// The frame-bound gesture begun since the last one ended, and where it began.
 	#frameGesture: { fileIndex: number; frameIndex: number } | null = null;
 	// Wheel events are told apart here and nowhere else (inputProfile.ts).
@@ -107,13 +109,16 @@ export class ToolHost {
 	 * The cursor the active tool shows under the pointer, such as a move or
 	 * resize cursor over a rectangle; null for the tool's usual one. A drag
 	 * that began there keeps it; a drag by another button, or the second
-	 * click of a placement, does not.
+	 * click of a placement, does not. It is asked for when read, so it
+	 * follows the image, frame and rectangles moving under a still pointer.
 	 */
 	get cursor(): string | null {
-		const hover = this.#hover;
-		if (!hover || this.#armed || this.#tools[this.#view.activeTool] !== hover.tool) return null;
-		if (this.#captured && this.#captured !== hover.tool) return null;
-		return hover.cursor;
+		if (this.#armed) return null;
+		const active = this.#tools[this.#view.activeTool];
+		if (this.#captured) return this.#grab?.tool === this.#captured && this.#captured === active ? this.#grab.cursor : null;
+		const pointer = this.#hoverPointer;
+		if (!pointer || !this.#view.file.has_pixels) return null;
+		return active.cursor?.(pointer, this.#ctx) ?? null;
 	}
 
 	/** The device the session is taken to use: what the wheel has shown, or the override. */
@@ -250,7 +255,7 @@ export class ToolHost {
 
 	/** The pointer left the viewport: no tool cursor until it comes back. */
 	pointerLeave(): void {
-		if (!this.#captured) this.#hover = null;
+		if (!this.#captured) this.#hoverPointer = null;
 	}
 
 	/** The browser took the pointer away; without an event, cancels whatever is in progress. */
@@ -296,20 +301,20 @@ export class ToolHost {
 		this.#armed = null;
 		this.#draft = null;
 		this.#frameGesture = null;
+		this.#grab = null;
 	}
 
-	/** Asks the active tool for its cursor where the pointer is, unless a placement is armed. */
+	/** Remembers where the pointer is over the image, for the cursor; controls over it have their own. */
 	#hoverAt(event: PointerEvent): void {
-		const tool = this.#tools[this.#view.activeTool];
-		const cursor = !this.#armed && this.#view.file.has_pixels && !isViewportChromeTarget(event.target)
-			? tool.cursor?.(toolPointer(event), this.#ctx) ?? null
-			: null;
-		this.#hover = cursor === null ? null : { tool, cursor };
+		this.#hoverPointer = isViewportChromeTarget(event.target) ? null : toolPointer(event);
 	}
 
 	#begin(tool: Tool, event: PointerEvent): void {
 		const view = this.#view;
+		this.#hoverAt(event);
+		const cursor = this.cursor;
 		if (tool.pointerDown(toolPointer(event), this.#ctx) !== "capture") return;
+		this.#grab = { tool, cursor };
 		event.preventDefault();
 		(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
 		this.#captured = tool;

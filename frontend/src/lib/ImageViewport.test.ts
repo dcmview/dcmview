@@ -1446,6 +1446,89 @@ describe("ImageViewport shared gestures", () => {
 		await fireEvent.pointerUp(viewport, { button: 1, clientX: 22, clientY: 22, pointerId: 1 });
 	});
 
+	describe("ROI tool cursor under a still pointer", () => {
+		const firstFrameRoi: api.EmbedRoiAnnotations = { num_roi: 1, roi_coords: [[10, 10, 30, 30]], roi_frames: [[0]] };
+		const hover = async (viewport: HTMLElement, clientX = 20, clientY = 20) => {
+			await fireEvent.pointerMove(viewport, { clientX, clientY, pointerId: 1 });
+			expect(viewport.style.cursor).toBe("move");
+		};
+
+		it("follows a two-finger pan that moves the ROI away", async () => {
+			const { viewport } = await renderReady("annotate_rect", oneRoi);
+			await hover(viewport);
+
+			await wheelAt(viewport, { deltaY: 20, at: 0 });
+			await wheelAt(viewport, { deltaY: 20, at: 16 });
+
+			expectTransform({ scale: 1, tx: 0, ty: -40 });
+			expect(viewport.style.cursor).toBe("");
+		});
+
+		it("follows a pinch that brings a handle under it", async () => {
+			const { viewport } = await renderReady("annotate_rect", oneRoi);
+			await hover(viewport);
+
+			// Zooming in about (20, 30) brings image (20, 27.8), by the bottom handle, under (20, 20).
+			await wheelAt(viewport, { deltaY: -150, ctrlKey: true });
+
+			expect(viewport.style.cursor).toBe("ns-resize");
+		});
+
+		it("follows a frame step to a frame without the ROI", async () => {
+			const { viewport, rerender } = await renderReady("annotate_rect", firstFrameRoi);
+			await hover(viewport);
+
+			await rerender({ currentFrame: 1, navigationPosition: 1 });
+			await shown(5, 1);
+
+			expect(viewport.style.cursor).toBe("");
+		});
+
+		it("is the new tool's own after a tool change", async () => {
+			const { viewport, rerender } = await renderReady("annotate_rect", oneRoi);
+			await hover(viewport);
+
+			await rerender({ activeTool: "pan" });
+
+			expect(viewport.style.cursor).toBe("");
+		});
+
+		it("is the tool's own over the zoom controls", async () => {
+			const { viewport } = await renderReady("annotate_rect", oneRoi);
+			await hover(viewport);
+
+			await fireEvent.pointerMove(document.querySelector(".zoom-controls")!, { clientX: 20, clientY: 20, pointerId: 1 });
+
+			expect(viewport.style.cursor).toBe("");
+		});
+
+		it("is the tool's own between the two clicks of a placement", async () => {
+			const { viewport } = await renderReady("annotate_rect", oneRoi);
+
+			await fireEvent.pointerDown(viewport, { button: 0, clientX: 50, clientY: 50, pointerId: 1 });
+			await fireEvent.pointerUp(viewport, { button: 0, clientX: 50, clientY: 50, pointerId: 1 });
+			await fireEvent.pointerMove(viewport, { clientX: 20, clientY: 20, pointerId: 1 });
+
+			expect(draft()).not.toBeNull();
+			expect(viewport.style.cursor).toBe("");
+		});
+
+		it("is read where a drag was released, before the pointer moves again", async () => {
+			const { viewport } = await renderReady("annotate_rect", oneRoi);
+			await hover(viewport);
+
+			await fireEvent.pointerDown(viewport, { button: 0, clientX: 20, clientY: 20, pointerId: 1 });
+			await fireEvent.pointerMove(viewport, { clientX: 45, clientY: 45, pointerId: 1 });
+			await fireEvent.pointerUp(viewport, { button: 0, clientX: 45, clientY: 45, pointerId: 1 });
+
+			await waitFor(() => expect(coords()).toEqual(["[35, 35, 55, 55]"]));
+			expect(viewport.style.cursor).toBe("move");
+			// Where the press began is bare image now.
+			await fireEvent.pointerMove(viewport, { clientX: 20, clientY: 20, pointerId: 1 });
+			expect(viewport.style.cursor).toBe("");
+		});
+	});
+
 	it("pan tool: the cursor stays the tool's own over a ROI", async () => {
 		const { viewport } = await renderReady("pan", oneRoi);
 

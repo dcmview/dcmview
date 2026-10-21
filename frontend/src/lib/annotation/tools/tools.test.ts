@@ -32,6 +32,8 @@ type Viewport = {
 	zoom?: number;
 	/** The session's input profile is a trackpad. */
 	trackpad?: boolean;
+	/** False while the shown frame is not the requested one, even with rectangles loaded. */
+	editable?: boolean;
 };
 
 const oneRectangle: EmbedRoiAnnotations = { num_roi: 1, roi_coords: [[10, 10, 30, 30]], roi_frames: [[1]] };
@@ -42,7 +44,7 @@ const noRectangles: EmbedRoiAnnotations = { num_roi: 0, roi_coords: [], roi_fram
  * origin, at 1:1 unless `zoom` is given, so client and image coordinates agree. `effects` lists what
  * the tool did to the viewport, in order.
  */
-function viewport({ images = 1, position = 0, rectangles = noRectangles, redacting = false, windowable = true, zoom = 1, trackpad = false }: Viewport) {
+function viewport({ images = 1, position = 0, rectangles = noRectangles, redacting = false, windowable = true, zoom = 1, trackpad = false, editable = true }: Viewport) {
 	const effects: unknown[][] = [];
 	const origin = { left: 0, top: 0 };
 	const file = fileSummary(5, { frame_count: 3, rows: 64, columns: 64 });
@@ -75,7 +77,7 @@ function viewport({ images = 1, position = 0, rectangles = noRectangles, redacti
 			commit: () => effects.push(["commit window"]),
 		},
 		rects: {
-			get editable() { return shown !== null; },
+			get editable() { return editable && shown !== null; },
 			get visible() { return visibleRois(shown, 1); },
 			get annotations() { return shown; },
 			get selectedIndex() { return selected; },
@@ -275,6 +277,12 @@ describe("rectangle tool cursor", () => {
 		const { ctx } = viewport({ rectangles: oneRectangle, trackpad });
 
 		expect(new RectangleTool("annotate_rect").cursor({ clientX: x, clientY: y }, ctx)).toBe(cursor);
+	});
+
+	it("offers nothing over a rectangle that cannot be edited now", () => {
+		const { ctx } = viewport({ rectangles: oneRectangle, editable: false });
+
+		expect(new RectangleTool("annotate_rect").cursor({ clientX: 20, clientY: 20 }, ctx)).toBeNull();
 	});
 
 	it("offers nothing while the rectangles load", () => {

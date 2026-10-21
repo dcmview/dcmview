@@ -285,14 +285,16 @@ Escape (`cancelPlacement`, offered the key by `App.svelte` before the
 shortcut table) or when another tool, file or frame is shown. The rectangle
 tool uses this to place a rectangle with two clicks. The host exposes what
 the tool holding the pointer, or armed, is drawing (the draft rectangle),
-and the cursor the active tool's optional `cursor` asks for where the
-pointer moves with no gesture in progress, which the viewport sets over its
-own. The rectangle tool answers with what a press there would grab: a move
-cursor over a rectangle's body and a resize cursor over a handle, turned
-with the image's flips and rotation, using the same hit test and tolerance
-as the press. A drag the tool began keeps that cursor; a drag by another
-button and the second click of a placement show the tool's own. The viewport
-keeps rendering, the readout, and the overlays, the presentation state's
+and the cursor the active tool's optional `cursor` gives for the last
+pointer position over the image with no gesture in progress, which the
+viewport sets over its own. It is asked for whenever it is read, so it
+follows a pan, zoom, frame step or rectangle change under a still pointer.
+The rectangle tool answers with what a press there would grab: a move cursor
+over a rectangle's body and a resize cursor over a handle, turned with the
+image's flips and rotation, using the same hit test and tolerance as the
+press. A drag the tool began keeps that cursor; a drag by another button and
+the second click of a placement show the tool's own. The viewport keeps
+rendering, the readout, and the overlays, the presentation state's
 annotations among them.
 
 The viewport retains the last complete presentation until its replacement is
