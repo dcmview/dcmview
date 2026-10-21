@@ -172,6 +172,7 @@ pub(super) fn inspect(input: &mut HeaderReader) -> Result<Header> {
     let (first, next) = read_page(input, encoding, offset)?;
     let mut header = first.header()?;
     header.metadata.frame_offsets = vec![offset];
+    header.metadata.tiff_jpeg = first.compression == 7;
     // Keep exact cycle detection so a repeated page is never counted twice.
     // The step check precedes insertion, bounding this set to 65,535 offsets.
     let mut seen = HashSet::from([offset]);
@@ -208,6 +209,7 @@ pub(super) fn inspect(input: &mut HeaderReader) -> Result<Header> {
         } else {
             header.metadata.frame_pages.push(page);
             header.metadata.frame_offsets.push(offset);
+            header.metadata.tiff_jpeg |= current.compression == 7;
             if current.icc != first.icc {
                 note(
                     &mut header,

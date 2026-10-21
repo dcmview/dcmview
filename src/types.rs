@@ -174,6 +174,11 @@ pub struct RasterMetadata {
     pub animated: bool,
     /// PNG `sBIT`, one entry per stored channel; informational only.
     pub significant_bits: Option<Vec<u8>>,
+    /// TIFF: some frame's page is JPEG-compressed (`Compression` 7). A
+    /// decode's heap limit then has room for one JPEG strip or tile
+    /// (`pixels::raster_decode_heap_limit`), and a JPEG page of a file
+    /// listed without one is refused.
+    pub tiff_jpeg: bool,
     /// Notes for the file report, such as a page whose ICC profile differs
     /// from page 0's or a page chain that could not be read to its end. At
     /// most [`RASTER_WARNINGS_MAX`] entries; when more arose, the last entry

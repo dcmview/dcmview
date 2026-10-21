@@ -700,6 +700,7 @@ dependencies = [
  "uuid",
  "walkdir",
  "weezl",
+ "zune-jpeg 0.5.15",
 ]
 
 [[package]]
@@ -1537,7 +1538,7 @@ dependencies = [
  "rayon",
  "tiff",
  "zune-core 0.4.12",
- "zune-jpeg",
+ "zune-jpeg 0.4.21",
 ]
 
 [[package]]
@@ -4090,6 +4091,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29ce2c8a9384ad323cf564b67da86e21d3cfdff87908bc1223ed5c99bc792713"
 dependencies = [
  "zune-core 0.4.12",
+]
+
+[[package]]
+name = "zune-jpeg"
+version = "0.5.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "27bc9d5b815bc103f142aa054f561d9187d191692ec7c2d1e2b4737f8dbd7296"
+dependencies = [
+ "zune-core 0.5.3",
 ]
 
 [[package]]

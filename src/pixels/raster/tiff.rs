@@ -1,10 +1,11 @@
 //! Read one recorded IFD, then present that page as the decoder's first page.
-//! A bilevel page is checked the same way and then decoded by
-//! `tiff_chunks.rs`, which the `tiff` crate's decoder never sees.
-use super::tiff_chunks::{self, Bilevel, Layout};
+//! A bilevel or JPEG-compressed page is checked the same way and then
+//! decoded by `tiff_chunks.rs`, which the `tiff` crate's decoder never sees.
+use super::tiff_chunks::{self, Bilevel, Jpeg, Layout};
 use super::{
-    checked_profile, reader::Reader, PixelError, PixelResult, RasterFrame, RASTER_ICC_MAX_BYTES,
-    RASTER_TIFF_MAX_CHUNKS, RASTER_TIFF_MAX_TAGS, RASTER_TIFF_TILE_MARGIN,
+    checked_profile, raster_tiff_jpeg_chunk_bytes, reader::Reader, PixelError, PixelResult,
+    RasterFrame, RASTER_ICC_MAX_BYTES, RASTER_TIFF_JPEG_TABLES_MAX_BYTES, RASTER_TIFF_MAX_CHUNKS,
+    RASTER_TIFF_MAX_TAGS, RASTER_TIFF_TILE_MARGIN,
 };
 use crate::api::contracts::RasterSampleFormat;
 use crate::types::FileEntry;
@@ -198,6 +199,48 @@ impl Page {
         reader.read_exact(&mut bytes)?;
         Ok(Some(bytes))
     }
+
+    /// `JPEGTables` (tag 347), when the page has it: at most
+    /// [`RASTER_TIFF_JPEG_TABLES_MAX_BYTES`], read through the decode's
+    /// reader, so its bytes are charged to the read budget.
+    ///
+    /// The tables are read as one more of the ranges `runs` names, the
+    /// runs of the page's strips or tiles, so reading them asks the file for
+    /// their bytes and no more.
+    fn jpeg_tables(
+        &self,
+        reader: &mut Reader<'_>,
+        length: u64,
+        mut runs: Vec<Range<u64>>,
+    ) -> Result<Option<Vec<u8>>> {
+        let Some(entry) = self.entry(347) else {
+            return Ok(None);
+        };
+        ensure!(
+            matches!(entry.kind, 1 | 7),
+            "TIFF JPEG tables are not bytes"
+        );
+        ensure!(
+            entry.count <= RASTER_TIFF_JPEG_TABLES_MAX_BYTES as u64,
+            "TIFF JPEG tables exceed {} bytes",
+            RASTER_TIFF_JPEG_TABLES_MAX_BYTES
+        );
+        let inline = if self.wide { 8 } else { 4 };
+        if entry.count <= inline {
+            return Ok(Some(entry.value[..entry.count as usize].to_vec()));
+        }
+        let offset = self.order.number(&entry.value[..inline as usize]);
+        ensure!(
+            offset <= length && entry.count <= length - offset,
+            "TIFF JPEG tables outside file"
+        );
+        runs.push(offset..offset + entry.count);
+        reader.read_spans(runs);
+        reader.seek(SeekFrom::Start(offset))?;
+        let mut bytes = vec![0; entry.count as usize];
+        reader.read_exact(&mut bytes)?;
+        Ok(Some(bytes))
+    }
 }
 
 struct Patch {
@@ -279,16 +322,19 @@ fn decode_page(
         .context("missing TIFF frame offset")?;
     let page = Page::read(reader, offset, length)?;
     let compression = page.scalar(reader, 259, 1, length)?;
-    // Group 4 is decided once the depth is known: it is for bilevel pages.
-    if !matches!(compression, 1 | 4 | 5 | 8 | 32946 | 32773) {
+    // Group 4 and JPEG are decided once the depth is known: Group 4 is for
+    // bilevel pages, JPEG for 8-bit ones.
+    if !matches!(compression, 1 | 4 | 5 | 7 | 8 | 32946 | 32773) {
         return Err(unsupported("raster.unsupported_compression"));
     }
+    let jpeg = compression == 7;
     let samples = page.scalar(reader, 277, 1, length)?;
     let planar = page.scalar(reader, 284, 1, length)?;
     let photometric = page.scalar(reader, 262, u64::MAX, length)?;
     let alpha = page.values(reader, 338, 0, length)?;
     if (samples > 1 && planar == 2)
-        || !matches!((photometric, samples), (0 | 1, 1) | (2, 3 | 4))
+        || !(matches!((photometric, samples), (0 | 1, 1) | (2, 3 | 4))
+            || (jpeg && (photometric, samples) == (6, 3)))
         || (samples == 4 && (alpha.len() != 1 || !matches!(alpha[0], 1 | 2)))
     {
         return Err(unsupported("raster.unsupported_color"));
@@ -310,6 +356,9 @@ fn decode_page(
     if compression == 4 && (!bilevel || u64::from(file.columns) > u64::from(u16::MAX)) {
         return Err(unsupported("raster.unsupported_compression"));
     }
+    if jpeg && !(depth == 8 && format == 1 && matches!(samples, 1 | 3) && planar == 1) {
+        return Err(unsupported("raster.unsupported_compression"));
+    }
     let expected_format = match raster.sample_format {
         RasterSampleFormat::Uint => 1,
         RasterSampleFormat::Int => 2,
@@ -328,7 +377,10 @@ fn decode_page(
             && depth.next_power_of_two().max(8) == u64::from(file.bits_allocated)
             && depth == u64::from(raster.bit_depth)
             && format == expected_format
-            && photometric == expected_photometric
+            // YCbCr is listed as the RGB it decodes to.
+            && (photometric == expected_photometric
+                || (photometric == 6 && expected_photometric == 2))
+            && jpeg <= raster.tiff_jpeg
             && (samples != 4 || (alpha[0] == 1) == raster.alpha_associated),
         "TIFF page differs from catalog"
     );
@@ -415,6 +467,30 @@ fn decode_page(
         };
         let bytes =
             tiff_chunks::decode_bilevel(reader, &layout, compression, fill_order == 2, expected)?;
+        return Ok(RasterFrame { bytes, icc_profile });
+    }
+    if jpeg {
+        // Every check above has passed; the `tiff` crate gives a JPEG
+        // decoder no limit on the size a strip or tile declares, so these
+        // pages are decoded here.
+        let tables = page.jpeg_tables(reader, length, chunk_runs(&offsets, &counts))?;
+        let jpeg = Jpeg {
+            tables,
+            samples,
+            ycbcr: photometric == 6,
+            chunk_bytes: raster_tiff_jpeg_chunk_bytes(file).context("missing raster frame size")?,
+            file_length: length,
+        };
+        let layout = Layout {
+            width: file.columns,
+            height: file.rows,
+            chunk_width,
+            chunk_height,
+            tiled,
+            offsets,
+            counts,
+        };
+        let bytes = tiff_chunks::decode_jpeg(reader, &layout, &jpeg, expected)?;
         return Ok(RasterFrame { bytes, icc_profile });
     }
     let mut patches = vec![Patch {

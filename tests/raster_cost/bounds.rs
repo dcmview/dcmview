@@ -670,15 +670,12 @@ pub(super) fn hostile_files() -> Vec<Hostile> {
             Fails,
         )
         .replaced_by(files::webp_from_chunks(&webp_frame)),
-        // A later page need not share page 0's compression, and its own is
-        // checked before its strips are touched.
+        // A later page need not share page 0's compression. This one's
+        // strip is a JPEG that declares itself far larger than the strip,
+        // and is refused before it is decoded.
         Hostile {
             frame: 1,
-            ..Hostile::new(
-                "tiff frame compressed as jpeg",
-                jpeg_page,
-                Refused("raster.unsupported_compression"),
-            )
+            ..Hostile::new("tiff frame compressed as jpeg", jpeg_page, Fails)
         }
         .reading_at_most(2 * BUFFER),
         Hostile::new("tiff strip of four gigabytes", tiff_claim, Fails),

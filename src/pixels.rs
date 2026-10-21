@@ -57,9 +57,11 @@ pub(crate) use native_layout::{NativeByteOrder, NativeFrameLayout};
 pub(crate) use raster::raster_tag_nodes;
 pub use raster::{
     decode_raster_frame, raster_decode_heap_limit, raster_frame_bytes, raster_read_budget,
-    RasterFrame, RasterSource, RASTER_DECODE_HEAP_BASE_BYTES, RASTER_ICC_MAX_BYTES,
-    RASTER_JPEG_MAX_SCANS, RASTER_READ_BUDGET_BASE_BYTES, RASTER_READ_BUDGET_PER_DECODED_BYTE,
-    RASTER_READ_BUFFER_BYTES, RASTER_TIFF_MAX_CHUNKS, RASTER_TIFF_MAX_TAGS,
+    raster_tiff_jpeg_chunk_bytes, RasterFrame, RasterSource, RASTER_DECODE_HEAP_BASE_BYTES,
+    RASTER_ICC_MAX_BYTES, RASTER_JPEG_MAX_SCANS, RASTER_READ_BUDGET_BASE_BYTES,
+    RASTER_READ_BUDGET_PER_DECODED_BYTE, RASTER_READ_BUFFER_BYTES,
+    RASTER_TIFF_JPEG_CHUNK_MIN_BYTES, RASTER_TIFF_JPEG_HEAP_PER_SIDE_BYTES,
+    RASTER_TIFF_JPEG_TABLES_MAX_BYTES, RASTER_TIFF_MAX_CHUNKS, RASTER_TIFF_MAX_TAGS,
     RASTER_TIFF_TILE_MARGIN,
 };
 pub use raster::{

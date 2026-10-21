@@ -459,6 +459,7 @@ impl Header {
                 unsupported: None,
                 animated: false,
                 significant_bits: None,
+                tiff_jpeg: false,
                 warnings: Vec::new(),
             },
         }
