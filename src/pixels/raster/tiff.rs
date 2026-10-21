@@ -203,16 +203,7 @@ impl Page {
     /// `JPEGTables` (tag 347), when the page has it: at most
     /// [`RASTER_TIFF_JPEG_TABLES_MAX_BYTES`], read through the decode's
     /// reader, so its bytes are charged to the read budget.
-    ///
-    /// The tables are read as one more of the ranges `runs` names, the
-    /// runs of the page's strips or tiles, so reading them asks the file for
-    /// their bytes and no more.
-    fn jpeg_tables(
-        &self,
-        reader: &mut Reader<'_>,
-        length: u64,
-        mut runs: Vec<Range<u64>>,
-    ) -> Result<Option<Vec<u8>>> {
+    fn jpeg_tables(&self, reader: &mut Reader<'_>, length: u64) -> Result<Option<Vec<u8>>> {
         let Some(entry) = self.entry(347) else {
             return Ok(None);
         };
@@ -234,8 +225,6 @@ impl Page {
             offset <= length && entry.count <= length - offset,
             "TIFF JPEG tables outside file"
         );
-        runs.push(offset..offset + entry.count);
-        reader.read_spans(runs);
         reader.seek(SeekFrom::Start(offset))?;
         let mut bytes = vec![0; entry.count as usize];
         reader.read_exact(&mut bytes)?;
@@ -473,7 +462,7 @@ fn decode_page(
         // Every check above has passed; the `tiff` crate gives a JPEG
         // decoder no limit on the size a strip or tile declares, so these
         // pages are decoded here.
-        let tables = page.jpeg_tables(reader, length, chunk_runs(&offsets, &counts))?;
+        let tables = page.jpeg_tables(reader, length)?;
         let jpeg = Jpeg {
             tables,
             samples,

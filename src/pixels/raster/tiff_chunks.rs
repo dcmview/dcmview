@@ -459,9 +459,8 @@ pub(super) struct Jpeg {
 /// `RowsPerStrip`, or for the last strip the rows that remain (as libtiff
 /// writes it). A strip taller than the image by the tile margin or more
 /// may declare only the image's rows. The decoder is also told that size
-/// as its limit, and what it reports after reading the headers is compared
-/// again. So no stream is decoded at any size but the one the page's
-/// layout gives.
+/// as its limit. So no stream is decoded at any size but the one the
+/// page's layout gives.
 ///
 /// Beside the frame this holds the bytes of one strip or tile and the
 /// tables (at most the file's length), one decoded strip or tile (at most
@@ -595,14 +594,6 @@ pub(super) fn decode_jpeg(
             options = options.jpeg_set_out_colorspace(stored);
             decoder.set_options(options);
         }
-        let info = decoder.info().context("missing JPEG frame header")?;
-        // `pixel_density` is the sample precision the decoder read.
-        ensure!(
-            (info.width, info.height, info.components, info.pixel_density)
-                == (header.width, header.height, header.components, 8)
-                && decoder.output_buffer_size() == Some(size),
-            "the JPEG decoder read another frame header"
-        );
         if decoded.len() < size {
             decoded.reserve_exact(size - decoded.len());
             decoded.resize(size, 0);
