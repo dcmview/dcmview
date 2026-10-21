@@ -18,6 +18,7 @@
 mod admission;
 mod agreement;
 mod annotations;
+mod bilevel;
 mod bounds;
 mod caches;
 #[path = "../integration/codestream_files.rs"]
@@ -29,6 +30,8 @@ mod digests;
 mod heap;
 mod layout;
 mod overlays;
+#[path = "../integration/raster_bilevel_files.rs"]
+mod raster_bilevel_files;
 #[path = "../integration/raster_cases.rs"]
 mod raster_cases;
 #[path = "../integration/raster_files.rs"]
