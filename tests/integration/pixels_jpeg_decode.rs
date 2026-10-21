@@ -20,7 +20,8 @@ async fn decodes_requested_jpeg_display_frame_to_png() {
         vec![frame0.clone(), frame1.clone()],
     );
 
-    let file = support::file_entry(path.clone(), "1.2.840.10008.1.2.4.50", 2);
+    let mut file = support::file_entry(path.clone(), "1.2.840.10008.1.2.4.50", 2);
+    file.bits_allocated = 8;
     let request = |frame| FrameRequest {
         frame,
         window_center: None,
@@ -70,6 +71,7 @@ async fn jpeg_lossless_decodes_server_side_to_windowed_png() {
         DiscoverOptions {
             recursive: false,
             filters: Vec::new(),
+            formats: Default::default(),
         },
     )
     .await

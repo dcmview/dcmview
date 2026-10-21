@@ -10,8 +10,168 @@ diagnostic viewer.
 
 ## Unreleased
 
+### Breaking changes
+
+- Image files now appear in mixed folders by default. Use `--formats dicom`
+  to restore the previous DICOM-only directory scan; explicitly named files
+  are still inspected regardless of that selection.
+- Discovery reason `missing_part10_preamble` is renamed `unrecognized_format`.
+  Clients that grouped unknown files under the old code must map the new code
+  to that same category; there is no flag that restores the old wire spelling.
+
 ### Added
 
+- Annotations are held as records of the annotation model, and
+  `POST /api/annotations/ops` applies one operation envelope to them:
+  create, update, delete and restore an annotation, mask tiles, labels and
+  layers, or an atomic batch, with per-record revisions, `409` for a stale
+  operation and safe retries by `op_id`. The existing annotation endpoints
+  and the EMBED-style CSV import and export read and write the same store
+  and are unchanged; existing clients need no change. A rectangle made
+  through an operation also appears in them. Saving annotations for a file
+  that cannot be read for its key now answers `422 file_key_unavailable`;
+  reading and exporting them, and `--annotations`, read no file and are
+  unchanged for such a file. An operation says which file it is for with
+  `?file=<index>`; under a key that is not that file's settled key it
+  answers `409 file_key_replaced`, and without an index under a key several
+  files carry, `409 file_key_ambiguous`.
+- A session's annotations can be downloaded as a `dcmview.annotations`
+  document, with every shape, layer and label and a description of each
+  annotated file: `GET /api/annotations/export.json`, or
+  `GET /api/annotations/export.jsonl` for the same records a line each.
+  `--annotations` loads either form again, as well as an EMBED-style CSV;
+  the start of the file decides which it is (a `{` and the format's name;
+  any other file is read as CSV), and
+  `--annotations-format embed|native` forces one. An annotation is put on
+  a loaded file only after that file was compared with the key the
+  document names it by, its bytes hashed when the key is a digest; the key,
+  the SOP Instance UID and the path, matched from its end so that a
+  subfolder, a parent or a moved copy of the folder still fits, find the
+  files to compare, and a file named by a digest is also found by its
+  content among the loaded files of its size. Loading is all or nothing,
+  and a JSON Lines file that was cut off is refused. Files with the same
+  bytes keep their own ROIs through a document. A document never holds an
+  absolute path. A `--mask` session's document names files by content
+  digest alone, with no UID, patient id, folder, file or user name, and
+  loads into any session. A document export needs the key of every file
+  that has ROIs and answers `422 file_key_unavailable` for one that cannot
+  be read; a JSON document past 256 MiB, or a session with more files or
+  records than a document may hold, answers
+  `422 annotation_export_too_large`; and when the documents still being
+  downloaded hold 512 MiB together, another answers
+  `503 annotation_export_busy` with `Retry-After`.
+- `GET /api/annotations/import` reports where the `--annotations` import
+  stands and what it did: rows matched and unmatched, and every box that was
+  corrected or kept although it is unusual, by row. The report holds no
+  path or value of the file.
+- The `dcmview-adapters` workspace crate holds the annotation file formats
+  (EMBED ROI CSV, native JSON and JSON Lines) for other programs that read
+  or write them.
+- Catalog entries carry stable session file keys through `file_key`,
+  `alias_of` and `key_error`. `GET /api/files` accepts `since` and `limit`
+  and reports `revision`, `reset`, `more`, `keys_hashing` and `rekeys`.
+  Display and raw frames carry `X-File-Key` when available, and the startup
+  JSON line reports `key_rules`. Existing clients need no change.
+- Raster metadata in the Metadata panel and `/tags`: PNG, JPEG, TIFF and
+  WebP container fields, EXIF and TIFF directories with GPS, text chunks,
+  comments, XMP and ICC profile descriptions. `/tags/select` accepts paths
+  such as `EXIF/GPS/0x0002`. Values are escaped and limited, and TIFF trees
+  show the first 16 pages. In a `--mask` session only values describing the
+  pixel grid are shown; dates are masked, not shifted.
+- `--decode-memory BYTES` sets a separate budget for decodes in progress,
+  with a 256 MiB minimum. Without it the budget is a quarter of the
+  machine's physical memory, from 1 GiB to 4 GiB (4 GiB on Windows and
+  where physical memory cannot be read), and startup states the budget in
+  effect on standard error.
+- Byte-based decode admission reserves samples, intermediates and output
+  frames before work starts, with half the budget kept for interactive work
+  while thumbnails load. A frame too large for its class's share answers
+  `422 decode_memory_exceeded`; a full waiting queue answers `503 decode_busy`
+  with `Retry-After: 1`. Neither refusal is cached or changes catalog support.
+- `raster.file_too_large` identifies a PNG, JPEG or WebP longer than its
+  read budget (64 MiB plus four times its decoded frame).
+
+- `GET /api/file/{index}/frame/{frame}/thumbnail` returns JPEG previews at
+  bucketed sizes in physical aspect, with the default or full-dynamic window.
+  Thumbnails honour redaction boxes and display masking, omit shutters and
+  overlay planes, and use their own cache without evicting viewer frames.
+- Thumbnails of large JPEG 2000 and JPEG Baseline frames are decoded at a
+  reduced resolution: a frame at least four times its thumbnail along both
+  axes is halved as often as leaves it twice the thumbnail's size (JPEG at
+  most three times). The thumbnail has the same size and window as before;
+  `X-Thumbnail-Source: reduced_decode` reports it. Grayscale frames whose
+  window is computed from their own samples (no stored window, or
+  `window_mode=full_dynamic`), frames with redaction boxes and codestreams
+  that cannot be reduced are decoded in full as before; colour frames have
+  no window and are reduced in either mode.
+- Background thumbnail decodes yield to viewer decodes, with a capped share
+  of cores and a one-second interactive idle window on one-core hosts.
+- Header-only, content-based discovery of PNG, JPEG, TIFF (including BigTIFF
+  and compatible multipage stacks), and WebP beside DICOM. Header scans have
+  fixed byte, read and step budgets with cancellation checks; oversized
+  headers are skipped with an actionable warning. Highly compressed PNGs, including blank masks, are
+  listed regardless of their size on disk. TIFFs with more than 65,535 pages
+  are skipped; describable unsupported TIFF layouts remain listed with
+  `raster.unsupported_color` or `raster.unsupported_sample_format`.
+- Raster decoding for display, raw pixel readout, thumbnails and redaction:
+  PNG at every depth and color type (including palettes and Adam7), 8-bit
+  baseline, extended sequential and progressive JPEG, still WebP, and
+  multi-page TIFF with strips or tiles, BigTIFF and either byte order. TIFF
+  supports 8/16/32-bit signed and unsigned gray, 32/64-bit float gray, and
+  8/16-bit unsigned RGB/RGBA with none, LZW, Deflate or PackBits compression.
+  Animated PNG and WebP show their first frame only. Raw samples stay in the
+  stored grid: low-bit PNG values are unscaled, WhiteIsZero TIFF values are
+  un-inverted, and associated alpha is un-premultiplied. Gray defaults to its
+  stored range at 8 bits or fewer, a TIFF's declared range, or frame
+  percentiles. Display flattens alpha over black and carries valid RGB ICC
+  profiles up to 4 MiB, dropping converted CMYK JPEG profiles. Each frame is
+  capped at 268,435,456 pixels; reads, TIFF tags and chunks, JPEG scans, and
+  decode memory are bounded. TIFF strips and tiles may be stored in any
+  order. A WebP whose image does not have the size its header gives or is
+  not a key frame, and a TIFF page that repeats a tag or whose tiles are
+  4,096 pixels or more larger than the image, fail to decode; a TIFF whose
+  first page repeats a tag is not listed. Refused images report
+  `raster.unsupported_color`, `raster.unsupported_sample_format`,
+  `raster.unsupported_compression`,
+  `raster.jpeg_unsupported_process`, `raster.too_large`, or
+  `raster.file_too_large`. JPEG-compressed
+  and 1-, 2- and 4-bit TIFF are not decoded, and gray profiles are not
+  carried.
+- The Explorer's Study view lists PNG, JPEG, TIFF and WebP files in an
+  "Images" group after the patients, in their folder tree, with their own
+  icon and a format chip; DICOM files stay in the patient tree even without
+  identifiers. The Explorer filter's `format:png` (or `jpg`, `tif`,
+  `webp`, `dicom`) selects by format; a plain term also matches an image
+  file's format name and the path the current view shows for a file, never
+  a folder that every listed file shares. Opening an image file the viewer
+  does not decode says that it cannot be displayed instead of failing a
+  frame request, and an image file's tag panel is titled "Metadata". In a
+  `--mask` session the Study view lists image files as `File N` without
+  folders and its filter does not match paths.
+- `--formats dicom,png,jpeg,tiff,webp` narrows directory discovery, and
+  `--filter format=<name>` and `--filter path=<text>` select by exact format
+  or a substring of the reported path, ignoring case.
+- File summaries add `file_format` and `raster` metadata: stored color and
+  sample layout, orientation, alpha/profile presence, animation, significant
+  bits, and the TIFF frame-to-page map with the first 16 excluded pages and
+  their full `excluded_pages_total` count. Rasters use `object_kind: "image"`
+  and empty DICOM identity fields. Notes about a listed file, such as a TIFF
+  page chain that could not be read to its end, are printed to stderr during
+  discovery: at most 16 per file, the last counting any that are not shown.
+- Annotation documents state a pixel digest for each frame whose stored
+  samples were decoded (`pixel_digest`, `px:` and 64 hex characters, one entry a frame
+  and `null` for the others): a BLAKE3 digest of the frame's stored
+  samples that is the same for the same pixels in every lossless layout
+  the viewer serves raw samples of, defined in
+  `crates/dcmview-annotation/src/pixel.rs`. Digests are a by-product of
+  decoding a frame's raw samples; nothing is decoded or hashed for an
+  export. Frames coded lossily (JPEG Baseline, JPEG and WebP files), with
+  half-resolution chrominance or with associated alpha, and colour JPEG
+  Lossless and colour JPEG 2000 frames, have none. A reload refuses a file that was matched by its UID alone when a
+  frame both the document and the session know has other pixels
+  (`evidence_conflict`); it never decodes to check and finds no file by a
+  pixel digest. A document's reference to an image file also names the
+  page of each frame (`frame_source`).
 - A right-button drag zooms in every tool, up to zoom in and down to zoom
   out, about the point it began on. A right click that does not move still
   does nothing.
@@ -22,6 +182,99 @@ diagnostic viewer.
 
 ### Changed
 
+- **Export ROIs** and `GET /api/annotations/export.csv` write their rows
+  sorted by path (the byte order of the path as written). The order used to
+  follow the order discovery happened to find the files in and could differ
+  between two runs. Each row's bytes are unchanged.
+- An EMBED-style CSV with a negative coordinate or one that is not a whole
+  number no longer fails to load. The negative value is read as 0 and the
+  other is rounded to the nearest pixel, and the import's report lists each
+  such box. A box past the image edge is still kept and exported exactly as
+  written.
+- An annotation CSV is read within fixed bounds: a row of at most 16 MiB,
+  65,536 ROIs in a row, 65,536 frames for a ROI and 16,777,216 rows. A file
+  past one fails to load like any invalid file. The messages of a failed
+  load no longer end with the JSON or number parser's own text.
+- A DICOM or raster frame whose decode estimate exceeds the budget is now
+  refused with `422 decode_memory_exceeded` instead of being attempted.
+  The default is a quarter of physical memory, from 1 GiB to 4 GiB;
+  `--decode-memory` sets it without changing
+  whether the catalog lists a file as renderable.
+- A PNG, JPEG or WebP longer than its read budget is listed as unsupported
+  instead of failing with 500 on every frame request.
+- A raster file that has grown since it was listed is not decoded, and the
+  error says so; reopen the folder to inspect it at its new length.
+- A dropped window/level preview no longer frees its decode permit while
+  its decode is still running.
+- A display or raw frame request that is abandoned while it waits for
+  decode capacity is no longer decoded, so requests a client gave up on do
+  not delay the ones it still wants. A decode that has started still
+  finishes and is cached.
+
+- Discovery reads a DICOM file's header within fixed limits. It passes over
+  any value longer than 1 MiB before the pixel data without reading it
+  (Overlay Data excepted), so large private or bulk elements no longer cost
+  scan time or memory. A multi-valued text element of more than 65,536
+  values is passed over in the same way, so a catalog field read from one
+  is empty. A file whose sequences nest more than 64 deep, or
+  whose Deflated Explicit VR Little Endian data set needs more than 64 MiB
+  to read up to its pixel data, is skipped as `dicom_parse_failed`.
+
+- `/tags` and `/tags/select` report a text or numeric value longer than
+  1 MiB as `{"type": "binary", "length": N}`, as they report binary values,
+  instead of a preview of it. A tag tree that reaches the end of a truncated
+  file inside a value it does not read now ends with that element instead
+  of failing, the tree of a Deflated Explicit VR Little Endian file
+  whose pixel data inflates to more than 64 MiB ends with its pixel
+  element, and a tree whose sequences nest more than 64 deep ends there
+  with an error value. A tree that ends before its data set ends with a
+  `Note` leaf that says why. In a deflated file, text longer than 4,096
+  bytes that is not plain ASCII is shown from its first 4,096 bytes.
+
+- The `error` text of a failed decode is now `frame decode failed` or
+  `raw frame decode failed`, with a reason only where the viewer states one
+  itself ("pixel data disagrees with the header" and its numbers, native
+  pixel data shorter than its frames, a truncated fragment, a raster file
+  that changed since it was listed). The decoder's own message moved
+  to the log at debug level (`RUST_LOG=dcmview=debug`), and for PNG, JPEG,
+  TIFF and WebP files the log names the kind of failure instead. The
+  overlay endpoints and the endpoints that read a file's metadata (tags,
+  references, semantic context, value mapping, graphic annotations, slide
+  context) answer `500 internal_error` with a fixed sentence in the same
+  cases. `code` values are unchanged.
+
+- `--cache-budget BYTES` now also covers the thumbnail cache, and its default
+  total is 768 MiB instead of 704 MiB: 256, 384, 64 and 64 MiB for the
+  display, raw, overlay and thumbnail caches respectively.
+- Requests for the same segmentation, RT Dose or Parametric Map overlay that
+  arrive while it is being drawn now wait for that one drawing and report
+  `X-Cache: HIT`, and requests for the semantic context of the same RT Dose
+  or Parametric Map share one pass over its frames for the legend.
+- A segmentation, RT Dose or Parametric Map overlay that fails while it is
+  encoded now answers `500 pixel_decode_failed`, as one whose frames cannot
+  be decoded does, instead of `500 internal_error`.
+- A display frame now reserves the larger of its decode and its encoding
+  (its raw frame and seven times its display buffer) of the decode memory
+  budget, where it reserved the decode and three display buffers. An image
+  file reserves less than before: with 4 GiB, a square 8-bit gray one is
+  shown up to 13,470 pixels a side whatever its length, where it was
+  12,636. An uncompressed or RLE 8-bit DICOM frame reserves more: 8 bytes
+  a pixel for gray where it was 6, and 24 for colour where it was 18. The
+  tables in `docs/configuration.md` give the new sizes.
+- A presentation layer (a frame's shutter and overlay graphics) reserves 25
+  bytes a pixel where it reserved 9. A frame of more than 6,550 pixels a
+  side with a 1 GiB budget, or 13,105 with 4 GiB, can be shown while its
+  layer is refused, and is then shown without those graphics.
+
+- A JPEG XL frame that carries an embedded colour profile is now refused
+  with `500 pixel_decode_failed` and "JPEG XL frame carries an embedded
+  colour profile, which is not supported". The viewer takes colour from the
+  DICOM data set and never used that profile. Files whose JPEG XL frames
+  embed one, as a lossless libjxl encode writes them from a source that has
+  one, displayed before and no longer do; encode them again without the
+  profile. The file stays listed and its frames without a profile decode.
+- A JPEG XL frame whose image header does not end within the first 64 KiB
+  of its codestream is refused as unreadable.
 - The viewer tells a mouse wheel from a trackpad one gesture at a time
   instead of one event at a time, and remembers the device for the session.
   A fast two-finger swipe no longer jumps from panning to zooming halfway,
@@ -39,9 +292,116 @@ diagnostic viewer.
 
 ### Fixed
 
+- Discovery no longer sizes what it reads from the lengths a DICOM file
+  declares. Before, a file whose header declared more data than the file
+  held could make the viewer allocate that much memory while scanning a
+  folder.
+- A file that has no key because the first loaded file with its UID could
+  not be read now reports `key_error: "uncompared"`. Before, its entry
+  showed `file_key: null` with no error and `keys_hashing` 0, which a
+  client could not tell from a file still waiting for its hash.
+- Error responses of the endpoints that read a file no longer repeat a
+  decoding or parsing library's message. Before, such a message
+  could carry a few bytes of the file into the response and the log,
+  including in a `--mask` session.
+- `/tags` and `/tags/select` no longer read pixel data or bulk values.
+  Before, selecting an element at or behind the pixel data read the whole
+  file into memory outside the decode memory budget, and a tag tree read
+  every value before the pixel data at its declared length.
+- Segmentation, RT Dose and Parametric Map overlays and the legend of an RT
+  Dose or Parametric Map are now reserved against the decode memory budget
+  as whole pieces of work: the frames they decode, the values they are
+  resampled from and the image that is encoded. Before, only the decode of
+  each frame was limited, so the memory an overlay or legend took on top of
+  that was not bounded, and each of several requests for the same overlay
+  or legend did all of the work again. An overlay that needs
+  more than the budget now answers `422 decode_memory_exceeded`, and one
+  that would wait behind a full queue `503 decode_busy` with
+  `Retry-After: 1`, as frames do.
+- An RT Dose or Parametric Map overlay drawn before more files were loaded
+  is drawn again afterwards instead of being served from the cache, so its
+  colors follow the legend of the files now loaded.
+- A frame of a Deflated Explicit VR Little Endian file is read into a
+  buffer that grows as its data inflates. Before, a file whose data ended
+  early still had memory set aside for the whole frame its header states.
+- Display frames and presentation layers reserve the decode memory an image
+  that does not compress takes while it is encoded. Before, encoding such
+  an image could hold more memory than had been reserved for it.
+- A PALETTE COLOR frame reserves decode memory for the RGB image it is
+  displayed as. Before, it reserved as a gray frame and could hold more
+  than that.
+- Cached display frames, thumbnails, presentation layers and overlays hold
+  exactly the bytes `--cache-budget` counts for them. Before, a cached
+  image could hold up to twice its length, so the caches could hold more
+  than the budget.
+- A JPEG XL frame is decoded with the decoder's own allocation limit set
+  from the file's header, and two parts of a frame that were read outside
+  that limit no longer reach the decoder: an embedded colour profile, which
+  was read before the frame was checked, and the metadata and JPEG
+  reconstruction boxes of a frame in the box container, which were
+  decompressed and kept. The viewer used neither. A frame with an embedded
+  profile is now refused (see Changed), and a frame in the box container is
+  decoded from its codestream alone; its pixels are unchanged.
+- 8-bit images in Explicit VR Big Endian (`1.2.840.10008.1.2.2`) whose
+  Pixel Data has VR OW are shown with their pixels in the right places.
+  Such a file stores its samples as 16-bit words, high byte first, so every
+  two samples are exchanged on disk. Versions 0.3.0 to 0.4.1 did not
+  exchange them back: the display, thumbnails, raw frames and the pixel
+  readout all had every two neighbouring samples swapped (in colour
+  images, across channels too), and the last sample of a frame with an odd
+  number of bytes came from the next frame or from the padding byte. Files
+  with VR OB, 16-bit samples or a little-endian transfer syntax were never
+  affected. A big-endian file written by software that stores 8-bit
+  samples in pixel order under VR OW, which is not conforming, looked right
+  in 0.3.0 to 0.4.1 and now shows every two samples exchanged, as it does
+  in pydicom and DCMTK; see
+  [troubleshooting](docs/troubleshooting.md#a-big-endian-8-bit-image-shows-neighbouring-pixels-exchanged).
+- Overlay planes whose Overlay Data (60xx,3000) has VR OB, as older files
+  store it, are drawn as the file holds them, in every transfer syntax.
+  Before, each byte of such a value was read as a whole 16-bit word, so
+  past its first eight pixels the overlay, or a bitmap display shutter,
+  was drawn in the wrong places. Overlay Data with VR OW, which the
+  current standard requires, was and is read correctly.
+- 32-bit integer images in Explicit VR Big Endian (`1.2.840.10008.1.2.2`)
+  whose Pixel Data has VR OW show their stored values. Such a file stores
+  each sample as two 16-bit words, the low word first, each word high byte
+  first, as DCMTK writes it. Versions 0.3.0 to 0.4.1 reversed the four
+  bytes of each sample instead, so the display, thumbnails, raw frames, the
+  pixel readout and value overlays had the two words of every sample
+  exchanged. Float and Double Float Pixel Data, 16-bit
+  samples and the little-endian transfer syntaxes were never affected. A
+  big-endian file whose 32-bit samples of VR OW have their four bytes
+  reversed, which is not conforming but is how pydicom reads such samples,
+  looked right in 0.3.0 to 0.4.1 and now shows the words of each sample
+  exchanged, as it does in DCMTK; see
+  [troubleshooting](docs/troubleshooting.md#a-big-endian-32-bit-image-shows-wrong-values-or-noise).
 - A trackpad pinch in the Scroll tool zooms instead of stepping frames.
 - A ROI moved or resized while a second pointer pressed its middle button is
   saved where it was dropped; it used to stay drawn there unsaved.
+
+## 0.4.1 - 2026-10-09
+
+### Fixed
+
+- A compressed DICOM frame whose pixel data declares a different image than
+  the file's header is now refused instead of being decoded at the size the
+  pixel data declares. Before, a small file could make the viewer hold
+  gigabytes of memory for one frame, and a JPEG frame larger than its header
+  ended in an internal error. This affected 0.4.0 and earlier, for JPEG,
+  JPEG-LS, JPEG 2000 and JPEG XL frames and for Deflated Image Frame
+  Compression. Such a frame now answers `500 pixel_decode_failed` with
+  "pixel data disagrees with the header"; the file stays listed and its
+  other frames display. Compared are rows, columns, samples per pixel and
+  the sample depth against Bits Allocated, and the frame's tile, packet and
+  scan structure against fixed limits (4,096 tiles, 100 scans). Files that
+  differ from their header only in Bits Stored, sign, colour transform,
+  resolution levels or chroma subsampling display as before.
+- A JPEG 2000 frame stored as a JP2 file is decoded from its codestream
+  alone: a palette or channel definition in the file's other boxes is no
+  longer applied.
+- A JPEG XL frame with an alpha channel, floating-point samples, more bits
+  than Bits Allocated, or an animation is refused; so is an 8-bit JPEG frame
+  under a 16-bit header, which was displayed as noise.
 
 ## 0.4.0 - 2026-10-08
 

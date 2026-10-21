@@ -8,6 +8,7 @@
 	} from "./keyedAsyncResource";
 	import {
 		flattenTagRows,
+		isSequenceOpen,
 		isSequenceTag,
 		tagValueDisplay,
 		tagValueToCopyText,
@@ -37,11 +38,16 @@
 	const VR_COLUMN_MIN_PX = 28;
 	const VR_COLUMN_MAX_PX = 140;
 
-	let { fileIndex }: { fileIndex: number } = $props();
+	let { fileIndex, title = "DICOM tags" }: {
+		fileIndex: number;
+		/** "Metadata" for a raster image file; see `tagPanelNames`. */
+		title?: string;
+	} = $props();
 
 	let filter = $state("");
 	let tagResourcesByFile = $state.raw<Record<number, AsyncResourceSnapshot<TagNode[]> | undefined>>({});
-	let expandedSequences = $state<Set<string>>(new Set());
+	// Rows whose children the user opened or closed; see `isSequenceOpen`.
+	let toggledSequences = $state<Set<string>>(new Set());
 	let expandedLongValues = $state<Set<string>>(new Set());
 	let copiedKey = $state<string | null>(null);
 	let tagColumnWidthPx = $state(TAG_COLUMN_DEFAULT_PX);
@@ -73,13 +79,13 @@
 	}
 
 	function toggleSequence(key: string) {
-		const next = new Set(expandedSequences);
+		const next = new Set(toggledSequences);
 		if (next.has(key)) {
 			next.delete(key);
 		} else {
 			next.add(key);
 		}
-		expandedSequences = next;
+		toggledSequences = next;
 	}
 
 	function toggleLongValue(key: string) {
@@ -191,7 +197,7 @@
 
 	const visibleRows = $derived.by(() => {
 		const source = activeTagResource?.value ?? [];
-		return flattenTagRows(source, `f${fileIndex}`, expandedSequences, filter);
+		return flattenTagRows(source, `f${fileIndex}`, toggledSequences, filter);
 	});
 
 	export function retryFailedLoads(): void {
@@ -202,7 +208,7 @@
 
 <aside class="panel">
 	<header>
-		<h2>DICOM tags</h2>
+		<h2>{title}</h2>
 		<SearchField bind:value={filter} placeholder="keyword, tag or value" aria-label="Filter tags" />
 	</header>
 	{#if error}
@@ -269,11 +275,11 @@
 								type="button"
 								class="chevron"
 								onkeydown={keepActivationLocal}
-								aria-label={expandedSequences.has(row.key) ? "Collapse sequence" : "Expand sequence"}
-								aria-expanded={expandedSequences.has(row.key)}
+								aria-label={isSequenceOpen(row.node, row.key, toggledSequences) ? "Collapse sequence" : "Expand sequence"}
+								aria-expanded={isSequenceOpen(row.node, row.key, toggledSequences)}
 								onclick={(event) => { event.stopPropagation(); toggleSequence(row.key); }}
 							>
-								<Icon name={expandedSequences.has(row.key) ? "chevron-down" : "chevron-right"} size={12} />
+								<Icon name={isSequenceOpen(row.node, row.key, toggledSequences) ? "chevron-down" : "chevron-right"} size={12} />
 							</button>
 						{/if}
 						<span>{row.node.tag}</span>

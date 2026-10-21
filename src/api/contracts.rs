@@ -12,8 +12,11 @@ pub const API_PREFIX: &str = "/api";
 
 pub const JSON_MEDIA_TYPE: &str = "application/json";
 pub const PNG_MEDIA_TYPE: &str = "image/png";
+pub const JPEG_MEDIA_TYPE: &str = "image/jpeg";
 pub const OCTET_STREAM_MEDIA_TYPE: &str = "application/octet-stream";
 pub const CSV_MEDIA_TYPE: &str = "text/csv; charset=utf-8";
+/// JSON Lines: one JSON value per line.
+pub const JSONL_MEDIA_TYPE: &str = "application/jsonl";
 
 /// Unix-millisecond server start identity on every API response, including errors.
 pub const SERVER_INSTANCE_HEADER: &str = "X-Server-Instance";
@@ -38,12 +41,31 @@ pub use dcmview_protocol::{
 /// parent asks for it; a standalone viewer's own polling does not send it.
 pub const BACKGROUND_REQUEST_HEADER: &str = "X-Dcmview-Background";
 
+/// The file's key (`FileSummary::file_key`, written in full) on a display
+/// frame and a raw frame response. Sent whenever the file has a
+/// key when the response is built and absent while it has none, so a viewer
+/// showing a file whose key was pending learns the key from the next frame
+/// it loads, without waiting for a catalog poll. A masked session sends the
+/// key as its catalog shows it.
+pub const FILE_KEY_HEADER: &str = "X-File-Key";
+
+/// Seconds a client is told to wait, in the standard `Retry-After` header,
+/// before repeating a request answered `503 decode_busy`. A fixed number: a
+/// decode has no deadline to derive a better one from.
+pub const DECODE_BUSY_RETRY_AFTER_SECONDS: u32 = 1;
+
 pub const CACHE_HEADER: &str = "X-Cache";
 pub const CACHE_HIT: &str = "HIT";
 pub const CACHE_MISS: &str = "MISS";
 pub const EXPORT_CONTENT_DISPOSITION_HEADER: &str = "Content-Disposition";
 pub const EXPORT_CONTENT_DISPOSITION_VALUE: &str =
     "attachment; filename=\"dcmview-annotations.csv\"";
+/// [`EXPORT_CONTENT_DISPOSITION_HEADER`] of `endpoints::ANNOTATIONS_EXPORT_JSON`.
+pub const EXPORT_JSON_CONTENT_DISPOSITION_VALUE: &str =
+    "attachment; filename=\"dcmview-annotations.json\"";
+/// [`EXPORT_CONTENT_DISPOSITION_HEADER`] of `endpoints::ANNOTATIONS_EXPORT_JSONL`.
+pub const EXPORT_JSONL_CONTENT_DISPOSITION_VALUE: &str =
+    "attachment; filename=\"dcmview-annotations.jsonl\"";
 
 pub const RAW_FRAME_HEADER_ROWS: &str = "X-Frame-Rows";
 pub const RAW_FRAME_HEADER_COLUMNS: &str = "X-Frame-Columns";
@@ -115,10 +137,58 @@ pub const RAW_FRAME_HEADERS: &[(&str, &str)] = &[
     ("paddingHigh", RAW_FRAME_HEADER_PADDING_HIGH),
 ];
 
+/// Thumbnail response header naming the step that produced the image, as a
+/// [`ThumbnailSource`] value. Diagnostic only: every source yields the same
+/// presentation.
+pub const THUMBNAIL_HEADER_SOURCE: &str = "X-Thumbnail-Source";
+/// `Cache-Control` of a thumbnail. File indexes are valid within one server
+/// process only, so a browser must not keep a thumbnail across a restart.
+pub const THUMBNAIL_CACHE_CONTROL: &str = "no-store";
+
+/// Thumbnail response headers, keyed by their name in the generated
+/// TypeScript table. Both are sent on every thumbnail, with [`CACHE_HEADER`].
+pub const THUMBNAIL_HEADERS: &[(&str, &str)] = &[
+    ("source", THUMBNAIL_HEADER_SOURCE),
+    ("cacheControl", "Cache-Control"),
+];
+
+/// The longest-edge sizes a thumbnail is rendered at, ascending. A requested
+/// `size` is snapped up to the next bucket so cache keys stay few; the client
+/// scales down.
+pub const THUMBNAIL_SIZE_BUCKETS: [u32; 4] = [128, 256, 512, 1024];
+/// The bucket of a request that names no `size`.
+pub const THUMBNAIL_DEFAULT_SIZE: u32 = 256;
+
+/// The step that produced a thumbnail, reported in
+/// [`THUMBNAIL_HEADER_SOURCE`]. `ThumbnailCache`, `ReducedDecode` and
+/// `FullDecode` are sent; `DisplayCache` and `RawCache` are reserved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ThumbnailSource {
+    ThumbnailCache,
+    DisplayCache,
+    RawCache,
+    ReducedDecode,
+    FullDecode,
+}
+
+impl ThumbnailSource {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ThumbnailCache => "thumbnail_cache",
+            Self::DisplayCache => "display_cache",
+            Self::RawCache => "raw_cache",
+            Self::ReducedDecode => "reduced_decode",
+            Self::FullDecode => "full_decode",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ApiMethod {
     Get,
     Put,
+    Post,
 }
 
 impl ApiMethod {
@@ -126,6 +196,7 @@ impl ApiMethod {
         match self {
             Self::Get => "GET",
             Self::Put => "PUT",
+            Self::Post => "POST",
         }
     }
 }
@@ -141,7 +212,10 @@ pub enum ResponseHeaders {
     DisplayFrame,
     /// [`CACHE_HEADER`] plus [`RAW_FRAME_HEADERS`].
     RawFrame,
-    /// [`EXPORT_CONTENT_DISPOSITION_HEADER`].
+    /// [`CACHE_HEADER`] plus [`THUMBNAIL_HEADERS`].
+    Thumbnail,
+    /// [`EXPORT_CONTENT_DISPOSITION_HEADER`], naming a file with the
+    /// endpoint's extension.
     Export,
 }
 
@@ -161,8 +235,8 @@ pub struct Endpoint {
 
 pub mod endpoints {
     use super::{
-        ApiMethod, Endpoint, ResponseHeaders, CSV_MEDIA_TYPE, JSON_MEDIA_TYPE,
-        OCTET_STREAM_MEDIA_TYPE, PNG_MEDIA_TYPE,
+        ApiMethod, Endpoint, ResponseHeaders, CSV_MEDIA_TYPE, JPEG_MEDIA_TYPE, JSONL_MEDIA_TYPE,
+        JSON_MEDIA_TYPE, OCTET_STREAM_MEDIA_TYPE, PNG_MEDIA_TYPE,
     };
 
     const fn json(id: &'static str, method: ApiMethod, path: &'static str) -> Endpoint {
@@ -302,6 +376,19 @@ pub mod endpoints {
         OCTET_STREAM_MEDIA_TYPE,
         ResponseHeaders::RawFrame,
     );
+    /// Small lossy JPEG preview of the frame for the gallery; query
+    /// `ThumbnailQuery`. The whole frame in the stored pixel grid, resampled
+    /// to its physical aspect and fitted inside the size bucket, never
+    /// cropped, rotated, flipped or enlarged. It has the frame's default
+    /// presentation without the display shutter and overlay graphics, and
+    /// the frame's redaction boxes painted black. A masked session withholds
+    /// it for the files whose display frames it withholds.
+    pub const FILE_THUMBNAIL: Endpoint = binary(
+        "fileThumbnail",
+        "/file/{index}/frame/{frame}/thumbnail",
+        JPEG_MEDIA_TYPE,
+        ResponseHeaders::Thumbnail,
+    );
     /// `TagNode[]`.
     pub const FILE_TAGS: Endpoint = json("fileTags", ApiMethod::Get, "/file/{index}/tags");
     /// One `TagNode`; query `TagQuery`.
@@ -339,13 +426,61 @@ pub mod endpoints {
         ApiMethod::Put,
         "/file/{index}/redactions/series",
     );
-    /// EMBED-style CSV of every in-memory annotation.
+    /// EMBED-style CSV of every in-memory annotation, rows sorted by path.
     pub const ANNOTATIONS_EXPORT: Endpoint = binary(
         "annotationsExport",
         "/annotations/export.csv",
         CSV_MEDIA_TYPE,
         ResponseHeaders::Export,
     );
+    /// Every annotation, label and layer of the session as one
+    /// `dcmview.annotations` JSON document (`Document` of
+    /// `frontend/src/generated/annotation-types.ts`), with a `FileRef` for
+    /// each file a record names.
+    pub const ANNOTATIONS_EXPORT_JSON: Endpoint = binary(
+        "annotationsExportJson",
+        "/annotations/export.json",
+        JSON_MEDIA_TYPE,
+        ResponseHeaders::Export,
+    );
+    /// The same document in its JSON Lines form: a header line, then one
+    /// line for each file, layer, annotation and label.
+    pub const ANNOTATIONS_EXPORT_JSONL: Endpoint = binary(
+        "annotationsExportJsonl",
+        "/annotations/export.jsonl",
+        JSONL_MEDIA_TYPE,
+        ResponseHeaders::Export,
+    );
+    /// `AnnotationImportResponse`: where the session's `--annotations`
+    /// import stands and what it reported. Answers at once.
+    pub const ANNOTATIONS_IMPORT: Endpoint =
+        json("annotationsImport", ApiMethod::Get, "/annotations/import");
+    /// One annotation operation; query `AnnotationOpQuery`. The body is one
+    /// `OpEnvelope` of the annotation model as JSON, at most [`super::ANNOTATION_OP_MAX_BYTES`]
+    /// long, and the answer is an `AnnotationOpResponse`. See that type for
+    /// the statuses.
+    pub const ANNOTATION_OPS: Endpoint = json("annotationOps", ApiMethod::Post, "/annotations/ops");
+
+    /// The endpoints that decode or render pixels under the decode memory
+    /// budget (`pixels::DecodeScheduler`). Each may answer
+    /// `503 decode_busy` with `Retry-After` when the budget is in use and
+    /// its queue is full. Each but the semantic context, which reports a
+    /// frame it cannot decode in the overlay's eligibility, may answer
+    /// `422 decode_memory_exceeded` for a frame whose decode needs more
+    /// than the budget. No other endpoint answers either.
+    pub const DECODING: &[Endpoint] = &[
+        FILE_SEMANTIC_CONTEXT,
+        FILE_FRAME,
+        FILE_RAW_FRAME,
+        FILE_RAW_PIXEL,
+        FILE_THUMBNAIL,
+        FILE_PRESENTATION_LAYER,
+        FILE_SEGMENTATION_OVERLAY,
+        FILE_DOSE_OVERLAY,
+        FILE_DOSE_OVERLAY_VALUES,
+        FILE_PARAMETRIC_MAP_OVERLAY,
+        FILE_PARAMETRIC_MAP_OVERLAY_VALUES,
+    ];
 
     pub const ALL: &[Endpoint] = &[
         HEALTH,
@@ -366,6 +501,7 @@ pub mod endpoints {
         FILE_FRAME,
         FILE_RAW_FRAME,
         FILE_RAW_PIXEL,
+        FILE_THUMBNAIL,
         FILE_TAGS,
         FILE_TAG_SELECT,
         FILE_ANNOTATIONS_GET,
@@ -374,6 +510,10 @@ pub mod endpoints {
         FILE_REDACTIONS_UPDATE,
         FILE_REDACTIONS_APPLY_TO_SERIES,
         ANNOTATIONS_EXPORT,
+        ANNOTATIONS_EXPORT_JSON,
+        ANNOTATIONS_EXPORT_JSONL,
+        ANNOTATIONS_IMPORT,
+        ANNOTATION_OPS,
     ];
 }
 
@@ -403,7 +543,15 @@ pub struct FileSummary {
     pub instance_number: String,
     pub sop_instance_uid: String,
     pub sop_class_uid: String,
+    /// The object family: a DICOM family from the SOP Class, or `image` for a
+    /// raster file.
     pub object_kind: String,
+    /// What the file is, detected from its content and never from its name.
+    /// A raster (anything but `dicom`) has empty DICOM identity strings and
+    /// an empty `transfer_syntax_uid`.
+    pub file_format: FileFormat,
+    /// What discovery read from a raster file's header; `null` for DICOM.
+    pub raster: Option<RasterSummary>,
     pub support_state: SupportState,
     pub support_reason: Option<String>,
     /// Whether client-side raw windowing preserves every declared presentation
@@ -427,10 +575,241 @@ pub struct FileSummary {
     pub pixel_aspect_ratio: Option<f64>,
     pub transfer_syntax_uid: String,
     pub default_window: Option<WindowPreset>,
+    /// The file's stable key (`docs/design/annotation-model.md` 1.3):
+    /// `sop:<SOP Instance UID>` or `b3:<64 lowercase hex>`, the BLAKE3 digest
+    /// of the file's bytes.
+    ///
+    /// - Left out when the key is `sop:` followed by this entry's
+    ///   `sop_instance_uid`, which is the case for a DICOM file whose UID no
+    ///   other loaded file is known to contradict. A reader rebuilds it.
+    /// - `null` while the file has no key: a raster, a DICOM file without a
+    ///   usable UID, or one whose UID another loaded file with different
+    ///   bytes also carries, until its bytes have been hashed. Hashing starts
+    ///   once a frame of the file has been served. `key_error` says when it
+    ///   failed.
+    /// - Otherwise the key in full.
+    ///
+    /// A key is at most 132 bytes. This is the key as it stands, which may
+    /// not be settled: a `sop:` key is replaced, once, by a `b3:` key when
+    /// the file turns out to share its UID with different bytes, and
+    /// `rekeys` in [`FilesResponse`] reports each replacement. A `b3:` key,
+    /// and a `sop:` key the server has returned for a write or an export,
+    /// never change. A file found after the key of its UID was settled has
+    /// `null` here until it has been compared with the first file that
+    /// carries the UID. In a masked session a `sop:` key is built from the
+    /// masked UID, so the rule for leaving it out is unchanged and no real
+    /// UID is sent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub file_key: Option<Option<String>>,
+    /// The `index` of the first loaded file that holds the same key, when
+    /// that is another file: the two are one image under two paths and share
+    /// annotations. Left out otherwise. Two DICOM files with one UID and one
+    /// size are aliases without their bytes having been compared; comparing
+    /// them, which happens before a key of theirs is written down, may give
+    /// both a `b3:` key instead.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub alias_of: Option<usize>,
+    /// Why the file's bytes could not be hashed for its key, or, for
+    /// `uncompared`, why they could not be compared with the first file of
+    /// its UID. Left out when hashing has not failed. A file with
+    /// `file_key: null` and an error stays without a key until hashing is
+    /// asked for again and succeeds; one with `file_key: null` and no error
+    /// is waiting to be hashed or is being hashed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub key_error: Option<FileKeyError>,
+}
+
+/// Why a file has no key: its digest could not be computed, or could not
+/// be compared with the digest its key depends on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum FileKeyError {
+    /// The file could not be opened or read.
+    Unreadable,
+    /// The file is not the one discovery saw: its length differs, or it
+    /// changed while it was being read.
+    Changed,
+    /// Nothing is wrong with this file. It carries the UID of a file loaded
+    /// before it whose key was already settled, so it has a key only once
+    /// its bytes have been compared with that first file's, and the first
+    /// file could not be hashed (its own entry says why). The file stays
+    /// without a key until a key request reads the first file.
+    Uncompared,
+}
+
+/// One file's key replaced by another (`docs/design/annotation-model.md`
+/// 1.7). A client applies it in one step to everything it holds under
+/// `old_key` for the file `index`: records, queued operations, history and
+/// selection. For the rest of the session the server accepts `old_key` as
+/// naming the first file that held it, which can be another file than
+/// `index`, so what is held under `old_key` for other files stays. A key
+/// the server has returned for a write or an export is never replaced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+pub struct FileRekey {
+    /// The catalog revision at which the key changed.
+    pub revision: u64,
+    pub index: usize,
+    /// The key the file had, in full.
+    pub old_key: String,
+    /// The key the file has now, in full.
+    pub new_key: String,
+}
+
+/// Query of `GET /api/files`.
+#[derive(Debug, Clone, Default, Deserialize, TS)]
+#[ts(optional_fields)]
+pub struct FilesQuery {
+    /// A `revision` from an earlier response. The response then lists only
+    /// the entries added or changed after it. Absent or 0 lists every entry.
+    /// A value above the catalog's current revision is answered with every
+    /// entry and `reset: true`.
+    pub since: Option<u64>,
+    /// The most entries to return, at least 1. Absent returns all of them.
+    /// 0 is `400 invalid_query`.
+    pub limit: Option<u32>,
+}
+
+/// The container format of a discovered file, detected from its content
+/// (`docs/design/image-formats.md` section 3). The serialized names are also
+/// the values of `--formats` and of the `format` scan filter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum FileFormat {
+    #[default]
+    Dicom,
+    Png,
+    Jpeg,
+    Tiff,
+    Webp,
+}
+
+impl FileFormat {
+    /// Every format, in the order lists of formats are printed.
+    pub const ALL: [Self; 5] = [Self::Dicom, Self::Png, Self::Jpeg, Self::Tiff, Self::Webp];
+
+    /// The serialized name: `dicom`, `png`, `jpeg`, `tiff` or `webp`.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Dicom => "dicom",
+            Self::Png => "png",
+            Self::Jpeg => "jpeg",
+            Self::Tiff => "tiff",
+            Self::Webp => "webp",
+        }
+    }
+
+    /// Whether this is a raster image format, that is, anything but DICOM.
+    pub const fn is_raster(self) -> bool {
+        !matches!(self, Self::Dicom)
+    }
+}
+
+/// How a raster file stores colour, before any expansion on decode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum RasterColorType {
+    Gray,
+    GrayAlpha,
+    Rgb,
+    Rgba,
+    /// Indexed colour; decoded frames hold the expanded colours.
+    Palette,
+    /// CMYK or YCCK JPEG; decoded frames hold an approximate sRGB conversion.
+    Cmyk,
+    /// A stored layout none of the above describes and the viewer does not
+    /// decode: CIELab, more than four bands, or an extra sample that is not
+    /// alpha. The file is listed with `support_reason`
+    /// `raster.unsupported_color`.
+    Other,
+}
+
+/// The numeric kind of a raster file's stored samples.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum RasterSampleFormat {
+    Uint,
+    Int,
+    Float,
+}
+
+/// Why a TIFF page is not one of the file's frames: the first property, in
+/// this order, in which it differs from page 0, or the subfile flag that
+/// marks it as not a full image
+/// (`docs/design/image-formats.md` section 2.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum RasterPageDifference {
+    /// `NewSubfileType` bit 0: a reduced-resolution copy, such as a thumbnail.
+    ReducedResolution,
+    /// `NewSubfileType` bit 2: a transparency mask.
+    Mask,
+    Width,
+    Height,
+    SamplesPerPixel,
+    SampleFormat,
+    BitsPerSample,
+    Photometric,
+    /// The extra-sample (alpha) type.
+    Alpha,
+    Orientation,
+}
+
+/// A TIFF page left out of the frame map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+pub struct RasterExcludedPage {
+    /// Zero-based IFD index in the file's page chain.
+    pub page: u32,
+    pub differs: RasterPageDifference,
+}
+
+/// What discovery read from a raster file's header. Every field holds for
+/// every frame of the file. Nothing here is decoded from pixel data.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+pub struct RasterSummary {
+    pub color_type: RasterColorType,
+    /// Bits per sample as stored in the file (1, 2, 4, 8, 16, 32 or 64).
+    /// Raw frames serve low-bit samples one byte each, at this depth's values.
+    pub bit_depth: u32,
+    pub sample_format: RasterSampleFormat,
+    /// Whether the file carries an alpha channel or palette transparency.
+    pub has_alpha: bool,
+    /// The EXIF or TIFF orientation, 1 to 8; 1 when the file declares none or
+    /// an invalid one. `rows`, `columns`, raw samples and every coordinate
+    /// stay in the stored pixel grid: this is a display hint only.
+    pub orientation: u8,
+    /// Whether the file embeds an ICC profile.
+    pub has_icc: bool,
+    /// Pages (IFDs) in the file: 1 for PNG, JPEG and WebP, at most 65,535
+    /// for TIFF (a file with more is not listed).
+    pub pages_total: u32,
+    /// The zero-based page (IFD index) of each frame, in frame order. Its
+    /// length is the file's `frame_count`; `[0]` for PNG, JPEG and WebP.
+    pub frame_pages: Vec<u32>,
+    /// The first pages that are not frames, in page order: at most 16, so a
+    /// file with many excluded pages does not grow every catalog response.
+    pub excluded_pages: Vec<RasterExcludedPage>,
+    /// How many pages are not frames; `pages_total` is this plus the length
+    /// of `frame_pages`.
+    pub excluded_pages_total: u32,
+    /// An animated PNG or WebP; only its first frame is a frame here.
+    pub animated: bool,
+    /// PNG `sBIT`: the original precision of each stored channel, in file
+    /// order. Informational only: it never narrows a window or value range.
+    /// `null` when the file has no `sBIT` chunk.
+    pub significant_bits: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct FilesResponse {
+    /// With neither `since` nor `limit`, every entry in index order.
+    /// Otherwise the entries added or changed after `since` (after 0 when it
+    /// is absent), least recently changed first, each as it is now and each
+    /// once, and at most `limit` of them. An entry that changes while a
+    /// client pages through the list is listed again on a later page, so
+    /// applying every page by `index` ends with the current catalog.
     pub files: Vec<FileSummary>,
     pub discovery: Vec<DiscoveryResult>,
     pub server_start_ms: u64,
@@ -440,6 +819,26 @@ pub struct FilesResponse {
     pub scanned: usize,
     pub skipped: usize,
     pub filtered: usize,
+    /// The catalog revision this response is complete up to: pass it as
+    /// `since` to receive what changed afterwards. It starts at 0 and rises
+    /// by one for every entry added and every entry whose `file_key`,
+    /// `alias_of` or `key_error` changes. When `more` is `true` it is the
+    /// revision of the last entry listed, not the catalog's latest.
+    pub revision: u64,
+    /// `true` when `since` was above the catalog's revision, which means it
+    /// came from another process: the client drops the entries it holds and
+    /// takes this response, which then lists from the start, as the catalog.
+    pub reset: bool,
+    /// `true` when `limit` cut the list short: ask again with
+    /// `since=<revision>` for the rest.
+    pub more: bool,
+    /// Files whose bytes are being hashed for a key now, or are queued for
+    /// it. A client that shows pending keys polls while this is above zero.
+    pub keys_hashing: usize,
+    /// The key replacements after `since` and up to `revision`, oldest
+    /// first. A file's key is replaced at most once, so the list never holds
+    /// more entries than there are files.
+    pub rekeys: Vec<FileRekey>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -1069,8 +1468,62 @@ pub enum ApiErrorCode {
     /// A value overlay's planes do not reach the requested frame.
     OverlayNotCoveringFrame,
     PixelDecodeFailed,
+    /// The decode needs more memory than is free and too many requests are
+    /// already waiting for it. Status 503 with `Retry-After:`
+    /// [`DECODE_BUSY_RETRY_AFTER_SECONDS`]; the same request succeeds once
+    /// running decodes finish. Only the endpoints of
+    /// [`endpoints::DECODING`] answer it.
+    DecodeBusy,
+    /// The decode needs more memory than the whole decode memory budget
+    /// (`--decode-memory`), or, for a thumbnail, than the share of it
+    /// thumbnails may use. Status 422; repeating the request cannot succeed
+    /// in this session. The file is not unsupported: a larger budget decodes
+    /// it. Only the endpoints of [`endpoints::DECODING`] answer it.
+    DecodeMemoryExceeded,
     /// Content a masked session (`--mask`) withholds.
     Masked,
+    /// An annotation operation was based on a revision its target has left.
+    /// Status 409, on `endpoints::ANNOTATION_OPS` only, in an
+    /// [`AnnotationOpResponse`] whose `result` holds the current state.
+    /// Nothing was applied.
+    AnnotationConflict,
+    /// An annotation operation broke a rule of the annotation model or of
+    /// the store. Status 422, on `endpoints::ANNOTATION_OPS` only, in an
+    /// [`AnnotationOpResponse`] whose `result` lists the violations.
+    /// Nothing was applied.
+    AnnotationInvalid,
+    /// An annotation write named a file that has no key and cannot be given
+    /// one: its bytes, or those of the first file loaded with its SOP
+    /// Instance UID, could not be read or have changed since discovery
+    /// (`FileSummary::key_error`). Status 422. Nothing was written.
+    FileKeyUnavailable,
+    /// An annotation operation named a file by a key that is not the
+    /// settled key of one file: files that shared the key turned out to
+    /// differ, or the key was replaced (`FilesResponse::rekeys`). Status
+    /// 409, a plain `ErrorResponse`. Nothing was applied; the catalog now
+    /// shows the file's key, and the same operation under that key is
+    /// applied.
+    FileKeyReplaced,
+    /// An annotation operation named a file by a `sop:` key that more than
+    /// one loaded file carries the UID of, without saying which file it
+    /// was drawn on (`AnnotationOpQuery::file`). Status 409, a plain
+    /// `ErrorResponse`. Nothing was applied.
+    FileKeyAmbiguous,
+    /// The session's annotations do not fit one JSON document
+    /// (268,435,456 bytes). Status 422, on
+    /// `endpoints::ANNOTATIONS_EXPORT_JSON` only. The JSON Lines export has
+    /// no such bound.
+    AnnotationExportTooLarge,
+    /// The annotation documents still being downloaded hold as much text
+    /// as the session lets them hold together (512 MiB), and this one
+    /// would pass it. Status 503 with `Retry-After:`
+    /// [`DECODE_BUSY_RETRY_AFTER_SECONDS`]; the same request succeeds once
+    /// a download has ended. A document is always sent when no other is.
+    /// On `endpoints::ANNOTATIONS_EXPORT_JSON` and
+    /// `endpoints::ANNOTATIONS_EXPORT_JSONL` only.
+    AnnotationExportBusy,
+    /// A request body longer than its endpoint reads. Status 413.
+    PayloadTooLarge,
     /// The request lacks the session's bearer token. Status 401 with
     /// `WWW-Authenticate:` [`UNAUTHORIZED_CHALLENGE`]. Answered for every
     /// path under [`API_PREFIX`], declared or not, before routing.
@@ -1082,6 +1535,100 @@ pub enum ApiErrorCode {
 pub struct ErrorResponse {
     pub code: ApiErrorCode,
     pub error: String,
+}
+
+/// The query of `endpoints::ANNOTATION_OPS`.
+///
+/// `file` is the catalog index of the file the operation was drawn on. It
+/// stands beside the envelope and is no part of the annotation model: the
+/// envelope names a file by key, and a key this viewer shows may be shared
+/// by several loaded files (one SOP Instance UID) until they are compared.
+/// With `file`, every file key in the envelope must be the settled key of
+/// that one file, or the request is `409 file_key_replaced`. The record an
+/// operation changes must be on the file the operation names, for every
+/// kind of operation (`409 annotation_conflict` otherwise), so a request
+/// for one file neither records anything on another nor changes a record
+/// of another. Byte-identical copies share one key and count as one file
+/// in this. The viewer's page always sends it. Without it, a `sop:` key whose UID more
+/// than one loaded file carries is `409 file_key_ambiguous`.
+#[derive(Debug, Clone, Default, Deserialize, TS)]
+#[ts(optional_fields)]
+pub struct AnnotationOpQuery {
+    pub file: Option<usize>,
+}
+
+/// Where a session's `--annotations` import stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum AnnotationImportState {
+    /// The session was started without `--annotations`.
+    None,
+    /// The file is still being read; the EMBED reads wait for it.
+    Loading,
+    /// The import ended and what it read is in the session.
+    Ready,
+    /// The import failed and nothing of it is in the session.
+    Failed,
+}
+
+/// The answer of `endpoints::ANNOTATIONS_IMPORT`.
+///
+/// `report` is there when `state` is `ready`: what the import's adapter
+/// did, in fixed codes, counts and row numbers. It holds no path, file
+/// key, UID or other text of the file, in any session. `error` is there
+/// when `state` is `failed`: the import's message, which the EMBED reads
+/// and the CSV export of that session also answer with.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct AnnotationImportResponse {
+    pub state: AnnotationImportState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub report: Option<dcmview_adapters::Report>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub error: Option<String>,
+}
+
+/// The longest body `endpoints::ANNOTATION_OPS` reads, in bytes: the
+/// annotation model's bound on one operation envelope, 16,777,216.
+pub const ANNOTATION_OP_MAX_BYTES: usize = dcmview_annotation::limits::MAX_ENVELOPE_BYTES;
+
+/// The answer to one annotation operation (`endpoints::ANNOTATION_OPS`).
+///
+/// | Status | `result.status` | `code` | Meaning |
+/// |---|---|---|---|
+/// | 200 | `ok` | absent | Applied, or applied earlier under the same `op_id`: `result.revs` holds the new revision of every record and layer it changed. |
+/// | 409 | `conflict` | `annotation_conflict` | `result.current` is what the operation should have been based on. |
+/// | 422 | `invalid` | `annotation_invalid` | `result.violations` says which rules were broken. |
+///
+/// An envelope is applied whole or not at all, a `batch` included, so with
+/// 409 and 422 nothing changed. The two refusals are also error envelopes:
+/// they carry `code` and `error` as an `ErrorResponse` does.
+///
+/// Any other failure is a plain `ErrorResponse`: 400 `invalid_json` for a
+/// body that is not an envelope, 413 `payload_too_large`, 422
+/// `file_key_unavailable`, 409 `file_key_replaced`, 409
+/// `file_key_ambiguous`.
+///
+/// Every file key in the request and in `result` is in the form this
+/// session sends keys (`FileSummary::file_key`): a masked session reads and
+/// writes keys built from masked UIDs.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct AnnotationOpResponse {
+    /// The annotation model's `ApplyResult`
+    /// (`frontend/src/generated/annotation-types.ts`).
+    #[ts(type = "ApplyResult")]
+    pub result: dcmview_annotation::ApplyResult,
+    /// The store's revision as this request left it: the number of
+    /// envelopes it has applied. It rises by one for each envelope that changed
+    /// something, and is unchanged by a refusal and by a repeated `op_id`.
+    pub revision: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub code: Option<ApiErrorCode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -1150,6 +1697,20 @@ pub struct FrameQuery {
     /// `true` for a window/level drag preview: served from the display cache
     /// when present, otherwise rendered without being cached.
     pub preview: Option<bool>,
+}
+
+/// Thumbnail query.
+#[derive(Debug, Clone, Copy, Deserialize, TS)]
+#[ts(optional_fields)]
+pub struct ThumbnailQuery {
+    /// Longest edge wanted, in device pixels: 1 to the largest of
+    /// [`THUMBNAIL_SIZE_BUCKETS`], snapped up to the next bucket; absent
+    /// means [`THUMBNAIL_DEFAULT_SIZE`]. Anything else is `400
+    /// invalid_query`.
+    pub size: Option<u32>,
+    /// `default` (when absent) for the frame's default presentation, or
+    /// `full_dynamic`. A thumbnail takes no explicit window.
+    pub window_mode: Option<WindowMode>,
 }
 
 /// Raw-pixel query: the zero-based image row and column.

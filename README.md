@@ -7,6 +7,14 @@ Point it at one or more DICOM files from the command line or Python, and it
 starts a local browser viewer for images, tags, cine playback, and rectangular
 ROI annotations. Stop the process and the server is gone.
 
+PNG, JPEG, TIFF, and WebP image files are detected by content and displayed
+beside DICOM, with raw pixel readout, thumbnails, and redaction support.
+Their Metadata panel shows container fields, EXIF, text and profile details.
+The Explorer's Study view groups them by folder under "Images" after the
+patients, and its filter takes `format:png` (or `jpg`, `tif`, `webp`, `dicom`) and path
+fragments. Use `dcmview --formats dicom ./mixed_dir` for a DICOM-only
+directory list.
+
 The main problem it solves is remote-server inspection. Medical imaging research
 often happens where the data already live: an SSH session, a shared compute
 server, or a locked-down institutional network. Viewing those images usually
@@ -145,7 +153,7 @@ dcmview: server running at http://127.0.0.1:<port>/#token=<session-token>
 
 Press Ctrl+C to stop the server.
 
-If startup reports skipped files, no valid DICOM files, a port conflict, or a
+If startup reports skipped files, no DICOM or image files, a port conflict, or a
 browser launch failure, see the
 [troubleshooting guide](docs/troubleshooting.md).
 
@@ -334,9 +342,12 @@ dcmview --annotations ./embed_annotations.csv ./study_dir
 ```
 
 `dcmview` never modifies the input CSV or DICOM files. Viewer edits stay in
-memory and can be downloaded with **Export ROIs**. For the required columns,
-coordinate format, frame scoping rules, validation behavior, and examples, see
-the [annotation reference](docs/annotations.md).
+memory and can be downloaded with **Export ROIs**, whose rows are sorted by
+path. A session can also be downloaded as a `dcmview.annotations` document
+(`/api/annotations/export.json` or `export.jsonl`) and loaded again with
+`--annotations`. For the required columns, coordinate format, frame scoping
+rules, validation behavior, the import's report, and examples, see the
+[annotation reference](docs/annotations.md).
 
 ## Screen Sharing: Masking And Redaction
 
@@ -355,8 +366,8 @@ In a masked session:
 
 - Each patient is shown as `Patient 0001`, `Patient 0002`, ... and files as
   `File 1`, `File 2`, ... outside the directory tree.
-- Every date and date-time moves by one random offset per patient, within one
-  year. Times of day are kept.
+- Every DICOM date and date-time moves by one random offset per patient,
+  within one year. Times of day are kept.
 - Ages above 89 years show `089Y`, and a birth date that implies an age over
   89 is blank.
 - Person names, private elements and the attributes the DICOM PS3.15 Basic
@@ -368,6 +379,9 @@ In a masked session:
   hashed `2.25.` UIDs, consistently, so references still resolve.
 - Presentation state text is not drawn, and slide label and overview images
   are not shown.
+- Image-file metadata keeps only values that describe the pixel grid. Text,
+  GPS, dates, and device and software names show `[masked]`; raster dates
+  are masked, not shifted.
 
 What masking does **not** cover:
 
@@ -376,7 +390,9 @@ What masking does **not** cover:
 - **Free text** inside values that are kept, such as descriptions.
 - **Folder and file names.** The Directory view shows them as they are on
   disk, under a "Not masked" note, and tabs follow that view while it is
-  showing. The Study view and everything else use `File N`.
+  showing. The Study view and everything else use `File N`; its "Images"
+  group lists image files without their folders, and its filter does not
+  match paths.
 - Anything outside the viewer page: the terminal, VS Code's own editor tab and
   Explorer, and the exported ROI CSV, which keeps real paths.
 
@@ -446,10 +462,17 @@ compiles the VS Code extension.
 
 See the [development reference](docs/development.md) for source builds, frontend
 proxy behavior, fixture policy, test commands, architecture notes, and cache
-budget guidance. On smaller machines, `--cache-budget 256MiB` reduces the
-server's retained frame caches; it does not cap total process or browser
+budget guidance. The server defaults to 768 MiB across four caches: 256 MiB
+for display PNGs, 384 MiB for raw frames, 64 MiB for overlays and 64 MiB for
+thumbnail JPEGs. On smaller machines, `--cache-budget 256MiB` reduces these
+retained caches proportionally; it does not cap total process or browser
 memory. See [frame cache memory](docs/configuration.md#frame-cache-memory)
-for accepted sizes and limits.
+for accepted sizes and limits. Decodes in progress have a separate
+[`--decode-memory` budget](docs/configuration.md#decode-memory), defaulting
+to a quarter of the machine's physical memory, from 1 GiB to 4 GiB (2 GiB on
+an 8 GiB machine, 4 GiB on Windows); a frame whose estimate exceeds it is refused with
+`422 decode_memory_exceeded` and a message naming the flag, while staying
+listed as renderable.
 
 ## Reporting Issues
 

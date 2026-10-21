@@ -3,6 +3,7 @@
 	import { fetchAnnotationsExport, fetchHealth, onAccessDenied, onReachabilityChange, onServerRestart, type AccessDenial, type SemanticContextResponse } from "./api";
 	import AccessRequired from "./lib/AccessRequired.svelte";
 	import { adoptAccessToken } from "./lib/accessToken";
+	import { tagPanelNames } from "./lib/rasterSupport";
 	import FileNavigator from "./lib/FileNavigator.svelte";
 	import FrameSlider from "./lib/FrameSlider.svelte";
 	import GraphicAnnotationBar from "./lib/GraphicAnnotationBar.svelte";
@@ -94,6 +95,7 @@
 	let wsiContext = $state<ReturnType<typeof WsiTileContext>>();
 
 	const activeFile = $derived(tabs.activeFile);
+	const tagPanelName = $derived(tagPanelNames(activeFile));
 	const frameOverlay = $derived.by<FrameOverlay | null>(() => {
 		if (semanticMode !== "semantic_context") return null;
 		if (!semanticResponse || semanticResponse.source_file_index !== tabs.activeFileIndex) return null;
@@ -539,7 +541,7 @@
 				tabindex="-1"
 				role={layout.compactDrawer === "tags" ? "dialog" : undefined}
 				aria-modal={layout.compactDrawer === "tags" ? "true" : undefined}
-				aria-label="DICOM tags"
+				aria-label={tagPanelName.title}
 				onkeydown={(event) => layout.trapDrawerFocus(event)}
 			>
 				<div
@@ -547,7 +549,7 @@
 					class:dragging={layout.resizing !== null}
 					class:disabled={layout.tagPanelCollapsed}
 					role="separator"
-					aria-label="Resize DICOM tag panel"
+					aria-label={`Resize ${tagPanelName.panel}`}
 					aria-orientation="vertical"
 					aria-valuemin={TAG_PANEL_MIN_WIDTH_PX}
 					aria-valuemax={TAG_PANEL_MAX_WIDTH_PX}
@@ -562,7 +564,7 @@
 						variant="ghost"
 						icon="panel-right"
 						onclick={() => layout.toggleTagPanel()}
-						aria-label={layout.tagPanelCollapsed ? "Expand DICOM tag panel" : "Collapse DICOM tag panel"}
+						aria-label={`${layout.tagPanelCollapsed ? "Expand" : "Collapse"} ${tagPanelName.panel}`}
 						aria-expanded={!layout.tagPanelCollapsed}
 					/>
 				</span>
@@ -570,7 +572,7 @@
 					{#if activeFile === null}
 						<div class="tag-empty">No file selected</div>
 					{:else}
-						<TagPanel bind:this={tagPanel} fileIndex={activeFile.index} />
+						<TagPanel bind:this={tagPanel} fileIndex={activeFile.index} title={tagPanelName.title} />
 					{/if}
 				{/if}
 			</aside>

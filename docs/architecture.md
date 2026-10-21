@@ -20,7 +20,9 @@ repository may depend on without the viewer:
 | Package | Path | Holds | Depends on |
 |---|---|---|---|
 | `dcmview` | `.` | The viewer binary and library. | Everything, including the members. |
-| `dcmview-protocol` | `crates/dcmview-protocol` | The launch and startup contract: `StartupEvent`, `launch_url`, `STARTUP_PROTOCOL`, `TOKEN_FRAGMENT_PARAM`, `TOKEN_ENV_VAR`, and the test that pins the startup line. | `serde` only. No axum, tokio or DICOM crates. |
+| `dcmview-protocol` | `crates/dcmview-protocol` | The launch and startup contract: `StartupEvent` (with the `key_rules` number the viewer reports in it), `launch_url`, `STARTUP_PROTOCOL`, `TOKEN_FRAGMENT_PARAM`, `TOKEN_ENV_VAR`, and the test that pins the startup line. | `serde` only. No axum, tokio or DICOM crates. |
+| `dcmview-annotation` | `crates/dcmview-annotation` | The neutral annotation model: file keys, file references, geometry, frame scopes, the label schema, labels, layers, annotations, the document, operations, and the validation of all of them. See [Annotation Model](#annotation-model). | `serde`, `serde_json`, `thiserror`, `uuid`, `ts-rs`, `schemars`. No axum, tokio, DICOM or pixel-pipeline crates; no filesystem or network access. |
+| `dcmview-adapters` | `crates/dcmview-adapters` | Import and export adapters over the model: the adapter traits and their contexts, the registry, the report every import and export answers with, EMBED ROI CSV (rows, and the adapter between rows and rectangle records) and the native JSON and JSON Lines formats. See [Annotation Files](#annotation-files). | `dcmview-annotation`, `serde`, `serde_json`, `thiserror`, `csv`, `uuid`, `ts-rs`. No axum, tokio, DICOM or pixel-pipeline crates; an adapter reads the `Read` and writes the `Write` it is handed and touches no file or socket of its own. |
 
 Rules for the workspace:
 
@@ -29,8 +31,8 @@ Rules for the workspace:
   project URLs; every package inherits them.
 - Every member has the viewer's version. Other repositories pin a member by
   dcmview release tag, so the tag is the only version a consumer selects, and
-  wire compatibility is carried by `STARTUP_PROTOCOL` rather than by the crate
-  version. The root `[package].version` stays a literal because release
+  wire compatibility is carried by `STARTUP_PROTOCOL`, by the annotation
+  document's `version` and by `KEY_RULES` rather than by the crate version. The root `[package].version` stays a literal because release
   tooling reads it; `scripts/check_versions.py` compares each
   `crates/*/Cargo.toml` with it.
 - Plain `cargo build`, `cargo run` and `cargo test` at the root act on the
@@ -50,22 +52,28 @@ application module:
 | Local startup | `src/startup/` | `LocalViewerOptions`, `LocalViewerOutcome`, and `DiscoveryHandle`. |
 | HTTP wire model | `src/api/contracts.rs` | Plain `endpoints` table, media types, header names, wire structs (query names are `FrameQuery`/`TagQuery` fields), and error envelope. |
 | Launch and startup contract | `crates/dcmview-protocol` | `StartupEvent` (the `--startup-json` line), `launch_url`, `STARTUP_PROTOCOL`, the token fragment parameter and the token environment variable. Re-exported by `src/api/contracts.rs`. Fields are only added. |
-| HTTP runtime | `src/server/` | Listener/runtime, route registration, handlers, state, registry, activity tracking, tags, and embedded assets. |
-| Pixel service | `src/pixels/` | Typed display/raw requests, cache behavior, transfer-syntax classification, decoding, rendering, and `PixelError`. |
+| Annotation model | `crates/dcmview-annotation` | The model's types and wire format, `validate` on each of them, `FileKey` and `KEY_RULES`, `Op` and `OpEnvelope`, the size bounds in `limits`, and the generated TypeScript and JSON Schema. The root package takes `FileKey` and `KEY_RULES` from it (`src/keys.rs`), and its annotation store holds the model's records and applies its operations. |
+| Annotation store | `src/annotations.rs`, `src/annotations/`, `src/server/annotations.rs` | `AnnotationBackend` (`snapshot`, `apply`, `export`, `revision`) and its in-memory implementation `MemoryBackend`: records by id under settled file keys, one transaction per operation envelope. `AnnotationStore` is what a session holds: the backend, the state and the report of the `--annotations` import, and the one permit for document exports. `annotations/embed.rs` is the EMBED compatibility view as pure functions, and `annotations.rs` the `--annotations` file: its format, and an EMBED CSV matched to the loaded files by path. `server/annotations.rs` joins the store to the registry for every door: it settles keys, translates the keys a masked session shows, and serves the EMBED endpoints, the operation endpoint, the document exports and the native import. See [Annotation Store](#annotation-store). |
+| Annotation adapters | `crates/dcmview-adapters` | `ExportAdapter` and `ImportAdapter` with `ExportContext`, `ImportContext` and `FileResolver`; `Registry`; `Report` and its closed codes; `ImportError` and `ExportError`; the bounds in `limits`; `embed::{read_rows, write_csv, rois_of}` and `EmbedAdapter`; `NativeJson` and `NativeJsonLines`. See [Annotation Files](#annotation-files). |
+| File keys | `src/keys/` | `KeyTable`: which key each loaded file has and whether it is settled, as a plain data structure with no I/O that holds no string per file. `FileHasher`: one file's BLAKE3 digest in bounded slices. See [File Keys And The Catalog Cursor](#file-keys-and-the-catalog-cursor). |
+| HTTP runtime | `src/server/` | Listener/runtime, route registration, handlers, state, registry, activity tracking, tags, and embedded assets. `server/catalog.rs` holds the registry with its key table and catalog revisions; `server/catalog/keys.rs` holds background hashing and what a session shows for a key. |
+| Pixel service | `src/pixels/` | Typed display, raw and thumbnail requests, cache behavior, transfer-syntax classification, decoding, the render seam (`render.rs` `DisplayBuffer`), decode classes (`schedule.rs`), and `PixelError`. `raster.rs` decodes PNG, JPEG, TIFF and WebP frames within fixed read and memory limits and renders them; `raster/tags.rs` reads their metadata tree through the same reader, within limits of its own and without reading pixels. `digest.rs` computes the pixel digest of each frame a raw decode produces and keeps the session's table of them. See [Pixel Digests](#pixel-digests). |
 | Patient geometry | `src/geometry.rs` | Normalized per-frame position, orientation, pixel spacing, coplanarity checks, and target-to-source pixel transforms. |
 | Plane stacks | `src/plane_stack.rs` | RT Dose grids and Parametric Map frames as parallel planes; coverage and bracketing-plane sampling of a displayed frame. |
 | Value mapping | `src/value_mapping.rs` | Per-frame Modality transform and Real World Value Mappings (or Dose Grid Scaling) that convert stored samples. |
 | DICOM references | `src/references.rs` | Bounded extraction of typed instance relationships without implying target presence or semantic rendering. |
 | Semantic context | `src/semantic.rs` | Conservative SEG, Parametric Map, and RT Dose metadata interpretation layered beside unchanged pixel preview. |
 | Presentation states | `src/presentation_state.rs` | PIXEL-unit graphic and text annotations of softcopy presentation states, and which image frames each annotation item applies to. |
-| Display masking | `src/masking.rs` | `Masker`: the per-process keyed replacements of a `--mask` session (patient pseudonym, date shift, UID hash) and the tag rules, with the PS3.15 Table E.1-1 attribute list in `masking/profile.rs`. The registry holds it and masks the catalog as files register; handlers mask tag trees, semantic context and UID fields of other responses. |
-| Redaction boxes | `src/redactions.rs`, `src/pixels/redaction.rs` | `RedactionStore`: per-file boxes and their revision, in memory. The pixel service paints them into display PNGs (revision in the display cache key), fills them in raw frame copies, and the presentation layer paints them too. |
+| Display masking | `src/masking.rs` | `Masker`: the per-process keyed replacements of a `--mask` session (patient pseudonym, date shift, UID hash) and the tag rules, with the PS3.15 Table E.1-1 attribute list in `masking/profile.rs`, and the allowlist for raster metadata in `masking/raster.rs`. The registry holds it and masks the catalog as files register; handlers mask tag trees, semantic context and UID fields of other responses. |
+| Redaction boxes | `src/redactions.rs`, `src/pixels/redaction.rs` | `RedactionStore`: per-file boxes and their revision, in memory, by file index. A store of its own: it shares the ROI wire shape and its validation with the EMBED endpoints and nothing with the annotation store. The pixel service paints them into display PNGs and thumbnails (revision in the display and thumbnail cache keys), fills them in raw frame copies, and the presentation layer paints them too. |
 | WSI tile context | `src/wsi.rs` | Bounded positioning of one selected WSI tile without stitching or Total Pixel Matrix reconstruction. |
+| Data set reads | `src/data_set.rs` | `read_for_catalog` and `read_for_tags`: the only reads of a DICOM data set for the catalog and the tag endpoints, and the limits on what they read and hold whatever a file declares. See [DICOM Data Set Reads](#dicom-data-set-reads). |
 | Attribute readers | `src/dicom_values.rs` | Lenient string, number, and sequence readers shared by discovery, references, semantic context, and WSI context. |
-| DICOM discovery | `src/loader/` | `discovery.rs` progressive events, cancellation, and reports; `entry.rs` `FileEntry` construction; `metadata.rs` geometry, LUT, overlay, and shutter extraction; `filter.rs` metadata filters. |
+| File discovery | `src/loader/` | `discovery.rs` progressive events, cancellation, and reports; `entry.rs` format detection from content and DICOM `FileEntry` construction; `format.rs` the `--formats` selection and raster signatures; `raster.rs` header-only inspection of PNG, JPEG, TIFF and WebP into a `FileEntry`; `metadata.rs` geometry, LUT, overlay, and shutter extraction; `filter.rs` `--filter` predicates. |
 | Frontend client | `frontend/src/api.ts` | Typed fetch wrappers over the generated endpoint paths and wire types. |
 | VS Code extension | `vscode/src/` | `extension.ts` wires activation only. `viewerSessions.ts` owns viewer processes and their webview panels; `customEditor.ts` and `commands.ts` open files through it; `bridgeServer.ts` serves the loopback launch/stop/wait bridge; `bridgeRegistry.ts` publishes and refreshes the registry file; `terminalInterception.ts` sets the terminal environment and PATH shims. |
 | Cross-language generation | `examples/generate_api_types.rs` | Checked-in `frontend/src/generated/api-types.ts` rendered with `ts-rs` from the Rust HTTP contract. |
+| Annotation model generation | `crates/dcmview-annotation/examples/generate_annotation_model.rs` | Checked-in `frontend/src/generated/annotation-types.ts` (`ts-rs`) and `crates/dcmview-annotation/schema/dcmview.annotations.schema.json` (`schemars`), rendered from the model's serde attributes. |
 
 Axum integration tests execute the router without a process; discovery and
 lifecycle tests drive the real loader; end-to-end profiles exercise a real
@@ -83,7 +91,7 @@ flowchart TD
     startup --> discovery["startup/discovery.rs<br/>owned discovery task"]
     discovery --> loader["loader/<br/>spawn_blocking and Rayon"]
     discovery --> registry["server/catalog.rs<br/>FileRegistry"]
-    discovery --> annotations["annotations.rs<br/>in-memory ROI store"]
+    discovery --> annotations["annotations/<br/>in-memory annotation store"]
     bind --> runtime["BoundServer::serve"]
     runtime --> router["server/api/<br/>routes, handlers, state"]
     router --> pixels["pixels/<br/>display and raw services"]
@@ -138,9 +146,12 @@ modules, not the reverse:
 6. `pixels/service.rs` is the server-facing pixel boundary. Codec, cache,
    rendering, and window modules remain below it. A cache miss registers an
    in-flight decode that later requests for the key await; the decode runs as
-   its own task and caches its result even if its client disconnected, and a
-   semaphore bounds concurrent decodes to the core count. The frame caches are
-   bounded by bytes only. Grayscale 8- and 16-bit frames are presented through
+   its own task and, once it has started, caches its result even if its
+   client disconnected, and
+   `schedule.rs` bounds concurrent decodes to the core count and to the
+   decode memory budget and grants permits by decode class (see "Render
+   Seam, Thumbnails And Decode Classes" and "Decode Admission"). The frame
+   caches are bounded by bytes only. Grayscale 8- and 16-bit frames are presented through
    a per-stored-value lookup table (`render.rs`), with automatic windows from a
    histogram of stored values. `pixels/native_layout.rs`
    validates native frame sizing and normalizes bit-packed, planar, subsampled,
@@ -372,6 +383,28 @@ Up/Down shortcuts use that order (including the active filter), so file
 selection follows the explorer presentation rather than registry insertion
 order.
 
+Raster image files (`file_format` other than `dicom`, never inferred from
+empty UIDs) stay out of the clinical tree. The Study view lists them in one
+"Images" group after the patients, shaped by `buildImageGroup` in
+`lib/fileTree.ts` as the directory tree of those files
+(`docs/design/image-formats.md` section 7); a masked session lists them flat
+under their display names, since only the Directory view shows real paths.
+The explorer filter's `format:` scope matches any format (`jpg` and `tif` are
+aliases); an unscoped term matches a raster's format name but never `dicom`.
+Unscoped terms also match the path the current view shows for a file, never
+a folder every listed file shares: in the Directory view the path below the
+folders all files share, in the Study view a raster's path below the folders
+all rasters share and a DICOM file's name, and nothing in a masked Study
+view. `lib/rasterSupport.ts` decides from the catalog entry
+that a raster cannot be drawn; `ImageViewport` then views it as a file
+without pixels, shows why, and requests no frame, value mapping or layer.
+The tag panel's heading and the accessible names of its shell come from
+`tagPanelNames`: "Metadata" for a raster. The panel shows a raster's
+metadata tree with the rows of a DICOM tag tree; a group of that tree (a
+node with children whose `vr` is not `SQ`, `tagRows.ts` `isGroupTag`)
+starts open where a DICOM sequence starts closed, so a file's EXIF entries
+and a filter's matches show without a click.
+
 `App.svelte` gives `ImageViewport` one ordered logical-frame sequence for the
 active tab. A sequence may describe frames from one multiframe object, many
 single-frame CT/MR objects, or a mixture of both. Viewport display and raw
@@ -466,13 +499,31 @@ Fields are only added, and the crate's own test pins the exact shapes.
   `{"code":"stable_machine_code","error":"human-readable detail"}`. Codes are
   owned by `ApiErrorCode` in the canonical Rust contract; messages may add
   context without changing automation behavior.
+- A decode error's message is the viewer's own wording. `PixelError::Decode`
+  renders as its context and the outermost `pixels::Stated` reason of its
+  cause chain (fixed wording and numbers the viewer computed), and as its
+  context alone when the chain states none: the rest of the chain can be a
+  decoding library's text, which can quote the file. That text is
+  `PixelError::detail`; `server/api/error.rs` keeps it off the response
+  (`ApiError::failed` does the same for the overlay endpoints' other
+  causes), and the request logger writes it at debug level, escaped, only
+  when the session is not masked. Any other log line that reports why a
+  file could not be read writes the cause through `masking::logged_cause`,
+  which leaves it out once the process has a masked session.
+  `pixels/raster.rs` `decoder_failure`
+  reduces a PNG, JPEG, TIFF or WebP library's error to its kind before it
+  enters a chain, so a raster's cause holds no library text at any level.
+  The warning logged for a server error is the response's message.
 - `/api/health` exposes the package version plus build target and profile so
   compatibility evidence can identify the tested viewer build.
 - `/api/files` exposes a response-bounded view of the 256 most recent entries
   in the memory-only discovery ledger and each file's SOP Class, coarse object
   kind, and explicit `renderable`, `metadata_only`, or `unsupported` state with
   a stable reason when applicable. Exact scan totals remain separate. These
-  states describe viewer capability, not DICOM conformance.
+  states describe viewer capability, not DICOM conformance. Each entry also
+  carries its file key state, and `since` and `limit` page through the
+  entries that changed after a catalog revision (see "File Keys And The
+  Catalog Cursor").
 - `/api/series` builds an ephemeral server-owned catalog grouped strictly by
   Study and Series UID. Its typed stacks map virtual positions to source file
   and frame, prefer patient-geometry ordering for classic slices, surface
@@ -499,7 +550,9 @@ Fields are only added, and the crate's own test pins the exact shapes.
   Unavailable semantic mappings return `422 semantic_mapping_unavailable`.
   Like the value overlays in `server/api/overlays.rs`, the encoded PNG is
   cached per SEG frame and resolved source frame, and `X-Cache` reports that
-  cache. Discovery inspects candidate FRACTIONAL SEGs with a maximum above 1
+  cache. The decode of the SEG frame, the image and its PNG are one piece
+  of admitted work that requests for the same overlay share ("Decode
+  Admission"). Discovery inspects candidate FRACTIONAL SEGs with a maximum above 1
   on its blocking workers after filters match. Native samples are streamed in
   bounded chunks (deflated datasets are inflated once); encapsulated samples
   reuse one header and sequential frame cursor, retaining at most one decoded
@@ -519,13 +572,19 @@ Fields are only added, and the crate's own test pins the exact shapes.
   parallel frame brackets the same planes everywhere, an oblique one per
   pixel). The planes it reaches are decoded through the raw cache and
   converted with `value_mapping`, and `pixels/colorwash.rs` encodes viridis
-  over the context legend's range. A frame with no pixel inside the volume
-  is `404 overlay_not_covering_frame`. Encoded PNGs are cached per volume and
-  displayed frame, and `X-Cache` reports that cache. The `/values` form
+  over the context legend's range. All of that is one piece of admitted
+  work, reserved for the planes the frame reaches and for the displayed
+  frame, and requests for the same overlay share it ("Decode Admission"). A frame with no pixel inside the volume
+  is `404 overlay_not_covering_frame`. Encoded PNGs are cached per volume,
+  displayed frame and file set (`OverlayCacheKey.file_set`, the value the
+  legend's `ValueRangeCacheKey` carries: the legend's scale is read against
+  the file set, and the overlay is colored by it), and `X-Cache` reports
+  that cache. The `/values` form
   sends the same resampled values as little-endian `f32`s for readouts,
   cached beside the PNG (`OverlayEncoding`). Semantic context lists
   covered source frames; the server completes its legend from the decoded
-  frames' value range.
+  frames' value range, found once per object and file set under one permit
+  and shared by the requests that ask for it meanwhile.
 - `/api/file/{index}/frame/{frame}/graphic-annotations?state=`
   (`presentation_state.rs`) returns, as JSON, the graphic and text objects a
   Grayscale or Color Softcopy Presentation State draws on one image frame
@@ -551,7 +610,9 @@ Fields are only added, and the crate's own test pins the exact shapes.
   slide reconstruction.
 - `/api/file/{index}/tags/select` traverses explicit tag/item paths against the
   original object and pages sequence items, allowing targeted retrieval beyond
-  legacy tag-tree preview caps.
+  legacy tag-tree preview caps. For a raster image file it selects a node of
+  the tree `/tags` serves, by a path of node names, and reads nothing more
+  from the file.
 - Path, query, and JSON extractor failures pass through the same envelope.
 - Unknown `/api` routes return JSON `404`; unsupported methods return JSON
   `405`.
@@ -565,6 +626,13 @@ Fields are only added, and the crate's own test pins the exact shapes.
   cached render on a hit; color and VOI LUT frames, and frames windowed in a
   real-world `unit`, include neither. A `unit` window that cannot apply
   reports the default window the frame is shown with.
+- `/api/file/{index}/frame/{frame}/thumbnail?size=&window_mode=` returns a
+  small `image/jpeg` preview for the gallery with `X-Cache`,
+  `X-Thumbnail-Source` and `Cache-Control: no-store` (file indexes are valid
+  for one process only). `size` is the longest edge wanted, 1 to 1024,
+  snapped up to a bucket (128, 256, 512, 1024; 256 when absent); a size
+  outside that range is `400 invalid_query`. Its errors are otherwise the
+  display frame's. See "Render Seam, Thumbnails And Decode Classes".
 - Raw responses include all required `X-Frame-*` metadata headers. Default
   window headers are present only when the DICOM supplies a default window.
 - Unsupported transfer syntaxes are `422`, as are layouts the catalog marks
@@ -602,7 +670,59 @@ retain stored sample ordering (including planar configuration) while
 normalizing multi-byte values to little endian. Integer sample fields are
 masked to Bits Stored and signed values are extended from High Bit so unused
 allocated bits never affect display or raw consumers; one-bit pixels are
-expanded to one byte per sample. Float and double-float objects are pixel-renderable, but
+expanded to one byte per sample.
+
+Explicit VR Big Endian is retired and stays supported. Pixel Data of VR OW
+is a stream of 16-bit words, each in the byte order of the transfer syntax,
+whatever Bits Allocated is, and a pixel cell wider than a word continues,
+least significant bit first, into the next word; Pixel Data of VR OB is a
+byte stream (PS3.5 sections 6.2 and 8.2, in the editions that carry the
+big-endian transfer syntax). Float Pixel Data (OF) and Double Float Pixel
+Data (OD) are whole 32- and 64-bit values in the byte order of the transfer
+syntax. A big-endian file therefore stores:
+
+- 8-bit samples of VR OW with the two samples of every word exchanged, and
+  where the value has an odd number of samples its padding byte comes
+  before the last sample. The words run through the whole value, not
+  through each frame, so a word spans two frames where a frame has an odd
+  number of bytes.
+- 16-bit samples as words, high byte first.
+- 32-bit samples of VR OW as two words, the low word first, each high byte
+  first: the sample `0x11223344` is stored `33 44 11 22`, as DCMTK reads and
+  writes it.
+
+`native_layout.rs` states the two rules for big-endian words, and
+`read_native_frame`, which every reader of native frames goes through
+(display, thumbnails, raw frames, the pixel readout, pixel digests and value
+overlays), applies both while it reads the frame in `read_native_frame_bytes`.
+For `stores_swapped_byte_pairs` it reads the words that hold the frame, at
+most two bytes more than the frame, and puts them in sample order in the
+buffer they were read into; for `stores_low_word_first` it exchanges the two
+words of each sample in the buffer the frame was read into. Either way the
+frame then holds its samples in order, each in the file's byte order, and
+the frame layout reverses every sample of more than 8 bits, float and double
+float values included, into little endian. The segmentation sample scan
+reads the element itself and applies the 8-bit rule; it reads no samples of
+more than 8 bits. 8-bit Pixel Data of VR OB, and little-endian Pixel Data
+of either VR, is read as it is. One-bit Pixel Data is read through the
+DICOM parser, which reads a value of VR OW as words in the file's byte
+order and a value of VR OB as bytes, and its bits are taken from the least
+significant bit of each byte in that order.
+
+Overlay Data (60xx,3000) is read by its VR in the same way
+(`loader/metadata.rs` `overlay_data_words`). A value of VR OW is the
+plane's 16-bit words, each read in the file's byte order. A value of VR
+OB, which files written before the attribute became OW alone carry, is a
+byte stream in either byte order: the first bit of the plane is the least
+significant bit of the first byte, and two bytes make one word with the
+first as its low byte. A value of VR UN is read as OB is.
+
+Two kinds of big-endian file are not conforming and show as DCMTK shows
+them. One that holds 8-bit samples of VR OW in sample order shows every
+pair of samples exchanged. One whose 32-bit samples of VR OW have their
+four bytes reversed shows the two words of each sample exchanged.
+
+Float and double-float objects are pixel-renderable, but
 real-world-value mapping remains a separate semantic capability (the
 value-mapping endpoint, value overlays, and display windows requested in a
 `unit`) rather than an implicit part of the display pipeline.
@@ -657,10 +777,14 @@ same operations from the frame's `presentation-layer` over its own windowed
 image, so a shutter or overlay no longer keeps a file on server windowing.
 
 Color display frames take the same shutter. Every color decode path converts
-to interleaved RGB and ends in `render::encode_rgb8_display_png`, which fills
+to interleaved RGB and ends in a `DisplayBuffer` (`DisplayBuffer::rgb8`), on
+which the display path fills
 pixels outside the opening with the Shutter Presentation Color CIELab Value
 converted from D50 PCS-values to sRGB, else the gray P-value on all three
 channels; the 16-bit JPEG 2000 RGB path scales that fill to its precision.
+The shutter and overlay planes are drawn on the render seam's buffer
+(`DisplayBuffer::draw_presentation_graphics`), after every decode path has
+produced its pixels and before PNG encoding.
 Each frame's shutter is its Per-frame Functional Groups Frame Display Shutter,
 else the Shared Functional Groups one, else the Display Shutter modules.
 
@@ -686,7 +810,10 @@ JPEG, JPEG-LS and JPEG XL share one dicom-pixeldata frame decode
 (`pixels/pixeldata_frame.rs`). Deflated Explicit VR Little Endian is a dataset
 encoding and routes through the native layout pipeline: the inflated stream is
 parsed to the pixel element and inflated up to the requested frame, keeping
-only that frame. Deflated Image Frame Compression (`.8.1`) carries one-bit
+only that frame. The frame's buffer grows with the bytes that inflate, up to
+the frame's size: neither the entry nor the length the pixel element
+declares sizes it before the data is there, so a stream that ends early
+costs what it supplied. Deflated Image Frame Compression (`.8.1`) carries one-bit
 monochrome frames, such as binary segmentations, each deflated on its own.
 
 Encapsulated frames are located by `pixels/encapsulated.rs` for every
@@ -696,13 +823,1746 @@ reader seeks to the frame's first item; without one it steps over item
 headers, reading only each fragment's end to find a JPEG end marker (RLE has
 one fragment per frame).
 
+### Render Seam, Thumbnails And Decode Classes
+
+**Render seam.** Every decode path renders a frame to a `DisplayBuffer`
+(`pixels/render.rs`): 8-bit grayscale or RGB pixels in the stored pixel grid
+(16-bit RGB for the one JPEG 2000 path that has it), after everything that
+depends on the samples (Modality LUT or rescale, VOI LUT or window,
+MONOCHROME1 inversion, Pixel Padding, palette and YBR conversion) and before
+anything is drawn over it or encoded. Rendering and encoding are separate
+steps, and the buffer a decode path returns never has graphics or redaction
+on it, so one render serves either presentation:
+
+- a display frame draws the display shutter and overlay planes on the buffer
+  and encodes a PNG (`DisplayBuffer::into_display_png`), then paints the
+  frame's redaction boxes;
+- a thumbnail draws no shutter and no overlay planes, paints the redaction
+  boxes on the buffer (`DisplayBuffer::redact`), resamples it and encodes a
+  JPEG (`pixels/thumbnail.rs`).
+
+A new decoder produces a `DisplayBuffer` and gets both presentations, as the
+raster decoder does (`pixels/raster.rs` `render_raster_frame`).
+
+**Thumbnails.** A thumbnail is the frame's whole field of view in the stored
+pixel grid, resampled to its physical aspect and fitted inside the size
+bucket; it is never cropped, rotated, flipped or enlarged, so a stored-grid
+position maps to a thumbnail position by one scale per axis.
+`pixels::thumbnail_dimensions` is the one statement of that geometry. The
+presentation is the same whatever produced the image: the frame's default
+window (or `window_mode=full_dynamic`), no shutter, no overlay planes, an
+area filter in display space, JPEG quality 85, no ICC profile.
+`X-Thumbnail-Source` is therefore diagnostic. The sources sent are
+`thumbnail_cache`, `reduced_decode` ("Reduced Decodes For Thumbnails") and
+`full_decode`; `display_cache` and `raw_cache` are declared for sources the
+viewer does not have.
+
+Thumbnails are withheld and redacted exactly where display frames are, so
+the gallery cannot show what the viewer hides:
+
+- a masked session (`--mask`) answers `403 masked` for the files whose
+  frames it withholds (slide label and overview images);
+- a frame's redaction boxes are painted black on the buffer before it is
+  resampled, so no redacted pixel contributes to any thumbnail pixel;
+- the thumbnail cache key is file, frame, bucket, window mode and the
+  revision of the file's redaction boxes (0 when the frame has none), so a
+  change to the boxes makes every cached thumbnail of the file unreachable.
+
+Thumbnails are written to their own cache only (`ThumbnailCache`, 64 MiB of
+encoded JPEGs by default). They never write the display or raw caches, which
+hold the viewer's working set, and do not read them. Identical concurrent
+requests share one render.
+
+**Decode classes.** Every decode holds a permit of its viewer's
+`DecodeScheduler` (`pixels/schedule.rs`), which has one permit per core.
+`AppState` owns the scheduler, and each of its caches names it, so the pixel
+service finds from a cache whose permits a miss uses. A request names its
+class. Thumbnails are `Background`; all other work (display frames, raw
+frames, previews, presentation layers, segmentation and value overlays and
+the value range of a legend) is `Interactive`. The scheduler:
+
+- grants an interactive request as soon as a permit is free;
+- grants a background request only when a permit is free, background work
+  holds fewer than `background_limit(permits)` permits (half of them, at
+  least one, and never all of them on a multi-core host, so one permit is
+  always left for interactive work), and no interactive request is waiting;
+- on a one-core host, where no permit can be reserved, additionally holds a
+  background request back until no interactive request has arrived for
+  `ONE_CORE_IDLE_WINDOW` (one second); a request that is refused is not
+  an arrival;
+- considers waiting interactive requests first whenever a permit returns;
+- forgets a request that stops waiting.
+
+An interactive decode waits for its permit inside its own task, which the
+requests for that frame share. Once it holds the permit it finishes and is
+cached even when its client disconnects; while it still waits, it leaves the
+queue when the last request waiting for it is dropped. A thumbnail
+waits for its permit inside the request, so a tile the user scrolled past is
+dropped before any work starts; once it holds a permit its render runs as
+its own task and is cached regardless.
+
+The class belongs to the endpoint. It is unrelated to
+`X-Dcmview-Background: 1`, which only keeps a request off the idle clock: a
+thumbnail of a tile the user is looking at is background decode work and
+user activity at once, and the header never changes how a request is served.
+
+A decode that holds a permit runs to completion, so the classes bound the
+delay the gallery adds to the viewer rather than remove it.
+`pixels::INTERACTIVE_LATENCY_TARGET` (100 ms) is that bound: while
+thumbnails load, the 95th percentile of the extra time an interactive
+display frame takes over the same frames on an idle server, end to end at
+the HTTP boundary, on a host with four cores or more. The opt-in measurement
+`integration::thumbnail_timing` reports it and enforces it in a release
+build on such a host. On a one-core host the bound is one background decode
+that had already started.
+
+### Reduced Decodes For Thumbnails
+
+A thumbnail is at most 1,024 pixels along its longest edge, and two codecs
+can decode a frame at a fraction of its size for a fraction of the work
+(`docs/design/gallery-views.md` section 3.3): JPEG 2000 stops its inverse
+wavelet transform at a lower resolution level, and the JPEG DCT processes
+invert each block at 1/2, 1/4 or 1/8 of its size. `pixels/reduced.rs` states
+when a thumbnail uses them, and its module comment is the rule.
+
+**How far.** `pixels::thumbnail_reduction` gives the reduction a thumbnail
+asks for, from the catalog entry and the request alone: for a JPEG 2000 or
+JPEG Baseline file, the largest number of halvings (at most three for JPEG)
+that leaves the frame at least twice its thumbnail along both axes. Twice,
+so that the area filter that makes the thumbnail still averages four decoded
+pixels or more for each of its own; a frame is therefore reduced when it is
+at least four times its thumbnail (512 pixels for the 128 bucket, 4,096 for
+the 1,024 bucket). The thumbnail of a reduced frame has the size of the
+stored frame's, from `thumbnail_dimensions` of the entry's rows and columns,
+so the geometry a client derives from the catalog does not depend on how
+the frame was decoded.
+
+**Same presentation.** A reduction is asked for only when the frame's
+default presentation is the same function of each sample whatever the rest
+of the frame holds: colour, and grayscale with a stored window or a selected
+VOI LUT. A grayscale frame windowed from its own histogram (no stored
+window) and every `full_dynamic` thumbnail of a grayscale frame are decoded
+in full, because a reduced image has other percentiles and other extremes.
+A colour frame has no window in either mode, so its `full_dynamic`
+thumbnail is reduced like its default one. So a thumbnail has the window its
+display frame has, whichever path decoded it, and differs from the shrunk
+display frame only by the decoder's own low-pass filter along edges.
+
+**Checked first, and held to the entry.** A reduced decode starts where a
+full one does: `codestream::checked` accepts the frame for the entry before
+any decoder sees it (`jpeg2000::render_jp2_thumbnail`,
+`pixeldata_frame::decode_frame_for_thumbnail`), and the decoder is the same
+library given the same bytes with one parameter more. What a frame declares
+can only lower the reduction: a JPEG 2000 frame is halved no more often than
+the fewest decomposition levels any of its coding styles states, and not at
+all when its image does not start at the origin of its reference grid (the
+decoder does not place such an image correctly at a reduced resolution); a
+JPEG frame in the lossless process is not reduced. What a reduced decode
+returns must be the entry's image at the reduction applied, each extent
+divided and rounded up (`Reduction::accepts`); anything else is discarded.
+
+**Never worse than a full decode.** A frame that cannot be reduced as asked
+is reduced less or decoded in full, in the same task and under the same
+permit, after the reduced attempt has given back what it held. A frame
+therefore costs at most one reduced decode and one full decode, never both
+at once, and every frame that has a thumbnail from a full decode has one.
+The reservation does not change: `DecodeWork::Thumbnail` reserves what a
+full decode holds whichever path is taken, because whether a frame can be
+reduced is known only once its codestream has been read.
+
+**Redaction and masking.** A frame with redaction boxes is decoded in full,
+so its boxes are painted on stored pixels before anything is resampled and
+no redacted pixel reaches the thumbnail through a decoder's filter. A masked
+session refuses the thumbnails of the files it withholds (slide label and
+overview images) before any of this, and serves the others as any session
+does.
+
+`X-Thumbnail-Source` is `reduced_decode` when the decode that made the
+thumbnail was reduced and `full_decode` otherwise. Reduced thumbnails are
+written to the thumbnail cache only, like any other.
+
+### Decode Admission
+
+A decode holds its frame several times over while it runs, so the number of
+permits does not bound memory: a frame at the raster pixel limit is up to
+2 GiB of samples. Each permit therefore also carries a share of the **decode
+memory budget** (`docs/design/image-formats.md` section 2.3): `--decode-memory`,
+at least 256 MiB. Without the flag it is `pixels::default_decode_memory`: a
+quarter of the machine's physical memory, not less than 1 GiB and not more
+than 4 GiB, and 4 GiB when physical memory is not known. `startup/memory.rs`
+reads physical memory with `sysconf` on Linux and macOS and does not read it
+elsewhere (Windows included), and startup prints the budget in effect and
+whether it is the machine's default or came from the flag on standard error.
+`AppState::new` and `DecodeLimits::DEFAULT` are 4 GiB on every machine, so
+tests do not depend on the host. The budget is its own setting and not a
+share of `--cache-budget`, and nothing the catalog reports depends on it.
+
+**What is reserved.** `pixels::decode_estimate` (`pixels/admission.rs`)
+gives the bytes one piece of work reserves, from the catalog entry alone and
+before the file is opened. With `P` pixels, `S` samples, a raw frame of `F`
+bytes, a display buffer of `D` bytes (`P`, or `3 * P` for 8-bit colour and
+for a PALETTE COLOR frame, which is displayed as RGB, `6 * P` for deeper
+colour), and `V` of `32 * S` for samples of 32 or 64 bits
+(which are windowed one at a time as 64-bit values) and 0 otherwise; and,
+for an overlay, the `T` pixels of the displayed frame it is drawn on and the
+`N` frames of its object it holds at once:
+
+| Work (`DecodeWork`) | Reserved |
+|---|---|
+| `RawFrame`: decoding a frame to its samples | `decode` |
+| `DisplayFrame`: a display frame or a preview from a cold cache | `V + max(decode, F + 7 * D) + 1 MiB` |
+| `Thumbnail` | `decode + V + D + 8 MiB` |
+| `PresentationLayer` | `25 * P + 1 MiB` |
+| `RawRedaction`: the copy of a raw frame in which boxes are filled | `F` |
+| `ValueLegend`: the value range of an RT Dose or Parametric Map, one frame after another | `decode + 8 * P` |
+| `SegmentationOverlay`: one SEG frame painted on a displayed frame | `decode + 24 * T + 1 MiB` |
+| `ValueOverlay` sent as a PNG | `8 * N * P + max(decode, 32 * T + 1 MiB)` |
+| `ValueOverlay` sent as values | `8 * N * P + max(decode, 12 * T + 1 MiB)` |
+
+where `decode` is, for a raster, `raster_decode_heap_limit` at the file
+length discovery recorded (32 MiB and a read buffer, `6 * F`, and four times
+the file or its read budget if that is less); for DICOM, 16 MiB plus `3 * F`
+(native, RLE, deflated frame), `5 * F` (JPEG Baseline, JPEG Lossless,
+JPEG-LS) or `16 * S + 2 * F` (JPEG 2000, JPEG XL). The raster row is the
+limit the raster decoder is held to for every file, so a raster's
+reservation is never less than what its decode holds; `tests/raster_cost`
+measures each path against it. The DICOM rows are rules: a compressed
+frame must declare the image of its catalog entry before it is decoded
+("Compressed Frames Are Held To The Header"), but the heap a DICOM decoder
+holds for that image is not limited the way the raster decoder's is. A
+thumbnail reserves its row whether its frame is decoded in full or at a
+reduced resolution ("Reduced Decodes For Thumbnails").
+
+A display frame has two stages and reserves the larger. Its decode is over,
+and what the decode held given back, before the frame is encoded; only the
+raw frame may still be held then. An image that does not compress is held
+about six times over while it is encoded as a PNG: the image, the attempt
+to compress it, and the stored copy written instead, each in a buffer that
+grew by doubling. `F + 7 * D` covers that for a display buffer, and
+`25 * P` for a presentation layer, which is four bytes a pixel; a frame of
+noise and a layer whose shutter hides every other pixel measure up to 6.3
+times the display buffer and 24.2 bytes a pixel. Redaction boxes are
+painted on a decoded copy of a display PNG, and the PNG is given up before
+the copy is encoded, so a frame with boxes holds no more than the same
+frame without. `tests/raster_cost/admission.rs` measures such images
+against both rows. A presentation layer is refused at a smaller frame than
+a display frame is (above about 6,550 pixels a side with 1 GiB, 13,105
+with 4 GiB), and the viewer then shows the frame without its shutter and
+overlay graphics.
+
+The overlay rows are estimated from the entry of the overlay's object (the
+SEG, dose or map), which is what they decode; the displayed frame
+contributes its rows and columns only. An overlay holds much more than a
+decode. A frame as real-world values is eight bytes a pixel (`8 * P`): a
+legend holds one at a time, a value overlay the `N` planes its displayed
+frame is sampled from, from the first decode until it is done. `N` is one
+or two for a frame parallel to the planes and can be every plane of the
+volume for a frame that cuts through them; the server computes it from the
+geometry in the catalog before it asks for the permit and decodes no plane
+beyond it. An overlay image is 24 bytes a displayed pixel while it is
+encoded (`24 * T`: four of RGBA, a compressed stream in a buffer up to twice
+its length, and the PNG, held twice over while it grows), which an image
+that does not compress reaches; a value overlay adds the resampled values
+of the displayed frame, eight bytes a pixel, and sends either that image or
+four bytes a pixel of values. Its decodes are over before the displayed
+frame is resampled, so it reserves the larger of the two stages beside its
+planes. `tests/raster_cost/overlays.rs` measures each kind against its row.
+
+A raster's reservation uses the length the file had when it was listed
+(`RasterMetadata.file_length`). A decode of a file that has grown past that
+length since fails before anything is read.
+
+**One permit for one piece of work.** A display frame takes one permit for
+its decode, window, shutter and overlay planes, PNG and redaction. When its
+samples come through the raw tier, that decode runs under the display
+frame's permit and takes none of its own, and it never waits for a decode
+another request announced (which may itself be waiting for a permit): it
+reads the raw cache and otherwise decodes. No work waits for a second
+permit while it holds one.
+
+An overlay and a legend are each one piece of work too
+(`pixels::compute_from_frames`): one permit covers every frame the work
+decodes, the values it converts them to, the resampling and the encoding.
+The work reads its frames through the `CoveredFrames` it is handed, which
+decode under that permit exactly as a display frame's raw decode does. A
+value overlay needs its volume's legend first; the legend is work of its
+own, finished and its permit returned before the overlay asks for one.
+
+**Admission.** `DecodeScheduler::admit(class, bytes)` grants the permit and
+the bytes in one step and takes both back when the `DecodePermit` is
+dropped, so the bytes reserved are always those of decodes that are running:
+
+- a request is granted when it is first in its class's queue, a permit is
+  free under the rules above, and the bytes reserved plus its own do not
+  exceed the budget;
+- a background request also needs the bytes reserved by background decodes
+  plus its own to stay within half the budget
+  (`background_memory_limit`), and no interactive request to be waiting. The
+  other half is never reserved by a thumbnail;
+- requests of a class are granted in arrival order, so a large request at
+  the front is not overtaken by small ones and cannot starve;
+- a request for more than its class may ever reserve (the budget, or half
+  of it for a thumbnail) is refused at once: `422 decode_memory_exceeded`,
+  which says how much was needed and names `--decode-memory`. The file stays
+  `renderable` in the catalog; a larger budget decodes it;
+- a request that would have to wait while its class already has 1,024
+  requests waiting (each class has its own queue of that length) is
+  refused: `503 decode_busy` with `Retry-After: 1`. A waiting request holds no decode
+  memory, so the queue limits bound tasks and delay, not bytes.
+
+Requests the caches can answer take no permit, so a busy viewer still serves
+what it holds.
+
+**Shutdown.** When the server is told to stop it calls
+`DecodeScheduler::refuse_waiting` before it drains its requests: every
+request waiting for a permit is answered `503 decode_busy` at once, and so
+is any that would have to wait from then on. Decodes that hold a permit
+finish, so the drain is bounded by the work already running and not by the
+length of the queue. The refusal is permanent for that scheduler: a new
+viewer in the same process is given a new one.
+
+A waiting request registers for the scheduler's next change before it
+checks the state it waits on, so a release or a refusal that happens
+between its check and its wait still wakes it. A unit test in
+`pixels/schedule.rs` polls a request by hand against a release and a
+refusal made from another thread and tells a missed change from the
+scheduler's own account and a counting waker, without a clock.
+
+**Who waits where.** An interactive decode waits inside its own task, and a
+refusal is the result for every request that shared it. The task counts the
+requests waiting for it: when the last of them is dropped before the permit
+is granted, the decode leaves the queue, frees its place there and is never
+started, and the next request for the frame announces a decode of its own.
+A decode that has been granted its permit runs to its end and is cached
+whoever is still waiting. An overlay and a legend's value range wait and
+are shared the same way: requests for the same overlay, or for the legend
+of the same object, wait for one computation, keyed as its cache is (the
+overlay cache; `ValueRangeCache` for a legend, per object and file set),
+and a refusal is the answer for all of them. A thumbnail, a preview and the
+copy made for redaction boxes in a raw frame wait inside the request, so one
+that is dropped while it waits starts no work and reserves nothing. Once any
+of them holds a permit, its work runs in a task of its own and keeps the
+permit and the bytes until the blocking work ends, whether or not the
+request is still there. A panic, an error and an aborted task all drop the
+permit.
+
+**Where the answers appear.** The endpoints of `endpoints::DECODING`: the
+display, raw, raw-pixel, thumbnail and presentation-layer endpoints, the
+segmentation and value overlays, and the semantic context of an RT Dose or
+Parametric Map, whose legend spans the values of every frame of the object.
+An overlay that needs more than the budget answers 422, and one that would
+wait behind a full queue 503, as a frame does. A legend refused because the
+viewer was busy answers 503 and is not cached; one that needs more than the
+budget makes the overlay ineligible, with that reason, and the overlay
+endpoints then answer `422 semantic_mapping_unavailable`.
+
+**What the budget does not cover.** It bounds what running decodes hold.
+Beside it are the frame caches (`--cache-budget`), the body of each response
+while it is sent (a raw frame is `F` bytes, held once per response when it
+is too large to cache), and tag trees, which are read within the limits of
+"DICOM Data Set Reads".
+
 See [the HTTP API reference](api.md) for endpoint payloads and headers.
+
+### Compressed Frames Are Held To The Header
+
+A compressed frame describes its own image a second time, inside its
+codestream, and the codec libraries size their buffers and loops from that
+description. The catalog entry holds what the data set says: Rows, Columns,
+Samples per Pixel and Bits Allocated. `pixels/codestream.rs` makes the two
+agree before any codec library sees a frame, so a frame costs what its
+entry's image costs whatever its own header declares.
+
+- `codestream::declared` reads what the frame declares from its encoded
+  bytes alone, and allocates nothing that grows with it. `codestream::agrees`
+  compares that with the entry by the accept table in its documentation,
+  which is the whole rule. `codestream::checked` runs both, and every decoder
+  calls it: `pixels/jpeg2000.rs` `checked_codestream` for JPEG 2000, and
+  `pixels/pixeldata_frame.rs` `checked_fragment` for JPEG, JPEG-LS and JPEG
+  XL. Each returns a value its module's decoders take and nothing else makes,
+  so a decode cannot skip it. The display, raw, raw-pixel and thumbnail
+  endpoints (a thumbnail's reduced decode included), the overlay endpoints
+  that decode another object's frames, and discovery's scan of a fractional
+  segmentation all decode through those two functions.
+- A frame that fails is a decode error for that frame (`500
+  pixel_decode_failed`, or the overlay endpoints' own error) whose message
+  contains `codestream::CODESTREAM_MISMATCH`, "pixel data disagrees with the
+  header". The file stays listed and its other frames decode.
+- A JPEG XL frame whose image header says an embedded colour profile
+  follows is refused the same way, with `codestream::JXL_EMBEDDED_PROFILE`
+  as its message: "JPEG XL frame carries an embedded colour profile, which
+  is not supported". The viewer takes colour from the data set and has no
+  use for that profile, and the decoder would read it outside its
+  allocation limit, so the frame never reaches the decoder.
+
+| Syntax | Read from the frame, and how far | Compared with the entry |
+|---|---|---|
+| JPEG Baseline, JPEG Lossless | The frame header (`SOFn`), after at most 1,024 marker segments, each stepped over by its length; then the scans are counted to the end of the frame | Rows, columns, components; precision against Bits Allocated by process (8 in 8 for the DCT processes; for lossless 8 in 8, any other precision in 16); at most 100 scans |
+| JPEG-LS | The frame header (`SOF55`), after at most 1,024 marker segments | Rows, columns, components; precision 2 to 8 in 8 bits allocated, 9 to 16 in 16 |
+| JPEG 2000 | `SIZ`, then every coding style (`COD`, `COC`) of the main header (at most 1,024 marker segments) and of each tile-part header; a JP2 file's boxes up to its codestream box (at most 64) | Rows, columns (from the image size and offset), components, all at full resolution and one depth; precision at most Bits Allocated; at most 4,096 tiles; at most 65,536 packets for a component of a tile, or one for every 64 pixels of the tile if that is more |
+| JPEG XL | The image header, read by the decoder's header parser from at most the first 64 KiB of the codestream, without starting the decoder; in the box container, the boxes up to those bytes (at most 64). A header that does not end within those bytes (dozens of named extra channels would do it) is refused as unreadable | No embedded colour profile; rows, columns, channels (colour and alpha); integer samples of at most Bits Allocated; no animation |
+
+What the table does not name is not compared: the colour transform, the
+number of resolution levels, chroma subsampling, restart intervals, a
+lossless point transform, Bits Stored and the sign of the samples differ
+between honest files and their headers, and such files decode as before.
+Two of them are read all the same, because they bound how far a thumbnail's
+decode of a JPEG 2000 frame is reduced: the fewest decomposition levels any
+coding style of the frame states, and whether its image starts at the origin
+of its reference grid (`Structure::Jpeg2000`).
+
+Three more rules close the same gap where there is no header to compare:
+
+- **JPEG 2000 in a JP2 file.** The decoder is given the contents of the
+  codestream box only, so the file's other boxes (a palette, a channel
+  definition, an image header box that repeats the size) take no part in the
+  decode.
+- **JPEG XL.** A frame's image header does not bound its decode: a frame
+  header, extra channels and reference frames can each ask for more. The
+  frame is decoded by `codestream::decode_jpeg_xl` with the decoder's
+  allocation tracker limited to `codestream::jxl_decode_limit` (4 MiB plus 64
+  bytes for each sample of the entry's frame), and the output buffer is
+  sized from the entry. Two things the decoder would read outside that
+  limit never reach it. An embedded colour profile: a frame that has one is
+  refused before the decoder starts. The boxes of the box container
+  (metadata, compressed or not, and JPEG reconstruction data, which the
+  decoder decompresses and keeps): the decoder is given the codestream
+  alone, the contents of the frame's `jxlc` box or of its `jxlp` boxes
+  joined in one buffer no longer than the frame, so it never sees a
+  container. A recompressed JPEG file decodes to the same pixels without
+  its reconstruction data. The limit bounds what the decoder accounts for
+  with its tracker.
+- **Deflated Image Frame.** `codestream::inflate_frame` reads the frame's
+  packed size plus one byte out of the inflater and no more; a frame that
+  inflates to anything else is refused.
+
+The data set a decode reads is compared with the entry as well
+(`codestream::header_agrees`): a file can be replaced after it was listed,
+and the codec adapters size their output from the data set they are given.
+`encapsulated::open_for_frame_decode` hands a decoder an object that holds
+the requested frame as its only fragment, so the bytes that were checked are
+the bytes that are decoded.
+
+RLE Lossless and native pixel data need none of this: their decoders size
+every buffer from the entry (`pixels/rle.rs`, `pixels/native.rs`).
+
+### DICOM Data Set Reads
+
+Every element of a DICOM data set declares its own length, a deflated data
+set inflates to a size nothing declares, and sequences nest as deep as the
+file says. `src/data_set.rs` is the only code that reads a data set for the
+catalog (`read_for_catalog`, called by `loader/entry.rs`) and for the tag
+endpoints, and its doc comment is the contract for what those reads may
+cost. The limits are fixed
+numbers or the file's real length, never a length the file declares:
+
+| Limit | Value | What it bounds |
+|---|---|---|
+| A value is read only when it fits | the bytes the file has left | No value is allocated at a length the file does not hold. Checked for every element of the file meta group before the group is parsed, too. |
+| `DATA_SET_VALUE_MAX_BYTES` | 1 MiB | No longer value is read. The one exception is Overlay Data (60xx,3000), which the catalog entry keeps. |
+| `DATA_SET_INFLATED_BUDGET_BYTES` | 64 MiB | What one read of a Deflated Explicit VR Little Endian data set may spend: every byte it inflates, kept or discarded, `DATA_SET_INFLATED_ELEMENT_CHARGE_BYTES` (512) for each element it builds and twice that for each item, and, for text and lists of tags, what the built value holds beyond its bytes. Those values are built by the module itself from their bytes: the list of a multi-valued string is sized and checked against what is left before it is filled, each string is charged its reserved bytes once shrunk, and a decoder is handed at most `DATA_SET_INFLATED_TEXT_PIECE_BYTES` (4,096) at a time. Text longer than a piece that does not decode to the bytes it is, is kept as its first piece. |
+| `DATA_SET_CATALOG_MAX_VALUES` | 65,536 | The most values a multi-valued string may have for the catalog read to keep it, counted in its bytes before it is split; a longer list is passed over and the entry is built as if the element were absent. An element with a 16-bit length, which is every such element of an Explicit VR file, cannot hold that many. The tag read has no such limit. |
+| `DATA_SET_MAX_DEPTH` | 64 | How deep sequences nest. |
+
+A value that is not read is passed over by seeking, so it costs neither
+memory nor a read of its bytes; a deflated data set cannot be seeked, and
+its skipped values are inflated and discarded. The read goes through the
+parser's lazy tokens (`dicom-parser` `LazyDataSetReader`), which hand over
+each header before its value, and builds the same object `dicom-object`
+would for what it keeps.
+
+The catalog read keeps the data set before Float Pixel Data (7FE0,0008),
+the earliest standard pixel element, and ends at the header of the data
+set's own top-level pixel element, so it reads no pixel value and nothing
+behind one. Pixel elements nested in sequences, such as an Icon Image
+Sequence, do not count, and their fragments are passed over. A file that
+breaks a limit before its pixel element is not listed: discovery skips it as
+`dicom_parse_failed`, as it does a file that does not parse.
+
+The tag endpoints read through the same module (`read_for_tags`, called by
+`server/tags.rs`) under the same limits, with two differences. The read
+walks the whole data set (a selection before the pixel data stops there),
+and it reads no value the tree shows by its length: Pixel Data, every bulk
+binary value representation (`shown_by_length`) and any value over
+`DATA_SET_VALUE_MAX_BYTES`. Each of those is listed, empty, at its declared
+length; encapsulated Pixel Data is listed at the length of its fragments,
+which are stepped over one item header at a time. So the cost of `/tags`
+and `/tags/select` does not grow with pixel data or bulk values, whichever
+element is selected, and they take no decode permit. A value the read
+would keep that runs past the end of the file fails the read. The tree
+ends early, without failing, in these cases, and then ends with a `Note`
+leaf that says which (`TagDataSet::cut`, added by `server/tags.rs` behind
+the masked nodes):
+
+- a data set that ends, or runs out of inflated budget, inside a value that
+  is being passed over ends there: that element is listed and nothing after
+  it is. The tree of a deflated data set whose pixel data inflates past the
+  budget therefore ends with its pixel element;
+- sequences nested past the limit end the tree at the sequence that is too
+  deep, which is listed without items; the top-level element it is in
+  also shows an error value that says so (`TagDataSet::too_deep`);
+- top-level bytes that are not an element end the tree: a header that
+  cannot be read (which is also how a file cut inside a header looks, and
+  an inflate or read error at a header), or the tag (0000,0000), which no
+  data set holds.
+
+One end is not partial and has no note: nothing but zeros from such a place
+to the end of the file (up to 1 MiB of them, in a file read by seeking) is
+padding after a whole data set. Fewer than four stray bytes at the end of a
+file are taken as its end by the parser and are not noted either. A
+well-formed element is listed wherever it stands, a lower tag behind the
+pixel data included.
+
+What a read holds is bounded by what the file supplies: the values it kept,
+each backed by its bytes in the file, and the in-memory elements and values
+built from the bytes it read. That is not a fixed budget. Only a read of a
+deflated data set has one: what it holds of the data set was charged when
+it was built, and never comes to more than the budget and
+`DATA_SET_INFLATED_OVERSHOOT_BYTES` (the bytes of the one value being
+built, at most 1 MiB, and what a decoder holds for one piece of text). The
+file meta group is outside that budget in every file: it is not deflated,
+and what a read holds of it is bounded by the bytes the file supplies for
+it.
+
+### Raster Image Files
+
+Discovery lists PNG, JPEG, TIFF and still WebP files beside DICOM
+(`docs/design/image-formats.md`; on by default by the owner's decision 12.2).
+
+- **Format is decided from content, never from the name.** `DICM` at offset
+  128 makes a file DICOM whatever its first bytes are, so a DICOM WSI file
+  whose preamble is a TIFF header stays DICOM. Otherwise the first bytes
+  select PNG, JPEG, TIFF (classic or BigTIFF, either byte order) or WebP. A
+  file shorter than the 132-byte Part 10 prefix is still matched. Anything
+  else is skipped with the discovery reason `unrecognized_format`, which
+  replaced `missing_part10_preamble` (owner's decision 12.3).
+- **`--formats`** narrows what a directory walk loads to the listed formats
+  (`dicom`, `png`, `jpeg`, `tiff`, `webp`; default all). A recognized file
+  outside the list is skipped with `format_not_selected` before its header is
+  parsed. A file named as an input path is loaded in whatever supported
+  format it has, whatever the list says. `--formats dicom` gives the
+  DICOM-only behaviour of earlier versions.
+- **Raster discovery is header-only**, like DICOM discovery: PNG chunks up to
+  the first `IDAT`, JPEG markers up to the first frame header, the TIFF IFD
+  chain, the WebP chunk headers. No pixel data is decoded and no file is read
+  whole. A raster signature whose header does not parse is skipped with
+  `raster_header_invalid`. Selected rasters carry the reason `valid_image`.
+- **A raster header has a fixed scan budget**, the same for every file
+  whatever its size or what it declares (`loader/raster.rs` holds the numbers
+  and why): at most 64 MiB obtained from the file, a bounded number of reads,
+  and at most 65,535 JPEG segments, PNG chunks, WebP chunks or TIFF pages.
+  JPEG, PNG and WebP are scanned through one small buffer; a TIFF IFD is read
+  with reads of exactly its own length, because pages lie between pixel
+  data. Nothing is read or allocated in proportion to a declared length: a
+  payload that is not needed is skipped, an EXIF block is read for its first
+  64 KiB only, and no limit is derived from the file's size (a blank mask is
+  smaller on disk than one of its rows). Every step checks discovery
+  cancellation. A file that spends the budget before its header is complete
+  is skipped with `raster_header_invalid` and a stderr line saying what ran
+  out. There are no wall-clock limits. All of it is read through one function
+  over a `Read + Seek` source, which the unit tests count.
+- **A TIFF may have at most 65,535 pages.** A file with more is skipped, not
+  truncated, since a frame map that stops early would move the last frame.
+  (This narrows the design's "walk the whole IFD chain".) The catalog lists
+  the first 16 excluded pages and counts the rest in `excluded_pages_total`.
+- **A raster the viewer does not decode is listed, not skipped**, with the
+  reason discovery found in its header (`RasterMetadata.unsupported`,
+  reported as `support_reason`). When several apply, the first of these is
+  reported:
+  `raster.unsupported_color` for a TIFF that is CIELab, has more than four
+  bands or an extra sample that is not alpha (`color_type` `other`), or is
+  palette, CMYK, gray with alpha, YCbCr outside JPEG compression, or colour
+  stored as separate planes;
+  `raster.unsupported_sample_format` for a TIFF with 16-bit float, 1-, 2- or
+  4-bit or 64-bit integer samples, or colour that is not 8- or 16-bit
+  unsigned;
+  `raster.unsupported_compression` for a TIFF compressed with anything but
+  none, LZW, Deflate or PackBits (JPEG-compressed TIFF included);
+  `raster.jpeg_unsupported_process` for a JPEG that is not 8-bit baseline,
+  extended sequential or progressive Huffman;
+  `raster.too_large` for a frame of more than 268,435,456 pixels (16,384 x
+  16,384), whatever the host's memory or cache budget;
+  `raster.file_too_large` for a PNG, JPEG or WebP file longer than its read
+  budget (64 MiB plus four times the frame), which no decode would read. A
+  TIFF may be any length.
+  Only a header that cannot be described at all is `raster_header_invalid`.
+- **A raster `FileEntry`** has `format` set, `raster: Some(RasterMetadata)`,
+  empty DICOM identity strings and an empty `transfer_syntax_uid`. Its
+  `rows`, `columns` and sample layout describe the stored pixel grid and the
+  raw frames a decoder serves (`loader/raster.rs` has the table); the EXIF or
+  TIFF orientation is recorded and never applied. A multi-page TIFF is one
+  file whose frames are the pages that match page 0; the others are listed
+  as excluded with the property that differs.
+- **On the wire** `FileSummary.file_format` names the format and
+  `FileSummary.raster` is a `RasterSummary` for rasters and `null` for DICOM;
+  `object_kind` is `image`. Rasters have no Study or Series UID, so the series
+  catalog leaves them out and each is its own tab; for the same reason
+  `redactions/series` copies a raster's boxes to no other file, and a raster
+  is never the target of a DICOM reference.
+- **Filters.** `--filter format=<name>` matches the format name exactly and
+  `--filter path=<text>` matches a substring of the reported path, both
+  ignoring case. The DICOM filter fields are empty for a raster, so any DICOM
+  filter excludes rasters.
+- **Without DICOM to parse**, `/value-mapping` answers the identity mapping,
+  `/references` an empty list and `/semantic-context` `not_applicable`, none
+  of which opens the file, and `/tags` answers the file's metadata tree
+  (below). No endpoint answers a server error for a raster.
+- **Masked sessions** give a raster no patient: its patient fields stay empty
+  and it takes no pseudonym. Its display name is the session's `File N`. Its
+  pixels are served as they are: masking hides identifiers, and burned-in
+  text is what redaction boxes are for. Of its metadata tree a masked
+  session shows the shape and the values that describe the pixel grid, and
+  nothing else (below).
+
+**Decoding.** A raster frame enters the pixel service like any other:
+`pixels/syntax.rs` `codec_for_file` gives a raster `Codec::Raster` from its
+format, before any transfer-syntax lookup, and `service.rs` dispatches that
+codec to `pixels/raster.rs`. So a raster frame has the same raw and display
+caches, decode permits, classes and admission, redaction boxes, presentation
+layer and thumbnails as a DICOM frame, and `classify_pixel_support` reports it
+`renderable` unless discovery recorded a reason above. The frame endpoints
+answer `422 unsupported_pixel_layout` naming that reason, without opening
+the file, for a raster that has one.
+
+- **One function reads the file**, `decode_raster_frame`, from a `Read +
+  Seek` source (the file, or a test's counted bytes), and its doc comment is
+  the contract. It decodes with the linked crates: `png` with no output
+  transformation, `image`'s JPEG and WebP decoders, and `tiff` on the frame's
+  own page.
+- **The entry is checked against the file.** Discovery read the header once
+  and trusts declarations it does not verify (a WebP canvas and its flags, a
+  TIFF page found by offset), and the file may have changed since. Before
+  any buffer is sized, the image in the file must have the entry's width,
+  height, colour type, depth and sample format; otherwise the decode fails.
+  A frame is never another size than the catalog says. The same holds for
+  every other size a decoder would take from the file on its own, each
+  compared with the entry or a constant before anything is allocated or
+  looped by it:
+  - a WebP's chunks are walked up to its first image before its decoder
+    sees the file: the bitstream there (`VP8 `, `VP8L`, or the one inside
+    the first `ANMF` frame) must state the size of the canvas, or of its
+    frame inside the canvas, because a lossy bitstream's decoder allocates
+    by the size the bitstream states. A lossy bitstream must be a key
+    frame: no other frame states a size;
+  - a WebP profile chunk is read only when it precedes the image, declares
+    at most 4 MiB and ends inside the file;
+  - a TIFF page that holds any tag twice is refused, by discovery and again
+    by the decoder, since readers disagree on which entry counts (the linked
+    crate takes the last) and the page checked would not be the page read;
+  - a TIFF tile must be less than 4,096 pixels wider and less than 4,096
+    longer than the image (`RASTER_TIFF_TILE_MARGIN`), because the decoder
+    reads and discards what a tile holds beside the image;
+  - a TIFF strip or tile is read to the end of its byte count and no
+    further.
+- **What a decode may cost is fixed by the catalog entry**, never by a
+  length, count or size the file declares, and none of it is a time limit:
+  - at most 268,435,456 pixels, so at most 2 GiB of samples;
+  - at most `raster_read_budget` bytes handed to a decoder (64 MiB plus
+    four times the frame's bytes), counted at one buffered reader: every
+    byte read from the file, read-ahead included, and every buffered byte
+    handed out again after a seek back, so strips or tiles that share bytes
+    are charged for each use; a PNG, JPEG or WebP longer than the budget is
+    listed as `raster.file_too_large` and refused unread;
+  - reads of 64 KiB, with seeks inside the buffer costing none;
+  - a TIFF page's strips or tiles read for their own bytes whatever order
+    the file stores them in: those that lie end to start in decode order
+    are a run, and a read that begins in a run never reads past its end. A
+    file written last row first, or with its tiles scattered, costs its
+    length and its page's tags a second time, like one written in order;
+  - a TIFF frame read from its own IFD (`RasterMetadata.frame_offsets`), not
+    by walking the page chain, so the last frame costs what the first does;
+    at most 65,536 strips or tiles and 4,096 tags on a page;
+  - at most 100 scans in a progressive JPEG;
+  - at most `raster_decode_heap_limit` bytes of heap on the decoding thread
+    (a fixed 32 MiB and one read buffer, six times the frame, four times the
+    bytes read), so a profile, text chunk, strip or tile is never allocated
+    at a size it merely declares. Half of the fixed part is for the one
+    allocation a file sizes unchecked: the decoder of a lossy WebP
+    allocates a partition of coefficients at its declared length, under
+    16 MiB, before reading it, and stops at the first the file does not
+    hold.
+  A decode holds a scheduler permit and runs to completion; these limits,
+  not cancellation, bound it.
+- **Memory across decodes.** The limits above are per decode. A frame at
+  the pixel limit is 256 MiB of 8-bit gray samples and 2 GiB at four 16-bit
+  samples or one 64-bit sample a pixel, and `raster_decode_heap_limit` for
+  it is 32 MiB and one read buffer, six times that frame and four times
+  the file read (itself at most the read budget, 64 MiB plus four times the
+  frame). The decoder
+  paths hold about half of the frame term on the files
+  `tests/raster_cost/scale.rs` measures: at most three frames. That limit
+  is what a raster decode reserves of the decode memory budget before it
+  starts ("Decode Admission"), so the decodes running at once never have
+  more reserved than the budget. The file term is part of every raster
+  reservation, so what fits depends on the file's length as well as on its
+  pixels: a display frame at the pixel limit reserves, when its decode is
+  the larger of its two stages, 1.6 GiB and four times its file's length
+  for 8-bit gray, 3.1 GiB and four times its file's length for 16-bit gray,
+  4.6 GiB and the same for 8-bit RGB, and 12.1 GiB and the same for 16-bit
+  RGBA, and never less than its encoding stage (2.0, 2.3, 6.0 and 12.5
+  GiB). With a budget of 4 GiB (the default on a machine with
+  16 GiB or more) the first fits when
+  its file is no longer than 631 MiB and the second when its file is no
+  longer than 247 MiB; the colour layouts do not fit at that size. A frame
+  that does not fit is refused with `422 decode_memory_exceeded`, which
+  states the bytes it needs, until the viewer is started with a
+  `--decode-memory` of at least that. `docs/configuration.md`, "Decode
+  memory", has the table of examples.
+- **Raw frames hold stored sample semantics**, whatever a decoder returns
+  (design section 5.2): low-bit PNG samples keep their stored values (a
+  one-bit image is 0 and 1) in one byte each; 16-bit and wider samples are
+  little endian; a WhiteIsZero TIFF serves its stored values, floats bit for
+  bit, with `MONOCHROME1` so the shared windowing inverts once; palettes are
+  expanded to RGB, or RGBA with `tRNS`; TIFF associated alpha is
+  un-premultiplied, so alpha in the raw tier is always unassociated; a CMYK
+  or YCCK JPEG serves the decoder's approximate RGB. Samples are always
+  interleaved, with one to four per pixel (`MONOCHROME2` with two samples is
+  gray and alpha, `RGBA` is four). Orientation is never applied.
+- **Display.** Gray frames take the shared window: by default the whole
+  stored range for integer samples of 8 bits or fewer (an 8-bit image is
+  shown as stored), a TIFF's declared `MinSampleValue`/`MaxSampleValue`
+  range, and otherwise the frame's percentiles. PNG `sBIT` never narrows a
+  window. Alpha is flattened over black, 16-bit colour is reduced to 8 bits,
+  and colour is never windowed. A colour frame carries the file's ICC
+  profile to the browser only when the profile is valid, at most 4 MiB and
+  for RGB data; a CMYK JPEG's profile is never used.
+- **Not decoded in this version**, each reported with its reason:
+  JPEG-compressed TIFF (the linked `tiff` crate hands a tile to a JPEG
+  decoder with no limit on the size the tile declares), 1-bit TIFF (the
+  crate does not unpack it), palette, CMYK and gray-with-alpha TIFF, and
+  planar colour. Animated PNG and WebP show their first frame only.
+
+**Metadata.** `/tags` and `/tags/select` serve a raster's metadata in the
+`TagNode` shape of the DICOM tag tree, so the Metadata panel shows it with
+the same component (`docs/design/image-formats.md` section 8).
+
+- **One function reads it**, `pixels::read_raster_tags`
+  (`pixels/raster/tags.rs`), from a `Read + Seek` source, and its doc
+  comment is the contract: the layout of the tree per format, how values
+  are shown and what a read may cost. `raster_tag_nodes` puts leaves from
+  the catalog entry before it (`File`: format, size, extension, pages,
+  frames, excluded pages) and one `Note` leaf after it for each thing a
+  reader should know: the entry's warnings, a name whose extension belongs
+  to another format, an animation, and the reader's own notes.
+- **The tree.** A node is a leaf or a group (a `sequence` value with one
+  item, its children; `vr` is empty, where a DICOM sequence has `SQ`).
+  Container fields are top-level leaves whose `tag` names their source and
+  whose `keyword` names the field (`PNG:IHDR` `Width`, `JPEG:SOF0`
+  `Precision`, `WEBP:VP8X` `CanvasWidth`, `PNG:tEXt` `Text`, `JPEG:COM`
+  `Comment`, `XMP` `Packet`, `ICC` `Description`). Directories of TIFF and
+  EXIF entries are groups: `TIFF:page N` for each of a TIFF's first 16
+  pages, with `Exif`, `GPS` and `Interop` groups inside a page, and `EXIF`
+  with `IFD0`, `Exif`, `GPS`, `Interop` and `IFD1` for the EXIF block of a
+  PNG, JPEG or WebP. An entry's `tag` is its number (`0x010F`), its
+  `keyword` its name in that kind of directory (`Unknown` when the table in
+  `tags/names.rs` has none) and its `vr` its TIFF type. Rationals are shown
+  as stored (`1/250`), binary values by their length, and a maker note, an
+  embedded thumbnail, IPTC and Photoshop blocks are never parsed. The tree
+  is one per file: a multi-page TIFF shows its pages as groups, and an
+  animation its container's fields.
+- **The file is not trusted, and the limits do not depend on the reader
+  getting them right.** Every byte comes through the pixel reader with a
+  budget of 4 MiB, behind a source that refuses the 16,385th read. Every
+  node enters the tree through `TagSink`, which holds the tree to 1,024
+  nodes three deep, one value to 1,024 characters or 64 numbers, and all
+  text of a tree to 128 KiB. The format readers add: 256 entries shown of a
+  directory whatever count it declares, 16 pages and 64 directories read, a
+  directory reached twice never read again, 4,096 bytes read of one value,
+  a compressed chunk inflated to 64 KiB at most, the first 64 KiB of a
+  profile, and offsets checked against the file's real length (an EXIF
+  block's against the block). Image data is stepped over by seeking; a
+  JPEG is walked to its first scan, and the 36 bytes read at each of its
+  markers take in, at the start of that scan and at a short segment just
+  before it, the scan header and the first entropy-coded bytes, which
+  are not looked at. One read holds at most
+  2 MiB of heap. Reading never fails and never panics: damage and limits
+  become notes (`RasterTagNote`), which are fixed words and never hold a
+  byte of the file, and the rest of the tree is still shown.
+- **A file's bytes reach only values, and only escaped.** `tag`, `keyword`
+  and `vr` are dcmview's own names. `TagSink` decodes every text value
+  (invalid bytes become U+FFFD), trims trailing NULs and white space, turns
+  tabs and line ends into spaces, and writes as `\u{..}` every other
+  control character, the line and paragraph separators, every format
+  character (general category Cf) and every other code point that is
+  ignorable by default, variation selectors and the tag block included
+  (one table, `ESCAPED`), so an escape sequence in a comment is visible
+  text.
+- **No decode permit.** A metadata read decodes no pixels and is bounded by
+  the numbers above, so it runs on a blocking thread beside the decode
+  scheduler, not through it. The tag cache keeps the tree as the session
+  shows it, like a DICOM tree; a tree is well under 1 MiB.
+- **Selection** (`server/tags.rs` `select_raster_node`) walks the served
+  tree by a path of steps, each a node's `tag`, optionally `.keyword`,
+  optionally `[n]` for the n-th match: `PNG:IHDR.Width`, `PNG:tEXt[2]`,
+  `EXIF/GPS/0x0002`. It reads nothing from the file, so what is selected is
+  what the tree shows, masked or not. A path that names nothing is `400`.
+- **Masked sessions** show a raster's tree through an allowlist
+  (`masking/raster.rs`): a value is kept only when its place is listed and
+  it is a number, a list of numbers or number-shaped text, and of a
+  directory entry text only when the entry's type is a rational (a file can
+  write any tag as text, and a date is digits too). Of a directory
+  a masked tree shows one value for each listed field and nothing else:
+  the first entry of that tag, when it has a type the field is defined
+  with (TIFF 6.0 and EXIF) and no more numbers than the field holds (one
+  for a size or a scalar field, the fixed count of a field such as
+  `PageNumber` or `PrimaryChromaticities`, four for a field with a number
+  for each sample). A repeated, longer or differently typed entry is
+  masked whole. Strip and tile offsets and byte counts are shown only when
+  there is one, as in a page stored in one strip; a colour map is never
+  shown. Each value shown is still a number the file chose, so this is a
+  display aid for honest files, not a guarantee against a file built to
+  carry something in those numbers. Listed are the
+  `File` leaves except the extension, the notes, the container's layout
+  fields (`PNG:IHDR`, `pHYs`, `gAMA`, `cHRM`, `sRGB`, `sBIT`, `acTL`; JFIF
+  version and density, the frame header, the Adobe version and transform;
+  the WebP headers and loop count), a profile's size and version, the
+  layout entries of an image directory (sizes, sample layout, compression,
+  strips and tiles, resolution, orientation) and of an EXIF directory only
+  the colour space and pixel dimensions. Everything else shows `[masked]`:
+  every unknown tag, all text of the file, GPS, dates and times (masked,
+  not shifted: a raster has no patient whose offset would apply), device
+  make, model and serial numbers, software and host names, owner, artist,
+  copyright, description and comment fields, PNG text chunks, XMP, maker
+  notes, thumbnail entries, profile names and descriptions, document and
+  page names, exposure settings. The catalog entry of a raster holds no
+  text of the file, and neither do the notes, the errors of these endpoints
+  or anything written to stderr. A colour display frame still carries the
+  file's ICC profile to the browser, as a DICOM colour frame does.
+
+## File Keys And The Catalog Cursor
+
+Every loaded file has a stable key, the string annotations and anything that
+leaves the process address a file by (`docs/design/annotation-model.md` 1.3,
+1.7, 1.8). The file index stays what the viewer's own routes use; it is
+discovery order and means nothing outside one process. The key syntax and
+the rule version `KEY_RULES` belong to `crates/dcmview-annotation`, so a hub
+computes the same keys with the same code. Which key a file has is decided
+by `keys::KeyTable` (`src/keys/table.rs`), whose documentation is normative.
+In short:
+
+| File | Key |
+|---|---|
+| DICOM with a usable SOP Instance UID (1 to 128 characters of `A-Z a-z 0-9 . - _`) that nothing contradicts | `sop:<uid>` |
+| Another loaded file with the same UID and the same length | The same `sop:<uid>`, provisionally: their bytes have not been compared |
+| Files with one UID that are known to differ (their lengths differ, or their digests do) before any key of theirs was relied on | `b3:<digest>` each, so byte-identical copies among them still share a key |
+| Raster, DICOM without a UID, or with a UID that is not usable | `b3:<digest>` |
+
+`<digest>` is the BLAKE3 digest of the file's bytes exactly as stored, as 64
+lowercase hex characters. The UID is the data set's SOP Instance UID as
+discovery reads it: the first value, without its padding and surrounding
+white space, and otherwise as written (`docs/api.md`, "File keys"). That
+reading is part of the rules `KEY_RULES` versions, since other tooling has to
+read the same UID to compute the same key.
+
+**A key that is shown and a key that is relied on.** The catalog and the
+frame header show a file's key as it stands, and that key can still change:
+`sop:<uid>` shared by UID and length is unchecked, and a file found later
+can contradict it. A key is *settled* when it can no longer change: every
+`b3:` key, and `sop:<uid>` once `KeyTable::rely_on` has returned it. Only
+`FileRegistry::ensure_key` settles a key, and only a settled key goes into
+a record or an export. To settle `sop:<uid>` for a file whose UID other
+loaded files of the same length carry, every one of those files is hashed
+first (`docs/design/annotation-model.md` 1.7: verified "before the first
+annotation write on either file"), so two files with one settled key hold
+the same bytes, whatever order they were found or asked about in. The file
+asked about and the group's first file are hashed before the others: when
+those two differ the group is split, the file has its `b3:` key, and the
+rest of the group is not read for that request. When the first file with
+the UID cannot be hashed there is nothing to compare with, so nothing is
+split and nothing is relied on: `ensure_key` on any file of the group
+answers `Unavailable` with the first file's failure, no key shown changes,
+and the next request tries the first file again. Two other files of the
+group whose own digests differ still split it (`KeyTable::check_group`
+compares a digest with the first one the group learned, whichever file it
+came from): they have the `b3:` keys they would have in any session, and
+the first file has none until it is read. A file other than the
+first that cannot be hashed costs only its own key (it loses the shared
+key when the group is relied on), so which file was found first decides
+what one unreadable file withholds, and nothing else about the keys.
+
+**After a key was relied on.** `sop:<uid>` then names the bytes of the first
+file with that UID for the rest of the session, and nothing replaces it. A
+file with the UID that is found afterwards has no key until it has been
+compared with that first file; it then shares the key, or takes a `b3:` key
+of its own if it differs. A file of the group that could not be read when
+the key was settled loses the provisional key it showed and is treated the
+same way. Keys are session-scoped: the same folder opened again, or found
+in another order while a key is asked for, can give a file another key, and
+anything stored is matched on reload through its `FileRef` evidence, not by
+key alone.
+
+A key is replaced by another (`sop:` by `b3:`, once) only for a file whose
+group was shown to differ before any key of it was relied on.
+
+### Discovery Adds No Read
+
+Discovery never hashes. A file's length comes from the `stat` discovery
+already makes (`FileEntry::size_bytes`), as does its modification time
+(`FileEntry::modified`), and the path that tells one file reached twice from
+two files is the one the discovery record already resolved
+(`FileRegistry::record_selected`). Registering a file is a constant number
+of hash-map operations under the registry lock it already took. A file that
+needs its bytes read for a key is registered without a key.
+
+The key table copies nothing out of a file. It is given the registry's own
+entry (`KeyedFile`, implemented by `Keyed` in `server/catalog/keys.rs`) and
+keeps clones of that handle in its vectors and maps, so a file whose UID and
+path are its own costs about a hundred bytes there whatever their length,
+and no allocation. A `sop:` key is not stored as text: it is `sop:` plus the
+UID the entry already holds, and it is written out where it is sent.
+`tests/key_table_memory.rs` holds the bound with a counting allocator, and
+the timing script reports resident memory after the scan.
+
+The rule is measured, not assumed: `scripts/startup_timing.py` times first
+response, first file and scan completion against the released baseline on
+synthetic folders (`docs/development.md`, "Startup And Discovery Timing").
+A change to discovery, to `FileRegistry::insert` or to the catalog listing
+is run through it before it merges.
+
+### When A File Is Hashed
+
+A whole-file digest costs a full read, so it is computed only when a key
+needs it and somebody has a use for the key:
+
+- **After a frame of the file is served.** The first display or raw frame
+  response for a file without a key queues its digest
+  (`FileRegistry::frame_sent`), for a raster as for a DICOM file without a
+  usable UID: both are served by the same two handlers. Thumbnails do not
+  count: scrolling a gallery never reads a folder of images a second time.
+- **On request.** `FileRegistry::ensure_key` returns a file's key once it is
+  settled, hashing first what that takes: nothing for a DICOM file whose UID
+  no other loaded file has; the file itself for one without a key; and, for
+  a file whose UID other files of the same length carry, that file and the
+  first file with the UID, then every other one of those files if the two
+  agree, whichever of them is asked about. That last case costs the bytes
+  of the group's files, each read once, and is paid only when a key of the
+  group is relied on: a dataset that holds a copy of every file is not read
+  twice for being opened. A folder whose files all carry one UID and one
+  length and differ costs two reads for a key; its other files are hashed
+  as they are viewed or asked about.
+- **For a file found after its UID's key was relied on,** when a frame of it
+  is served: the file and, if it was never hashed, the first file with the
+  UID, since the late file has no key until the two are compared.
+
+The catalog hashes one file at a time, in slices of at most 8 MiB
+(`keys::KEY_HASH_SLICE_BYTES`) on the blocking pool. Each slice holds a
+`Background` decode permit and gives it back before the next, so a viewer's
+decode never waits behind more than one slice. Digests asked for through
+`ensure_key` go ahead of those queued by viewing. `FileHasher` opens the
+path once, without waiting (`O_NONBLOCK` on Unix, so a FIFO in a file's
+place cannot hold a pool thread), and checks the opened file, not the path:
+a file whose length or modification time is not what discovery's `stat`
+saw, that changes while it is read, or that cannot be read gets no digest
+and its entry reports `key_error`; at most one byte past the discovered
+length is ever read. Length and modification time are all that tie the
+bytes to the file discovery saw, so a file rewritten at the same length
+with its modification time set back is hashed as what it now holds, and a
+file that was only touched is refused for the rest of the session.
+Hashing needs a Tokio runtime to start; a registry filled outside one keeps
+its queue until a call arrives inside one. A worker that panics on a file
+records that file as unreadable and goes on with the rest of the queue, so
+a fault cannot leave `ensure_key` waiting. A worker whose runtime goes away
+puts the file it held back at the front of the queue with no failure, and
+the next call inside a runtime starts a worker again; an `ensure_key` that
+was waiting on a queued file is woken by that and starts one itself, so it
+does not depend on another request arriving. A digest that becomes
+wanted is queued before the registry lock is released, so a catalog page
+never shows a file waiting for its key beside a `keys_hashing` that leaves
+it out. `FileRegistry::stop_key_work` ends hashing at shutdown.
+
+### What A Client Sees
+
+- `FileSummary.file_key` is left out when it is `sop:` plus the entry's own
+  `sop_instance_uid` (an ordinary DICOM file adds no bytes to the catalog),
+  `null` while the file has no key, and the key otherwise. `alias_of` names
+  the first file that holds the same key. `key_error` is `unreadable` or
+  `changed` for the file's own digest, or `uncompared` for a file that
+  waits to be compared with the first file of its UID while that file has
+  one of the other two (`KeyView::uncompared`, `KeyTable` rule 4): an entry
+  with `file_key: null` and no `key_error` is always one whose digest is
+  still to come. What an entry shows is the key as it stands, settled or
+  not.
+- Display and raw frame responses carry `X-File-Key` whenever the file has a
+  key, so a viewer showing a file whose key was pending learns it from the
+  next frame.
+- A replaced key is one `FileRekey` (`index`, `old_key`, `new_key`,
+  `revision`) in `FilesResponse.rekeys`, delivered with the changed entry. A
+  file's key is replaced at most once, and never after `ensure_key` returned
+  it. The old key keeps naming the first file that held it
+  (`FileRegistry::file_for_shown_key`), which may be another file than
+  `index`: a replacement is applied to what is held for that file, not to
+  everything held under the old key.
+- The `--startup-json` line reports `key_rules`.
+
+A file key built from a SOP Instance UID is an identifier. A masked session
+builds it from the masked UID everywhere a key is sent (`shown_key` in
+`server/catalog/keys.rs` is the one place that decides), accepts it back in
+that form only, and keeps the real key inside the process. A `b3:` key holds
+no header value and is sent unchanged.
+
+### The Catalog Cursor
+
+Entries are not append-only: a key resolves, an alias is found, a key is
+replaced. The catalog therefore has a revision. It starts at 0, and every
+entry added and every entry whose `file_key`, `alias_of` or `key_error`
+changes takes the next revision as its own, so no two entries share one.
+
+`GET /api/files` with neither `since` nor `limit` lists every entry in index
+order, as it always has. With `since=<revision>` it lists the entries whose
+revision is higher, least recently changed first, each as it is now; `limit`
+caps the page, `more` says the list was cut and `revision` is where to
+resume. An entry that changes while a client pages is listed again later, so
+applying pages by `index` ends with the current catalog. A `since` above the
+catalog's revision comes from another process and is answered from the start
+with `reset: true`. A poll from the current revision costs the same whatever
+the size of the catalog.
+
+A response is one moment of the registry. `FileRegistry::files_page` reads
+the entries, the scan state and counters, the discovery records and the
+hashing count under one hold of the registry lock, and the handler reads
+nothing else for the response. A response that says `scan_complete` therefore
+lists every file the scan found, which matters because the page stops
+polling when it sees that member.
+
+## Pixel Digests
+
+A file key names bytes. A **pixel digest** names the samples of one frame,
+whatever file stores them: `px:` and the BLAKE3 hash of a 24-byte header
+(rows, columns, samples per pixel, bits allocated, sample format and a
+zero, each a little-endian `u32`) followed by the samples row by row,
+colour by pixel, little-endian. `crates/dcmview-annotation/src/pixel.rs`
+is the definition (`PixelLayout`, `pixel_digest_text`), with test vectors
+computed apart from the viewer; `src/pixels/digest.rs` maps a raw frame
+onto it.
+
+| Rule | What it means |
+|---|---|
+| The samples are the stored ones | A digest is of what the raw tier holds before a redaction: no rescale, lookup table, window, inversion or colour conversion. Bits outside the stored field are not hashed, a sample narrower than a byte is hashed as one byte, and colour stored by plane is hashed by pixel. |
+| One digest for one image | The same samples have the same digest in every layout that has a raw tier and an exact decode: uncompressed or deflated little-endian DICOM (gray and colour), uncompressed big-endian DICOM, RLE and JPEG XL Lossless (gray and colour), JPEG Lossless, JPEG-LS and JPEG 2000 Lossless (one sample a pixel), PNG and TIFF. Bits outside Bits Stored are taken out while hashing, wherever the decoder left the stored field (`StoredField`), so a transcode that carries other bits there keeps the digest. Signedness, sample width, sample count and shape are part of it; the photometric interpretation is not. Samples of an Explicit VR Big Endian file are hashed in sample order, each little-endian. |
+| Exact decodes only | A frame has a digest only when decoding it gives exactly the stored samples (`pixels::exact_samples`). Baseline JPEG in DICOM, JPEG and WebP files, chrominance at half resolution and TIFF with associated alpha have none. Neither has a frame the raw tier does not serve: colour JPEG Lossless and colour JPEG 2000. |
+| Computed by the decode | A raw decode hashes the samples it produced before it returns them, on a blocking thread, under its own permit (`record_frame_digest`, called from `raw_frame`). Raw decodes are made by the raw frame and raw pixel endpoints, by overlays and legends computed from frames, and by a display frame that goes through the raw tier (`raw_samples_for_display`: one integer sample a pixel of 1, 8 or 16 bits, except JPEG 2000 shown without a real-world unit). A cache hit, a thumbnail, any other display decode (colour, JPEG 2000, 32-bit and floating-point gray), discovery, an export and an import compute none. |
+| Fixed cost | One pass over the samples and at most 64 KiB beside them (`PIXEL_DIGEST_BUFFER_BYTES`): a frame is never copied to be hashed. Samples in order with every bit stored are hashed where they lie; colour by plane and samples narrower than their cells pass through that buffer. |
+| Bounded table | `PixelDigests`, one a session (`FileRegistry::pixel_digests`), keeps 32 bytes a frame for the last 65,536 frames recorded (`PIXEL_DIGEST_CAPACITY`) in at most 16 MiB, and nothing until a frame is decoded. The session's raw cache names it (`BudgetedLru::with_pixel_digests`); a cache without one records nothing. `PixelDigestStats` counts the digests computed and the bytes they covered. |
+
+Documents carry them as evidence (`FileRef.pixel_digest`, one entry a
+frame). An export states what the table holds for the loaded files that
+share a reference's key and decodes nothing; a file of more than 65,536
+frames states none. An import compares them, where a file was matched by
+its UID without its bytes being compared, with what the table holds for
+the files of that key: a frame both know must agree. It never decodes,
+never records a document's digests, and finds no file by them.
+
+## Annotation Model
+
+`crates/dcmview-annotation` is the one definition of what an annotation is.
+It is a pure model: types, their JSON form, and the rules a value must meet.
+It holds no state and applies no operation; a store does that. It does not
+touch the filesystem, the network or the environment, and every function
+gives the same result for the same arguments except `new_id`, which reads
+the system clock and the operating system's random number generator. The
+root package takes `FileKey` and `KEY_RULES` from this crate for the catalog,
+and the rest of the model for its annotation store
+([Annotation Store](#annotation-store)). The design it implements is
+`docs/design/annotation-model.md`.
+
+| Module | Holds |
+|---|---|
+| `key` | `FileKey` (`sop:<uid>` or `b3:<64 lowercase hex>`), `KEY_RULES`, and the other strings with one fixed syntax: `LayerId`, `Author`, `Timestamp`. |
+| `file` | `FileRef`: every identifier known for a file, its dimensions and frame count. |
+| `geometry` | `Geometry` (point, line, polyline, polygon, rect, ellipse, mask), `quantize`, `Geometry::validate`, `Geometry::clamped`. |
+| `frames` | `FrameScope`: `"all"`, or a set of frames with the list as it was written. |
+| `schema` | `LabelSchema`: classes, fields and options; `LabelSchema::implicit` for a session without one. |
+| `label`, `layer`, `record` | `LabelTarget` and its canonical id, `LabelValue`, `Label`; `Layer`, `LayerPatch`; `Annotation`, `RecordMeta`, `new_id`. |
+| `document` | `Document`, `FORMAT` (`dcmview.annotations`) and `VERSION`. |
+| `op` | `Op` (ten operations, `Batch` included), `OpEnvelope`, `Patch`, `QueueKey`, `ApplyResult`. |
+| `validate` | `Violation`, the closed `ViolationCode` list, `Invalid`, and the `Context` (files and schema) a validation is given. |
+| `limits` | Every size bound, as a constant. |
+| `generate` | `typescript()` and `json_schema()`. |
+
+Rules the crate keeps:
+
+- **Reading checks shape, validating checks invariants.** Deserialization
+  accepts any value of the right shape whose file keys, layer ids, authors
+  and timestamps have their fixed syntax. The `validate` functions are the
+  strict check, and every write goes through them. A record the lenient EMBED
+  CSV import read (a rectangle past the edge, with no area, or with its
+  corners out of order) is held and written back unchanged until it is
+  edited. `Geometry::clamped` rounds a geometry and then moves every
+  position outside its image onto the nearest edge, and reports which of
+  the two it did; it is how an edit brings such a record inside its image.
+- **Coordinates** are corner-origin and continuous in the stored pixel grid,
+  `x` the column and `y` the row, valid over `[0, columns]` by `[0, rows]`,
+  quantized to 1/1000 px. Every comparison a validation makes is on quantized
+  values.
+- **Numbers are written one way.** A whole number has no fraction (`340`,
+  never `340.0` or `-0.0`), and a geometry number is written quantized, so a
+  Rust writer and a JavaScript writer produce the same text.
+- **Frame lists are kept as written.** A frame set holds the frames sorted
+  and distinct in `set`, and beside it the list an import read when that
+  differs (`as_written`), so an unedited EMBED row writes back the list it
+  was read from. An explicit list that names every frame is not `"all"`.
+- **Unknown members survive where a type keeps them.** The document, the
+  schema and its classes, fields and options, a file and its `space`, a
+  layer and its `source`, an annotation and a label keep members this
+  version does not know and write them back. A geometry, a frame set, a
+  code, a spacing entry, an operation, its envelope and its patches do not:
+  an unknown member there is ignored when read. A label target with one is
+  refused. Within a document major version members are only added; a new
+  geometry type, operation or enum value is a new major version.
+- **Each member is written once.** A field writes its own members and its
+  type's members from the field, and leaves out an unknown member with one
+  of those names, so a field whose type was changed in code still names
+  nothing twice. A member the model names is refused when the text read
+  holds it twice. A repeated key inside a map whose keys are data
+  (`attributes`, `extensions`, a mask's frames and tiles, the unknown
+  members) is not: the last one is kept.
+- **Absent is left out.** An optional member is not written when it is
+  absent, and `null` is read as absent: a record read with `"score": null`
+  or `"derived_from": null` is written back without the member. The members
+  written as `null` are a file's identifiers, digests and `frame_source`, a
+  layer's `color`, a document's `schema`, and an operation's `base_rev`,
+  `before` and `after`.
+- **Ids.** Record and operation ids are UUIDv7. Layer ids and schema ids are
+  1 to 64 characters of `A-Z a-z 0-9 . - _`.
+- **Queue keys.** `Op::queue_keys` gives what a client orders an operation
+  by: the file key for annotation operations and for labels on a file or
+  frame, the label target's canonical id (`patient:`, `study:`, `series:`,
+  `folder:<root>/<path>`) otherwise, and the layer id for layer operations.
+- **Bounded input.** Every parser and validator returns an error and never
+  panics. Reading refuses text longer than its bound (256 MiB for a
+  document, 16 MiB for an operation envelope) before parsing it, and within
+  that bound builds every list the text holds. A validation compares each
+  list and string with its constant in `limits` before visiting its items
+  and reports at most 32 violations. Its work is linear in the size of the
+  value plus what it indexes of the schema: the first lookup of a field or
+  of a class in a call builds the map from id to item for the whole field
+  list or class list, and the first check against one field's options or
+  target kinds, or one class's attributes or geometry types, builds a set
+  for that field or class alone. Each is built at most once per call.
+- **An operation is at most 16 MiB of text.** Create, delete and restore
+  carry the whole annotation, mask included, so a mask of more tiles than
+  fit in one envelope cannot travel as one of them: about 2,000 tiles at the
+  longest payload, an area near 2,900 by 2,900 pixels, where a mask may hold
+  262,144. A full-frame mask at depth 8 on a large image is past it.
+- **Redaction boxes are not part of the model.** They stay in
+  `src/redactions.rs`, outside the model, its operations and every export.
+
+The fixtures under `crates/dcmview-annotation/tests/fixtures/` pin the wire
+format: `document.json` uses every member, and `operations.json` holds one
+envelope per operation with its queue keys. They are written by hand; a new
+member is added to them in the change that adds it.
+
+`cargo run -p dcmview-annotation --example generate_annotation_model`
+rewrites the generated TypeScript and JSON Schema, and `--check` fails when
+either is stale. The crate's tests make the same comparison, so the `core`
+profile catches drift; the frontend type check compiles the generated
+TypeScript.
+
+## Annotation Store
+
+A session's annotations are records of the annotation model, held by a store
+and changed only by the model's operations
+(`docs/design/annotation-model.md` 7.3, 7.4, 9; `docs/design/seams.md` 8, 9).
+The EMBED-style endpoints and the `--annotations` CSV are a view of the same
+records and read and write the bytes they always did.
+
+```mermaid
+flowchart LR
+    ops["POST /api/annotations/ops<br/>one OpEnvelope"] --> service
+    embed["GET, PUT /api/file/{index}/annotations<br/>GET /api/annotations/export.csv"] --> service
+    csv["--annotations file<br/>annotations.rs, dcmview-adapters"] --> service
+    documents["GET /api/annotations/export.json, export.jsonl<br/>GET /api/annotations/import"] --> service
+    service["server/annotations.rs<br/>settle keys, translate shown keys"] --> registry["FileRegistry<br/>ensure_key, key_status"]
+    service --> view["annotations/embed.rs<br/>ROI rows as records and back"]
+    service --> backend["AnnotationBackend<br/>MemoryBackend"]
+```
+
+### The Backend
+
+`AnnotationBackend` is what a store does, whatever holds the records:
+`snapshot` (the current records of some files), `apply` (operation
+envelopes, one result each), `export` (everything, as a `Document`) and
+`revision`. `MemoryBackend` is the only implementation: records in server
+memory for the session, nothing written anywhere. A backend addresses a file
+by its `FileKey` alone and never sees an index, a path or the registry; the
+caller says which keys exist and how large each file is.
+
+One envelope is one transaction:
+
+- **All or nothing.** An envelope changes everything it names or nothing. A
+  `Batch` is one envelope: its operations apply in order, each seeing the
+  ones before it, and the first that is refused refuses the whole batch and
+  leaves the store as it was.
+- **One result.** `ok` lists the new revision of every record and layer the
+  envelope changed. `conflict` holds what the refused operation should have
+  been based on. `invalid` holds the violations, with paths from the
+  envelope (`/op/ops/3/base_rev`).
+- **Idempotent by `op_id`.** An envelope whose `op_id` was applied before
+  returns the first result and changes nothing. The store remembers the
+  results of the most recent applied envelopes, at most 65,536 of them
+  (`REMEMBERED_OPS`) and at most 262,144 revision entries between them
+  (`REMEMBERED_REVS`), so what it remembers is bounded in bytes and not
+  only in number. An envelope it has forgotten, like one that was refused,
+  is judged again: for one that was applied that is a refusal (its
+  `base_rev` has passed, or its id exists), never a second application.
+- **Ordered.** The envelopes of one call apply in the order given, each its
+  own transaction; a refusal does not stop the ones after it. Two
+  transactions never interleave and no reader sees one half applied.
+
+Revisions come in two kinds. A record's or layer's `rev` is 1 when it is
+created, whatever the payload said, and rises by one with every operation
+that changes it, delete and restore included; an operation's `base_rev` must
+equal it. The store's own revision is the number of envelopes it has
+applied: it starts at 0 and is unchanged by a refusal and by a repeated
+`op_id`, so two reads at one revision saw the same records. An answer
+carries the revision its own transaction left, read under the store's lock,
+so two applied envelopes never report the same one.
+
+The store writes `created_by`, `created_at`, `modified_by` and `modified_at`
+itself, with the session's author (`user:<USER>`, else `user:local`) and its
+own clock; what a payload says, and the envelope's `actor` and `ts`, are
+advisory. A deleted record is kept with its id and revision, out of every
+snapshot, export and view, so a stale operation is a conflict and an id is
+never used twice; a restore brings back what the store kept, in its old
+place in creation order. A label that loses its value is kept the same way,
+and gets a value back only while its layer exists. Deleted annotations are
+kept whole, for a restore, up to 64 MiB together (`DELETED_BYTES`, counted
+as JSON); past that the oldest, in the order they were deleted, keep only
+their id and revision, and a restore of one of those answers `missing`
+while its id stays taken. A deleted layer and a label without a value keep
+no content either. What stays for the id of a dropped annotation or a
+deleted layer is within 2 KiB (`tests/raster_cost/annotations.rs` counts
+it); a label without a value also keeps its target. The number of ids is
+bounded only by the envelopes a session applies.
+Snapshots and the document list records in creation order.
+
+What the store checks beyond the model's `OpEnvelope::validate` (that the
+target exists and is at `base_rev`, that ids are new, that a layer exists
+and is empty before it goes, that the record a patch or a tile change leaves
+is still valid) is the table in the documentation of `MemoryBackend`. Every
+session starts with one layer, `default` ("Annotations"), which cannot be
+deleted, and holds at most 4,096 layers. A layer's `readonly` is advisory:
+the store does not refuse a write into a read-only layer. A session has no
+label schema yet, so the implicit one applies: one class, `roi`, and no
+label fields.
+
+**Cost.** A transaction costs time and memory in proportion to its envelope
+plus the things it names, each counted once however many of its operations
+name it, and never in proportion to the store. That holds for annotations,
+labels and layers alike: each is copied at most once per transaction, when
+it is first changed, so that a refusal can put it back, and later operations
+change it in place. An annotation that operations updated is validated once,
+in the state the envelope leaves it, after the last operation, deleted or
+not (a deleted record can be restored, so it must be valid too); a failure
+there refuses the envelope with the path of the last operation that changed
+the record. A layer knows how many records it holds. The store's lock is
+held for one transaction at a time, so another request waits for at most the
+work of one envelope, which is bounded at 16 MiB and 10,000 operations.
+`tests/raster_cost/annotations.rs` counts the heap a batch on a large
+annotation, layer and label holds.
+
+A record costs about a kilobyte: an imported ROI that became a record holds
+its file key, layer, class, author and two timestamps as text of its own,
+beside the rectangle. Rows that stay staged cost what they did as rows.
+
+### Keys
+
+Records hold settled file keys and nothing else
+([File Keys And The Catalog Cursor](#file-keys-and-the-catalog-cursor)).
+`server/annotations.rs` is the one place a request meets the store, and it
+keeps these rules for every door:
+
+- **A write settles the key first.** Before anything is written for a file,
+  `FileRegistry::ensure_key` settles its key, which may hash the file and
+  the files that share its UID; the write waits for that. A file that
+  cannot be given a key (its bytes, or those of the first file loaded with
+  its UID, cannot be read or have changed) is not written to: the request
+  answers `422 file_key_unavailable` and nothing changes.
+- **A read never hashes, and neither does a CSV import.** A file whose key
+  is not settled has no record, because no write got through for it, so a
+  read answers at once from `FileRegistry::key_status` and from the rows
+  the import staged. What the EMBED endpoints show and export costs what it
+  did before records had keys, whatever the size of the files. A document
+  import does hash: it makes records, so it settles the key of each file
+  it places and compares bytes with a reference that names them. A
+  document export hashes the annotated files of a masked session.
+- **Keys cross the wire in the session's form.** A key from a client is
+  resolved with `FileRegistry::file_for_shown_key` and a key sent back is
+  written with `FileRegistry::shown_key_of`. A masked session therefore
+  takes and gives keys built from masked UIDs, and a real UID names
+  nothing; the records still hold real keys.
+- **An operation is recorded on the file it was drawn on, or on none.** A
+  key the catalog shows may be provisional: files with one UID and one size
+  share it until they are compared, and `file_for_shown_key` can name only
+  the first of them. A key alone cannot say which file an operation is
+  for. So a request may carry, beside the envelope and outside the
+  annotation model, the catalog index of the file it was drawn on
+  (`?file=`; the viewer's page always sends it, as the EMBED endpoints
+  address a file by index). That file's key is settled and every key in
+  the envelope must be it, else `409 file_key_replaced` with nothing
+  applied; settling has by then given that file its own key in the
+  catalog, however many files shared the old one, so one look at the
+  catalog gives the key the operation goes through under. A request
+  without an index that names a `sop:` key whose UID more than one loaded
+  file carries is `409 file_key_ambiguous`, before anything is read
+  (`docs/design/annotation-model.md` 1.7).
+- **A shared key names the first file's bytes.** `sop:<uid>` is checked
+  against the first file loaded with that UID. When that file can no
+  longer be read or has changed, no file of the group gets `sop:<uid>`
+  that session, the readable ones included, and the
+  `422 file_key_unavailable` they get says that it is the first file that
+  failed. There is one way out, and it depends on what was asked: once
+  two other files of the group have both been hashed (each was asked
+  about, or viewed) and hold different bytes, the group is split, and
+  every file of it that can be read has the key of its own bytes from
+  then on. So a readable member is refused while it is the only one
+  hashed, or while every member hashed so far holds the same bytes, and
+  is given its content key once a member with other bytes has been
+  hashed. An unreadable file that is not the first costs only its own
+  key.
+- **The record an operation changes is on the file it names.** An update,
+  a tile change, a delete and a restore each name a file (`file`, or the
+  `file` of their snapshot) and a record id; when the record is on
+  another file the operation is a conflict and nothing changes. With
+  `?file=`, the file named is that one file, so a request for one file
+  cannot change a record of another. Byte-identical copies share one key
+  and count as one file in this.
+
+An operation that names a key no loaded file has is refused before the
+store sees it: `invalid`, `unknown_file`.
+
+### The EMBED Compatibility View
+
+`GET` and `PUT /api/file/{index}/annotations`,
+`GET /api/annotations/export.csv` and `--annotations` keep their shapes,
+statuses, messages and bytes. `tests/fixtures/embed-goldens/` freezes the
+bytes, and `tests/integration/embed_goldens.rs` compares them through the
+real binary.
+
+- **A ROI is a rectangle record.** `[ymin, xmin, ymax, xmax]` is the
+  rectangle `x0 = xmin`, `y0 = ymin`, `x1 = xmax`, `y1 = ymax` of class
+  `roi` in the default layer, every number as written. A row whose
+  `ROI_frames` is `[]` gives each ROI every frame; otherwise each ROI keeps
+  its list as written, order and repeats included, and an empty list for
+  one ROI stays empty.
+- **A file's view** is the live rectangle records under the file's settled
+  key, the rows the import read for the file first and then every other
+  record in creation order: `num_roi`, their rectangles (one off the pixel
+  grid rounded outward), and `roi_frames` empty when every record covers
+  every frame, else one list per record. Other geometries are not in it.
+  Rows the mapping read come back unchanged.
+- **Byte-identical files keep their own rows.** Such files share a key and
+  so a set of records. A record that an EMBED write made for one file (a
+  CSV row, a `PUT`) is bound to that file's index and shows in that file's
+  view alone; a record made by any other operation shows in the view of
+  every file with the key. Each path is exported as its own row.
+- **`PUT` is a diff, checked by the endpoint's own rule.** The list is
+  accepted or refused whole by `canonicalize_annotations`, exactly as
+  before, and by nothing else. The view's records are then matched to the
+  list by position and changed by one transaction: an update for each
+  position whose rectangle or frame scope differs, a delete for each record
+  past the end, a create for each ROI past the end. A record that does not
+  change keeps its id and revision, and saving what is shown is no
+  transaction at all. A read right after a save shows exactly the list the
+  save answered.
+- **A `PUT` replaces the file's ROIs whole.** The transaction carries the
+  view it was worked out from (`ViewCheck`: the ids and revisions it read),
+  and the store refuses it, under the same lock as the write, when the view
+  is no longer that; the save then reads the view again. Of two saves of
+  one file, the one applied last decides everything the view shows, and
+  ROIs of the other never remain beside it.
+- **The import stages rows; it does not make records.** After discovery the
+  CSV is read all or nothing as before, by the EMBED adapter's reader
+  ([Annotation Files](#annotation-files)), which reads a negative coordinate
+  as 0 and rounds one that is not whole. Its rows are then kept by file
+  index exactly as read (a box past the image edge, with no area or with
+  its corners out of order included), at the cost they had before the store
+  held records: a staged ROI is its coordinates and its frame list, within
+  256 bytes, and no file is read. A file's staged rows are what its view
+  shows and what the export writes for it, including a file that cannot be
+  given a key. They become records, authored `import:embed`, the first time
+  the file's key is settled and something reads its view or an operation
+  names it; a `PUT` replaces them instead. Staged rows are in no snapshot
+  and no document: a document export settles and stores them first
+  ([Annotation Files](#annotation-files)). EMBED reads wait for the CSV to be read; writes do not, and a file
+  the EMBED endpoint wrote to while the CSV was loading keeps what was
+  written.
+
+EMBED writes go through the store with `Checking::AsLoaded`: the store's own
+checks apply and the model's `validate` does not, because the EMBED rule
+admits values the model's would refuse. A native import writes the same
+way, after its adapter has checked every record
+([Annotation Files](#annotation-files)). Every other write is
+`Checking::Strict`.
+
+The export hashes nothing and writes one row per loaded file whose view
+shows a ROI, with the path as discovery recorded it, sorted by path: the
+byte order of the path as written, whatever order discovery found the files
+in (`docs/design/annotation-model.md` 12.11). It is one read: the staged rows under the import's lock, and
+the records with the store held still while every file's key state and
+view are read, so no row shows a write another row of the same export
+does not. A write waits only while an export is reading.
+`tests/raster_cost/annotations.rs` holds the import to its
+bytes per ROI.
+
+### Redaction Boxes Are Not In It
+
+`RedactionStore` keeps its boxes by file index with a revision of its own.
+It shares the ROI wire shape and `canonicalize_annotations` with the EMBED
+endpoints and nothing with the annotation store: a box has no file key, is
+changed by no operation, and is in no snapshot, document or export
+(`docs/design/annotation-model.md`, re-baseline amendment of 2026-10-05).
+
+## Annotation Files
+
+Reading and writing annotation files is the `dcmview-adapters` crate
+(`docs/design/output-adapters.md`; `docs/design/annotation-model.md` 8, 9).
+An adapter is code over the model: it reads the `Read` or writes the `Write`
+it is handed and learns about files only from the context its caller fills,
+so the viewer and any other consumer of the crate get the same bytes.
+
+| Adapter id | Reads | Writes |
+|---|---|---|
+| `embed` | EMBED ROI CSV | EMBED ROI CSV |
+| `native` | a `dcmview.annotations` document as JSON, and its JSON Lines form | the JSON document |
+| `native-jsonl` | | the JSON Lines form |
+
+`Registry::builtin` holds them; `Registry::sniff` says which importer the
+start of a file is for.
+
+### What Every Adapter Keeps
+
+- **Input is untrusted.** An importer never panics on its input, reads it
+  within the fixed bounds of `dcmview_adapters::limits`, allocates only for
+  what it has read and never from a count the input states, and does work
+  in proportion to the input. Past a bound the import fails; nothing is
+  truncated.
+- **An import is all or nothing.** Invalid data on a record that matched a
+  file fails the whole import. What matched no file is counted and left
+  out.
+- **Nothing is silent.** Every import and export answers with a `Report`:
+  the adapter, counts, and one entry for each kind of loss and warning with
+  how often it happened and the first 16 places.
+- **No text of the input leaves in a report or an error.** Both are fixed
+  codes and words, numbers and row numbers: never a path, a file key, a
+  UID, a record id or a parser's message that quotes what it read. They can
+  be shown, logged and sent in a masked session.
+- **An export changes nothing** and gives the same bytes for the same
+  document and context.
+
+| Bound | Value |
+|---|---|
+| One CSV record, its line terminator included | 16 MiB |
+| Rows of a CSV | 16,777,216 |
+| ROIs of one row | 65,536 |
+| Frames of one ROI | 65,536 |
+| A JSON document, and the first line of a JSON Lines file | 256 MiB |
+| One record line of a JSON Lines file | 16 MiB |
+| Files of a document | 1,048,576 |
+| Annotations and labels of a document | 1,048,576 |
+| Layers of a document | 4,096 |
+| JSON values of one record, or of a document's header | 1,048,576, of which 131,072 objects and arrays |
+| Memory the records of one document are charged | 4 GiB in the library; in the viewer a quarter of physical memory, from 1 GiB to 4 GiB |
+| JSON nesting | 64 levels |
+
+### EMBED ROI CSV
+
+The format is rows: a path and the boxes on the file at that path. The crate
+has it at two levels. `embed::read_rows` and `embed::write_csv` are rows, for
+a caller that holds boxes by file; the viewer uses them, because it stages
+an import's rows by file index without settling a key and writes one row
+for each loaded path, byte-identical copies included. `EmbedAdapter` is the
+same reader and writer between rows and the rectangle records of a
+document, for a caller that holds records under file keys.
+
+**Writing.** The header `anon_dicom_path,num_ROI,ROI_coords,ROI_frames`,
+then one record per row sorted by path, each with compact JSON, written by
+`csv::Writer` with its default settings. These bytes are released
+behaviour and `tests/fixtures/embed-goldens/` holds them.
+
+**Reading.** The columns are found by name; `anon_dicom_path` and
+`ROI_coords` are required. A row whose path names no loaded file is counted
+and nothing else of it is read. A matched row must be well formed (its JSON,
+`num_ROI`, one frame list per box, frame indices below the file's frame
+count, no second row for a file), and one that is not fails the whole
+import, with the messages the import has always given, without the parser's
+own text after them.
+
+**Lenient coordinates** (owner decision of 2026-10-08, EMBED parity
+amendment of `docs/design/annotation-model.md`): a negative coordinate is
+read as 0, and one that is not a whole number is rounded to the nearest
+pixel, halves away from zero. Nothing else is changed: a box that reaches
+past the image edge, has no area or has its corners out of order is kept
+exactly as read. The report lists each such box by row and position
+(`negative_coordinate`, `non_integer_coordinate`, `out_of_range`,
+`zero_area`, `corners_out_of_order`, `frames_empty`).
+
+**Bounded.** The reader counts the bytes it takes for the record it is
+reading and refuses one past its bound without reading it whole. A matched
+row's boxes and frame lists are counted from the row's text before their
+values are kept, so a row of millions of empty boxes costs no more than its
+text.
+
+### The Native Formats
+
+A JSON document is one `dcmview.annotations` document, compact. The JSON
+Lines form holds the same document a record a line: a header (the document
+with its four lists empty), then `{"file": ...}`, `{"layer": ...}`,
+`{"annotation": ...}` and `{"label": ...}` lines, then an end line that
+counts them, `{"end":{"files":2,"layers":1,"annotations":5,"labels":0}}`.
+`NativeJson` reads both, and a document written over several lines,
+without being told which it is, and passes over a UTF-8 byte order mark
+before either.
+
+The end line is what tells a whole JSON Lines file from one that was cut
+off at a line. A file with record lines and no end line, or with an end
+line whose counts are not the lines read, is refused whole
+(`ImportError::Truncated`), and a line after the end line is malformed. A
+header alone, a text on one line that holds no record, is a file cut off
+after its first line and is refused the same way, with or without a line
+feed after it.
+
+An export refuses a document with more files or records than an import
+reads (`ExportError::TooMany`), so nothing is written that cannot be read
+back for its size. The bounds are a value (`Limits`, `Limits::DEFAULT` in
+the table above) that both contexts carry.
+
+The import is strict: every file reference, layer, annotation and label
+must pass the model's `validate`, against the label schema in force where
+the records will live (a schema the document carries is not taken, and the
+report says so). A failure names the row and the first rule broken.
+
+**A box the EMBED import kept as read.** A record that was loaded
+leniently is held unchanged, and a native export writes records as they are
+held, so a document can hold a rectangle the strict check refuses. The
+native import takes it back as it is: a rectangle whose only violations are
+`out_of_bounds`, `degenerate` or `frames_empty` is kept as read and
+reported (`out_of_range`, `zero_area`, `corners_out_of_order`,
+`frames_empty`). Anything else that breaks a rule, and any other geometry
+that does, fails the import. A document the viewer wrote can therefore be
+loaded by it, and nothing is changed or dropped without a line in the
+report.
+
+Each file of a document is placed through the caller's `FileResolver`,
+which finds candidates by key, then SOP Instance UID, then path, and
+answers with one it has compared with the reference. A file that matches
+nothing has its records counted as unmatched; one whose candidates hold
+other bytes or another key (`evidence_conflict`), could not be read to
+compare (`file_unverified`), have another size (`size_mismatch`) or have
+no key is refused and its records counted as refused. Every other record
+is handed on under the key the resolver gave.
+
+### In A Session
+
+`server/annotations.rs` and `annotations.rs` hand the adapters the
+session's files and store.
+
+- **`--annotations FILE`** is an EMBED CSV or a native document. The start
+  of the file decides (`AnnotationInput::from_path`): a file whose first
+  byte after an optional byte order mark and whitespace is `{` and whose
+  first 4,096 bytes hold `"dcmview.annotations"` is native, and every
+  other file, other JSON included, is read, and refused with exit status
+  1, as the EMBED CSV it always was. `--annotations-format embed|native`
+  forces one. An EMBED header is checked before the viewer serves; a native
+  file is read after discovery, and what is wrong with it fails the import
+  with the viewer serving.
+- **The CSV export** is `embed::write_csv` over each file's EMBED view.
+- **A document export** (`GET /api/annotations/export.json` and
+  `export.jsonl`, `export_native`) waits for the import, takes the
+  session's one export permit, settles and stores the staged rows of every
+  file that has some, reads the store once (`AnnotationBackend::export`),
+  adds one `FileRef` for each file key a record names, and writes it. Only
+  a settled key is in a document, so a file with staged rows that cannot be
+  given a key fails the export (`422 file_key_unavailable`): rows are never
+  left out silently. While a file is hashed the request waits. A `FileRef`
+  describes the loaded file that has the key, of several the one whose
+  path sorts first, and
+  its `digest` is set when the registry has computed one. Its
+  `pixel_digest` lists the [pixel digests](#pixel-digests) the session
+  holds for the frames of the files with that key, `null` for the others
+  and nothing when it holds none, read from the table without decoding a
+  frame; its `frame_source` names, for an image file, the page of each
+  frame. **A document
+  never holds an absolute path** (`DocumentPaths`): every file's path is
+  made absolute against the working directory, and a `path` is the
+  components below the deepest directory that holds every loaded file,
+  with `/` between them. When that directory is the filesystem root, a
+  drive, or a directory above the home directory, the files share no
+  folder worth naming, and each is named by its file name alone. The copy
+  and the writing run on a blocking thread. A session that holds more
+  files or records than a document may answers
+  `422 annotation_export_too_large`.
+- **A native import** (`import_native`) reads the document on a blocking
+  thread and places its files with the session's resolver. **A record is
+  placed on a loaded file only when that file was compared with the key
+  its reference names it by.** Candidates are found by the key as the
+  session shows keys, then by the UID in the same form (every loaded file
+  that carries it), then by the path, then, for a reference with a
+  content key, by content. A relative path names every loaded
+  file whose own path ends with all of its components (`PathSuffixes`; one
+  component is enough), so a document finds its files when a subfolder or
+  a parent of the exported folder is loaded, or the folder was moved; a
+  path that names more than 64 loaded files is too vague and names none,
+  and so is a UID that more than 64 loaded files carry; a reference that
+  nothing else finds is then refused as `file_ambiguous`.
+  By content, a reference finds the loaded files of its byte size, rows,
+  columns and frame count whose bytes have its digest, of its format and
+  SOP class: a copy at a path the document does not name, or any file of
+  a masked session's document. That hashes, once for the import, every
+  loaded file of that size and shape the registry has no digest of, and
+  no other file. A later step is looked up only when the earlier ones
+  gave no file that passes, and a path lookup compares with a few files
+  and those it names (`PathSuffixes` sorts the paths once), so matching
+  is linear in the references and their candidates however many files
+  share a name. Each
+  candidate in turn has its key settled; for a `sop:` reference that key
+  must be the reference's, and for a `b3:` reference the file's bytes are
+  hashed, if they have not been, and their digest must be the key's.
+  A `sop:` reference whose bytes were not compared (it states no `b3:`
+  digest) is also held to the [pixel digests](#pixel-digests) both sides
+  have: a frame the document states and the session has decoded on a
+  loaded file with the candidate's key must have the same digest, or the
+  candidate does not pass. Nothing is decoded for it. The
+  first candidate that passes takes the records. When none passes the
+  reference is refused: `file_unverified` when a candidate could not be
+  read, `evidence_conflict` otherwise. A UID or a path never places a
+  record by itself, and only the candidates of a reference are hashed. The
+  import's state is `loading` until this has ended. The records are then
+  applied as **one
+  transaction** (`Checking::AsLoaded`, author `import:native`): layers the
+  document has and the session lacks are created, a record keeps its id,
+  layer, class, geometry, frames, attributes and extensions, and the store
+  stamps it and gives it `rev` 1. A record or layer id the session already
+  holds refuses the whole document, and nothing of it is in the session. A
+  failed import leaves the store failed, as a failed CSV does.
+- **`GET /api/annotations/import`** answers at once with where the import
+  stands (`none`, `loading`, `ready`, `failed`), its report or its message.
+
+**Rows of byte-identical files.** Files with the same bytes share a key
+and each shows the rows written for it. A document says which: a record
+that is one copy's row carries
+`"extensions": { "embed": { "row_of": <path>, "imported": <bool> } }` when
+more than one loaded file has its key. An import takes the member out and
+binds the record to the loaded file that path names and that has the
+record's key; when that copy is not loaded the record is left out and
+counted as unmatched. **A masked document does not say which copy.**
+It holds no path, byte-identical files differ in nothing else,
+and the order discovery finds files in differs from run to run, so a place
+in that order would name another file each time. It writes
+`"copies": <n>` in place of `row_of`: the row was on one of `n` copies.
+An import binds such a record to the loaded copy whose path sorts first,
+which is the same in every run, and counts it as a
+`copy_placement_not_kept` loss in its report. For the same reason nothing
+a document says depends on the order files were found in: a reference
+describes the copy whose path sorts first, and `row_of` is a path. A record without the member shows
+on every copy. Settling one file's key settles every loaded file that
+carries its UID, so when an import has ended what such a copy shows does
+not depend on which copies were looked at; a copy without a UID shows a
+record once it has been hashed.
+
+**What a session holds for it.** One document is built at a time: a
+second export waits, holding nothing, until the first one's text is
+written, and a client that reads its download slowly holds up no other
+export. An export holds a copy of the records and their text once. The
+texts still being sent are bounded together: 512 MiB
+(`DOWNLOAD_BUDGET_BYTES`), or one text of any size when no other is being
+sent; a document that would pass it is dropped when built and answered
+`503 annotation_export_busy` with `Retry-After`.
+
+**What a document import holds, from the file to the store,** is at most
+5 GiB for any input: a budget for what its records are charged
+(`Limits::held_bytes`, at most 4 GiB), 256 MiB for building one record or
+the header before it is charged, and the text in its buffer (up to three
+times a JSON document of 256 MiB; up to three times one line of a JSON
+Lines file). None of these depends on what the text is made of, and the
+budget is not a multiple of the text: the model is expensive for small
+things (a map of one member is a node of several hundred bytes; a mask
+of one tile a frame is charged many times its text), so a multiple would
+refuse documents the viewer itself wrote. The library's number
+(`Limits::DEFAULT`, 4 GiB) is set from the other bounds: 1,048,576
+rectangles on 1,048,576 files, the largest session of the common kind
+they allow, are charged 3.1 GiB. **The viewer's budget follows the
+machine:** a quarter of its physical memory, not less than 1 GiB
+and not more than 4 GiB, and 4 GiB where the memory is not read
+(`default_document_budget`, set on the store at startup), because a
+document charged all of it is held for the session.
+
+Beside the document, an import holds its indexes of the loaded files (by
+UID, by size and by path) while it runs: a few hundred bytes for each
+loaded file, which grows with the session and not with the document.
+
+- **Charged, not predicted.** After each file reference, layer,
+  annotation and label is built, the reader adds its charge (`held`: what
+  the item holds, counted on the item by the lengths of its strings and
+  lists and the number of its members, and the room an import needs for
+  it on the way into the store) and stops past the budget.
+- **Export and import agree, on every bound.** The writers hold a
+  document to what a reader holds it to, with the reader's own
+  functions: the numbers of files and records, the charge, and for each
+  record and the header the JSON values, the objects and arrays, the
+  depth, and in the JSON Lines form the length of each line. A session
+  past one is refused that export (`422 annotation_export_too_large`,
+  naming the bound and its value). A document is written exactly when it
+  would be read: whatever a session can export in a form, the same viewer
+  can import. The forms do not have the same bounds (a JSON document has
+  one on its whole length, a JSON Lines file on each line, and a record
+  stands at another depth in each), so a session can fit one form and
+  not the other.
+- **Nothing is copied.** The reader's lists grow by a quarter;
+  placement makes each per-record structure once at its final size; and
+  the store takes the import's batch an operation at a time and moves
+  each record in, on the thread that read it
+  (`MemoryBackend::transact_owned`), with room for the whole batch made
+  first. The charge of an annotation covers the moments it is in two
+  lists at once.
+- **The transient is bounded before parsing.** One pass over the text
+  holds a record, or the header, to 1,048,576 JSON values, 131,072
+  objects and arrays, and 64 levels, which are set from the model's
+  largest mask and polygon.
+
+Reading a CSV holds the rows it hands on, within 400 bytes a ROI.
+`tests/raster_cost/annotations.rs` counts the CSV read for 200,000 ROIs;
+imports 200,000 rectangles in both forms and hostile texts of every kind
+of record, each under a budget of exactly its charge and of one byte
+less, and holds the peak to the charge; builds the costliest records
+within the transient; and compares what is counted with the allocator.
+
+**Masked sessions.** The masks of a session are drawn for one
+process, so a key or a UID it shows names nothing anywhere else, and a
+real one must not leave it. A masked session shows a file as `File N`
+without its folder, because folder and file names often say whose the
+files are, and its document says no more than the session shows. It
+names each file by its content only: `key` and `digest` are the `b3:`
+digest of the file's bytes (annotated files are hashed for the export,
+and one that cannot be read fails it with `422 file_key_unavailable`),
+`path` is `File N`, the three instance UIDs and the patient id are
+absent, every `user:` author is written `user:local`, and the document's
+`extensions` say `"dcmview": { "masked": true }`. What a masked document
+holds of a file is its content digest, byte size, SOP class, format,
+rows, columns and frame count, the pages of its frames and the pixel
+digests of the frames that were decoded, and of a record its id, timestamps, layer,
+class, geometry, attributes and extensions. A pixel digest says one
+thing the content digest does not: it is equal for every file that holds
+the same samples, whatever its headers, so two masked documents, or a
+masked document and a file, can be told to show the same pixels. A label whose target is a
+patient, study, series or folder is left out and counted as a
+`labels_dropped` loss in the export's report: such a target is text a
+client chose from what the masked session showed, or a folder path. Such a document loads into
+any session, masked or not: each reference finds its file by content. An
+import into a masked session finds candidates by a key or a UID in the
+form the session shows only, so a document that an unmasked session wrote
+is found by its paths and checked against the files' real keys. In a session that is not masked, a patient,
+study, series or folder label target is text a client chose and is
+written and read as it is held.
+
+Redaction boxes are in no document and no export.
 
 ## Lifecycle And Discovery Ownership
 
 Local startup follows a strict order:
 
-1. Validate the optional annotation CSV header.
+1. Decide the format of the optional `--annotations` file and validate an
+   EMBED CSV's header.
 2. Construct state and configuration.
 3. Bind `BoundServer`; an occupied explicit port fails before discovery starts.
 4. Spawn the owned discovery task.
@@ -710,15 +2570,18 @@ Local startup follows a strict order:
    on Unix, Ctrl+C and Ctrl+Break on Windows) before printing the URL, then
    serve until a stop signal, external failure notification, or idle timeout.
    The VS Code bridge client uses the same listeners.
-6. Request discovery cancellation and await the discovery task, which includes
-   the loader's `spawn_blocking`/Rayon work, before returning.
+6. Stop background key hashing (`FileRegistry::stop_key_work`), request
+   discovery cancellation and await the discovery task, which includes the
+   loader's `spawn_blocking`/Rayon work, before returning.
 
 The loader sends one event per inspected candidate through a bounded channel.
 The discovery task drains that channel while awaiting the loader, updates
 `FileRegistry` (files, counts, and the bounded discovery ledger), and marks the
 scan complete on every exit path, including a panic. It then streams the annotation CSV once on a cancellable
-blocking worker, matching only loaded absolute path keys and committing valid
-rows atomically without overwriting viewer edits. Annotation failures remain in
+blocking worker, matching only loaded absolute path keys, and stages the rows
+of a CSV that read whole in the annotation store
+(`server::annotations::import_embed_rows`), reading no file for it and
+without overwriting viewer edits. Annotation failures remain in
 the annotation store and do not terminate image viewing. Scan and no-files
 failures produce typed outcomes and cancel the server's shutdown token.
 Normal server exit during incomplete discovery or annotation loading requests
@@ -726,7 +2589,9 @@ cancellation and remains a successful process outcome.
 
 `RequestActivity` tracks in-flight requests and a monotonic idle baseline.
 Idle timeout does not start until the scan has finished,
-and graceful shutdown lets in-flight requests drain. The browser task
+and graceful shutdown lets in-flight requests drain; those waiting for
+decode capacity are answered `503 decode_busy` first ("Decode Admission",
+Shutdown), so the drain waits only for decodes that are running. The browser task
 is owned by `BoundServer::serve` and cleaned up on every normal return or
 error.
 
@@ -737,18 +2602,30 @@ join guarantees after hard task abortion.
 
 ### Process Seams For A Supervising Parent
 
-- `--cache-budget BYTES` sets one total for the display, raw and overlay
-  frame caches. `pixels::CacheBudget` splits it in the proportions of the
-  defaults (256, 384 and 64 MiB), and `AppState::with_cache_budget` builds
+- `--decode-memory BYTES` sets the decode memory budget
+  (`DecodeLimits::with_memory`, `AppState::with_decode_limits`); without it
+  the budget is `DecodeLimits::default_for` the machine's physical memory. The local
+  viewer always starts with a limited scheduler; `DecodeScheduler::new`,
+  which has no budget, is for tests of the permit rules.
+- `--cache-budget BYTES` sets one total for the display, raw, overlay and
+  thumbnail caches. `pixels::CacheBudget` splits it in the proportions of
+  the defaults (256, 384, 64 and 64 MiB), and `AppState::with_cache_budget` builds
   the caches from it before the router exists. Tag, semantic and value
   mapping caches are bounded by entry count and are not part of the budget.
+  A cache bills an entry the length of its body, and a body holds exactly
+  that: the pixel service passes every result through
+  `FrameBody::compact` before it is cloned for the cache and the requests,
+  which gives back the spare room of the buffer it was encoded in.
+  `AppState::cached_bytes` reports what each cache bills, and
+  `tests/raster_cost/caches.rs` compares it with the heap the entries hold.
 - `--exit-with-parent` (hidden) treats end of file on stdin as a stop signal
   and shuts down gracefully, so a child does not outlive a parent that died
   without signalling it. It only works when the parent passes a pipe and
   keeps its write end open: a closed or null stdin is an immediate end of
   file.
 - A request carrying `X-Dcmview-Background: 1` is served and drained like
-  any other but does not move the idle clock that `--timeout` reads. The
+  any other but does not move the idle clock that `--timeout` reads. It does
+  not select a decode class; the endpoint does. The
   viewer's own polling does not send it in a standalone launch, so
   `--timeout` behaves there as before.
 
@@ -785,6 +2662,7 @@ The supported development baselines are Rust 1.88+, Node.js 20.19+, and Python
 | `e2e` | Process or integration changes | `core`, then a real debug binary, Python wrapper binary integration, debug-binary HTTP smoke, and VS Code Electron integration, which opens a fixture through the extension's custom editor and terminal shim against the debug binary. |
 | `compatibility-artifact` | Stored current corpus integration | Builds only the dcmview binary, verifies an explicitly supplied producer container (`DCMVIEW_COMPAT_CORPUS_ROOT`), and runs `scripts/compatibility/run.py` against every verified DICOM payload. It never checks out or builds the generator and fails when no container is supplied. It is run locally only; no CI workflow runs it. |
 | `corpus` | Stored generated corpus, unit and integration level | Builds frontend assets and runs every ignored lib and integration test except the remote-fixture ones, with `DCMVIEW_PREPARED_CORPUS` set from `--corpus PATH` or the environment. Those tests read cases from a local dicom-test-suite corpus, either one flat `all` corpus or per-profile `core`/`extended`/`extended-deflate` roots; the ICC test's JPEG XL and JPEG 2000 re-encodings run only when their per-profile roots exist. It fails before building when the corpus is unset or not a directory, never generates one, and no CI workflow runs it. |
+| `timing` | Startup and discovery timing against the released baseline | Builds frontend assets, then runs `scripts/startup_timing.py run --enforce`: release builds of the working tree and of the tag `v0.4.0` (built once from `git archive` and kept under `target/timing/`), timed on synthetic folders it writes, failing when the candidate's best run is past the baseline's by more than 5% plus 3 ms. Local only: it is in no aggregate profile and no CI workflow runs it. See `docs/development.md`, "Startup And Discovery Timing". |
 | `external` | Opt-in upstream DICOM compatibility | Builds frontend assets and runs only ignored integration tests behind `remote-fixtures`; those tests may download or populate the `dicom-test-files` cache. It is separate from `e2e`. |
 | `remote-ssh` | Remote-server workflow | Copies a manylinux wheel (`DCMVIEW_REMOTE_WHEEL`, else one built with `scripts/build_linux_wheel.sh`) into a throwaway SSH server container built from `tests/remote/Dockerfile` (Ubuntu 22.04 by default, `DCMVIEW_REMOTE_BASE_IMAGE` overrides), then reaches it only with the real `ssh` client. `python/tests/remote_ssh_integration.py` launches the bundled binary, the console scripts, `python -m dcmview_py` and `view(block=False)` over SSH; forwards what the printed hint names, over TCP and `--unix-socket`; checks that the page shell is public and the API needs the token; checks in headless Chromium that the forwarded `#token=` link paints a frame; and checks that Ctrl+C, `--timeout` and a dropped interactive session stop the server. Needs Docker, `ssh` and Python Playwright with Chromium (`--install` installs Playwright). CI runs it on the wheel the packaging job built, and `release.yml` runs it on the tagged wheel before publishing. |
 | `vscode-remote-ssh` | VS Code Remote-SSH workflow | Uses the same container and wheel as `remote-ssh`, plus a linux-x64 VSIX (`DCMVIEW_REMOTE_VSIX`, else one packaged around the wheel's binary with the release scripts). `tests/remote/vscode_remote_ssh.mjs` downloads VS Code (`DCMVIEW_VSCODE_REMOTE_VERSION`, default `stable`) and the Marketplace Remote-SSH extension into throwaway directories and connects once so the VS Code Server installs; the VSIX then goes in with that server's CLI. Playwright's Electron driver then opens the fixture in the custom editor and runs `dcmview` and the wheel's `dcmview-py` in remote integrated terminals. Each flow passes only when the viewer frame inside the webview, loaded through VS Code's port forward with its `#token=`, paints. After all editors close, no dcmview may be left on the remote. Needs Node, a display (`xvfb-run`), and network access for VS Code, Remote-SSH and the VS Code Server. `release.yml` runs it on the tagged wheel and linux-x64 VSIX before publishing. |
@@ -799,22 +2677,143 @@ installation and VS Code Electron integration can also use network/cache state;
 
 ### What Each Layer Covers
 
+- The annotation model's tests (`crates/dcmview-annotation/tests/`) go
+  through its public API only: the two hand-written fixtures round-trip
+  unchanged, table rows break one rule each and name the violation code
+  expected, hostile and oversized input must come back as an error, and the
+  committed TypeScript and JSON Schema must equal what the model renders.
 - Discovery lifecycle tests drive the real loader over copies of committed
   fixtures for completion, cancellation, annotation failure, no-files, and
   all-filtered cases.
+- File key tests are in four places. `src/keys/table.rs` tables the key
+  rules with no filesystem, each group shape in every registration order.
+  `src/keys/hash.rs` hashes real temporary files, including ones that change
+  under it or are swapped for a FIFO at the moment they are opened.
+  `tests/key_table_memory.rs` is its own binary with a counting allocator
+  and bounds what the table holds per file. `tests/integration/file_keys.rs`
+  runs the real loader into a registry and reads the catalog, the cursor,
+  the frame header and key replacement as a client does; it bounds hashing
+  by `FileRegistry::key_stats` (files, bytes and slices read), never by
+  elapsed time, takes a `DecodeScheduler` of its own to hold the permits
+  hashing waits for, and waits on the registry's change signal instead of
+  sleeping. Two seams exist for what no outside call can arrange: the
+  registry's `after_page` hook (the catalog handler's one-read rule) and the
+  worker fault of `server/catalog/keys.rs` (a worker that panics).
 - `BoundServer::bind` is separate from `serve`, so bind ordering and occupied
   ports are deterministic.
 - `server::router(AppState)` supports in-process `axum-test` coverage for the
   complete HTTP boundary.
 - Generated DICOM fixtures exercise real discovery and codec paths. Integration
   tests do not mock the DICOM layer.
-- Discovery builds each file's catalog metadata in one parse (`loader/entry.rs`
-  `read_discovery_header`): it builds the metadata object from the parser's
-  tokens up to the earliest standard pixel-data tag, exactly as
-  `OpenFileOptions::read_until(FLOAT_PIXEL_DATA)` would, then continues the
-  same parse to the data set's own top-level pixel element (deflated data sets
-  through their inflating adapter). Pixel elements nested in sequences, such
-  as an Icon Image Sequence, do not count. It does not retain integer, float,
+- Raster discovery tests (`tests/integration/raster_discovery.rs`) write small
+  PNG, JPEG, TIFF and WebP files with the linked encoders, run the real
+  loader over them and assert on `/api/files`; the expected values are the
+  ones the files were written with.
+- Raster decode tests (`tests/integration/raster_decode.rs`) take a file per
+  supported layout, written from sample values chosen in the test
+  (`raster_cases.rs` and `raster_files.rs`: the linked encoders, hand-written
+  PNG chunks and TIFF directories, and a few embedded files encoded by other
+  tools from flat colours), and compare the raw and display frames with
+  those values, so no expected pixel is one a decoder returned.
+- Raster metadata tests: `tests/raster_cost/tags.rs` reads trees through
+  `read_raster_tags` from files written with known values (hand-written
+  directories, chunks, segments and profiles in `raster_tag_files.rs`, and
+  four small files written by Pillow) and from hostile ones, on the counted
+  source and allocator; `tests/integration/raster_tags.rs` serves trees
+  through the router, selects from them, and plants a string in every place
+  a file can hold text to show that a masked session returns none of them
+  from any endpoint.
+- Raster cost tests (`tests/raster_cost/`) call `decode_raster_frame` on
+  honest, hostile and damaged files and state what a decode may cost in
+  things that are counted, never timed: the reads and bytes of the source it
+  is given, and the heap the decoding thread holds. They are a test binary
+  of their own because they run on a counting allocator
+  (`tests/raster_cost/heap.rs`, per thread, so the tests still run in
+  parallel), which the JPEG 2000 decoder exercised by the main integration
+  binary does not tolerate in a debug build. `admission.rs` there runs every
+  path of the pixel service (raw, display, preview, thumbnail, presentation
+  layer, with and without redaction boxes) for the same files and for DICOM
+  fixtures on a runtime whose threads are counted together, and holds the
+  heap of each to the bytes it reserved, and the heap of many at once to
+  the budget. `overlays.rs` there does the same for a legend and for every
+  kind of overlay, through the API, on objects and displayed frames enlarged
+  from the committed fixtures and filled with samples that do not compress.
+- Reduced thumbnail tests (`tests/integration/reduced_thumbnails.rs`) take
+  thumbnails of honest JPEG 2000 and JPEG frames written by other encoders
+  (`tests/fixtures/reduced-decode`), one for each layout the reduced paths
+  decode: bit depths, signed samples, MONOCHROME1, colour with and without
+  a transform, tiles, precincts and tile-parts, baseline and progressive
+  JPEG, chroma subsampling, odd sizes, several frames. Each thumbnail must
+  have the size its entry gives it, say which decode made it, and match the
+  default display frame shrunk within a stated tolerance, edge rows and
+  columns included. The same file holds the rule's table
+  (`thumbnail_reduction`), the frames that are decoded in full (grayscale
+  with no stored window or in `full_dynamic`, redaction boxes, no levels,
+  an image off its grid origin along either axis, the lossless process), and frames with their bytes replaced or cut
+  off, for which the thumbnail endpoint must answer no worse than the
+  display endpoint and cache no failure. No frame an encoder writes
+  fails the reduced JPEG 2000 decode and passes the full one, so a unit
+  test in `pixels/jpeg2000.rs` replaces the attempt to show the full decode
+  that follows it. `tests/raster_cost/reduced.rs`
+  counts the heap of reduced JPEG thumbnails, of failed attempts followed by
+  a full decode, and of the full decode of the same frames against the one
+  reservation; the JPEG 2000 decoder cannot run on the counting allocator,
+  so for it `tests/codestream_cost` shows that a frame which disagrees with
+  its header is refused before a reduced decode exactly as before a full
+  one.
+- Codestream tests state the same for compressed DICOM frames.
+  `integration::codestream_agreement` decodes honest codestreams written by
+  encoders the viewer does not link (OpenJPEG, libjpeg, DCMTK, libjxl; the
+  bytes are in `tests/integration/codestream_files.rs`) under headers that
+  differ from them only as the standard allows, and requests frames that
+  declare another image at every endpoint that decodes one.
+  `tests/codestream_cost/` reads the headers of honest, cut, edited and
+  random frames, checks `codestream::agrees` against its accept table row by
+  row, and serves frames a few hundred bytes long that declare images of
+  millions of pixels, asserting the heap the whole process holds while each
+  is refused. A JPEG XL frame that libjxl wrote with an embedded colour
+  profile is refused at every endpoint in the first and under the same heap
+  bound in the second, which also listens to what the decoder's crates log
+  to tell that the decoder was never started on it, and decodes a frame of
+  a larger image under a small entry to count what the allocation limit
+  alone holds the decoder to. Frames libjxl wrote in the box container,
+  with metadata boxes and with JPEG reconstruction data, decode there
+  within their entry's allowance and to the samples of the bare codestream,
+  and the header of a frame longer than the header read is read holding no
+  more than that read. Its counting allocator counts every thread,
+  because decoders run on blocking threads, so its tests run one at a time;
+  it decodes no honest JPEG 2000 frame, for the reason given above.
+- Decode admission tests (`tests/integration/decode_admission.rs`) hold the
+  scheduler to its rules through its own account of itself
+  (`DecodeScheduler::load` and `load_when`), never through time: the bytes
+  reserved never pass the budget, thumbnails keep to their half, a full
+  queue answers 503 with `Retry-After` on the decoding endpoints and on no
+  other, a frame too large for the budget answers 422 and stays renderable,
+  a permit comes back however its holder ends, and a queued decode whose
+  requests have all been dropped leaves the queue. Overlays and legends are
+  held to the same rules: each reserves its estimate once on a viewer with a
+  single permit, requests for the same one share a computation, one over
+  the budget answers 422, and one nobody waits for leaves the queue. On Unix a decode is held
+  in place by a pipe put where its file was, to show that a request dropped
+  after its decode began stays counted until the decode ends.
+- Data set cost tests (`tests/raster_cost/data_sets.rs`) call
+  `read_for_catalog` on files written element by element
+  (`data_set_files.rs`): values declared past the end of the file, bulk
+  values the catalog has no use for, sequences nested to and past the limit,
+  and deflated data sets that inflate, in bytes or in elements, past their
+  budget. They count the bytes read at the source and the heap at the
+  allocator, then run the real loader over the same files to show that it
+  lists and refuses them as the read does. `data_set_tags.rs` does the same
+  for `read_for_tags` (pixel data, bulk values and long text in files of
+  megabytes) and asks `/tags` and `/tags/select` through the router on a
+  counted runtime, for each element shown by its length.
+- Discovery builds each file's catalog metadata in one bounded read
+  (`loader/entry.rs` `read_discovery_header`, "DICOM Data Set Reads"): the
+  metadata object holds what
+  `OpenFileOptions::read_until(FLOAT_PIXEL_DATA)` would build, less the
+  values the limits leave out, and the same read goes on to the header of
+  the data set's own top-level pixel element (deflated data sets through
+  their inflating adapter). It does not retain integer, float,
   or double-float pixel values in the catalog. Selected candidate FRACTIONAL
   SEGs additionally receive the bounded sample inspection described above; this
   is one pixel-stream pass per object, not a header parse per frame.
@@ -847,7 +2846,39 @@ installation and VS Code Electron integration can also use network/cache state;
 - `tests/fixtures/embed-goldens/` freezes the EMBED-style ROI CSV bytes: each
   hand-written input is loaded by the real binary with `--annotations` over
   copies of committed fixtures, and the export must equal the expected file
-  byte for byte, with rows in any order (Unix only).
+  byte for byte, rows in path order (Unix only). Each case also states what
+  the import reports, and two more tests reload a session from its own
+  JSON and JSON Lines export and compare the CSV it then writes. The cases
+  go through the annotation store and the adapters, so they are also what
+  holds the EMBED compatibility view to the bytes it had before.
+- The adapters' tests (`crates/dcmview-adapters/tests/`) go through the
+  crate's public API with a small file registry of their own: the bytes
+  each format writes, what a lenient EMBED read changes and keeps with the
+  report it leaves, every way a matched row or a record fails an import,
+  the bounds (with an input that never ends, counted, to show how far it is
+  read), and the committed goldens and the model's document fixture mutated
+  a few thousand ways with a fixed seed. A word planted in every free text
+  of an input must be in no report and no error.
+  `tests/integration/annotation_documents.rs` covers the same formats as a
+  session serves them: a session written and read back, an import applied
+  whole or not at all, which file a record lands on, a masked session, and
+  an export for a file without a key.
+- `tests/integration/annotation_ops.rs` drives the store through
+  `POST /api/annotations/ops` and the EMBED endpoints together: an envelope
+  applied whole or not at all, revisions and stale operations, a repeated
+  `op_id`, the EMBED view of records made by operations, byte-identical
+  files, files whose key is hashed for the write or cannot be had, CSV rows
+  shown and exported without a file being read, an operation under a key
+  that is not one file's own, the model's size limits, and a masked
+  session's keys.
+  `tests/integration/annotation_store.rs` covers through `AnnotationBackend`
+  what no endpoint of a session without a label schema reaches: labels,
+  layers, mask tiles, snapshots and the document, what is remembered and
+  forgotten, what a refusal leaves behind, and what a delete may hide. A unit test in
+  `server/annotations.rs` puts a second save between a save's read and its
+  write. `tests/raster_cost/annotations.rs` counts, at the allocator, what
+  a batch on a large record holds, and what reading a CSV, both exports and
+  a native import hold for 200,000 ROIs.
 - Python unit tests isolate subprocess policy; `python-integration` adds the real
   binary. VS Code compile and Electron integration remain separate layers.
 - `scripts/compatibility/run.py --corpus-root` checks the real binary against
@@ -871,8 +2902,10 @@ installation and VS Code Electron integration can also use network/cache state;
   window/level, WSI positioning, cine, windowing, viewport transforms,
   file switching, and recovery after request errors.
 - `python/tests/test_check_profiles.py` locks the documented
-  `quick`/`core`/`e2e` composition and the exact independent `external` and
-  `corpus` commands without launching toolchains.
+  `quick`/`core`/`e2e` composition and the exact independent `external`,
+  `corpus` and `timing` commands without launching toolchains.
+  `python/tests/test_startup_timing.py` pins the timing threshold's
+  arithmetic and that binaries listing different files are not compared.
 
 ### Intentionally External Coverage
 
@@ -891,6 +2924,18 @@ installation and VS Code Electron integration can also use network/cache state;
   broader compatibility is manual or reported with de-identified data.
 - Performance targets require explicit timing and memory instrumentation. They
   are not inferred from mocked or ordinary correctness tests.
+- `integration::thumbnail_timing` holds two such instruments, ignored in
+  normal runs: one measures the delay thumbnails add to display frames
+  against `pixels::INTERACTIVE_LATENCY_TARGET` over files it generates; the
+  other times cold thumbnails of 2080 x 1560 JPEG 2000 and JPEG frames
+  decoded at an eighth of their size against the same frames decoded in
+  full, and fails when the reduced JPEG 2000 ones are not at least twice as
+  fast. Run them in a release build (`cargo test --release --test
+  integration thumbnail_timing -- --ignored --nocapture`). The `corpus`
+  profile skips them.
+- `scripts/startup_timing.py` (the `timing` profile) is the instrument for
+  startup and discovery time. It compares two release binaries, so it is
+  run on one quiet machine and not in CI.
 
 ## Extension Points
 
@@ -899,14 +2944,24 @@ Not current correctness blockers:
 1. If local startup is ever exposed as an abortable library API, introduce an
    explicit supervisor/reaper contract for hard task abortion; the binary's
    current result-based lifecycle already joins its work.
-2. Add opt-in performance benchmarks before enforcing startup, first-frame, or
-   cache-memory thresholds in CI.
+2. Startup and discovery timing is an opt-in local check
+   (`scripts/startup_timing.py`); add first-frame and cache-memory benchmarks
+   before enforcing thresholds for them, and do not gate CI on a shared
+   runner's timing.
 3. Keep external upstream fixtures opt-in unless their availability and cache
    behavior become deterministic enough for normal CI.
-4. When adding an endpoint, add it to `endpoints` in the Rust contract,
+4. A new raster format is a `FileFormat` variant, a signature in
+   `loader/format.rs`, a header reader in `loader/raster.rs`, and an arm of
+   `decode_raster_frame` in `pixels/raster.rs` that keeps its limits; nothing
+   else names formats.
+5. When adding an endpoint, add it to `endpoints` in the Rust contract,
    register its route, regenerate the checked-in TypeScript, and add a wrapper
    in `frontend/src/api.ts`; the runtime contract test covers it through
    `endpoints::ALL`.
+5. When adding a member to an annotation model type, make it optional on
+   read, add it to `tests/fixtures/document.json` or `operations.json`, and
+   regenerate the TypeScript and JSON Schema in the same change. A new
+   violation code is added at the end of `ViolationCode`.
 
 ## Maintainer Invariants
 
@@ -918,9 +2973,85 @@ Not current correctness blockers:
   exit or error path.
 - Keep CPU, codec, filesystem, and Rayon work off the async executor.
 - Do not hold cache or registry locks across I/O, decode, encode, or await.
+- Every decode takes a `DecodeScheduler` permit of the right class; only
+  gallery and other non-interactive work is `Background`.
+- Work that holds a frame (a decode, a render, a frame-sized copy) starts
+  only under a permit from `admission::admit`, reserving
+  `decode_estimate` bytes computed from the catalog entry. New work gets a
+  `DecodeWork` kind and a row in the estimate, measured in
+  `tests/raster_cost/admission.rs`. Never wait for a permit while holding
+  one, and never derive an estimate from what the file declares.
+- No codec library is handed a compressed frame before
+  `pixels::codestream::checked` has accepted it for the catalog entry.
+- A response of the frame, raw, thumbnail and overlay endpoints never
+  carries a library's error text or bytes of a file: a reason reaches a
+  decode error's message only as a `pixels::Stated`, and a masked session
+  logs nothing else either.
+- Discovery reads a DICOM data set only through `data_set::read_for_catalog`
+  and the tag endpoints only through `data_set::read_for_tags`.
+  Nothing there is sized from a length the file declares before that length
+  has been checked against the file's real length or a constant, and its
+  limits change only together with `tests/raster_cost/data_sets.rs` and
+  `data_set_tags.rs`.
+- Thumbnails write their own cache only, and anything that returns source
+  pixels applies the frame's redaction boxes and the masked-session refusal
+  before encoding.
+- A thumbnail's decode is reduced only as `pixels::thumbnail_reduction`
+  asks, from the entry and the request; what the frame declares can lower
+  the reduction and never raise it. A frame with redaction boxes, and one
+  whose presentation depends on its own samples, is decoded in full, and a
+  frame that cannot be reduced as asked is decoded in full under the same
+  permit and the same reservation.
 - Treat `src/api/contracts.rs` plus its generated TypeScript as one contract.
 - Keep `crates/dcmview-protocol` free of viewer, server and DICOM
   dependencies, and only add fields to its types.
+- Keep `crates/dcmview-annotation` a pure model: no viewer, server, DICOM or
+  pixel-pipeline dependency, no filesystem or network access, no state. Raise
+  `KEY_RULES` with any change to file-key syntax or derivation, which
+  includes the rules of `keys::KeyTable`. Do not lower a bound in `limits`.
+- Discovery never reads a file for its key, and no request path waits for a
+  digest except `FileRegistry::ensure_key`. Hash only through `FileHasher`,
+  one slice per `Background` permit.
+- A key is written into a record or an export only as `ensure_key` returned
+  it. The key an entry or a frame header shows may be provisional.
+- A pixel digest is computed only by the raw decode of its frame, under
+  that decode's permit, and only for a frame decoded exactly. Nothing else
+  decodes or hashes for one, and `PixelDigests` stays within its capacity
+  and its stated heap.
+- The key table holds no copy of a UID or a path and builds no key string
+  per file; keep `tests/key_table_memory.rs` passing without raising its
+  bound.
+- Every place a file key leaves the process sends `shown_key`'s form, so a
+  masked session never sends a real UID inside a key.
+- A catalog entry that changes after it was registered takes a new revision;
+  nothing else moves the cursor.
+- Keep redaction boxes out of the annotation model.
+- Annotation records hold settled file keys only. Every write path awaits
+  `FileRegistry::ensure_key` in `server/annotations.rs` before it reaches the
+  store, and no read path does. Do not write a record under a key read from
+  the catalog or from `X-File-Key`.
+- Nothing but `server/annotations.rs` joins the annotation store to the
+  registry, and the store stays free of indexes, paths and masking. A key
+  leaves the process only through `FileRegistry::shown_key_of`.
+- A change to the annotation store is one transaction of
+  `MemoryBackend::transact`: do not add a second way to change a record. A
+  refused transaction is undone from what it changed, never by copying the
+  store.
+- The EMBED endpoints and the CSV export are released behaviour. A change
+  to `annotations/embed.rs`, `canonicalize_annotations` or the EMBED reader
+  and writer of `dcmview-adapters` that moves a byte needs the owner's
+  sign-off and the golden changed in the same commit
+  (`tests/fixtures/embed-goldens/README.md`).
+- Keep `crates/dcmview-adapters` free of the viewer: no axum, tokio, DICOM
+  or pixel-pipeline dependency, and no file or socket opened by an adapter.
+  What a format needs from a file registry comes through its context.
+- An importer bounds what it reads by a constant in
+  `dcmview_adapters::limits` and allocates for what it has read, never from
+  a count the input states. A report and an import or export error hold no
+  text of the input.
+- Only a settled file key is in a document. A document export settles and
+  stores staged rows first and fails for a file that cannot be given a key;
+  a native import settles the key of every file it places.
 - Add endpoint fetches through `frontend/src/api.ts`.
 - Use generated synthetic fixtures for integration coverage; never commit PHI.
 - Run the narrow profile while iterating, then the profile required by the

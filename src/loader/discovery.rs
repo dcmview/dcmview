@@ -1,5 +1,6 @@
 use super::entry::{build_entry_selected, EntryInspection};
 use super::filter::{matches_filters, ScanFilter};
+use super::format::FormatSelection;
 use crate::types::FileEntry;
 use anyhow::{Context, Result};
 use rayon::prelude::*;
@@ -21,6 +22,8 @@ const DISCOVERY_SEND_RETRY_INTERVAL: Duration = Duration::from_millis(1);
 pub struct DiscoverOptions {
     pub recursive: bool,
     pub filters: Vec<ScanFilter>,
+    /// The formats loaded from walked directories (`--formats`).
+    pub formats: FormatSelection,
 }
 
 /// The outcome of inspecting one discovery candidate.
@@ -44,9 +47,20 @@ pub enum DiscoveryDisposition {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DiscoveryReason {
     ValidDicom,
+    /// A selected raster image file.
+    ValidImage,
     InputPathUnavailable,
     DirectoryEntryUnreadable,
-    MissingPart10Preamble,
+    /// Neither a DICOM Part 10 file nor a raster format the viewer reads.
+    /// Before raster support this was `MissingPart10Preamble`, code
+    /// `missing_part10_preamble`; the owner signed the rename off
+    /// (`docs/design/image-formats.md` decision 12.3).
+    UnrecognizedFormat,
+    /// A recognized format that `--formats` leaves out; the file's header
+    /// was not parsed.
+    FormatNotSelected,
+    /// A raster signature whose header does not parse.
+    RasterHeaderInvalid,
     DicomParseFailed,
     UnsupportedMediaDirectory,
     InspectionFailed,
@@ -58,9 +72,12 @@ impl DiscoveryReason {
     pub const fn summary(self) -> &'static str {
         match self {
             Self::ValidDicom => "valid DICOM",
+            Self::ValidImage => "valid image",
             Self::InputPathUnavailable => "missing input path",
             Self::DirectoryEntryUnreadable => "unreadable directory entry",
-            Self::MissingPart10Preamble => "not DICOM (no DICM preamble)",
+            Self::UnrecognizedFormat => "not a DICOM or image file",
+            Self::FormatNotSelected => "excluded by --formats",
+            Self::RasterHeaderInvalid => "unreadable image header",
             Self::DicomParseFailed => "unparsable DICOM",
             Self::UnsupportedMediaDirectory => "DICOMDIR",
             Self::InspectionFailed => "unreadable file",
@@ -71,9 +88,12 @@ impl DiscoveryReason {
     pub const fn code(self) -> &'static str {
         match self {
             Self::ValidDicom => "valid_dicom",
+            Self::ValidImage => "valid_image",
             Self::InputPathUnavailable => "input_path_unavailable",
             Self::DirectoryEntryUnreadable => "directory_entry_unreadable",
-            Self::MissingPart10Preamble => "missing_part10_preamble",
+            Self::UnrecognizedFormat => "unrecognized_format",
+            Self::FormatNotSelected => "format_not_selected",
+            Self::RasterHeaderInvalid => "raster_header_invalid",
             Self::DicomParseFailed => "dicom_parse_failed",
             Self::UnsupportedMediaDirectory => "unsupported_media_directory",
             Self::InspectionFailed => "inspection_failed",
@@ -101,7 +121,10 @@ impl DiscoveryRecord {
 
 #[derive(Debug, Clone)]
 pub struct DiscoveryReport {
+    /// Selected files of every format.
     pub files_found: usize,
+    /// The raster image files among `files_found`.
+    pub images_found: usize,
     pub skipped: usize,
     /// Skipped candidates by reason, so the summary can say why.
     pub skipped_by_reason: BTreeMap<DiscoveryReason, usize>,
@@ -184,12 +207,20 @@ pub async fn discover_progressive(
     .context("loader worker panicked")?
 }
 
+/// One file to inspect, with the format selection that applies to it:
+/// `--formats` narrows what a directory walk loads, while a file named as an
+/// input path is loaded in whatever supported format it has.
+struct Candidate {
+    path: PathBuf,
+    formats: FormatSelection,
+}
+
 fn collect_candidates(
     paths: &[PathBuf],
     options: &DiscoverOptions,
     events: &mpsc::Sender<DiscoveryEvent>,
     cancellation: &DiscoveryCancellation,
-) -> std::result::Result<(Vec<PathBuf>, Vec<DiscoveryRecord>), DiscoveryCancelled> {
+) -> std::result::Result<(Vec<Candidate>, Vec<DiscoveryRecord>), DiscoveryCancelled> {
     let check_active = || ensure_discovery_active(events, cancellation);
     let mut candidates = Vec::new();
     let mut skipped = Vec::new();
@@ -198,7 +229,10 @@ fn collect_candidates(
         check_active()?;
 
         if path.is_file() {
-            candidates.push(path.clone());
+            candidates.push(Candidate {
+                path: path.clone(),
+                formats: FormatSelection::all(),
+            });
             continue;
         }
 
@@ -216,7 +250,10 @@ fn collect_candidates(
                 };
                 match entry {
                     Ok(dir_entry) if dir_entry.path().is_file() => {
-                        candidates.push(dir_entry.path().to_path_buf());
+                        candidates.push(Candidate {
+                            path: dir_entry.path().to_path_buf(),
+                            formats: options.formats,
+                        });
                     }
                     Ok(_) => {}
                     Err(error) => {
@@ -270,15 +307,21 @@ fn discover_progressive_blocking(
     for record in &initial_skipped {
         note_skip(&record.path, record.reason);
     }
+    let images_found = AtomicUsize::new(0);
     let filtered = AtomicUsize::new(0);
 
     let processing_result: std::result::Result<(), DiscoveryCancelled> = candidates
         .par_iter()
         .try_for_each_with(events.clone(), |events, candidate| {
             ensure_discovery_active(events, cancellation)?;
+            let Candidate {
+                path: candidate,
+                formats,
+            } = candidate;
 
             let inspected = build_entry_selected(
                 candidate,
+                *formats,
                 &|entry| matches_filters(entry, &options.filters),
                 &|| ensure_discovery_active(events, cancellation).map_err(Into::into),
             );
@@ -287,10 +330,15 @@ fn discover_progressive_blocking(
                 Ok(EntryInspection::Selected(entry))
                     if matches_filters(&entry, &options.filters) =>
                 {
+                    let is_image = entry.format.is_raster();
                     let record = DiscoveryRecord::new(
                         candidate,
                         DiscoveryDisposition::Selected,
-                        DiscoveryReason::ValidDicom,
+                        if is_image {
+                            DiscoveryReason::ValidImage
+                        } else {
+                            DiscoveryReason::ValidDicom
+                        },
                     );
                     send_discovery_event(
                         events,
@@ -301,6 +349,9 @@ fn discover_progressive_blocking(
                         },
                     )?;
                     files_found.fetch_add(1, Ordering::Relaxed);
+                    if is_image {
+                        images_found.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
                 Ok(EntryInspection::Selected(_)) => {
                     let record = DiscoveryRecord::new(
@@ -338,7 +389,7 @@ fn discover_progressive_blocking(
                         DiscoveryEvent::SkippedInput(record),
                     )?;
                     note_skip(candidate, DiscoveryReason::InspectionFailed);
-                    eprintln!("dcmview: warning — failed to inspect DICOM: {error}");
+                    eprintln!("dcmview: warning — failed to inspect file: {error}");
                 }
             }
 
@@ -350,6 +401,7 @@ fn discover_progressive_blocking(
     let skipped_by_reason = skipped.into_inner().unwrap_or_default();
     Ok(DiscoveryReport {
         files_found: files_found.load(Ordering::Relaxed),
+        images_found: images_found.load(Ordering::Relaxed),
         skipped: skipped_by_reason.values().sum(),
         skipped_by_reason,
         filtered: filtered.load(Ordering::Relaxed),

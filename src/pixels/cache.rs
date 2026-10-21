@@ -1,18 +1,28 @@
+use super::digest::PixelDigests;
 use super::error::PixelError;
 use super::render::DisplayPng;
+use super::schedule::{decode_scheduler, DecodeScheduler};
 use crate::api::contracts::RawFrameMetadata;
-use crate::types::{FrameCacheKey, OverlayCacheKey, RawFrameCacheKey};
+use crate::types::{
+    FrameCacheKey, OverlayCacheKey, RawFrameCacheKey, ThumbnailCacheKey, ValueRangeCacheKey,
+};
 use bytes::Bytes;
 use futures::future::{BoxFuture, Shared};
 use lru::LruCache;
 use std::collections::HashMap;
 use std::hash::Hash;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use tokio::sync::Notify;
 
 // Keep these budgets in sync with README memory guidance and frontend frame retention.
 pub const FRAME_CACHE_MAX_BYTES: usize = 256 * 1024 * 1024; // 256 MiB
 pub const RAW_CACHE_MAX_BYTES: usize = 384 * 1024 * 1024; // 384 MiB
 pub const OVERLAY_CACHE_MAX_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
+pub const THUMBNAIL_CACHE_MAX_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
+/// Room for the value ranges of 64 objects. It is not a share of
+/// `--cache-budget`: a range is two numbers.
+pub const VALUE_RANGE_CACHE_MAX_BYTES: usize = 64 * std::mem::size_of::<ValueRange>();
 
 /// Encoded display frames keyed by file, frame, and window request.
 pub type FrameCache = BudgetedLru<FrameCacheKey, DisplayPng>;
@@ -20,15 +30,98 @@ pub type FrameCache = BudgetedLru<FrameCacheKey, DisplayPng>;
 pub type RawFrameCache = BudgetedLru<RawFrameCacheKey, (Bytes, RawFrameMetadata)>;
 /// Encoded overlay PNGs keyed by overlay object (and SEG frame) and displayed frame.
 pub type OverlayCache = BudgetedLru<OverlayCacheKey, Bytes>;
+/// Encoded thumbnail JPEGs keyed by file, frame, size bucket, window mode
+/// and redaction revision. Thumbnails are written here only: a gallery
+/// scroll must not evict the viewer's display and raw frames.
+pub type ThumbnailCache = BudgetedLru<ThumbnailCacheKey, Bytes>;
+
+/// The value ranges of RT Dose and Parametric Map objects, keyed by object
+/// and file set. A range is found by decoding every frame of its object, so
+/// it is computed once, by one request, like a frame
+/// (`service::compute_from_frames`).
+pub type ValueRangeCache = BudgetedLru<ValueRangeCacheKey, ValueRange>;
+
+/// The smallest and the largest finite value among the mapped values of an
+/// object's frames. Values that are not finite (samples without a mapping)
+/// are not counted.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ValueRange {
+    pub min: f64,
+    pub max: f64,
+}
+
+impl ValueRange {
+    /// The range of no values: `min > max`. Including a finite value in it
+    /// gives the range of that value.
+    pub const EMPTY: Self = Self {
+        min: f64::INFINITY,
+        max: f64::NEG_INFINITY,
+    };
+
+    /// This range widened to hold `value`; unchanged when `value` is not
+    /// finite.
+    pub fn including(self, value: f64) -> Self {
+        if !value.is_finite() {
+            return self;
+        }
+        Self {
+            min: self.min.min(value),
+            max: self.max.max(value),
+        }
+    }
+
+    /// Whether no finite value has been included.
+    pub fn is_empty(&self) -> bool {
+        self.min > self.max
+    }
+}
 
 /// A cached value whose memory cost is the length of its frame body.
+///
+/// A cache bills an entry [`FrameBody::body_len`] bytes, so an entry must
+/// hold no more than that. A body built in a buffer that grew keeps the
+/// buffer's spare room, which nothing counts: whatever is to be cached is
+/// passed through [`FrameBody::compact`] first, once, before it is cloned
+/// (the pixel service does it for every decode it caches).
 pub trait FrameBody: Clone {
+    /// The bytes a cache bills this value.
     fn body_len(&self) -> usize;
+
+    /// This value with its body in an allocation of exactly
+    /// [`FrameBody::body_len`] bytes. The contents are unchanged.
+    ///
+    /// A body nothing else refers to is shrunk where it is; one that is
+    /// shared is copied, and the copy is exact.
+    fn compact(self) -> Self;
+}
+
+/// `body` in an allocation of exactly its length.
+///
+/// `Bytes::from(Vec<u8>)` keeps the vector's whole capacity for as long as
+/// any clone lives, and `Bytes` cannot say how much that is.
+fn exact_bytes(body: Bytes) -> Bytes {
+    let mut bytes = Vec::from(body);
+    bytes.shrink_to_fit();
+    Bytes::from(bytes)
+}
+
+impl FrameBody for ValueRange {
+    fn body_len(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+
+    fn compact(self) -> Self {
+        self
+    }
 }
 
 impl FrameBody for Bytes {
     fn body_len(&self) -> usize {
         self.len()
+    }
+
+    fn compact(self) -> Self {
+        exact_bytes(self)
     }
 }
 
@@ -36,16 +129,85 @@ impl FrameBody for DisplayPng {
     fn body_len(&self) -> usize {
         self.png.len()
     }
+
+    fn compact(mut self) -> Self {
+        self.png = exact_bytes(self.png);
+        self
+    }
 }
 
 impl FrameBody for (Bytes, RawFrameMetadata) {
     fn body_len(&self) -> usize {
         self.0.len()
     }
+
+    fn compact(self) -> Self {
+        (exact_bytes(self.0), self.1)
+    }
 }
 
 /// A decode other requests for the same key await instead of repeating.
 pub(crate) type InFlight<V> = Shared<BoxFuture<'static, Result<V, Arc<PixelError>>>>;
+
+/// A decode announced for a key, and how many requests are waiting for it.
+///
+/// A request waits through [`BudgetedLru::join_flight`], which counts it
+/// until it has its answer or is dropped. The decode's own task reads the
+/// count while it waits to be admitted: a decode nobody is waiting for any
+/// longer gives up its place in the queue
+/// ([`BudgetedLru::abandon_flight_if_unwanted`]).
+pub(crate) struct Flight<V> {
+    decode: InFlight<V>,
+    waiters: Arc<FlightWaiters>,
+}
+
+/// The requests waiting for one [`Flight`].
+#[derive(Default)]
+pub(crate) struct FlightWaiters {
+    count: AtomicUsize,
+    /// Notified when the count returns to zero. Only the decode's task
+    /// listens, so one stored notification is never lost.
+    left: Notify,
+}
+
+impl FlightWaiters {
+    /// Resolves once no request is waiting. A request may have joined again
+    /// by the time the caller acts on it: the count is only settled under
+    /// the cache's lock, where requests join.
+    pub(crate) async fn none_left(&self) {
+        while self.count.load(Ordering::SeqCst) != 0 {
+            self.left.notified().await;
+        }
+    }
+}
+
+/// One request's place among the waiters of a [`Flight`], given up when it
+/// is dropped: with the answer, or because the request was.
+pub(crate) struct JoinedFlight<V> {
+    decode: InFlight<V>,
+    waiters: Arc<FlightWaiters>,
+}
+
+impl<V: Clone> JoinedFlight<V> {
+    /// The decode's result.
+    pub(crate) async fn result(self) -> Result<V, Arc<PixelError>> {
+        self.decode.clone().await
+    }
+}
+
+impl<V> Drop for JoinedFlight<V> {
+    fn drop(&mut self) {
+        if self.waiters.count.fetch_sub(1, Ordering::SeqCst) == 1 {
+            self.waiters.left.notify_one();
+        }
+    }
+}
+
+impl<V> Flight<V> {
+    pub(crate) fn new(decode: InFlight<V>, waiters: Arc<FlightWaiters>) -> Self {
+        Self { decode, waiters }
+    }
+}
 
 /// An LRU bounded by the total bytes of its bodies, plus the decodes
 /// currently running for keys it does not hold yet. Entries are not counted:
@@ -53,41 +215,132 @@ pub(crate) type InFlight<V> = Shared<BoxFuture<'static, Result<V, Arc<PixelError
 ///
 /// Callers hold the surrounding mutex only for lookups and inserts; decoding
 /// and encoding happen outside the lock.
+///
+/// A cache also names the [`DecodeScheduler`] that admits the decodes which
+/// fill it, so the pixel service takes a cache and needs nothing else to
+/// know whose permits and whose decode memory budget a miss uses. The
+/// caches of one viewer share one scheduler (`AppState`).
 pub struct BudgetedLru<K: Hash + Eq, V> {
     entries: LruCache<K, V>,
     bytes: usize,
     max_bytes: usize,
-    in_flight: HashMap<K, InFlight<V>>,
+    in_flight: HashMap<K, Flight<V>>,
+    scheduler: Arc<DecodeScheduler>,
+    /// Where the raw decodes that fill this cache record the pixel digest
+    /// of each frame; `None` for a cache whose decodes record none.
+    pixel_digests: Option<Arc<PixelDigests>>,
 }
 
 impl<K: Hash + Eq, V: FrameBody> BudgetedLru<K, V> {
+    /// A cache whose misses are admitted by the process's shared scheduler
+    /// ([`decode_scheduler`]).
     pub(crate) fn new(max_bytes: usize) -> Self {
+        Self::with_scheduler(max_bytes, Arc::clone(decode_scheduler()))
+    }
+
+    /// A cache of at most `max_bytes` of frame bodies whose misses are
+    /// admitted by `scheduler`.
+    pub fn with_scheduler(max_bytes: usize, scheduler: Arc<DecodeScheduler>) -> Self {
         Self {
             entries: LruCache::unbounded(),
             bytes: 0,
             max_bytes,
             in_flight: HashMap::new(),
+            scheduler,
+            pixel_digests: None,
         }
     }
 
-    pub(crate) fn in_flight(&self, key: &K) -> Option<InFlight<V>> {
-        self.in_flight.get(key).cloned()
+    /// This cache, with `digests` as the table the raw decodes that fill it
+    /// record each frame's pixel digest in (`pixels::record_frame_digest`).
+    /// Only a raw frame cache is given one: a session's, which gets its
+    /// registry's table (`AppState`). A cache without one computes no
+    /// digest.
+    pub fn with_pixel_digests(mut self, digests: Arc<PixelDigests>) -> Self {
+        self.pixel_digests = Some(digests);
+        self
     }
 
-    pub(crate) fn start_flight(&mut self, key: K, decode: InFlight<V>) {
-        self.in_flight.insert(key, decode);
+    /// The table this cache's raw decodes record pixel digests in, if it
+    /// was given one.
+    pub fn pixel_digests(&self) -> Option<Arc<PixelDigests>> {
+        self.pixel_digests.clone()
     }
 
-    pub(crate) fn finish_flight(&mut self, key: &K) {
-        self.in_flight.remove(key);
+    /// The scheduler that admits the decodes filling this cache.
+    pub(crate) fn scheduler(&self) -> Arc<DecodeScheduler> {
+        Arc::clone(&self.scheduler)
+    }
+
+    /// Joins the decode announced for `key`, if there is one, as one more
+    /// request waiting for it.
+    pub(crate) fn join_flight(&self, key: &K) -> Option<JoinedFlight<V>> {
+        let flight = self.in_flight.get(key)?;
+        flight.waiters.count.fetch_add(1, Ordering::SeqCst);
+        Some(JoinedFlight {
+            decode: flight.decode.clone(),
+            waiters: Arc::clone(&flight.waiters),
+        })
+    }
+
+    /// Whether a decode is announced for `key`.
+    pub(crate) fn has_flight(&self, key: &K) -> bool {
+        self.in_flight.contains_key(key)
+    }
+
+    /// Announces `flight` as the decode for `key` and joins it.
+    pub(crate) fn start_flight(&mut self, key: K, flight: Flight<V>) -> JoinedFlight<V>
+    where
+        K: Clone,
+    {
+        self.in_flight.insert(key.clone(), flight);
+        self.join_flight(&key)
+            .expect("the flight was just announced")
+    }
+
+    /// Forgets the decode announced for `key` if it is the one `waiters`
+    /// belongs to, so a decode that ends late never removes its successor.
+    pub(crate) fn finish_flight(&mut self, key: &K, waiters: &Arc<FlightWaiters>) {
+        if self
+            .in_flight
+            .get(key)
+            .is_some_and(|flight| Arc::ptr_eq(&flight.waiters, waiters))
+        {
+            self.in_flight.remove(key);
+        }
+    }
+
+    /// Forgets the decode announced for `key` when it is the one `waiters`
+    /// belongs to and no request is waiting for it, and says whether it
+    /// did. Requests join under the same lock, so after `true` none can:
+    /// the next request for `key` announces a decode of its own.
+    pub(crate) fn abandon_flight_if_unwanted(
+        &mut self,
+        key: &K,
+        waiters: &Arc<FlightWaiters>,
+    ) -> bool {
+        if waiters.count.load(Ordering::SeqCst) != 0 {
+            return false;
+        }
+        self.finish_flight(key, waiters);
+        true
     }
 
     pub(crate) fn get(&mut self, key: &K) -> Option<V> {
         self.entries.get(key).cloned()
     }
 
+    /// The bytes the entries are billed between them: the sum of their
+    /// [`FrameBody::body_len`], never more than the budget.
+    pub fn billed_bytes(&self) -> usize {
+        self.bytes
+    }
+
     /// Inserts `value`, evicting least-recently-used entries until it fits the
     /// byte budget. A value larger than the whole budget is not cached.
+    ///
+    /// The value is billed its [`FrameBody::body_len`]; the caller has
+    /// passed it through [`FrameBody::compact`], so that is what it holds.
     pub(crate) fn insert(&mut self, key: K, value: V) {
         let incoming = value.body_len();
         if incoming > self.max_bytes {
@@ -110,13 +363,14 @@ impl<K: Hash + Eq, V: FrameBody> BudgetedLru<K, V> {
     }
 }
 
-/// One byte budget divided among the display, raw and overlay caches
-/// (`--cache-budget`), in the proportions of the defaults.
+/// One byte budget divided among the display, raw, overlay and thumbnail
+/// caches (`--cache-budget`), in the proportions of the defaults.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CacheBudget {
     pub frame_bytes: usize,
     pub raw_bytes: usize,
     pub overlay_bytes: usize,
+    pub thumbnail_bytes: usize,
 }
 
 impl CacheBudget {
@@ -124,6 +378,7 @@ impl CacheBudget {
         frame_bytes: FRAME_CACHE_MAX_BYTES,
         raw_bytes: RAW_CACHE_MAX_BYTES,
         overlay_bytes: OVERLAY_CACHE_MAX_BYTES,
+        thumbnail_bytes: THUMBNAIL_CACHE_MAX_BYTES,
     };
 
     /// Smallest accepted total. A frame larger than its cache's share is
@@ -133,7 +388,7 @@ impl CacheBudget {
     pub const MIN_TOTAL_BYTES: u64 = 16 * 1024 * 1024;
 
     /// Splits `total_bytes` in the proportions of [`Self::DEFAULT`], rounding
-    /// each share down so the three never exceed the total. A total below
+    /// each share down so the four never exceed the total. A total below
     /// [`Self::MIN_TOTAL_BYTES`] is an error that names the minimum.
     pub fn from_total(total_bytes: u64) -> Result<Self, String> {
         if total_bytes < Self::MIN_TOTAL_BYTES {
@@ -152,11 +407,15 @@ impl CacheBudget {
             frame_bytes: share(Self::DEFAULT.frame_bytes)?,
             raw_bytes: share(Self::DEFAULT.raw_bytes)?,
             overlay_bytes: share(Self::DEFAULT.overlay_bytes)?,
+            thumbnail_bytes: share(Self::DEFAULT.thumbnail_bytes)?,
         })
     }
 
     pub fn total_bytes(&self) -> u64 {
-        self.frame_bytes as u64 + self.raw_bytes as u64 + self.overlay_bytes as u64
+        self.frame_bytes as u64
+            + self.raw_bytes as u64
+            + self.overlay_bytes as u64
+            + self.thumbnail_bytes as u64
     }
 }
 
@@ -191,6 +450,10 @@ pub fn new_raw_cache() -> Arc<Mutex<RawFrameCache>> {
 
 pub fn new_overlay_cache() -> Arc<Mutex<OverlayCache>> {
     Arc::new(Mutex::new(OverlayCache::new(OVERLAY_CACHE_MAX_BYTES)))
+}
+
+pub fn new_thumbnail_cache() -> Arc<Mutex<ThumbnailCache>> {
+    Arc::new(Mutex::new(ThumbnailCache::new(THUMBNAIL_CACHE_MAX_BYTES)))
 }
 
 #[cfg(test)]
@@ -316,20 +579,22 @@ mod tests {
             Ok(CacheBudget::DEFAULT)
         );
         assert_eq!(
-            CacheBudget::from_total(352 * MIB),
+            CacheBudget::from_total(384 * MIB),
             Ok(CacheBudget {
                 frame_bytes: 128 * 1024 * 1024,
                 raw_bytes: 192 * 1024 * 1024,
                 overlay_bytes: 32 * 1024 * 1024,
+                thumbnail_bytes: 32 * 1024 * 1024,
             })
         );
         // Totals that do not divide evenly round down and never exceed the total.
         for total in [16 * MIB, 16 * MIB + 1, 100 * MIB + 7, 8 * 1024 * MIB] {
             let budget = CacheBudget::from_total(total).expect("budget");
             assert!(budget.total_bytes() <= total, "{total}");
-            assert!(total - budget.total_bytes() < 3, "{total}");
+            assert!(total - budget.total_bytes() < 4, "{total}");
             assert!(budget.raw_bytes > budget.frame_bytes, "{total}");
             assert!(budget.frame_bytes > budget.overlay_bytes, "{total}");
+            assert_eq!(budget.thumbnail_bytes, budget.overlay_bytes, "{total}");
         }
         assert!(CacheBudget::from_total(CacheBudget::MIN_TOTAL_BYTES - 1).is_err());
         assert!(CacheBudget::from_total(0).is_err());

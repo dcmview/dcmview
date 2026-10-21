@@ -60,6 +60,7 @@ pub(crate) fn segmentation_has_only_binary_samples(
         }
         let samples: Bytes = match codec {
             Codec::Native => unreachable!("native samples use the streaming path"),
+            Codec::Raster => unreachable!("a transfer syntax never selects the raster codec"),
             Codec::Rle => super::rle::decode_fragment(file, &encoded)?.into(),
             Codec::Jpeg2000 => {
                 let (bytes, metadata) = super::jpeg2000::decode_raw_fragment(file, &encoded)?;
@@ -75,7 +76,7 @@ pub(crate) fn segmentation_has_only_binary_samples(
                 .samples
                 .into(),
             Codec::JpegBaseline | Codec::JpegLossless | Codec::JpegLs | Codec::JpegXl => {
-                let decoded = super::pixeldata_frame::decode_object(&object, 0, "SEG")?;
+                let decoded = super::pixeldata_frame::decode_object(file, &object, 0, "SEG")?;
                 ensure!(
                     decoded.rows == file.rows
                         && decoded.columns == file.columns
@@ -100,6 +101,7 @@ fn native_binary_samples(
     file: &crate::types::FileEntry,
     check_active: &impl Fn() -> anyhow::Result<()>,
 ) -> anyhow::Result<bool> {
+    use super::native_layout::{stores_swapped_byte_pairs, swap_byte_pairs, NativeByteOrder};
     use anyhow::{ensure, Context};
     use dicom_dictionary_std::{tags, uids};
     use dicom_encoding::TransferSyntaxIndex;
@@ -119,10 +121,11 @@ fn native_binary_samples(
         } else {
             Box::new(input)
         };
-    let available = {
+    let byte_order = NativeByteOrder::of_transfer_syntax(&file.transfer_syntax_uid);
+    let (available, swapped_pairs) = {
         let tokens = DataSetReader::new_with_ts(&mut stream, syntax)?;
         let mut depth = 0_usize;
-        let mut available = None;
+        let mut found = None;
         for token in tokens {
             check_active()?;
             match token? {
@@ -131,13 +134,18 @@ fn native_binary_samples(
                 DataToken::ElementHeader(header)
                     if depth == 0 && header.tag == tags::PIXEL_DATA =>
                 {
-                    available = header.len.get();
+                    found = header.len.get().map(|length| {
+                        (
+                            u64::from(length),
+                            stores_swapped_byte_pairs(byte_order, header.vr(), file.bits_allocated),
+                        )
+                    });
                     break;
                 }
                 _ => {}
             }
         }
-        u64::from(available.context("missing native SEG pixel data")?)
+        found.context("missing native SEG pixel data")?
     };
     let samples = u64::from(file.rows)
         .checked_mul(u64::from(file.columns))
@@ -149,12 +157,25 @@ fn native_binary_samples(
         samples
     };
     ensure!(remaining <= available, "incomplete SEG samples");
+    // An odd number of samples in swapped byte pairs ends in a word whose
+    // first byte is the value's padding and whose second is the last sample.
+    let padded_last_word = swapped_pairs && remaining % 2 == 1 && remaining < available;
     let mut buffer = [0_u8; 64 * 1024];
     while remaining > 0 {
         check_active()?;
         let length = remaining.min(buffer.len() as u64) as usize;
+        if swapped_pairs {
+            // Chunks are whole words, so each is put in sample order alone.
+            let whole_words = length + usize::from(length % 2 == 1 && padded_last_word);
+            let words = &mut buffer[..whole_words];
+            stream.read_exact(words).context("truncated SEG samples")?;
+            swap_byte_pairs(words);
+        } else {
+            stream
+                .read_exact(&mut buffer[..length])
+                .context("truncated SEG samples")?;
+        }
         let bytes = &mut buffer[..length];
-        stream.read_exact(bytes).context("truncated SEG samples")?;
         if file.bits_allocated == 8 {
             super::stored_bits::canonicalize_integer_samples(
                 bytes,
@@ -292,6 +313,59 @@ mod tests {
             maximum_fractional_value: None,
             color: [255, 79, 132],
         }
+    }
+
+    /// A big-endian image whose three 8-bit samples are stored as 16-bit
+    /// words: on disk `samples[1], samples[0], padding, samples[2]`.
+    fn big_endian_words(directory: &std::path::Path, samples: [u8; 3]) -> crate::types::FileEntry {
+        use dicom_core::{DataElement, PrimitiveValue, VR};
+        use dicom_dictionary_std::{tags, uids};
+        use dicom_object::{meta::FileMetaTableBuilder, InMemDicomObject};
+        let us = |tag, value: u16| DataElement::new(tag, VR::US, PrimitiveValue::from(value));
+        let words = vec![
+            u16::from_le_bytes([samples[0], samples[1]]),
+            u16::from_le_bytes([samples[2], 0]),
+        ];
+        let path = directory.join(format!("words-{}.dcm", samples[2]));
+        InMemDicomObject::from_element_iter([
+            DataElement::new(tags::SOP_CLASS_UID, VR::UI, uids::SEGMENTATION_STORAGE),
+            DataElement::new(tags::SOP_INSTANCE_UID, VR::UI, "2.25.4100"),
+            us(tags::SAMPLES_PER_PIXEL, 1),
+            DataElement::new(tags::PHOTOMETRIC_INTERPRETATION, VR::CS, "MONOCHROME2"),
+            us(tags::ROWS, 1),
+            us(tags::COLUMNS, 3),
+            us(tags::BITS_ALLOCATED, 8),
+            us(tags::BITS_STORED, 8),
+            us(tags::HIGH_BIT, 7),
+            us(tags::PIXEL_REPRESENTATION, 0),
+            DataElement::new(tags::PIXEL_DATA, VR::OW, PrimitiveValue::U16(words.into())),
+        ])
+        .with_meta(
+            FileMetaTableBuilder::new()
+                .transfer_syntax("1.2.840.10008.1.2.2")
+                .media_storage_sop_class_uid(uids::SEGMENTATION_STORAGE)
+                .media_storage_sop_instance_uid("2.25.4100"),
+        )
+        .expect("file meta")
+        .write_to_file(&path)
+        .expect("write big-endian image");
+        let stored = std::fs::read(&path).expect("read back");
+        assert!(stored.ends_with(&[samples[1], samples[0], 0, samples[2]]));
+        crate::loader::test_entry(&path)
+    }
+
+    /// The last of an odd number of samples stored as big-endian words comes
+    /// after the value's padding byte; the scan must read it and not the
+    /// padding.
+    #[test]
+    fn scans_the_last_sample_of_big_endian_words_and_not_their_padding() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let scan = |samples| {
+            let file = big_endian_words(directory.path(), samples);
+            native_binary_samples(&file, &|| Ok(())).expect("scan")
+        };
+        assert!(scan([0, 1, 1]));
+        assert!(!scan([0, 1, 255]));
     }
 
     #[test]

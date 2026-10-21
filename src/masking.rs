@@ -7,6 +7,7 @@
 //! are stable within a session and unrelated across sessions.
 
 mod profile;
+mod raster;
 
 use crate::api::contracts::{
     FileSummary, GraphicAnnotationsResponse, SemanticContext, SemanticContextResponse,
@@ -120,8 +121,26 @@ impl Default for Masker {
     }
 }
 
+/// Set once a masked session exists in the process. The mode is fixed for
+/// a viewer, and a log line cannot ask which viewer it belongs to.
+static MASKED_SESSION: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The cause of a failure as a log line may show it: a library's or a
+/// parser's text, which can quote the file it was reading. Escaped, and
+/// left out altogether once the process has a masked session, which logs
+/// nothing a file holds. Every log call that formats an error from reading
+/// a file goes through this.
+pub fn logged_cause(cause: &dyn std::fmt::Display) -> String {
+    if MASKED_SESSION.load(std::sync::atomic::Ordering::Relaxed) {
+        "not logged in a masked session".to_string()
+    } else {
+        format!("{cause:#}").escape_debug().to_string()
+    }
+}
+
 impl Masker {
     pub fn new() -> Self {
+        MASKED_SESSION.store(true, std::sync::atomic::Ordering::Relaxed);
         Self {
             keys: RandomState::new(),
             patients: Mutex::new(HashMap::new()),
@@ -181,12 +200,14 @@ impl Masker {
 
     /// The catalog entry of a masked session.
     pub fn summary(&self, file: &FileEntry) -> FileSummary {
-        let patient = self.patient(file);
         let mut summary = FileSummary::from(file);
         summary.display_name = format!("File {}", file.index + 1);
-        summary.patient_id = patient.id();
-        summary.patient_name = patient.name();
-        summary.study_date = patient.shift_date(&file.study_date);
+        if !file.format.is_raster() {
+            let patient = self.patient(file);
+            summary.patient_id = patient.id();
+            summary.patient_name = patient.name();
+            summary.study_date = patient.shift_date(&file.study_date);
+        }
         summary.label = crate::loader::build_label(
             &summary.patient_id,
             &summary.modality,
@@ -260,6 +281,17 @@ impl Masker {
         for node in nodes {
             self.mask_tag(&patient, node, false);
         }
+    }
+
+    /// Masks the metadata tree of a raster image file: the tree
+    /// `pixels::read_raster_tags` reads, with the server's `File` and `Note`
+    /// leaves. `masking/raster.rs` has the rule: only listed values that
+    /// describe the pixel grid are shown, and all text of the file, every
+    /// unknown tag, and everything that says who, where, when or with what
+    /// shows `[masked]`. A node selected from a tree masked here needs no
+    /// further masking.
+    pub fn raster_tags(&self, nodes: &mut [TagNode]) {
+        raster::mask_tree(nodes);
     }
 
     /// Masks one element selected by a `tag/item/tag...` path. The tags above

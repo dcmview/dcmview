@@ -45,6 +45,7 @@ async fn shutter_fixture_frame(name: &str, frame: u32) -> (DynamicImage, Vec<u8>
         DiscoverOptions {
             recursive: false,
             filters: Vec::new(),
+            formats: Default::default(),
         },
     )
     .await

@@ -3,8 +3,9 @@ mod bridge;
 mod startup;
 
 use clap::Parser;
+use dcmview::annotations::AnnotationFormat;
 use dcmview::loader;
-use dcmview::pixels::{parse_byte_size, CacheBudget};
+use dcmview::pixels::{parse_byte_size, CacheBudget, DecodeLimits};
 use std::env;
 use std::path::PathBuf;
 
@@ -12,12 +13,13 @@ use std::path::PathBuf;
 #[command(
     name = "dcmview",
     version,
-    about = "Start a temporary local DICOM inspection viewer",
-    long_about = "Start a temporary local web server for inspecting DICOM files, directories, image frames, tags, and optional ROI annotations. dcmview is intended for research and development inspection, not clinical diagnosis.",
+    about = "Start a temporary local viewer for DICOM and image files",
+    long_about = "Start a temporary local web server for inspecting DICOM and image files, directories, image frames, tags, and optional ROI annotations. dcmview is intended for research and development inspection, not clinical diagnosis.",
     after_long_help = "\
 Examples:
   dcmview ./scan.dcm
   dcmview ./study_dir
+  dcmview --formats dicom ./mixed_dir
   dcmview --no-recursive ./study_dir
   dcmview --no-browser --host 127.0.0.1 --port 8010 ./study_dir
   ssh -L 8010:127.0.0.1:8010 user@remote
@@ -32,7 +34,7 @@ struct Cli {
     #[arg(
         value_name = "PATH",
         required_unless_present = "vscode_bridge_client",
-        help = "DICOM file or directory to inspect; repeat for multiple inputs"
+        help = "DICOM and image files or directories to inspect; repeat for multiple inputs"
     )]
     paths: Vec<PathBuf>,
 
@@ -84,9 +86,17 @@ struct Cli {
         long = "cache-budget",
         value_name = "BYTES",
         value_parser = parse_cache_budget,
-        help = "Total memory for the frame caches, such as 256MiB; default about 700MiB"
+        help = "Total memory for the frame caches, such as 256MiB; default 768MiB"
     )]
     cache_budget: Option<CacheBudget>,
+
+    #[arg(
+        long = "decode-memory",
+        value_name = "BYTES",
+        value_parser = parse_decode_memory,
+        help = "Memory that frames being decoded may use between them, such as 8GiB; default a quarter of physical memory, from 1GiB to 4GiB"
+    )]
+    decode_memory: Option<DecodeLimits>,
 
     #[arg(long = "exit-with-parent", hide = true)]
     exit_with_parent: bool,
@@ -99,10 +109,28 @@ struct Cli {
 
     #[arg(
         long = "annotations",
-        value_name = "CSV",
-        help = "Load EMBED-style ROI annotations from CSV without modifying the file"
+        value_name = "FILE",
+        help = "Load annotations without modifying the file: an EMBED-style ROI CSV, or a \
+                dcmview.annotations document as JSON or JSON Lines",
+        long_help = "Load annotations without modifying the file: an EMBED-style ROI CSV, or a \
+                     dcmview.annotations document as JSON or JSON Lines.\n\nA file that starts \
+                     with { (after an optional byte order mark) and names the dcmview.annotations \
+                     format in its first 4,096 bytes is read as a document; every other file is \
+                     read as CSV. A file that is neither stops dcmview with exit status 1 before \
+                     it serves. A document that cannot be loaded does not: the viewer serves and \
+                     GET /api/annotations/import says why."
     )]
     annotations: Option<PathBuf>,
+
+    #[arg(
+        long = "annotations-format",
+        value_name = "FORMAT",
+        value_parser = parse_annotation_format,
+        requires = "annotations",
+        help = "Read --annotations as embed (EMBED-style ROI CSV) or native (a \
+                dcmview.annotations document) instead of deciding from the file"
+    )]
+    annotations_format: Option<AnnotationFormat>,
 
     #[arg(
         long = "filter",
@@ -112,6 +140,15 @@ struct Cli {
                 FIELD is a name such as patient_id or a DICOM keyword such as PatientID"
     )]
     filters: Vec<loader::ScanFilter>,
+
+    #[arg(
+        long = "formats",
+        value_name = "LIST",
+        value_parser = parse_formats,
+        help = "File formats to load from directories, as a comma-separated list of \
+                dicom, png, jpeg, tiff, webp; default all. A file named as a PATH is always loaded"
+    )]
+    formats: Option<loader::FormatSelection>,
 
     #[arg(
         long = "mask",
@@ -140,8 +177,24 @@ fn parse_scan_filter(raw: &str) -> std::result::Result<loader::ScanFilter, Strin
     raw.parse()
 }
 
+fn parse_annotation_format(raw: &str) -> std::result::Result<AnnotationFormat, String> {
+    match raw {
+        "embed" => Ok(AnnotationFormat::Embed),
+        "native" => Ok(AnnotationFormat::Native),
+        _ => Err("expected embed or native".to_string()),
+    }
+}
+
+fn parse_formats(raw: &str) -> std::result::Result<loader::FormatSelection, String> {
+    raw.parse()
+}
+
 fn parse_cache_budget(raw: &str) -> Result<CacheBudget, String> {
     CacheBudget::from_total(parse_byte_size(raw)?)
+}
+
+fn parse_decode_memory(raw: &str) -> Result<DecodeLimits, String> {
+    DecodeLimits::with_memory(parse_byte_size(raw)?)
 }
 
 #[tokio::main]

@@ -168,6 +168,7 @@ async fn prepared_native_overlay_composites_after_luts_and_preserves_raw_frame()
         dcmview::loader::DiscoverOptions {
             recursive: false,
             filters: Vec::new(),
+            formats: Default::default(),
         },
     )
     .await
@@ -273,6 +274,7 @@ async fn prepared_native_full_frame_shutter_preserves_windowed_pixels_and_raw_fr
         dcmview::loader::DiscoverOptions {
             recursive: false,
             filters: Vec::new(),
+            formats: Default::default(),
         },
     )
     .await

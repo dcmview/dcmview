@@ -1,34 +1,51 @@
-use crate::api::contracts::{RawFrameMetadata, RealWorldValueMap, SupportState, WindowMode};
+use crate::api::contracts::{
+    RawFrameMetadata, RealWorldValueMap, SupportState, ThumbnailSource, WindowMode,
+};
 use crate::types::{
-    FileEntry, FrameCacheKey, NativePixelDataKind, RawFrameCacheKey, ResolvedWindow, WindowRequest,
+    FileEntry, FrameCacheKey, NativePixelDataKind, RawFrameCacheKey, ResolvedWindow,
+    ThumbnailCacheKey, WindowRequest,
 };
 use anyhow::Context;
 use bytes::Bytes;
 use futures::FutureExt;
 use std::future::Future;
 use std::hash::Hash;
-use std::sync::{Arc, LazyLock, Mutex};
-use tokio::sync::Semaphore;
+use std::sync::{Arc, Mutex};
 
-use super::cache::{BudgetedLru, FrameBody, FrameCache, InFlight, RawFrameCache};
+use super::admission::{self, DecodeWork};
+use super::cache::{
+    BudgetedLru, Flight, FlightWaiters, FrameBody, FrameCache, RawFrameCache, ThumbnailCache,
+};
 use super::deflated_frame::{
     decode_deflated_binary_frame_to_png, decode_raw_deflated_binary_frame,
+    render_deflated_binary_frame,
 };
+use super::digest::record_frame_digest;
 use super::error::{PixelError, PixelResult};
 use super::jpeg::{
     decode_compressed_frame_to_png, decode_raw_jpeg_lossless, read_raw_jpeg_samples,
+    render_compressed_frame, render_compressed_thumbnail,
 };
-use super::jpeg2000::{decode_jp2_fragment_to_png, decode_raw_jp2_samples};
-use super::jpegls::{decode_jpeg_ls_to_png, decode_raw_jpeg_ls};
-use super::jpegxl::{decode_jpeg_xl_to_png, decode_raw_jpeg_xl};
-use super::native::{decode_uncompressed_to_png, read_raw_uncompressed};
+use super::jpeg2000::{
+    decode_jp2_fragment_to_png, decode_raw_jp2_samples, render_jp2_fragment, render_jp2_thumbnail,
+};
+use super::jpegls::{decode_jpeg_ls_to_png, decode_raw_jpeg_ls, render_jpeg_ls};
+use super::jpegxl::{decode_jpeg_xl_to_png, decode_raw_jpeg_xl, render_jpeg_xl};
+use super::native::{decode_uncompressed_to_png, read_raw_uncompressed, render_uncompressed};
+use super::raster::{decode_raster_to_png, decode_raw_raster, render_raster};
 use super::redaction::{redact_png, redact_raw, RawLayout, Redaction};
+use super::reduced::{thumbnail_reduction, Reduction, ThumbnailRender};
 use super::render::{
-    encode_real_world_windowed_png, encode_windowed_luminance_png, AppliedWindow, DisplayPng,
-    LuminanceRenderOptions, StoredSamples,
+    encode_real_world_windowed_png, encode_windowed_luminance_png, AppliedWindow, DisplayBuffer,
+    DisplayPng, LuminanceRenderOptions, StoredSamples,
 };
-use super::rle::{decode_raw_rle, decode_rle_to_png};
-use super::syntax::{classify_pixel_support, codec_for_syntax, Codec, PixelSupportReason};
+use super::rle::{decode_raw_rle, decode_rle_to_png, render_rle};
+use super::schedule::{DecodeClass, DecodePermit, DecodeScheduler};
+use super::syntax::{classify_pixel_support, codec_for_file, Codec, PixelSupportReason};
+use super::thumbnail::{
+    encode_thumbnail_jpeg, encode_thumbnail_jpeg_sized, thumbnail_dimensions, ThumbnailRequest,
+    ThumbnailResponse,
+};
 
 #[derive(Debug, Clone)]
 pub struct RawFrameRequest {
@@ -45,23 +62,68 @@ pub struct RawFrameResponse {
 /// [`load_raw_frame`] with the frame's redaction boxes filled. The cache
 /// keeps the decoded samples, which the display path also reads; the boxes
 /// are filled in a copy for each response.
+///
+/// The copy is as large as the frame, so it is made under its own permit
+/// ([`DecodeWork::RawRedaction`]), taken after the decode's has been
+/// returned. The request waits for that permit itself, so one that is
+/// dropped while it waits makes no copy; once the copy has begun it holds
+/// the permit until it is done, whether or not the request is still there.
 pub async fn load_redacted_raw_frame(
     file: Arc<FileEntry>,
     cache: Arc<Mutex<RawFrameCache>>,
     request: RawFrameRequest,
     redaction: &Redaction,
 ) -> PixelResult<RawFrameResponse> {
+    let scheduler = scheduler_of(&cache)?;
     let mut raw = load_raw_frame(file.clone(), cache, request).await?;
     if !redaction.is_empty() {
-        raw.body = redact_raw(&file, &raw.body, &raw.metadata, &redaction.boxes);
+        let permit = admission::admit(
+            &scheduler,
+            DecodeClass::Interactive,
+            &file,
+            DecodeWork::RawRedaction,
+        )
+        .await?;
+        let (body, metadata, boxes) = (raw.body, raw.metadata.clone(), redaction.boxes.clone());
+        raw.body = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            redact_raw(&file, &body, &metadata, &boxes)
+        })
+        .await
+        .map_err(|error| {
+            PixelError::raw_decode(anyhow::anyhow!("raw redaction task failed: {error}"))
+        })?;
     }
     Ok(raw)
+}
+
+/// Who holds the permit a raw decode runs under.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RawAdmission {
+    /// The decode admits itself as interactive [`DecodeWork::RawFrame`].
+    Own,
+    /// The caller holds a permit whose estimate includes this decode
+    /// ([`DecodeWork::DisplayFrame`]) and awaits it, so the decode takes
+    /// none. Such a caller must never wait for work that may itself be
+    /// waiting for a permit, or two display frames could each hold the
+    /// permit the other's raw decode needs: it reads the cache, and
+    /// otherwise decodes, without joining a decode already announced.
+    Covered,
 }
 
 pub async fn load_raw_frame(
     file: Arc<FileEntry>,
     cache: Arc<Mutex<RawFrameCache>>,
     request: RawFrameRequest,
+) -> PixelResult<RawFrameResponse> {
+    raw_frame(file, cache, request, RawAdmission::Own).await
+}
+
+async fn raw_frame(
+    file: Arc<FileEntry>,
+    cache: Arc<Mutex<RawFrameCache>>,
+    request: RawFrameRequest,
+    admission: RawAdmission,
 ) -> PixelResult<RawFrameResponse> {
     if !file.has_pixels {
         return Err(PixelError::NoPixelData {
@@ -79,7 +141,10 @@ pub async fn load_raw_frame(
     };
 
     let frame = request.frame;
-    let ((body, metadata), cache_hit) = cached_or_decoded(&cache, key, async move {
+    let decoded_file = file.clone();
+    let digest_cache = cache.clone();
+    let decode = async move {
+        let file = decoded_file;
         let (body, mut metadata) = match codec {
             Codec::DeflatedImageFrame => {
                 decode_raw_deflated_binary_frame(file.clone(), frame).await?
@@ -95,14 +160,30 @@ pub async fn load_raw_frame(
                 .await
                 .map_err(PixelError::raw_decode)?,
             Codec::Rle => decode_raw_rle(file.clone(), frame).await?,
+            Codec::Raster => decode_raw_raster(file.clone(), frame).await?,
         };
         if let Some([low, high]) = raw_padding_bounds(&file, &metadata) {
             metadata.padding_low = Some(low);
             metadata.padding_high = Some(high);
         }
+        // The frame's pixel digest, from the samples just decoded and
+        // while this decode's permit still covers them. Read here, so a
+        // frame the cache answers costs nothing more.
+        let digests = digest_cache
+            .lock()
+            .ok()
+            .and_then(|cache| cache.pixel_digests());
+        if let Some(digests) = digests {
+            record_frame_digest(&digests, &file, frame, &body, &metadata).await;
+        }
         Ok((body, metadata))
-    })
-    .await?;
+    };
+    let ((body, metadata), cache_hit) = match admission {
+        RawAdmission::Own => {
+            cached_or_decoded(&cache, key, file, DecodeWork::RawFrame, decode).await?
+        }
+        RawAdmission::Covered => covered_decode(&cache, key, decode).await?,
+    };
 
     Ok(RawFrameResponse {
         body,
@@ -228,24 +309,33 @@ pub async fn load_redacted_frame(
         .filter(|_| display.mode == WindowMode::Default);
     if let (Some(map), Some(window)) = (request.real_world, real_world_window) {
         let key = display.cache_key(&file, Some(&map.unit_label));
-        if let Some(display) = cache.lock().map_err(|_| cache_poisoned())?.get(&key) {
-            return Ok(FrameResponse::png(display, true));
-        }
         // A real-world window is applied to decoded integer samples, so
-        // JPEG 2000 decodes through the raw tier here too.
-        let raw = raw_samples_for_display(&file, codec, &raw_cache, display.frame, true).await;
-        if let Some((raw, layout)) = raw {
-            let render = window_real_world_samples(file, raw, layout, map, window, display.frame);
-            let render = redacted(render, boxes);
-            let (display, cache_hit) =
-                cached_or_rendered(&cache, key, request.preview, render).await?;
-            return Ok(FrameResponse::png(display, cache_hit));
-        }
-        // Samples a real-world window cannot apply to show the default
-        // window, as a frame without a mapping in that unit does, and report
-        // it, so the viewer can tell its window was not applied.
-        display.center = None;
-        display.width = None;
+        // JPEG 2000 decodes through the raw tier here too. Samples a
+        // real-world window cannot apply to show the default window, as a
+        // frame without a mapping in that unit does, and report it, so the
+        // viewer can tell its window was not applied.
+        let render = {
+            let (file, raw_cache) = (file.clone(), raw_cache.clone());
+            async move {
+                match raw_samples_for_display(&file, codec, &raw_cache, display.frame, true).await {
+                    Some((raw, layout)) => {
+                        window_real_world_samples(file, raw, layout, map, window, display.frame)
+                            .await
+                    }
+                    None => {
+                        let display = DisplayWindow {
+                            center: None,
+                            width: None,
+                            ..display
+                        };
+                        render_display(file, codec, raw_cache, display).await
+                    }
+                }
+            }
+        };
+        let (display, cache_hit) =
+            cached_or_rendered(&cache, key, request.preview, file, redacted(render, boxes)).await?;
+        return Ok(FrameResponse::png(display, cache_hit));
     }
 
     // Only this frame's integer Modality path proves sub-unit widths render
@@ -259,24 +349,247 @@ pub async fn load_redacted_frame(
     }
 
     let key = display.cache_key(&file, None);
-
-    let cached = cache.lock().map_err(|_| cache_poisoned())?.get(&key);
-    let (display, cache_hit) = match cached {
-        Some(display) => (display, true),
-        None => match raw_samples_for_display(&file, codec, &raw_cache, display.frame, false).await
-        {
-            Some((raw, layout)) => {
-                let render = redacted(window_raw_samples(file, raw, layout, display), boxes);
-                cached_or_rendered(&cache, key, request.preview, render).await?
-            }
-            None => {
-                let render = redacted(decode_display_frame(codec, file, display), boxes);
-                cached_or_rendered(&cache, key, request.preview, render).await?
-            }
-        },
-    };
+    let render = redacted(
+        render_display(file.clone(), codec, raw_cache, display),
+        boxes,
+    );
+    let (display, cache_hit) =
+        cached_or_rendered(&cache, key, request.preview, file, render).await?;
 
     Ok(FrameResponse::png(display, cache_hit))
+}
+
+/// One display frame, from the raw tier when it holds or can decode the
+/// frame's samples and otherwise from the codec's display decoder. It runs
+/// under the permit of the display frame it is for
+/// ([`DecodeWork::DisplayFrame`]), whose estimate includes the decode.
+async fn render_display(
+    file: Arc<FileEntry>,
+    codec: Codec,
+    raw_cache: Arc<Mutex<RawFrameCache>>,
+    display: DisplayWindow,
+) -> PixelResult<DisplayPng> {
+    match raw_samples_for_display(&file, codec, &raw_cache, display.frame, false).await {
+        Some((raw, layout)) => window_raw_samples(file, raw, layout, display).await,
+        None => decode_display_frame(codec, file, display).await,
+    }
+}
+
+/// The gallery thumbnail of one frame: a small JPEG of the whole frame with
+/// the redaction boxes painted black.
+///
+/// Errors as [`load_redacted_frame`] does for the same file and frame: no
+/// pixel data, frame out of range, unsupported transfer syntax, a layout the
+/// display path does not present, a failed decode.
+///
+/// The cache key is the file, frame, bucket, window mode and the revision of
+/// `redaction` (0 when it has no box for this frame), so a thumbnail
+/// rendered before a file's boxes changed is never served after the change.
+///
+/// 1. A thumbnail the cache holds is returned as it is: source
+///    `ThumbnailCache`, a cache hit.
+/// 2. A render of the same key already under way is awaited instead of
+///    repeated, and counts as a cache hit with source `ThumbnailCache`.
+/// 3. Otherwise the request waits for a [`DecodeClass::Background`] permit
+///    of the cache's scheduler for [`DecodeWork::Thumbnail`] inside this
+///    future, so a request that is dropped while it waits starts no work
+///    and reserves nothing. A refusal is this request's error
+///    ([`PixelError::DecodeBusy`], [`PixelError::DecodeMemoryExceeded`]):
+///    nothing was started, so no other request shares it. Once it holds the
+///    permit, the render runs as its own task, keeps the permit until it
+///    ends, and caches its result whether or not the request is still
+///    there. A cache miss, whose source is `ReducedDecode` when the frame
+///    was decoded at a reduced resolution and `FullDecode` otherwise.
+///
+/// The render decodes the frame with its codec's display renderer at the
+/// default window of `request.window_mode` (no explicit center or width, no
+/// real-world unit), paints `redaction.boxes` on the buffer
+/// ([`DisplayBuffer::redact`]) and encodes it
+/// (`thumbnail::encode_thumbnail_jpeg`, with the file's effective pixel
+/// aspect ratio). It does not draw the display shutter or overlay planes.
+///
+/// A JPEG 2000 or JPEG Baseline frame without redaction boxes is decoded
+/// at the reduced resolution `thumbnail_reduction` asks for, when its
+/// codestream allows it (`pixels/reduced.rs`); its thumbnail has the size
+/// of the stored frame's (`thumbnail::encode_thumbnail_jpeg_sized`). A
+/// frame with boxes is always decoded in full, so the boxes are painted on
+/// stored pixels. Either way the work is one [`DecodeWork::Thumbnail`]
+/// under one permit.
+///
+/// It never reads or writes the display cache and never writes the raw
+/// cache: those hold the viewer's working set, which a gallery scroll must
+/// not evict. In this version it does not read the raw cache either.
+///
+/// [`DecodeClass::Background`]: super::schedule::DecodeClass::Background
+/// [`DisplayBuffer::redact`]: super::render::DisplayBuffer::redact
+pub async fn load_thumbnail(
+    file: Arc<FileEntry>,
+    cache: Arc<Mutex<ThumbnailCache>>,
+    request: ThumbnailRequest,
+    redaction: Redaction,
+) -> PixelResult<ThumbnailResponse> {
+    if !file.has_pixels {
+        return Err(PixelError::NoPixelData {
+            file_index: file.index,
+        });
+    }
+    PixelError::ensure_frame(request.frame, file.frame_count)?;
+    let codec = codec_or_unsupported(&file)?;
+    reject_unsupported_layout(&file, FrameKind::Display)?;
+    let key = ThumbnailCacheKey {
+        file_index: file.index,
+        frame: request.frame,
+        bucket: request.bucket,
+        window_mode: request.window_mode,
+        redaction: if redaction.is_empty() {
+            0
+        } else {
+            redaction.revision
+        },
+    };
+    let (flight, scheduler) = {
+        let mut lock = cache.lock().map_err(|_| cache_poisoned())?;
+        if let Some(body) = lock.get(&key) {
+            return Ok(thumbnail_response(body, true));
+        }
+        (lock.join_flight(&key), lock.scheduler())
+    };
+    // What the render this request starts found it could do; requests that
+    // share it report the cache.
+    let decoded_at = Arc::new(std::sync::OnceLock::new());
+    let (flight, cache_hit) = match flight {
+        Some(flight) => (flight, true),
+        None => {
+            let permit = admission::admit(
+                &scheduler,
+                DecodeClass::Background,
+                &file,
+                DecodeWork::Thumbnail,
+            )
+            .await?;
+            // Another request may have started or finished this key while
+            // we queued. Claim a flight only while holding the cache lock.
+            let mut lock = cache.lock().map_err(|_| cache_poisoned())?;
+            if let Some(body) = lock.get(&key) {
+                return Ok(thumbnail_response(body, true));
+            }
+            match lock.join_flight(&key) {
+                Some(flight) => {
+                    drop(permit);
+                    (flight, true)
+                }
+                None => {
+                    let reported = Arc::clone(&decoded_at);
+                    let render = async move {
+                        // Boxes are in stored pixels, and a reduced pixel
+                        // mixes its neighbours: a frame that has boxes is
+                        // decoded in full.
+                        let reduction = if redaction.is_empty() {
+                            reducible(codec, &file, request)
+                        } else {
+                            None
+                        };
+                        let ThumbnailRender { mut buffer, shift } =
+                            render_thumbnail_frame(codec, file.clone(), request, reduction).await?;
+                        let _ = reported.set(shift);
+                        tokio::task::spawn_blocking(move || {
+                            let ratio = file
+                                .series_metadata
+                                .native_pixel
+                                .effective_pixel_aspect_ratio();
+                            if shift == 0 {
+                                buffer.redact(&redaction.boxes);
+                                encode_thumbnail_jpeg(buffer, request.bucket, ratio)
+                            } else {
+                                let stored = thumbnail_dimensions(
+                                    file.rows,
+                                    file.columns,
+                                    ratio,
+                                    request.bucket,
+                                );
+                                encode_thumbnail_jpeg_sized(buffer, stored)
+                            }
+                        })
+                        .await
+                        .context("thumbnail encoding task failed")
+                        .and_then(|result| result)
+                        .map_err(PixelError::frame_decode)
+                    };
+                    let flight = spawn_decode_with_permit(
+                        &cache,
+                        key.clone(),
+                        std::future::ready(Ok(Some(permit))),
+                        render,
+                    );
+                    (lock.start_flight(key, flight), false)
+                }
+            }
+        }
+    };
+    let body = flight.result().await.map_err(|error| error.duplicate())?;
+    let mut response = thumbnail_response(body, cache_hit);
+    if !cache_hit && decoded_at.get().is_some_and(|shift| *shift > 0) {
+        response.source = ThumbnailSource::ReducedDecode;
+    }
+    Ok(response)
+}
+
+fn thumbnail_response(body: Bytes, cache_hit: bool) -> ThumbnailResponse {
+    ThumbnailResponse {
+        body,
+        cache_hit,
+        source: if cache_hit {
+            ThumbnailSource::ThumbnailCache
+        } else {
+            ThumbnailSource::FullDecode
+        },
+    }
+}
+
+/// The reduction a thumbnail asks for, for the codecs that have a reduced
+/// decode; the others are never asked.
+fn reducible(codec: Codec, file: &FileEntry, request: ThumbnailRequest) -> Option<Reduction> {
+    match codec {
+        Codec::Jpeg2000 | Codec::JpegBaseline => {
+            thumbnail_reduction(file, request.bucket, request.window_mode)
+        }
+        _ => None,
+    }
+}
+
+/// Renders a frame for its thumbnail: through the codec's reduced decode
+/// when `reduction` asks for one, otherwise exactly as
+/// [`render_display_frame`] does at the default window.
+async fn render_thumbnail_frame(
+    codec: Codec,
+    file: Arc<FileEntry>,
+    request: ThumbnailRequest,
+    reduction: Option<Reduction>,
+) -> PixelResult<ThumbnailRender> {
+    let (frame, mode) = (request.frame, request.window_mode);
+    match (codec, reduction) {
+        (Codec::Jpeg2000, Some(_)) => render_jp2_thumbnail(file, frame, mode, reduction)
+            .await
+            .map_err(PixelError::frame_decode),
+        (Codec::JpegBaseline, Some(_)) => {
+            render_compressed_thumbnail(codec, file, frame, mode, reduction)
+                .await
+                .map_err(PixelError::frame_decode)
+        }
+        _ => render_display_frame(
+            codec,
+            file,
+            DisplayWindow {
+                frame,
+                center: None,
+                width: None,
+                mode,
+                redaction: 0,
+            },
+        )
+        .await
+        .map(ThumbnailRender::full),
+    }
 }
 
 impl FrameResponse {
@@ -325,7 +638,7 @@ async fn redacted(
     if boxes.is_empty() {
         return Ok(display);
     }
-    display.png = tokio::task::spawn_blocking(move || redact_png(&display.png, &boxes))
+    display.png = tokio::task::spawn_blocking(move || redact_png(display.png, &boxes))
         .await
         .context("redaction task failed")
         .and_then(|result| result)
@@ -364,6 +677,42 @@ async fn decode_display_frame(
             .await
             .map_err(PixelError::frame_decode)?,
         Codec::Rle => decode_rle_to_png(file, frame, center, width, mode).await?,
+        Codec::Raster => decode_raster_to_png(file, frame, center, width, mode).await?,
+    })
+}
+
+/// Renders the same codec paths without presentation graphics or encoding.
+async fn render_display_frame(
+    codec: Codec,
+    file: Arc<FileEntry>,
+    window: DisplayWindow,
+) -> PixelResult<DisplayBuffer> {
+    let DisplayWindow {
+        frame,
+        center,
+        width,
+        mode,
+        ..
+    } = window;
+    Ok(match codec {
+        Codec::DeflatedImageFrame => {
+            render_deflated_binary_frame(file, frame, center, width, mode).await?
+        }
+        Codec::JpegBaseline | Codec::JpegLossless => {
+            render_compressed_frame(codec, file, frame, center, width, mode)
+                .await
+                .map_err(PixelError::frame_decode)?
+        }
+        Codec::Jpeg2000 => render_jp2_fragment(file, frame, center, width, mode)
+            .await
+            .map_err(PixelError::frame_decode)?,
+        Codec::JpegXl => render_jpeg_xl(file, frame, center, width, mode).await?,
+        Codec::JpegLs => render_jpeg_ls(file, frame, center, width, mode).await?,
+        Codec::Native => render_uncompressed(file, frame, center, width, mode)
+            .await
+            .map_err(PixelError::frame_decode)?,
+        Codec::Rle => render_rle(file, frame, center, width, mode).await?,
+        Codec::Raster => render_raster(file, frame, center, width, mode).await?,
     })
 }
 
@@ -434,6 +783,9 @@ async fn window_real_world_samples(
 /// unless `decode_jpeg2000` it only reuses a frame the raw cache already holds
 /// rather than risk a second decode per request. `None` means decode for
 /// display as before.
+///
+/// The caller holds the display frame's permit, so the raw decode takes none
+/// ([`RawAdmission::Covered`]).
 async fn raw_samples_for_display(
     file: &Arc<FileEntry>,
     codec: Codec,
@@ -451,9 +803,14 @@ async fn raw_samples_for_display(
         };
         raw_cache.lock().ok()?.get(&key)?
     } else {
-        let raw = load_raw_frame(file.clone(), raw_cache.clone(), RawFrameRequest { frame })
-            .await
-            .ok()?;
+        let raw = raw_frame(
+            file.clone(),
+            raw_cache.clone(),
+            RawFrameRequest { frame },
+            RawAdmission::Covered,
+        )
+        .await
+        .ok()?;
         (raw.body, raw.metadata)
     };
     let layout = display_integer_layout(file, codec, &raw.1)?;
@@ -482,6 +839,16 @@ fn displays_grayscale(file: &FileEntry, codec: Codec) -> bool {
                     && matches!(file.bits_allocated, 1 | 8 | 16)
             }
             Codec::Rle => monochrome && matches!(file.pixel_representation, 0 | 1),
+            // Gray with alpha has two samples and is flattened by its own
+            // renderer; wider and floating-point gray is windowed per sample.
+            Codec::Raster => {
+                monochrome
+                    && matches!(
+                        file.series_metadata.native_pixel.pixel_data_kind,
+                        None | Some(NativePixelDataKind::Integer)
+                    )
+                    && matches!(file.bits_allocated, 8 | 16)
+            }
             Codec::DeflatedImageFrame
             | Codec::JpegBaseline
             | Codec::JpegLossless
@@ -521,28 +888,54 @@ fn display_integer_layout(
 /// preview rendered for this request alone. A drag sends one preview per
 /// window it passes through; caching them would evict the frames cine and
 /// the settled window need, and no other request will ask for them.
+///
+/// Either way `render` runs under one interactive permit for
+/// [`DecodeWork::DisplayFrame`] on `file`.
+///
+/// A preview the cache holds is served from it. Otherwise the request
+/// waits for its permit itself, so a preview that is dropped while it waits
+/// (the drag moved on) renders nothing and reserves nothing. Once it holds
+/// the permit, the render runs as its own task and keeps the permit until
+/// it ends: a request dropped after that point no longer frees the permit
+/// or the memory while its blocking work is still running.
 async fn cached_or_rendered(
     cache: &Arc<Mutex<FrameCache>>,
     key: FrameCacheKey,
     preview: bool,
+    file: Arc<FileEntry>,
     render: impl Future<Output = PixelResult<DisplayPng>> + Send + 'static,
 ) -> PixelResult<(DisplayPng, bool)> {
     if !preview {
-        return cached_or_decoded(cache, key, render).await;
+        return cached_or_decoded(cache, key, file, DecodeWork::DisplayFrame, render).await;
     }
-    let _permit = DECODE_PERMITS
-        .acquire()
-        .await
-        .map_err(|_| PixelError::frame_decode(anyhow::anyhow!("decoder shut down")))?;
-    Ok((render.await?, false))
+    let scheduler = {
+        let mut lock = cache.lock().map_err(|_| cache_poisoned())?;
+        if let Some(display) = lock.get(&key) {
+            return Ok((display, true));
+        }
+        lock.scheduler()
+    };
+    let permit = admission::admit(
+        &scheduler,
+        DecodeClass::Interactive,
+        &file,
+        DecodeWork::DisplayFrame,
+    )
+    .await?;
+    let task = tokio::spawn(async move {
+        let _permit = permit;
+        std::panic::AssertUnwindSafe(render).catch_unwind().await
+    });
+    match task.await {
+        Ok(Ok(result)) => Ok((result?, false)),
+        Ok(Err(_)) => Err(PixelError::frame_decode(anyhow::anyhow!(
+            "preview task panicked"
+        ))),
+        Err(join_error) => Err(PixelError::frame_decode(anyhow::anyhow!(
+            "preview task failed: {join_error}"
+        ))),
+    }
 }
-
-/// Decodes run on the blocking pool; bounding them to the core count keeps
-/// concurrent requests from multiplying peak memory (one large frame can take
-/// hundreds of MB while it decodes) without speeding anything up.
-static DECODE_PERMITS: LazyLock<Semaphore> = LazyLock::new(|| {
-    Semaphore::new(std::thread::available_parallelism().map_or(4, |cores| cores.get()))
-});
 
 /// The cached value for `key` (`true`), or the result of `decode` (`false`).
 ///
@@ -550,9 +943,18 @@ static DECODE_PERMITS: LazyLock<Semaphore> = LazyLock::new(|| {
 /// a hit. The decode runs as its own task and caches its result there, so a
 /// client that disconnects mid-decode (a slider drag, a held arrow key) still
 /// leaves the finished frame cached for the request that follows.
+///
+/// The task first waits for an interactive permit for `work` on `file` from
+/// the cache's scheduler. A refusal is the decode's result, for every
+/// request that shared it, and nothing is cached. While it waits, the
+/// decode is only as wanted as its requests: when the last request waiting
+/// for it is dropped, it leaves the scheduler's queue and is never started,
+/// and a later request for `key` announces a new decode.
 async fn cached_or_decoded<K, V>(
     cache: &Arc<Mutex<BudgetedLru<K, V>>>,
     key: K,
+    file: Arc<FileEntry>,
+    work: DecodeWork,
     decode: impl Future<Output = PixelResult<V>> + Send + 'static,
 ) -> PixelResult<(V, bool)>
 where
@@ -564,56 +966,166 @@ where
         if let Some(value) = lock.get(&key) {
             return Ok((value, true));
         }
-        match lock.in_flight(&key) {
+        match lock.join_flight(&key) {
             Some(flight) => (flight, true),
             None => {
-                let flight = spawn_decode(cache, key.clone(), decode);
-                lock.start_flight(key, flight.clone());
-                (flight, false)
+                let scheduler = lock.scheduler();
+                let permit = async move {
+                    admission::admit(&scheduler, DecodeClass::Interactive, &file, work)
+                        .await
+                        .map(Some)
+                };
+                let flight = spawn_decode_with_permit(cache, key.clone(), permit, decode);
+                (lock.start_flight(key, flight), false)
             }
         }
     };
     flight
+        .result()
         .await
         .map(|value| (value, cache_hit))
         .map_err(|error| error.duplicate())
 }
 
-/// Runs `decode` as its own task, which caches the result and clears the
-/// in-flight entry whether or not anyone is still waiting for it.
-fn spawn_decode<K, V>(
+/// [`cached_or_decoded`] for a caller that already holds a permit covering
+/// `decode` ([`RawAdmission::Covered`]): no permit is taken, and nothing is
+/// awaited that could be waiting for one. A cached value is returned; with
+/// no decode announced for `key`, this one is announced (so requests for
+/// the same key share it) and cached; with one announced, which may not
+/// have been admitted yet, `decode` runs for this caller alone and its
+/// result is cached.
+async fn covered_decode<K, V>(
     cache: &Arc<Mutex<BudgetedLru<K, V>>>,
     key: K,
     decode: impl Future<Output = PixelResult<V>> + Send + 'static,
-) -> InFlight<V>
+) -> PixelResult<(V, bool)>
 where
     K: Hash + Eq + Clone + Send + 'static,
     V: FrameBody + Send + Sync + 'static,
 {
-    let (task_cache, task_key) = (Arc::clone(cache), key.clone());
+    let flight = {
+        let mut lock = cache.lock().map_err(|_| cache_poisoned())?;
+        if let Some(value) = lock.get(&key) {
+            return Ok((value, true));
+        }
+        if lock.has_flight(&key) {
+            Err(decode)
+        } else {
+            let flight =
+                spawn_decode_with_permit(cache, key.clone(), std::future::ready(Ok(None)), decode);
+            Ok(lock.start_flight(key.clone(), flight))
+        }
+    };
+    match flight {
+        Ok(flight) => flight
+            .result()
+            .await
+            .map(|value| (value, false))
+            .map_err(|error| error.duplicate()),
+        Err(decode) => {
+            let value = decode.await?.compact();
+            if let Ok(mut lock) = cache.lock() {
+                lock.insert(key, value.clone());
+            }
+            Ok((value, false))
+        }
+    }
+}
+
+/// Runs `decode` as its own task once `permit` resolves, holding what it
+/// resolves to until the decode ends. The task caches the result and clears
+/// the in-flight entry whether or not anyone is still waiting for it. A
+/// refused permit is the result, and `decode` is never polled.
+///
+/// The permit future is awaited in the detached task for viewer work; for
+/// thumbnails it is an already granted permit moved out of the request, and
+/// for a decode its caller's permit covers it is no permit at all.
+///
+/// While the permit future is pending, the task also watches the requests
+/// waiting for the flight ([`BudgetedLru::join_flight`]). When the last of
+/// them is dropped before the permit is granted, the flight is abandoned:
+/// its in-flight entry is removed, the permit future is dropped, which
+/// gives up its place in the scheduler's queue, and `decode` is never
+/// polled. A decode whose permit has been granted runs to its end and is
+/// cached whoever is still waiting.
+fn spawn_decode_with_permit<K, V>(
+    cache: &Arc<Mutex<BudgetedLru<K, V>>>,
+    key: K,
+    permit: impl Future<Output = PixelResult<Option<DecodePermit>>> + Send + 'static,
+    decode: impl Future<Output = PixelResult<V>> + Send + 'static,
+) -> Flight<V>
+where
+    K: Hash + Eq + Clone + Send + 'static,
+    V: FrameBody + Send + Sync + 'static,
+{
+    let waiters = Arc::new(FlightWaiters::default());
+    let (task_cache, task_key, task_waiters) =
+        (Arc::clone(cache), key.clone(), Arc::clone(&waiters));
     let task = tokio::spawn(async move {
-        let result = match DECODE_PERMITS.acquire().await {
-            Ok(_permit) => decode.await,
-            Err(_) => Err(PixelError::frame_decode(anyhow::anyhow!(
-                "decoder shut down"
-            ))),
+        let admitted = {
+            let mut permit = std::pin::pin!(permit);
+            loop {
+                tokio::select! {
+                    // A permit that is ready is taken, wanted or not: the
+                    // scheduler has already granted it.
+                    biased;
+                    admitted = &mut permit => break Some(admitted),
+                    () = task_waiters.none_left() => {
+                        // Requests join under the cache lock, so under it
+                        // "nobody is waiting" stays true once seen.
+                        // A poisoned cache serves nobody: give up as well.
+                        let abandoned = task_cache.lock().map_or(true, |mut lock| {
+                            lock.abandon_flight_if_unwanted(&task_key, &task_waiters)
+                        });
+                        if abandoned {
+                            break None;
+                        }
+                    }
+                }
+            }
+        };
+        let Some(admitted) = admitted else {
+            // Nobody holds this flight any longer, so nobody reads this.
+            return Err(PixelError::DecodeBusy);
+        };
+        // Cleanup belongs to the task too: even an abandoned request, a
+        // refused permit and a panicked render must leave no in-flight
+        // entry behind.
+        let result = match admitted {
+            Ok(permit) => {
+                let result = std::panic::AssertUnwindSafe(decode)
+                    .catch_unwind()
+                    .await
+                    .unwrap_or_else(|_| {
+                        Err(PixelError::frame_decode(anyhow::anyhow!(
+                            "decode task panicked"
+                        )))
+                    })
+                    // Before it is cloned for the cache and the requests,
+                    // and while the permit still covers the buffer it was
+                    // built in.
+                    .map(FrameBody::compact);
+                drop(permit);
+                result
+            }
+            Err(refusal) => Err(refusal),
         };
         if let Ok(mut lock) = task_cache.lock() {
-            lock.finish_flight(&task_key);
+            lock.finish_flight(&task_key, &task_waiters);
             if let Ok(value) = &result {
                 lock.insert(task_key, value.clone());
             }
         }
         result
     });
-    let cache = Arc::clone(cache);
-    async move {
+    let (cache, flight_waiters) = (Arc::clone(cache), Arc::clone(&waiters));
+    let decode = async move {
         match task.await {
             Ok(result) => result.map_err(Arc::new),
             Err(join_error) => {
                 // A panicked decode never reached its own cleanup.
                 if let Ok(mut lock) = cache.lock() {
-                    lock.finish_flight(&key);
+                    lock.finish_flight(&key, &flight_waiters);
                 }
                 Err(Arc::new(PixelError::frame_decode(anyhow::anyhow!(
                     "decode task failed: {join_error}"
@@ -622,7 +1134,127 @@ where
         }
     }
     .boxed()
-    .shared()
+    .shared();
+    Flight::new(decode, waiters)
+}
+
+/// The frames of one file, for work that holds a permit whose estimate
+/// includes decoding them ([`compute_from_frames`]). A frame read through
+/// this takes no permit of its own and waits for none.
+pub struct CoveredFrames {
+    file: Arc<FileEntry>,
+    raw_cache: Arc<Mutex<RawFrameCache>>,
+}
+
+impl CoveredFrames {
+    /// The file whose frames these are.
+    pub fn file(&self) -> &Arc<FileEntry> {
+        &self.file
+    }
+
+    /// The raw samples of frame `frame`, as [`load_raw_frame`] returns them
+    /// and with its errors, but under the permit the work already holds
+    /// ([`RawAdmission::Covered`]): the raw cache is read, and a frame it
+    /// does not hold is decoded here and cached. It never waits for a
+    /// permit, nor for a decode another request announced.
+    pub async fn raw(&self, frame: u32) -> PixelResult<RawFrameResponse> {
+        raw_frame(
+            self.file.clone(),
+            self.raw_cache.clone(),
+            RawFrameRequest { frame },
+            RawAdmission::Covered,
+        )
+        .await
+    }
+}
+
+/// The value `compute` derives from frames of `file`, computed once for
+/// `key` and shared: the cached value (`true`), or the result of `compute`
+/// (`false`; `true` for a request that joined a computation another
+/// request announced).
+///
+/// This is how work that decodes frames and then holds more than a decode
+/// does (an overlay resampled and encoded, a legend's value range) is
+/// admitted. It is [`cached_or_decoded`] with the frames handed to the
+/// work:
+///
+/// - a value `cache` holds is returned without a permit;
+/// - otherwise one computation is announced for `key`, which every request
+///   for `key` waits for, and it runs as its own task;
+/// - the task first waits for one interactive permit for `work` on `file`
+///   from `cache`'s scheduler. A refusal
+///   ([`PixelError::DecodeMemoryExceeded`], [`PixelError::DecodeBusy`]) is
+///   the result for every request that shared it, and nothing is cached.
+///   While it waits, the computation leaves the queue when the last request
+///   waiting for it is dropped;
+/// - `compute` then runs under that permit until it ends, whoever is still
+///   waiting, and its value is cached. It reads frames only through the
+///   [`CoveredFrames`] it is given, so every decode it causes runs under
+///   the same permit; `raw_cache` is where those frames are read from and
+///   kept. `compute` must not wait for another permit, nor for work that
+///   may be waiting for one.
+///
+/// `work` must cover everything `compute` holds: the caller sizes it from
+/// the catalog (the displayed frame an overlay is drawn on, the number of
+/// planes it samples) and `compute` holds no more than that.
+///
+/// `cache` and `raw_cache` belong to one viewer and share its scheduler.
+pub async fn compute_from_frames<K, V, Fut>(
+    file: Arc<FileEntry>,
+    work: DecodeWork,
+    cache: Arc<Mutex<BudgetedLru<K, V>>>,
+    key: K,
+    raw_cache: Arc<Mutex<RawFrameCache>>,
+    compute: impl FnOnce(CoveredFrames) -> Fut,
+) -> PixelResult<(V, bool)>
+where
+    K: Hash + Eq + Clone + Send + 'static,
+    V: FrameBody + Send + Sync + 'static,
+    Fut: Future<Output = PixelResult<V>> + Send + 'static,
+{
+    let frames = CoveredFrames {
+        file: file.clone(),
+        raw_cache,
+    };
+    cached_or_decoded(&cache, key, file, work, compute(frames)).await
+}
+
+/// The scheduler that admits the decodes filling `cache`.
+fn scheduler_of<K, V>(cache: &Arc<Mutex<BudgetedLru<K, V>>>) -> PixelResult<Arc<DecodeScheduler>>
+where
+    K: Hash + Eq,
+    V: FrameBody,
+{
+    Ok(cache.lock().map_err(|_| cache_poisoned())?.scheduler())
+}
+
+/// Runs `draw`, which draws and encodes one presentation layer of `file`,
+/// on the blocking pool under an interactive permit for
+/// [`DecodeWork::PresentationLayer`].
+///
+/// The request waits for the permit itself, so one that is dropped while it
+/// waits draws nothing. The permit then belongs to the blocking work and is
+/// held until `draw` returns, whether or not the request is still there.
+pub async fn draw_presentation_layer<T: Send + 'static>(
+    scheduler: &Arc<DecodeScheduler>,
+    file: &FileEntry,
+    draw: impl FnOnce() -> T + Send + 'static,
+) -> PixelResult<T> {
+    let permit = admission::admit(
+        scheduler,
+        DecodeClass::Interactive,
+        file,
+        DecodeWork::PresentationLayer,
+    )
+    .await?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        draw()
+    })
+    .await
+    .map_err(|error| {
+        PixelError::frame_decode(anyhow::anyhow!("presentation layer task failed: {error}"))
+    })
 }
 
 fn cache_poisoned() -> PixelError {
@@ -645,8 +1277,11 @@ fn reject_unsupported_layout(file: &FileEntry, kind: FrameKind) -> PixelResult<(
     let Some(reason) = support.reason else {
         return Ok(());
     };
+    // No tier serves a raster the catalog reports as unsupported: its reason
+    // is why nothing decodes it.
     let applies = support.state == SupportState::Unsupported
         && (kind == FrameKind::Display
+            || file.format.is_raster()
             || matches!(
                 reason,
                 PixelSupportReason::InvalidGeometry
@@ -659,7 +1294,7 @@ fn reject_unsupported_layout(file: &FileEntry, kind: FrameKind) -> PixelResult<(
 }
 
 fn codec_or_unsupported(file: &FileEntry) -> PixelResult<Codec> {
-    codec_for_syntax(&file.transfer_syntax_uid)
+    codec_for_file(file)
         .ok_or_else(|| PixelError::UnsupportedTransferSyntax(file.transfer_syntax_uid.clone()))
 }
 
@@ -680,7 +1315,7 @@ mod tests {
                 continue;
             }
             let file = Arc::new(crate::loader::test_entry(&path));
-            let Some(codec) = codec_for_syntax(&file.transfer_syntax_uid) else {
+            let Some(codec) = codec_for_file(&file) else {
                 continue;
             };
             if !file.has_pixels || reject_unsupported_layout(&file, FrameKind::Display).is_err() {
@@ -727,5 +1362,79 @@ mod tests {
             compared += 1;
         }
         assert!(compared >= 15, "only {compared} fixtures took the raw tier");
+    }
+
+    /// A gray raster frame is the same image, with the same window, whether
+    /// it is windowed from the raw tier (the viewer's display frames) or
+    /// rendered by the raster decoder itself (thumbnails).
+    #[tokio::test]
+    async fn a_gray_raster_renders_alike_from_the_raw_tier_and_from_its_own_decode() {
+        use image::{ExtendedColorType, ImageEncoder};
+        use tiff::encoder::{colortype, TiffEncoder};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ramp8: Vec<u8> = (0..64).map(|index| index * 4).collect();
+        let ramp16: Vec<u8> = (0..64_u16)
+            .flat_map(|index| (index * 1000).to_ne_bytes())
+            .collect();
+        for (name, color, data) in [
+            ("gray8.png", ExtendedColorType::L8, &ramp8),
+            ("gray16.png", ExtendedColorType::L16, &ramp16),
+        ] {
+            let mut bytes = Vec::new();
+            image::codecs::png::PngEncoder::new(&mut bytes)
+                .write_image(data, 8, 8, color)
+                .expect("encode PNG");
+            std::fs::write(dir.path().join(name), bytes).expect("write PNG");
+        }
+        // Signed samples, shown inverted: WhiteIsZero.
+        let signed: Vec<i16> = (0..64).map(|index| (index - 32) * 500).collect();
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        {
+            let mut encoder = TiffEncoder::new(&mut bytes).expect("TIFF encoder");
+            let mut image = encoder
+                .new_image::<colortype::GrayI16>(8, 8)
+                .expect("TIFF page");
+            image
+                .encoder()
+                .write_tag(tiff::tags::Tag::PhotometricInterpretation, 0_u16)
+                .expect("TIFF tag");
+            image.write_data(&signed).expect("TIFF samples");
+        }
+        std::fs::write(dir.path().join("int16.tif"), bytes.into_inner()).expect("write TIFF");
+
+        for name in ["gray8.png", "gray16.png", "int16.tif"] {
+            let file = Arc::new(crate::loader::test_entry(&dir.path().join(name)));
+            let codec = codec_for_file(&file).expect("a raster has a codec");
+            assert_eq!(codec, Codec::Raster, "{name}");
+            let raw_cache = new_raw_cache();
+            let (raw, layout) = raw_samples_for_display(&file, codec, &raw_cache, 0, false)
+                .await
+                .unwrap_or_else(|| panic!("{name} takes the raw tier"));
+            for (center, width, mode) in [
+                (None, None, WindowMode::Default),
+                (Some(100.0), Some(5000.0), WindowMode::Default),
+                (None, None, WindowMode::FullDynamic),
+            ] {
+                let window = DisplayWindow {
+                    frame: 0,
+                    center,
+                    width,
+                    mode,
+                    redaction: 0,
+                };
+                let decoded = decode_display_frame(codec, file.clone(), window)
+                    .await
+                    .expect("display decode");
+                let windowed = window_raw_samples(file.clone(), raw.clone(), layout, window)
+                    .await
+                    .expect("raw-tier display");
+                assert_eq!(
+                    (decoded.png, decoded.window),
+                    (windowed.png, windowed.window),
+                    "{name}"
+                );
+            }
+        }
     }
 }

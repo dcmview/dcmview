@@ -2,11 +2,12 @@ use super::support;
 use axum::http::{header, HeaderValue, StatusCode};
 use axum_test::{TestResponse, TestServer};
 use bytes::Bytes;
-use dcmview::annotations::{AnnotationStore, EmbedRoiAnnotations};
+use dcmview::annotations::EmbedRoiAnnotations;
 use dcmview::api::contracts::{
     endpoints, Endpoint, ResponseHeaders, CACHE_HEADER, CACHE_HIT, CACHE_MISS,
     DISPLAY_FRAME_HEADERS, EXPORT_CONTENT_DISPOSITION_HEADER, EXPORT_CONTENT_DISPOSITION_VALUE,
-    RAW_FRAME_HEADERS, SERVER_INSTANCE_HEADER,
+    EXPORT_JSONL_CONTENT_DISPOSITION_VALUE, EXPORT_JSON_CONTENT_DISPOSITION_VALUE,
+    RAW_FRAME_HEADERS, SERVER_INSTANCE_HEADER, THUMBNAIL_HEADERS,
 };
 use dcmview::server;
 use dcmview::types::WindowPreset;
@@ -36,17 +37,18 @@ async fn json_endpoints_match_frontend_contract_shapes() {
         width: 3000.0,
     });
 
-    let state = support::app_state_with_annotations(
+    let state = support::app_state_with_embed_rows(
         vec![entry],
-        AnnotationStore::new(HashMap::from([(
+        HashMap::from([(
             0,
             EmbedRoiAnnotations {
                 num_roi: 1,
                 roi_coords: vec![[1, 2, 3, 4]],
                 roi_frames: vec![vec![0]],
             },
-        )])),
-    );
+        )]),
+    )
+    .await;
 
     let test_server = TestServer::new(server::router(state));
 
@@ -57,7 +59,12 @@ async fn json_endpoints_match_frontend_contract_shapes() {
             "discovery",
             "files",
             "filtered",
+            "keys_hashing",
             "masked",
+            "more",
+            "rekeys",
+            "reset",
+            "revision",
             "scan_complete",
             "scanned",
             "server_start_ms",
@@ -65,6 +72,8 @@ async fn json_endpoints_match_frontend_contract_shapes() {
         ],
     );
     let file = &files["files"].as_array().expect("files array")[0];
+    // A DICOM file with its own UID carries no key member at all: its key
+    // is `sop:` plus `sop_instance_uid`.
     assert_object_keys(
         file,
         &[
@@ -72,6 +81,7 @@ async fn json_endpoints_match_frontend_contract_shapes() {
             "columns",
             "default_window",
             "display_name",
+            "file_format",
             "frame_count",
             "has_pixels",
             "index",
@@ -84,6 +94,7 @@ async fn json_endpoints_match_frontend_contract_shapes() {
             "patient_name",
             "pixel_aspect_ratio",
             "presentation_layer",
+            "raster",
             "raw_windowing_compatible",
             "raw_windowing_reason",
             "rows",
@@ -119,6 +130,8 @@ async fn json_endpoints_match_frontend_contract_shapes() {
         ],
     );
     assert_eq!(file["object_kind"], "classic_image");
+    assert_eq!(file["file_format"], "dicom");
+    assert!(file["raster"].is_null());
     assert_eq!(file["support_state"], "renderable");
     assert!(file["support_reason"].is_null());
     assert_eq!(info["object_kind"], "classic_image");
@@ -478,16 +491,36 @@ fn assert_declared_response_headers(endpoint: &Endpoint, response: &TestResponse
             assert_no_display_frame_headers(endpoint, response);
             assert_no_export_header(endpoint, response);
         }
+        ResponseHeaders::Thumbnail => {
+            assert_cache_header(endpoint, response);
+            for (_, name) in THUMBNAIL_HEADERS {
+                assert!(
+                    response.maybe_header(*name).is_some(),
+                    "{} is missing thumbnail header {name}",
+                    endpoint.id
+                );
+            }
+            assert_no_raw_frame_headers(endpoint, response);
+            assert_no_display_frame_headers(endpoint, response);
+            assert_no_export_header(endpoint, response);
+        }
         ResponseHeaders::Export => {
             assert_no_cache_header(endpoint, response);
             assert_no_raw_frame_headers(endpoint, response);
             assert_no_display_frame_headers(endpoint, response);
+            let expected = if *endpoint == endpoints::ANNOTATIONS_EXPORT_JSON {
+                EXPORT_JSON_CONTENT_DISPOSITION_VALUE
+            } else if *endpoint == endpoints::ANNOTATIONS_EXPORT_JSONL {
+                EXPORT_JSONL_CONTENT_DISPOSITION_VALUE
+            } else {
+                EXPORT_CONTENT_DISPOSITION_VALUE
+            };
             assert_eq!(
                 response
                     .header(EXPORT_CONTENT_DISPOSITION_HEADER)
                     .to_str()
                     .expect("content-disposition"),
-                EXPORT_CONTENT_DISPOSITION_VALUE,
+                expected,
                 "{} content-disposition contract",
                 endpoint.id
             );
@@ -573,6 +606,7 @@ async fn color_display_omits_the_applied_window_header() {
         dcmview::loader::DiscoverOptions {
             recursive: false,
             filters: Vec::new(),
+            formats: Default::default(),
         },
     )
     .await
@@ -653,6 +687,7 @@ async fn segmentation_context_always_includes_a_string_array_of_warnings() {
             dcmview::loader::DiscoverOptions {
                 recursive: true,
                 filters: vec![],
+                formats: Default::default(),
             },
         )
         .await

@@ -16,16 +16,34 @@ use std::sync::Arc;
 use tokio::task;
 
 use super::color::color_samples_to_rgb8;
+use super::error::Stated;
 use super::header::open_header;
 use super::icc::select_icc_profile;
-use super::native_layout::{native_pixel_element_tag, NativeByteOrder, NativeFrameLayout};
+use super::native_layout::{
+    exchange_words_of_samples, native_pixel_element_tag, stores_low_word_first,
+    stores_swapped_byte_pairs, NativeByteOrder, NativeFrameLayout, NativeLayoutError,
+    SwappedPairSpan,
+};
 use super::palette::palette_indices_to_rgb8;
 use super::render::{
-    encode_rgb8_display_png, encode_windowed_luminance_png, DisplayPng, LuminanceRenderOptions,
-    StoredSamples,
+    render_windowed_luminance, DisplayBuffer, DisplayPng, LuminanceRenderOptions, StoredSamples,
 };
 use super::stored_bits::canonicalize_integer_samples;
 use super::syntax::Codec;
+
+pub(crate) async fn render_uncompressed(
+    file: Arc<FileEntry>,
+    frame: u32,
+    requested_wc: Option<f64>,
+    requested_ww: Option<f64>,
+    window_mode: WindowMode,
+) -> Result<DisplayBuffer> {
+    task::spawn_blocking(move || {
+        render_uncompressed_blocking(&file, frame, requested_wc, requested_ww, window_mode)
+    })
+    .await
+    .context("uncompressed decode task failed")?
+}
 
 pub(crate) async fn decode_uncompressed_to_png(
     file: Arc<FileEntry>,
@@ -41,13 +59,13 @@ pub(crate) async fn decode_uncompressed_to_png(
     .context("uncompressed decode task failed")?
 }
 
-fn decode_uncompressed_to_png_blocking(
+fn render_uncompressed_blocking(
     file: &FileEntry,
     frame: u32,
     requested_wc: Option<f64>,
     requested_ww: Option<f64>,
     window_mode: WindowMode,
-) -> Result<DisplayPng> {
+) -> Result<DisplayBuffer> {
     let rows = file.rows;
     let columns = file.columns;
     let samples_per_pixel = file.samples_per_pixel.max(1);
@@ -86,15 +104,8 @@ fn decode_uncompressed_to_png_blocking(
             Some(samples) => color_samples_to_rgb8(samples, &frame_bytes, pixel_count, 0)?,
             None => palette_indices_to_rgb8(&object, &frame_bytes, bits_allocated)?,
         };
-        return encode_rgb8_display_png(
-            file,
-            frame,
-            rgb,
-            columns,
-            rows,
-            select_icc_profile(&object),
-        )
-        .context("color PNG encoding failed");
+        return DisplayBuffer::rgb8(rgb, columns, rows, select_icc_profile(&object))
+            .context("color PNG encoding failed");
     }
     if samples_per_pixel != 1 || !matches!(photometric.as_str(), "MONOCHROME1" | "MONOCHROME2") {
         return Err(anyhow!(
@@ -120,7 +131,7 @@ fn decode_uncompressed_to_png_blocking(
         _ => None,
     };
     if let Some(container) = container {
-        return encode_windowed_luminance_png(
+        return render_windowed_luminance(
             file,
             StoredSamples::Integer {
                 bytes: &frame_bytes,
@@ -137,7 +148,18 @@ fn decode_uncompressed_to_png_blocking(
         false,
         kind,
     )?;
-    encode_windowed_luminance_png(file, StoredSamples::Values(&stored), options)
+    render_windowed_luminance(file, StoredSamples::Values(&stored), options)
+}
+
+fn decode_uncompressed_to_png_blocking(
+    file: &FileEntry,
+    frame: u32,
+    requested_wc: Option<f64>,
+    requested_ww: Option<f64>,
+    window_mode: WindowMode,
+) -> Result<DisplayPng> {
+    render_uncompressed_blocking(file, frame, requested_wc, requested_ww, window_mode)?
+        .into_display_png(file, frame)
 }
 
 fn native_frame_layout(file: &FileEntry) -> NativeFrameLayout<'_> {
@@ -151,9 +173,6 @@ fn native_frame_layout(file: &FileEntry) -> NativeFrameLayout<'_> {
         byte_order: NativeByteOrder::LittleEndian,
     }
 }
-
-// Retired, but still readable; dicom-dictionary-std marks the constant deprecated.
-const EXPLICIT_VR_BIG_ENDIAN: &str = "1.2.840.10008.1.2.2";
 
 /// Stored bytes for one native frame, plus the layout that interprets them.
 struct NativeFrameSource<'a> {
@@ -184,14 +203,20 @@ impl NativeFrameSource<'_> {
 /// the frame, discarding what precedes it: one frame of memory, and time that
 /// grows with the frame's position. One-bit frames need not start on a byte
 /// boundary; they are small in practice and read the whole element.
+///
+/// The bytes returned are in sample order, for every reader of native
+/// frames: 8-bit samples a big-endian file stores as 16-bit words are put
+/// back in order here ([`stores_swapped_byte_pairs`]), and so are the two
+/// words of each 32-bit sample, which such a file stores low word first
+/// ([`stores_low_word_first`]). The bytes of a sample of more than 8 bits
+/// are then in the file's byte order, which the layout names.
 fn read_native_frame(file: &FileEntry, frame: u32) -> Result<NativeFrameSource<'_>> {
     let layout = native_frame_layout(file);
     if layout.bits_allocated != 1 {
         let deflated = file.transfer_syntax_uid == uids::DEFLATED_EXPLICIT_VR_LITTLE_ENDIAN;
-        let byte_order = if file.transfer_syntax_uid == EXPLICIT_VR_BIG_ENDIAN {
-            NativeByteOrder::BigEndian
-        } else {
-            NativeByteOrder::LittleEndian
+        let layout = NativeFrameLayout {
+            byte_order: NativeByteOrder::of_transfer_syntax(&file.transfer_syntax_uid),
+            ..layout
         };
         let bytes = if deflated {
             read_deflated_frame_bytes(file, layout, frame)?
@@ -201,10 +226,7 @@ fn read_native_frame(file: &FileEntry, frame: u32) -> Result<NativeFrameSource<'
         return Ok(NativeFrameSource {
             bytes,
             frame_in_bytes: 0,
-            layout: NativeFrameLayout {
-                byte_order,
-                ..layout
-            },
+            layout,
         });
     }
 
@@ -215,10 +237,12 @@ fn read_native_frame(file: &FileEntry, frame: u32) -> Result<NativeFrameSource<'
         )
     })?;
     // dicom-object normalizes native primitive values to host order. The
-    // supported release hosts are little-endian, matching the raw API.
+    // supported release hosts are little-endian, matching the raw API. That
+    // is also what puts one-bit data of VR OW in a big-endian file in bit
+    // order: it is read as 16-bit words and laid out low byte first.
     let bytes = object
         .get(native_pixel_element_tag(native_pixel_data_kind(file)))
-        .context("missing native pixel data element")?
+        .context(Stated::new("missing native pixel data element"))?
         .to_bytes()
         .context("pixel bytes unavailable")?
         .into_owned();
@@ -246,7 +270,8 @@ fn frame_span(layout: NativeFrameLayout<'_>, frame: u32) -> Result<(usize, usize
 
 /// Returns the stored bytes of `frame` of a deflated data set: the inflated
 /// stream is parsed up to the top-level pixel element's header, the frames
-/// before `frame` are inflated and discarded, and only `frame` is kept.
+/// before `frame` are inflated and discarded, and only `frame` is kept, in
+/// a buffer that grows as the frame inflates ([`read_as_it_arrives`]).
 fn read_deflated_frame_bytes(
     file: &FileEntry,
     layout: NativeFrameLayout<'_>,
@@ -293,23 +318,54 @@ fn read_deflated_frame_bytes(
                 _ => {}
             }
         }
-        available.context("missing native pixel data element")?
+        available.context(Stated::new("missing native pixel data element"))?
     };
     if end > available {
-        return Err(anyhow!(
-            "native pixel data frame {frame} extends beyond {available} source bytes"
-        ));
+        return Err(NativeLayoutError::FrameOutOfBounds { frame, available }.into());
     }
-    io::copy(&mut (&mut inflated).take(start as u64), &mut io::sink())?;
-    let mut bytes = vec![0; end - start];
-    inflated
-        .read_exact(&mut bytes)
-        .context("deflated pixel data is truncated")?;
+    let skipped = io::copy(&mut (&mut inflated).take(start as u64), &mut io::sink())?;
+    if skipped != start as u64 {
+        return Err(anyhow!("deflated pixel data is truncated"));
+    }
+    read_as_it_arrives(&mut inflated, end - start).context("deflated pixel data is truncated")
+}
+
+/// The first allocation [`read_as_it_arrives`] makes for a frame, and the
+/// least it grows by.
+const DEFLATED_FRAME_FIRST_BYTES: usize = 64 * 1024;
+
+/// Reads exactly `length` bytes of `source` into a buffer that grows with
+/// what has arrived: it starts at [`DEFLATED_FRAME_FIRST_BYTES`], doubles
+/// when it is full, and never exceeds `length`. A source that ends early is
+/// an error, and has cost no more than twice what it supplied (or the first
+/// allocation), whatever `length` is.
+///
+/// The length an element declares in a deflated data set says nothing about
+/// how much the stream inflates to, so a frame's buffer is not sized from
+/// it, nor from the entry alone, before the data is there.
+fn read_as_it_arrives(source: &mut impl Read, length: usize) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    while bytes.len() < length {
+        let step = (length - bytes.len()).min(bytes.len().max(DEFLATED_FRAME_FIRST_BYTES));
+        bytes.try_reserve_exact(step)?;
+        let read = source.by_ref().take(step as u64).read_to_end(&mut bytes)?;
+        if read != step {
+            return Err(anyhow!(
+                "the stream ended after {} of {length} bytes",
+                bytes.len()
+            ));
+        }
+    }
     Ok(bytes)
 }
 
-/// Returns the stored bytes of `frame`, in the file's byte order, by locating
-/// the top-level native pixel element and seeking past the preceding frames.
+/// Returns the stored bytes of `frame`, in sample order and each sample in
+/// the file's byte order, by locating the top-level native pixel element and
+/// seeking past the preceding frames. Where the element stores swapped byte
+/// pairs, the words that hold the frame are read (at most two bytes more
+/// than the frame) and put in sample order in the buffer they were read
+/// into; where it stores 32-bit samples low word first, the two words of
+/// each sample are exchanged in that buffer.
 fn read_native_frame_bytes(
     file: &FileEntry,
     layout: NativeFrameLayout<'_>,
@@ -350,14 +406,25 @@ fn read_native_frame_bytes(
                     .and_then(|length| usize::try_from(length).ok())
                     .context("native pixel data has undefined length")?;
                 if end > available {
-                    return Err(anyhow!(
-                        "native pixel data frame {frame} extends beyond {available} source bytes"
-                    ));
+                    return Err(NativeLayoutError::FrameOutOfBounds { frame, available }.into());
                 }
                 let value_start = decoder.position();
+                if stores_swapped_byte_pairs(layout.byte_order, header.vr(), layout.bits_allocated)
+                {
+                    let span = SwappedPairSpan::of_samples(start, end, available);
+                    let length = span.end - span.start;
+                    decoder.seek(value_start + span.start as u64)?;
+                    let mut bytes = Vec::with_capacity(length);
+                    decoder.read_to_vec(u32::try_from(length)?, &mut bytes)?;
+                    span.restore_sample_order(&mut bytes);
+                    return Ok(bytes);
+                }
                 decoder.seek(value_start + start as u64)?;
                 let mut bytes = Vec::with_capacity(frame_len);
                 decoder.read_to_vec(u32::try_from(frame_len)?, &mut bytes)?;
+                if stores_low_word_first(layout.byte_order, header.vr(), layout.bits_allocated) {
+                    exchange_words_of_samples(&mut bytes);
+                }
                 return Ok(bytes);
             }
             // The lazy reader leaves unread values in the stream; step over
@@ -373,7 +440,7 @@ fn read_native_frame_bytes(
             _ => {}
         }
     }
-    Err(anyhow!("missing native pixel data element"))
+    Err(Stated::error("missing native pixel data element"))
 }
 
 fn native_pixel_data_kind(file: &FileEntry) -> NativePixelDataKind {

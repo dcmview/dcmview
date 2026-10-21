@@ -39,6 +39,7 @@ async fn assert_compressed_fixture_contract(
         DiscoverOptions {
             recursive: false,
             filters: Vec::new(),
+            formats: Default::default(),
         },
     )
     .await
@@ -129,6 +130,7 @@ async fn assert_color_fixture_display(name: &str, transfer_syntax_uid: &str) -> 
         DiscoverOptions {
             recursive: false,
             filters: Vec::new(),
+            formats: Default::default(),
         },
     )
     .await
@@ -278,6 +280,7 @@ async fn deflated_explicit_vr_little_endian_satisfies_display_and_raw_contracts(
         DiscoverOptions {
             recursive: false,
             filters: Vec::new(),
+            formats: Default::default(),
         },
     )
     .await
@@ -359,6 +362,7 @@ async fn jpeg2000_display_applies_rescale_before_every_window_mode() {
         DiscoverOptions {
             recursive: false,
             filters: Vec::new(),
+            formats: Default::default(),
         },
     )
     .await

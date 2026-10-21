@@ -3,14 +3,16 @@ use super::error;
 use super::handlers;
 use super::overlays;
 use super::state::AppState;
-use crate::api::contracts::{endpoints, API_PREFIX, SERVER_INSTANCE_HEADER};
+use crate::api::contracts::{
+    endpoints, ANNOTATION_OP_MAX_BYTES, API_PREFIX, SERVER_INSTANCE_HEADER,
+};
 use crate::server::web;
 use crate::server::RequestActivity;
-use axum::extract::{Request, State};
+use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::{header, HeaderName, HeaderValue};
 use axum::middleware::{self, Next};
 use axum::response::Response;
-use axum::routing::{any, get, put};
+use axum::routing::{any, get, post, put};
 use axum::Router;
 use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Predicate};
 use tower_http::compression::{CompressionLayer, CompressionLevel};
@@ -18,7 +20,10 @@ use tower_http::compression::{CompressionLayer, CompressionLevel};
 use tower_http::cors::CorsLayer;
 
 pub(crate) fn router(state: AppState) -> Router {
-    let activity = state.activity().clone();
+    let request_log = RequestLog {
+        activity: state.activity().clone(),
+        masked: state.registry().masker().is_some(),
+    };
     let instance = HeaderValue::from_str(&state.server_start_ms().to_string())
         .expect("integer server identity");
     // Methods here must match `endpoints::ALL`; tests/integration/api_contract.rs
@@ -69,6 +74,7 @@ pub(crate) fn router(state: AppState) -> Router {
         .route(endpoints::FILE_FRAME.path, get(handlers::frame))
         .route(endpoints::FILE_RAW_FRAME.path, get(handlers::raw_frame))
         .route(endpoints::FILE_RAW_PIXEL.path, get(handlers::raw_pixel))
+        .route(endpoints::FILE_THUMBNAIL.path, get(handlers::thumbnail))
         .route(endpoints::FILE_TAGS.path, get(handlers::tags))
         .route(endpoints::FILE_TAG_SELECT.path, get(handlers::select_tag))
         .route(
@@ -86,6 +92,24 @@ pub(crate) fn router(state: AppState) -> Router {
         .route(
             endpoints::ANNOTATIONS_EXPORT.path,
             get(handlers::export_annotations),
+        )
+        .route(
+            endpoints::ANNOTATIONS_EXPORT_JSON.path,
+            get(handlers::export_annotations_json),
+        )
+        .route(
+            endpoints::ANNOTATIONS_EXPORT_JSONL.path,
+            get(handlers::export_annotations_jsonl),
+        )
+        .route(
+            endpoints::ANNOTATIONS_IMPORT.path,
+            get(handlers::annotation_import),
+        )
+        // The annotation model bounds an operation envelope, not the
+        // extractor's default, which is smaller.
+        .route(
+            endpoints::ANNOTATION_OPS.path,
+            post(handlers::annotation_ops).layer(DefaultBodyLimit::max(ANNOTATION_OP_MAX_BYTES)),
         )
         .fallback(error::not_found_handler)
         .method_not_allowed_fallback(error::method_not_allowed_handler);
@@ -112,7 +136,7 @@ pub(crate) fn router(state: AppState) -> Router {
         .fallback(error::page_not_found_handler)
         .method_not_allowed_fallback(error::method_not_allowed_handler)
         .layer(middleware::from_fn_with_state(
-            activity,
+            request_log,
             track_request_activity,
         ))
         .layer(middleware::from_fn_with_state(instance, identify_server))
@@ -142,8 +166,16 @@ fn compression() -> CompressionLayer<impl Predicate> {
         )
 }
 
+/// What the request logger needs of the viewer.
+#[derive(Clone)]
+struct RequestLog {
+    activity: RequestActivity,
+    /// A `--mask` session logs nothing a file holds.
+    masked: bool,
+}
+
 async fn track_request_activity(
-    State(activity): State<RequestActivity>,
+    State(RequestLog { activity, masked }): State<RequestLog>,
     request: Request,
     next: Next,
 ) -> Response {
@@ -160,6 +192,11 @@ async fn track_request_activity(
     let response = next.run(request).await;
     if let Some(error::ServerErrorMessage(message)) = response.extensions().get() {
         tracing::warn!(%method, %uri, status = response.status().as_u16(), "{message}");
+    }
+    // The cause is a library's or a parser's text and may quote the file:
+    // debug level, escaped, and never in a masked session.
+    if let (false, Some(error::ServerErrorDetail(detail))) = (masked, response.extensions().get()) {
+        tracing::debug!(%method, %uri, "cause: {}", crate::masking::logged_cause(detail));
     }
     response
 }

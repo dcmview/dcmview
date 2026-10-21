@@ -1,3 +1,4 @@
+use super::format::{sniff_raster_format, FormatSelection};
 use super::metadata::{
     normalize_pixel_aspect, read_exact_f64s, read_frame_patient_geometry, read_lut_sequence,
     read_positive_f64_pair, read_positive_u32_pair, read_presentation_metadata,
@@ -5,20 +6,15 @@ use super::metadata::{
 };
 use super::DiscoveryReason;
 use crate::api::contracts::WindowPreset;
+use crate::data_set::read_for_catalog;
 use crate::dicom_values::{read_first_string, read_number, read_strings, sequence_items};
 use crate::pixels::{read_pixel_padding_range, NativeByteOrder, NativeFrameLayout};
-use crate::types::{FileEntry, NativePixelDataKind, NativePixelMetadata, SeriesMetadata};
-use anyhow::{bail, Context, Result};
-use dicom_core::value::{DataSetSequence, InMemFragment, PixelFragmentSequence, Value};
-use dicom_core::VR;
+use crate::types::{
+    FileEntry, FileFormat, NativePixelDataKind, NativePixelMetadata, SeriesMetadata,
+};
+use anyhow::{Context, Result};
 use dicom_dictionary_std::{tags, uids};
 use dicom_encoding::text::SpecificCharacterSet;
-use dicom_encoding::{Codec, TransferSyntax, TransferSyntaxIndex};
-use dicom_object::mem::InMemElement;
-use dicom_object::{FileMetaTable, InMemDicomObject};
-use dicom_parser::dataset::read::{DataSetReader, Result as ParserResult};
-use dicom_parser::dataset::DataToken;
-use dicom_transfer_syntax_registry::TransferSyntaxRegistry;
 use std::fs::File;
 use std::io::{self, BufReader, Read};
 use std::path::Path;
@@ -30,23 +26,44 @@ pub(super) enum EntryInspection {
 
 #[cfg(test)]
 pub(super) fn build_entry(path: &Path) -> Result<EntryInspection> {
-    build_entry_selected(path, &|_| true, &|| Ok(()))
+    build_entry_selected(path, FormatSelection::all(), &|_| true, &|| Ok(()))
 }
 
+/// Inspects one candidate file. `formats` is the selection that applies to
+/// it: the discovery's own for a file found by walking a directory, and
+/// [`FormatSelection::all`] for a file named as an input path.
+///
+/// The format is decided from content alone: `DICM` at offset 128 makes the
+/// file DICOM whatever precedes it; otherwise a raster signature at the
+/// start selects that format; otherwise the file is skipped as
+/// `UnrecognizedFormat`. A recognized format outside `formats` is skipped as
+/// `FormatNotSelected` before any header is parsed.
 pub(super) fn build_entry_selected(
     path: &Path,
+    formats: FormatSelection,
     selected: &impl Fn(&FileEntry) -> bool,
     check_active: &impl Fn() -> Result<()>,
 ) -> Result<EntryInspection> {
     let DiscoveryHeader {
         object: obj,
+        file_length,
+        file_modified,
         odd_item_length,
         pixels: pixel_header,
-    } = match read_discovery_header(path)? {
-        HeaderRead::NotPart10 => {
-            return Ok(EntryInspection::Skipped(
-                DiscoveryReason::MissingPart10Preamble,
-            ))
+    } = match read_discovery_header(path, formats)? {
+        HeaderRead::NotPart10(prefix) => {
+            return match sniff_raster_format(&prefix) {
+                None => Ok(EntryInspection::Skipped(
+                    DiscoveryReason::UnrecognizedFormat,
+                )),
+                Some(format) if !formats.contains(format) => {
+                    Ok(EntryInspection::Skipped(DiscoveryReason::FormatNotSelected))
+                }
+                Some(format) => super::raster::inspect_raster(path, format, check_active),
+            }
+        }
+        HeaderRead::NotSelected => {
+            return Ok(EntryInspection::Skipped(DiscoveryReason::FormatNotSelected))
         }
         HeaderRead::ParseFailed => {
             return Ok(EntryInspection::Skipped(DiscoveryReason::DicomParseFailed))
@@ -184,6 +201,10 @@ pub(super) fn build_entry_selected(
     let mut entry = FileEntry {
         index: 0,
         path: path.to_path_buf(),
+        size_bytes: file_length,
+        modified: file_modified,
+        format: FileFormat::Dicom,
+        raster: None,
         label,
         patient_id,
         patient_name,
@@ -266,8 +287,11 @@ pub(super) fn build_entry_selected(
             match crate::pixels::segmentation_has_only_binary_samples(&entry, &obj, check_active) {
                 Ok(true) => entry.series_metadata.binary_fractional_seg_maximum = Some(maximum),
                 Ok(false) => {}
-                Err(error) => tracing::warn!(path = %path.display(), %error,
-                    "could not inspect fractional SEG samples; retaining declared interpretation"),
+                Err(error) => tracing::warn!(
+                    path = %path.display(),
+                    cause = %crate::masking::logged_cause(&error),
+                    "could not inspect fractional SEG samples; retaining declared interpretation"
+                ),
             }
         }
     }
@@ -290,10 +314,19 @@ fn valid_specific_character_set(value: &str) -> bool {
     })
 }
 
+/// The 128-byte preamble and the `DICM` magic code of a Part 10 file. Every
+/// raster signature fits in the same read.
+const PART10_PREFIX_LENGTH: usize = 132;
+
 /// What discovery reads from one file: the data set up to, but excluding,
-/// Float Pixel Data, and the top-level pixel element's header.
+/// Float Pixel Data, without the values the bounded read leaves out, and the
+/// top-level pixel element's header.
 struct DiscoveryHeader {
     object: dicom_object::DefaultDicomObject,
+    /// The file's length from the `stat` taken when it was opened.
+    file_length: u64,
+    /// Its modification time from the same `stat`.
+    file_modified: Option<std::time::SystemTime>,
     /// A sequence item before the pixel data declares an odd length, which a
     /// conformant data set never does.
     odd_item_length: bool,
@@ -302,187 +335,72 @@ struct DiscoveryHeader {
 }
 
 enum HeaderRead {
-    NotPart10,
+    /// No `DICM` at offset 128. Holds the start of the file, up to
+    /// [`PART10_PREFIX_LENGTH`] bytes and fewer for a shorter file, for the
+    /// raster signatures.
+    NotPart10(Vec<u8>),
+    /// A Part 10 file while DICOM is outside the format selection; not parsed.
+    NotSelected,
     ParseFailed,
     Read(Box<DiscoveryHeader>),
 }
 
-/// Opens and parses `path` once for everything discovery needs.
-///
-/// The metadata object is what `OpenFileOptions::read_until(FLOAT_PIXEL_DATA)`
-/// builds: float and double-float pixel data precede Pixel Data, so stopping
-/// at Float Pixel Data keeps every pixel payload out of the scan. That call
-/// drops the element it stopped at and reads through its own buffer, so the
-/// object is built here from the same parser's tokens instead, and the parse
-/// carries on from the stop token to the top-level pixel element's header.
-fn read_discovery_header(path: &Path) -> Result<HeaderRead> {
+/// Opens `path` once for everything discovery needs: the format from its
+/// first bytes and, for a Part 10 file, the bounded read of its data set
+/// (`data_set::read_for_catalog`), which never reads a pixel value, a value
+/// the file does not hold or a value the catalog has no use for.
+fn read_discovery_header(path: &Path, formats: FormatSelection) -> Result<HeaderRead> {
     let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
-    let file_length = file
+    let metadata = file
         .metadata()
-        .with_context(|| format!("failed to stat {}", path.display()))?
-        .len();
+        .with_context(|| format!("failed to stat {}", path.display()))?;
+    let file_length = metadata.len();
+    let file_modified = metadata.modified().ok();
     let mut reader = BufReader::new(file);
-    let mut preamble = [0_u8; 132];
-    match reader.read_exact(&mut preamble) {
-        Ok(()) if &preamble[128..132] == b"DICM" => {}
-        Ok(()) => return Ok(HeaderRead::NotPart10),
-        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => {
-            return Ok(HeaderRead::NotPart10)
+    // A file shorter than the preamble is not Part 10 but may be a raster (a
+    // valid PNG can be about 70 bytes), so a short read keeps what it got.
+    let mut preamble = [0_u8; PART10_PREFIX_LENGTH];
+    let mut filled = 0;
+    while filled < preamble.len() {
+        match reader.read(&mut preamble[filled..]) {
+            Ok(0) => break,
+            Ok(read) => filled += read,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => {
+                return Err(error).with_context(|| format!("failed to read {}", path.display()))
+            }
         }
-        Err(error) => {
-            return Err(error).with_context(|| format!("failed to read {}", path.display()))
-        }
+    }
+    if filled < preamble.len() || &preamble[128..132] != b"DICM" {
+        return Ok(HeaderRead::NotPart10(preamble[..filled].to_vec()));
+    }
+    if !formats.contains(FileFormat::Dicom) {
+        return Ok(HeaderRead::NotSelected);
     }
     // The file meta reader expects the magic code.
     reader
         .seek_relative(-4)
         .with_context(|| format!("failed to seek {}", path.display()))?;
-    let Ok(meta) = FileMetaTable::from_reader(&mut reader) else {
+    let Some(data_set) = read_for_catalog(&mut reader, file_length) else {
         return Ok(HeaderRead::ParseFailed);
     };
-    let Some(transfer_syntax) = TransferSyntaxRegistry.get(meta.transfer_syntax()) else {
-        return Ok(HeaderRead::ParseFailed);
-    };
-    // Deflated data sets are parsed through the syntax's own adapter, as
-    // dicom-object does.
-    Ok(match transfer_syntax.codec() {
-        Codec::Dataset(Some(adapter)) => parse_data_set(
-            adapter.adapt_reader(Box::new(reader)),
-            transfer_syntax,
-            meta,
-            file_length,
-        ),
-        Codec::Dataset(None) => HeaderRead::ParseFailed,
-        _ => parse_data_set(reader, transfer_syntax, meta, file_length),
-    })
-}
-
-/// Builds the discovery header from the data set after the file meta.
-fn parse_data_set(
-    source: impl Read,
-    transfer_syntax: &TransferSyntax,
-    meta: FileMetaTable,
-    file_length: u64,
-) -> HeaderRead {
-    let Ok(mut tokens) = DataSetReader::new_with_ts(source, transfer_syntax) else {
-        return HeaderRead::ParseFailed;
-    };
-    let mut odd_item_length = false;
-    let Ok((elements, stop)) = read_elements(&mut tokens, false, &mut odd_item_length) else {
-        return HeaderRead::ParseFailed;
-    };
-    let pixels = match stop {
-        Some(stop) => top_level_pixel_element(std::iter::once(Ok(stop)).chain(tokens)),
-        None => Ok(None),
-    };
-    HeaderRead::Read(Box::new(DiscoveryHeader {
-        object: InMemDicomObject::from_element_iter(elements).with_exact_meta(meta),
-        odd_item_length,
-        pixels: pixels.map(|element| {
-            element.map(|(kind, native_length)| PixelDataHeader {
-                kind,
-                native_length,
+    Ok(HeaderRead::Read(Box::new(DiscoveryHeader {
+        object: data_set.object,
+        file_length,
+        file_modified,
+        odd_item_length: data_set.odd_item_length,
+        pixels: data_set.pixels.map(|element| {
+            element.map(|element| PixelDataHeader {
+                kind: match element.tag {
+                    tags::FLOAT_PIXEL_DATA => NativePixelDataKind::Float32,
+                    tags::DOUBLE_FLOAT_PIXEL_DATA => NativePixelDataKind::Float64,
+                    _ => NativePixelDataKind::Integer,
+                },
+                native_length: element.length,
                 file_length,
             })
         }),
-    }))
-}
-
-/// Builds data set elements from parser tokens the way dicom-object's
-/// builder does. At the top level it stops at the first element from Float
-/// Pixel Data on and returns that token unread; inside an item it reads to
-/// the item's end, nested pixel data included.
-fn read_elements<I>(
-    tokens: &mut I,
-    in_item: bool,
-    odd_item_length: &mut bool,
-) -> Result<(Vec<InMemElement>, Option<DataToken>)>
-where
-    I: Iterator<Item = ParserResult<DataToken>>,
-{
-    let mut elements = Vec::new();
-    while let Some(token) = tokens.next() {
-        let token = token?;
-        let tag = match &token {
-            DataToken::ElementHeader(header) => Some(header.tag),
-            DataToken::SequenceStart { tag, .. } => Some(*tag),
-            DataToken::PixelSequenceStart => Some(tags::PIXEL_DATA),
-            _ => None,
-        };
-        if !in_item && tag.is_some_and(|tag| tag >= tags::FLOAT_PIXEL_DATA) {
-            return Ok((elements, Some(token)));
-        }
-        let element = match token {
-            DataToken::ElementHeader(header) => {
-                match tokens.next().context("element has no value")?? {
-                    DataToken::PrimitiveValue(value) => InMemElement::new_with_len(
-                        header.tag,
-                        header.vr,
-                        header.len,
-                        Value::Primitive(value),
-                    ),
-                    token => bail!("unexpected token {token:?} for {}", header.tag),
-                }
-            }
-            DataToken::SequenceStart { tag, len } => {
-                let items = read_items(tokens, odd_item_length)?;
-                InMemElement::new_with_len(
-                    tag,
-                    VR::SQ,
-                    len,
-                    Value::Sequence(DataSetSequence::new(items, len)),
-                )
-            }
-            DataToken::PixelSequenceStart => {
-                InMemElement::new(tags::PIXEL_DATA, VR::OB, read_fragments(tokens)?)
-            }
-            DataToken::ItemEnd if in_item => return Ok((elements, None)),
-            token => bail!("unexpected token {token:?}"),
-        };
-        elements.push(element);
-    }
-    Ok((elements, None))
-}
-
-fn read_items<I>(tokens: &mut I, odd_item_length: &mut bool) -> Result<Vec<InMemDicomObject>>
-where
-    I: Iterator<Item = ParserResult<DataToken>>,
-{
-    let mut items = Vec::new();
-    while let Some(token) = tokens.next() {
-        match token? {
-            DataToken::ItemStart { len } => {
-                *odd_item_length |= len.get().is_some_and(|length| length % 2 != 0);
-                let (elements, _) = read_elements(tokens, true, odd_item_length)?;
-                items.push(InMemDicomObject::from_element_iter(elements));
-            }
-            DataToken::SequenceEnd => return Ok(items),
-            token => bail!("unexpected token {token:?} in a sequence"),
-        }
-    }
-    bail!("data set ended inside a sequence")
-}
-
-/// Encapsulated pixel data nested in an item, collected as dicom-object does.
-fn read_fragments<I>(tokens: &mut I) -> Result<Value<InMemDicomObject, InMemFragment>>
-where
-    I: Iterator<Item = ParserResult<DataToken>>,
-{
-    let mut offset_table = None;
-    let mut fragments = Vec::new();
-    for token in tokens {
-        match token? {
-            DataToken::OffsetTable(table) => offset_table = Some(table),
-            DataToken::ItemValue(data) => fragments.push(data),
-            DataToken::ItemStart { .. } | DataToken::ItemEnd => {}
-            DataToken::SequenceEnd => break,
-            token => bail!("unexpected token {token:?} in pixel data"),
-        }
-    }
-    Ok(Value::PixelSequence(PixelFragmentSequence::new(
-        offset_table.unwrap_or_default(),
-        fragments,
-    )))
+    })))
 }
 
 /// The top-level pixel element as discovery sees it, without reading pixel
@@ -525,37 +443,6 @@ fn present_frame_count(
     u32::try_from(bound.max(1)).unwrap_or(u32::MAX)
 }
 
-/// The kind and native length of the data set's own pixel element, if any.
-///
-/// Counts only top-level elements, so a pixel element nested in a sequence
-/// (an Icon Image Sequence, for example) or pixel-tag bytes inside another
-/// value never make a no-pixel object look like an image.
-fn top_level_pixel_element(
-    tokens: impl Iterator<Item = ParserResult<DataToken>>,
-) -> Result<Option<(NativePixelDataKind, Option<u32>)>> {
-    let mut depth = 0_usize;
-    for token in tokens {
-        match token? {
-            DataToken::PixelSequenceStart if depth == 0 => {
-                return Ok(Some((NativePixelDataKind::Integer, None)));
-            }
-            DataToken::SequenceStart { .. } | DataToken::PixelSequenceStart => depth += 1,
-            DataToken::SequenceEnd => depth = depth.saturating_sub(1),
-            DataToken::ElementHeader(header) if depth == 0 => {
-                let kind = match header.tag {
-                    tags::PIXEL_DATA => NativePixelDataKind::Integer,
-                    tags::FLOAT_PIXEL_DATA => NativePixelDataKind::Float32,
-                    tags::DOUBLE_FLOAT_PIXEL_DATA => NativePixelDataKind::Float64,
-                    _ => continue,
-                };
-                return Ok(Some((kind, header.len.get())));
-            }
-            _ => {}
-        }
-    }
-    Ok(None)
-}
-
 /// The catalog label of a file: the identifying fields it has, else `fallback`.
 pub(crate) fn build_label(
     patient_id: &str,
@@ -596,6 +483,7 @@ mod tests {
         };
         let EntryInspection::Selected(entry) = super::build_entry_selected(
             &fixture,
+            FormatSelection::all(),
             &|_| {
                 selected.set(true);
                 false
@@ -612,13 +500,14 @@ mod tests {
         );
         assert_eq!(entry.series_metadata.binary_fractional_seg_maximum, None);
         checks.set(0);
-        let error = super::build_entry_selected(&fixture, &|_| true, &|| {
-            checks.set(checks.get() + 1);
-            anyhow::ensure!(checks.get() < 10, "cancel sample inspection");
-            Ok(())
-        })
-        .err()
-        .expect("cancelled inspection must not publish an entry");
+        let error =
+            super::build_entry_selected(&fixture, FormatSelection::all(), &|_| true, &|| {
+                checks.set(checks.get() + 1);
+                anyhow::ensure!(checks.get() < 10, "cancel sample inspection");
+                Ok(())
+            })
+            .err()
+            .expect("cancelled inspection must not publish an entry");
         assert!(error.to_string().contains("cancel sample inspection"));
     }
 
@@ -764,6 +653,7 @@ mod tests {
         );
     }
 
+    use super::super::format::FormatSelection;
     use super::super::test_fixtures::base_object;
     use super::{
         build_entry, read_discovery_header, valid_specific_character_set, EntryInspection,
@@ -879,11 +769,12 @@ mod tests {
             .expect("write fixture");
     }
 
-    /// The single parse builds exactly the object dicom-object's
-    /// `read_until(FLOAT_PIXEL_DATA)` builds, and finds the pixel element the
-    /// former second walk found, for every kind of pixel data and syntax.
+    /// The bounded read builds the object dicom-object's
+    /// `read_until(FLOAT_PIXEL_DATA)` builds, less the pixel fragments nested
+    /// in an item, and finds the top-level pixel element, for every kind of
+    /// pixel data and syntax.
     #[test]
-    fn one_parse_matches_read_until_and_finds_each_pixel_element() {
+    fn bounded_read_matches_read_until_and_finds_each_pixel_element() {
         use NativePixelDataKind::{Float32, Float64, Integer};
         let native = || {
             DataElement::new(
@@ -902,18 +793,17 @@ mod tests {
                 ),
             )
         };
-        let icons = |pixel_data| {
+        let icon_of = |elements: Vec<DataElement<InMemDicomObject>>| {
             DataElement::new(
                 tags::ICON_IMAGE_SEQUENCE,
                 VR::SQ,
                 dicom_core::value::DataSetSequence::from(vec![
-                    InMemDicomObject::from_element_iter([
-                        DataElement::new(tags::ROWS, VR::US, PrimitiveValue::from(1_u16)),
-                        pixel_data,
-                    ]),
+                    InMemDicomObject::from_element_iter(elements),
                 ]),
             )
         };
+        let icon_rows = || DataElement::new(tags::ROWS, VR::US, PrimitiveValue::from(1_u16));
+        let icons = |pixel_data| icon_of(vec![icon_rows(), pixel_data]);
         let padding = || {
             DataElement::new(
                 tags::DATA_SET_TRAILING_PADDING,
@@ -995,11 +885,16 @@ mod tests {
             }
             write_object(&path, object, transfer_syntax);
 
-            let expected = OpenFileOptions::new()
+            let mut expected = OpenFileOptions::new()
                 .read_until(tags::FLOAT_PIXEL_DATA)
                 .open_file(&path)
                 .expect("dicom-object reads the fixture");
-            let HeaderRead::Read(header) = read_discovery_header(&path).expect("read header")
+            if name == "encapsulated icon" {
+                // Fragments are passed over wherever they are.
+                expected.put(icon_of(vec![icon_rows()]));
+            }
+            let HeaderRead::Read(header) =
+                read_discovery_header(&path, FormatSelection::all()).expect("read header")
             else {
                 panic!("{name} should parse");
             };
@@ -1023,7 +918,7 @@ mod tests {
         }
     }
 
-    /// Each way a file can fail keeps its own outcome: no Part 10 preamble,
+    /// Each way a file can fail keeps its own outcome: no recognized format,
     /// an unparsable header (including an odd item length), or a data set
     /// that breaks after the header, which fails the inspection.
     #[test]
@@ -1063,7 +958,7 @@ mod tests {
             EntryInspection::Skipped(reason) => reason.code(),
             EntryInspection::Selected(_) => "selected",
         };
-        assert_eq!(skipped(&short), "missing_part10_preamble");
+        assert_eq!(skipped(&short), "unrecognized_format");
         assert_eq!(
             skipped(&part10("cut-value.dcm", &cut_value)),
             "dicom_parse_failed"

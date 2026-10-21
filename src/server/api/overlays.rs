@@ -19,11 +19,13 @@ use crate::api::contracts::{
 };
 use crate::geometry::frame_geometry;
 use crate::pixels::{
-    self, ColorScale, ColorwashRequest, PixelError, PixelResult, RawFrameRequest, COLORMAP_NAME,
-    COLORMAP_STOPS,
+    self, ColorScale, ColorwashRequest, CoveredFrames, DecodeWork, PixelError, PixelResult,
+    ValueRange, COLORMAP_NAME, COLORMAP_STOPS,
 };
 use crate::plane_stack::{PlaneStack, StackSampleError};
-use crate::types::{FileEntry, NativePixelDataKind, OverlayCacheKey, OverlayEncoding};
+use crate::types::{
+    FileEntry, NativePixelDataKind, OverlayCacheKey, OverlayEncoding, ValueRangeCacheKey,
+};
 use crate::value_mapping::{map_value, FileValueMappings};
 use axum::extract::rejection::{PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
@@ -57,7 +59,9 @@ pub(super) async fn segmentation_overlay(
         SegmentationOverlayError::Unavailable(_) => {
             ApiError::semantic_mapping_unavailable(error.to_string())
         }
-        SegmentationOverlayError::Metadata(_) => ApiError::internal(error.to_string()),
+        SegmentationOverlayError::Metadata(cause) => {
+            ApiError::failed("the segmentation's metadata could not be read", cause)
+        }
     })?;
     let target = files
         .iter()
@@ -73,27 +77,40 @@ pub(super) async fn segmentation_overlay(
         target_file_index: plan.source_file_index,
         target_frame: plan.source_frame_index,
         encoding: OverlayEncoding::Png,
+        file_set: None,
     };
-    if let Some(png) = state.cached_overlay(&key) {
-        return Ok(overlay_response(png, true, OverlayEncoding::Png));
-    }
-    let raw = pixels::load_raw_frame(segmentation, state.raw_cache(), RawFrameRequest { frame })
-        .await
-        .map_err(error::pixel_error)?;
-    let png = task::spawn_blocking(move || {
-        pixels::encode_segmentation_overlay_png(
-            &raw.body,
-            &raw.metadata,
-            &plan,
-            target.rows,
-            target.columns,
-        )
-    })
+    let work = DecodeWork::SegmentationOverlay {
+        target_rows: target.rows,
+        target_columns: target.columns,
+    };
+    let (png, cache_hit) = pixels::compute_from_frames(
+        segmentation,
+        work,
+        state.overlay_cache(),
+        key,
+        state.raw_cache(),
+        |frames| async move {
+            let raw = frames.raw(frame).await?;
+            task::spawn_blocking(move || {
+                pixels::encode_segmentation_overlay_png(
+                    &raw.body,
+                    &raw.metadata,
+                    &plan,
+                    target.rows,
+                    target.columns,
+                )
+            })
+            .await
+            .map_err(|error| {
+                PixelError::frame_decode(anyhow::anyhow!(
+                    "SEG overlay encoding task failed: {error}"
+                ))
+            })?
+        },
+    )
     .await
-    .map_err(|error| ApiError::internal(format!("SEG overlay encoding task failed: {error}")))?
     .map_err(error::pixel_error)?;
-    state.cache_overlay(key, png.clone());
-    Ok(overlay_response(png, false, OverlayEncoding::Png))
+    Ok(overlay_response(png, cache_hit, OverlayEncoding::Png))
 }
 
 /// The frame's own shutter and overlay graphics, for a frame windowed in the
@@ -110,6 +127,15 @@ pub(super) async fn presentation_layer(
         }));
     }
     PixelError::ensure_frame(frame, file.frame_count).map_err(error::pixel_error)?;
+    // The layer is sized by the entry's rows and columns: a raster the
+    // viewer does not decode (too large, for one) gets none.
+    if file.format.is_raster() {
+        if let Some(reason) = pixels::classify_pixel_support(&file).reason_id() {
+            return Err(error::pixel_error(PixelError::UnsupportedLayout(
+                reason.to_string(),
+            )));
+        }
+    }
     // A file's own frame as overlay and target: no SEG is its own source.
     let key = OverlayCacheKey {
         overlay_file_index: index,
@@ -117,6 +143,7 @@ pub(super) async fn presentation_layer(
         target_file_index: index,
         target_frame: frame,
         encoding: OverlayEncoding::Png,
+        file_set: None,
     };
     let redaction = state
         .redactions()
@@ -127,12 +154,15 @@ pub(super) async fn presentation_layer(
     if let Some(png) = state.cached_overlay(&key).filter(|_| cacheable) {
         return Ok(overlay_response(png, true, OverlayEncoding::Png));
     }
-    let png = task::spawn_blocking(move || {
-        pixels::encode_presentation_layer_png(&file, frame, &redaction.boxes)
+    // The layer is four bytes a pixel whatever the file holds, so it is
+    // drawn under a permit like a decode.
+    let drawn = file.clone();
+    let png = pixels::draw_presentation_layer(&state.decode_scheduler(), &file, move || {
+        pixels::encode_presentation_layer_png(&drawn, frame, &redaction.boxes)
     })
     .await
-    .map_err(|error| ApiError::internal(format!("presentation layer task failed: {error}")))?
-    .map_err(|error| ApiError::internal(format!("{error:#}")))?;
+    .map_err(error::pixel_error)?
+    .map_err(|error| ApiError::failed("the presentation layer could not be drawn", error))?;
     if cacheable {
         state.cache_overlay(key, png.clone());
     }
@@ -220,9 +250,13 @@ async fn value_overlay(
             "an overlay is drawn on image frames, not on its own frames",
         ));
     }
-    let context = semantic_context_for(state, overlay.clone(), state.registry().files_snapshot())
+    // The legend is read against this file set, so the overlay drawn with
+    // it is kept for this file set.
+    let files = state.registry().files_snapshot();
+    let file_set = files.len();
+    let context = semantic_context_for(state, overlay.clone(), files)
         .await
-        .map_err(|error| ApiError::internal(format!("{error:#}")))?;
+        .map_err(error::context_failure)?;
     let (stack, legend) = overlay_plan(&overlay, &context)?;
     let frame_of_reference = &overlay.series_metadata.frame_of_reference_uid;
     if target.series_metadata.frame_of_reference_uid != *frame_of_reference {
@@ -246,46 +280,64 @@ async fn value_overlay(
         target_file_index: target.index,
         target_frame: frame,
         encoding,
+        file_set: Some(file_set),
     };
     if let Some(body) = state.cached_overlay(&key) {
         return Ok(overlay_response(body, true, encoding));
     }
     let mappings = value_mappings_for(state, overlay.clone())
         .await
-        .map_err(|error| ApiError::internal(format!("{error:#}")))?;
-    let frames = sample.frames();
-    let mut planes = Vec::with_capacity(frames.len());
-    for plane_frame in frames {
-        planes.push(
-            mapped_frame_values(state, &overlay, &mappings, plane_frame)
-                .await
-                .map_err(error::pixel_error)?,
-        );
-    }
+        .map_err(|error| {
+            ApiError::failed("the overlay's value mappings could not be read", error)
+        })?;
+    let plane_frames = sample.frames();
+    let work = DecodeWork::ValueOverlay {
+        target_rows: target.rows,
+        target_columns: target.columns,
+        planes: u32::try_from(plane_frames.len()).unwrap_or(u32::MAX),
+        encoding,
+    };
     let scale = ColorScale {
         min: legend.min_value,
         max: legend.max_value,
         transparent_at_or_below: legend.transparent_at_or_below,
     };
-    let body = task::spawn_blocking(move || {
-        let values = sample.resample(&planes).ok_or_else(|| {
-            PixelError::UnsupportedLayout("overlay plane values do not match the plane grid".into())
-        })?;
-        match encoding {
-            OverlayEncoding::Png => pixels::encode_colorwash_png(ColorwashRequest {
-                values: &values,
-                target_rows: target.rows,
-                target_columns: target.columns,
-                scale,
-            }),
-            OverlayEncoding::Values => Ok(encode_f32_values(&values)),
-        }
-    })
+    let (body, cache_hit) = pixels::compute_from_frames(
+        overlay,
+        work,
+        state.overlay_cache(),
+        key,
+        state.raw_cache(),
+        |frames| async move {
+            let mut planes = Vec::with_capacity(plane_frames.len());
+            for plane_frame in plane_frames {
+                planes.push(mapped_frame_values(&frames, &mappings, plane_frame).await?);
+            }
+            task::spawn_blocking(move || {
+                let values = sample.resample(&planes).ok_or_else(|| {
+                    PixelError::UnsupportedLayout(
+                        "overlay plane values do not match the plane grid".into(),
+                    )
+                })?;
+                match encoding {
+                    OverlayEncoding::Png => pixels::encode_colorwash_png(ColorwashRequest {
+                        values: &values,
+                        target_rows: target.rows,
+                        target_columns: target.columns,
+                        scale,
+                    }),
+                    OverlayEncoding::Values => Ok(encode_f32_values(&values)),
+                }
+            })
+            .await
+            .map_err(|error| {
+                PixelError::frame_decode(anyhow::anyhow!("overlay encoding task failed: {error}"))
+            })?
+        },
+    )
     .await
-    .map_err(|error| ApiError::internal(format!("overlay encoding task failed: {error}")))?
     .map_err(error::pixel_error)?;
-    state.cache_overlay(key, body.clone());
-    Ok(overlay_response(body, false, encoding))
+    Ok(overlay_response(body, cache_hit, encoding))
 }
 
 /// Resampled values as little-endian `f32`s; NaN stays NaN.
@@ -347,11 +399,16 @@ enum LegendScale {
 /// which spans the values of every frame so all displayed frames share one
 /// color scale. Frames that cannot be decoded, or hold no usable value,
 /// make the overlay ineligible instead.
+///
+/// `Err(PixelError::DecodeBusy)` when a frame could not be decoded only
+/// because the viewer was busy: that says nothing about the overlay, so the
+/// context is left incomplete for the caller to discard, not to cache.
 pub(super) async fn add_overlay_legend(
     state: &AppState,
     file: &Arc<FileEntry>,
+    file_set: usize,
     context: &mut SemanticContextResponse,
-) {
+) -> PixelResult<()> {
     let (eligibility, source_frames, legend, scale): (
         &mut OverlayEligibility,
         &mut Vec<ResolvedSegmentSourceFrame>,
@@ -370,43 +427,85 @@ pub(super) async fn add_overlay_legend(
             &mut map.legend,
             LegendScale::MappedRange,
         ),
-        _ => return,
+        _ => return Ok(()),
     };
     if !eligibility.eligible {
-        return;
+        return Ok(());
     }
-    match value_legend(state, file, scale).await {
+    match value_legend(state, file, file_set, scale).await {
         Ok(value) => *legend = Some(value),
-        Err(reason) => {
+        Err(LegendFailure::Busy) => return Err(PixelError::DecodeBusy),
+        Err(LegendFailure::Unavailable(reason)) => {
             *eligibility = crate::semantic::ineligible(&reason);
             source_frames.clear();
         }
+    }
+    Ok(())
+}
+
+/// Why an overlay has no legend.
+enum LegendFailure {
+    /// A frame was not decoded because the viewer was busy; ask again.
+    Busy,
+    /// The overlay cannot be drawn, for this reason.
+    Unavailable(String),
+}
+
+impl From<&str> for LegendFailure {
+    fn from(reason: &str) -> Self {
+        Self::Unavailable(reason.to_string())
     }
 }
 
 async fn value_legend(
     state: &AppState,
     file: &Arc<FileEntry>,
+    file_set: usize,
     scale: LegendScale,
-) -> Result<OverlayLegend, String> {
+) -> Result<OverlayLegend, LegendFailure> {
     let mappings = value_mappings_for(state, file.clone())
         .await
-        .map_err(|error| format!("overlay metadata could not be read: {error:#}"))?;
+        .map_err(|error| {
+            LegendFailure::Unavailable(format!("overlay metadata could not be read: {error:#}"))
+        })?;
     let map = mappings
         .real_world(0)
         .next()
         .ok_or("the overlay has no real-world value mapping")?
         .clone();
-    let (mut min, mut max) = (f64::INFINITY, f64::NEG_INFINITY);
-    for frame in 0..file.frame_count {
-        let values = mapped_frame_values(state, file, &mappings, frame)
-            .await
-            .map_err(|error| format!("overlay frames could not be decoded: {error}"))?;
-        for value in values.into_iter().filter(|value| value.is_finite()) {
-            min = min.min(value);
-            max = max.max(value);
+    let key = ValueRangeCacheKey {
+        file_index: file.index,
+        file_set,
+    };
+    let (range, _) = pixels::compute_from_frames(
+        file.clone(),
+        DecodeWork::ValueLegend,
+        state.value_range_cache(),
+        key,
+        state.raw_cache(),
+        |frames| async move {
+            let mut range = ValueRange::EMPTY;
+            for frame in 0..frames.file().frame_count {
+                let values = mapped_frame_values(&frames, &mappings, frame).await?;
+                range = task::spawn_blocking(move || {
+                    values.into_iter().fold(range, ValueRange::including)
+                })
+                .await
+                .map_err(|error| {
+                    PixelError::raw_decode(anyhow::anyhow!("value range task failed: {error}"))
+                })?;
+            }
+            Ok(range)
+        },
+    )
+    .await
+    .map_err(|error| match error {
+        PixelError::DecodeBusy => LegendFailure::Busy,
+        error => {
+            LegendFailure::Unavailable(format!("overlay frames could not be decoded: {error}"))
         }
-    }
+    })?;
+    let (min, max) = (range.min, range.max);
     let (min_value, transparent_at_or_below) = match scale {
         LegendScale::PositiveDose if max > 0.0 => (0.0, Some(0.0)),
         LegendScale::PositiveDose => return Err("the dose grid holds no positive dose".into()),
@@ -427,21 +526,20 @@ async fn value_legend(
 /// One frame's samples in the units of its preferred real-world mapping;
 /// samples outside the mapped range are NaN.
 async fn mapped_frame_values(
-    state: &AppState,
-    file: &Arc<FileEntry>,
+    frames: &CoveredFrames,
     mappings: &FileValueMappings,
     frame: u32,
 ) -> PixelResult<Vec<f64>> {
     let map = mappings.real_world(frame).next().cloned().ok_or_else(|| {
         PixelError::UnsupportedLayout(format!("frame {frame} has no real-world value mapping"))
     })?;
-    let kind = file
+    let kind = frames
+        .file()
         .series_metadata
         .native_pixel
         .pixel_data_kind
         .unwrap_or(NativePixelDataKind::Integer);
-    let raw =
-        pixels::load_raw_frame(file.clone(), state.raw_cache(), RawFrameRequest { frame }).await?;
+    let raw = frames.raw(frame).await?;
     task::spawn_blocking(move || {
         let stored = pixels::raw_frame_values(&raw.body, &raw.metadata, kind)?;
         Ok(stored

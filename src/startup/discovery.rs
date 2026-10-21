@@ -1,6 +1,8 @@
-use dcmview::annotations::{AnnotationSource, AnnotationStore};
+use dcmview::annotations::{AnnotationInput, AnnotationSource, AnnotationStore, NativeSource};
 use dcmview::loader;
+use dcmview::server::annotations;
 use dcmview::server::FileRegistry;
+use dcmview_adapters::Report;
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -12,7 +14,8 @@ pub(super) struct DiscoveryInputs {
     pub(super) input_paths: Vec<PathBuf>,
     pub(super) recursive: bool,
     pub(super) filters: Vec<loader::ScanFilter>,
-    pub(super) annotation_source: Option<AnnotationSource>,
+    pub(super) formats: loader::FormatSelection,
+    pub(super) annotation_source: Option<AnnotationInput>,
     pub(super) registry: FileRegistry,
     pub(super) annotation_store: AnnotationStore,
     pub(super) shutdown: CancellationToken,
@@ -93,7 +96,7 @@ async fn run_discovery(
         if let Some(source) = inputs.annotation_source {
             load_annotations(
                 source,
-                inputs.registry.files_snapshot(),
+                inputs.registry,
                 inputs.annotation_store,
                 cancellation,
             )
@@ -130,6 +133,7 @@ async fn scan(
     let options = loader::DiscoverOptions {
         recursive: inputs.recursive,
         filters: inputs.filters.clone(),
+        formats: inputs.formats,
     };
     let discover =
         loader::discover_progressive(&inputs.input_paths, options, events_tx, cancellation);
@@ -143,6 +147,7 @@ async fn scan(
         result,
         &inputs.registry,
         &inputs.filters,
+        inputs.formats,
         &inputs.input_paths,
     )
 }
@@ -150,44 +155,70 @@ async fn scan(
 fn record_event(event: loader::DiscoveryEvent, registry: &FileRegistry) {
     match event {
         loader::DiscoveryEvent::Selected { file, record } => {
-            registry.record_discovery(record);
-            registry.insert(*file);
+            registry.record_selected(*file, record);
         }
         loader::DiscoveryEvent::SkippedInput(record)
         | loader::DiscoveryEvent::FilteredInput(record) => registry.record_discovery(record),
     }
 }
 
+/// Loads the `--annotations` file against the files discovery found. The
+/// load is all or nothing; a failure leaves the store failed and the
+/// viewer serving.
 async fn load_annotations(
-    source: AnnotationSource,
-    files: Vec<std::sync::Arc<dcmview::types::FileEntry>>,
+    source: AnnotationInput,
+    registry: FileRegistry,
     store: AnnotationStore,
     cancellation: loader::DiscoveryCancellation,
 ) {
+    match source {
+        AnnotationInput::Embed(source) => {
+            load_embed_annotations(source, registry, store, cancellation).await;
+        }
+        AnnotationInput::Native(source) => {
+            load_native_annotations(source, registry, store, cancellation).await;
+        }
+    }
+}
+
+/// Reads the annotation CSV, then stages its rows in the annotation store.
+/// No image file is read for it.
+async fn load_embed_annotations(
+    source: AnnotationSource,
+    registry: FileRegistry,
+    store: AnnotationStore,
+    cancellation: loader::DiscoveryCancellation,
+) {
+    let files = registry.files_snapshot();
     let scan_cancellation = cancellation.clone();
     let result = tokio::task::spawn_blocking(move || {
-        source.load_for_files_with_check(&files, || {
-            if scan_cancellation.is_cancelled() {
-                anyhow::bail!("annotation loading cancelled");
-            }
-            Ok(())
-        })
+        source.read_for_files(&files, &|| !scan_cancellation.is_cancelled())
     })
     .await;
 
     match result {
-        Ok(Ok((annotations, report))) => {
-            if let Err(error) = store.commit_csv_if_unedited(annotations) {
-                eprintln!("dcmview: warning — failed to commit annotations: {error:#}");
-                let _ = store.fail_loading(error.to_string());
+        Ok(Ok(read)) => {
+            // The report is in place before the rows end the import, so
+            // whoever sees the import ready sees what it did.
+            let committed = store
+                .record_import_report(read.report.clone())
+                .map_err(|error| error.to_string())
+                .and_then(|()| {
+                    annotations::import_embed_rows(&registry, &store, read.rows)
+                        .map_err(|error| error.to_string())
+                });
+            if let Err(error) = committed {
+                eprintln!("dcmview: warning — failed to commit annotations: {error}");
+                let _ = store.fail_loading(error);
                 return;
             }
-            if report.unmatched_rows > 0 {
+            if read.report.counts.unmatched > 0 {
                 eprintln!(
-                    "dcmview: warning — {} annotation row(s) did not match discovered DICOM files",
-                    report.unmatched_rows
+                    "dcmview: warning — {} annotation row(s) did not match discovered files",
+                    read.report.counts.unmatched
                 );
             }
+            warn_of(&read.report);
         }
         Ok(Err(error)) => {
             if !cancellation.is_cancelled() {
@@ -202,10 +233,53 @@ async fn load_annotations(
     }
 }
 
+/// Reads a native annotation document and applies its records
+/// (`annotations::import_native`, which ends the store's import either
+/// way).
+async fn load_native_annotations(
+    source: NativeSource,
+    registry: FileRegistry,
+    store: AnnotationStore,
+    cancellation: loader::DiscoveryCancellation,
+) {
+    let scan_cancellation = cancellation.clone();
+    let keep_going = std::sync::Arc::new(move || !scan_cancellation.is_cancelled());
+    match annotations::import_native(&registry, &store, &source, keep_going).await {
+        Ok(report) => {
+            if report.counts.unmatched > 0 {
+                eprintln!(
+                    "dcmview: warning — {} annotation record(s) did not match discovered files",
+                    report.counts.unmatched
+                );
+            }
+            warn_of(&report);
+        }
+        Err(error) => {
+            if !cancellation.is_cancelled() {
+                eprintln!("dcmview: warning — failed to load annotations: {error}");
+            }
+        }
+    }
+}
+
+/// One line on standard error for each kind of warning an import reported:
+/// its code and how often. A report holds no text of the file, so neither
+/// does the log.
+fn warn_of(report: &Report) {
+    for warning in &report.warnings {
+        eprintln!(
+            "dcmview: warning — annotation import: {} ({})",
+            warning.code.as_str(),
+            warning.count
+        );
+    }
+}
+
 fn finish_scan(
     result: anyhow::Result<loader::DiscoveryReport>,
     registry: &FileRegistry,
     filters: &[loader::ScanFilter],
+    formats: loader::FormatSelection,
     input_paths: &[PathBuf],
 ) -> DiscoveryOutcome {
     let report = match result {
@@ -216,7 +290,7 @@ fn finish_scan(
             {
                 return DiscoveryOutcome::Cancelled;
             }
-            eprintln!("failed to discover DICOM files: {error:#}");
+            eprintln!("failed to discover files: {error:#}");
             return DiscoveryOutcome::Failed;
         }
     };
@@ -225,25 +299,25 @@ fn finish_scan(
     if file_count == 0 {
         if report.filtered > 0 {
             eprintln!(
-                "dcmview: no DICOM files matched active filters ({})",
+                "dcmview: no files matched active filters ({})",
                 format_scan_filters(filters)
             );
         } else if report.skipped > 0 {
             eprintln!(
-                "dcmview: no valid DICOM files found ({})",
+                "dcmview: no DICOM or image files found ({})",
                 skip_breakdown(&report)
             );
         } else {
-            eprintln!("dcmview: no valid DICOM files found");
+            eprintln!("dcmview: no DICOM or image files found");
         }
         return DiscoveryOutcome::Failed;
     }
 
-    print_progressive_load_summary(file_count, &report, filters, input_paths);
+    print_progressive_load_summary(file_count, &report, filters, formats, input_paths);
     DiscoveryOutcome::Completed
 }
 
-/// "3 skipped: 2 not DICOM (no DICM preamble), 1 unparsable DICOM".
+/// "3 skipped: 2 not a DICOM or image file, 1 unparsable DICOM".
 fn skip_breakdown(report: &loader::DiscoveryReport) -> String {
     let reasons = report
         .skipped_by_reason
@@ -258,6 +332,7 @@ fn print_progressive_load_summary(
     file_count: usize,
     report: &loader::DiscoveryReport,
     filters: &[loader::ScanFilter],
+    formats: loader::FormatSelection,
     input_paths: &[PathBuf],
 ) {
     let (skipped, filtered) = (report.skipped, report.filtered);
@@ -282,10 +357,24 @@ fn print_progressive_load_summary(
     if !filters.is_empty() {
         notes.push(format!("filters: {}", format_scan_filters(filters)));
     }
+    if !formats.is_all() {
+        notes.push(format!("formats: {formats}"));
+    }
     notes.push(recursive_note.to_string());
     let note = notes.join(", ");
 
-    if file_count == 1 && skipped == 0 && filtered == 0 && filters.is_empty() {
+    let single = file_count == 1 && skipped == 0 && filtered == 0 && filters.is_empty();
+    if report.images_found > 0 {
+        let images = report.images_found;
+        let dicom = file_count - images;
+        if single {
+            dcmview::status_line!("dcmview: loaded 1 image file");
+        } else {
+            dcmview::status_line!(
+                "dcmview: loaded {file_count} file(s) ({dicom} DICOM, {images} image(s)) from {path_label} ({note})"
+            );
+        }
+    } else if single {
         dcmview::status_line!("dcmview: loaded 1 DICOM file");
     } else {
         dcmview::status_line!(
@@ -343,7 +432,8 @@ mod tests {
                 input_paths: vec![input_path],
                 recursive: true,
                 filters,
-                annotation_source,
+                formats: loader::FormatSelection::all(),
+                annotation_source: annotation_source.map(AnnotationInput::Embed),
                 registry: registry.clone(),
                 annotation_store: annotation_store.clone(),
                 shutdown: shutdown.clone(),

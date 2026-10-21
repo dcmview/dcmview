@@ -2,20 +2,32 @@ use crate::api::contracts::{RawFrameMetadata, WindowMode};
 use crate::types::FileEntry;
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
-use image::{ImageBuffer, ImageFormat, Rgb};
-use std::io::Cursor;
 use std::sync::Arc;
 use tokio::task;
 
+use super::codestream::{self, CodestreamKind, Structure};
 use super::encapsulated::read_encapsulated_fragment_blocking;
 use super::error::{PixelError, PixelResult};
 use super::header::open_header;
 use super::icc::select_icc_profile;
+use super::reduced::{Reduction, ThumbnailRender};
 use super::render::{
-    encode_rgb8_display_png, encode_windowed_luminance_png, DisplayPng, LuminanceRenderOptions,
-    StoredSamples,
+    render_windowed_luminance, DisplayBuffer, DisplayPng, LuminanceRenderOptions, StoredSamples,
 };
-use super::shutter;
+
+pub(crate) async fn render_jp2_fragment(
+    file: Arc<FileEntry>,
+    frame: u32,
+    requested_wc: Option<f64>,
+    requested_ww: Option<f64>,
+    window_mode: WindowMode,
+) -> Result<DisplayBuffer> {
+    task::spawn_blocking(move || {
+        render_jp2_fragment_blocking(&file, frame, requested_wc, requested_ww, window_mode)
+    })
+    .await
+    .context("jp2 fragment decode task failed")?
+}
 
 pub(crate) async fn decode_jp2_fragment_to_png(
     file: Arc<FileEntry>,
@@ -31,25 +43,104 @@ pub(crate) async fn decode_jp2_fragment_to_png(
     .context("jp2 fragment decode task failed")?
 }
 
-fn decode_jp2_fragment_to_png_blocking(
+/// Renders one JPEG 2000 frame for its thumbnail: its default presentation
+/// in `window_mode`, decoded at a reduced resolution when `reduction` asks
+/// for one and the frame allows it, in full otherwise.
+///
+/// The fragment is read from the file once and checked once
+/// (`codestream::checked`) whichever decode follows; a frame the check
+/// refuses is an error and reaches no decoder. Then:
+///
+/// 1. The reduction applied is `reduction.shift`, or the fewest
+///    decomposition levels the codestream declares if that is less
+///    (`Structure::Jpeg2000::levels`): the decoder can halve the image once
+///    for each level of every tile and component and no further. With no
+///    `reduction`, or no level, or an image that does not start at the
+///    origin of its reference grid (`Structure::Jpeg2000::at_origin`; the
+///    decoder does not place such an image correctly at a reduced
+///    resolution), the frame is decoded in full.
+/// 2. Otherwise [`decode_reduced`] is tried once. An image it returns is
+///    rendered, and [`ThumbnailRender::shift`] says what was applied.
+/// 3. When it returns nothing, the frame is decoded in full exactly as a
+///    display frame is, after the reduced attempt has given back all it
+///    held, and `shift` is 0.
+///
+/// So a frame costs at most one reduced decode and one full decode, never
+/// both at once, and every frame that has a thumbnail from a full decode
+/// has one here.
+pub(crate) async fn render_jp2_thumbnail(
+    file: Arc<FileEntry>,
+    frame: u32,
+    window_mode: WindowMode,
+    reduction: Option<Reduction>,
+) -> Result<ThumbnailRender> {
+    task::spawn_blocking(move || {
+        let fragment = read_encapsulated_fragment_blocking(&file.path, frame)?;
+        let checked = checked_codestream(&file, &fragment)?;
+        let (image, shift) = decode_for_thumbnail(&file, &checked, reduction, decode_reduced)?;
+        let buffer = render_jp2_image(&file, frame, &image, None, None, window_mode)?;
+        Ok(ThumbnailRender { buffer, shift })
+    })
+    .await
+    .context("jp2 thumbnail decode task failed")?
+}
+
+/// Steps 1 to 3 of [`render_jp2_thumbnail`]: the image and the reduction
+/// that was applied to it. `reduce` is [`decode_reduced`]; it is a
+/// parameter so that the fallback can be shown for an attempt that fails.
+fn decode_for_thumbnail(
+    file: &FileEntry,
+    checked: &CheckedCodestream<'_>,
+    reduction: Option<Reduction>,
+    reduce: impl FnOnce(&FileEntry, &CheckedCodestream<'_>, Reduction) -> Option<jpeg2k::Image>,
+) -> Result<(jpeg2k::Image, u8)> {
+    let shift = reduction.map_or(0, |reduction| reduction.shift.min(checked.levels));
+    let reduced = if shift == 0 {
+        None
+    } else {
+        reduce(file, checked, Reduction { shift })
+    };
+    Ok(match reduced {
+        Some(image) => (image, shift),
+        None => (decode_full(checked)?, 0),
+    })
+}
+
+fn render_jp2_fragment_blocking(
     file: &FileEntry,
     frame: u32,
     requested_wc: Option<f64>,
     requested_ww: Option<f64>,
     window_mode: WindowMode,
-) -> Result<DisplayPng> {
+) -> Result<DisplayBuffer> {
     let fragment = read_encapsulated_fragment_blocking(&file.path, frame)?;
 
-    let jp2_image = jpeg2k::Image::from_bytes(&fragment)
-        .map_err(anyhow::Error::from)
-        .context("failed to decode JP2 fragment")?;
+    let jp2_image = decode_checked(file, &fragment)?;
 
+    render_jp2_image(
+        file,
+        frame,
+        &jp2_image,
+        requested_wc,
+        requested_ww,
+        window_mode,
+    )
+}
+
+/// Presents a decoded JPEG 2000 image, at whatever resolution it was
+/// decoded: the buffer has the image's own rows and columns.
+fn render_jp2_image(
+    file: &FileEntry,
+    frame: u32,
+    jp2_image: &jpeg2k::Image,
+    requested_wc: Option<f64>,
+    requested_ww: Option<f64>,
+    window_mode: WindowMode,
+) -> Result<DisplayBuffer> {
     let comps = jp2_image.components();
     if comps.is_empty() {
         return Err(anyhow!("JP2 image has no components"));
     }
-
-    let mut buffer = Cursor::new(Vec::<u8>::new());
 
     if comps.len() == 1 {
         // Grayscale shares the presentation pipeline used by every other
@@ -72,7 +163,7 @@ fn decode_jp2_fragment_to_png_blocking(
             comps[0].is_signed(),
             file.pixel_representation,
         ) {
-            return encode_windowed_luminance_png(
+            return render_windowed_luminance(
                 file,
                 StoredSamples::Integer {
                     bytes: &bytes,
@@ -83,11 +174,7 @@ fn decode_jp2_fragment_to_png_blocking(
             );
         }
         let stored_samples: Vec<f64> = data.iter().map(|&value| f64::from(value)).collect();
-        return encode_windowed_luminance_png(
-            file,
-            StoredSamples::Values(&stored_samples),
-            options,
-        );
+        render_windowed_luminance(file, StoredSamples::Values(&stored_samples), options)
     } else if comps.len() == 3 {
         // RGB — rare in medical imaging but handle it
         let width = comps[0].width();
@@ -104,32 +191,135 @@ fn decode_jp2_fragment_to_png_blocking(
                 .collect();
             // Only 8-bit color carries an ICC profile into the PNG.
             let icc_profile = select_icc_profile(&*open_header(&file.path)?);
-            return encode_rgb8_display_png(file, frame, interleaved, width, height, icc_profile)
-                .context("JP2 decode failed: png encoding failed");
+            DisplayBuffer::rgb8(interleaved, width, height, icc_profile)
+                .context("JP2 decode failed: png encoding failed")
         } else if precision <= 16 {
             let r = comps[0].data_u16();
             let g = comps[1].data_u16();
             let b = comps[2].data_u16();
-            let mut interleaved: Vec<u16> = r
+            let interleaved: Vec<u16> = r
                 .zip(g)
                 .zip(b)
                 .flat_map(|((rv, gv), bv)| [rv, gv, bv])
                 .collect();
             let full_scale = u16::try_from((1_u32 << precision) - 1).unwrap_or(u16::MAX);
-            shutter::apply_to_rgb16(&mut interleaved, full_scale, file, frame, height, width);
-            let image = ImageBuffer::<Rgb<u16>, Vec<u16>>::from_raw(width, height, interleaved)
-                .ok_or_else(|| anyhow!("JP2 decoded buffer size mismatch"))?;
-            image::DynamicImage::ImageRgb16(image)
-                .write_to(&mut buffer, ImageFormat::Png)
-                .context("JP2 decode failed: png encoding failed")?;
+            DisplayBuffer::rgb16(interleaved, full_scale, width, height)
         } else {
-            return Err(anyhow!("unsupported JP2 component layout"));
+            Err(anyhow!("unsupported JP2 component layout"))
         }
     } else {
-        return Err(anyhow!("unsupported JP2 component layout"));
+        Err(anyhow!("unsupported JP2 component layout"))
     }
+}
 
-    Ok(DisplayPng::color(Bytes::from(buffer.into_inner())))
+/// Decodes one frame's codestream once it is known to declare the entry's
+/// image. The decoder sizes everything from the codestream, so this is the
+/// only place a JPEG 2000 frame may be handed to it; a JP2 file is reduced
+/// to its codestream first, so none of its other boxes takes part.
+fn decode_checked(file: &FileEntry, fragment: &[u8]) -> Result<jpeg2k::Image> {
+    decode_full(&checked_codestream(file, fragment)?)
+}
+
+/// The codestream of one frame that `codestream::checked` has accepted for
+/// its entry. Only [`checked_codestream`] makes one, and the decoders take
+/// nothing else, so no JPEG 2000 decode can skip the check.
+struct CheckedCodestream<'a> {
+    /// The bare codestream: the fragment, or the contents of the codestream
+    /// box of a JP2 file.
+    bytes: &'a [u8],
+    /// How many times the decoder may halve the image:
+    /// `Structure::Jpeg2000::levels`, the fewest decomposition levels any
+    /// coding style of the codestream declares, or 0 for an image that is
+    /// not `at_origin`.
+    levels: u8,
+}
+
+fn checked_codestream<'a>(file: &FileEntry, fragment: &'a [u8]) -> Result<CheckedCodestream<'a>> {
+    let declared = codestream::checked(file, CodestreamKind::Jpeg2000, fragment)?;
+    let Structure::Jpeg2000 {
+        codestream,
+        levels,
+        at_origin,
+        ..
+    } = declared.structure
+    else {
+        return Err(anyhow!("JP2 fragment was not read as JPEG 2000"));
+    };
+    let bytes = fragment
+        .get(codestream)
+        .context("JP2 codestream lies outside its fragment")?;
+    Ok(CheckedCodestream {
+        bytes,
+        levels: if at_origin { levels } else { 0 },
+    })
+}
+
+fn decode_full(checked: &CheckedCodestream<'_>) -> Result<jpeg2k::Image> {
+    jpeg2k::Image::from_bytes(checked.bytes)
+        .map_err(anyhow::Error::from)
+        .context("failed to decode JP2 fragment")
+}
+
+/// Decodes `checked` with each axis divided by `2^reduction.shift`, or
+/// returns `None` when that does not give `file`'s frame at that reduction.
+///
+/// The caller passes a shift of at least 1 and at most `checked.levels`.
+/// The decoder is asked for it with
+/// `jpeg2k::Image::from_bytes_with(checked.bytes,
+/// jpeg2k::DecodeParameters::new().reduce(shift))`, the same decoder and
+/// the same bytes as a full decode: it then stops the inverse wavelet
+/// transform `shift` levels early, and allocates its sample buffers at the
+/// reduced size. `None`, never an error and never a panic, when:
+///
+/// - the decoder returns an error (the caller decodes in full instead);
+/// - the image does not have `file.samples_per_pixel` components;
+/// - any component's width and height are not the same as the first's, or
+///   are not accepted by [`Reduction::accepts`] for `file`;
+/// - any component's sample count is not its width times its height.
+///
+/// The image is dropped before `None` is returned, so the full decode that
+/// follows starts with nothing held.
+fn decode_reduced(
+    file: &FileEntry,
+    checked: &CheckedCodestream<'_>,
+    reduction: Reduction,
+) -> Option<jpeg2k::Image> {
+    let image = jpeg2k::Image::from_bytes_with(
+        checked.bytes,
+        jpeg2k::DecodeParameters::new().reduce(u32::from(reduction.shift)),
+    )
+    .ok()?;
+    let components = image.components();
+    if components.len() != usize::try_from(file.samples_per_pixel).ok()? {
+        return None;
+    }
+    let first = components.first()?;
+    let (width, height) = (first.width(), first.height());
+    if !reduction.accepts(file, width, height) {
+        return None;
+    }
+    let samples = usize::try_from(width)
+        .ok()?
+        .checked_mul(usize::try_from(height).ok()?)?;
+    if components.iter().any(|component| {
+        component.width() != width
+            || component.height() != height
+            || component.data().len() != samples
+    }) {
+        return None;
+    }
+    Some(image)
+}
+
+fn decode_jp2_fragment_to_png_blocking(
+    file: &FileEntry,
+    frame: u32,
+    requested_wc: Option<f64>,
+    requested_ww: Option<f64>,
+    window_mode: WindowMode,
+) -> Result<DisplayPng> {
+    render_jp2_fragment_blocking(file, frame, requested_wc, requested_ww, window_mode)?
+        .into_display_png(file, frame)
 }
 
 pub(crate) async fn decode_raw_jp2_samples(
@@ -155,10 +345,7 @@ pub(super) fn decode_raw_fragment(
     file: &FileEntry,
     fragment: &[u8],
 ) -> PixelResult<(Bytes, RawFrameMetadata)> {
-    let jp2_image = jpeg2k::Image::from_bytes(fragment)
-        .map_err(anyhow::Error::from)
-        .context("failed to decode JP2 fragment for raw samples")
-        .map_err(PixelError::raw_decode)?;
+    let jp2_image = decode_checked(file, fragment).map_err(PixelError::raw_decode)?;
 
     let comps = jp2_image.components();
     if comps.is_empty() {
@@ -298,8 +485,76 @@ fn encode_raw_jp2_samples(
 
 #[cfg(test)]
 mod tests {
-    use super::{encode_raw_jp2_samples, raw_jp2_sample_layout, RawJp2SampleLayout};
+    use super::{
+        checked_codestream, decode_for_thumbnail, decode_reduced, encode_raw_jp2_samples,
+        raw_jp2_sample_layout, RawJp2SampleLayout,
+    };
+    use crate::pixels::reduced::Reduction;
     use crate::pixels::PixelError;
+    use crate::types::FileEntry;
+
+    /// A reduced attempt that returns nothing is followed by the full
+    /// decode of the same checked codestream, and reported as a full
+    /// decode. No frame an encoder writes makes the linked decoder fail
+    /// reduced and succeed in full, so the attempt is replaced here.
+    #[test]
+    fn a_reduced_attempt_that_fails_is_followed_by_the_full_decode() {
+        let frame = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/reduced-decode/gray8-512x384.j2k"),
+        )
+        .expect("the fixture");
+        let file = FileEntry {
+            format: Default::default(),
+            raster: None,
+            size_bytes: 0,
+            modified: None,
+            index: 0,
+            path: "unread.dcm".into(),
+            label: String::new(),
+            patient_id: String::new(),
+            patient_name: String::new(),
+            study_instance_uid: String::new(),
+            study_date: String::new(),
+            study_description: String::new(),
+            series_instance_uid: String::new(),
+            series_number: String::new(),
+            series_description: String::new(),
+            modality: String::new(),
+            instance_number: String::new(),
+            sop_instance_uid: String::new(),
+            sop_class_uid: String::new(),
+            series_metadata: Default::default(),
+            has_pixels: true,
+            frame_count: 1,
+            rows: 384,
+            columns: 512,
+            bits_allocated: 8,
+            pixel_representation: 0,
+            samples_per_pixel: 1,
+            photometric_interpretation: "MONOCHROME2".to_string(),
+            rescale_slope: 1.0,
+            rescale_intercept: 0.0,
+            transfer_syntax_uid: "1.2.840.10008.1.2.4.90".to_string(),
+            default_window: None,
+        };
+        let checked = checked_codestream(&file, &frame).expect("an honest frame");
+        let asked = Some(Reduction { shift: 1 });
+        let size = |image: &jpeg2k::Image| (image.width(), image.height());
+
+        let (image, shift) =
+            decode_for_thumbnail(&file, &checked, asked, decode_reduced).expect("reduced");
+        assert_eq!((size(&image), shift), ((256, 192), 1));
+
+        let mut attempts = 0;
+        let (image, shift) = decode_for_thumbnail(&file, &checked, asked, |_, _, reduction| {
+            attempts += 1;
+            assert_eq!(reduction.shift, 1);
+            None
+        })
+        .expect("the full decode");
+        assert_eq!((size(&image), shift, attempts), ((512, 384), 0, 1));
+    }
 
     #[test]
     fn raw_sample_layout_accepts_supported_precision_and_signedness_boundaries() {

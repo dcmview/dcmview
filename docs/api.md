@@ -27,8 +27,8 @@ Keep the listener on loopback and use SSH forwarding for remote work: plain
 HTTP does not encrypt bearer headers or DICOM data.
 
 For scripts, start with `dcmview --no-browser --startup-json ./study_dir`.
-Its `server_started` JSON line provides `base_url`, `token`, and `protocol`,
-along with the launch `url`. In another shell, paste that JSON line when
+Its `server_started` JSON line provides `base_url`, `token`, `protocol`, and
+`key_rules` (the file-key rules version), along with the launch `url`. In another shell, paste that JSON line when
 `read` waits, then request the API (requires `jq` and `curl`):
 
 ```bash
@@ -91,13 +91,14 @@ and redirects the bare prefix to its trailing-slash form.
 | Method | Path | Success response |
 |---|---|---|
 | GET | `/health` | `HealthResponse`: `status: "ok"`, viewer name/version/build identity, `file_count`, `server_start_ms`, `masked`. |
-| GET | `/files` | `FilesResponse`: file summaries plus scan progress. |
+| GET | `/files` | `FilesResponse`: file summaries plus scan progress. Query: `since`, `limit`. |
 | GET | `/series` | `SeriesCatalogResponse`: logical series and ordered frame stacks. |
 | GET | `/file/{index}/info` | `FrameInfo` for one file. |
 | GET | `/file/{index}/references` | `ReferenceCatalogResponse`: declared DICOM relationships and their local matches. |
 | GET | `/file/{index}/semantic-context` | `SemanticContextResponse`: SEG, Parametric Map, RT Dose, or softcopy presentation state context, or `not_applicable`. |
-| GET | `/file/{index}/frame/{frame}` | Display frame as `image/png`, with `X-Cache` and, for linearly windowed frames, `X-Frame-Window-Center`/`X-Frame-Window-Width`. Query: `wc`, `ww`, `mode`, `unit`, `preview`. |
-| GET | `/file/{index}/frame/{frame}/raw` | Decoded samples as `application/octet-stream`, with `X-Cache` and `X-Frame-*` metadata headers. |
+| GET | `/file/{index}/frame/{frame}` | Display frame as `image/png`, with `X-Cache`, `X-File-Key` when resolved, and, for linearly windowed frames, `X-Frame-Window-Center`/`X-Frame-Window-Width`. Query: `wc`, `ww`, `mode`, `unit`, `preview`. |
+| GET | `/file/{index}/frame/{frame}/thumbnail` | Small `image/jpeg` preview, with `X-Cache`, `X-Thumbnail-Source` and `Cache-Control: no-store`. Query: `size`, `window_mode`. |
+| GET | `/file/{index}/frame/{frame}/raw` | Decoded samples as `application/octet-stream`, with `X-Cache`, `X-File-Key` when resolved, and `X-Frame-*` metadata headers. |
 | GET | `/file/{index}/frame/{frame}/raw/pixel?row=&column=` | One pixel of the raw frame as a 1x1 raw frame: its stored samples in color-by-pixel order (planar and subsampled YBR_FULL_422 resolved), with the same headers. `400` outside the frame. |
 | GET | `/file/{index}/frame/{frame}/presentation-layer` | The display shutter fill and overlay graphics of a grayscale display frame as an RGBA `image/png` of the frame's size, opaque gray where drawn and transparent elsewhere (fully transparent without a shutter or overlay), with `X-Cache`. |
 | GET | `/file/{index}/frame/{frame}/segmentation-overlay` | Transparent source-sized SEG mask as `image/png`, with `X-Cache`. |
@@ -115,9 +116,34 @@ and redirects the bare prefix to its trailing-slash form.
 | GET | `/file/{index}/redactions` | `EmbedRoiAnnotations`: one file's redaction boxes. |
 | PUT | `/file/{index}/redactions` | Replaces one file's redaction boxes with a JSON `EmbedRoiAnnotations` body and returns the canonical result. |
 | PUT | `/file/{index}/redactions/series` | `RedactionSeriesResponse`: copies the file's redaction boxes to every file of its series with the same rows and columns, and lists those files. Takes no body. |
-| GET | `/annotations/export.csv` | `text/csv; charset=utf-8` with `Content-Disposition: attachment; filename="dcmview-annotations.csv"`. |
+| GET | `/annotations/export.csv` | `text/csv; charset=utf-8` with `Content-Disposition: attachment; filename="dcmview-annotations.csv"`. Rows are sorted by path. |
+| GET | `/annotations/export.json` | The session's annotations as one `dcmview.annotations` JSON document, `application/json`, with `Content-Disposition: attachment; filename="dcmview-annotations.json"`. See [Annotation documents](#annotation-documents). |
+| GET | `/annotations/export.jsonl` | The same document as JSON Lines, `application/jsonl`, with `Content-Disposition: attachment; filename="dcmview-annotations.jsonl"`. |
+| GET | `/annotations/import` | `AnnotationImportResponse`: where the `--annotations` import stands, and its report. |
+| POST | `/annotations/ops` | `AnnotationOpResponse`: applies one annotation operation. Query: `file` (the catalog index of the file the operation is for). The body is one `OpEnvelope` as JSON, at most 16 MiB. Also answers `409` and `422` with the same body shape; see [Annotation operations](#annotation-operations). |
 
 Every success status is `200`.
+
+### Decode admission
+
+Display, raw, raw-pixel, thumbnail and presentation-layer requests, segmentation
+and value overlays (PNG and values), and the semantic context of an RT Dose or
+Parametric Map may answer `503 decode_busy` with `Retry-After: 1` when their
+class's decode queue is full, or when the viewer is stopping while they wait
+for decode capacity. All but semantic context may also answer
+`422 decode_memory_exceeded` when the work needs more than the decode memory
+budget (`--decode-memory`), or more than half of it for a thumbnail. An
+overlay is one piece of work: the frames it decodes, the resampling and the
+encoding are reserved together, by the overlay's object and by the size of
+the displayed frame it is drawn on, so an overlay may be refused on a large
+displayed frame although every frame involved can be shown on its own.
+
+Neither refusal is cached, and neither changes the file's `support_state`.
+After a 503, wait the `Retry-After` number of seconds and repeat the request.
+Do not repeat a 422 in the same session: its message names the required bytes
+and `--decode-memory`; restart with a larger budget. Cache hits take no decode
+permit and remain available while the budget is held. No other endpoints
+answer these two admission errors.
 
 ## Files And Scan Progress
 
@@ -126,8 +152,8 @@ Every success status is `200`.
 | Field | Meaning |
 |---|---|
 | `scan_complete` | `true` after every requested path has been scanned. |
-| `scanned` | Valid DICOM files accepted into the registry. |
-| `skipped` | Files that could not be read as supported DICOM objects. |
+| `scanned` | DICOM and image files accepted into the registry. |
+| `skipped` | Unrecognized or unreadable files, unsupported DICOM objects, invalid raster headers, and recognized formats excluded by `--formats`. |
 | `filtered` | Readable files excluded by `--filter`. |
 | `discovery` | Up to 256 recent skipped or filtered paths (`path`, `disposition` of `skipped` or `filtered`, `reason`). Accepted files appear only in `files`; totals stay in the counters above. |
 
@@ -145,14 +171,304 @@ grayscale display frames carry a display shutter or overlay graphics; neither
 depends on the window, so `presentation-layer` drawn over a frame windowed in
 the browser gives exactly the display frame for that window.
 
+A file summary is built from the file's data set before its pixel data,
+read within fixed limits. Two of them can leave a field empty in a file
+that is listed: a value longer than 1 MiB is not read (Overlay Data
+excepted), and neither is a multi-valued text element of more than 65,536
+values. In a Deflated Explicit VR Little Endian file, a text value longer
+than 4,096 bytes that is not plain ASCII is read as its first 4,096 bytes,
+less a character they cut. A summary field read from such an element is as
+it would be if the
+element were absent; a polygonal display shutter with that many vertex
+values is not applied, as one whose vertices cannot be read is not. An
+element of an Explicit VR file other than UC cannot hold that many values.
+
+### File keys
+
+Every file has a session-scoped identity independent of its discovery index.
+`file_key` has three states:
+
+| Value | Meaning |
+|---|---|
+| Left out | The key is `sop:` followed by the entry's `sop_instance_uid`. Ordinary DICOM entries need no extra member. |
+| `null` | No key is available yet; the file needs a whole-file digest. |
+| A string | The file's explicit key. |
+
+Keys are at most 132 bytes: `sop:<uid>` has a body of 1–128 ASCII letters,
+digits, `.`, `-` or `_`, taken as written; `b3:<digest>` has the full BLAKE3
+digest of the stored file bytes, as 64 lowercase hex characters. A masked
+session builds `sop:` keys from masked UIDs and accepts only that shown form;
+`b3:` keys are sent unchanged.
+
+A `sop:` key is built from the data set's SOP Instance UID (0008,0018), not
+from the Media Storage SOP Instance UID of the file meta. Discovery reads it
+as text and takes the first value when the element holds several separated
+by a backslash, without the NUL or spaces that pad the value and without
+surrounding white space. What is left is used as written, with no case
+folding and no other normalisation, when it is 1 to 128 of the characters
+above; a missing element, an empty value and any other value give the file a
+`b3:` key. Tooling that computes keys for the same files has to read the UID
+the same way to arrive at the same key: this reading is part of the rules
+`key_rules` versions.
+
+`alias_of`, when present, is the index of the first entry that held the same
+key. Files with the same UID and length provisionally share a key; their
+bytes are compared only when a caller needs a settled key. The file asked
+about and the first file with the UID are read first. If they differ, each
+file of the group takes its content key: the two that were read at once,
+the others when they are viewed or asked about, and until then an existing
+UID key remains, except that a failed digest removes it. If they agree,
+every other file with that UID is read, whichever of them the caller asked
+about, and the UID key is settled when all agree. If the first file with
+the UID cannot be read, there is nothing to compare the others with: no
+file gets the UID key settled while that lasts, a request that needs a key
+fails with the first file's `key_error`, and the keys shown stay as they
+were. Each such request tries the first file again. The one exception is
+two other files of the group that were both asked about and differ from
+each other: they cannot both be the first file's image, so the group takes
+content keys as it would have with the first file read, and the first file
+has `file_key: null` until it can be read.
+
+A settled key is final: every `b3:` key, and a `sop:` key once it has been
+returned for a write or an export. It stays the file's key for the rest of
+the session and is never replaced. A file with the same UID that is found
+afterwards has `file_key: null` until it has been compared with the first
+file that carries the UID, and then shares the key or takes a content key
+of its own; so does a file of the group that could not be read when the key
+was settled. The key an entry or `X-File-Key` shows is the key as it
+stands and may not be settled yet.
+
+A `file_key: null` without a `key_error` means a digest is on its way: the
+file is queued or being hashed, or will be once a frame of it is served.
+With a `key_error` it means no key is coming until a key request succeeds.
+When the first file that carries a UID cannot be read after its key was
+returned, a file with that UID found afterwards cannot be compared with it:
+its entry shows `file_key: null` with `key_error: "uncompared"`, and stays
+so until a later key request reads the first file. The first file's own
+entry keeps its key and carries the `unreadable` or `changed` that says why.
+
+`key_error`, when present, is `unreadable`, `changed` or `uncompared`.
+`changed` means the file is not the one discovery saw: its length or its
+modification time differs, or it changed while it was read. A file
+rewritten with other bytes of the same length is recognised by its
+modification time alone. `uncompared` says nothing is wrong with the file
+itself: it waits for the first file of its UID, as above. A later explicit
+key request retries a failed digest, the first file's included. Clients
+should treat a `key_error` value they do not know as "no key for now".
+
+Discovery performs no reads for keys. A file needing a digest starts hashing
+in the background after its first successful display or raw frame, or when a
+caller explicitly requests its settled key. That holds for an image file as
+for a DICOM file without a usable UID: its frames decode like any other, the
+first one served starts its hashing, and later ones carry its key. Thumbnails, pixel probes and
+frames that fail do not start hashing and carry no `X-File-Key`.
+Display and raw frame responses include `X-File-Key` once a key is available;
+the frame response never waits for hashing. The current viewer needs no change.
+
+### Catalog revisions
+
+`revision` starts at 0 and rises once for every inserted entry or change to
+its `file_key`, `alias_of` or `key_error`. A plain `/api/files` request returns
+all entries in index order. `since=<revision>` returns entries inserted or
+updated after that revision, each as it stands now, least recently changed
+first. `limit=<count>` caps the page; with `limit` alone, `since` defaults to
+0. A zero limit returns `400 invalid_query`.
+
+`more: true` means entries remain, and the returned `revision` is the cursor
+for the next page. Otherwise it is the current catalog revision. An entry
+updated during paging can appear again; replace the client's entry at that
+index. A `since` greater than the current catalog revision returns
+`reset: true` and starts from 0, so the client can rebuild its catalog.
+Otherwise `reset` is false. `keys_hashing` counts queued files plus the file
+currently being hashed. Key changes can arrive after `scan_complete`.
+
+One response is one moment of the catalog: its entries, `scan_complete`,
+the counters, `discovery` and `keys_hashing` are read together. A response
+with `scan_complete: true` lists every file the scan found, and a file that
+is queued for hashing when the entries are read is counted.
+
+`rekeys` contains replacements after the requested cursor and through the
+returned revision, oldest first. Each has `revision`, `index`, `old_key` and
+`new_key`; a file replaces its key at most once, a `sop:` key by a `b3:`
+key, and never once the key has been settled. The replacement takes the
+revision of its changed entry. A plain request includes all replacements.
+An old key continues to name its first holder for the rest of the session,
+which can be another file than `index`: apply a replacement to what is held
+for the file `index`, not to everything held under `old_key`.
+Existing clients may keep requesting the full catalog without a cursor.
+
+### Raster image summaries
+
+`FileSummary.file_format` is `dicom`, `png`, `jpeg`, `tiff`, or `webp`, detected
+from content. `raster` is `null` for DICOM and the following object for images.
+Rasters have `object_kind: "image"`, empty DICOM identity and transfer-syntax
+strings, `has_pixels: true`, and `support_state: "renderable"` unless a
+`raster.*` reason applies. Unsupported rasters remain listed, with the first
+applicable `support_reason`:
+
+- `raster.unsupported_color`: TIFF CIELab, more than four bands, an extra
+  sample that is not alpha, palette, CMYK, gray with alpha, YCbCr outside
+  JPEG compression, or color stored as separate planes.
+- `raster.unsupported_sample_format`: TIFF 16-bit float, 1-, 2- or 4-bit or
+  64-bit integer samples, or color other than 8- or 16-bit unsigned.
+- `raster.unsupported_compression`: TIFF compression other than none, LZW,
+  Deflate or PackBits, including JPEG-compressed TIFF.
+- `raster.jpeg_unsupported_process`: JPEG other than 8-bit baseline, extended
+  sequential or progressive Huffman.
+- `raster.too_large`: a frame above 268,435,456 pixels, independent of host
+  memory and cache budget.
+- `raster.file_too_large`: a PNG, JPEG or WebP longer than its read budget
+  (64 MiB plus four times its decoded frame). It is listed as unsupported,
+  rather than failing every frame request with 500. TIFF reads individual
+  pages and has no whole-file length cap.
+
+Dimensions and coordinates remain in the stored pixel grid. For gray rasters,
+`default_window` covers the full stored range of integer samples of 8 bits or
+fewer, or a TIFF's declared `MinSampleValue`/`MaxSampleValue` range. Otherwise
+it is `null` and display uses the frame's percentiles. PNG `sBIT` does not
+narrow the window.
+
+| `RasterSummary` field | Meaning |
+|---|---|
+| `color_type` | Stored `gray`, `gray_alpha`, `rgb`, `rgba`, `palette`, `cmyk`, or `other` for an unsupported TIFF color layout. |
+| `bit_depth` | Stored bits per sample, including low-bit palette indices. |
+| `sample_format` | `uint`, `int`, or `float`. |
+| `has_alpha` | Alpha channel or transparency, including PNG `tRNS`. |
+| `orientation` | EXIF/TIFF orientation 1–8; defaults to 1. Reported, never applied to dimensions or coordinates. |
+| `has_icc` | Whether an ICC profile is embedded. |
+| `pages_total` | TIFF pages inspected; 1 for PNG, JPEG, and WebP. |
+| `frame_pages` | Zero-based TIFF page index per frame; `[0]` for other formats. Its length is `frame_count`. |
+| `excluded_pages` | At most 16 objects with `page` and `differs`: first difference in order `reduced_resolution`, `mask`, `width`, `height`, `samples_per_pixel`, `sample_format`, `bits_per_sample`, `photometric`, `alpha`, `orientation`. |
+| `excluded_pages_total` | Count of all excluded TIFF pages, including those not listed. `pages_total` equals this plus `frame_pages.length`. |
+| `animated` | APNG or animated WebP; only the first frame is represented. |
+| `significant_bits` | PNG `sBIT` bytes in stored channel order, or `null`; informational only. |
+
+TIFF page 0 is always frame 0. Later pages join the frame map only if their
+layout and orientation match page 0 and they are neither reduced-resolution
+nor mask pages. A damaged later IFD ends the walk; earlier pages remain listed.
+A TIFF may have at most 65,535 pages; a longer chain is skipped as
+`raster_header_invalid`, rather than listed with a truncated frame map.
+A page that holds any tag twice cannot be read: as the first page it makes
+the file `raster_header_invalid`, and as a later page it ends the walk.
+
+Discovery reasons include `valid_image` for accepted rasters,
+`unrecognized_format` for content that is neither DICOM nor a recognized image
+(replaces `missing_part10_preamble`), `format_not_selected` for a recognized
+format excluded from a directory walk, and `raster_header_invalid` for a
+recognized image whose header cannot be read within the fixed scan budget. Accepted files are represented
+in `files`, not the bounded skipped/filtered `discovery` list.
+
+For a raster file index, the following responses require no DICOM parsing:
+
+| Endpoint suffix under `/api/file/{index}` | Raster response |
+|---|---|
+| `/frame/{frame}`, `/frame/{frame}/thumbnail`, `/frame/{frame}/raw`, `/frame/{frame}/raw/pixel`, `/frame/{frame}/presentation-layer` | As for DICOM for a renderable raster. A refused raster returns `422 unsupported_pixel_layout` naming its reason, without opening the file; a damaged file that cannot decode returns `500` in the shared JSON error envelope. A renderable file may answer `422 decode_memory_exceeded` or `503 decode_busy`; neither is cached or changes `support_state`. Follow the [decode admission retry rules](#decode-admission). Missing pixels and out-of-range frames are checked first; the latter is `404 frame_out_of_range`. |
+| `/tags` | `200` with the file's metadata tree; see [Raster metadata](#raster-metadata). A file that is damaged, or that holds more than is shown, still answers `200`, with `Note` leaves. `404` when the file is gone. |
+| `/tags/select` | One node of that tree by its path; `400 bad_request` for a path that names nothing. |
+| `/references` | `200` with `source_file_index`, empty `source_sop_instance_uid`, and `references: []`. Rasters are never reference targets. |
+| `/semantic-context` | `200`, `context.kind: "not_applicable"` with a reason, `default_mode: "pixel_preview"`, and `pixel_preview_preserves_stored_values: true`. |
+| `/frame/{frame}/value-mapping` | `200` identity: `stored_value_type` is `integer`, `float32`, or `float64`; `modality` has slope 1, intercept 0, `rescale_type: null`, `lut: null`; `real_world: []`, `voi_lut: null`. Frame range is checked first. |
+| `PUT /redactions/series` | `200` with `file_indices: []`; no boxes are copied because rasters belong to no series. |
+
+Rasters are absent from `/api/series`. DICOM-only overlay, WSI, and presentation
+state operations retain their existing wrong-kind errors rather than attempting
+to open an image as DICOM. Per-file ROI and redaction storage is available,
+and redactions apply to display, raw, presentation-layer and thumbnail pixels.
+
+## Thumbnails
+
+`GET /api/file/{index}/frame/{frame}/thumbnail` returns a JPEG of the whole
+frame. `size` requests a longest edge in device pixels, snapped up to
+128, 256, 512 or 1024; omitted means 256. Zero, values above 1024 and malformed
+sizes return `400 invalid_query`. `window_mode` is `default` (also when
+omitted) or `full_dynamic`; other values return `400 invalid_query`.
+
+Every successful response carries these three thumbnail/cache headers:
+
+| Header | Values |
+|---|---|
+| `X-Cache` | `MISS` for a new render; `HIT` for a cached thumbnail or a shared render already underway. |
+| `X-Thumbnail-Source` | On a miss, `reduced_decode` when the frame was decoded at a reduced resolution and `full_decode` otherwise; `thumbnail_cache` on a hit or shared render. `display_cache` and `raw_cache` are reserved and are not sent. |
+| `Cache-Control` | `no-store`: file indexes belong to one process, so the same URL after a restart could refer to a different file. |
+
+The thumbnail uses the default window (DICOM window, else VOI LUT, else the
+automatic window), or the full dynamic range when requested. Modality
+transforms, MONOCHROME1 inversion, padding and palette/colour conversion
+match the display path. It omits the shutter and overlay planes, blanks
+redaction boxes **before** resampling, then shrinks in display space with an
+area filter and encodes at JPEG quality 85, without an ICC profile. Masked
+sessions withhold slide label and overview images just as for display frames.
+
+Geometry stays in the stored pixel grid, without cropping, rotation, flipping
+or enlargement. With `ratio = pixel_aspect_ratio` (pixel height over width;
+absent, non-finite or non-positive means 1), the dimensions are:
+
+```text
+width  = columns * min(1, 1 / ratio)
+height = rows    * min(1, ratio)
+scale  = min(1, bucket / max(width, height))
+thumbnail = (max(1, round(width * scale)), max(1, round(height * scale)))
+```
+
+A stored `(row, column)` maps to `(row * thumbnail_height / rows,
+column * thumbnail_width / columns)`, with no offset.
+
+A JPEG 2000 or JPEG Baseline frame that is at least four times its
+thumbnail along both axes is decoded at a reduced resolution (halved one or
+more times; JPEG at most three), which is much faster for large frames. The
+thumbnail has the same size, window and geometry either way, and matches a
+full decode except for slightly softer or sharper edges. A frame is decoded
+in full when it is grayscale and its window comes from its own samples (no
+stored window or VOI LUT, or `window_mode=full_dynamic`), when it has
+redaction boxes, or when its codestream cannot be reduced (a JPEG 2000 frame
+without decomposition levels or with an image offset, the JPEG lossless
+process). A colour frame has no window, so it is reduced in either window
+mode. A reduced decode reads less of a frame than a full one, so the
+thumbnail of a damaged JPEG 2000 frame can look intact where its display
+frame shows the damage; a thumbnail is a preview and does not show that a
+frame decodes cleanly.
+`X-Thumbnail-Source` says which happened and is diagnostic: clients need not
+read it. The decode memory a thumbnail reserves is the same either way.
+
+Thumbnails share concurrent renders and fill only their own cache. The key
+includes file, frame, bucket, window mode and redaction revision, so edits to
+redaction boxes invalidate earlier previews. Background decode permits are
+awaited inside the request: aborting a queued request starts no work; once a
+render starts it finishes and caches its result even after disconnection.
+
+Errors use the shared JSON envelope: `404 not_found`, `404 frame_out_of_range`,
+`404 no_pixel_data`, `400 invalid_query`, `403 masked`,
+`422 unsupported_transfer_syntax`, `422 unsupported_pixel_layout`,
+`422 decode_memory_exceeded`, `503 decode_busy` (with `Retry-After: 1`), or
+`500 pixel_decode_failed`. Admission refusals are not cached and do not change
+`support_state`: [wait and retry a 503, but do not repeat a 422](#decode-admission).
+Thumbnails may reserve only half the decode memory budget between them.
+The common authentication requirement also applies.
+
 ## Display And Raw Frames
+
+Display, raw, `raw/pixel` and `presentation-layer` requests may answer
+`422 decode_memory_exceeded` or `503 decode_busy` with `Retry-After: 1`.
+Neither is cached or changes `support_state`; follow the
+[decode admission retry rules](#decode-admission): wait the stated seconds
+and repeat a 503, but do not repeat a 422 in the same session.
+
+Raster raw frames always contain interleaved stored samples: low-bit PNG gray
+values are unscaled, and WhiteIsZero TIFF values are un-inverted with
+`MONOCHROME1` so display inverts once. Two samples (`MONOCHROME2`) mean gray
+and alpha; four (`RGBA`) mean color with unassociated alpha. Wider samples
+are little endian. Orientation never rotates the samples or coordinates.
+Display flattens alpha over black, windows gray, and reduces 16-bit color to
+8-bit RGB without windowing color. A valid RGB ICC profile of at most 4 MiB
+is carried by color display frames; gray and converted CMYK JPEG profiles
+are dropped.
 
 Display frames are always decoded server-side and PNG-encoded; the endpoint
 never returns compressed DICOM fragments. The window is chosen in this order:
 
 1. `mode=full_dynamic`: current-frame min/max; `wc`/`ww` are ignored.
 2. Explicit `wc` and `ww`, which must be sent together with a positive width.
-3. DICOM Window Center/Width.
+3. DICOM Window Center/Width or the raster `default_window`.
 4. The current frame's 1st/99th percentile.
 
 `unit` (with `wc` and `ww`) puts the explicit window in a real-world unit: it
@@ -179,8 +495,9 @@ of a real-world window (windows
 that render alike, such as `wc=-0` and `wc=0` or widths below 1, share a key);
 the raw cache key is file and frame only. Both endpoints send `X-Cache: HIT` or
 `X-Cache: MISS`. A request for a frame another request is already decoding
-waits for that decode and reports `HIT`, and a decode whose client
-disconnected still fills the cache. A display request can fill the raw cache
+waits for that decode and reports `HIT`. A decode that has started still
+fills the cache when its client disconnects; one that is still waiting for
+decode capacity when its last client disconnects is not started. A display request can fill the raw cache
 too (grayscale frames are windowed from decoded samples kept there), so a raw
 request after a display request of the same frame may report `HIT`.
 
@@ -337,9 +654,13 @@ outside the volume, without a mapped value, or at or below
 maximum dose of the whole grid with zero dose transparent; the Parametric Map
 legend spans the minimum to maximum mapped value of every frame with no
 floor. Both use one scale for every slice. Encoded overlays are cached per
-volume and displayed frame, and SEG overlays per SEG frame and resolved
-source frame; every overlay endpoint's `X-Cache` reports that encoded-PNG
-cache, not the decoded frames beneath it.
+volume, displayed frame and file set (the legend they are colored by is
+read against the files loaded, so one drawn before a file was added is
+drawn again), and SEG overlays per SEG frame and resolved source frame;
+every overlay endpoint's `X-Cache` reports that encoded-PNG cache, not the
+decoded frames beneath it. Requests for the same overlay
+that arrive while it is being drawn wait for that one drawing and report
+`X-Cache: HIT`.
 
 The `/values` form of each value overlay sends the resampled values instead
 of colors, so a viewer can read the volume's value under the cursor: one
@@ -356,14 +677,27 @@ volume's Frame of Reference that it covers, in file and frame order, at most
 is the declared source image when exactly one covered file is declared, or
 the only covered file. The Parametric Map overlay also needs a usable
 mapping on every frame, all in one unit. A volume whose frames cannot be
-decoded, or a dose grid without positive dose, is ineligible.
+decoded, or a dose grid without positive dose, is ineligible. The legend
+spans the values of every frame of the volume; finding that range is
+reserved against the decode memory budget as one piece of work, and
+requests that ask for it meanwhile share it. A volume whose range needs
+more than the budget is ineligible with the memory-budget reason. If the
+viewer instead refuses that work because it is busy, the legend is not
+computed: semantic context answers `503 decode_busy` with `Retry-After: 1`,
+and the incomplete context is not cached as ineligible. Wait that many
+seconds and repeat the request.
 
 The overlay endpoints answer `400` when the query names the wrong kind of
 object, `404` for an unknown file index or out-of-range frame, `404
 overlay_not_covering_frame` when no pixel center of the displayed frame
 lies inside the volume, and `422 semantic_mapping_unavailable` when the
 volume is ineligible or the displayed frame lies in another Frame of
-Reference or lacks geometry.
+Reference or lacks geometry. Segmentation and value overlays also follow
+[decode admission](#decode-admission): `503 decode_busy` with `Retry-After: 1`
+or `422 decode_memory_exceeded`, neither cached nor changing `support_state`.
+Wait and repeat a 503; do not repeat a 422 in the same session. An overlay
+whose frames cannot be decoded, or that fails while it is encoded, answers
+`500 pixel_decode_failed`.
 
 `wsi-context` positions one tile of a Whole Slide Microscopy object in its Total
 Pixel Matrix without stitching. It answers `400` for other objects.
@@ -375,10 +709,105 @@ numeric arrays and sequences may carry `truncated` and `total`, and a value
 that fails to serialize becomes `{"type": "error", "message": "..."}` without
 failing the response.
 
+Neither endpoint reads a value it reports by its length, so their cost does
+not grow with pixel data or bulk values. Reported as `{"type": "binary", "length": N}`,
+with the length the element declares, are Pixel Data, every value of a bulk
+binary representation (OB, OW, OD, OF, OL, UN) and any other value longer
+than 1 MiB, whatever its representation; encapsulated Pixel Data reports the
+bytes of its fragments. A tree that does not reach the end of its data set
+still answers `200`, and its last node is then a leaf with `tag` `"Note"`,
+empty `vr` and `keyword`, and a string that says why:
+
+- the data set ends inside a value that is not read (a truncated file):
+  that element is the last one listed;
+- a Deflated Explicit VR Little Endian data set is read within 64 MiB, so
+  when its pixel data inflates to more than is left of that, the pixel
+  element is the last one listed;
+- sequences nest more than 64 deep: the tree ends at that sequence, and the
+  top-level element it is in also has the value
+  `{"type": "error", "message": "..."}`;
+- what follows in the file is not a data element: an element header that
+  cannot be read (a file cut inside a header, a read or inflate error), or
+  an element with the tag (0000,0000).
+
+Zero padding after a data set is not such a case: when everything from
+there to the end of the file is zero, the tree is whole and has no note
+(up to 1 MiB of padding; in a deflated data set padding is noted as
+something that is not an element). One to three stray bytes at the very end
+of a file are ignored, and so is anything in a file behind the end of its
+deflate stream, which is never read: neither gets a note. An element that can be read is listed wherever it
+stands. `/tags/select` returns one node and carries no note.
+
+In a Deflated Explicit VR Little Endian file, a text value longer than
+4,096 bytes that is not plain ASCII is shown from its first 4,096 bytes,
+less a character they cut (for a multi-valued element, each value); the preview shows 256 characters
+of a value in any case.
+(`/tags/select` for a tag before the pixel data reads only up to the pixel
+data, so it does not find an element of that tag placed behind it.)
+Both endpoints answer `500` when a value they
+would read runs past the end of the file, or when a deflated data set
+cannot be read within its budget before its pixel data (see
+[troubleshooting](troubleshooting.md#files-are-reported-as-skipped)); a
+file can be in that state when it changed after discovery listed it.
+
 `/tags/select?path=...` reads one element directly from the file, without the
 preview's depth and item caps. `path` alternates tags and zero-based item
 indices, such as `(0008,2218)/69/(0008,0100)`. For a sequence, `offset`
 (default 0) and `limit` (default 64, at most 256) page its items.
+
+### Raster metadata
+
+For a raster image file `/tags` returns the file's metadata in the same
+`TagNode` shape. A node is a leaf, or a group: a `sequence` value with one
+item, the group's children, and an empty `vr` (a DICOM sequence has `SQ`).
+`tag`, `keyword` and `vr` are names dcmview chooses and never hold bytes of
+the file. The tree is one per file, in this order:
+
+| Nodes | What they are |
+|---|---|
+| `File` leaves | From the catalog entry: `Format`, `Size` (bytes), `Extension` (lower case, when the name has a short alphanumeric one), `Pages`, `Frames`, and for a TIFF with pages that are not frames `ExcludedPages` and one `ExcludedPage` (`page 3: width`) for each the catalog lists. |
+| Container leaves | `tag` names the source, `keyword` the field. PNG: `PNG:IHDR` (`Width`, `Height`, `BitDepth`, `ColorType`, `Compression`, `Filter`, `Interlace`), `PNG:pHYs` (`PixelsPerUnitX`, `PixelsPerUnitY`, `Unit`), `PNG:gAMA` `Gamma`, `PNG:cHRM` `Chromaticities`, `PNG:sRGB` `RenderingIntent`, `PNG:sBIT` `SignificantBits`, `PNG:tIME` `Time`, `PNG:acTL` (`Frames`, `Plays`), `PNG:iCCP` `ProfileName`, and `PNG:tEXt`, `PNG:zTXt`, `PNG:iTXt` `Text` (`keyword: text`), each text chunk a leaf. JPEG, up to its first scan: `JPEG:JFIF` (`Version`, `Units`, `XDensity`, `YDensity`), `JPEG:Adobe` (`Version`, `Transform`), `JPEG:COM` `Comment` for each comment, `JPEG:SOFn` (`Precision`, `Height`, `Width`, `Components`). WebP: `WEBP:VP8X` (`Flags`, `CanvasWidth`, `CanvasHeight`) or `WEBP:VP8` / `WEBP:VP8L` (`Width`, `Height`), and `WEBP:ANIM` `LoopCount`. Numbers are the stored integers. |
+| `TIFF:page N` groups | One for each of a TIFF's first 16 pages: its entries in file order, then `Exif`, `GPS` and `Interop` groups for the directories the page points to. |
+| `EXIF` group | The EXIF block of a PNG, JPEG or WebP: groups `IFD0`, `Exif`, `GPS`, `Interop`, `IFD1`, each present when the block has it. |
+| `XMP` leaf | `Packet`: the start of a JPEG's or WebP's XMP packet, as text. |
+| `ICC` leaves | `Size`, `Version`, `Class`, `ColorSpace` and `Description` of the embedded profile. |
+| `Note` leaves | One sentence each: a note discovery made, a name whose extension belongs to another format, an animation of which the first frame is shown, a part that is damaged, a limit that was reached. Fixed words and numbers. |
+
+A directory entry (in a page or an EXIF directory) has its tag number as
+`tag` (`0x010F`), the tag's name as `keyword` (`Unknown` when dcmview has
+none) and its TIFF type as `vr` (`ASCII`, `SHORT`, `RATIONAL`, ...). Its value
+is a `string` for text, a `number` or `numbers` for integer and float types,
+a `string` of `numerator/denominator` pairs for rationals, `binary` with its
+length for `UNDEFINED` data (a maker note, a thumbnail, IPTC and Photoshop
+blocks are never parsed), and `error` for a value that lies outside the file,
+has an unknown type or is not a finite number.
+
+Limits, the same for every file: at most 1,024 nodes, three levels deep; a
+text value shows at most 1,024 characters and then `…`, and a tree at most
+128 KiB of text; a numeric value shows at most 64 numbers and states its
+`total`; a directory shows its first 256 entries. Text is decoded (invalid
+bytes become U+FFFD), trailing NULs and white space are dropped, tabs and
+line ends become spaces, and these are written as `\u{..}` with the code
+point in hex: every other control character (U+0000 to U+001F, U+007F to
+U+009F), the line and paragraph separators (U+2028, U+2029), every format
+character (Unicode general category Cf, which holds the soft hyphen, the
+zero-width and bidirectional characters, the byte order mark and the tag
+characters), and every other code point Unicode makes ignorable by default
+(the variation selectors U+180B to U+180D, U+180F, U+FE00 to U+FE0F and
+U+E0100 to U+E01EF, the combining grapheme joiner, the Hangul fillers, and
+the rest of U+E0000 to U+E0FFF; U+180E, the Mongolian vowel separator, is a
+format character). A variation selector or a joiner inside an emoji
+sequence is therefore shown escaped too.
+
+`/tags/select?path=...` returns one node of this tree; nothing more is read
+from the file. `path` is steps separated by `/`, at most three. A step is a
+node's `tag`, optionally `.` and its `keyword`, optionally `[n]` for the
+`n`-th node (from zero) of that level that matches; without `[n]`, the
+first. Examples: `PNG:IHDR.Width`, `PNG:tEXt[2]`, `EXIF/GPS/0x0002`,
+`TIFF:page 1/0x0100`. A group is returned with its children, and `offset`
+and `limit` page its one item as they page a sequence's; a leaf takes no
+`offset`. A path longer than 256 bytes, a step that matches nothing, a step
+through a leaf and a `limit` outside 1 to 256 are `400 bad_request`.
 
 ## Annotations
 
@@ -390,8 +819,333 @@ Annotations are EMBED-style rectangles held in memory:
 
 `PUT` validates coordinates and frame indices against the file and answers
 `400 bad_request` when they do not fit. The CSV export is built from the
-current in-memory store; source DICOM and CSV files are never modified. See
-[annotations](annotations.md) for the CSV format.
+current in-memory store, one row for each file that has a ROI, sorted by
+path (the byte order of the path as written); source DICOM and CSV files are
+never modified. See [annotations](annotations.md) for the CSV format.
+
+These endpoints are a view of the annotation store, which holds records of
+the annotation model (`frontend/src/generated/annotation-types.ts`,
+`crates/dcmview-annotation/schema/`). A ROI is a rectangle record of class
+`roi`; a rectangle made through
+[annotation operations](#annotation-operations) shows here too, rounded
+outward to whole pixels, and other geometries do not. A file's ROIs are
+listed with the rows `--annotations` read for it first, then every other
+record in the order it was made. A `PUT` changes only the records that
+differ from the list it sends, matched by position.
+
+A `PUT` replaces the file's ROIs whole: of two saves of one file, the one
+applied last decides everything a `GET` then shows, which is exactly the
+list that save answered.
+
+A record is stored under its file's key, so the first `PUT` for a file whose
+catalog entry shows `"file_key": null`, or shares its `sop_instance_uid` with
+another file, waits while the file is hashed. When the file cannot be given
+a key (`key_error` in its catalog entry), `PUT` answers
+`422 file_key_unavailable` and nothing is saved. A file that shares its
+`sop_instance_uid` with others has the key `sop:<uid>`, which is checked
+against the first file loaded with that UID: when that first file can no
+longer be read or has changed, the other files of the group get this answer
+too, although they are readable, and the message says that it is the first
+file that failed. Reading never waits for a
+file to be hashed, and neither does `--annotations` with a CSV: the rows of
+a CSV are shown and exported as the CSV wrote them for every matched file,
+including one that cannot be given a key. `--annotations` with a document
+does hash: it gives each file it places its key, and compares a file's
+bytes with a reference that names them, while the import is `loading`.
+
+### Annotation documents
+
+`GET /api/annotations/export.json` answers every annotation, label and layer
+of the session as one document of the annotation model
+(`Document` in `frontend/src/generated/annotation-types.ts`,
+`crates/dcmview-annotation/schema/`):
+
+```json
+{ "format": "dcmview.annotations", "version": "1.0", "schema": null,
+  "files": [ { "key": "sop:1.2.840.1", "kind": "dicom", "path": "case/lcc.dcm",
+               "rows": 4096, "columns": 3328, "frames": 1, "...": "..." } ],
+  "layers": [ { "id": "default", "name": "Annotations", "kind": "user", "...": "..." } ],
+  "annotations": [ { "id": "0199...", "file": "sop:1.2.840.1", "frames": "all",
+                     "layer": "default", "class": "roi",
+                     "geometry": { "type": "rect", "x0": 340, "y0": 120, "x1": 430, "y1": 220 },
+                     "...": "..." } ],
+  "labels": [], "extensions": {} }
+```
+
+`GET /api/annotations/export.jsonl` answers the same document a record a
+line: a header line (the document with its four lists empty), then one line
+for each file, layer, annotation and label, each an object with one member
+named `file`, `layer`, `annotation` or `label`, then an end line that
+counts them: `{"end":{"files":1,"layers":1,"annotations":1,"labels":0}}`.
+A JSON Lines file that does not end with that line, or whose counts are not
+its lines, was cut off or altered and is not loaded; that includes a header
+line alone, with or without a line feed after it.
+
+Loading a document is bounded whatever the text is, and writing one is
+held to the same bounds by the same checks: the numbers of files and of
+records; for one record, or everything outside the records, 1,048,576
+JSON values, 131,072 of them objects or arrays, nested at most 64 deep;
+256 MiB for a JSON document and 16 MiB for one line of JSON Lines; and a
+budget for the memory the records are charged as they are built (the
+lengths of their strings and lists, the number of their members), which
+does not depend on the length of the text. The budget is a quarter of the
+machine's physical memory, between 1 GiB and 4 GiB, and 4 GiB where that
+is not known. A document past a bound fails its import, and a session
+past one is refused that export with `422 annotation_export_too_large`;
+both messages name the bound and its value. What a session can export in
+a form, the same viewer can import. A rectangle is charged about 1,900
+bytes and a file about 1,300.
+
+The store's revision counts the envelopes this session applied. A
+document is loaded as one envelope, so the revision after a reload is not
+the revision of the session that wrote it, and is not part of a document.
+
+- `files` has one `FileRef` for each file a record names, for the loaded
+  file that has that key, of several the one whose path sorts first.
+  `path` is never absolute:
+  it is relative to the deepest directory that holds every loaded file,
+  with `/` between components, and when the loaded files share no
+  directory below the filesystem root, or only one above the home
+  directory, it is the file's name alone. `digest` is set when the file
+  has been hashed.
+- `pixel_digest` states the pixel digest of each frame whose stored
+  samples the session has decoded: one entry a frame, `px:` and 64 hex characters or `null`, and
+  an empty list for a file none of whose frames has one, or of more than
+  65,536 frames. A digest is BLAKE3 of the frame's rows, columns, samples
+  per pixel, bits allocated, sample format and a zero, each a little-endian
+  `u32`, followed by the stored samples row by row, colour by pixel,
+  little-endian (`crates/dcmview-annotation/src/pixel.rs` has the
+  definition). It is of the samples the file stores, before any rescale,
+  window, inversion or colour conversion, so the same samples have one
+  digest in every lossless encoding and file format the viewer serves raw
+  samples of. Frames coded lossily (JPEG Baseline, JPEG and WebP files),
+  with chrominance at half resolution or with associated alpha have
+  none, and neither have colour JPEG Lossless and colour JPEG 2000
+  frames, which have no raw frame. A digest is recorded when a frame's
+  raw samples are decoded: by `GET .../frame/{frame}/raw` and
+  `.../raw/pixel`, by an overlay or legend computed from the frame, and
+  by a display frame of one integer sample a pixel of 1, 8 or 16 bits
+  (not JPEG 2000). Any other display frame, and a thumbnail, records
+  none. An export only reads what the session already knows: it decodes
+  and hashes nothing, so every other frame is `null`. Redaction boxes and
+  windows do not change a digest.
+- `frame_source` is, for an image file, the page of each frame (`[0]` for
+  a file of one image, the IFD indexes for a TIFF) and `null` for DICOM.
+- Records are written as they are held: nothing is checked, clamped or left
+  out. A box that `--annotations` read from an EMBED CSV and kept although
+  it reaches past the image is in the document as it was read.
+- ROIs that `--annotations` read and nothing has touched are made records
+  first, which needs each such file's key: the request waits while a file
+  is hashed, and answers `422 file_key_unavailable` when one cannot be given
+  a key. Rows are never left out. The CSV export has no such need.
+- A document of more than 268,435,456 bytes answers
+  `422 annotation_export_too_large`; the JSON Lines form has no bound on
+  its bytes. Either form answers the same for a session with more than
+  1,048,576 annotated files, or more than 1,048,576 annotations and labels:
+  what an export writes, an import can read.
+- One document is built at a time; a second export waits until the first
+  is ready to send. A download that is read slowly holds up no other.
+- The documents being downloaded may hold 512 MiB of text together. One
+  that would pass that while another is still being sent answers
+  `503 annotation_export_busy` with `Retry-After: 1`, and succeeds when
+  asked again after a download has ended. A document is always sent when
+  no other is, whatever its size. A client that stops reading keeps its
+  share of the budget until its connection is closed.
+- Files with the same bytes share a key and each keeps its own ROIs. A
+  record that is one such file's ROI says so in
+  `"extensions": { "embed": { "row_of": "<path>", "imported": true } }`,
+  and a later session puts it back on the file that path names. A masked
+  session, whose document holds no path, writes `"copies": <n>` in place
+  of `row_of`: the ROI was on one of `n` byte-identical files, and which
+  one is not recorded. A session that loads it puts such ROIs on the copy
+  whose path sorts first and counts them in its report as a
+  `copy_placement_not_kept` loss.
+- A session started with `--mask` names files by content alone: each
+  `key` and `digest` is `b3:` and the BLAKE3 digest of the file's bytes,
+  `path` is the name the session shows (`File 1`), the three instance UIDs
+  and the patient id are absent, every `user:` author is `user:local`, and
+  the document's `extensions` hold `"dcmview": { "masked": true }`. What
+  is left of a file is its content digest, byte size, SOP class, format,
+  rows, columns and frame count, the pages of its frames and the pixel
+  digests of the frames that were decoded; a record keeps its id and
+  timestamps. A
+  label on a patient, study, series or folder is left out: it names its
+  target by what the masked session showed or by a folder path.
+  The annotated files are read for it; one that cannot be read answers
+  `422 file_key_unavailable`. The document loads into any later session,
+  masked or not, each file found by its content.
+- Both wait for the `--annotations` import, and answer `500` with its
+  message when it failed, as the CSV export does.
+- Redaction boxes are never in a document.
+
+Either form can be given to `--annotations` of a later session; see
+[annotations](annotations.md).
+
+#### How `--annotations` decides what a file is
+
+Without `--annotations-format`, the first 4,096 bytes decide. A file is a
+document when, after an optional UTF-8 byte order mark and whitespace, it
+starts with `{` and those bytes hold `"dcmview.annotations"`. Every other
+file is read as an EMBED-style CSV, other JSON included.
+
+| The file | Without the flag | `--annotations-format native` | `--annotations-format embed` |
+|---|---|---|---|
+| A document, with or without a byte order mark | Loaded after discovery; the status says how it went. | The same. | Exit status 1 before serving. |
+| An EMBED-style CSV | Loaded. | The viewer serves, the import is `failed`. | Loaded. |
+| Anything else (other JSON, a CSV without the required columns) | Exit status 1 before serving. | The viewer serves, the import is `failed`. | Exit status 1 before serving. |
+
+A document that cannot be loaded (not valid, cut off, a record that breaks
+a rule) never stops the viewer: the import ends `failed` with a message,
+and the EMBED reads and the exports answer `500` with it.
+
+### The import's status
+
+`GET /api/annotations/import` answers at once:
+
+```json
+{ "state": "ready",
+  "report": { "adapter": { "id": "embed", "version": 1 }, "direction": "import",
+              "counts": { "files": 2, "annotations_in": 3, "annotations_out": 3,
+                          "labels_in": 0, "labels_out": 0, "unmatched": 1, "refused": 0 },
+              "losses": [],
+              "warnings": [ { "code": "negative_coordinate", "count": 1,
+                              "rows": [ { "row": 3, "roi": 0 } ] } ],
+              "matched_by": { "key": 0, "sop_instance_uid": 0, "path": 2 } } }
+```
+
+| `state` | Meaning |
+|---|---|
+| `none` | The session was started without `--annotations`. |
+| `loading` | The file is still being read, or its files are being matched to the loaded ones, which may hash some. |
+| `ready` | The import ended; `report` says what it did. |
+| `failed` | The import failed and brought nothing; `error` is its message, which the EMBED reads and the exports also answer with. |
+
+A report is codes, counts and row numbers. `warnings[].rows` and
+`losses[].rows` hold the first 16 places of each kind; `row` is the CSV
+row with the header as row 1 (for a document, the line the record has in
+the JSON Lines form) and `roi` the position of a box in that row. It holds no
+path, file key, UID or other text of the file. The codes are listed with
+`Report` in `frontend/src/generated/api-types.ts`.
+
+For a document, `counts.unmatched` counts the records of files that are
+not loaded and `counts.refused` those of files that were found and not
+accepted, each with a warning at the file's row: `evidence_conflict` (the
+files found hold other bytes, have another key, or have other pixels in a
+frame this session has decoded, than the document names), `file_unverified` (a file found could not be read to compare),
+`file_ambiguous` (its path names more than 64 loaded files, or more than
+64 carry its UID, and nothing else finds it),
+`size_mismatch` (other rows, columns or frame count) and `key_unavailable`.
+`matched_by` says how the accepted files were found. A file is accepted
+only after it was compared with the key the document names it by, so a
+path or a UID alone never puts a record on a file.
+
+### Annotation operations
+
+`POST /api/annotations/ops` applies one operation of the annotation model.
+The body is one envelope:
+
+```json
+{ "op_id": "0199c0de-0000-7000-8000-0000000003e8", "actor": "user:alice",
+  "ts": "2026-09-29T21:06:02.004Z",
+  "op": { "type": "create_annotation", "annotation": {
+    "id": "0199c0de-0000-7000-8000-000000000032",
+    "file": "sop:1.2.826.0.1.3680043.8.498.1", "frames": "all",
+    "layer": "default", "class": "roi",
+    "geometry": { "type": "rect", "x0": 340, "y0": 120, "x1": 430, "y1": 220 },
+    "attributes": {}, "extensions": {}, "rev": 1,
+    "created_by": "user:alice", "created_at": "2026-09-29T21:04:11.120Z",
+    "modified_by": "user:alice", "modified_at": "2026-09-29T21:04:11.120Z" } } }
+```
+
+`op` is one of `create_annotation`, `update_annotation`,
+`delete_annotation`, `restore_annotation`, `mask_tiles`, `set_label`,
+`create_layer`, `update_layer`, `delete_layer` and `batch`. Ids are UUIDv7,
+made by the client. The body is read whatever its `Content-Type`.
+
+| Status | Body | Meaning |
+|---|---|---|
+| `200` | `{ "result": { "status": "ok", "revs": [{ "id", "rev" }] }, "revision" }` | Applied. `revs` holds the new revision of every record and layer the envelope changed. |
+| `409` | the same with `"status": "conflict"` and `current`, plus `code: "annotation_conflict"` and `error` | The operation's `base_rev` is not its target's revision. `current` is the record or layer as it is (`kind`: `annotation`, `label`, `layer`), or `deleted` with its revision, or `missing`. |
+| `422` | the same with `"status": "invalid"` and `violations`, plus `code: "annotation_invalid"` and `error` | A rule was broken. Each violation has a stable `code`, a JSON Pointer `path` from the envelope, and a `detail` for a person. |
+| `409` | `{ "code": "file_key_replaced", "error" }` | A key the envelope names is not the settled key of its file. Nothing was applied. Read the file's key from the catalog and send the operation again. |
+| `409` | `{ "code": "file_key_ambiguous", "error" }` | Without `file`: a `sop:` key the envelope names is carried by more than one loaded file. Nothing was read or applied. Send the operation with `file`. |
+| `422` | `{ "code": "file_key_unavailable", "error" }` | A file the envelope names has no key and cannot be given one. |
+| `400` | `{ "code": "invalid_json", "error" }` | The body is not an envelope. |
+| `413` | `{ "code": "payload_too_large", "error" }` | The body is longer than 16 MiB (16,777,216 bytes). |
+
+- **One envelope is one transaction.** It is applied whole or not at all.
+  The operations of a `batch` (1 to 10,000, none a batch) apply in order,
+  each seeing the ones before it, and the first that is refused refuses
+  them all. With `409` and `422` nothing changed.
+- **A retry is safe.** An envelope whose `op_id` was applied before answers
+  `200` with the first result and changes nothing. The viewer remembers the
+  results of the most recent applied envelopes: at most 65,536, and at most
+  262,144 revision entries between them. An envelope it no longer
+  remembers is judged again like a new one, as a refused envelope is; for
+  one that was applied that means `409` or `422` (its `base_rev` has
+  passed, or its id exists), never a second application.
+- **A batch is judged as a whole.** Each operation's own shape is checked
+  where it stands. What a batch leaves of an annotation it updated is
+  validated once, after its last operation, also when the batch deletes
+  the annotation afterwards; a failure there names the last operation that
+  changed the record.
+- **Revisions.** A record or layer starts at `rev` 1, whatever the payload
+  says, and each operation that changes it adds one, delete and restore
+  included. An operation's `base_rev` must be the target's `rev`. `revision`
+  in the answer is the store's own as this request left it: the number of
+  envelopes applied so far, unchanged by a refusal and by a repeated
+  `op_id`. No two applied envelopes answer the same one.
+- **The viewer stamps records.** `created_by`, `created_at`, `modified_by`
+  and `modified_at` are written by the viewer (`user:<USER>` of the
+  process, its clock); the values in a payload, and `actor` and `ts`, are
+  advisory.
+- **Coordinates** are stored quantized to 1/1000 pixel and must lie in
+  `[0, columns]` by `[0, rows]` of the file.
+- **Deleted records keep their id.** A delete leaves the id and its
+  revision behind: `restore_annotation` brings the record back as it was,
+  and a `create_annotation` under that id is `invalid` (`duplicate_id`).
+  The viewer keeps deleted annotations whole for a restore up to 64 MiB
+  together, the ones deleted first dropped first; a restore of one that was dropped is a
+  `409` whose `current` is `missing`, and its id stays taken.
+  A label whose value is cleared (`"after": null`) keeps its id and
+  revision the same way.
+- **Layers.** Every session has the layer `default` ("Annotations"), which
+  cannot be deleted, and holds at most 4,096 layers. A layer is deleted
+  only when it holds no annotation and no label with a value; a `batch` can
+  delete the records and the layer together. A layer's `readonly` is
+  advisory in this release: the viewer does not refuse a write into a
+  read-only layer.
+- **File keys, and which file.** The envelope names a file by the key its
+  catalog entry shows ([File keys](#file-keys)). A `sop:` key may be shown
+  by several loaded files at once (one SOP Instance UID and one size, not
+  yet compared), so the key alone does not always say which file is meant.
+  Send `?file=<index>` with the catalog index of the file the operation was
+  drawn on; the viewer's page always does. Then:
+  - the first operation for a file whose key is not settled waits while
+    the file is hashed;
+  - every file key in the envelope must be the settled key of that file.
+    When it is not (the files that shared the key hold different bytes, or
+    the key was replaced since), the answer is `409 file_key_replaced` and
+    nothing is applied. The catalog entry of that file shows its own key
+    from then on: read it and send the operation again under it. One retry
+    is enough, however many files shared the old key;
+  - an operation is recorded on that file or on none, and changes no
+    record of another file: an update, a tile change, a delete or a
+    restore whose record is on another file than the one it names is a
+    `409 annotation_conflict`. Byte-identical copies are one file here:
+    they share one key, so a record of one copy can be changed through
+    the other.
+
+  Without `file`, a `sop:` key whose UID more than one loaded file carries
+  is `409 file_key_ambiguous`; any other key must be the settled key of the
+  file it names. A key no loaded file has is `invalid` with `unknown_file`.
+  In a masked session keys are built from masked UIDs in both directions.
+- **No label schema yet.** A session has one class, `roi`, which allows
+  every geometry type, and no label fields, so every `set_label` is
+  `invalid` with `unknown_field`.
+
+Annotations are held in memory and are gone when the viewer exits. Redaction
+boxes are not annotations: no operation reads or changes them.
 
 ## Redaction Boxes
 
@@ -402,10 +1156,12 @@ ends, and `roi_frames` is empty (every box covers every frame) or lists each
 box's zero-based frames. They live in memory for the session and are not part
 of the annotation CSV export.
 
-Both frame endpoints apply the boxes of the requested frame:
+Display, raw and thumbnail endpoints apply the boxes of the requested frame:
 
 - Display frames paint them black. The boxes' revision is part of the display
   cache key, so `X-Cache` is `MISS` for the first request after a change.
+- Thumbnails paint them black before resampling. The boxes' revision is part
+  of the thumbnail cache key too.
 - Raw frames, and `raw/pixel`, fill them with one stored value: the frame's
   darkest (its largest for MONOCHROME1), or black for color. Automatic windows
   computed from the samples are therefore unchanged.
@@ -439,9 +1195,41 @@ A session started with `--mask` reports `masked: true` in `/health` and
 - A presentation state's `content_creator_name` is `[masked]`, its
   `presentation_creation_date` is shifted, and its text objects are withheld
   and counted in `skipped.masked_text`.
+- A raster image file's metadata tree keeps its shape and shows only listed
+  values that describe the pixel grid and its encoding: the `File` leaves
+  except `Extension`, the notes, the container's layout fields (`PNG:IHDR`,
+  `pHYs`, `gAMA`, `cHRM`, `sRGB`, `sBIT`, `acTL`; `JPEG:JFIF`, `JPEG:Adobe`
+  and the frame header; the WebP headers and loop count), a profile's `Size`
+  and `Version`, and of directory entries the layout ones (sizes, sample
+  layout, compression, strips and tiles, resolution, orientation, colour
+  space, pixel dimensions, and the pointers to other directories). Of a
+  directory a masked tree shows one value for each listed field and
+  nothing else: the first entry of that tag, when it has a type the field
+  is defined with and no more numbers than the field holds (one for a
+  size, a scalar field, and strip and tile offsets and byte counts; the
+  field's fixed count otherwise; at most four where there is a number for
+  each sample). A repeated, longer or differently typed entry is
+  `[masked]` whole. The values shown are still numbers the file chose:
+  masking is a display aid for honest files, not a guarantee against a
+  file built to carry something in them. Every other value is `[masked]`:
+  unknown tags, colour maps, all text of the file, GPS, dates and times
+  (masked, not shifted), device, software and host names, serial
+  numbers, owner, artist, copyright, description and comment fields, PNG
+  text chunks, XMP, maker notes, thumbnail entries, profile names and
+  descriptions, document and page names, and exposure settings.
+  `/tags/select` selects from the masked tree. A raster's catalog entry and
+  the errors of these endpoints hold no text of the file.
 - Slide label and overview images (Image Type value 3 `LABEL` or `OVERVIEW`)
   report `support_state: unsupported` with `support_reason:
   masked_label_image`, and their frame endpoints answer `403` `masked`.
+- An annotation document (`/annotations/export.json`, `export.jsonl`)
+  holds no UID and no patient id, real or masked, no folder or file name
+  and no user name: files are named by the digest of their bytes and
+  shown as `File N`, and a `user:` author is `user:local`. A document
+  given to `--annotations` names a file by key or UID only in the form the
+  session shows, so one written by an unmasked session is found by its
+  paths and checked against the files themselves. The import's report and
+  its error message hold no text of the file in any session.
 
 `burned_in_annotation` in a file summary is `true` when the file declares
 Burned In Annotation `YES`; masking does not change pixels.
@@ -464,13 +1252,42 @@ Branch on `code`; `error` is diagnostic text and may change.
 | `403` | `masked` (content a `--mask` session withholds) |
 | `404` | `not_found`, `route_not_found`, `asset_not_found`, `no_pixel_data`, `frame_out_of_range`, `overlay_not_covering_frame` |
 | `405` | `method_not_allowed` |
-| `413` | `invalid_json` (a JSON body over 2 MiB, about 200,000 ROIs in one annotation edit) |
+| `409` | `annotation_conflict` (an annotation operation based on an older revision; the body is an `AnnotationOpResponse`), `file_key_replaced` (an annotation operation under a key that is not its file's settled key), `file_key_ambiguous` (an annotation operation without `file` under a key several files carry) |
+| `413` | `invalid_json` (a JSON body over 2 MiB, about 200,000 ROIs in one annotation edit), `payload_too_large` (an annotation operation over 16 MiB) |
 | `415` | `invalid_json` (missing `Content-Type: application/json`) |
-| `422` | `invalid_json` (valid JSON of the wrong shape), `unsupported_transfer_syntax`, `unsupported_pixel_layout` (display frames for any layout the catalog marks unsupported; raw frames for invalid geometry or numeric precision), `semantic_mapping_unavailable` |
+| `422` | `invalid_json` (valid JSON of the wrong shape), `unsupported_transfer_syntax`, `unsupported_pixel_layout` (display frames for any layout the catalog marks unsupported; raw frames for invalid geometry or numeric precision), `semantic_mapping_unavailable`, `decode_memory_exceeded` (decode estimate exceeds the budget or thumbnail share; increase `--decode-memory`), `annotation_invalid` (an annotation operation that breaks a rule; the body is an `AnnotationOpResponse`), `file_key_unavailable` (an annotation write, or a document export, for a file that cannot be given a key), `annotation_export_too_large` (the session's annotations do not fit one JSON document; export JSON Lines) |
 | `500` | `pixel_decode_failed`, `internal_error` |
+| `503` | `decode_busy` (decode queue full; `Retry-After: 1`) |
 
 A failed decode affects only that request; the server keeps running, and logs
-the failure (with the request) to stderr. A file deleted or moved after
+the failure (with the request) to stderr. The `error` of a failed decode is
+the viewer's own wording: `frame decode failed` or `raw frame decode failed`,
+followed by a reason only where the viewer states one in fixed words and
+numbers, as it does for the cases below. It never repeats what a decoding
+library said of the file, because such a message can quote the file; the
+frame, raw frame, raw pixel, thumbnail and overlay endpoints answer the same
+for any two files that fail at the same step, apart from numbers the viewer
+computed. The endpoints that read a file's metadata (`/tags`,
+`/tags/select`, `/references`, `/semantic-context`, `/value-mapping`,
+`/graphic-annotations` and `/wsi-context`) answer `500 internal_error` with
+one fixed sentence each when the file cannot be read. The reasons the viewer states include
+"pixel data disagrees with the header", "native pixel data frame N extends
+beyond M source bytes", "encapsulated fragment is truncated" and "missing
+native pixel data element". `unsupported_transfer_syntax`
+names the UID only when it is written as a UID is. The library's account is
+written to the log at debug level (`RUST_LOG=dcmview=debug`), with the
+request, except in a `--mask` session, which logs nothing a file holds; for
+PNG, JPEG, TIFF and WebP files the log names the kind of failure and not the
+library's text. A compressed frame whose pixel data
+declares a different image than the file's header (another size, component
+count or sample depth, or a tile, packet or scan structure beyond the fixed
+limits) is such a failure: `500 pixel_decode_failed` with "pixel data
+disagrees with the header" in the message, on every endpoint that decodes
+the frame. A JPEG XL frame that carries an embedded colour profile fails the
+same way, with "JPEG XL frame carries an embedded colour profile, which is
+not supported" in the message: colour comes from the data set, and the
+profile inside the frame is never read. The file stays listed and its other
+frames decode. A file deleted or moved after
 discovery answers `404 not_found` naming its path.
 
 JSON, CSV and the viewer's scripts and styles are gzip-compressed for clients

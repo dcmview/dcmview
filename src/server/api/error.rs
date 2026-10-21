@@ -1,6 +1,9 @@
-use crate::api::contracts::{ApiErrorCode, ErrorResponse, UNAUTHORIZED_CHALLENGE};
+use crate::api::contracts::{
+    ApiErrorCode, ErrorResponse, DECODE_BUSY_RETRY_AFTER_SECONDS, UNAUTHORIZED_CHALLENGE,
+};
 use crate::pixels::{self, PixelError};
-use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
+use crate::server::annotations::AnnotationError;
+use axum::extract::rejection::{BytesRejection, JsonRejection, PathRejection, QueryRejection};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -9,7 +12,11 @@ use axum::Json;
 pub(super) struct ApiError {
     status: StatusCode,
     code: ApiErrorCode,
+    /// The response's `error`: the viewer's own wording.
     message: String,
+    /// What a library or a parser said of the file, which may quote it.
+    /// Never sent; logged at debug level outside a masked session.
+    detail: Option<String>,
 }
 
 impl ApiError {
@@ -18,6 +25,7 @@ impl ApiError {
             status,
             code,
             message: message.into(),
+            detail: None,
         }
     }
 
@@ -26,7 +34,13 @@ impl ApiError {
             status: StatusCode::BAD_REQUEST,
             code: ApiErrorCode::BadRequest,
             message: message.into(),
+            detail: None,
         }
+    }
+
+    /// A well-formed query whose value is outside what the endpoint takes.
+    pub(super) fn invalid_query(message: impl Into<String>) -> Self {
+        Self::coded(StatusCode::BAD_REQUEST, ApiErrorCode::InvalidQuery, message)
     }
 
     pub(super) fn not_found(message: impl Into<String>) -> Self {
@@ -34,6 +48,7 @@ impl ApiError {
             status: StatusCode::NOT_FOUND,
             code: ApiErrorCode::NotFound,
             message: message.into(),
+            detail: None,
         }
     }
 
@@ -42,6 +57,7 @@ impl ApiError {
             status: StatusCode::METHOD_NOT_ALLOWED,
             code: ApiErrorCode::MethodNotAllowed,
             message: message.into(),
+            detail: None,
         }
     }
 
@@ -59,11 +75,39 @@ impl ApiError {
         )
     }
 
+    /// A body that is not the JSON its endpoint reads.
+    pub(super) fn invalid_json(message: impl Into<String>) -> Self {
+        Self::coded(StatusCode::BAD_REQUEST, ApiErrorCode::InvalidJson, message)
+    }
+
+    /// A body longer than the operation endpoint reads.
+    pub(super) fn payload_too_large() -> Self {
+        Self::coded(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            ApiErrorCode::PayloadTooLarge,
+            format!(
+                "an annotation operation is at most {} bytes",
+                crate::api::contracts::ANNOTATION_OP_MAX_BYTES
+            ),
+        )
+    }
+
     pub(super) fn internal(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             code: ApiErrorCode::InternalError,
             message: message.into(),
+            detail: None,
+        }
+    }
+
+    /// A failure whose cause is a library's or a parser's own text: the
+    /// response says `message`, in the viewer's fixed wording, and the
+    /// cause goes to the debug log.
+    pub(super) fn failed(message: &'static str, cause: impl std::fmt::Display) -> Self {
+        Self {
+            detail: Some(format!("{message}: {cause:#}")),
+            ..Self::internal(message)
         }
     }
 
@@ -72,6 +116,7 @@ impl ApiError {
             status: StatusCode::UNPROCESSABLE_ENTITY,
             code: ApiErrorCode::SemanticMappingUnavailable,
             message: message.into(),
+            detail: None,
         }
     }
 
@@ -80,6 +125,7 @@ impl ApiError {
             status: StatusCode::NOT_FOUND,
             code: ApiErrorCode::OverlayNotCoveringFrame,
             message: message.into(),
+            detail: None,
         }
     }
 
@@ -88,6 +134,7 @@ impl ApiError {
             status,
             code,
             message: message.into(),
+            detail: None,
         }
     }
 }
@@ -125,6 +172,55 @@ pub(super) fn json_rejection(error: JsonRejection) -> ApiError {
     ApiError::from_rejection(error.status(), ApiErrorCode::InvalidJson, error.body_text())
 }
 
+/// A body the operation endpoint could not take whole: longer than the
+/// endpoint reads, or cut short.
+pub(super) fn body_rejection(error: BytesRejection) -> ApiError {
+    if error.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        ApiError::payload_too_large()
+    } else {
+        ApiError::from_rejection(error.status(), ApiErrorCode::BadRequest, error.body_text())
+    }
+}
+
+/// The answer for an annotation request that could not be served. A ROI
+/// list the EMBED endpoint refuses is the 400 it always was, with the
+/// reason unchanged, and a failed import the 500 with the import's message.
+pub(super) fn annotation_error(error: AnnotationError) -> ApiError {
+    let message = error.to_string();
+    match error {
+        AnnotationError::NotFound(_) => ApiError::not_found(message),
+        AnnotationError::Rejected(_) => ApiError::bad_request(message),
+        AnnotationError::KeyUnavailable { .. } => ApiError::coded(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            ApiErrorCode::FileKeyUnavailable,
+            message,
+        ),
+        AnnotationError::KeyAmbiguous { .. } => ApiError::coded(
+            StatusCode::CONFLICT,
+            ApiErrorCode::FileKeyAmbiguous,
+            message,
+        ),
+        AnnotationError::KeyReplaced { .. } => {
+            ApiError::coded(StatusCode::CONFLICT, ApiErrorCode::FileKeyReplaced, message)
+        }
+        AnnotationError::ExportTooLarge { .. } | AnnotationError::ExportTooMany { .. } => {
+            ApiError::coded(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                ApiErrorCode::AnnotationExportTooLarge,
+                message,
+            )
+        }
+        AnnotationError::ExportBusy => ApiError::coded(
+            StatusCode::SERVICE_UNAVAILABLE,
+            ApiErrorCode::AnnotationExportBusy,
+            message,
+        ),
+        AnnotationError::ImportFailed(_) | AnnotationError::Stopped | AnnotationError::Store(_) => {
+            ApiError::internal(message)
+        }
+    }
+}
+
 pub(super) fn pixel_error(error: PixelError) -> ApiError {
     match error {
         pixels::PixelError::NoPixelData { .. } => ApiError::coded(
@@ -152,11 +248,37 @@ pub(super) fn pixel_error(error: PixelError) -> ApiError {
             ApiErrorCode::UnsupportedPixelLayout,
             error.to_string(),
         ),
-        pixels::PixelError::Decode { .. } => ApiError::coded(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            ApiErrorCode::PixelDecodeFailed,
+        pixels::PixelError::DecodeBusy => ApiError::coded(
+            StatusCode::SERVICE_UNAVAILABLE,
+            ApiErrorCode::DecodeBusy,
             error.to_string(),
         ),
+        pixels::PixelError::DecodeMemoryExceeded { .. } => ApiError::coded(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            ApiErrorCode::DecodeMemoryExceeded,
+            error.to_string(),
+        ),
+        pixels::PixelError::Decode { .. } => ApiError {
+            detail: error.detail(),
+            ..ApiError::coded(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ApiErrorCode::PixelDecodeFailed,
+                error.to_string(),
+            )
+        },
+    }
+}
+
+/// A semantic context that could not be built: the busy answer when a
+/// frame its legend needs was refused for that reason, else a server error.
+pub(super) fn context_failure(failure: anyhow::Error) -> ApiError {
+    match failure.downcast::<PixelError>() {
+        Ok(busy @ PixelError::DecodeBusy) => pixel_error(busy),
+        Ok(other) => ApiError {
+            detail: other.detail(),
+            ..ApiError::internal(other.to_string())
+        },
+        Err(failure) => ApiError::failed("the semantic context could not be read", failure),
     }
 }
 
@@ -186,11 +308,20 @@ pub(super) async fn method_not_allowed_handler() -> ApiError {
 #[derive(Clone)]
 pub(super) struct ServerErrorMessage(pub(super) String);
 
+/// What a library or a parser said of the file behind a server error, kept
+/// on the response for the request logger. It may quote the file, so it is
+/// never sent and a masked session does not log it.
+#[derive(Clone)]
+pub(super) struct ServerErrorDetail(pub(super) String);
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let logged = self
-            .status
-            .is_server_error()
+        // A busy answer is the budget working, not a fault to report.
+        let busy = matches!(
+            self.code,
+            ApiErrorCode::DecodeBusy | ApiErrorCode::AnnotationExportBusy
+        );
+        let logged = (self.status.is_server_error() && !busy)
             .then(|| ServerErrorMessage(self.message.clone()));
         let mut response = (
             self.status,
@@ -206,9 +337,76 @@ impl IntoResponse for ApiError {
                 HeaderValue::from_static(UNAUTHORIZED_CHALLENGE),
             );
         }
+        if busy {
+            response.headers_mut().insert(
+                header::RETRY_AFTER,
+                HeaderValue::from(DECODE_BUSY_RETRY_AFTER_SECONDS),
+            );
+        }
         if let Some(message) = logged {
             response.extensions_mut().insert(message);
+            if let Some(detail) = self.detail {
+                response.extensions_mut().insert(ServerErrorDetail(detail));
+            }
         }
         response
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The request log reports the responses that carry a
+    /// `ServerErrorMessage`. A busy answer is the decode memory budget at
+    /// work, not a fault, and carries none; a decode that failed does.
+    #[test]
+    fn a_busy_answer_is_not_reported_as_a_server_error() {
+        let reported = |error: PixelError| {
+            let response = pixel_error(error).into_response();
+            assert!(response.status().is_server_error());
+            response.extensions().get::<ServerErrorMessage>().is_some()
+        };
+        assert!(!reported(PixelError::DecodeBusy));
+        assert!(reported(PixelError::frame_decode(anyhow::anyhow!(
+            "corrupt"
+        ))));
+    }
+
+    /// An annotation export that met a bound says which: too much for a
+    /// document is the client's to change (422), and downloads that hold
+    /// the budget are over shortly (503 with `Retry-After`, not reported
+    /// as a fault).
+    #[test]
+    fn an_export_past_a_bound_says_which_bound() {
+        for (error, status, code, retry) in [
+            (
+                AnnotationError::ExportTooMany {
+                    bound: dcmview_adapters::Bound::Records,
+                    limit: 2,
+                },
+                StatusCode::UNPROCESSABLE_ENTITY,
+                ApiErrorCode::AnnotationExportTooLarge,
+                false,
+            ),
+            (
+                AnnotationError::ExportTooLarge { limit: 2 },
+                StatusCode::UNPROCESSABLE_ENTITY,
+                ApiErrorCode::AnnotationExportTooLarge,
+                false,
+            ),
+            (
+                AnnotationError::ExportBusy,
+                StatusCode::SERVICE_UNAVAILABLE,
+                ApiErrorCode::AnnotationExportBusy,
+                true,
+            ),
+        ] {
+            let error = annotation_error(error);
+            assert_eq!((error.status, error.code), (status, code));
+            let response = error.into_response();
+            assert_eq!(response.headers().contains_key(header::RETRY_AFTER), retry);
+            assert!(response.extensions().get::<ServerErrorMessage>().is_none());
+        }
     }
 }

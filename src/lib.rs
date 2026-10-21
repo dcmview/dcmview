@@ -11,8 +11,10 @@ macro_rules! status_line {
 
 pub mod annotations;
 pub mod api;
+pub mod data_set;
 mod dicom_values;
 pub mod geometry;
+pub mod keys;
 pub mod loader;
 pub mod masking;
 pub mod object_kind;

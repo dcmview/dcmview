@@ -96,6 +96,7 @@ async fn golden_uncompressed_fixture_matches_raw_and_display_contracts() {
         DiscoverOptions {
             recursive: false,
             filters: Vec::new(),
+            formats: Default::default(),
         },
     )
     .await
@@ -148,6 +149,7 @@ async fn golden_single_frame_jpeg_fixture_round_trips_server_decode() {
         DiscoverOptions {
             recursive: false,
             filters: Vec::new(),
+            formats: Default::default(),
         },
     )
     .await
@@ -187,6 +189,7 @@ async fn golden_large_single_frame_jpeg_fixture_exercises_viewer_geometry() {
         DiscoverOptions {
             recursive: false,
             filters: Vec::new(),
+            formats: Default::default(),
         },
     )
     .await
@@ -235,6 +238,7 @@ async fn golden_multiframe_jpeg_fixture_has_offset_table_and_decodes_by_frame() 
         DiscoverOptions {
             recursive: false,
             filters: Vec::new(),
+            formats: Default::default(),
         },
     )
     .await
@@ -264,6 +268,7 @@ async fn golden_sr_fixture_reports_no_pixels_and_rejects_frame_access() {
         DiscoverOptions {
             recursive: false,
             filters: Vec::new(),
+            formats: Default::default(),
         },
     )
     .await
@@ -290,6 +295,7 @@ async fn golden_image_metadata_without_pixel_data_reports_no_pixels() {
         DiscoverOptions {
             recursive: false,
             filters: Vec::new(),
+            formats: Default::default(),
         },
     )
     .await

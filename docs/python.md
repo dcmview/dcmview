@@ -12,6 +12,16 @@ plain HTTP does not encrypt the token or DICOM data. The binary inherits
 `DCMVIEW_TOKEN` when a fixed token is needed. Direct API clients must send
 `Authorization: Bearer <token>`; see the [API reference](api.md).
 
+Folders now display PNG, JPEG, TIFF, and WebP image files beside DICOM,
+detected by content, with pixel readout, thumbnails, and redaction support.
+Their Metadata panel shows container fields, EXIF and TIFF directories,
+text, XMP and ICC profile descriptions.
+`python -m dcmview_py` forwards all arguments to the binary, including
+`--formats dicom ./mixed_dir` to get a
+DICOM-only directory list. `view()` has no `formats` keyword; its existing
+`filters=["format=dicom"]` can select DICOM files (and applies to explicitly
+named inputs too).
+
 ## Install
 
 ```bash
@@ -135,7 +145,7 @@ view(
 | `block` | `True` | Wait for the viewer to exit and return `None`. When `False`, return a shutdown handle. |
 | `recursive` | `True` | Recursively scan input directories. |
 | `timeout` | `None` | Exit after this many seconds without API or browser requests once the scan has finished. |
-| `annotations` | `None` | Load an EMBED-style ROI annotation CSV into memory without modifying the file. |
+| `annotations` | `None` | Load an EMBED-style ROI annotation CSV, or a `dcmview.annotations` document, into memory without modifying the file. |
 | `filters` | `None` | Iterable of `FIELD=VALUE` metadata filters, where `FIELD` is a snake_case name or DICOM keyword (`modality` or `Modality`; see the [configuration reference](configuration.md) for the list). Values are forwarded as repeatable `--filter` flags and combined with AND semantics. |
 | `mask` | `False` | Replace patient identifiers in everything the viewer displays, for screen sharing. Display only: files are not modified and this is not de-identification. |
 | `vscode_bridge` | `True` | Open the viewer in VS Code when run from a VS Code terminal or inside an open workspace folder. |
@@ -200,8 +210,8 @@ keeping its token fragment.
 ## Return Values and Errors
 
 Blocking calls return `None` after a successful viewer exit. Non-blocking calls
-return a shutdown handle once the viewer has found DICOM files (or VS Code has
-taken the launch), usually within milliseconds; if the scan finds none, the
+return a shutdown handle once the viewer has found DICOM or image files (or
+VS Code has taken the launch), usually within milliseconds; if the scan finds none, the
 call raises `subprocess.CalledProcessError` instead of returning a handle whose
 viewer has already exited.
 

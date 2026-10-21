@@ -62,30 +62,31 @@ absolute executable paths.
 
 ## Startup And Discovery
 
-### `dcmview: no valid DICOM files found`
+### `dcmview: no DICOM or image files found`
 
-Symptom: startup exits with a non-zero status and reports that no valid DICOM
-files were found.
+Symptom: startup exits non-zero with `dcmview: no DICOM or image files found`,
+optionally followed by a skip breakdown. If metadata filters excluded the
+readable files, it says `dcmview: no files matched active filters (...)`.
 
-Likely cause: the input path is wrong, the directory contains no readable DICOM
-files, filters exclude every DICOM file, or the files are not valid DICOM
-objects.
+Likely cause: the path is wrong, the directory contains no readable DICOM or
+recognized image headers, or `--formats` or `--filter` excludes every file.
 
 Fix: verify the path, try a known single DICOM file, and temporarily remove
-`--filter` arguments. For directory inputs, remember that recursive scanning is
-enabled by default; use `--no-recursive` only when the DICOM files are directly
+`--filter` and `--formats` arguments. Directory scanning is recursive by
+default; use `--no-recursive` only when the DICOM files are directly
 inside the selected directory.
 
 ### Files are reported as skipped
 
 Symptom: startup or the viewer file registry reports skipped files.
 
-Likely cause: the scan encountered non-DICOM files, unreadable paths, or invalid
-DICOM objects. The startup summary counts skips by reason, for example
-`(3 skipped: 2 not DICOM (no DICM preamble), 1 unparsable DICOM, ...)`. Files
+Likely cause: the scan encountered unrecognized files, unreadable paths,
+invalid DICOM objects or raster headers, or a format excluded by `--formats`.
+The startup summary counts skips by reason, for example
+`(3 skipped: 2 not a DICOM or image file, 1 unparsable DICOM, ...)`. Files
 excluded by metadata filters are counted separately as filtered.
 
-Fix: skipped non-DICOM sidecar files are usually harmless. To see which files
+Fix: skipped unrecognized sidecar files are usually harmless. To see which files
 were skipped and why, run with `RUST_LOG=dcmview=debug`, which logs each skipped
 path and its reason to stderr. If an expected DICOM file is skipped, check file
 permissions and try opening that file directly:
@@ -94,8 +95,133 @@ permissions and try opening that file directly:
 dcmview ./expected-file.dcm
 ```
 
+A DICOM file is skipped as `dicom_parse_failed` ("unparsable DICOM") when its
+header cannot be read within fixed limits, whatever the reason the file was
+written that way:
+
+- an element before the pixel data declares a value longer than the rest of
+  the file (a truncated or damaged file);
+- sequences nest more than 64 deep;
+- a Deflated Explicit VR Little Endian data set needs more than 64 MiB to
+  read up to its pixel data, counting the bytes it inflates and 512 bytes
+  for each element and 1,024 for each sequence item before the pixel data,
+  and for a text value that is kept what it holds in memory beyond its
+  bytes (24 bytes for each value of a multi-valued element, and whatever
+  its decoded text takes more than its bytes).
+
+Large values before the pixel data are not a reason: discovery passes over
+any value longer than 1 MiB without reading it, and the file is listed.
+Re-export a deflated file that is skipped with an uncompressed transfer
+syntax, for example `dcmconv +te in.dcm out.dcm`.
+
 If filters are in use, confirm that the field name and value match the file's
-metadata. Filter matching is case-insensitive substring matching.
+metadata. DICOM fields and paths use case-insensitive substring matching;
+`format` matches a whole format name.
+
+Raster headers that exhaust the fixed scan budget are skipped as
+`raster_header_invalid` and print one line on stderr:
+
+```text
+dcmview: warning — {path}: {what}; not loaded
+```
+
+`{what}` is `more than 65535 TIFF pages`, `more than 65535 JPEG segments before
+the image`, `more than 65535 PNG chunks before the image`, `more than 65535
+WebP chunks`, or `the image header is larger than 64 MiB` (also used when the
+read-count budget runs out). Split the file into smaller files, keeping TIFF
+stacks to at most 65,535 pages each. For images with excessive metadata, also
+remove unnecessary metadata from a copy before retrying.
+
+The limits count what header inspection reads and the segments, chunks or
+pages it visits, never the size of the file. Pixel data and other payloads are
+skipped without being read, so a large file with an ordinary header is listed
+whatever its size, and blank PNG masks are listed even when they compress to
+less than one row of pixels. A WebP animation is described from its first
+chunk; its frames are walked, one chunk each and without reading them, only
+when the file declares EXIF metadata, which is stored after the frames. Bytes
+that must be read to find the header do count: a JPEG padded with tens of
+megabytes of fill bytes before a marker is skipped.
+
+A listed image file can also print notes in the same style, for example when
+a TIFF page chain cannot be read past some page (the pages before it are
+listed) or a page's ICC profile presence differs from the first page's:
+
+```text
+dcmview: warning — {path}: {note}
+```
+
+Each file prints at most 16 notes; the last one counts any that are not shown.
+
+A TIFF whose first page lists the same tag twice is skipped as an unreadable
+image header, and a later page that does ends the page walk: TIFF readers
+disagree on which of the two entries counts. Rewrite the file with a tool
+that removes the duplicate, for example `tiffcp in.tif out.tif`.
+
+### Image files now appear beside DICOM
+
+PNG, JPEG, TIFF, and WebP images are displayed beside DICOM by default.
+Their Metadata panel shows container fields, EXIF and TIFF directories,
+text, XMP and ICC profile descriptions. Run
+`dcmview --formats dicom ./mixed_dir` to restore the DICOM-only directory
+list. An explicitly named image file still loads.
+
+### A Note row appears in an image's Metadata panel
+
+"Damaged or cut short" means that part of the metadata could not be read
+completely, for example because its bytes are missing or a directory points
+outside its block. "More metadata than is shown" means a fixed limit on
+reading or displaying metadata was reached. TIFF trees show at most the
+first 16 pages. In either case, the rest of the tree that could be read is
+still shown.
+
+### An image is listed as unsupported
+
+The file's support reason identifies what prevents decoding:
+
+- `raster.unsupported_color`: a TIFF color or plane layout the viewer does
+  not decode, such as palette, CMYK, gray with alpha, or separate color planes.
+- `raster.unsupported_sample_format`: a TIFF sample type outside supported
+  depths, such as bilevel, 16-bit float, or 64-bit integer.
+- `raster.unsupported_compression`: TIFF compression other than none, LZW,
+  Deflate, or PackBits; JPEG-compressed TIFF is included.
+- `raster.jpeg_unsupported_process`: JPEG other than 8-bit baseline,
+  extended sequential, or progressive Huffman.
+- `raster.too_large`: a frame exceeds 268,435,456 pixels.
+- `raster.file_too_large`: a PNG, JPEG or WebP is longer than 64 MiB plus
+  four times its decoded frame, usually because a large payload was appended.
+  It is listed as unsupported; frame requests do not attempt to decode it.
+
+Convert a copy to a supported layout: for example, re-encode JPEG-compressed
+TIFF using LZW, expand bilevel TIFF to 8-bit gray, or convert separate color
+planes to interleaved RGB. Resize or split images above the pixel limit.
+Keep the source if its precision or metadata matters to your work.
+
+### A listed image fails to decode
+
+An image that is listed but answers `500` with a decode error is damaged or
+is built in a way the viewer refuses to follow:
+
+- a WebP whose image data states another size than the file's header, or
+  whose lossy image is not a key frame;
+- a TIFF page that lists a tag twice (the file changed after it was listed);
+- a TIFF whose tiles are 4,096 pixels or more wider or longer than the
+  image, which would have the decoder read far more than the image holds;
+- a TIFF strip or tile whose compressed data runs past its declared length;
+- a TIFF frame whose data takes more than 64 MiB plus four times its
+  decoded frame to read;
+- a raster file that has grown since discovery listed it. The message says
+  the file changed; reopen the folder (start dcmview on it again) to
+  inspect the file at its new length.
+
+The response and the warning on stderr say `frame decode failed`, with a
+reason only where the viewer states one itself; they do not repeat the
+decoder's own message. To see what kind of failure the decoder reported,
+start the viewer with `RUST_LOG=dcmview=debug` and ask for the frame again:
+the cause follows the warning as a `cause:` line. A `--mask` session does
+not log it.
+
+Re-encode a copy with an ordinary tool (`tiffcp`, ImageMagick, `cwebp`); a
+file such tools cannot read is damaged.
 
 ### The viewer opens before every file appears
 
@@ -158,10 +284,60 @@ authenticates and leaves the listener's API open.
 
 ## Viewer And Decode Errors
 
+### A frame is refused: it needs more decode memory than the budget
+
+Symptom: `422 decode_memory_exceeded`. The message says how many bytes the
+frame needs, how much the budget allows, and asks you to start dcmview with a
+larger `--decode-memory`. The file stays listed as renderable; repeating the
+request in the same session cannot help.
+
+Restart with a larger budget, for example:
+
+```bash
+dcmview --decode-memory 8GiB ./study_dir
+```
+
+The default is a quarter of the machine's physical memory, not less than
+1 GiB and not more than 4 GiB (4 GiB on Windows), so a frame that opens on a
+16 GiB machine may be refused on an 8 GiB one. dcmview prints the budget in
+effect when it starts (`dcmview: decode memory 2GiB (default for this
+machine)`). The message gives the bytes this frame needs: a budget
+of at least that many decodes it. Thumbnails share only half the budget, so a
+frame may open in the viewer and still have no thumbnail until the budget is
+twice what the thumbnail's message says it needs. See
+[Decode memory](configuration.md#decode-memory) for what is reserved and
+for examples: an image file's reservation includes four times the length of
+its file, so of two images with the same pixels the longer file may be the
+one refused. The budget covers decodes in progress separately from the
+caches.
+
+A segmentation, dose or map overlay can be refused in the same way although
+the image under it is shown: an overlay reserves for the object it is made
+from and for every pixel of the displayed image. When the colour scale of a
+dose or map needs more than the budget, the viewer reports the overlay as
+unavailable and gives this message as the reason.
+
+### The API answers 503 decode_busy
+
+The request would have to wait for decode capacity, and its class's waiting
+queue is full. Wait the number of seconds in `Retry-After`, then repeat the
+request. This answer is not cached and does not change the file's support
+state. Cached frames remain available.
+
+A queue holds 1,024 waiting requests, and the next request that would have
+to wait is refused. For ordinary viewer use that takes large frames decoding
+while more than a thousand requests for other frames accumulate. Thumbnails
+have a separate queue of the same length. Reduce the number of requests in
+flight if an API client repeatedly reaches the limit.
+
+A viewer that is stopping gives the same answer to every request still
+waiting for decode capacity.
+
 ### Image frame returns unsupported transfer syntax
 
 Symptom: the viewer cannot display a file and the API returns
-`422 {"code": "unsupported_transfer_syntax", "error": "unsupported transfer syntax: ..."}`.
+`422 {"code": "unsupported_transfer_syntax", "error": "unsupported transfer syntax: ..."}`
+(the UID follows only when the file writes it as a UID).
 
 Likely cause: the file uses a transfer syntax that `dcmview` intentionally does
 not decode yet. JPEG-LS Lossless (`.80`) grayscale and JPEG XL Lossless (`.110`)
@@ -175,6 +351,74 @@ Fix: convert the file to an uncompressed, JPEG Baseline, JPEG Lossless, or
 JPEG 2000 transfer syntax with your normal DICOM tooling, or file a
 compatibility issue with the transfer syntax UID and a fully de-identified or
 synthetic reproduction case. Do not attach protected DICOM data.
+
+### A JPEG XL frame is refused for its embedded colour profile
+
+Symptom: a JPEG XL frame does not display and the API answers
+`500 pixel_decode_failed` with "JPEG XL frame carries an embedded colour
+profile, which is not supported". The file's other frames, if they carry no
+profile, display.
+
+Cause: the frame's JPEG XL data holds an ICC profile of its own. `dcmview`
+takes colour from the DICOM data set (Photometric Interpretation and the ICC
+Profile attribute) and does not read a profile from inside a frame. A
+lossless encode with libjxl keeps the profile of the image it was given, so
+files converted from PNG, TIFF or JPEG sources that had one can hold it.
+
+Fix: encode the frame again without an embedded profile, from pixels that
+carry none, and describe the colour in the data set (the ICC Profile
+attribute) if it matters.
+
+A JPEG XL frame whose image header is longer than 64 KiB, which takes
+dozens of named extra channels, is refused too, with "pixel data disagrees
+with the header: its own header cannot be read"; encode it without the
+extra channels.
+
+### A big-endian 8-bit image shows neighbouring pixels exchanged
+
+Symptom: an 8-bit image in Explicit VR Big Endian
+(`1.2.840.10008.1.2.2`) looks combed: along each row, every two
+neighbouring pixels have changed places, and in a colour image the colours
+are wrong as well. The tag panel shows Pixel Data with VR `OW`. pydicom,
+DCMTK and other conforming readers show the file the same way.
+
+Cause: the file was written by software that stored the samples in pixel
+order under VR OW. In a big-endian file a value of VR OW is 16-bit words
+written high byte first, so a conforming writer stores every pair of 8-bit
+samples exchanged, and a reader exchanges them back. Software that changes
+the byte order of a data set without swapping its 8-bit Pixel Data, or
+that writes pixel bytes unchanged under OW, produces such a file. `dcmview`
+0.3.0 to 0.4.1 read these files as their writer meant them and conforming
+files exchanged; it now reads Pixel Data as the standard defines it.
+
+Fix: write the file again as Explicit VR Little Endian from the original
+pixels, or give its Pixel Data VR OB, which is a byte stream in either byte
+order. Files with 16-bit samples, and 8-bit files in the little-endian
+transfer syntaxes, are not affected.
+
+### A big-endian 32-bit image shows wrong values or noise
+
+Symptom: a 32-bit integer image in Explicit VR Big Endian
+(`1.2.840.10008.1.2.2`) looks like noise or has values far from what was
+expected. The tag panel shows Pixel Data with VR `OW` and Bits Allocated
+32. DCMTK shows the file the same way; pydicom shows it as its writer meant
+it.
+
+Cause: the file was written by software that stored each 32-bit sample with
+its four bytes reversed. As in the 8-bit case above, a value of VR OW is
+16-bit words written high byte first, and a 32-bit sample is two of them,
+the low word first (PS3.5 section 8.2): the sample `0x11223344` is stored
+`33 44 11 22`, as DCMTK writes it. Software that treats such samples as
+32-bit values stores `11 22 33 44` and reads its own files back, and
+pydicom reads them the same way, but a conforming reader sees the two words
+of each sample exchanged. `dcmview` 0.3.0 to 0.4.1 read these files as
+their writer meant them and conforming files with their words exchanged; it
+now reads Pixel Data as the standard defines it.
+
+Fix: write the file again as Explicit VR Little Endian from the original
+pixels. VR OB is not an option here: it holds Pixel Data of 8 bits or
+fewer. Float and Double Float Pixel Data, 16-bit samples, and files in the
+little-endian transfer syntaxes are not affected.
 
 ### Tags load but the image is missing
 
@@ -253,7 +497,11 @@ not match a loaded DICOM path.
 Fix: confirm that the CSV includes `anon_dicom_path` and `ROI_coords`. When
 present, `num_ROI` must equal the number of coordinate boxes. `ROI_coords` must
 be a JSON array of `[ymin, xmin, ymax, xmax]` boxes, and `ROI_frames` must be a
-JSON array of frame-index lists or `[]`. Frame indices are zero-based.
+JSON array of frame-index lists or `[]`. Frame indices are zero-based. A
+negative coordinate or one that is not a whole number is not an error: it is
+corrected on load and listed in the import's report
+(`GET /api/annotations/import`), which also says when a document given to
+`--annotations` failed and why.
 
 Example:
 

@@ -705,7 +705,11 @@ the mask"), which is reported.
   report (`out_of_range`, `zero_area` warnings with row numbers and file
   keys), and such rows go into the golden fixtures. The rest of the EMBED
   checks (header, JSON shape, `num_ROI`, `ROI_frames` length, frame ranges)
-  stay fatal as today. The model's "rejects out-of-range geometry" (model
+  stay fatal as today, with one exception (amended 2026-10-08, model doc
+  2.1 and its EMBED parity amendment): a negative coordinate becomes 0 and
+  a non-integer coordinate is rounded to the nearest pixel, each with a
+  warning in the report, instead of failing the import. A coordinate past
+  the image edge is never changed on load. The model's "rejects out-of-range geometry" (model
   doc 2.1) applies to PUT/ops and to the **new native formats**, which
   validate strictly. The overstated `docs/annotations.md` wording is a
   separate shipped-docs fix, on the owner's word.
@@ -885,7 +889,10 @@ zip opens everywhere.
    policy is all-or-nothing on invalid matched records for every format.
    **Confirmed.** **Amended 2026-09-30**: EMBED CSV import is
    lenient on geometry: out-of-range and zero-area rows load as in 0.3 and
-   are listed in the import report; native formats validate strictly. COCO
+   are listed in the import report; native formats validate strictly.
+   **Amended 2026-10-08**: on that import a negative coordinate becomes 0
+   and a non-integer one is rounded, each with a warning; a coordinate past
+   the edge is kept as loaded. COCO
    results import requires the originating manifest or an explicit mapping.
    Hub-mode import permission is the `imports` key, enforced in the spoke,
    and all imports are denied to annotators under `blind_metadata`.

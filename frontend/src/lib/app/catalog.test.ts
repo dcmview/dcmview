@@ -18,6 +18,11 @@ function filesResponse(count: number, scanComplete: boolean): FilesResponse {
 		scanned: count,
 		skipped: 0,
 		filtered: 0,
+		revision: count,
+		reset: false,
+		more: false,
+		keys_hashing: 0,
+		rekeys: [],
 	} as FilesResponse;
 }
 

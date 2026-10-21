@@ -93,7 +93,7 @@ suite('dcmview startup URL', () => {
       {
         name: 'new with token',
         // A different legacy URL proves the new fields take precedence.
-        event: { ...common, url: 'http://127.0.0.1:9999/#token=stale', base_url: baseUrl, token: 'Xy_test', protocol: 1 },
+        event: { ...common, url: 'http://127.0.0.1:9999/#token=stale', base_url: baseUrl, token: 'Xy_test', protocol: 1, key_rules: 1 },
         expected: `${baseUrl}/?theme=dark#token=Xy_test`,
       },
       {

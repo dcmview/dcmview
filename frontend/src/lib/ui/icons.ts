@@ -31,6 +31,7 @@ export const ICONS = {
 	series: "<rect x=\"5\" y=\"5\" width=\"8.5\" height=\"8.5\" rx=\"1\"/><path d=\"M2.5 11V3.5a1 1 0 0 1 1-1H11\"/>",
 	directory: "<path d=\"M2.5 4h4l1.5 1.5h5.5v7.5h-11z\"/>",
 	file: "<path d=\"M4 2.5h5.5l2.5 2.5v8.5H4zM9.5 2.5V5H12\"/>",
+	image: "<rect x=\"2.5\" y=\"3\" width=\"11\" height=\"10\" rx=\"1.5\"/><circle cx=\"6\" cy=\"6.5\" r=\"1\"/><path d=\"M2.5 11l3-2.8 2.2 1.9 2.3-2.4 3.5 3.3\"/>",
 	dose: "<circle cx=\"8\" cy=\"8\" r=\"5.5\"/><circle cx=\"8\" cy=\"8\" r=\"2.5\"/>",
 	seg: "<path d=\"M5.5 3.2c3-1 6.8.6 7.2 4s-2.3 5.6-5.4 5.3S2 10.3 2.6 7.3c.3-2 1.3-3.4 2.9-4.1z\"/>",
 	pmap: "<rect x=\"2.5\" y=\"2.5\" width=\"11\" height=\"11\" rx=\"1.5\"/><path d=\"M2.5 8h11M8 2.5v11\"/>",

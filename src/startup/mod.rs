@@ -1,11 +1,12 @@
 mod discovery;
+mod memory;
 
 use anyhow::{Context, Result};
-use dcmview::annotations::{AnnotationSource, AnnotationStore};
+use dcmview::annotations::{AnnotationFormat, AnnotationInput, AnnotationStore};
 use dcmview::api::contracts::TOKEN_ENV_VAR;
 use dcmview::loader;
 use dcmview::masking::Masker;
-use dcmview::pixels::CacheBudget;
+use dcmview::pixels::{CacheBudget, DecodeLimits};
 use dcmview::server::{AccessToken, AppState, BoundServer, FileRegistry, ServerConfig};
 use discovery::{DiscoveryHandle, DiscoveryInputs, DiscoveryOutcome};
 use std::path::PathBuf;
@@ -17,13 +18,21 @@ pub(crate) struct LocalViewerOptions {
     pub(crate) input_paths: Vec<PathBuf>,
     pub(crate) recursive: bool,
     pub(crate) filters: Vec<loader::ScanFilter>,
+    /// `--formats`; every format when the flag is absent.
+    pub(crate) formats: loader::FormatSelection,
     pub(crate) annotation_path: Option<PathBuf>,
+    /// `--annotations-format`; decided from the file when the flag is
+    /// absent.
+    pub(crate) annotation_format: Option<AnnotationFormat>,
     pub(crate) mask: bool,
     pub(crate) host: String,
     pub(crate) port: u16,
     pub(crate) unix_socket: Option<PathBuf>,
     pub(crate) timeout_seconds: Option<u64>,
     pub(crate) cache_budget: Option<CacheBudget>,
+    /// `--decode-memory`; the default for this machine when the flag is
+    /// absent ([`memory::decode_limits`]).
+    pub(crate) decode_limits: Option<DecodeLimits>,
     pub(crate) exit_with_parent: bool,
     pub(crate) open_browser: bool,
     pub(crate) startup_json: bool,
@@ -70,7 +79,7 @@ pub(crate) async fn run_local_viewer(options: LocalViewerOptions) -> Result<Loca
         .annotation_path
         .as_ref()
         .map(|path| {
-            AnnotationSource::from_path(path)
+            AnnotationInput::from_path(path, options.annotation_format)
                 .with_context(|| format!("failed to load annotations from {}", path.display()))
         })
         .transpose()?;
@@ -83,8 +92,11 @@ pub(crate) async fn run_local_viewer(options: LocalViewerOptions) -> Result<Loca
         AnnotationStore::loading()
     } else {
         AnnotationStore::empty()
-    };
-    let mut state = AppState::new(registry.clone(), annotation_store.clone());
+    }
+    .with_document_budget(memory::document_budget());
+    let (decode_limits, decode_memory_source) = memory::decode_limits(options.decode_limits);
+    let mut state =
+        AppState::new(registry.clone(), annotation_store.clone()).with_decode_limits(decode_limits);
     if let Some(budget) = options.cache_budget {
         state = state.with_cache_budget(budget);
     }
@@ -105,14 +117,20 @@ pub(crate) async fn run_local_viewer(options: LocalViewerOptions) -> Result<Loca
     let bound = BoundServer::bind(&config)
         .await
         .map_err(|error| friendly_bind_error(error, config.port))?;
+    eprintln!(
+        "dcmview: decode memory {} ({decode_memory_source})",
+        memory::byte_size(decode_limits.memory_bytes)
+    );
     if options.exit_with_parent {
         dcmview::signals::stop_on_stdin_eof(shutdown.clone())
             .context("failed to watch parent stdin pipe")?;
     }
+    let key_registry = registry.clone();
     let discovery = DiscoveryHandle::spawn(DiscoveryInputs {
         input_paths: options.input_paths,
         recursive: options.recursive,
         filters: options.filters,
+        formats: options.formats,
         annotation_source,
         registry,
         annotation_store,
@@ -121,6 +139,7 @@ pub(crate) async fn run_local_viewer(options: LocalViewerOptions) -> Result<Loca
     });
 
     let server_result = bound.serve(config, state).await;
+    key_registry.stop_key_work();
     let discovery_outcome = discovery.cancel_and_wait().await;
     server_result?;
 
@@ -154,13 +173,16 @@ mod tests {
             input_paths: vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")],
             recursive: true,
             filters: Vec::new(),
+            formats: loader::FormatSelection::all(),
             annotation_path: None,
+            annotation_format: None,
             mask: false,
             host: "127.0.0.1".to_string(),
             port,
             unix_socket: None,
             timeout_seconds: Some(0),
             cache_budget: None,
+            decode_limits: Some(DecodeLimits::DEFAULT),
             exit_with_parent: false,
             open_browser: false,
             startup_json: false,

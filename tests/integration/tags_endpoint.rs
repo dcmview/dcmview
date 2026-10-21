@@ -16,6 +16,10 @@ async fn serializes_sequences_and_binary_values_without_leaking_raw_pixel_data()
     write_tag_fixture(&path);
 
     let file = FileEntry {
+        format: Default::default(),
+        raster: None,
+        size_bytes: 0,
+        modified: None,
         index: 0,
         path: path.clone(),
         label: "tag fixture".to_string(),
@@ -91,6 +95,10 @@ async fn truncates_long_multibyte_tag_values_without_panicking() {
     write_multibyte_tag_fixture(&path);
 
     let file = FileEntry {
+        format: Default::default(),
+        raster: None,
+        size_bytes: 0,
+        modified: None,
         index: 0,
         path: path.clone(),
         label: "multibyte fixture".to_string(),
@@ -153,6 +161,10 @@ async fn limits_large_numeric_arrays_and_sequences() {
     write_limited_tag_fixture(&path);
 
     let file = FileEntry {
+        format: Default::default(),
+        raster: None,
+        size_bytes: 0,
+        modified: None,
         index: 0,
         path: path.clone(),
         label: "limits fixture".to_string(),

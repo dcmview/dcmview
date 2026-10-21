@@ -2,14 +2,15 @@ use crate::api::contracts::{RawFrameMetadata, WindowMode};
 use crate::types::FileEntry;
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
+use dicom_dictionary_std::tags;
 use dicom_object::open_file;
-use dicom_pixeldata::PixelDecoder;
 use std::sync::Arc;
 use tokio::task;
 
+use super::codestream;
 use super::error::{PixelError, PixelResult};
 use super::render::{
-    encode_windowed_luminance_png, DisplayPng, LuminanceRenderOptions, StoredSamples,
+    render_windowed_luminance, DisplayBuffer, DisplayPng, LuminanceRenderOptions, StoredSamples,
 };
 
 pub(crate) const DEFLATED_IMAGE_FRAME_UID: &str = "1.2.840.10008.1.2.8.1";
@@ -30,30 +31,66 @@ pub(crate) async fn decode_deflated_binary_frame_to_png(
     validate_binary_layout(&file)
         .map_err(|error| PixelError::UnsupportedLayout(error.to_string()))?;
     task::spawn_blocking(move || {
-        let decoded = decode_binary_frame(&file, frame).map_err(PixelError::frame_decode)?;
-        // One byte per binary sample, 0 or 1.
-        encode_windowed_luminance_png(
+        render_deflated_binary_frame_blocking(
             &file,
-            StoredSamples::Integer {
-                bytes: &decoded.samples,
-                bits_allocated: 8,
-                signed: false,
-            },
-            LuminanceRenderOptions {
-                frame,
-                rows: decoded.rows,
-                columns: decoded.columns,
-                requested_wc,
-                requested_ww,
-                window_mode,
-            },
-        )
+            frame,
+            requested_wc,
+            requested_ww,
+            window_mode,
+        )?
+        .into_display_png(&file, frame)
         .map_err(PixelError::frame_decode)
     })
     .await
     .map_err(|error| {
         PixelError::frame_decode(anyhow!("Deflated Image Frame decode task failed: {error}"))
     })?
+}
+
+pub(crate) async fn render_deflated_binary_frame(
+    file: Arc<FileEntry>,
+    frame: u32,
+    requested_wc: Option<f64>,
+    requested_ww: Option<f64>,
+    window_mode: WindowMode,
+) -> PixelResult<DisplayBuffer> {
+    validate_binary_layout(&file)
+        .map_err(|error| PixelError::UnsupportedLayout(error.to_string()))?;
+    task::spawn_blocking(move || {
+        render_deflated_binary_frame_blocking(&file, frame, requested_wc, requested_ww, window_mode)
+    })
+    .await
+    .map_err(|error| {
+        PixelError::frame_decode(anyhow!("Deflated Image Frame decode task failed: {error}"))
+    })?
+}
+
+fn render_deflated_binary_frame_blocking(
+    file: &FileEntry,
+    frame: u32,
+    requested_wc: Option<f64>,
+    requested_ww: Option<f64>,
+    window_mode: WindowMode,
+) -> PixelResult<DisplayBuffer> {
+    let decoded = decode_binary_frame(file, frame).map_err(PixelError::frame_decode)?;
+    // One byte per binary sample, 0 or 1.
+    render_windowed_luminance(
+        file,
+        StoredSamples::Integer {
+            bytes: &decoded.samples,
+            bits_allocated: 8,
+            signed: false,
+        },
+        LuminanceRenderOptions {
+            frame,
+            rows: decoded.rows,
+            columns: decoded.columns,
+            requested_wc,
+            requested_ww,
+            window_mode,
+        },
+    )
+    .map_err(PixelError::frame_decode)
 }
 
 pub(crate) async fn decode_raw_deflated_binary_frame(
@@ -92,37 +129,36 @@ pub(super) fn decode_object(
     object: &dicom_object::DefaultDicomObject,
     frame: u32,
 ) -> Result<DecodedBinaryFrame> {
-    let decoded = object
-        .decode_pixel_data_frame(frame)
-        .context("Deflated Image Frame adapter decode failed")?;
-
-    if decoded.rows() != file.rows || decoded.columns() != file.columns {
-        return Err(anyhow!(
-            "decoded Deflated Image Frame geometry {}x{} does not match catalog {}x{}",
-            decoded.columns(),
-            decoded.rows(),
-            file.columns,
-            file.rows
-        ));
-    }
-    if decoded.bits_allocated() != 1 || decoded.samples_per_pixel() != 1 {
+    // The adapter would inflate whatever the fragment holds; the frame is
+    // inflated here instead, to the size the entry gives and no further.
+    codestream::header_agrees(file, object)?;
+    if file.bits_allocated != 1 || file.samples_per_pixel != 1 {
         return Err(anyhow!(
             "decoded Deflated Image Frame layout requires one one-bit sample per pixel"
         ));
     }
-
-    // dicom-pixeldata's adapter output is the native bit-packed frame. Avoid
-    // DecodedPixelData::frame_data here: it currently sizes one-bit frames as
-    // one byte per sample and rejects the correctly packed adapter buffer.
-    let pixel_count = usize::try_from(decoded.rows())?
-        .checked_mul(usize::try_from(decoded.columns())?)
+    let fragments = object
+        .element(tags::PIXEL_DATA)
+        .ok()
+        .and_then(|element| element.fragments())
+        .context("Deflated Image Frame pixel data is not encapsulated")?;
+    let fragment = usize::try_from(frame)
+        .ok()
+        .and_then(|frame| fragments.get(frame))
+        .context("Deflated Image Frame has no fragment for the frame")?;
+    let pixel_count = usize::try_from(file.rows)?
+        .checked_mul(usize::try_from(file.columns)?)
         .context("Deflated Image Frame geometry overflow")?;
-    let packed = decoded.data().to_vec();
+    let packed_len = pixel_count
+        .checked_add(7)
+        .map(|bits| bits / 8)
+        .context("Deflated Image Frame size overflow")?;
+    let packed = codestream::inflate_frame(fragment, packed_len)?;
     let samples = unpack_one_bit_frame(&packed, pixel_count)?;
     Ok(DecodedBinaryFrame {
         samples,
-        rows: decoded.rows(),
-        columns: decoded.columns(),
+        rows: file.rows,
+        columns: file.columns,
     })
 }
 

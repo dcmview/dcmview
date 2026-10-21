@@ -208,6 +208,7 @@ pub fn semantic_context(
     let object = open_header(&source.path).context("failed to open semantic metadata")?;
     let candidates = files
         .iter()
+        .filter(|file| !file.format.is_raster())
         .map(|file| ReferenceCandidate::from_file(file))
         .collect::<Vec<_>>();
     let edges = references::extract_reference_edges_from_object(&object);

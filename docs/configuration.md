@@ -21,18 +21,28 @@ dcmview [OPTIONS] <PATH> [PATH ...]
 
 | Option | Default | Description |
 |---|---:|---|
-| `<PATH>...` | required | DICOM file or directory to inspect; repeat for multiple inputs. |
+| `<PATH>...` | required | DICOM or image file or directory to inspect; repeat for multiple inputs. |
 | `-p, --port <PORT>` | `0` | Local HTTP port to bind. `0` asks the OS for an available port. |
 | `--host <ADDR>` | `127.0.0.1` | Local interface to bind. Keep the default for normal and SSH-forwarded use. |
 | `--unix-socket <PATH>` | none | Listen on a private Unix domain socket instead of TCP; Linux and macOS only. Conflicts with explicit `--host` and `--port`. |
 | `--no-token` | `false` | Serve the API without the access token; for use behind a proxy that already authenticates. Warns that the API is open to anything that can reach the listener. |
 | `--no-browser` | `false` | Print the viewer URL instead of opening a browser automatically. |
 | `--timeout <SECONDS>` | none | Exit after this many seconds without API or browser requests once the scan has finished. |
-| `--cache-budget <BYTES>` | `704MiB` | Total memory for cached display, raw and overlay frame bodies; minimum `16MiB`. |
+| `--cache-budget <BYTES>` | `768MiB` | Total memory for cached display, raw, overlay and thumbnail frame bodies; minimum `16MiB`. |
+| `--decode-memory <BYTES>` | a quarter of physical memory, from `1GiB` to `4GiB` | Memory that frames being decoded may use between them; minimum `256MiB`. See [Decode memory](#decode-memory). |
 | `--no-recursive` | `false` | Scan only the top level of input directories. |
-| `--annotations <CSV>` | none | Load EMBED-style ROI annotations from CSV without modifying the file. |
-| `--filter <FIELD=VALUE>` | none | Include only files whose metadata field contains the value; repeatable. |
+| `--annotations <FILE>` | none | Load annotations without modifying the file: an EMBED-style ROI CSV, or a `dcmview.annotations` document as JSON or JSON Lines. The start of the file decides which. |
+| `--annotations-format <FORMAT>` | decided from the file | Read `--annotations` as `embed` (EMBED-style ROI CSV) or `native` (a `dcmview.annotations` document). Without it, a file that starts with `{` and names the `dcmview.annotations` format in its first 4,096 bytes is a document and every other file is read as CSV; a file that is neither stops `dcmview` with exit status 1. |
+| `--formats <NAMES>` | all five formats | Comma-separated `dicom,png,jpeg,tiff,webp`; narrows directory walks only. |
+| `--filter <FIELD=VALUE>` | none | Include only files matching a metadata, format, or path filter; repeatable. |
 | `--mask` | `false` | Replace patient identifiers in everything the viewer displays, for screen sharing. Display only: files are not modified and this is not de-identification. Fixed for the session. |
+
+`--formats` accepts those five names case-insensitively, with whitespace
+around names and repeated names allowed. Empty items and aliases such as `jpg`,
+`tif`, or `all` are errors. A recognized file outside the selection is counted
+as skipped (`format_not_selected`). A file named explicitly as an input path
+is always inspected regardless of the selection; filters still apply.
+Use `dcmview --formats dicom ./mixed_dir` for a DICOM-only directory scan.
 
 Filter fields, by snake_case name or DICOM keyword (either spelling, any
 case):
@@ -48,9 +58,16 @@ case):
 | `series_number` | `SeriesNumber` |
 | `series_uid` | `SeriesInstanceUID` |
 | `modality` | `Modality` |
+| `format` | — |
+| `path` | — |
 
-Matching is case-insensitive substring matching; multiple filters are combined
-with AND semantics.
+DICOM fields use case-insensitive substring matching. `format` requires one of
+`dicom`, `png`, `jpeg`, `tiff`, or `webp` and matches the whole format name,
+ignoring case. `path` matches a case-insensitive substring of the path reported
+by `/api/files`, without canonicalizing it. Multiple filters use AND semantics.
+Rasters have empty DICOM fields, so a DICOM filter such as `modality=MG`
+excludes them. For example, `--filter format=png --filter path=exports` selects
+PNG files whose reported path contains `exports`.
 
 `--startup-json` and `--vscode-bridge-client` are hidden integration flags for
 wrappers and VS Code terminal interception. They are not part of the normal user
@@ -64,15 +81,154 @@ followed by `KiB`, `MiB` or `GiB`, case-insensitively and without spaces.
 Fractions, signs, decimal suffixes such as `MB`, overflow and totals below
 `16MiB` (`16777216` bytes) are rejected.
 
-The total is split proportionally among display, raw and overlay frame caches
-using their default sizes of 256, 384 and 64 MiB. Each share rounds down;
-frames larger than their cache's share are served without being retained.
-Without the flag, those defaults are unchanged.
+The total defaults to 768 MiB and is split proportionally among display, raw,
+overlay and thumbnail caches using their default sizes of 256, 384, 64 and
+64 MiB. Each share rounds down; frames larger than their cache's share are
+served without being retained.
 
 This limits retained frame bodies, not total process memory. It does not cover
-in-flight decoding and responses, cache metadata, the file catalog, annotations,
+decodes in progress (see "Decode memory" below), responses being sent, cache metadata, the file catalog, annotations,
 or the tag, semantic and value-mapping caches (which use entry limits).
 Browser memory is separate.
+
+### Decode memory
+
+Decoding a frame takes several times the frame's size while it runs. dcmview
+reserves an estimate of that memory before each decode starts and keeps the
+total reserved by the decodes running at once within `--decode-memory`.
+Values are written as for `--cache-budget`; totals below `256MiB` are
+rejected, and a value given is used exactly.
+
+Without the flag the budget follows the machine: one quarter of its physical
+memory, but not less than 1 GiB and not more than 4 GiB.
+
+| Physical memory | Default decode memory |
+|---|---|
+| 4 GiB or less | 1 GiB |
+| 8 GiB | 2 GiB |
+| 12 GiB | 3 GiB |
+| 16 GiB or more | 4 GiB |
+| not known | 4 GiB |
+
+The budget for annotation documents follows the machine the same way,
+and has no flag: the memory the records of one `dcmview.annotations`
+document may be charged, when it is loaded with `--annotations` and when
+it is exported, is one quarter of physical memory, not less than 1 GiB
+and not more than 4 GiB (the table above), and 4 GiB where physical
+memory is not known. A document past it is not loaded, and
+`GET /api/annotations/import` gives the message, which names the bound
+and its value ("the bytes of memory its records hold are limited to
+2147483648"); a session past it is refused the export with
+`422 annotation_export_too_large` and a message that names them too. A rectangle is
+charged about 1,900 bytes and an annotated file about 1,300. See
+[annotations](annotations.md#documents).
+
+Physical memory is read on Linux and macOS. On Windows and other platforms
+it is not read, and the default is 4 GiB whatever the machine has. It is the
+machine's memory, not the limit of a container or cgroup, and an operating
+system may report a little less than the installed amount: a Linux machine
+sold as 8 GB that reports 7.6 GiB gets 1.9 GiB. dcmview states the budget
+in effect on standard error when it starts:
+
+```text
+dcmview: decode memory 2GiB (default for this machine)
+dcmview: decode memory 8GiB (set by --decode-memory)
+```
+
+Showing one frame of an image file (PNG, JPEG, TIFF or WebP) reserves 1 MiB
+and the larger of what decoding it and what encoding it for the browser may
+hold:
+
+```text
+decoding:  32.1 MiB + 6 x frame + 4 x min(file length, 64 MiB + 4 x frame)
+encoding:  frame + 7 x display
+```
+
+where `frame` is the decoded frame (pixels x samples per pixel x bytes per
+sample), `display` is one byte per pixel for gray, three for 8-bit colour
+and six for deeper colour, and the file length is the one the file had when
+it was listed. Samples of 32 or 64 bits add 32 bytes per sample. A
+thumbnail reserves the decoding line, one `display` and 8 MiB. A DICOM frame reserves by its transfer syntax and not by the length of
+its file; [Decode Admission](architecture.md#decode-admission) lists every
+case.
+
+A segmentation, RT Dose or Parametric Map overlay is reserved as a whole,
+by the image it is drawn on as well as by the object it is made from. A
+segmentation overlay reserves the decode of its frame and 24 bytes for
+every pixel of the displayed image. A dose or map overlay reserves 8 bytes
+for every pixel of each plane of the volume the image is sampled from (one
+or two planes for an image parallel to them, possibly all of them for an
+image that cuts through the volume) and, beside the planes, the larger of
+the decode of one plane and 32 bytes for every pixel of the displayed image
+(12 when only its values are read under the cursor). For a 4096 x 4096
+image the image's part is 384 MiB under a segmentation and 512 MiB under a
+dose or map; for a 512 x 512 slice it is 6 to 8 MiB, less than the 16 MiB
+every DICOM decode starts from. The colour scale of a dose or map reserves
+the decode of one of its frames and 8 bytes for every pixel of it.
+
+For a frame of 16,384 x 16,384 pixels, the largest an image file may have,
+that is, whatever the budget:
+
+| Stored samples | Without the file term | Uncompressed file | File term at its most |
+|---|---|---|---|
+| 8-bit gray | 2.1 GiB | 2.6 GiB | 5.8 GiB |
+| 16-bit gray | 3.1 GiB | 5.1 GiB | 11.3 GiB |
+| 8-bit RGB | 6.1 GiB | 7.6 GiB | 16.8 GiB |
+| 8-bit RGBA | 6.3 GiB | 10.1 GiB | 22.3 GiB |
+| 16-bit RGBA | 12.6 GiB | 20.1 GiB | 44.3 GiB |
+
+The first column is what the frame reserves for the shortest of files; the second is a file as long as its decoded frame; the last
+is a file of 64 MiB plus four frames or longer.
+
+The examples below that name "4 GiB" assume a budget of 4 GiB: the default
+on a machine with 16 GiB of physical memory or more, or `--decode-memory
+4GiB` on any machine.
+
+- Frames of ordinary size are unaffected: a 4096 x 5120 16-bit mammogram
+  reserves between 181 and 417 MiB, depending on its transfer syntax, so
+  several decode at once with 4 GiB, at least four with the 2 GiB an 8 GiB
+  machine gets, and at least two with 1 GiB.
+- Large frames take turns: a frame whose reservation does not fit beside
+  the decodes that are running waits for them to finish.
+- A frame that would need more than the whole budget is not decoded. The
+  viewer says how many bytes it needs and names this option; the file is
+  still listed, and starting dcmview with at least that value decodes it.
+- With 4 GiB, an 8-bit gray frame at the 16,384 x 16,384 limit is
+  shown when its file is no longer than 631 MiB, and a 16-bit gray one only
+  when its file is no longer than 247 MiB: an uncompressed 16-bit TIFF of
+  that size is 512 MiB and needs `--decode-memory 6GiB`. Colour at that
+  size needs more than 4 GiB whatever the file's length. With the 2 GiB an
+  8 GiB machine gets by default, no frame at the limit is shown: the
+  smallest reservation there is 1 MiB more than the budget.
+- Whatever the file's length, the largest square frames shown are:
+
+  | Budget | 8-bit gray | 16-bit gray | 8-bit RGB | 16-bit RGBA |
+  |---|---|---|---|---|
+  | 4 GiB (default with 16 GiB or more) | 13,470 | 9,524 | 7,777 | 4,762 |
+  | 2 GiB (default with 8 GiB) | 9,156 | 6,474 | 5,286 | 3,237 |
+  | 1 GiB (default with 4 GiB or less) | 5,918 | 4,185 | 3,417 | 2,092 |
+
+  A larger frame is shown only when its file is short enough for the sum
+  above.
+- A frame's shutter and overlay graphics are drawn as a layer of their own,
+  which reserves 25 bytes per pixel. A frame of more than 6,550 pixels a
+  side with 1 GiB (13,105 with 4 GiB) can be shown while its layer is
+  refused, and is then shown without those graphics.
+- Thumbnails may reserve half of the budget between them, and no thumbnail
+  starts decoding while a frame the viewer asked for is waiting; one that
+  has already started finishes first. A frame too large for that half has
+  no thumbnail and still opens in the viewer: with 4 GiB, an 8-bit gray
+  frame at the pixel limit has a thumbnail only when its file is no longer
+  than 53 MiB.
+- When 1,024 frame requests are already waiting for memory, the next one
+  that would have to wait is answered `503` with `Retry-After: 1` instead;
+  the same request succeeds once decodes finish. Thumbnails have a queue of
+  their own, of the same length.
+
+This limits the memory of decodes in progress, not total process memory. The
+frame caches (`--cache-budget`), responses being sent, and browser memory are
+separate. The estimate is deliberately high, so real use is usually well
+below the limit.
 
 ### Private Unix socket and SSH forwarding
 
@@ -182,7 +338,7 @@ single path-like value or an iterable of path-like values.
 | `block` | `True` | When `True`, waits for `dcmview` to exit and returns `None`; when `False`, returns a handle with `.url`, `.stop()`, and context-manager support. |
 | `recursive` | `True` | When `False`, forwards `--no-recursive`. |
 | `timeout` | `None` | Forwards to `--timeout` when set. |
-| `annotations` | `None` | Path to an EMBED-style ROI CSV; forwards `--annotations` when set. |
+| `annotations` | `None` | Path to an EMBED-style ROI CSV or a `dcmview.annotations` document; forwards `--annotations` when set. |
 | `filters` | `None` | Iterable of `FIELD=VALUE` filters; each value forwards as `--filter`. |
 | `mask` | `False` | When `True`, forwards `--mask`. |
 | `vscode_bridge` | `True` | When `True`, the viewer opens in VS Code when launched from a VS Code terminal or inside an open workspace folder. |

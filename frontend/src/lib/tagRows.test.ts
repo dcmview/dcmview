@@ -29,7 +29,48 @@ const tags: TagNode[] = [
 	},
 ];
 
+/** A raster file's metadata: flat leaves, then a group holding a group. */
+const metadata: TagNode[] = [
+	{ tag: "PNG:IHDR", keyword: "Width", vr: "", value: { type: "number", value: 640 } },
+	{
+		tag: "EXIF",
+		keyword: "",
+		vr: "",
+		value: {
+			type: "sequence",
+			items: [[{
+				tag: "IFD0",
+				keyword: "",
+				vr: "",
+				value: {
+					type: "sequence",
+					items: [[
+						{ tag: "0x010F", keyword: "Make", vr: "ASCII", value: { type: "string", value: "Aperture Works" } },
+						{ tag: "0x0112", keyword: "Orientation", vr: "SHORT", value: { type: "number", value: 6 } },
+					]],
+				},
+			}]],
+		},
+	},
+];
+
 describe("tag row shaping", () => {
+	it("shows the groups of a raster's metadata open, and closes the ones toggled", () => {
+		const tags = (toggled: string[], filter = "") =>
+			flattenTagRows(metadata, "f7", new Set(toggled), filter).map((row) => row.node.tag);
+		expect(tags([])).toEqual(["PNG:IHDR", "EXIF", "IFD0", "0x010F", "0x0112"]);
+		expect(tags(["f7-1:item0-0"])).toEqual(["PNG:IHDR", "EXIF", "IFD0"]);
+		expect(tags(["f7-1"])).toEqual(["PNG:IHDR", "EXIF"]);
+		// A filter shows the entries that match, under the groups that hold them.
+		expect(tags([], "aperture")).toEqual(["EXIF", "IFD0", "0x010F"]);
+
+		const rows = flattenTagRows(metadata, "f7", new Set(), "");
+		expect(rows.map((row) => row.depth)).toEqual([0, 0, 1, 2, 2]);
+		expect(tagValueDisplay(rows[1], false)).toBe("[1 entry]");
+		expect(tagValueDisplay(rows[2], false)).toBe("[2 entries]");
+	});
+
+
 	it("retains a sequence parent when a descendant matches the filter", () => {
 		const rows = flattenTagRows(tags, "f42", new Set(), "nested-series");
 		expect(rows.map((row) => row.node.keyword)).toEqual(["ReferencedSeriesSequence"]);

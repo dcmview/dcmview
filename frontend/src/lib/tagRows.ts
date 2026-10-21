@@ -6,15 +6,38 @@ export type FlatTagRow = {
 	depth: number;
 };
 
+/**
+ * Rows of a tag tree. `toggledSequences` holds the keys of the rows whose
+ * children the user opened or closed: a DICOM sequence starts closed and a
+ * group of a raster file's metadata starts open (`isSequenceOpen`).
+ */
 export function flattenTagRows(
 	nodes: TagNode[],
 	prefix: string,
-	expandedSequences: ReadonlySet<string>,
+	toggledSequences: ReadonlySet<string>,
 	filter: string,
 ): FlatTagRow[] {
 	const rows: FlatTagRow[] = [];
-	flattenRows(nodes, prefix, 0, rows, expandedSequences, filter.trim().toLowerCase());
+	flattenRows(nodes, prefix, 0, rows, toggledSequences, filter.trim().toLowerCase());
 	return rows;
+}
+
+/**
+ * A group of a raster file's metadata tree (`EXIF`, `IFD0`, `TIFF:page 0`):
+ * a node with children that is not a DICOM sequence. The server gives a
+ * group one item and no value type, where a sequence has the type `SQ`.
+ */
+export function isGroupTag(node: TagNode): boolean {
+	return node.value.type === "sequence" && node.vr !== "SQ";
+}
+
+/** Whether a row's children show: a group unless closed, a sequence once opened. */
+export function isSequenceOpen(
+	node: TagNode,
+	key: string,
+	toggledSequences: ReadonlySet<string>,
+): boolean {
+	return isGroupTag(node) !== toggledSequences.has(key);
 }
 
 function flattenRows(
@@ -22,7 +45,7 @@ function flattenRows(
 	prefix: string,
 	depth: number,
 	out: FlatTagRow[],
-	expandedSequences: ReadonlySet<string>,
+	toggledSequences: ReadonlySet<string>,
 	needle: string,
 ): void {
 	nodes.forEach((node, index) => {
@@ -33,14 +56,14 @@ function flattenRows(
 
 		if (!needle || nodeMatches || descendantMatches) out.push({ key, node, depth });
 
-		if (node.value.type === "sequence" && expandedSequences.has(key)) {
+		if (node.value.type === "sequence" && isSequenceOpen(node, key, toggledSequences)) {
 			node.value.items.forEach((item, itemIndex) => {
 				flattenRows(
 					item,
 					`${key}:item${itemIndex}`,
 					depth + 1,
 					out,
-					expandedSequences,
+					toggledSequences,
 					needle,
 				);
 			});
@@ -109,8 +132,11 @@ export function tagValueDisplay(row: FlatTagRow, expanded: boolean): string {
 			return value.value.join(", ");
 		case "binary":
 			return `[${row.node.vr} · ${value.length.toLocaleString()} bytes]`;
-		case "sequence":
-			return `[SQ · ${value.items.length} item(s)]`;
+		case "sequence": {
+			if (!isGroupTag(row.node)) return `[SQ · ${value.items.length} item(s)]`;
+			const entries = value.items[0]?.length ?? 0;
+			return `[${entries} ${entries === 1 ? "entry" : "entries"}]`;
+		}
 		case "error":
 			return `[error] ${value.message}`;
 	}

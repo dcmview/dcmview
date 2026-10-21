@@ -3,28 +3,36 @@ use super::overlays;
 use super::state::AppState;
 use crate::api::contracts::RedactionSeriesResponse;
 use crate::api::contracts::{
-    DiscoveryResult, EmbedRoiAnnotations, FileSummary, FilesResponse, FrameInfo, FrameQuery,
-    GraphicAnnotationsQuery, GraphicAnnotationsResponse, HealthResponse, PixelQuery,
-    ReferenceCatalogResponse, SemanticContextResponse, TagNode, TagQuery, ViewerIdentity,
-    CACHE_HEADER, CACHE_HIT, CACHE_MISS, CSV_MEDIA_TYPE, DISPLAY_FRAME_HEADER_WINDOW_APPLIED,
-    DISPLAY_FRAME_HEADER_WINDOW_CENTER, DISPLAY_FRAME_HEADER_WINDOW_WIDTH,
-    EXPORT_CONTENT_DISPOSITION_HEADER, EXPORT_CONTENT_DISPOSITION_VALUE, OCTET_STREAM_MEDIA_TYPE,
-    RAW_FRAME_HEADER_BITS_ALLOCATED, RAW_FRAME_HEADER_COLUMNS, RAW_FRAME_HEADER_DEFAULT_WC,
-    RAW_FRAME_HEADER_DEFAULT_WW, RAW_FRAME_HEADER_PADDING_HIGH, RAW_FRAME_HEADER_PADDING_LOW,
+    AnnotationImportResponse, AnnotationOpQuery, AnnotationOpResponse, ApiErrorCode,
+    DiscoveryResult, EmbedRoiAnnotations, FileSummary, FilesQuery, FilesResponse, FrameInfo,
+    FrameQuery, GraphicAnnotationsQuery, GraphicAnnotationsResponse, HealthResponse, PixelQuery,
+    ReferenceCatalogResponse, SemanticContextResponse, TagNode, TagQuery, ThumbnailQuery,
+    ViewerIdentity, CACHE_HEADER, CACHE_HIT, CACHE_MISS, CSV_MEDIA_TYPE,
+    DISPLAY_FRAME_HEADER_WINDOW_APPLIED, DISPLAY_FRAME_HEADER_WINDOW_CENTER,
+    DISPLAY_FRAME_HEADER_WINDOW_WIDTH, EXPORT_CONTENT_DISPOSITION_HEADER,
+    EXPORT_CONTENT_DISPOSITION_VALUE, EXPORT_JSONL_CONTENT_DISPOSITION_VALUE,
+    EXPORT_JSON_CONTENT_DISPOSITION_VALUE, FILE_KEY_HEADER, JPEG_MEDIA_TYPE, JSONL_MEDIA_TYPE,
+    JSON_MEDIA_TYPE, OCTET_STREAM_MEDIA_TYPE, RAW_FRAME_HEADER_BITS_ALLOCATED,
+    RAW_FRAME_HEADER_COLUMNS, RAW_FRAME_HEADER_DEFAULT_WC, RAW_FRAME_HEADER_DEFAULT_WW,
+    RAW_FRAME_HEADER_PADDING_HIGH, RAW_FRAME_HEADER_PADDING_LOW,
     RAW_FRAME_HEADER_PHOTOMETRIC_INTERPRETATION, RAW_FRAME_HEADER_PIXEL_REPRESENTATION,
     RAW_FRAME_HEADER_RESCALE_INTERCEPT, RAW_FRAME_HEADER_RESCALE_SLOPE, RAW_FRAME_HEADER_ROWS,
-    RAW_FRAME_HEADER_SAMPLES_PER_PIXEL,
+    RAW_FRAME_HEADER_SAMPLES_PER_PIXEL, THUMBNAIL_CACHE_CONTROL, THUMBNAIL_HEADER_SOURCE,
+    THUMBNAIL_SIZE_BUCKETS,
 };
-use crate::pixels::{self, FrameRequest, RawFrameRequest};
+use crate::pixels::{self, FrameRequest, RawFrameRequest, ThumbnailRequest};
 use crate::references::{self, ReferenceCandidate};
+use crate::server::annotations;
 use crate::server::tags;
 use crate::types::{FileEntry, WindowMode, WindowRequest};
 use crate::value_mapping::FileValueMappings;
-use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
+use axum::extract::rejection::{BytesRejection, JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
-use axum::http::{header, HeaderMap, HeaderValue};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use bytes::Bytes;
+use dcmview_annotation::{ApplyResult, EnvelopeError, OpEnvelope};
 use std::sync::Arc;
 use tokio::task;
 
@@ -60,13 +68,27 @@ fn ensure_pixels_shown(state: &AppState, file: &FileEntry) -> Result<(), ApiErro
     Ok(())
 }
 
-pub(super) async fn files(State(state): State<AppState>) -> Json<FilesResponse> {
-    let status = state.registry().status();
-    Json(FilesResponse {
-        files: state.registry().summaries_snapshot(),
-        discovery: state
-            .registry()
-            .discovery_response_snapshot()
+pub(super) async fn files(
+    State(state): State<AppState>,
+    query: Result<Query<FilesQuery>, QueryRejection>,
+) -> Result<Json<FilesResponse>, ApiError> {
+    let Query(query) = query.map_err(error::query_rejection)?;
+    if query.limit == Some(0) {
+        return Err(ApiError::invalid_query("limit must be at least 1"));
+    }
+    // One read of the registry: the entries, the scan state and the
+    // counters in this response are of the same moment. A second read here
+    // could report a completed scan beside a list that predates its end.
+    let page = state.registry().files_page(
+        query.since,
+        query
+            .limit
+            .map(|limit| usize::try_from(limit).unwrap_or(usize::MAX)),
+    );
+    Ok(Json(FilesResponse {
+        files: page.files,
+        discovery: page
+            .discovery
             .into_iter()
             .map(|record| DiscoveryResult {
                 path: record.path.display().to_string(),
@@ -81,11 +103,28 @@ pub(super) async fn files(State(state): State<AppState>) -> Json<FilesResponse> 
             .collect(),
         server_start_ms: state.server_start_ms(),
         masked: state.registry().masker().is_some(),
-        scan_complete: status.scan_complete,
-        scanned: status.scanned,
-        skipped: status.skipped,
-        filtered: status.filtered,
-    })
+        scan_complete: page.status.scan_complete,
+        scanned: page.status.scanned,
+        skipped: page.status.skipped,
+        filtered: page.status.filtered,
+        revision: page.revision,
+        reset: page.reset,
+        more: page.more,
+        keys_hashing: page.keys_hashing,
+        rekeys: page.rekeys,
+    }))
+}
+
+/// What every display and raw frame response does for file keys: sends the
+/// file's key as the session shows it in [`FILE_KEY_HEADER`] when it has
+/// one, and notes that a frame was served, which starts the hashing of a
+/// file that has none.
+fn note_frame_served(state: &AppState, index: usize, headers: &mut HeaderMap) {
+    let registry = state.registry();
+    if let Some(key) = registry.shown_file_key(index) {
+        insert_header_if_valid(headers, FILE_KEY_HEADER, key);
+    }
+    registry.frame_sent(index);
 }
 
 /// The registered file at `index`, or a 404 naming the index and how many
@@ -95,9 +134,7 @@ pub(super) fn registered_file(
     index: usize,
     role: &str,
 ) -> Result<Arc<FileEntry>, ApiError> {
-    let registry = state.registry();
-    registry.get(index).ok_or_else(|| {
-        let count = registry.status().file_count;
+    state.registry().get_or_count(index).map_err(|count| {
         ApiError::not_found(format!(
             "{role} index {index} is out of range: {count} file(s) are loaded"
         ))
@@ -138,15 +175,31 @@ pub(super) async fn references(
 ) -> Result<Response, ApiError> {
     let Path(index) = path.map_err(error::path_rejection)?;
     let source = registered_file(&state, index, "file")?;
+    if source.format.is_raster() {
+        return uid_masked_json(
+            &state,
+            ReferenceCatalogResponse {
+                source_file_index: index,
+                source_sop_instance_uid: String::new(),
+                references: Vec::new(),
+            },
+        );
+    }
     let source_path = source.path.clone();
     let edges = task::spawn_blocking(move || references::extract_reference_edges(&source_path))
         .await
-        .map_err(|error| ApiError::internal(format!("reference extraction task failed: {error}")))?
-        .map_err(|error| error::gone_or(&source.path, ApiError::internal(error.to_string())))?;
+        .map_err(|error| ApiError::failed("the file's references could not be read", error))?
+        .map_err(|error| {
+            error::gone_or(
+                &source.path,
+                ApiError::failed("the file's references could not be read", error),
+            )
+        })?;
     let candidates = state
         .registry()
         .files_snapshot()
         .into_iter()
+        .filter(|file| !file.format.is_raster())
         .map(|file| ReferenceCandidate::from_file(&file))
         .collect::<Vec<_>>();
     let resolved = references::resolve_reference_edges(&edges, &candidates)
@@ -173,7 +226,7 @@ pub(super) async fn semantic_context(
     let path = source.path.clone();
     let context = semantic_context_for(&state, source.clone(), files)
         .await
-        .map_err(|failure| error::gone_or(&path, ApiError::internal(format!("{failure:#}"))))?;
+        .map_err(|failure| error::gone_or(&path, error::context_failure(failure)))?;
     let mut context = SemanticContextResponse::clone(&context);
     if let Some(masker) = state.registry().masker() {
         masker.semantic_context(&source, &mut context);
@@ -183,21 +236,37 @@ pub(super) async fn semantic_context(
 
 /// The source's semantic context against `files`, built at most once per
 /// file set and kept in a small LRU.
+///
+/// The legend of an RT Dose or Parametric Map decodes its frames. When one
+/// is refused because the viewer is busy, the error is that
+/// `PixelError::DecodeBusy` and nothing is kept, so the next request builds
+/// the context again; `error::context_failure` reports it.
 pub(super) async fn semantic_context_for(
     state: &AppState,
     source: Arc<FileEntry>,
     files: Vec<Arc<FileEntry>>,
 ) -> anyhow::Result<Arc<SemanticContextResponse>> {
+    if source.format.is_raster() {
+        return Ok(Arc::new(SemanticContextResponse {
+            source_file_index: source.index,
+            default_mode: "pixel_preview".to_string(),
+            pixel_preview_preserves_stored_values: true,
+            context: crate::api::contracts::SemanticContext::NotApplicable {
+                reason: "semantic context is not available for image files".to_string(),
+            },
+        }));
+    }
     let key = (source.index, files.len());
     if let Some(context) = state.cached_semantic_context(key) {
         return Ok(context);
     }
     let object = source.clone();
+    let file_set = files.len();
     let mut context =
         task::spawn_blocking(move || crate::semantic::semantic_context(&object, &files))
             .await
             .map_err(|error| anyhow::anyhow!("semantic context task failed: {error}"))??;
-    overlays::add_overlay_legend(state, &source, &mut context).await;
+    overlays::add_overlay_legend(state, &source, file_set, &mut context).await?;
     let context = Arc::new(context);
     state.cache_semantic_context(key, context.clone());
     Ok(context)
@@ -225,8 +294,21 @@ pub(super) async fn graphic_annotations(
         crate::presentation_state::graphic_annotations(&presentation_state, &target, frame)
     })
     .await
-    .map_err(|error| ApiError::internal(format!("graphic annotation task failed: {error}")))?
-    .map_err(|failure| error::gone_or(&path, ApiError::internal(format!("{failure:#}"))))?;
+    .map_err(|error| {
+        ApiError::failed(
+            "the presentation state's annotations could not be read",
+            error,
+        )
+    })?
+    .map_err(|failure| {
+        error::gone_or(
+            &path,
+            ApiError::failed(
+                "the presentation state's annotations could not be read",
+                failure,
+            ),
+        )
+    })?;
     if let Some(masker) = state.registry().masker() {
         masker.graphic_annotations(&mut annotations);
     }
@@ -241,9 +323,12 @@ pub(super) async fn value_mapping(
     let file = registered_file(&state, index, "file")?;
     crate::pixels::PixelError::ensure_frame(frame, file.frame_count).map_err(error::pixel_error)?;
     let path = file.path.clone();
-    let mappings = value_mappings_for(&state, file)
-        .await
-        .map_err(|failure| error::gone_or(&path, ApiError::internal(format!("{failure:#}"))))?;
+    let mappings = value_mappings_for(&state, file).await.map_err(|failure| {
+        error::gone_or(
+            &path,
+            ApiError::failed("the frame's value mappings could not be read", failure),
+        )
+    })?;
     uid_masked_json(&state, mappings.frame(index, frame))
 }
 
@@ -253,6 +338,9 @@ pub(super) async fn value_mappings_for(
     state: &AppState,
     file: Arc<FileEntry>,
 ) -> anyhow::Result<Arc<FileValueMappings>> {
+    if file.format.is_raster() {
+        return Ok(Arc::new(FileValueMappings::identity(&file)));
+    }
     let files = state.registry().files_snapshot();
     let key = (file.index, files.len());
     if let Some(mappings) = state.cached_value_mappings(key) {
@@ -284,8 +372,8 @@ pub(super) async fn wsi_context(
     let files = state.registry().files_snapshot();
     let context = task::spawn_blocking(move || crate::wsi::frame_context(&source, frame, &files))
         .await
-        .map_err(|error| ApiError::internal(format!("WSI context task failed: {error}")))?
-        .map_err(|error| ApiError::internal(error.to_string()))?;
+        .map_err(|error| ApiError::failed("the slide context could not be read", error))?
+        .map_err(|error| ApiError::failed("the slide context could not be read", error))?;
     uid_masked_json(&state, context)
 }
 
@@ -295,18 +383,10 @@ pub(super) async fn annotations(
 ) -> Result<Json<EmbedRoiAnnotations>, ApiError> {
     let Path(index) = path.map_err(error::path_rejection)?;
     registered_file(&state, index, "file")?;
-
-    state
-        .annotations()
-        .wait_until_ready()
+    annotations::embed_rois(state.registry(), state.annotations(), index)
         .await
-        .map_err(|error| ApiError::internal(error.to_string()))?;
-    let annotations = state
-        .annotations()
-        .get(index)
-        .map_err(|error| ApiError::internal(error.to_string()))?;
-
-    Ok(Json(annotations))
+        .map(Json)
+        .map_err(error::annotation_error)
 }
 
 pub(super) async fn update_annotations(
@@ -315,15 +395,65 @@ pub(super) async fn update_annotations(
     payload: Result<Json<EmbedRoiAnnotations>, JsonRejection>,
 ) -> Result<Json<EmbedRoiAnnotations>, ApiError> {
     let Path(index) = path.map_err(error::path_rejection)?;
-    let Json(annotations) = payload.map_err(error::json_rejection)?;
-    let file = registered_file(&state, index, "file")?;
+    let Json(rois) = payload.map_err(error::json_rejection)?;
+    registered_file(&state, index, "file")?;
+    annotations::replace_embed_rois(state.registry(), state.annotations(), index, rois)
+        .await
+        .map(Json)
+        .map_err(error::annotation_error)
+}
 
-    let canonical = state
-        .annotations()
-        .replace_for_file(&file, annotations)
-        .map_err(|error| ApiError::bad_request(error.to_string()))?;
-
-    Ok(Json(canonical))
+/// One annotation operation (`endpoints::ANNOTATION_OPS`). The body is read
+/// as bytes, so its bound is the annotation model's
+/// (`OpEnvelope::from_json_str`) and not the JSON extractor's, and a body
+/// that is not an envelope is the same `invalid_json` whatever its
+/// `Content-Type`.
+pub(super) async fn annotation_ops(
+    State(state): State<AppState>,
+    query: Result<Query<AnnotationOpQuery>, QueryRejection>,
+    body: Result<Bytes, BytesRejection>,
+) -> Result<Response, ApiError> {
+    let Query(query) = query.map_err(error::query_rejection)?;
+    let body = body.map_err(error::body_rejection)?;
+    let envelope = std::str::from_utf8(&body)
+        .map_err(|error| EnvelopeError::Malformed(error.to_string()))
+        .and_then(OpEnvelope::from_json_str)
+        .map_err(|error| match error {
+            EnvelopeError::TooLarge { .. } => ApiError::payload_too_large(),
+            EnvelopeError::Malformed(reason) => ApiError::invalid_json(format!(
+                "the body is not an annotation operation envelope: {reason}"
+            )),
+        })?;
+    let outcome =
+        annotations::apply_op(state.registry(), state.annotations(), envelope, query.file)
+            .await
+            .map_err(error::annotation_error)?;
+    let (status, code, error) = match &outcome.result {
+        ApplyResult::Ok { .. } => (StatusCode::OK, None, None),
+        ApplyResult::Conflict { .. } => (
+            StatusCode::CONFLICT,
+            Some(ApiErrorCode::AnnotationConflict),
+            Some("the operation was based on a revision its target has left".to_string()),
+        ),
+        ApplyResult::Invalid { violations } => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Some(ApiErrorCode::AnnotationInvalid),
+            Some(format!(
+                "the operation breaks {} rule(s) of the annotation model",
+                violations.len()
+            )),
+        ),
+    };
+    Ok((
+        status,
+        Json(AnnotationOpResponse {
+            result: outcome.result,
+            revision: outcome.revision,
+            code,
+            error,
+        }),
+    )
+        .into_response())
 }
 
 pub(super) async fn redactions(
@@ -364,13 +494,19 @@ pub(super) async fn apply_redactions_to_series(
 ) -> Result<Json<RedactionSeriesResponse>, ApiError> {
     let Path(index) = path.map_err(error::path_rejection)?;
     let source = registered_file(&state, index, "file")?;
+    if source.format.is_raster() {
+        return Ok(Json(RedactionSeriesResponse {
+            file_indices: Vec::new(),
+        }));
+    }
     let boxes = state
         .redactions()
         .get(index)
         .map_err(|error| ApiError::internal(error.to_string()))?;
     let mut file_indices = Vec::new();
     for file in state.registry().files_snapshot() {
-        let same_series = file.index != source.index
+        let same_series = !file.format.is_raster()
+            && file.index != source.index
             && file.study_instance_uid == source.study_instance_uid
             && file.series_instance_uid == source.series_instance_uid
             && (file.rows, file.columns) == (source.rows, source.columns);
@@ -405,16 +541,9 @@ fn frame_redaction(
 pub(super) async fn export_annotations(
     State(state): State<AppState>,
 ) -> Result<Response, ApiError> {
-    state
-        .annotations()
-        .wait_until_ready()
+    let csv = annotations::export_embed_csv(state.registry(), state.annotations())
         .await
-        .map_err(|error| ApiError::internal(error.to_string()))?;
-    let files = state.registry().files_snapshot();
-    let csv = state
-        .annotations()
-        .export_embed_csv(files.as_slice())
-        .map_err(|error| ApiError::internal(error.to_string()))?;
+        .map_err(error::annotation_error)?;
     let mut response = Response::new(axum::body::Body::from(csv));
     let headers = response.headers_mut();
     headers.insert(
@@ -426,6 +555,85 @@ pub(super) async fn export_annotations(
         HeaderValue::from_static(EXPORT_CONTENT_DISPOSITION_VALUE),
     );
     Ok(response)
+}
+
+/// The session's annotations as one JSON document
+/// (`endpoints::ANNOTATIONS_EXPORT_JSON`).
+pub(super) async fn export_annotations_json(
+    State(state): State<AppState>,
+) -> Result<Response, ApiError> {
+    native_export(
+        &state,
+        annotations::NativeForm::Json,
+        JSON_MEDIA_TYPE,
+        EXPORT_JSON_CONTENT_DISPOSITION_VALUE,
+    )
+    .await
+}
+
+/// The same document as JSON Lines (`endpoints::ANNOTATIONS_EXPORT_JSONL`).
+pub(super) async fn export_annotations_jsonl(
+    State(state): State<AppState>,
+) -> Result<Response, ApiError> {
+    native_export(
+        &state,
+        annotations::NativeForm::JsonLines,
+        JSONL_MEDIA_TYPE,
+        EXPORT_JSONL_CONTENT_DISPOSITION_VALUE,
+    )
+    .await
+}
+
+/// How much of a document export is handed to the connection at a time.
+const EXPORT_CHUNK_BYTES: usize = 1024 * 1024;
+
+/// A native export as a response. The session's document export permit
+/// is held while the text is built and let go of before it is sent
+/// (`annotations::export_native`), so a client that reads slowly holds up
+/// no other export. The body is sent in pieces and owns the text's share
+/// of the download budget until its last piece has been taken or the
+/// response is dropped.
+async fn native_export(
+    state: &AppState,
+    form: annotations::NativeForm,
+    media_type: &'static str,
+    disposition: &'static str,
+) -> Result<Response, ApiError> {
+    let export = annotations::export_native(state.registry(), state.annotations(), form)
+        .await
+        .map_err(error::annotation_error)?;
+    let length = export.bytes.len();
+    let body = futures::stream::unfold(
+        (Bytes::from(export.bytes), export.hold),
+        |(mut rest, hold)| async move {
+            if rest.is_empty() {
+                return None;
+            }
+            let piece = rest.split_to(rest.len().min(EXPORT_CHUNK_BYTES));
+            Some((Ok::<_, std::convert::Infallible>(piece), (rest, hold)))
+        },
+    );
+    // A layer that compresses the body may ask for more after the last
+    // piece; a fused stream answers that with the end again.
+    let body = futures::StreamExt::fuse(body);
+    let mut response = Response::new(axum::body::Body::from_stream(body));
+    let headers = response.headers_mut();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(media_type));
+    headers.insert(header::CONTENT_LENGTH, HeaderValue::from(length));
+    headers.insert(
+        EXPORT_CONTENT_DISPOSITION_HEADER,
+        HeaderValue::from_static(disposition),
+    );
+    Ok(response)
+}
+
+/// Where the `--annotations` import stands (`endpoints::ANNOTATIONS_IMPORT`).
+pub(super) async fn annotation_import(
+    State(state): State<AppState>,
+) -> Result<Json<AnnotationImportResponse>, ApiError> {
+    annotations::import_status(state.annotations())
+        .map(Json)
+        .map_err(error::annotation_error)
 }
 
 pub(super) async fn frame(
@@ -455,7 +663,10 @@ pub(super) async fn frame(
         let mappings = value_mappings_for(&state, file.clone())
             .await
             .map_err(|failure| {
-                error::gone_or(&source, ApiError::internal(format!("{failure:#}")))
+                error::gone_or(
+                    &source,
+                    ApiError::failed("the frame's value mappings could not be read", failure),
+                )
             })?;
         let preferred = mappings.real_world(frame).next();
         window = match preferred.filter(|map| map.unit_label == unit) {
@@ -515,6 +726,7 @@ pub(super) async fn frame(
             window.width.to_string(),
         );
     }
+    note_frame_served(&state, index, response.headers_mut());
     Ok(response)
 }
 
@@ -536,11 +748,13 @@ pub(super) async fn raw_frame(
     .await
     .map_err(|failure| error::gone_or(&source, error::pixel_error(failure)))?;
 
-    Ok(raw_response_with_headers(
+    let mut response = raw_response_with_headers(
         raw_response.body,
         &raw_response.metadata,
         raw_response.cache_hit,
-    ))
+    );
+    note_frame_served(&state, index, response.headers_mut());
+    Ok(response)
 }
 
 pub(super) async fn raw_pixel(
@@ -569,6 +783,63 @@ pub(super) async fn raw_pixel(
             ))
         })?;
     Ok(raw_response_with_headers(body, &metadata, raw.cache_hit))
+}
+
+/// The gallery thumbnail of one frame. It is refused and redacted exactly
+/// where the display frame is: a masked session withholds it for label and
+/// overview images, and the frame's redaction boxes are painted before it is
+/// encoded and are part of its cache key.
+pub(super) async fn thumbnail(
+    State(state): State<AppState>,
+    path: Result<Path<(usize, u32)>, PathRejection>,
+    query: Result<Query<ThumbnailQuery>, QueryRejection>,
+) -> Result<Response, ApiError> {
+    let Path((index, frame)) = path.map_err(error::path_rejection)?;
+    let Query(query) = query.map_err(error::query_rejection)?;
+    let file = registered_file(&state, index, "file")?;
+    ensure_pixels_shown(&state, &file)?;
+    let bucket = pixels::thumbnail_bucket(query.size).ok_or_else(|| {
+        ApiError::invalid_query(format!(
+            "size must be between 1 and {}",
+            THUMBNAIL_SIZE_BUCKETS[THUMBNAIL_SIZE_BUCKETS.len() - 1]
+        ))
+    })?;
+    let source = file.path.clone();
+
+    let thumbnail = pixels::load_thumbnail(
+        file,
+        state.thumbnail_cache(),
+        ThumbnailRequest {
+            frame,
+            bucket,
+            window_mode: query.window_mode.unwrap_or_default(),
+        },
+        frame_redaction(&state, index, frame)?,
+    )
+    .await
+    .map_err(|failure| error::gone_or(&source, error::pixel_error(failure)))?;
+
+    let cache_header = if thumbnail.cache_hit {
+        CACHE_HIT
+    } else {
+        CACHE_MISS
+    };
+    let mut response = Response::new(axum::body::Body::from(thumbnail.body));
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static(JPEG_MEDIA_TYPE),
+    );
+    headers.insert(CACHE_HEADER, HeaderValue::from_static(cache_header));
+    headers.insert(
+        THUMBNAIL_HEADER_SOURCE,
+        HeaderValue::from_static(thumbnail.source.as_str()),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(THUMBNAIL_CACHE_CONTROL),
+    );
+    Ok(response)
 }
 
 /// A raw-frame response: the samples, `X-Cache`, and the metadata headers.
@@ -639,18 +910,21 @@ pub(super) async fn tags(
     let Path(index) = path.map_err(error::path_rejection)?;
     let file = registered_file(&state, index, "file")?;
 
+    if file.format.is_raster() {
+        return Ok(Json(raster_tags(&state, index, file).await?));
+    }
     if let Some(nodes) = state.cached_tags(index) {
         return Ok(Json(nodes));
     }
 
     let path = file.path.clone();
-    let mut nodes = tokio::task::spawn_blocking(move || tags::build_tag_tree(&path))
+    let (mut nodes, note) = tokio::task::spawn_blocking(move || tags::build_tag_tree(&path))
         .await
-        .map_err(|error| ApiError::internal(format!("tag serialization task failed: {error}")))?
+        .map_err(|error| ApiError::failed("the file's tags could not be read", error))?
         .map_err(|failure| {
             error::gone_or(
                 &file.path,
-                ApiError::internal(format!("tag serialization failed: {failure}")),
+                ApiError::failed("the file's tags could not be read", format!("{failure:#}")),
             )
         })?;
 
@@ -658,8 +932,40 @@ pub(super) async fn tags(
     if let Some(masker) = state.registry().masker() {
         masker.tags(&file, &mut nodes);
     }
+    // The note that a tree is partial is the viewer's own text.
+    nodes.extend(note);
     state.cache_tags(index, nodes.clone());
     Ok(Json(nodes))
+}
+
+/// The metadata tree of a raster image file as this session shows it,
+/// from the tag cache or read now. Reading takes no decode permit: it is
+/// bounded by `pixels::read_raster_tags` and decodes no pixels. The error
+/// says nothing the file holds.
+async fn raster_tags(
+    state: &AppState,
+    index: usize,
+    file: Arc<FileEntry>,
+) -> Result<Vec<TagNode>, ApiError> {
+    if let Some(nodes) = state.cached_tags(index) {
+        return Ok(nodes);
+    }
+    let read = file.clone();
+    let mut nodes = tokio::task::spawn_blocking(move || pixels::raster_tag_nodes(&read))
+        .await
+        .map_err(|error| ApiError::internal(format!("metadata task failed: {error}")))?
+        .map_err(|_| {
+            error::gone_or(
+                &file.path,
+                ApiError::internal("the image file could not be opened to read its metadata"),
+            )
+        })?;
+    // The cache holds what the session shows: the mode never changes.
+    if let Some(masker) = state.registry().masker() {
+        masker.raster_tags(&mut nodes);
+    }
+    state.cache_tags(index, nodes.clone());
+    Ok(nodes)
 }
 
 pub(super) async fn select_tag(
@@ -670,6 +976,18 @@ pub(super) async fn select_tag(
     let Path(index) = path.map_err(error::path_rejection)?;
     let Query(query) = query.map_err(error::query_rejection)?;
     let file = registered_file(&state, index, "file")?;
+    if file.format.is_raster() {
+        // Selected from the tree `/tags` answers with, masked as it is.
+        let nodes = raster_tags(&state, index, file).await?;
+        let node = tags::select_raster_node(
+            &nodes,
+            &query.path,
+            query.offset.unwrap_or(0),
+            query.limit.unwrap_or(tags::TAG_SELECT_DEFAULT_LIMIT),
+        )
+        .map_err(|error| ApiError::bad_request(error.to_string()))?;
+        return Ok(Json(node));
+    }
     let path = file.path.clone();
     let selector = query.path.clone();
     let offset = query.offset.unwrap_or(0);
@@ -678,12 +996,13 @@ pub(super) async fn select_tag(
         tags::build_selected_tag(&path, &selector, offset, limit)
     })
     .await
-    .map_err(|error| ApiError::internal(format!("tag selection task failed: {error}")))?
+    .map_err(|error| ApiError::failed("the file's tags could not be read", error))?
     .map_err(|error| match error {
         tags::TagSelectError::Invalid(_) => ApiError::bad_request(error.to_string()),
-        tags::TagSelectError::Read(_) => {
-            error::gone_or(&file.path, ApiError::internal(error.to_string()))
-        }
+        tags::TagSelectError::Read(_) => error::gone_or(
+            &file.path,
+            ApiError::failed("the file's tags could not be read", &error),
+        ),
     })?;
     if let Some(masker) = state.registry().masker() {
         masker.selected_tag(&file, &query.path, &mut node);
@@ -694,5 +1013,81 @@ pub(super) async fn select_tag(
 fn insert_header_if_valid(headers: &mut HeaderMap, name: &'static str, value: String) {
     if let Ok(parsed) = HeaderValue::from_str(&value) {
         headers.insert(name, parsed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::annotations::AnnotationStore;
+    use crate::server::{router, AppState, FileRegistry};
+    use axum_test::TestServer;
+    use serde_json::Value;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    /// The catalog a client polls must be one moment of the registry. The
+    /// scan is made to find its last files and finish at the one point where
+    /// a response assembled from two reads would differ from one assembled
+    /// from a single read: after the entries were read. A response that then
+    /// reports the finished scan lists fewer files than the scan found, and
+    /// the page stops polling on `scan_complete`.
+    #[tokio::test]
+    async fn a_catalog_response_is_one_moment_of_the_scan() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/golden-uncompressed-u16-multiframe.dcm");
+        let template = crate::loader::test_entry(&fixture);
+        let entry = move |number: usize| {
+            let mut file = template.clone();
+            file.path = PathBuf::from(format!("/scan/{number}.dcm"));
+            file.sop_instance_uid = format!("1.2.826.0.1.3680043.10.515.{number}");
+            file
+        };
+        // (query, how the request is paged): the plain listing and the cursor
+        // take the same snapshot.
+        for query in ["", "?since=0", "?since=0&limit=1000"] {
+            let registry = FileRegistry::new();
+            registry.insert(entry(0));
+            let scan = registry.clone();
+            let entry = entry.clone();
+            let finished = Arc::new(AtomicBool::new(false));
+            let registry = registry.with_after_page(Arc::new({
+                let finished = finished.clone();
+                move || {
+                    if !finished.swap(true, Ordering::AcqRel) {
+                        scan.insert(entry(1));
+                        scan.insert(entry(2));
+                        scan.mark_scan_complete();
+                    }
+                }
+            }));
+            let server = TestServer::new(router(AppState::new(
+                registry.clone(),
+                AnnotationStore::empty(),
+            )));
+
+            let during: Value = server.get(&format!("/api/files{query}")).await.json();
+            assert!(
+                finished.load(Ordering::Acquire),
+                "{query}: the scan finished while the request was answered"
+            );
+            let listed = during["files"].as_array().expect("files").len();
+            assert_eq!(
+                (listed, &during["scan_complete"]),
+                (1, &Value::Bool(false)),
+                "{query}: the response is the catalog as it was when its entries were read"
+            );
+            assert_eq!(during["revision"], 1, "{query}");
+
+            let after: Value = server.get(&format!("/api/files{query}")).await.json();
+            assert_eq!(
+                (
+                    after["files"].as_array().expect("files").len(),
+                    &after["scan_complete"]
+                ),
+                (3, &Value::Bool(true)),
+                "{query}"
+            );
+        }
     }
 }

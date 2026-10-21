@@ -11,28 +11,46 @@ use dicom_parser::dataset::LazyDataToken;
 use dicom_parser::StatefulDecode;
 use dicom_transfer_syntax_registry::TransferSyntaxRegistry;
 
+use super::error::Stated;
 use super::header::open_header;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::PathBuf;
 
-/// The file's data set, ready to decode `frame`, and the index to decode.
+/// The file's data set, holding `frame` alone, and the index to decode: 0.
 ///
-/// For a multi-frame object this keeps the header plus only the requested
-/// frame's encoded bytes as a one-frame pixel sequence, so an uncached frame
-/// request reads one frame from disk rather than every frame in the file.
-/// Single-frame objects are opened whole, which reads the same bytes.
+/// The object keeps the header plus only the requested frame's encoded
+/// bytes, as a one-frame pixel sequence of one fragment, so the decoder is
+/// given exactly the bytes that `codestream::checked` reads. For a
+/// multi-frame object an uncached frame request then reads one frame from
+/// disk rather than every frame in the file. A single-frame object is
+/// opened whole, which reads the same bytes, and all of its fragments are
+/// its one frame.
 pub(crate) fn open_for_frame_decode(
     file: &FileEntry,
     frame: u32,
 ) -> Result<(DefaultDicomObject, u32)> {
-    if file.frame_count <= 1 {
-        let object = open_file(&file.path)
+    let (mut object, encoded) = if file.frame_count <= 1 {
+        anyhow::ensure!(frame == 0, "frame out of range");
+        let mut object = open_file(&file.path)
             .with_context(|| format!("failed to open DICOM: {}", file.path.display()))?;
-        return Ok((object, frame));
-    }
-    let mut object = open_header(&file.path)?;
-    let encoded = read_encapsulated_fragment_blocking(&file.path, frame)?;
+        let mut fragments = object
+            .take_element(tags::PIXEL_DATA)
+            .ok()
+            .and_then(|element| element.into_value().into_fragments())
+            .context("no encapsulated pixel data element")?;
+        let encoded = if fragments.len() == 1 {
+            fragments.remove(0)
+        } else {
+            fragments.concat()
+        };
+        (object, encoded)
+    } else {
+        (
+            open_header(&file.path)?,
+            read_encapsulated_fragment_blocking(&file.path, frame)?.to_vec(),
+        )
+    };
     object.put(DataElement::new(
         tags::NUMBER_OF_FRAMES,
         VR::IS,
@@ -43,7 +61,7 @@ pub(crate) fn open_for_frame_decode(
     object.put(DataElement::new(
         tags::PIXEL_DATA,
         VR::OB,
-        PixelFragmentSequence::new(Vec::<u32>::new(), vec![encoded.to_vec()]),
+        PixelFragmentSequence::new(Vec::<u32>::new(), vec![encoded]),
     ));
     Ok((object, 0))
 }
@@ -288,9 +306,9 @@ fn checked_fragment_end(
 ) -> Result<usize> {
     let remaining = file_length
         .checked_sub(reader.stream_position()?)
-        .context("encapsulated fragment is truncated")?;
+        .context(Stated::new("encapsulated fragment is truncated"))?;
     if u64::try_from(length)? > remaining {
-        return Err(anyhow!("encapsulated fragment is truncated"));
+        return Err(Stated::error("encapsulated fragment is truncated"));
     }
     start
         .checked_add(length)
@@ -333,7 +351,7 @@ fn read_frame_at_offset(
         frame_data.resize(fragment_end, 0);
         reader
             .read_exact(&mut frame_data[fragment_start..])
-            .context("encapsulated fragment is truncated")?;
+            .context(Stated::new("encapsulated fragment is truncated"))?;
         item_offset = item_offset
             .checked_add(8)
             .and_then(|offset| offset.checked_add(u64::from(length)))
@@ -379,7 +397,7 @@ fn read_frame_without_offsets(
             frame_data.resize(fragment_end, 0);
             reader
                 .read_exact(&mut frame_data[fragment_start..])
-                .context("encapsulated fragment is truncated")?;
+                .context(Stated::new("encapsulated fragment is truncated"))?;
             one_fragment_per_frame || compressed_frame_ends_here(&frame_data[fragment_start..])
         } else if one_fragment_per_frame {
             reader.seek_relative(i64::try_from(length)?)?;
@@ -391,7 +409,7 @@ fn read_frame_without_offsets(
             let mut last = [0_u8; 3];
             reader
                 .read_exact(&mut last[..tail])
-                .context("encapsulated fragment is truncated")?;
+                .context(Stated::new("encapsulated fragment is truncated"))?;
             compressed_frame_ends_here(&last[..tail])
         };
         if frame_complete {

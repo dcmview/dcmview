@@ -50,6 +50,20 @@ export type DirectoryFolder = {
 
 export type DirectoryNode = DirectoryFolder | DirectoryFile;
 
+/** The raster files of the study view: one group after the patients. */
+export type ImageGroup = {
+	key: string;
+	label: string;
+	detail: string;
+	/** Folders of files, or the files alone when folder names are hidden. */
+	children: DirectoryNode[];
+};
+
+/** A PNG, JPEG, TIFF or WebP file: decided by the format, never by empty UIDs. */
+export function isRasterFile(file: Pick<FileSummary, "file_format">): boolean {
+	return file.file_format !== "dicom";
+}
+
 export function studyFileOrder(patients: readonly NavPatient[]): number[] {
 	return patients.flatMap((patient) =>
 		patient.studies.flatMap((study) =>
@@ -142,6 +156,11 @@ function sharedDirectoryPrefix(paths: readonly string[][]): string[] {
 		}
 	}
 	return first.slice(0, length);
+}
+
+/** Keeps the deepest shared directory as recognizable context, hiding machine-specific prefixes. */
+function shownPathStart(directories: readonly string[][]): number {
+	return Math.max(0, sharedDirectoryPrefix(directories).length - 1);
 }
 
 function formatPersonName(value: string): string {
@@ -279,6 +298,11 @@ function fileLabel(file: FileSummary): string {
 	return instance ? `#${instance} ${name}` : name;
 }
 
+/** The chip beside a file name in a folder listing: the modality, or a raster's format. */
+export function fileKindLabel(file: Pick<FileSummary, "file_format" | "modality">): string {
+	return isRasterFile(file) ? file.file_format.toUpperCase() : clean(file.modality);
+}
+
 function fileDetail(file: FileSummary): string {
 	if (!file.has_pixels) return "no pixels";
 	const dimensions = file.rows > 0 && file.columns > 0 ? `${file.columns}x${file.rows}` : "";
@@ -290,8 +314,17 @@ function withCounts(detail: string, counts: string[]): string {
 	return [detail, ...counts].filter(Boolean).join(" · ");
 }
 
-function searchableValues(file: FileSummary, scope: string | null): string[] {
+const FORMAT_ALIASES: Partial<Record<FileSummary["file_format"], string>> = { jpeg: "jpg", tiff: "tif" };
+
+function formatValues(file: FileSummary): string[] {
+	const alias = FORMAT_ALIASES[file.file_format];
+	return alias ? [file.file_format, alias] : [file.file_format];
+}
+
+function searchableValues(file: FileSummary, scope: string | null, shownPath: string): string[] {
 	switch (scope) {
+		case "format":
+			return formatValues(file);
 		case "patient":
 			return [file.patient_id, file.patient_name];
 		case "study":
@@ -309,24 +342,61 @@ function searchableValues(file: FileSummary, scope: string | null): string[] {
 				file.series_description,
 				file.series_number,
 				file.modality,
+				// "dicom" is every DICOM file's format: only format: selects it.
+				...(isRasterFile(file) ? formatValues(file) : []),
+				shownPath,
 			];
 	}
 }
 
-function fileMatchesTerm(file: FileSummary, rawTerm: string): boolean {
+function fileMatchesTerm(file: FileSummary, rawTerm: string, shownPath: string): boolean {
 	const trimmed = clean(rawTerm);
 	if (!trimmed) return true;
 
-	const scoped = trimmed.match(/^(patient|study|series|modality):(.*)$/i);
+	const scoped = trimmed.match(/^(patient|study|series|modality|format):(.*)$/i);
 	const scope = scoped?.[1].toLowerCase() ?? null;
 	const needle = (scoped?.[2] ?? trimmed).trim().toLowerCase();
 	if (!needle) return true;
-	return searchableValues(file, scope).some((value) => clean(value).toLowerCase().includes(needle));
+	return searchableValues(file, scope, shownPath).some((value) => clean(value).toLowerCase().includes(needle));
 }
 
-export function fileMatchesFilter(file: FileSummary, query: string): boolean {
+/**
+ * Whether every term of `query` matches the file. `shownPath` is the part of
+ * the file's path the explorer shows, searched by unscoped terms; leave it
+ * empty where paths are hidden.
+ */
+export function fileMatchesFilter(file: FileSummary, query: string, shownPath = ""): boolean {
 	const terms = clean(query).split(/\s+/).filter(Boolean);
-	return terms.every((term) => fileMatchesTerm(file, term));
+	return terms.every((term) => fileMatchesTerm(file, term, shownPath));
+}
+
+/** Which part of a file's path the explorer shows, and so unscoped terms search. */
+export type PathSearch = "directory" | "study" | "hidden";
+
+/** Each path without the folders every one of them shares. */
+function pathsBelowSharedFolder(files: readonly FileSummary[]): Map<number, string> {
+	const parts = files.map((file) => pathParts(file.path));
+	const trimCount = sharedDirectoryPrefix(parts.map((path) => path.slice(0, -1))).length;
+	return new Map(files.map((file, position) => [file.index, parts[position].slice(trimCount).join("/")]));
+}
+
+/**
+ * The files matching `query`. Unscoped terms also match the path the view
+ * shows for a file, never a folder that every listed file shares:
+ * - `directory`: the path below the folders all files share;
+ * - `study`: a raster's path below the folders all rasters share (its place
+ *   in the Images group), and a DICOM file's name;
+ * - `hidden` (a masked Study view): no path at all.
+ */
+export function filterFiles(
+	files: readonly FileSummary[],
+	query: string,
+	{ paths = "directory" }: { paths?: PathSearch } = {},
+): FileSummary[] {
+	if (!clean(query)) return [...files];
+	if (paths === "hidden") return files.filter((file) => fileMatchesFilter(file, query));
+	const shown = pathsBelowSharedFolder(paths === "study" ? files.filter(isRasterFile) : files);
+	return files.filter((file) => fileMatchesFilter(file, query, shown.get(file.index) ?? basename(file.path)));
 }
 
 export function patientDetailWithCounts(patient: NavPatient): string {
@@ -469,23 +539,22 @@ export function buildFileTree(files: readonly FileSummary[]): NavPatient[] {
 	});
 }
 
-export function buildDirectoryTree(files: readonly FileSummary[]): DirectoryNode[] {
-	const root: DirectoryFolder = { kind: "folder", key: "directory:root", label: "Files", children: [] };
+/** `keyPrefix` keeps a second tree's collapse state apart from the directory view's. */
+export function buildDirectoryTree(files: readonly FileSummary[], keyPrefix = ""): DirectoryNode[] {
+	const root: DirectoryFolder = { kind: "folder", key: `${keyPrefix}directory:root`, label: "Files", children: [] };
 	const folders = new Map<string, DirectoryFolder>([[root.key, root]]);
 	const records = files.map((file) => {
 		const parts = pathParts(file.path);
 		return { file, directories: parts.slice(0, -1), fileName: parts[parts.length - 1] || file.path };
 	});
-	const common = sharedDirectoryPrefix(records.map((record) => record.directories));
-	// Keep the deepest common directory as recognizable context, while hiding machine-specific prefixes.
-	const trimCount = Math.max(0, common.length - 1);
+	const trimCount = shownPathStart(records.map((record) => record.directories));
 
 	for (const { file, directories, fileName } of records) {
 		let parent = root;
 		let folderPath = "";
 		for (const part of directories.slice(trimCount)) {
 			folderPath = folderPath ? `${folderPath}/${part}` : part;
-			const key = `directory:${folderPath}`;
+			const key = `${keyPrefix}directory:${folderPath}`;
 			let folder = folders.get(key);
 			if (!folder) {
 				folder = { kind: "folder", key, label: part, children: [] };
@@ -496,7 +565,7 @@ export function buildDirectoryTree(files: readonly FileSummary[]): DirectoryNode
 		}
 		parent.children.push({
 			kind: "file",
-			key: `directory:file:${file.index}`,
+			key: `${keyPrefix}directory:file:${file.index}`,
 			label: fileName,
 			detail: fileDetail(file),
 			file,
@@ -518,4 +587,42 @@ export function buildDirectoryTree(files: readonly FileSummary[]): DirectoryNode
 	};
 	sortNodes(root.children);
 	return root.children;
+}
+
+export const IMAGE_GROUP_KEY = "images";
+
+/**
+ * The study view's "Images" group (docs/design/image-formats.md section 7):
+ * the raster files in their folder tree, shaped like the directory view.
+ * Without `folders` (a masked session, whose study view shows no real path)
+ * the files are listed alone under their display names.
+ */
+export function buildImageGroup(
+	files: readonly FileSummary[],
+	{ folders = true }: { folders?: boolean } = {},
+): ImageGroup | null {
+	const rasters = files.filter(isRasterFile);
+	if (rasters.length === 0) return null;
+	const keyPrefix = `${IMAGE_GROUP_KEY}/`;
+	const children: DirectoryNode[] = folders
+		? buildDirectoryTree(rasters, keyPrefix)
+		: rasters
+			.map((file): DirectoryFile => ({
+				kind: "file",
+				key: `${keyPrefix}file:${file.index}`,
+				label: file.display_name,
+				detail: fileDetail(file),
+				file,
+			}))
+			.sort((left, right) => compareNatural(left.label, right.label) || left.file.index - right.file.index);
+	return { key: IMAGE_GROUP_KEY, label: "Images", detail: plural(rasters.length, "image"), children };
+}
+
+/** The clinical tree's files: everything that is not a raster. */
+export function clinicalFiles(files: readonly FileSummary[]): FileSummary[] {
+	return files.filter((file) => !isRasterFile(file));
+}
+
+export function imageGroupAriaLabel(group: ImageGroup, collapsed: boolean): string {
+	return `${group.label}, ${group.detail}, ${collapsed ? "collapsed" : "expanded"}`;
 }

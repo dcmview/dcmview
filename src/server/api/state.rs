@@ -2,7 +2,10 @@ use super::super::{now_unix_ms, FileRegistry, RequestActivity};
 use super::auth::AccessToken;
 use crate::annotations::AnnotationStore;
 use crate::api::contracts::{SemanticContextResponse, TagNode};
-use crate::pixels::{self, FrameCache, OverlayCache, RawFrameCache};
+use crate::pixels::{
+    self, CacheBudget, DecodeLimits, DecodeScheduler, FrameCache, OverlayCache, RawFrameCache,
+    ThumbnailCache, ValueRangeCache,
+};
 use crate::redactions::RedactionStore;
 use crate::types::OverlayCacheKey;
 use crate::value_mapping::FileValueMappings;
@@ -38,6 +41,10 @@ pub struct AppState {
     semantic_cache: Arc<Mutex<LruCache<FileSetCacheKey, Arc<SemanticContextResponse>>>>,
     value_mapping_cache: Arc<Mutex<LruCache<FileSetCacheKey, Arc<FileValueMappings>>>>,
     overlay_cache: Arc<Mutex<OverlayCache>>,
+    value_range_cache: Arc<Mutex<ValueRangeCache>>,
+    thumbnail_cache: Arc<Mutex<ThumbnailCache>>,
+    cache_budget: CacheBudget,
+    decode_scheduler: Arc<DecodeScheduler>,
     annotations: AnnotationStore,
     redactions: RedactionStore,
     server_start_ms: u64,
@@ -46,15 +53,40 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// A state with the default caches and its own decode scheduler
+    /// ([`DecodeScheduler::for_host`]: one permit per core and the default
+    /// decode memory budget), which admits every decode this state serves.
     pub fn new(registry: FileRegistry, annotations: AnnotationStore) -> Self {
+        let decode_scheduler = DecodeScheduler::for_host();
+        let cache_budget = CacheBudget::DEFAULT;
+        let pixel_digests = registry.pixel_digests().clone();
         Self {
             registry,
-            pixel_cache: pixels::new_cache(),
-            raw_cache: pixels::new_raw_cache(),
+            pixel_cache: Arc::new(Mutex::new(FrameCache::with_scheduler(
+                cache_budget.frame_bytes,
+                decode_scheduler.clone(),
+            ))),
+            raw_cache: Arc::new(Mutex::new(
+                RawFrameCache::with_scheduler(cache_budget.raw_bytes, decode_scheduler.clone())
+                    .with_pixel_digests(pixel_digests),
+            )),
             tag_cache: Arc::new(Mutex::new(LruCache::new(TAG_CACHE_MAX_FILES))),
             semantic_cache: Arc::new(Mutex::new(LruCache::new(SEMANTIC_CACHE_MAX_FILES))),
             value_mapping_cache: Arc::new(Mutex::new(LruCache::new(VALUE_MAPPING_CACHE_MAX_FILES))),
-            overlay_cache: pixels::new_overlay_cache(),
+            overlay_cache: Arc::new(Mutex::new(OverlayCache::with_scheduler(
+                cache_budget.overlay_bytes,
+                decode_scheduler.clone(),
+            ))),
+            value_range_cache: Arc::new(Mutex::new(ValueRangeCache::with_scheduler(
+                pixels::VALUE_RANGE_CACHE_MAX_BYTES,
+                decode_scheduler.clone(),
+            ))),
+            thumbnail_cache: Arc::new(Mutex::new(ThumbnailCache::with_scheduler(
+                cache_budget.thumbnail_bytes,
+                decode_scheduler.clone(),
+            ))),
+            cache_budget,
+            decode_scheduler,
             annotations,
             redactions: RedactionStore::new(),
             server_start_ms: now_unix_ms(),
@@ -70,13 +102,76 @@ impl AppState {
         self
     }
 
-    /// Replaces the display, raw and overlay caches with ones sized by
+    /// Replaces the display, raw, overlay and thumbnail caches with ones sized by
     /// `budget`. Call it before the state is cloned into a router.
     pub fn with_cache_budget(mut self, budget: pixels::CacheBudget) -> Self {
-        self.pixel_cache = Arc::new(Mutex::new(FrameCache::new(budget.frame_bytes)));
-        self.raw_cache = Arc::new(Mutex::new(RawFrameCache::new(budget.raw_bytes)));
-        self.overlay_cache = Arc::new(Mutex::new(OverlayCache::new(budget.overlay_bytes)));
+        self.cache_budget = budget;
+        self.rebuild_caches();
         self
+    }
+
+    /// Replaces the decode scheduler with one of the host's permits that
+    /// admits by `limits` (`--decode-memory`). Call it before the state is
+    /// cloned into a router.
+    pub fn with_decode_limits(self, limits: DecodeLimits) -> Self {
+        self.with_decode_scheduler(DecodeScheduler::with_limits(pixels::host_permits(), limits))
+    }
+
+    /// Replaces the decode scheduler: every decode this state serves is
+    /// admitted by `scheduler`, which the caller may keep to observe or to
+    /// hold permits of. Call it before the state is cloned into a router.
+    pub fn with_decode_scheduler(mut self, scheduler: Arc<DecodeScheduler>) -> Self {
+        self.decode_scheduler = scheduler;
+        self.rebuild_caches();
+        self
+    }
+
+    /// Empty caches of the current budget, filled through the current
+    /// scheduler.
+    fn rebuild_caches(&mut self) {
+        let (budget, scheduler) = (self.cache_budget, &self.decode_scheduler);
+        self.pixel_cache = Arc::new(Mutex::new(FrameCache::with_scheduler(
+            budget.frame_bytes,
+            scheduler.clone(),
+        )));
+        self.raw_cache = Arc::new(Mutex::new(
+            RawFrameCache::with_scheduler(budget.raw_bytes, scheduler.clone())
+                .with_pixel_digests(self.registry.pixel_digests().clone()),
+        ));
+        self.overlay_cache = Arc::new(Mutex::new(OverlayCache::with_scheduler(
+            budget.overlay_bytes,
+            scheduler.clone(),
+        )));
+        self.value_range_cache = Arc::new(Mutex::new(ValueRangeCache::with_scheduler(
+            pixels::VALUE_RANGE_CACHE_MAX_BYTES,
+            scheduler.clone(),
+        )));
+        self.thumbnail_cache = Arc::new(Mutex::new(ThumbnailCache::with_scheduler(
+            budget.thumbnail_bytes,
+            scheduler.clone(),
+        )));
+    }
+
+    /// What the display, raw, overlay and thumbnail caches bill the entries
+    /// they hold at this moment, each in the field of the budget that
+    /// bounds it. A cache whose lock is poisoned reports 0.
+    pub fn cached_bytes(&self) -> pixels::CacheBudget {
+        fn billed<K: std::hash::Hash + Eq, V: pixels::FrameBody>(
+            cache: &Mutex<pixels::BudgetedLru<K, V>>,
+        ) -> usize {
+            cache.lock().map_or(0, |cache| cache.billed_bytes())
+        }
+        pixels::CacheBudget {
+            frame_bytes: billed(&self.pixel_cache),
+            raw_bytes: billed(&self.raw_cache),
+            overlay_bytes: billed(&self.overlay_cache),
+            thumbnail_bytes: billed(&self.thumbnail_cache),
+        }
+    }
+
+    /// The scheduler that admits this state's decodes.
+    pub fn decode_scheduler(&self) -> Arc<DecodeScheduler> {
+        self.decode_scheduler.clone()
     }
 
     pub fn access_token(&self) -> Option<&AccessToken> {
@@ -97,6 +192,18 @@ impl AppState {
 
     pub(crate) fn raw_cache(&self) -> Arc<Mutex<RawFrameCache>> {
         self.raw_cache.clone()
+    }
+
+    pub(crate) fn overlay_cache(&self) -> Arc<Mutex<OverlayCache>> {
+        self.overlay_cache.clone()
+    }
+
+    pub(crate) fn value_range_cache(&self) -> Arc<Mutex<ValueRangeCache>> {
+        self.value_range_cache.clone()
+    }
+
+    pub(crate) fn thumbnail_cache(&self) -> Arc<Mutex<ThumbnailCache>> {
+        self.thumbnail_cache.clone()
     }
 
     pub(crate) fn cached_tags(&self, index: usize) -> Option<Vec<TagNode>> {

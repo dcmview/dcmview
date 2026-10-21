@@ -22,6 +22,7 @@ async fn loads_remote_dicom_test_file_through_loader_and_http_contracts() {
         DiscoverOptions {
             recursive: false,
             filters: Vec::new(),
+            formats: Default::default(),
         },
     )
     .await
@@ -66,6 +67,7 @@ async fn decodes_remote_jpeg2000_fixture_through_display_endpoint() {
         DiscoverOptions {
             recursive: false,
             filters: Vec::new(),
+            formats: Default::default(),
         },
     )
     .await

@@ -147,10 +147,7 @@ fn read_overlay_plane(obj: &dicom_object::DefaultDicomObject, group: u16) -> Opt
         .checked_add(15)?
         / 16;
     let required_words = usize::try_from(required_words).ok()?;
-    let mut data = obj
-        .get(dicom_core::Tag(group, 0x3000))?
-        .to_multi_int::<u16>()
-        .ok()?;
+    let mut data = overlay_data_words(obj.get(dicom_core::Tag(group, 0x3000))?)?;
     if data.len() < required_words {
         return None;
     }
@@ -166,6 +163,28 @@ fn read_overlay_plane(obj: &dicom_object::DefaultDicomObject, group: u16) -> Opt
         image_frame_origin,
         data,
     })
+}
+
+/// Overlay Data as the 16-bit words [`OverlayPlane::data`] holds: bit `n` of
+/// the plane is bit `n % 16` of word `n / 16`.
+///
+/// A value of VR OW is those words, and the parser has read each in the
+/// file's byte order. A value of VR OB, which files written before the
+/// attribute became OW alone carry, is a byte stream with the first bit in
+/// the least significant bit of the first byte, in either byte order: two
+/// bytes make a word, the first its low byte. UN is read the same way, as
+/// the bytes it is.
+fn overlay_data_words(element: &dicom_object::mem::InMemElement) -> Option<Vec<u16>> {
+    if !matches!(element.vr(), dicom_core::VR::OB | dicom_core::VR::UN) {
+        return element.to_multi_int::<u16>().ok();
+    }
+    let bytes = element.to_bytes().ok()?;
+    Some(
+        bytes
+            .chunks(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair.get(1).copied().unwrap_or(0)]))
+            .collect(),
+    )
 }
 
 /// Reads the Display Shutter and Bitmap Display Shutter modules. A declared

@@ -1,10 +1,13 @@
 pub use crate::api::contracts::{
-    ErrorResponse, FileSummary, FilesResponse, FrameInfo, RawFrameMetadata, TagNode, TagValue,
-    WindowMode, WindowPreset, RAW_FRAME_HEADER_BITS_ALLOCATED, RAW_FRAME_HEADER_COLUMNS,
+    ErrorResponse, FileFormat, FileSummary, FilesResponse, FrameInfo, RawFrameMetadata, TagNode,
+    TagValue, WindowMode, WindowPreset, RAW_FRAME_HEADER_BITS_ALLOCATED, RAW_FRAME_HEADER_COLUMNS,
     RAW_FRAME_HEADER_DEFAULT_WC, RAW_FRAME_HEADER_DEFAULT_WW,
     RAW_FRAME_HEADER_PHOTOMETRIC_INTERPRETATION, RAW_FRAME_HEADER_PIXEL_REPRESENTATION,
     RAW_FRAME_HEADER_RESCALE_INTERCEPT, RAW_FRAME_HEADER_RESCALE_SLOPE, RAW_FRAME_HEADER_ROWS,
     RAW_FRAME_HEADER_SAMPLES_PER_PIXEL,
+};
+use crate::api::contracts::{
+    RasterColorType, RasterExcludedPage, RasterSampleFormat, RasterSummary,
 };
 use std::path::PathBuf;
 
@@ -126,10 +129,138 @@ impl NativePixelMetadata {
     }
 }
 
+/// What discovery read from a raster file's header
+/// (`docs/design/image-formats.md` section 5.1). The fields hold for every
+/// frame, which the page rule of section 2.4 guarantees. Nothing here is
+/// decoded from pixel data, and no profile or pixel bytes are kept.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RasterMetadata {
+    pub color_type: RasterColorType,
+    /// Bits per sample as stored in the file.
+    pub bit_depth: u32,
+    pub sample_format: RasterSampleFormat,
+    /// An alpha channel, or palette transparency (PNG `tRNS`).
+    pub has_alpha: bool,
+    /// TIFF `ExtraSamples` 1 (premultiplied colour). Always `false` for PNG,
+    /// JPEG and WebP, whose alpha is unassociated.
+    pub alpha_associated: bool,
+    /// EXIF or TIFF orientation, 1 to 8; 1 when absent or out of range.
+    pub orientation: u8,
+    pub has_icc: bool,
+    /// Pages (IFDs) in the file; 1 for PNG, JPEG and WebP.
+    pub pages_total: u32,
+    /// The zero-based IFD index of each frame; never empty.
+    pub frame_pages: Vec<u32>,
+    /// The file's length in bytes when discovery listed it. A decode's
+    /// reservation of decode memory is computed from it, so a decoder
+    /// refuses a file that has grown past it since.
+    pub file_length: u64,
+    /// TIFF: the file offset of each frame's IFD, in frame order, so a frame
+    /// request seeks to its page instead of walking the chain to it. Empty
+    /// for PNG, JPEG and WebP. A decoder checks what it finds there against
+    /// the entry: the file may have changed since it was listed.
+    pub frame_offsets: Vec<u64>,
+    /// The first [`RASTER_EXCLUDED_PAGES_LISTED`] pages left out of the frame
+    /// map, in page order.
+    pub excluded_pages: Vec<RasterExcludedPage>,
+    /// How many pages are left out of the frame map, listed or not.
+    pub excluded_pages_total: u32,
+    /// Why the viewer does not decode this file, from its header alone;
+    /// `None` for a file whose frames decode. The catalog reports it as
+    /// `support_reason` and the frame endpoints answer it without reading
+    /// the file.
+    pub unsupported: Option<RasterUnsupported>,
+    /// Animated PNG (`acTL`) or animated WebP.
+    pub animated: bool,
+    /// PNG `sBIT`, one entry per stored channel; informational only.
+    pub significant_bits: Option<Vec<u8>>,
+    /// Notes for the file report, such as a page whose ICC profile differs
+    /// from page 0's or a page chain that could not be read to its end. At
+    /// most [`RASTER_WARNINGS_MAX`] entries; when more arose, the last entry
+    /// says how many are not shown.
+    pub warnings: Vec<String>,
+}
+
+/// How many excluded pages a raster's metadata lists; the rest are counted.
+pub const RASTER_EXCLUDED_PAGES_LISTED: usize = 16;
+
+/// How many warnings a raster's metadata keeps.
+pub const RASTER_WARNINGS_MAX: usize = 16;
+
+/// The most pixels one raster frame may have and be decoded: 16,384 x
+/// 16,384 (`docs/design/image-formats.md` section 2.3). It depends on nothing
+/// about the host. A frame is decoded whole, so this is what bounds the
+/// memory one decode can take; a larger file is listed and not decoded.
+pub const RASTER_MAX_FRAME_PIXELS: u64 = 268_435_456;
+
+/// Why the viewer lists a raster file and does not decode it
+/// (`docs/design/image-formats.md` sections 2.3 and 11), decided from the
+/// header at discovery. When several apply, the first in this order is
+/// reported.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RasterUnsupported {
+    /// The colour layout. TIFF: CIELab, more than four bands, an extra
+    /// sample that is not alpha (`color_type` `Other`); palette; CMYK; gray
+    /// with alpha; YCbCr; more than one sample stored as separate planes.
+    Color,
+    /// The sample format at this depth. TIFF: 16-bit float; 1-, 2- and 4-bit
+    /// samples; 64-bit integers; colour that is not 8- or 16-bit unsigned.
+    SampleFormat,
+    /// TIFF compression other than none, LZW, Deflate or PackBits.
+    Compression,
+    /// A JPEG that is not 8-bit baseline, extended sequential or progressive
+    /// Huffman: 12-bit, lossless, hierarchical or arithmetic-coded.
+    JpegProcess,
+    /// More than [`RASTER_MAX_FRAME_PIXELS`] pixels in a frame.
+    TooLarge,
+    /// A PNG, JPEG or WebP file longer than the bytes a decode of it may
+    /// read (`pixels::raster_read_budget`: 64 MiB plus four times the
+    /// frame). These are decoded from front to back, so the decoder would
+    /// refuse every frame; the length is known at discovery, and the file
+    /// is listed as not decoded instead. Never a TIFF, which is read a page
+    /// at a time and may be any length.
+    FileLength,
+}
+
+impl RasterMetadata {
+    /// The part of the metadata the catalog reports.
+    pub fn summary(&self) -> RasterSummary {
+        RasterSummary {
+            color_type: self.color_type,
+            bit_depth: self.bit_depth,
+            sample_format: self.sample_format,
+            has_alpha: self.has_alpha,
+            orientation: self.orientation,
+            has_icc: self.has_icc,
+            pages_total: self.pages_total,
+            frame_pages: self.frame_pages.clone(),
+            excluded_pages: self.excluded_pages.clone(),
+            excluded_pages_total: self.excluded_pages_total,
+            animated: self.animated,
+            significant_bits: self.significant_bits.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct FileEntry {
     pub index: usize,
     pub path: PathBuf,
+    /// The file's length in bytes when discovery opened it. Two files with
+    /// one SOP Instance UID and different lengths cannot be the same bytes,
+    /// and a whole-file digest is refused when the length has changed.
+    pub size_bytes: u64,
+    /// The file's modification time from the same `stat` as `size_bytes`.
+    /// A whole-file digest is refused when it has changed, which is how a
+    /// file rewritten with other bytes of the same length is told from the
+    /// one discovery saw. `None` when the platform reports none, and for an
+    /// entry that was not read from a file.
+    pub modified: Option<std::time::SystemTime>,
+    /// The container format, from the file's content. For a raster the DICOM
+    /// identity strings, `sop_class_uid` and `transfer_syntax_uid` are empty.
+    pub format: FileFormat,
+    /// Present exactly when `format` is a raster format.
+    pub raster: Option<Box<RasterMetadata>>,
     pub label: String,
     pub patient_id: String,
     pub patient_name: String,
@@ -277,7 +408,9 @@ impl From<&FileEntry> for FileSummary {
             instance_number: value.instance_number.clone(),
             sop_instance_uid: value.sop_instance_uid.clone(),
             sop_class_uid: value.sop_class_uid.clone(),
-            object_kind: crate::object_kind::classify_sop_class(&value.sop_class_uid).to_string(),
+            object_kind: crate::object_kind::classify_file(value).to_string(),
+            file_format: value.format,
+            raster: value.raster.as_deref().map(RasterMetadata::summary),
             support_state: support.state,
             support_reason: support.reason_id().map(ToString::to_string),
             // The browser reproduces every presentation transform: Modality
@@ -298,6 +431,11 @@ impl From<&FileEntry> for FileSummary {
                 .effective_pixel_aspect_ratio(),
             transfer_syntax_uid: value.transfer_syntax_uid.clone(),
             default_window: value.default_window,
+            // The catalog fills these from its key table; an entry on its
+            // own has the key its UID implies.
+            file_key: None,
+            alias_of: None,
+            key_error: None,
         }
     }
 }
@@ -339,6 +477,21 @@ impl FrameCacheKey {
             redaction: 0,
         }
     }
+}
+
+/// A cached thumbnail: one frame at one size bucket and window mode. Every
+/// thumbnail source yields the same presentation, so the key has no source.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ThumbnailCacheKey {
+    pub file_index: usize,
+    pub frame: u32,
+    /// One of `contracts::THUMBNAIL_SIZE_BUCKETS`.
+    pub bucket: u32,
+    pub window_mode: WindowMode,
+    /// Revision of the redaction boxes painted on the frame; 0 without any.
+    /// A change to a file's boxes moves the revision, so a thumbnail
+    /// rendered before the change is never served after it.
+    pub redaction: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -547,6 +700,22 @@ pub struct OverlayCacheKey {
     pub target_file_index: usize,
     pub target_frame: u32,
     pub encoding: OverlayEncoding,
+    /// For a value overlay, how many files were registered when the legend
+    /// it is colored by was read ([`ValueRangeCacheKey::file_set`]): the
+    /// file set decides the volume's mapping and so its scale. `None` for a
+    /// SEG overlay and a presentation layer, which have no legend.
+    pub file_set: Option<usize>,
+}
+
+/// The range of an RT Dose or Parametric Map's mapped values, which its
+/// legend spans: one per object and file set, since the Real World Value
+/// Mapping instances of the file set decide the mapping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ValueRangeCacheKey {
+    pub file_index: usize,
+    /// How many files were registered when the range was asked for. The
+    /// registry only grows, so its length names the file set.
+    pub file_set: usize,
 }
 
 /// How an overlay is sent: a colored PNG, or a value overlay's resampled
