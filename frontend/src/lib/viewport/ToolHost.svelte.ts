@@ -23,6 +23,13 @@ export interface ToolHostView extends Omit<ToolContext, "inputProfile"> {
 	gestureEnded(): void;
 }
 
+/**
+ * What a wheel gesture does: zoom as a pinch (Ctrl or Meta), step frames
+ * (Alt), or go to the tool active when it began, which pans or zooms with
+ * what it declines.
+ */
+type WheelMeaning = { kind: "pinch" } | { kind: "frames" } | { kind: "tool"; tool: Tool };
+
 /** Controls drawn over the image keep their own pointer and wheel events. */
 export function isViewportChromeTarget(target: EventTarget | null): boolean {
 	return target instanceof Element && !!target.closest(".zoom-controls, .roi-list");
@@ -59,6 +66,8 @@ export class ToolHost {
 	readonly #profile = new InputProfile();
 	#inputProfile = $state.raw<InputDevice>("mouse");
 	#inputProfileSetting = $state.raw<InputProfileSetting>("auto");
+	// What the wheel gesture in progress does, decided by its first event.
+	#wheelMeaning: WheelMeaning | null = null;
 
 	constructor(view: ToolHostView) {
 		this.#view = view;
@@ -117,17 +126,19 @@ export class ToolHost {
 		const { dx, dy } = this.#wheelDeltaPixels(event);
 		const { device, gestureStart } = this.#classifyWheel(event);
 		const wheel: ToolWheel = { dx, dy, device, gestureStart };
-		// Ctrl or Meta is how browsers report a pinch, which zooms in every tool.
-		if (event.ctrlKey || event.metaKey) {
+		// The modifiers held when a gesture began say what it does until it
+		// ends: the momentum after a fast swipe arrives after the key is let go.
+		if (gestureStart || !this.#wheelMeaning) this.#wheelMeaning = this.#meaningOf(event);
+		const meaning = this.#wheelMeaning;
+		if (meaning.kind === "pinch") {
 			this.#zoomByWheelDelta(dy, event.clientX, event.clientY, PINCH_ZOOM_SENSITIVITY);
 			return;
 		}
-		// Alt+wheel steps frames in every tool, and does nothing else on a single image.
-		if (event.altKey) {
+		if (meaning.kind === "frames") {
 			this.#scroll.stepFrames(wheel, this.#ctx);
 			return;
 		}
-		if (this.#tools[view.activeTool].wheel?.(wheel, this.#ctx)) return;
+		if (meaning.tool.wheel?.(wheel, this.#ctx)) return;
 		// Two fingers pan in every tool; so does a wheel that only moves sideways (a tilt wheel, Shift+wheel).
 		if (device === "trackpad" || dy === 0) {
 			view.setTransform({
@@ -293,6 +304,14 @@ export class ToolHost {
 		armed.cancel(this.#ctx);
 		this.endGesture();
 		return null;
+	}
+
+	#meaningOf(event: WheelEvent): WheelMeaning {
+		// Ctrl or Meta is how browsers report a pinch, which zooms in every tool.
+		if (event.ctrlKey || event.metaKey) return { kind: "pinch" };
+		// Alt+wheel steps frames in every tool, and does nothing else on a single image.
+		if (event.altKey) return { kind: "frames" };
+		return { kind: "tool", tool: this.#tools[this.#view.activeTool] };
 	}
 
 	/** The one place a wheel event is told apart: the device its gesture acts as. */

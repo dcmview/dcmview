@@ -379,6 +379,10 @@ diagnostic viewer.
   exchanged, as it does in DCMTK; see
   [troubleshooting](docs/troubleshooting.md#a-big-endian-32-bit-image-shows-wrong-values-or-noise).
 - A trackpad pinch in the Scroll tool zooms instead of stepping frames.
+- Letting go of Alt during the momentum of a fast Alt+two-finger swipe no
+  longer pans the image with the rest of it, and the end of a pinch no
+  longer pans either. A wheel gesture keeps what its first event's
+  modifiers made it until it pauses for 150 ms.
 - A ROI moved or resized while a second pointer pressed its middle button is
   saved where it was dropped; it used to stay drawn there unsaved.
 

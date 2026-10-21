@@ -331,7 +331,9 @@ other device it switches. A mouse wheel steps one frame per notch; an
 Alt+two-finger scroll steps one frame per 30 px of travel, and stepping slows
 to a stop as the momentum after the fingers lift decays. That stop is tuned on constructed
 traces, not recorded ones, so some trackpads may run a few frames further.
-Ctrl/Cmd+wheel zooms like a pinch.
+Ctrl/Cmd+wheel zooms like a pinch. A scroll keeps the meaning it began with
+until it pauses: letting go of Alt during a swipe's momentum does not turn
+the rest of it into a pan.
 
 ## Annotations
 
