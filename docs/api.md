@@ -309,10 +309,12 @@ applicable `support_reason`:
 - `raster.unsupported_color`: TIFF CIELab, more than four bands, an extra
   sample that is not alpha, palette, CMYK, gray with alpha, YCbCr outside
   JPEG compression, or color stored as separate planes.
-- `raster.unsupported_sample_format`: TIFF 16-bit float, 1-, 2- or 4-bit or
+- `raster.unsupported_sample_format`: TIFF 16-bit float, 2- or 4-bit or
   64-bit integer samples, or color other than 8- or 16-bit unsigned.
 - `raster.unsupported_compression`: TIFF compression other than none, LZW,
-  Deflate or PackBits, including JPEG-compressed TIFF.
+  Deflate or PackBits, and other than CCITT Group 4 on a bilevel (one-bit)
+  page at most 65,535 pixels wide. JPEG-compressed TIFF, CCITT Group 3 and
+  Modified Huffman are included.
 - `raster.jpeg_unsupported_process`: JPEG other than 8-bit baseline, extended
   sequential or progressive Huffman.
 - `raster.too_large`: a frame above 268,435,456 pixels, independent of host

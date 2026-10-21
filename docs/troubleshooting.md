@@ -181,9 +181,11 @@ The file's support reason identifies what prevents decoding:
 - `raster.unsupported_color`: a TIFF color or plane layout the viewer does
   not decode, such as palette, CMYK, gray with alpha, or separate color planes.
 - `raster.unsupported_sample_format`: a TIFF sample type outside supported
-  depths, such as bilevel, 16-bit float, or 64-bit integer.
+  depths, such as 2- or 4-bit, 16-bit float, or 64-bit integer.
 - `raster.unsupported_compression`: TIFF compression other than none, LZW,
-  Deflate, or PackBits; JPEG-compressed TIFF is included.
+  Deflate, or PackBits, and for bilevel TIFF other than CCITT Group 4 (at
+  most 65,535 pixels wide); JPEG-compressed TIFF and CCITT Group 3 are
+  included.
 - `raster.jpeg_unsupported_process`: JPEG other than 8-bit baseline,
   extended sequential, or progressive Huffman.
 - `raster.too_large`: a frame exceeds 268,435,456 pixels.
@@ -192,7 +194,8 @@ The file's support reason identifies what prevents decoding:
   It is listed as unsupported; frame requests do not attempt to decode it.
 
 Convert a copy to a supported layout: for example, re-encode JPEG-compressed
-TIFF using LZW, expand bilevel TIFF to 8-bit gray, or convert separate color
+TIFF using LZW, re-encode Group 3 fax TIFF as Group 4, expand 2- or 4-bit
+TIFF to 8-bit gray, or convert separate color
 planes to interleaved RGB. Resize or split images above the pixel limit.
 Keep the source if its precision or metadata matters to your work.
 
@@ -207,6 +210,9 @@ is built in a way the viewer refuses to follow:
 - a TIFF whose tiles are 4,096 pixels or more wider or longer than the
   image, which would have the decoder read far more than the image holds;
 - a TIFF strip or tile whose compressed data runs past its declared length;
+- a bilevel TIFF with a `Predictor`, or a `FillOrder` other than 1 or 2, or
+  a Group 4 strip whose rows hold more colour changes or codes than their
+  width allows;
 - a TIFF frame whose data takes more than 64 MiB plus four times its
   decoded frame to read;
 - a raster file that has grown since discovery listed it. The message says
