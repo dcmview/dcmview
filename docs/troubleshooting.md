@@ -216,11 +216,10 @@ is built in a way the viewer refuses to follow:
   width allows;
 - a JPEG-compressed TIFF strip or tile whose JPEG frame header declares
   another size than the strip or tile, other components than the page's
-  samples, samples other than 8-bit, or chroma sampled more than once; a
-  page whose `JPEGTables` is larger than 64 KiB; a page whose strips or
-  tiles would each decode to more than the frame or 16 MiB, whichever is
-  more; or a JPEG-compressed page in a file that had none when it was
-  listed;
+  samples, samples other than 8-bit, or chroma sampled more than once, or
+  that decodes to more than the frame or 16 MiB, whichever is more; a page
+  whose `JPEGTables` is larger than 64 KiB or holds anything but tables;
+  or a JPEG-compressed page in a file that had none when it was listed;
 - a TIFF frame whose data takes more than 64 MiB plus four times its
   decoded frame to read;
 - a raster file that has grown since discovery listed it. The message says

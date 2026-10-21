@@ -99,12 +99,12 @@ flate2 = "1.1"
 weezl = "0.1.12"
 fax = "=0.2.7"
 # The JPEG decoder for the JPEG-compressed TIFF strips and tiles
-# `pixels/raster/tiff_chunks.rs` decodes itself: a newer release than the
-# one `image` links, whose chroma upsampling agrees with libtiff's up to
-# the right edge of every strip and tile. Pinned: the heap limit of such
-# a decode (`pixels::raster_decode_heap_limit`) counts the buffers this
-# version allocates for a strip or tile, which a newer one must be
-# checked for before the pin moves.
+# `pixels/raster/tiff_chunks.rs` decodes itself, named directly so each
+# strip or tile is decoded under the size and scan limits its options
+# take. Pinned: the heap limit of such a decode
+# (`pixels::raster_decode_heap_limit`) counts the buffers this version
+# allocates for a strip or tile, which a newer one must be checked for
+# before the pin moves.
 zune-jpeg = "=0.5.15"
 jpeg2k = { version = "0.10", default-features = false, features = ["openjp2"] }
 # The JPEG decoder dicom-pixeldata already links, named so that a thumbnail

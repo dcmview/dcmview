@@ -1494,11 +1494,12 @@ the file, for a raster that has one.
 - **JPEG-compressed TIFF is decoded by the same chunk decoder**, since the
   linked `tiff` crate hands each strip or tile to a JPEG decoder that sizes
   its buffers from the size the stream declares: 8-bit gray, RGB and YCbCr,
-  interleaved, in strips or tiles, through `zune-jpeg` 0.5, whose chroma
-  upsampling agrees with libtiff's up to the right edge of every strip and
-  tile. Each strip or tile is joined to `JPEGTables` the way libtiff
-  joins them, and before the decoder is given it the viewer reads its frame
-  header itself: 8-bit samples, `SamplesPerPixel` components, only a YCbCr
+  interleaved, in strips or tiles, through `zune-jpeg` 0.5. The page's
+  `JPEGTables` are read once, keeping the last definition of each table,
+  and each strip or tile is joined to them the way libtiff joins them, so
+  the tables cost the same however many strips or tiles share them and
+  however they were written. Before the decoder is given a strip or tile
+  the viewer reads its frame header itself: 8-bit samples, `SamplesPerPixel` components, only a YCbCr
   page's luma sampled more than once (1, 2 or 4 times each way), and
   exactly the size the page lays out (the last strip may declare the rows
   that remain). The decoder is given that size as its limit too, so a tile

@@ -350,8 +350,9 @@ impl<T: Read + Seek> RasterSource for T {}
 ///   unsigned gray, RGB or YCbCr (photometric 6, three samples) with
 ///   `PlanarConfiguration` 1, or it is `raster.unsupported_compression`.
 ///   Its `JPEGTables` may be at most [`RASTER_TIFF_JPEG_TABLES_MAX_BYTES`]
-///   and must be one JPEG stream. Each strip or tile, joined to those
-///   tables as libtiff joins them, must have a frame header (SOF) of 8-bit
+///   and must be one JPEG stream of tables, which is read once, keeping
+///   the last definition of each table. Each strip or tile, joined to
+///   those tables as libtiff joins them, must have a frame header (SOF) of 8-bit
 ///   samples, `SamplesPerPixel` components and exactly the strip's or
 ///   tile's size: a tile's width and length, a strip's width and
 ///   `RowsPerStrip`, or for the last strip the rows that remain. A strip
