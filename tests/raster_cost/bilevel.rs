@@ -10,9 +10,11 @@ use super::raster_bilevel_files::{
 };
 use super::raster_files::{self as files, CountedFile, TiffPage};
 
-/// What a bilevel decode may hold beside its frame: one packed row, an
-/// input buffer, the Deflate or LZW decoder's state and two Group 4 lines,
-/// all far below this.
+/// What a bilevel decode of these fixtures may hold beside its frame: one
+/// packed row, an input buffer, the Deflate or LZW decoder's state, two
+/// Group 4 lines and tables of a few strips or tiles, all far below this.
+/// A page of tens of thousands of strips holds a few MiB more for its
+/// offset and count tables, as every TIFF page does.
 const BESIDE_THE_FRAME: u64 = MIB;
 
 /// The size of `g4-stripes-4096x4.tif`.
@@ -54,9 +56,9 @@ pub(super) fn uncompressed(width: usize, height: usize) -> (Vec<u8>, Vec<u8>) {
     (files::tiff_file(false, &[page]).0, values)
 }
 
-/// Every honest bilevel file decodes to its stored bits, reads no more than
-/// its own bytes and a buffer or two of tags, and holds its frame and less
-/// than [`BESIDE_THE_FRAME`] beside it, from the smallest to a 4,096 x 3,072
+/// Every honest bilevel fixture decodes to its stored bits, reads no more
+/// than its own bytes and a buffer or two of tags, and holds its frame and
+/// less than [`BESIDE_THE_FRAME`] beside it, from the smallest to a 4,096 x 3,072
 /// Group 4 page and an 8,192 x 8,192 uncompressed one.
 #[tokio::test]
 async fn an_honest_bilevel_page_holds_its_frame_and_little_beside_it() {
@@ -151,6 +153,13 @@ pub(super) fn hostile_bilevel_files() -> Vec<Hostile> {
             Outcome::Fails,
         )));
     }
+    // libtiff only warns when a Group 4 strip reaches its end-of-block
+    // code before its last row; a decode never pads the frame out.
+    cases.push(small(Hostile::new(
+        "tiff g4 strip that ends a row early",
+        with_tag(with_tag(g4.clone(), 257, 257, 22), 278, 278, 22),
+        Outcome::Fails,
+    )));
     cases.push(small(Hostile::new(
         "tiff bilevel tile cut short",
         half("g4-tiles-37x21.tif", 325),

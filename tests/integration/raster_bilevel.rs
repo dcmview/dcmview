@@ -80,7 +80,8 @@ async fn bilevel_pages_serve_their_stored_bits_and_show_black_and_white() {
 /// Group 4 is decoded for bilevel pages up to 65,535 pixels wide; Group 3
 /// and Modified Huffman are not decoded, and neither is a wider Group 4
 /// page. A decoded page whose strip is cut short is a decode error, never a
-/// frame padded out.
+/// frame padded out; so is one whose Group 4 strip reaches its
+/// end-of-block code before its last row.
 #[tokio::test]
 async fn bilevel_compressions_the_viewer_does_not_decode_say_why() {
     let g4 = fixture("g4-37x21.tif");
@@ -110,10 +111,13 @@ async fn bilevel_compressions_the_viewer_does_not_decode_say_why() {
     }
     fs::write(
         dir.path().join("widest-group4.tif"),
-        with_tag(g4, 256, 256, 65_535),
+        with_tag(g4.clone(), 256, 256, 65_535),
     )
     .expect("write raster");
     fs::write(dir.path().join("cut.tif"), cut).expect("write raster");
+    // One row more than the strip codes: its end-of-block code comes first.
+    let longer = with_tag(with_tag(g4, 257, 257, 22), 278, 278, 22);
+    fs::write(dir.path().join("ends-early.tif"), longer).expect("write raster");
     let scan = scan_dir(dir.path()).await;
 
     for (name, _, reason) in &cases {
@@ -131,11 +135,13 @@ async fn bilevel_compressions_the_viewer_does_not_decode_say_why() {
         scan.file("widest-group4.tif")["support_state"],
         "renderable"
     );
-    assert_eq!(scan.file("cut.tif")["support_state"], "renderable");
-    let index = scan.index("cut.tif");
-    let raw = scan
-        .server
-        .get(&format!("/api/file/{index}/frame/0/raw"))
-        .await;
-    assert_eq!(raw.status_code(), 500, "{}", raw.text());
+    for name in ["cut.tif", "ends-early.tif"] {
+        assert_eq!(scan.file(name)["support_state"], "renderable", "{name}");
+        let index = scan.index(name);
+        let raw = scan
+            .server
+            .get(&format!("/api/file/{index}/frame/0/raw"))
+            .await;
+        assert_eq!(raw.status_code(), 500, "{name}: {}", raw.text());
+    }
 }
