@@ -15,11 +15,16 @@ same bytes again:
   files shares its quantization and Huffman tables among its strips or
   tiles in `JPEGTables`;
 - libtiff writes no progressive JPEG, so for the progressive files
-  `jpegtran -progressive` of libjpeg-turbo 3.2.0 rewrites the one strip of
-  a libtiff file, joined to its tables, as a progressive stream (the same
-  coefficients, in jpegtran's default scans), and the file is that libtiff
-  file with the stream appended and its strip offset and byte count
-  pointed at it.
+  `jpegtran -progressive` of libjpeg-turbo 3.2.0 rewrites the one strip or
+  tile of a libtiff file, joined to its tables, as a progressive stream
+  (the same coefficients, in jpegtran's default scans), and the file is
+  that libtiff file with the stream in place of the strip or tile, what
+  follows it moved and the offsets to it adjusted;
+- in the same way, one RGB page's strip is replaced by libjpeg-turbo's
+  `cjpeg -sample 1x1` coding of the card, which is YCbCr: a page that says
+  RGB over a YCbCr-coded stream;
+- `tiffcp` joins the uncompressed gray card and its JPEG strips into one
+  file of two pages.
 
 Beside the small files it writes what libtiff itself decodes each to
 (`tiffcp -c zip:p9 -s`, which converts YCbCr to RGB as libtiff's JPEG
@@ -30,8 +35,9 @@ tests compare the viewer's decode with libtiff's without libtiff.
 
 The larger files are for the cost tests, which compare nothing but sizes:
 a 2,048 x 2,048 card without the checkerboard, at quality 50, as one
-progressive YCbCr strip and as one progressive RGB strip, and a card
-65,500 pixels wide (the widest libjpeg writes) in two YCbCr strips of 16
+progressive YCbCr strip and as one progressive RGB strip, the same card
+4,096 pixels square as one progressive gray tile and 63,550 x 88 as one
+progressive RGB strip (both just within 16 MiB decoded), and a card 65,500 pixels wide (the widest libjpeg writes) in two YCbCr strips of 16
 rows.
 
 The test files that are not honest (a frame header larger or smaller than
@@ -42,7 +48,7 @@ byte. Run from the repository root:
     python scripts/generate_tiff_jpeg_fixtures.py
 
 It needs Pillow (12.1.1 links libtiff 4.7.1), and `tiffcp` (libtiff 4.7.2)
-and `jpegtran` (libjpeg-turbo 3.2.0) on the PATH. It is not part of any
+and `jpegtran` and `cjpeg` (libjpeg-turbo 3.2.0) on the PATH. It is not part of any
 check profile: the committed files are the fixtures, and this is how they
 were made.
 """
@@ -105,31 +111,53 @@ def ifd_entries(data: bytes) -> tuple[str, int, dict[int, tuple[int, int, int, i
 	return order, ifd, entries
 
 
-def progressive(source: Path, target: Path) -> None:
-	"""`source`, a libtiff file of one JPEG strip, with that strip
-	rewritten by `jpegtran -progressive` and appended."""
-	data = bytearray(source.read_bytes())
-	order, _, entries = ifd_entries(bytes(data))
+TYPE_SIZES = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8}
+
+
+def with_chunk(data: bytes, offset_tag: int, count_tag: int, stream: bytes) -> bytes:
+	"""`data`, a classic TIFF of one strip or tile, with that strip's or
+	tile's bytes replaced by `stream` in place: what follows it moves, and
+	the header's, the page's and its tags' offsets past it move with it."""
+	order, ifd, entries = ifd_entries(data)
+	_, _, chunks, offset = entries[offset_tag]
+	_, _, _, count = entries[count_tag]
+	assert chunks == 1, "one strip or tile"
+	end = offset + count
+	shift = len(stream) - count
+	moved = lambda position: position + shift if position >= end else position
+	assert ifd >= end, "the page follows its strip or tile"
+	out = bytearray(data[:offset] + stream + data[end:])
+	struct.pack_into(order + "I", out, 4, moved(ifd))
+	for tag, (at, kind, values, value) in entries.items():
+		at = moved(at)
+		if values * TYPE_SIZES[kind] > 4:
+			struct.pack_into(order + "I", out, at + 8, moved(value))
+		elif tag == count_tag:
+			struct.pack_into(order + "I", out, at + 8, len(stream))
+	return bytes(out)
+
+
+def joined_chunk(data: bytes, offset_tag: int, count_tag: int) -> bytes:
+	"""The one strip or tile of `data` joined to its tables."""
+	_, _, entries = ifd_entries(data)
 	_, _, tables_count, tables_offset = entries[347]
-	_, _, strips, strip_offset = entries[273]
-	_, _, _, strip_count = entries[279]
-	assert strips == 1, "one strip"
-	tables = bytes(data[tables_offset : tables_offset + tables_count])
-	strip = bytes(data[strip_offset : strip_offset + strip_count])
-	joined = tables[:-2] + strip[2:]
+	offset, count = entries[offset_tag][3], entries[count_tag][3]
+	tables = data[tables_offset : tables_offset + tables_count]
+	return tables[:-2] + data[offset + 2 : offset + count]
+
+
+def progressive(source: Path, target: Path, tiled: bool = False) -> None:
+	"""`source`, a libtiff file of one JPEG strip or tile, with that strip
+	or tile rewritten by `jpegtran -progressive`."""
+	tags = (324, 325) if tiled else (273, 279)
+	data = source.read_bytes()
 	stream = subprocess.run(
 		["jpegtran", "-copy", "none", "-progressive"],
-		input=joined,
+		input=joined_chunk(data, *tags),
 		capture_output=True,
 		check=True,
 	).stdout
-	start = len(data)
-	data += stream
-	for tag, value in ((273, start), (279, len(stream))):
-		at, kind, _, _ = entries[tag]
-		assert kind == 4, "LONG strip tags"
-		struct.pack_into(order + "I", data, at + 8, value)
-	target.write_bytes(bytes(data))
+	target.write_bytes(with_chunk(data, *tags, stream))
 
 
 def references(names: list[str]) -> None:
@@ -178,7 +206,25 @@ def main() -> None:
 			name = f"{kind}-progressive-{size}"
 			progressive(single, OUTPUT / f"{name}.tif")
 			names.append(name)
+		# An RGB page whose strip is YCbCr-coded, as cjpeg codes it: the
+		# page says RGB, so the stream is decoded unconverted.
+		single = scratch / "rgb-single.tif"
+		colour.save(scratch / "card.ppm")
+		stream = subprocess.run(
+			["cjpeg", "-sample", "1x1", "-quality", "75", str(scratch / "card.ppm")],
+			capture_output=True,
+			check=True,
+		).stdout
+		name = f"rgb-ycbcr-coded-{size}"
+		(OUTPUT / f"{name}.tif").write_bytes(with_chunk(single.read_bytes(), 273, 279, stream))
+		names.append(name)
 		references(names)
+		# An uncompressed page, then a JPEG-compressed one of its layout.
+		two = OUTPUT / f"gray-two-pages-{size}.tif"
+		subprocess.run(
+			["tiffcp", str(plain["gray"]), str(OUTPUT / f"gray-strips-{size}.tif"), str(two)],
+			check=True,
+		)
 
 		large = image(2048, 2048, checks=False)
 		large.save(scratch / "large.tif")
@@ -186,6 +232,15 @@ def main() -> None:
 			single = scratch / f"large-{kind}.tif"
 			tiffcp(scratch / "large.tif", single, "-c", compression, "-r", "2048")
 			progressive(single, OUTPUT / f"{kind}-progressive-2048x2048.tif")
+		image(4096, 4096, checks=False).convert("L").save(scratch / "tile.tif")
+		single = scratch / "tile-jpeg.tif"
+		tiffcp(scratch / "tile.tif", single, "-c", "jpeg:50", "-t", "-w", "4096", "-l", "4096")
+		progressive(single, OUTPUT / "gray-progressive-tile-4096x4096.tif", tiled=True)
+		# As wide as decodes to just under 16 MiB at 88 rows.
+		image(63550, 88, checks=False).save(scratch / "wide-rgb.tif")
+		single = scratch / "wide-rgb-jpeg.tif"
+		tiffcp(scratch / "wide-rgb.tif", single, "-c", "jpeg:r:50", "-r", "88")
+		progressive(single, OUTPUT / "rgb-progressive-63550x88.tif")
 		image(65500, 32, checks=False).save(scratch / "wide.tif")
 		tiffcp(scratch / "wide.tif", OUTPUT / "ycbcr-strips-65500x32.tif", "-c", "jpeg:50", "-r", "16")
 
