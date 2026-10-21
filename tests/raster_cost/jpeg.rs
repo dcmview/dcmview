@@ -220,6 +220,14 @@ pub(super) fn hostile_jpeg_files() -> Vec<Hostile> {
         )
         .holding_at_most(17 * MIB),
     );
+    cases.push(
+        Hostile::new(
+            "tiff jpeg strip that declares more rows than 16 MiB holds",
+            declared_taller(),
+            Outcome::Fails,
+        )
+        .holding_at_most(2048 * 2048 * 3 + MIB),
+    );
     // A JPEG page where discovery listed an uncompressed one.
     let gray = fixture("gray-150x133.tif");
     cases.push(small(
@@ -477,4 +485,31 @@ async fn padded_jpeg_tables_cost_one_reading() {
         padded_heap <= honest_heap + 64 * 1024 + BUFFER,
         "{padded_heap} bytes of heap with padded tables, {honest_heap} without"
     );
+}
+
+/// The 2,048 x 2,048 RGB strip under a `RowsPerStrip` of 2,848, with its
+/// frame header declaring those rows too: a strip the layout allows that
+/// would decode to more than 16 MiB.
+fn declared_taller() -> Vec<u8> {
+    let taller = with_tag(fixture("rgb-progressive-2048x2048.tif"), 278, 278, 2_848);
+    with_frame_size(taller, 273, 2048, 2848)
+}
+
+/// A strip whose frame header declares more rows than the image has, as
+/// the layout allows, is refused when it would decode to more than a strip
+/// may, before anything is allocated for it.
+#[tokio::test]
+async fn a_jpeg_strip_declaring_too_many_rows_is_refused() {
+    let bytes = declared_taller();
+    let scan = list(&[("taller.tif", &bytes)]).await;
+    let entry = scan.entry("taller.tif");
+    let cost = super::bounds::decode(entry, 0, CountedFile::new(bytes.clone()));
+    assert_within_limits("taller.tif", entry, bytes.len() as u64, &cost);
+    let error = cost.result.expect_err("a strip of 2,848 rows");
+    let chain = error.detail().unwrap_or_default();
+    assert!(
+        chain.contains("decodes to more than 16777216 bytes"),
+        "{chain}"
+    );
+    assert!(cost.heap <= 2048 * 2048 * 3 + MIB, "heap {}", cost.heap);
 }
