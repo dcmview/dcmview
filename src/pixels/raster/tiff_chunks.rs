@@ -479,16 +479,8 @@ pub(super) fn decode_jpeg(
         "TIFF JPEG frame size differs from catalog"
     );
     let tables = match &jpeg.tables {
-        Some(tables) => {
-            ensure!(
-                tables.len() >= 4
-                    && tables[..2] == [0xFF, 0xD8]
-                    && tables[tables.len() - 2..] == [0xFF, 0xD9],
-                "the TIFF JPEG tables are not one JPEG stream"
-            );
-            &tables[..tables.len() - 2]
-        }
-        None => &[][..],
+        Some(tables) => shared_tables(tables)?,
+        None => Vec::new(),
     };
     // The height every frame header but the last strip's must declare: a
     // tile's length, or `RowsPerStrip`. A strip as tall as the image or
@@ -527,7 +519,7 @@ pub(super) fn decode_jpeg(
     let row_bytes = (u64::from(layout.width) * samples) as usize;
     layout.each_chunk(reader, false, |chunk, input| {
         stream.clear();
-        stream.extend_from_slice(tables);
+        stream.extend_from_slice(&tables);
         if !tables.is_empty() {
             let mut start = [0; 2];
             input
@@ -612,6 +604,100 @@ pub(super) fn decode_jpeg(
         Ok(())
     })?;
     Ok(frame)
+}
+
+/// The tables a page's strips or tiles share, read once from `JPEGTables`
+/// (SOI, then table segments, then EOI) and written again as the start of
+/// a stream to join each strip or tile to: SOI and the last definition of
+/// each quantization table, each Huffman table and the restart interval,
+/// in that order. A later definition of a table replaces an earlier one,
+/// so the stream decodes as the tables as written would. What each strip
+/// or tile is joined to is then at most four quantization and eight
+/// Huffman tables, a few KiB, however the tables were written; application
+/// and comment segments are left out, and any other segment is an error.
+fn shared_tables(tables: &[u8]) -> Result<Vec<u8>> {
+    ensure!(
+        tables.starts_with(&[0xFF, 0xD8]),
+        "the TIFF JPEG tables are not one JPEG stream"
+    );
+    let mut quantization: [Option<&[u8]>; 4] = [None; 4];
+    let mut huffman: [Option<&[u8]>; 8] = [None; 8];
+    let mut restart: Option<&[u8]> = None;
+    let mut at = 2;
+    loop {
+        ensure!(
+            tables.get(at) == Some(&0xFF),
+            "the TIFF JPEG tables are not one JPEG stream"
+        );
+        let mut marker = *tables
+            .get(at + 1)
+            .context("the TIFF JPEG tables end early")?;
+        while marker == 0xFF {
+            at += 1;
+            marker = *tables
+                .get(at + 1)
+                .context("the TIFF JPEG tables end early")?;
+        }
+        if marker == 0xD9 {
+            break;
+        }
+        let length = tables
+            .get(at + 2..at + 4)
+            .map(|bytes| usize::from(bytes[0]) << 8 | usize::from(bytes[1]))
+            .context("the TIFF JPEG tables end early")?;
+        let body = tables
+            .get(at + 4..at + 2 + length.max(2))
+            .context("the TIFF JPEG tables end early")?;
+        match marker {
+            0xDB => {
+                let mut rest = body;
+                while let [table, ..] = rest {
+                    let size = 1 + 64 * (1 + usize::from(table >> 4));
+                    ensure!(
+                        table >> 4 <= 1 && table & 15 < 4 && rest.len() >= size,
+                        "a TIFF JPEG quantization table is malformed"
+                    );
+                    quantization[usize::from(table & 15)] = Some(&rest[..size]);
+                    rest = &rest[size..];
+                }
+            }
+            0xC4 => {
+                let mut rest = body;
+                while let [table, ..] = rest {
+                    ensure!(
+                        table >> 4 <= 1 && table & 15 < 4 && rest.len() >= 17,
+                        "a TIFF JPEG Huffman table is malformed"
+                    );
+                    let codes: usize = rest[1..17].iter().map(|&count| usize::from(count)).sum();
+                    let size = 17 + codes;
+                    ensure!(
+                        codes <= 256 && rest.len() >= size,
+                        "a TIFF JPEG Huffman table is malformed"
+                    );
+                    huffman[usize::from(table >> 4) * 4 + usize::from(table & 15)] =
+                        Some(&rest[..size]);
+                    rest = &rest[size..];
+                }
+            }
+            0xDD => restart = Some(body),
+            0xE0..=0xEF | 0xFE => {}
+            _ => bail!("the TIFF JPEG tables hold a segment other than tables"),
+        }
+        at += 2 + length;
+    }
+    let mut shared = vec![0xFF, 0xD8];
+    let segments = quantization
+        .iter()
+        .flatten()
+        .map(|table| (0xDB, *table))
+        .chain(huffman.iter().flatten().map(|table| (0xC4, *table)))
+        .chain(restart.map(|body| (0xDD, body)));
+    for (marker, body) in segments {
+        shared.extend_from_slice(&[0xFF, marker]);
+        shared.extend_from_slice(&(body.len() as u16 + 2).to_be_bytes());
+        shared.extend_from_slice(body);
+    }
+    Ok(shared)
 }
 
 /// What the frame header (SOF) of a JPEG stream declares.
@@ -788,5 +874,40 @@ mod tests {
         assert!(frame_header(&stream[..stream.len() - 2], true).is_err());
         // A scan before any frame header.
         assert!(frame_header(&[0xFF, 0xD8, 0xFF, 0xDA, 0x00, 0x02], true).is_err());
+    }
+
+    #[test]
+    fn shared_tables_keep_the_last_definition_of_each_table() {
+        let quantization = |id: u8, value: u8| {
+            let mut segment = vec![0xFF, 0xDB, 0x00, 67, id];
+            segment.extend([value; 64]);
+            segment
+        };
+        let huffman = {
+            let mut segment = vec![0xFF, 0xC4, 0x00, 20, 0x00];
+            let mut counts = [0_u8; 16];
+            counts[0] = 1;
+            segment.extend(counts);
+            segment.push(0);
+            segment
+        };
+        let mut tables = vec![0xFF, 0xD8];
+        tables.extend(quantization(0, 1));
+        // A comment, which is left out.
+        tables.extend([0xFF, 0xFE, 0x00, 0x03, b'x']);
+        for _ in 0..1000 {
+            tables.extend(&huffman);
+        }
+        tables.extend(quantization(0, 2));
+        tables.extend([0xFF, 0xD9]);
+        let mut expected = vec![0xFF, 0xD8];
+        expected.extend(quantization(0, 2));
+        expected.extend(&huffman);
+        assert_eq!(shared_tables(&tables).expect("tables"), expected);
+        // A scan is not a table.
+        let mut scan = vec![0xFF, 0xD8, 0xFF, 0xDA, 0x00, 0x02];
+        scan.extend([0xFF, 0xD9]);
+        assert!(shared_tables(&scan).is_err());
+        assert!(shared_tables(&tables[..tables.len() - 3]).is_err());
     }
 }
