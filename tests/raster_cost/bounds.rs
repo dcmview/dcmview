@@ -740,6 +740,7 @@ pub(super) fn hostile_files() -> Vec<Hostile> {
     ]
     .into_iter()
     .chain(super::bilevel::hostile_bilevel_files())
+    .chain(super::jpeg::hostile_jpeg_files())
     .collect()
 }
 

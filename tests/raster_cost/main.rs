@@ -28,6 +28,7 @@ mod data_set_tags;
 mod data_sets;
 mod digests;
 mod heap;
+mod jpeg;
 mod layout;
 mod overlays;
 #[path = "../integration/raster_bilevel_files.rs"]
@@ -36,6 +37,8 @@ mod raster_bilevel_files;
 mod raster_cases;
 #[path = "../integration/raster_files.rs"]
 mod raster_files;
+#[path = "../integration/raster_jpeg_files.rs"]
+mod raster_jpeg_files;
 #[path = "../integration/raster_tag_files.rs"]
 mod raster_tag_files;
 mod reduced;
