@@ -10,7 +10,7 @@ import {
 	type RoiCoord,
 	type RoiHandle,
 } from "../../annotationGeometry";
-import { hitTestRoi, roiCoord } from "../../viewport/roiEditing";
+import { handleCursor, hitTestRoi, roiCoord, type RoiHit } from "../../viewport/roiEditing";
 import type { DraftRect, Tool, ToolContext, ToolPointer } from "./tool";
 
 /** How near a handle a press grabs it, in screen pixels: a trackpad points less precisely at the moment of clicking. */
@@ -59,6 +59,13 @@ export class RectangleTool implements Tool {
 		return this.#state.phase === "drawing" && this.#state.placing;
 	}
 
+	/** Over a rectangle a press moves it, and over a handle it resizes it: the cursor says which. */
+	cursor(pointer: ToolPointer, ctx: ToolContext): string | null {
+		const hit = this.#hit(pointer, ctx);
+		if (!hit) return null;
+		return hit.handle ? handleCursor(hit.handle, ctx.orientation) : "move";
+	}
+
 	pointerDown(pointer: ToolPointer, ctx: ToolContext): "capture" | "ignore" {
 		const state = this.#state;
 		if (state.phase === "drawing" && state.placing) {
@@ -71,7 +78,7 @@ export class RectangleTool implements Tool {
 		const point = ctx.toImage(pointer.clientX, pointer.clientY);
 		if (!point) return "ignore";
 		this.#before = { fileIndex: ctx.file.index, original: ctx.rects.annotations };
-		const hit = hitTestRoi(ctx.rects.visible, point, ctx.transform.scale, HANDLE_TOLERANCE_PX[ctx.inputProfile]);
+		const hit = this.#hit(pointer, ctx);
 		if (hit) {
 			ctx.rects.select(hit.roi.index);
 			ctx.rects.beginLiveEdit();
@@ -145,6 +152,14 @@ export class RectangleTool implements Tool {
 			ctx.rects.commit(annotations, ctx.rects.selectedIndex);
 		}
 		this.reset();
+	}
+
+	/** The editable rectangle, and the handle of it, that a press at `pointer` would grab. */
+	#hit(pointer: ToolPointer, ctx: ToolContext): RoiHit | null {
+		if (!ctx.rects.editable) return null;
+		const point = ctx.toImage(pointer.clientX, pointer.clientY);
+		if (!point) return null;
+		return hitTestRoi(ctx.rects.visible, point, ctx.transform.scale, HANDLE_TOLERANCE_PX[ctx.inputProfile]);
 	}
 
 	cancel(ctx: ToolContext): void {

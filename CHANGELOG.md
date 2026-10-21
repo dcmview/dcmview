@@ -179,6 +179,9 @@ diagnostic viewer.
 - The ROI and Redact tools place a rectangle with two clicks as well as a
   drag: click one corner, move, click the opposite one. Esc cancels, as does
   changing the tool, file or frame.
+- In the ROI and Redact tools the cursor shows what a press would do: a
+  move cursor over a rectangle and a resize cursor, pointing along the edge
+  or corner as drawn, over one of its handles.
 
 ### Changed
 

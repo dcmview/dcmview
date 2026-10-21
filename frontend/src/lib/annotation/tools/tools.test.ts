@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { EmbedRoiAnnotations } from "../../../api";
 import { fileSummary } from "../../../testing/fixtures";
 import { visibleRois } from "../../viewport/roiEditing";
+import { DEFAULT_ORIENTATION } from "../../viewerTools";
 import { zoomAnchor, zoomAroundAnchor, type ViewTransform } from "../../viewport/viewTransform";
 import { PanTool } from "./panTool";
 import { RectangleTool } from "./rectangleTool";
@@ -55,6 +56,7 @@ function viewport({ images = 1, position = 0, rectangles = noRectangles, redacti
 		imageColumns: 64,
 		inputProfile: trackpad ? "trackpad" : "mouse",
 		get transform() { return transform; },
+		orientation: DEFAULT_ORIENTATION,
 		setTransform(next) {
 			transform = { ...next, fit: false };
 			effects.push(["transform", Number(next.scale.toFixed(3)), Math.round(next.tx), Math.round(next.ty)]);
@@ -255,5 +257,29 @@ describe("viewport tools", () => {
 		const { ctx, effects: seen } = viewport(shown);
 		expect(run(tool(), ctx, steps)).toEqual(answers);
 		expect(seen).toEqual(effects);
+	});
+});
+
+describe("rectangle tool cursor", () => {
+	// The rectangle spans (10, 10) to (30, 30); handles grab within 8 screen px with a mouse, 10 with a trackpad.
+	it.each([
+		["over its body it moves", 20, 20, false, "move"],
+		["over a corner it resizes along the diagonal", 31, 9, false, "nesw-resize"],
+		["over the bottom-right corner", 30, 30, false, "nwse-resize"],
+		["over an edge's midpoint it resizes across the edge", 20, 30, false, "ns-resize"],
+		["over the left midpoint", 10, 20, false, "ew-resize"],
+		["off it, the tool's own cursor", 50, 50, false, null],
+		["just past a mouse's reach of a corner", 39, 1, false, null],
+		["within a trackpad's reach of the same corner", 39, 1, true, "nesw-resize"],
+	] as const)("%s", (_name, x, y, trackpad, cursor) => {
+		const { ctx } = viewport({ rectangles: oneRectangle, trackpad });
+
+		expect(new RectangleTool("annotate_rect").cursor({ clientX: x, clientY: y }, ctx)).toBe(cursor);
+	});
+
+	it("offers nothing while the rectangles load", () => {
+		const { ctx } = viewport({ rectangles: null });
+
+		expect(new RectangleTool("redact").cursor({ clientX: 20, clientY: 20 }, ctx)).toBeNull();
 	});
 });

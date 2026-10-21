@@ -1420,6 +1420,40 @@ describe("ImageViewport shared gestures", () => {
 		expect(api.updateAnnotations).not.toHaveBeenCalled();
 	});
 
+	it("ROI tool: the cursor moves over a ROI and resizes over its handles", async () => {
+		const { viewport } = await renderReady("annotate_rect", oneRoi);
+		const cursorAt = async (clientX: number, clientY: number) => {
+			await fireEvent.pointerMove(viewport, { clientX, clientY, pointerId: 1 });
+			return viewport.style.cursor;
+		};
+
+		expect(await cursorAt(20, 20)).toBe("move");
+		expect(await cursorAt(30, 30)).toBe("nwse-resize");
+		expect(await cursorAt(30, 20)).toBe("ew-resize");
+		expect(await cursorAt(50, 50)).toBe("");
+		expect(await cursorAt(20, 20)).toBe("move");
+		await fireEvent.pointerLeave(viewport);
+		expect(viewport.style.cursor).toBe("");
+
+		// A drag that grabbed the rectangle keeps the cursor; a middle-button pan over it does not.
+		await cursorAt(20, 20);
+		await fireEvent.pointerDown(viewport, { button: 0, clientX: 20, clientY: 20, pointerId: 1 });
+		await fireEvent.pointerMove(viewport, { clientX: 22, clientY: 22, pointerId: 1 });
+		expect(viewport.style.cursor).toBe("move");
+		await fireEvent.pointerUp(viewport, { button: 0, clientX: 22, clientY: 22, pointerId: 1 });
+		await fireEvent.pointerDown(viewport, { button: 1, clientX: 22, clientY: 22, pointerId: 1 });
+		expect(viewport.style.cursor).toBe("");
+		await fireEvent.pointerUp(viewport, { button: 1, clientX: 22, clientY: 22, pointerId: 1 });
+	});
+
+	it("pan tool: the cursor stays the tool's own over a ROI", async () => {
+		const { viewport } = await renderReady("pan", oneRoi);
+
+		await fireEvent.pointerMove(viewport, { clientX: 20, clientY: 20, pointerId: 1 });
+
+		expect(viewport.style.cursor).toBe("");
+	});
+
 	it("does not land a rectangle on the new frame when released without another move", async () => {
 		const { viewport, rerender } = await renderReady("annotate_rect", noRois);
 

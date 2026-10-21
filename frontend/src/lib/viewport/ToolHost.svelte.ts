@@ -60,6 +60,8 @@ export class ToolHost {
 	// The element holding the pointer capture.
 	#surface: HTMLElement | null = null;
 	#draft = $state.raw<DraftRect | null>(null);
+	// The cursor the active tool asked for where the pointer last moved, and that tool.
+	#hover = $state.raw<{ tool: Tool; cursor: string } | null>(null);
 	// The frame-bound gesture begun since the last one ended, and where it began.
 	#frameGesture: { fileIndex: number; frameIndex: number } | null = null;
 	// Wheel events are told apart here and nowhere else (inputProfile.ts).
@@ -99,6 +101,19 @@ export class ToolHost {
 		// it is not drawn over another, even before `shownChanged` drops it.
 		if (this.#armed && (this.#armed.id !== this.#view.activeTool || this.#frameGestureReplaced())) return null;
 		return this.#draft;
+	}
+
+	/**
+	 * The cursor the active tool shows under the pointer, such as a move or
+	 * resize cursor over a rectangle; null for the tool's usual one. A drag
+	 * that began there keeps it; a drag by another button, or the second
+	 * click of a placement, does not.
+	 */
+	get cursor(): string | null {
+		const hover = this.#hover;
+		if (!hover || this.#armed || this.#tools[this.#view.activeTool] !== hover.tool) return null;
+		if (this.#captured && this.#captured !== hover.tool) return null;
+		return hover.cursor;
 	}
 
 	/** The device the session is taken to use: what the wheel has shown, or the override. */
@@ -191,6 +206,7 @@ export class ToolHost {
 
 	pointerMove(event: PointerEvent): void {
 		if (this.#captured && event.pointerId !== this.#pointerId) return;
+		if (!this.#captured) this.#hoverAt(event);
 		// With no button held, the moves go to a tool armed between its clicks.
 		const armed = this.#liveArmed();
 		const tool = this.#captured ?? armed;
@@ -214,6 +230,7 @@ export class ToolHost {
 		}
 		tool.pointerUp(this.#ctx);
 		this.#captured = null;
+		this.#hoverAt(event);
 		// The release left the tool armed: its gesture goes on with no button held.
 		if (tool.armed) {
 			this.#armed = tool;
@@ -226,6 +243,11 @@ export class ToolHost {
 			return;
 		}
 		this.endGesture();
+	}
+
+	/** The pointer left the viewport: no tool cursor until it comes back. */
+	pointerLeave(): void {
+		if (!this.#captured) this.#hover = null;
 	}
 
 	/** The browser took the pointer away; without an event, cancels whatever is in progress. */
@@ -271,6 +293,15 @@ export class ToolHost {
 		this.#armed = null;
 		this.#draft = null;
 		this.#frameGesture = null;
+	}
+
+	/** Asks the active tool for its cursor where the pointer is, unless a placement is armed. */
+	#hoverAt(event: PointerEvent): void {
+		const tool = this.#tools[this.#view.activeTool];
+		const cursor = !this.#armed && this.#view.file.has_pixels && !isViewportChromeTarget(event.target)
+			? tool.cursor?.(toolPointer(event), this.#ctx) ?? null
+			: null;
+		this.#hover = cursor === null ? null : { tool, cursor };
 	}
 
 	#begin(tool: Tool, event: PointerEvent): void {

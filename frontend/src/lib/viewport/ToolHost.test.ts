@@ -4,6 +4,7 @@ import { fileSummary } from "../../testing/fixtures";
 import type { InputDevice, InputProfileSetting } from "./inputProfile";
 import { ToolHost, type ToolHostView } from "./ToolHost.svelte";
 import type { ToolId } from "../annotation/tools/tool";
+import { DEFAULT_ORIENTATION } from "../viewerTools";
 import type { ViewTransform } from "./viewTransform";
 
 /**
@@ -19,6 +20,7 @@ function hostOverViewport({ frames = 1, activeTool = "pan" as ToolId } = {}) {
 		imageRows: 64,
 		imageColumns: 64,
 		get transform() { return transform; },
+		orientation: DEFAULT_ORIENTATION,
 		setTransform: (next) => { transform = { ...next, fit: false }; },
 		toImage: () => null,
 		zoomAnchor: () => null,

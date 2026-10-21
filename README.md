@@ -288,7 +288,8 @@ The embedded browser viewer includes:
 - Lazy DICOM tag browsing with filtering, sequence expansion, binary length
   display, resizable columns, and click-to-copy values.
 - Rectangular ROI annotation display and editing, including draw, select, move,
-  resize, delete, frame scoping, and CSV export.
+  resize (the cursor shows which a press would do), delete, frame scoping,
+  and CSV export.
 - Display masking (`--mask`) for screen sharing: pseudonyms, shifted dates,
   hashed UIDs and masked identifiers in everything the viewer shows.
 - Redaction boxes drawn over burned-in pixel text, kept for the session and

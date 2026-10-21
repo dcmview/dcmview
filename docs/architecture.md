@@ -269,19 +269,26 @@ steps are equal, or all multiples of the smallest, with that smallest at
 least 4 px and nothing sideways, reads as a free-spinning wheel. A steady
 two-finger scroll of four equal steps of 4 px or more is such a gesture.
 
-Each tool (Pan, Zoom, Scroll, W/L, and the rectangle tool
-behind both ROI and Redact) is a state machine in `lib/annotation/tools/`
-behind the `Tool` interface of `tool.ts`, with no Svelte in it. Tools reach
-the viewport only through `ToolContext`, which the viewport implements over
-its own state: the view transform, frame navigation, the live window of a
-W/L drag, and the rectangles being edited. A tool whose gesture goes on
-with no button held reports `armed` after a release: the host then keeps
-its state, sends it the pointer's moves, gives it the next press, and drops
-it on Escape (`cancelPlacement`, offered the key by `App.svelte` before the
+Each tool (Pan, Zoom, Scroll, W/L, and the rectangle tool behind both ROI
+and Redact) is a state machine in `lib/annotation/tools/` behind the `Tool`
+interface of `tool.ts`, with no Svelte in it. Tools reach the viewport only
+through `ToolContext`, which the viewport implements over its own state: the
+view transform and orientation, frame navigation, the live window of a W/L
+drag, and the rectangles being edited. A tool whose gesture goes on with no
+button held reports `armed` after a release: the host then keeps its state,
+sends it the pointer's moves, gives it the next press, and drops it on
+Escape (`cancelPlacement`, offered the key by `App.svelte` before the
 shortcut table) or when another tool, file or frame is shown. The rectangle
 tool uses this to place a rectangle with two clicks. The host exposes what
-the tool holding the pointer, or armed, is drawing (the draft rectangle). The viewport keeps
-rendering, the readout, and the overlays, the presentation state's
+the tool holding the pointer, or armed, is drawing (the draft rectangle),
+and the cursor the active tool's optional `cursor` asks for where the
+pointer moves with no gesture in progress, which the viewport sets over its
+own. The rectangle tool answers with what a press there would grab: a move
+cursor over a rectangle's body and a resize cursor over a handle, turned
+with the image's flips and rotation, using the same hit test and tolerance
+as the press. A drag the tool began keeps that cursor; a drag by another
+button and the second click of a placement show the tool's own. The viewport
+keeps rendering, the readout, and the overlays, the presentation state's
 annotations among them.
 
 The viewport retains the last complete presentation until its replacement is

@@ -1,6 +1,6 @@
 import type { EmbedRoiAnnotations, FileSummary } from "../../../api";
 import type { ImagePoint } from "../../annotationGeometry";
-import type { ActiveTool } from "../../viewerTools";
+import type { ActiveTool, ImageOrientation } from "../../viewerTools";
 import type { InputDevice } from "../../viewport/inputProfile";
 import type { VisibleRoi } from "../../viewport/roiEditing";
 import type { ViewTransform, ZoomAnchor } from "../../viewport/viewTransform";
@@ -76,6 +76,8 @@ export interface ToolContext {
 	readonly imageRows: number;
 	readonly imageColumns: number;
 	readonly transform: ViewTransform;
+	/** How the image is flipped and turned on screen. */
+	readonly orientation: ImageOrientation;
 	setTransform(transform: Omit<ViewTransform, "fit">): void;
 	/** Image coordinates under a client point, clamped to the image; null before layout. */
 	toImage(clientX: number, clientY: number): ImagePoint | null;
@@ -118,6 +120,11 @@ export interface Tool {
 	pointerMove(pointer: ToolPointer, ctx: ToolContext): void;
 	/** The button was released: commits the gesture, or leaves the tool armed. */
 	pointerUp(ctx: ToolContext): void;
+	/**
+	 * The cursor over the image at `pointer` while this tool is active and no
+	 * gesture is in progress; null for the tool's usual one.
+	 */
+	cursor?(pointer: ToolPointer, ctx: ToolContext): string | null;
 	/** A wheel step while this tool is active; true when the tool used it. */
 	wheel?(wheel: ToolWheel, ctx: ToolContext): boolean;
 	/** Undoes what the gesture in progress has shown without saving it. */

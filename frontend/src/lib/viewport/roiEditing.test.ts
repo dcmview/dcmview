@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { EmbedRoiAnnotations } from "../../api";
-import { formatRoiFrames, hitTestRoi, roiCoord, roiHandles, visibleRois } from "./roiEditing";
+import { DEFAULT_ORIENTATION } from "../viewerTools";
+import { formatRoiFrames, handleCursor, hitTestRoi, roiCoord, roiHandles, visibleRois } from "./roiEditing";
 
 const annotations: EmbedRoiAnnotations = {
 	num_roi: 3,
@@ -64,5 +65,22 @@ describe("ROI helpers", () => {
 		expect(formatRoiFrames([], 3)).toBe("no frame mapping");
 		expect(formatRoiFrames([1, 2], 3)).toBe("frames 1, 2");
 		expect(formatRoiFrames([0, 1, 2, 3, 4, 5, 6], 9)).toBe("frames 0, 1, 2, 3, 4, 5, …");
+	});
+});
+
+describe("handleCursor", () => {
+	it.each([
+		["nw", DEFAULT_ORIENTATION, "nwse-resize"],
+		["ne", DEFAULT_ORIENTATION, "nesw-resize"],
+		["n", DEFAULT_ORIENTATION, "ns-resize"],
+		["w", DEFAULT_ORIENTATION, "ew-resize"],
+		["nw", { flipH: true, flipV: false, rotation: 0 }, "nesw-resize"],
+		["ne", { flipH: false, flipV: true, rotation: 0 }, "nwse-resize"],
+		["n", { flipH: false, flipV: false, rotation: 90 }, "ew-resize"],
+		["ne", { flipH: false, flipV: false, rotation: 90 }, "nwse-resize"],
+		["ne", { flipH: false, flipV: false, rotation: 180 }, "nesw-resize"],
+		["nw", { flipH: true, flipV: false, rotation: 270 }, "nwse-resize"],
+	] as const)("%s handle, flipped %o, points along %s", (handle, orientation, cursor) => {
+		expect(handleCursor(handle, orientation)).toBe(cursor);
 	});
 });

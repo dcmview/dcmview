@@ -267,6 +267,7 @@
 		get imageRows() { return imageRows; },
 		get imageColumns() { return imageColumns; },
 		get transform() { return activeTransform; },
+		get orientation() { return orientation; },
 		setTransform: (transform) => updateTransform(transform),
 		toImage: pointFromPointer,
 		zoomAnchor: zoomAnchorFromClient,
@@ -1349,6 +1350,11 @@
 		tools.pointerMove(event);
 	}
 
+	function onPointerLeave() {
+		stopProbe();
+		tools.pointerLeave();
+	}
+
 	function onContextMenu(event: MouseEvent) {
 		event.preventDefault();
 	}
@@ -1374,6 +1380,7 @@
 	data-theme="dark"
 	class:dragging={isDragging}
 	data-tool={activeTool}
+	style:cursor={tools.cursor}
 	role="application"
 	onwheel={(event) => tools.wheel(event)}
 	onpointerdown={(event) => tools.pointerDown(event)}
@@ -1381,7 +1388,7 @@
 	onpointerup={(event) => tools.pointerUp(event)}
 	onpointercancel={(event) => tools.pointerCancel(event)}
 	onlostpointercapture={(event) => tools.lostCapture(event)}
-	onpointerleave={stopProbe}
+	onpointerleave={onPointerLeave}
 	oncontextmenu={onContextMenu}
 	ondblclick={onreset}
 >
