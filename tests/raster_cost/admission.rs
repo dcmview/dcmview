@@ -748,9 +748,18 @@ fn big_endian_words_cost_what_little_endian_bytes_do() {
         let entry = Arc::new(scan.entry(name).clone());
         // Whatever a first request of a runtime sets up is not the frame.
         runtime.requests_during(ask(entry.clone(), Path::Raw, roomy_scheduler()));
-        let (ok, made) = runtime.requests_during(ask(entry, Path::Raw, roomy_scheduler()));
-        assert!(ok, "{name}");
-        made
+        // Requests are counted over every thread of the runtime, so another
+        // thread can add some to one run; a copy of the frame is made in
+        // every run, so the fewest of several runs still shows it.
+        (0..5)
+            .map(|_| {
+                let (ok, made) =
+                    runtime.requests_during(ask(entry.clone(), Path::Raw, roomy_scheduler()));
+                assert!(ok, "{name}");
+                made
+            })
+            .min()
+            .expect("five runs")
     };
     let (little, big) = (requests("little.dcm"), requests("big.dcm"));
     assert_eq!(
@@ -1140,9 +1149,18 @@ fn big_endian_words_of_wide_samples_cost_what_little_endian_samples_do() {
         let entry = Arc::new(scan.entry(name).clone());
         // Whatever a first request of a runtime sets up is not the frame.
         runtime.requests_during(ask(entry.clone(), Path::Raw, roomy_scheduler()));
-        let (ok, made) = runtime.requests_during(ask(entry, Path::Raw, roomy_scheduler()));
-        assert!(ok, "{name}");
-        made
+        // Requests are counted over every thread of the runtime, so another
+        // thread can add some to one run; a copy of the frame is made in
+        // every run, so the fewest of several runs still shows it.
+        (0..5)
+            .map(|_| {
+                let (ok, made) =
+                    runtime.requests_during(ask(entry.clone(), Path::Raw, roomy_scheduler()));
+                assert!(ok, "{name}");
+                made
+            })
+            .min()
+            .expect("five runs")
     };
     let (little, big) = (requests("little.dcm"), requests("big.dcm"));
     assert_eq!(
