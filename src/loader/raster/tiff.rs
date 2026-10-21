@@ -111,6 +111,7 @@ impl Page {
             | RasterColorType::Other => true,
         } || (self.planar == 2 && self.samples > 1);
         let supported_samples = match (color, sample_format, depth) {
+            (RasterColorType::Gray, RasterSampleFormat::Uint, 1) => true,
             (RasterColorType::Gray, RasterSampleFormat::Uint | RasterSampleFormat::Int, d) => {
                 matches!(d, 8 | 16 | 32)
             }
@@ -122,7 +123,11 @@ impl Page {
             Some(RasterUnsupported::Color)
         } else if !supported_samples {
             Some(RasterUnsupported::SampleFormat)
-        } else if !matches!(self.compression, 1 | 5 | 8 | 32946 | 32773) {
+        } else if !(matches!(self.compression, 1 | 5 | 8 | 32946 | 32773)
+            // CCITT Group 4, for bilevel pages; its decoder counts pixel
+            // positions in 16 bits.
+            || (self.compression == 4 && depth == 1 && self.width <= u32::from(u16::MAX)))
+        {
             Some(RasterUnsupported::Compression)
         } else {
             None

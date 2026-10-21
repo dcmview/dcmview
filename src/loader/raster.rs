@@ -143,11 +143,14 @@ use std::path::Path;
 ///     `other` with `has_alpha` false; palette; CMYK; gray with alpha;
 ///     YCbCr unless JPEG-compressed; more than one sample with
 ///     `PlanarConfiguration` 2.
-///   - `SampleFormat` (TIFF): gray that is not 8-, 16- or 32-bit integer or
-///     32- or 64-bit float; colour that is not 8- or 16-bit unsigned. The
+///   - `SampleFormat` (TIFF): gray that is not one-bit unsigned, 8-, 16- or
+///     32-bit integer or 32- or 64-bit float; colour that is not 8- or
+///     16-bit unsigned. The
 ///     `color_type`, `bit_depth` and `sample_format` are reported as stored.
 ///   - `Compression` (TIFF): `Compression` other than 1 (none), 5 (LZW), 8
-///     or 32946 (Deflate) or 32773 (PackBits), read from page 0.
+///     or 32946 (Deflate) or 32773 (PackBits), and other than 4 (CCITT
+///     Group 4) on a one-bit page at most 65,535 pixels wide, read from
+///     page 0.
 ///   - `JpegProcess`: a frame header other than `SOF0`, `SOF1` or `SOF2`, or
 ///     a sample precision other than 8.
 ///   - `TooLarge`: more than `RASTER_MAX_FRAME_PIXELS` pixels in a frame.

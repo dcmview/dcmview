@@ -1422,8 +1422,8 @@ async fn rasters_the_viewer_does_not_decode_say_why_and_their_frames_are_refused
         ),
         // Sample formats and depths.
         (
-            "bilevel.tif",
-            tiff(&[(258, &[1]), (262, &[1])]),
+            "two-bit.tif",
+            tiff(&[(258, &[2]), (262, &[1])]),
             "raster.unsupported_sample_format",
         ),
         (
@@ -1438,9 +1438,20 @@ async fn rasters_the_viewer_does_not_decode_say_why_and_their_frames_are_refused
         ),
         // The layout is named before the compression.
         (
-            "bilevel-fax.tif",
-            tiff(&[(258, &[1]), (259, &[4]), (262, &[0])]),
+            "two-bit-fax.tif",
+            tiff(&[(258, &[2]), (259, &[4]), (262, &[0])]),
             "raster.unsupported_sample_format",
+        ),
+        // Group 4 is for bilevel pages; Group 3 is not decoded.
+        (
+            "eight-bit-fax.tif",
+            tiff(&[gray8[0], gray8[1], (259, &[4])]),
+            "raster.unsupported_compression",
+        ),
+        (
+            "bilevel-group3.tif",
+            tiff(&[(258, &[1]), (259, &[3]), (262, &[0])]),
+            "raster.unsupported_compression",
         ),
         // JPEG processes: lossless, arithmetic-coded, 12-bit.
         (
