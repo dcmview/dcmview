@@ -31,6 +31,20 @@ wrote them from images it computes with integer arithmetic alone; the tests
 compute the same images, and make their damaged files by editing a count
 or a tag of these.
 
+`tiff-jpeg/` holds JPEG-compressed TIFF files written by libtiff: 4.7.1
+through Pillow 12.1.1 and 4.7.2 through its own `tiffcp`, of one 150 x 133
+test card as gray, RGB and YCbCr with 2 x 2 chroma subsampling, in the
+strips Pillow chooses, in strips of 16 rows and in 128 x 128 tiles, all
+sharing their tables in `JPEGTables`. The progressive files are a libtiff
+strip rewritten by `jpegtran -progressive` of libjpeg-turbo 3.2.0. Beside
+them are libtiff's own decodes of them (`*.libtiff.tif`, named for each
+file in `libtiff-decodes.txt`), which the tests compare the viewer's
+decode with, and three larger files for the cost tests: progressive
+2,048 x 2,048 YCbCr and RGB strips and two YCbCr strips 65,500 pixels wide.
+`python scripts/generate_tiff_jpeg_fixtures.py` wrote them; the tests make
+their damaged files by editing a tag, a count or a frame header byte of
+these.
+
 The committed corpus is intentionally small and synthetic:
 
 - `golden-uncompressed-u16-multiframe.dcm`
