@@ -242,7 +242,9 @@ def view(
 		recursive: Recursively scan input directories when ``True``.
 		timeout: Exit after this many seconds without API or browser requests
 			once the scan has finished.
-		annotations: Optional EMBED-style ROI annotation CSV to load in memory.
+		annotations: Optional annotation file to load in memory: an
+			EMBED-style ROI CSV or a ``dcmview.annotations`` document (JSON or
+			JSON Lines). The file is not modified.
 		filters: Optional iterable of ``FIELD=VALUE`` metadata filters. Filters
 			are forwarded to the binary and combined with AND semantics.
 		mask: Replace patient identifiers in everything the viewer displays,
