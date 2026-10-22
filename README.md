@@ -289,6 +289,10 @@ The embedded browser viewer includes:
   display, resizable columns, and click-to-copy values.
 - Rectangular ROI annotation display and editing, including draw, select, move,
   resize, delete, frame scoping, and CSV export.
+- Display of a loaded `dcmview.annotations` document: every point, line,
+  polyline, polygon, rectangle and ellipse in its layer or class color and
+  named by its class, with a class legend, layer toggles and the labels of
+  the shown image.
 - Display masking (`--mask`) for screen sharing: pseudonyms, shifted dates,
   hashed UIDs and masked identifiers in everything the viewer shows.
 - Redaction boxes drawn over burned-in pixel text, kept for the session and
@@ -332,7 +336,9 @@ dcmview --annotations ./embed_annotations.csv ./study_dir
 memory and can be downloaded with **Export ROIs**, whose rows are sorted by
 path. A session can also be downloaded as a `dcmview.annotations` document
 (`/api/annotations/export.json` or `export.jsonl`) and loaded again with
-`--annotations`. For the required columns, coordinate format, frame scoping
+`--annotations`. The viewer draws a loaded document's shapes in their class
+or layer colors with their class names, and lists its classes, layers and
+the labels of the shown image beside the frame. For the required columns, coordinate format, frame scoping
 rules, validation behavior, the import's report, and examples, see the
 [annotation reference](docs/annotations.md).
 

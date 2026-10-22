@@ -191,6 +191,13 @@ diagnostic viewer.
   (`evidence_conflict`); it never decodes to check and finds no file by a
   pixel digest. A document's reference to an image file also names the
   page of each frame (`frame_source`).
+- The viewer shows a loaded `dcmview.annotations` document's annotations:
+  every point, line, polyline, polygon, rectangle and ellipse in its layer
+  or class color with its class name (and score), a legend of the classes
+  with their counts, layer and class toggles that hide and show them in
+  this viewer only, and the labels of the shown image by level. Its
+  rectangles are edited as ROIs. A session without a document looks as
+  before.
 
 ### Changed
 

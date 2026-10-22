@@ -235,8 +235,30 @@ image pixels inside the transformed layer with a constant on-screen stroke,
 `NativeAnnotationLabels` draws point marks and class-name tags in each
 shape's color in unscaled viewport pixels, and `NativeAnnotationPanel` lists
 the classes (swatch and count, masks included), the layers, and the labels
-that apply to the shown image. Hiding a class or a layer is view state the
-panel's owner keeps; it never writes to the record store.
+that apply to the shown image.
+
+`ImageViewport` mounts them through `viewport/nativeAnnotations.svelte.ts`
+(`NativeAnnotations`), which reads a file's native records the first time it
+is shown, again once each EMBED save of it is applied, and again after
+`forget`. Each read aborts the one before it, and a read that a later one,
+`forget`, or a copy at a newer store revision has overtaken is dropped. A
+404, or a read that shows no more than the EMBED view
+(`showsMoreThanEmbed`: the implicit schema, no labels, only EMBED rectangles
+in layers without a color), leaves the file with nothing native, and the
+viewport mounts none of the three. Hidden layers and classes are session
+view state in that store, never saved or sent.
+
+The EMBED rectangles stay with `RoiOverlay`, `RoiLabels` and the rectangle
+tool. `nativeView` (in `display.ts`) pairs each record with an `embed_index`
+with the live EMBED rectangle at that index, and draws it only while that
+rectangle is on the shown frame with the box the record reads as (rounded
+outward, as the EMBED view writes it). The indices it draws go to
+`RoiOverlay` and `RoiLabels` as `nativeDrawn`, which then draw no outline or
+number for them and keep the selected ROI's handles, the draft rectangle,
+the ROI list and hit testing. While the native copy is behind an edit (a
+drag, a save not read back, a delete that shifted the indices) the record
+is left out and the ROI overlay draws the rectangle as before, so a
+rectangle is never drawn twice or lost.
 
 The viewport retains the last complete presentation until its replacement is
 ready. `viewport/frameLayers.ts` shares cached colorwash and presentation
