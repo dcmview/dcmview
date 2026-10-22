@@ -165,7 +165,7 @@ async fn the_sample_document_loads_through_annotations() {
 
 /// Byte-identical copies share a key, which a document names once: each
 /// key is annotated once, at the first of its files, and the copies are
-/// said to be left out. The document loads over all of them.
+/// said to be left out. The document passes the model's checks.
 #[tokio::test]
 async fn copies_are_annotated_once_for_their_key() {
     let dir = tempfile::tempdir().expect("temp dir");
