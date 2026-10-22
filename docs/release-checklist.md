@@ -8,6 +8,28 @@ Channel configuration, the release workflow's jobs, and artifact descriptions
 are in [Reference: Channels And Automation](#reference-channels-and-automation)
 at the end of this checklist.
 
+## Pre-releases
+
+A tag with a suffix, `vX.Y.Z-alpha.N`, `vX.Y.Z-beta.N` or `vX.Y.Z-rc.N`, is
+a pre-release. The manifests carry that semver version; `pyproject.toml`
+carries its PEP 440 spelling (`0.5.0b1`), which `check_versions.py`
+checks. Follow this checklist with these differences:
+
+- The release workflow runs every build and gate, the VSIX packaging and
+  the VS Code Remote-SSH check included. It creates the GitHub Release
+  marked as a pre-release, not as latest, with the archives, checksums and
+  wheels; the VSIX files and the Homebrew formula stay workflow artifacts
+  (`vscode-vsix`, `homebrew-formula`).
+- PyPI publishes the wheels when `PUBLISH_PYPI=1`; pip installs them only
+  with `pip install --pre` or an exact version.
+- Open VSX, the Homebrew tap and the Azure Marketplace pipeline are skipped.
+  The Marketplace rejects semver pre-release versions, so the extension
+  ships only in stable releases; `vscode/CHANGELOG.md` is updated then.
+- `dcmview-docs` is not synchronized (section 7), and the release media
+  are not recaptured.
+- Section 9 does not apply until the stable release: the next version is
+  the next pre-release or the stable `X.Y.Z`.
+
 ## 1. Establish The Release Baseline
 
 - [ ] Fetch current branches and tags without changing the working tree:
