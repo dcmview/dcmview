@@ -3023,3 +3023,107 @@ async fn writes_wait_for_a_document_import() {
         .await
         .assert_status_ok();
 }
+
+/// A document the store refuses after the adapter took it (a layer id the
+/// session already has) fails whole, and puts no schema in force.
+#[tokio::test]
+async fn an_import_the_store_refuses_puts_no_schema_in_force() {
+    let dir = tempdir().expect("temp dir");
+    // A CSV-like session, whose writes do not wait, so a layer can be
+    // made before the import.
+    let session = Session::loading(study_files(dir.path()));
+    session
+        .op(
+            None,
+            json!({ "type": "create_layer",
+                    "layer": { "id": "second", "name": "Taken", "kind": "user" } }),
+        )
+        .await;
+    let error = session
+        .import(dir.path(), &classed_document().to_string())
+        .await
+        .expect_err("the layer id is taken");
+    assert!(error.to_string().contains("refused"), "{error}");
+    assert!(session.store.backend().schema().expect("schema").is_none());
+}
+
+/// Of byte-identical files, which share a key, a rectangle the EMBED view
+/// of one made is that file's alone; a record made through an operation
+/// is on both.
+#[tokio::test]
+async fn a_copys_embed_rows_are_not_read_for_the_other_copy() {
+    let dir = tempdir().expect("temp dir");
+    let files = vec![
+        written(dir.path(), "a.dcm", "1.2.3.9", b"the same bytes"),
+        written(dir.path(), "b.dcm", "1.2.3.9", b"the same bytes"),
+    ];
+    let session = Session::plain(files);
+    session
+        .server
+        .put("/api/file/0/annotations")
+        .json(&rows(&[[1, 2, 3, 4]], &[]))
+        .await
+        .assert_status_ok();
+    let key = session
+        .registry
+        .key_status(0)
+        .and_then(|status| status.key)
+        .expect("key");
+    assert_eq!(
+        session.registry.key_status(1).and_then(|status| status.key),
+        Some(key.clone())
+    );
+    session
+        .op(
+            Some(0),
+            create(
+                40,
+                key.as_str(),
+                "default",
+                json!({ "type": "point", "x": 3, "y": 4 }),
+            ),
+        )
+        .await;
+    let own = native_records(&session.native(0).await);
+    let other = native_records(&session.native(1).await);
+    assert_eq!(own.len(), 2, "{own:?}");
+    assert_eq!(own[0].2, "rect");
+    assert_eq!(
+        other,
+        [(id(40), "roi".to_string(), "point".to_string(), Value::Null)]
+    );
+}
+
+/// A label that lost its value is not read; an `embed_index` a document
+/// carried among a record's unknown members is not sent beside the real
+/// one.
+#[tokio::test]
+async fn a_cleared_label_and_a_carried_embed_index_are_not_sent() {
+    let dir = tempdir().expect("temp dir");
+    let session = Session::loading(study_files(dir.path()));
+    let mut document = classed_document();
+    document["annotations"][0]["embed_index"] = json!(99);
+    session
+        .import(dir.path(), &document.to_string())
+        .await
+        .expect("import");
+    session
+        .op(
+            Some(0),
+            json!({ "type": "set_label", "id": id(11), "base_rev": 1,
+                    "target": { "file": "sop:1.2.3.1" }, "field": "density",
+                    "layer": "default", "before": "a", "after": null }),
+        )
+        .await;
+    let response = session.server.get("/api/file/0/annotations/native").await;
+    response.assert_status_ok();
+    let text = response.text();
+    let answer: Value = serde_json::from_str(&text).expect("answer");
+    assert_eq!(label_ids(&answer), [id(12), id(13), id(14)]);
+    assert_eq!(
+        text.matches("\"embed_index\"").count(),
+        answer["annotations"].as_array().expect("annotations").len(),
+        "{text}"
+    );
+    assert_eq!(answer["annotations"][0]["embed_index"], 0);
+}
