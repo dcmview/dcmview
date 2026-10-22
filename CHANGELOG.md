@@ -191,6 +191,16 @@ diagnostic viewer.
   (`evidence_conflict`); it never decodes to check and finds no file by a
   pixel digest. A document's reference to an image file also names the
   page of each frame (`frame_source`).
+- A right-button drag zooms in every tool, up to zoom in and down to zoom
+  out, about the point it began on. A right click that does not move still
+  does nothing.
+- Alt+wheel steps frames in every tool, with a mouse or a trackpad.
+- The ROI and Redact tools place a rectangle with two clicks as well as a
+  drag: click one corner, move, click the opposite one. Esc cancels, as does
+  changing the tool, file or frame.
+- In the ROI and Redact tools the cursor shows what a press would do: a
+  move cursor over a rectangle and a resize cursor, pointing along the edge
+  or corner as drawn, over one of its handles.
 
 ### Changed
 
@@ -287,6 +297,23 @@ diagnostic viewer.
   profile. The file stays listed and its frames without a profile decode.
 - A JPEG XL frame whose image header does not end within the first 64 KiB
   of its codestream is refused as unreadable.
+- The viewer tells a mouse wheel from a trackpad one gesture at a time
+  instead of one event at a time, and remembers the device for the session.
+  A fast two-finger swipe no longer jumps from panning to zooming halfway,
+  and a wheel that reports small steps zooms instead of panning once the
+  viewer has seen it is a wheel. After changing device, the first two
+  gestures may still act as the previous one.
+- A two-finger scroll pans in the Scroll tool too, as in every other tool,
+  instead of stepping frames. With a trackpad, step frames in the Scroll tool
+  by dragging up and down (one frame per 14 px, as with a mouse), or with
+  Alt+two-finger scroll in any tool.
+- An Alt+two-finger scroll steps one frame per 30 px of travel instead of
+  one per wheel event, and stepping slows to a stop as the momentum after
+  the fingers lift decays instead of running on through all of it. The stop
+  is tuned on constructed traces, not recorded ones, so some trackpads may
+  run a few frames further. A mouse wheel still steps one frame per notch.
+- In the trackpad profile a rectangle's handles are grabbed from 10 screen
+  pixels away instead of 8.
 
 ### Fixed
 
@@ -373,6 +400,15 @@ diagnostic viewer.
   looked right in 0.3.0 to 0.4.1 and now shows the words of each sample
   exchanged, as it does in DCMTK; see
   [troubleshooting](docs/troubleshooting.md#a-big-endian-32-bit-image-shows-wrong-values-or-noise).
+- A trackpad pinch in the Scroll tool zooms instead of stepping frames.
+- Letting go of Alt during the momentum of a fast Alt+two-finger swipe no
+  longer pans the image with the rest of it, and letting go of Ctrl or Cmd
+  before the last events of a Ctrl/Cmd+wheel zoom no longer pans with them.
+  A wheel gesture keeps what its first event's modifiers made it until it
+  pauses for 150 ms; a pinch, or Ctrl/Cmd pressed, takes it over from that
+  event on.
+- A ROI moved or resized while a second pointer pressed its middle button is
+  saved where it was dropped; it used to stay drawn there unsaved.
 
 ## 0.4.1 - 2026-10-09
 

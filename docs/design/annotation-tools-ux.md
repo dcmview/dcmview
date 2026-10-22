@@ -371,13 +371,16 @@ be treated as one.
 
 | Action | Mouse profile | Trackpad profile |
 |---|---|---|
-| Pan | Middle-drag; Pan tool | Two-finger scroll; Pan tool |
+| Pan | Middle-drag; Pan tool | Two-finger scroll, in every tool; Pan tool |
 | Zoom | Wheel; right-drag; Zoom tool | Pinch; Zoom tool |
-| Step frames | Arrows, `[`/`]`, Alt+wheel, wheel in the Scroll tool | Arrows, `[`/`]`, Alt+two-finger scroll, two-finger scroll in the Scroll tool |
+| Step frames | Arrows, `[`/`]`, Alt+wheel, wheel in the Scroll tool | Arrows, `[`/`]`, Alt+two-finger scroll, vertical drag in the Scroll tool |
 | Context menu | Right-click | Two-finger click or tap |
 | Draw a rect, ellipse or line | Drag, or click-click | Click-click (drag also works) |
 
-**Frame stepping from trackpad scrolls.** Accumulate the delta and step one
+**Frame stepping from trackpad scrolls.** These are Alt+two-finger scrolls:
+a plain two-finger scroll pans in every tool, the Scroll tool included, and
+that tool steps frames on a trackpad by a vertical drag (the owner,
+2026-10-21). Accumulate the delta and step one
 frame per ~30 px, not one per event, and stop stepping when the deltas decay
 smoothly after the fingers lift (a momentum tail), since the browser gives no
 phase. With a mouse, one notch stays one frame, as today. Alt is used instead

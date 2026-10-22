@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { EmbedRoiAnnotations } from "../../api";
-import { formatRoiFrames, hitTestRoi, roiCoord, roiHandles, visibleRois } from "./roiEditing";
+import { DEFAULT_ORIENTATION } from "../viewerTools";
+import { formatRoiFrames, handleCursor, hitTestRoi, roiCoord, roiHandles, visibleRois } from "./roiEditing";
 
 const annotations: EmbedRoiAnnotations = {
 	num_roi: 3,
@@ -39,6 +40,14 @@ describe("hitTestRoi", () => {
 		expect(hitTestRoi(rois, { x: 72, y: 72 }, 4)).toMatchObject({ handle: "se" });
 		expect(hitTestRoi(rois, { x: 74, y: 74 }, 4)).toBeNull();
 	});
+
+	it("grabs handles within the tolerance it is given", () => {
+		expect(hitTestRoi(rois, { x: 80, y: 50 }, 1, 10)).toMatchObject({ roi: { index: 1 }, handle: "e" });
+		expect(hitTestRoi(rois, { x: 81, y: 50 }, 1, 10)).toBeNull();
+		// Half of it at 2x.
+		expect(hitTestRoi(rois, { x: 75, y: 50 }, 2, 10)).toMatchObject({ handle: "e" });
+		expect(hitTestRoi(rois, { x: 76, y: 50 }, 2, 10)).toBeNull();
+	});
 });
 
 describe("ROI helpers", () => {
@@ -56,5 +65,22 @@ describe("ROI helpers", () => {
 		expect(formatRoiFrames([], 3)).toBe("no frame mapping");
 		expect(formatRoiFrames([1, 2], 3)).toBe("frames 1, 2");
 		expect(formatRoiFrames([0, 1, 2, 3, 4, 5, 6], 9)).toBe("frames 0, 1, 2, 3, 4, 5, …");
+	});
+});
+
+describe("handleCursor", () => {
+	it.each([
+		["nw", DEFAULT_ORIENTATION, "nwse-resize"],
+		["ne", DEFAULT_ORIENTATION, "nesw-resize"],
+		["n", DEFAULT_ORIENTATION, "ns-resize"],
+		["w", DEFAULT_ORIENTATION, "ew-resize"],
+		["nw", { flipH: true, flipV: false, rotation: 0 }, "nesw-resize"],
+		["ne", { flipH: false, flipV: true, rotation: 0 }, "nwse-resize"],
+		["n", { flipH: false, flipV: false, rotation: 90 }, "ew-resize"],
+		["ne", { flipH: false, flipV: false, rotation: 90 }, "nwse-resize"],
+		["ne", { flipH: false, flipV: false, rotation: 180 }, "nesw-resize"],
+		["nw", { flipH: true, flipV: false, rotation: 270 }, "nwse-resize"],
+	] as const)("%s handle, flipped %o, points along %s", (handle, orientation, cursor) => {
+		expect(handleCursor(handle, orientation)).toBe(cursor);
 	});
 });

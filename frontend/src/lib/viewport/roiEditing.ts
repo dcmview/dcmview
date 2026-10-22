@@ -1,5 +1,6 @@
 import type { EmbedRoiAnnotations } from "../../api";
 import { isAllFrames, type ImagePoint, type RoiCoord, type RoiHandle } from "../annotationGeometry";
+import type { ImageOrientation } from "../viewerTools";
 
 /** A ROI shown on the current frame; `frames` is null when it applies to every frame. */
 export type VisibleRoi = {
@@ -60,10 +61,10 @@ export function roiHandles(roi: VisibleRoi): RoiHandlePoint[] {
 
 /**
  * The topmost ROI under `point` and the handle it grabbed, if any. The handle
- * tolerance is about eight screen pixels at the current zoom `scale`.
+ * tolerance is about `tolerancePx` screen pixels at the current zoom `scale`.
  */
-export function hitTestRoi(rois: readonly VisibleRoi[], point: ImagePoint, scale: number): RoiHit | null {
-	const tolerance = Math.max(3, 8 / Math.max(scale, 0.2));
+export function hitTestRoi(rois: readonly VisibleRoi[], point: ImagePoint, scale: number, tolerancePx = 8): RoiHit | null {
+	const tolerance = Math.max(3, tolerancePx / Math.max(scale, 0.2));
 	for (let idx = rois.length - 1; idx >= 0; idx -= 1) {
 		const roi = rois[idx];
 		const handle = roiHandles(roi).find((candidate) => (
@@ -76,6 +77,25 @@ export function hitTestRoi(rois: readonly VisibleRoi[], point: ImagePoint, scale
 		}
 	}
 	return null;
+}
+
+/** Where each handle points from the rectangle's centre, in image axes (y down). */
+const HANDLE_DIRECTIONS: Record<RoiHandle, readonly [number, number]> = {
+	n: [0, -1], ne: [1, -1], e: [1, 0], se: [1, 1], s: [0, 1], sw: [-1, 1], w: [-1, 0], nw: [-1, -1],
+};
+
+/**
+ * The resize cursor for `handle` as the image is drawn: flipped, then
+ * rotated clockwise, the way the image layer is transformed.
+ */
+export function handleCursor(handle: RoiHandle, orientation: ImageOrientation): string {
+	let [x, y] = HANDLE_DIRECTIONS[handle];
+	if (orientation.flipH) x = -x;
+	if (orientation.flipV) y = -y;
+	for (let turn = 0; turn < orientation.rotation / 90; turn += 1) [x, y] = [-y, x];
+	if (x === 0) return "ns-resize";
+	if (y === 0) return "ew-resize";
+	return x === y ? "nwse-resize" : "nesw-resize";
 }
 
 export function formatRoiFrames(frames: number[] | null, frameCount: number): string {

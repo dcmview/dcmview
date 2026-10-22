@@ -288,7 +288,8 @@ The embedded browser viewer includes:
 - Lazy DICOM tag browsing with filtering, sequence expansion, binary length
   display, resizable columns, and click-to-copy values.
 - Rectangular ROI annotation display and editing, including draw, select, move,
-  resize, delete, frame scoping, and CSV export.
+  resize (the cursor shows which a press would do), delete, frame scoping,
+  and CSV export.
 - Display masking (`--mask`) for screen sharing: pseudonyms, shifted dates,
   hashed UIDs and masked identifiers in everything the viewer shows.
 - Redaction boxes drawn over burned-in pixel text, kept for the session and
@@ -316,9 +317,25 @@ Common shortcuts:
 | Redact tool | `X` |
 | Reset viewport | Double-click |
 
-Middle-drag pans in every tool. The wheel zooms about the pointer, a
-two-finger trackpad scroll pans, and Ctrl/Cmd+wheel (a trackpad pinch) zooms.
-In the Scroll tool the wheel steps frames.
+Mouse and trackpad, in every tool:
+
+| Action | Mouse | Trackpad |
+|---|---|---|
+| Pan | Middle-drag | Two-finger scroll, in the Scroll tool too |
+| Zoom | Wheel, or right-drag (up to zoom in) | Pinch |
+| Step frames | Alt+wheel, or the wheel in the Scroll tool | Alt+two-finger scroll, or a vertical drag in the Scroll tool |
+| Draw a ROI or redaction box | Drag, or click two corners (Esc cancels) | Click two corners, or drag |
+
+The viewer tells the two devices apart by their wheel events, one gesture at
+a time, and keeps to what it last saw: after a couple of scrolls with the
+other device it switches. A mouse wheel steps one frame per notch; an
+Alt+two-finger scroll steps one frame per 30 px of travel, and stepping
+slows to a stop as the momentum after the fingers lift decays. That stop is
+tuned on constructed traces, not recorded ones, so some trackpads may run a
+few frames further. Ctrl/Cmd+wheel zooms like a pinch. A scroll keeps the
+meaning it began with until it pauses: letting go of Alt during a swipe's
+momentum does not turn the rest of it into a pan. Only a pinch can take over
+a scroll before it pauses.
 
 ## Annotations
 

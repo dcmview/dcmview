@@ -267,6 +267,7 @@
 		get imageRows() { return imageRows; },
 		get imageColumns() { return imageColumns; },
 		get transform() { return activeTransform; },
+		get orientation() { return orientation; },
 		setTransform: (transform) => updateTransform(transform),
 		toImage: pointFromPointer,
 		zoomAnchor: zoomAnchorFromClient,
@@ -549,6 +550,11 @@
 			x: Math.min(imageColumns, Math.max(0, point.x)),
 			y: Math.min(imageRows, Math.max(0, point.y)),
 		};
+	}
+
+	/** Escape: cancels a rectangle between its two clicks. False when there is none. */
+	export function cancelPlacement(): boolean {
+		return tools.cancelPlacement();
 	}
 
 	/** Deletes the selected ROI on this file; App's keyboard dispatcher calls it. */
@@ -910,6 +916,14 @@
 		// frames stay for a return; only the previous tab's work stops.
 		rawFrames.abortAll();
 		displayFrames.resetScope();
+	});
+
+	// A rectangle left between its two clicks ends with the tool, file or frame it began on.
+	$effect(() => {
+		void activeTool;
+		void activeFile?.index;
+		void currentFrame;
+		untrack(() => tools.shownChanged());
 	});
 
 	// An explicit selection supersedes an in-progress local drag as well as
@@ -1336,6 +1350,11 @@
 		tools.pointerMove(event);
 	}
 
+	function onPointerLeave() {
+		stopProbe();
+		tools.pointerLeave();
+	}
+
 	function onContextMenu(event: MouseEvent) {
 		event.preventDefault();
 	}
@@ -1361,13 +1380,15 @@
 	data-theme="dark"
 	class:dragging={isDragging}
 	data-tool={activeTool}
+	style:cursor={tools.cursor}
 	role="application"
 	onwheel={(event) => tools.wheel(event)}
 	onpointerdown={(event) => tools.pointerDown(event)}
 	onpointermove={onPointerMove}
 	onpointerup={(event) => tools.pointerUp(event)}
-	onpointercancel={() => tools.pointerCancel()}
-	onpointerleave={stopProbe}
+	onpointercancel={(event) => tools.pointerCancel(event)}
+	onlostpointercapture={(event) => tools.lostCapture(event)}
+	onpointerleave={onPointerLeave}
 	oncontextmenu={onContextMenu}
 	ondblclick={onreset}
 >
