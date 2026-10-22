@@ -2896,7 +2896,27 @@ async fn a_masked_session_reads_records_under_the_keys_it_shows() {
         answer["labels"][2]["target"],
         json!({ "study": shown_study })
     );
-    // No user name: authors are written as a masked export writes them.
+    // No user name: authors are written as a masked export writes them,
+    // also on a record an operation made.
+    session
+        .op(
+            Some(0),
+            json!({ "type": "create_annotation", "annotation": classed(
+                21, &shown_key, "calc", json!({ "type": "point", "x": 3, "y": 4 })) }),
+        )
+        .await;
+    let response = session.server.get("/api/file/0/annotations/native").await;
+    response.assert_status_ok();
+    let text = response.text();
+    let answer: Value = serde_json::from_str(&text).expect("answer");
+    let made = answer["annotations"]
+        .as_array()
+        .expect("annotations")
+        .iter()
+        .find(|record| record["id"] == id(21).as_str())
+        .expect("the record the operation made");
+    assert_eq!(made["created_by"], "user:local");
+    assert_eq!(made["modified_by"], "user:local");
     assert_eq!(answer["labels"][2]["created_by"], "user:local");
     assert_eq!(answer["labels"][2]["modified_by"], "user:local");
     assert_eq!(answer["layers"][0]["source"]["author"], "user:local");
