@@ -33,7 +33,7 @@ function embedOnly(revision = 1): NativeAnnotationsResponse {
 
 describe("NativeAnnotations", () => {
 	it("reads a file once when it is shown", async () => {
-		const load = vi.fn(async () => nativeResponse());
+		const load = vi.fn(async (_file: number, _signal: AbortSignal) => nativeResponse());
 		const store = new NativeAnnotations({ load });
 
 		store.ensureLoaded(2);
