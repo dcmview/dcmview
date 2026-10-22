@@ -10,6 +10,7 @@ import type {
 	GraphicAnnotationsQuery,
 	GraphicAnnotationsResponse,
 	HealthResponse,
+	NativeAnnotationsResponse,
 	ParametricMapOverlayQuery,
 	PixelQuery,
 	RawFrameMetadata,
@@ -24,7 +25,6 @@ import type {
 } from "./generated/api-types";
 import { API_ENDPOINTS, API_RESPONSE_HEADERS, DISPLAY_FRAME_HEADERS, RAW_FRAME_HEADERS } from "./generated/api-types";
 import { accessToken } from "./lib/accessToken";
-import type { NativeAnnotationsResponse } from "./lib/annotation/nativeAnnotations";
 import type { RawFrame } from "./rawFrame";
 
 export type {
@@ -76,13 +76,7 @@ export type {
 } from "./generated/api-types";
 export type { RawFrame } from "./rawFrame";
 
-/**
- * `GET /api/file/{index}/annotations/native`, written here until the
- * contract's endpoint table generates it.
- */
-const FILE_ANNOTATIONS_NATIVE = { method: "GET", path: "/api/file/{index}/annotations/native" } as const;
-
-type Endpoint = (typeof API_ENDPOINTS)[keyof typeof API_ENDPOINTS] | typeof FILE_ANNOTATIONS_NATIVE;
+type Endpoint = (typeof API_ENDPOINTS)[keyof typeof API_ENDPOINTS];
 type PathParams = { index?: number; frame?: number };
 
 /**
@@ -405,7 +399,7 @@ export function fetchAnnotations(fileIndex: number): Promise<EmbedRoiAnnotations
 
 /** One file's annotation records in the model's types, with the schema, layers and labels they need. */
 export function fetchNativeAnnotations(fileIndex: number, signal?: AbortSignal): Promise<NativeAnnotationsResponse> {
-	const endpoint = FILE_ANNOTATIONS_NATIVE;
+	const endpoint = API_ENDPOINTS.fileAnnotationsNative;
 	return getJson(endpoint, endpointUrl(endpoint, { index: fileIndex }), signal);
 }
 
