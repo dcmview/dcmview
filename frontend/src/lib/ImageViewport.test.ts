@@ -1468,6 +1468,10 @@ describe("ImageViewport native annotations", () => {
 		await fireEvent.click(screen.getByRole("button", { name: /^Mass,/ }));
 		expect(document.querySelectorAll(".roi-handle")).toHaveLength(0);
 		expect(document.querySelectorAll(".roi-coords")).toHaveLength(0);
+		// With nothing clicked since, a delete finds no selection to remove.
+		const savesBeforeDelete = vi.mocked(api.updateAnnotations).mock.calls.length;
+		component.deleteSelectedRoi();
+		expect(vi.mocked(api.updateAnnotations).mock.calls.length).toBe(savesBeforeDelete);
 
 		// A click on where it is selects nothing.
 		await fireEvent.pointerDown(viewport, { button: 0, clientX: 20, clientY: 30, pointerId: 1 });
