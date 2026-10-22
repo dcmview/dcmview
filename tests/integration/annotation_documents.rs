@@ -3127,3 +3127,85 @@ async fn a_cleared_label_and_a_carried_embed_index_are_not_sent() {
     );
     assert_eq!(answer["annotations"][0]["embed_index"], 0);
 }
+
+/// A document schema the session cannot give the class `roi` to (one with
+/// 4,096 classes), and one whose own `roi` does not allow rectangles,
+/// cannot hold the rectangles an EMBED save makes: a save that adds one is
+/// refused with nothing written, while moving and deleting ROIs goes on,
+/// and the export loads again. A deprecated `roi` that allows rectangles
+/// holds them as before.
+#[tokio::test]
+async fn an_embed_save_is_refused_where_the_schema_cannot_hold_its_rectangles() {
+    let dir = tempdir().expect("temp dir");
+    let mut full = classed_schema();
+    let classes = full["classes"].as_array_mut().expect("classes");
+    for n in classes.len()..4_096 {
+        classes.push(json!({ "id": format!("c{n}"), "name": format!("C{n}"),
+                             "geometry": ["rect"] }));
+    }
+    let mut narrow = classed_schema();
+    narrow["classes"]
+        .as_array_mut()
+        .expect("classes")
+        .push(json!({ "id": "roi", "name": "Spot", "geometry": ["point"] }));
+    let mut deprecated = classed_schema();
+    deprecated["classes"]
+        .as_array_mut()
+        .expect("classes")
+        .push(json!({ "id": "roi", "name": "Old", "geometry": ["rect"], "deprecated": true }));
+    for (what, schema, adds) in [
+        ("full", full, false),
+        ("narrow", narrow, false),
+        ("deprecated", deprecated, true),
+    ] {
+        let session = Session::loading_document(study_files(dir.path()));
+        let mut document = classed_document();
+        document["schema"] = schema;
+        session
+            .import(dir.path(), &document.to_string())
+            .await
+            .unwrap_or_else(|error| panic!("{what}: {error}"));
+        let answer = session.native(0).await;
+        let in_force = answer["schema"]["classes"].as_array().expect("classes");
+        assert!(in_force.len() <= 4_096, "{what}");
+        assert_eq!(
+            in_force.iter().filter(|class| class["id"] == "roi").count(),
+            usize::from(what != "full"),
+            "{what}"
+        );
+        let before = session.store.backend().revision().expect("revision");
+        let added = session
+            .server
+            .put("/api/file/0/annotations")
+            .json(&rows(
+                &[[20, 10, 40, 30], [60, 60, 70, 70], [1, 2, 3, 4]],
+                &[],
+            ))
+            .await;
+        if adds {
+            added.assert_status_ok();
+        } else {
+            assert_eq!(added.status_code(), StatusCode::BAD_REQUEST, "{what}");
+            assert_eq!(added.json::<Value>()["code"], "bad_request", "{what}");
+            assert_eq!(
+                session.store.backend().revision().expect("revision"),
+                before,
+                "{what}: nothing written"
+            );
+            // Moving one and deleting the other makes no rectangle.
+            session
+                .server
+                .put("/api/file/0/annotations")
+                .json(&rows(&[[21, 11, 41, 31]], &[]))
+                .await
+                .assert_status_ok();
+        }
+        let text = session.text("/api/annotations/export.json").await;
+        let again = Session::loading_document(study_files(dir.path()));
+        let report = again
+            .import(dir.path(), &text)
+            .await
+            .unwrap_or_else(|error| panic!("{what}: the export reloads: {error}"));
+        assert_eq!(report["warnings"], json!([]), "{what}: {report}");
+    }
+}

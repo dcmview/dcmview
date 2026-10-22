@@ -383,7 +383,10 @@ pub async fn native_annotations(
 ///    shows; ROIs of the other never remain beside it.
 ///
 ///    No operation means no transaction: saving what is already shown
-///    changes no record and no revision.
+///    changes no record and no revision. A save that would create a
+///    rectangle is [`AnnotationError::Rejected`], with nothing written,
+///    when the schema in force has no class `roi` that allows rectangles
+///    (`embed_class_allowed`); moving or deleting ROIs is not.
 ///
 /// The answer is the canonical list of step 1, and a read of the view
 /// right after the save shows exactly that list.
@@ -424,6 +427,12 @@ pub async fn replace_embed_rois(
         );
         if ops.is_empty() {
             return Ok(wanted);
+        }
+        if ops
+            .iter()
+            .any(|op| matches!(op, Op::CreateAnnotation { .. }))
+        {
+            embed_class_allowed(store)?;
         }
         let envelope = OpEnvelope {
             op_id: new_id(),
@@ -2103,6 +2112,35 @@ fn with_embed_class(
         schema.classes.pop();
     }
     schema
+}
+
+/// Whether the label schema in force holds the rectangles an EMBED save
+/// makes: class `roi` allowing `rect` (`IMPLICIT_CLASS_ID`). Always so
+/// without a schema, and for a document schema [`with_embed_class`] gave
+/// the class; not for one with its own `roi` class that does not allow
+/// rectangles, or one too full to take the class. A save that would make
+/// a rectangle such a schema cannot hold is
+/// [`AnnotationError::Rejected`], before anything is written: the session
+/// could not load its own export again. A deprecated `roi` class still
+/// holds them.
+fn embed_class_allowed(store: &AnnotationStore) -> Result<(), AnnotationError> {
+    let Some(schema) = store.backend().schema().map_err(store_error)? else {
+        return Ok(());
+    };
+    let allowed = schema.classes.iter().any(|class| {
+        class.id == dcmview_annotation::IMPLICIT_CLASS_ID
+            && class
+                .geometry
+                .contains(&dcmview_annotation::GeometryType::Rect)
+    });
+    if allowed {
+        Ok(())
+    } else {
+        Err(AnnotationError::Rejected(
+            "The session's label schema has no class `roi` that allows rectangles, so no ROI can be added."
+                .to_string(),
+        ))
+    }
 }
 
 fn store_error(error: impl std::fmt::Display) -> AnnotationError {

@@ -1202,7 +1202,12 @@ made by the client. The body is read whatever its `Content-Type`.
 - **The label schema.** A session has the schema of its `--annotations`
   document when that document carries one: its classes and label fields,
   and the class `roi` (as below) when the document has none of that id,
-  because the EMBED endpoints make rectangles of class `roi`. Otherwise it
+  because the EMBED endpoints make rectangles of class `roi`. Where the
+  session's schema cannot hold them (its own `roi` class does not allow
+  rectangles, or it has 4,096 classes and no `roi`), a
+  `PUT /api/file/{index}/annotations` that would add a ROI answers
+  `400 bad_request` with nothing saved; moving and deleting ROIs still
+  works. Otherwise it
   has one class, `roi`, which allows every geometry type, and no label
   fields, so every `set_label` is `invalid` with `unknown_field`.
   While a document is loading, operations and EMBED saves wait for it, as

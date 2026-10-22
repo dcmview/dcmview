@@ -297,7 +297,11 @@ Rectangles drawn in the viewer, and the rows of an EMBED CSV, are of class
 `roi`. So that a session's export loads again whatever its document's
 schema, a document schema without a `roi` class gets the implicit one
 added (named `ROI`, without a colour, allowing every shape) when it becomes
-the session's; a schema with its own `roi` class is kept as it is. While a
+the session's; a schema with its own `roi` class is kept as it is. When
+the schema cannot hold rectangles of class `roi` (its own `roi` does not
+allow them, or it already has the most classes a schema may), a save that
+adds a ROI is refused and nothing is saved; moving and deleting ROIs still
+work. While a
 document is loading, edits wait for it, so they are checked against its
 schema; while a CSV is loading they do not.
 
