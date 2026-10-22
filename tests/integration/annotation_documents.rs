@@ -82,6 +82,15 @@ impl Session {
         Self::over(FileRegistry::from_files(files), AnnotationStore::loading())
     }
 
+    /// A session over `files` whose `--annotations` document has not been
+    /// imported yet, as the viewer makes one: writes wait for the import.
+    fn loading_document(files: Vec<FileEntry>) -> Self {
+        Self::over(
+            FileRegistry::from_files(files),
+            AnnotationStore::loading_document(),
+        )
+    }
+
     /// A session over `files` that had no `--annotations`.
     fn plain(files: Vec<FileEntry>) -> Self {
         Self::over(FileRegistry::from_files(files), AnnotationStore::empty())
@@ -2941,4 +2950,68 @@ async fn an_export_after_an_embed_save_loads_again_under_a_document_schema() {
             .len()
     );
     assert_eq!(again.document().await["schema"], exported["schema"]);
+}
+
+/// Writes of a session with a document wait for its import, so they are
+/// checked against the schema it brings; a CSV session's do not
+/// (`annotations_endpoint`).
+#[tokio::test]
+async fn writes_wait_for_a_document_import() {
+    let dir = tempdir().expect("temp dir");
+    let session = Session::loading_document(study_files(dir.path()));
+    let body = json!({
+        "op_id": dcmview_annotation::new_id(), "actor": "user:test",
+        "ts": "2026-10-10T08:00:00.000Z",
+        "op": { "type": "create_annotation", "annotation": classed(
+            30, "sop:1.2.3.1", "calc", json!({ "type": "point", "x": 3, "y": 4 })) },
+    });
+    let waiting = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        session
+            .server
+            .post("/api/annotations/ops?file=0")
+            .json(&body),
+    )
+    .await;
+    assert!(waiting.is_err(), "an operation waits for the document");
+    let saving = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        session
+            .server
+            .put("/api/file/0/annotations")
+            .json(&rows(&[[1, 2, 3, 4]], &[])),
+    )
+    .await;
+    assert!(saving.is_err(), "an EMBED save waits for the document");
+    session
+        .import(dir.path(), &classed_document().to_string())
+        .await
+        .expect("import");
+    // Checked against the document's schema: `calc` is one of its classes.
+    let response = session
+        .server
+        .post("/api/annotations/ops?file=0")
+        .json(&body)
+        .await;
+    assert_eq!(
+        response.status_code(),
+        StatusCode::OK,
+        "{}",
+        response.text()
+    );
+
+    // A failed import holds up no write.
+    let failed = Session::loading_document(study_files(dir.path()));
+    let mut broken = classed_document();
+    broken["annotations"][0]["class"] = json!("nodule");
+    failed
+        .import(dir.path(), &broken.to_string())
+        .await
+        .expect_err("a class the schema does not have");
+    failed
+        .server
+        .put("/api/file/0/annotations")
+        .json(&rows(&[[1, 2, 3, 4]], &[]))
+        .await
+        .assert_status_ok();
 }

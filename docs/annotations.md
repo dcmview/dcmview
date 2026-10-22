@@ -297,7 +297,9 @@ Rectangles drawn in the viewer, and the rows of an EMBED CSV, are of class
 `roi`. So that a session's export loads again whatever its document's
 schema, a document schema without a `roi` class gets the implicit one
 added (named `ROI`, without a colour, allowing every shape) when it becomes
-the session's; a schema with its own `roi` class is kept as it is.
+the session's; a schema with its own `roi` class is kept as it is. While a
+document is loading, edits wait for it, so they are checked against its
+schema; while a CSV is loading they do not.
 
 Exporting a document needs the key of every file that has ROIs. For a file
 that must be hashed first the download waits; when a file can no longer be

@@ -1204,6 +1204,9 @@ made by the client. The body is read whatever its `Content-Type`.
   because the EMBED endpoints make rectangles of class `roi`. Otherwise it
   has one class, `roi`, which allows every geometry type, and no label
   fields, so every `set_label` is `invalid` with `unknown_field`.
+  While a document is loading, operations and EMBED saves wait for it, as
+  the reads do, so they are checked against its schema; while a CSV is
+  loading they do not.
 
 Annotations are held in memory and are gone when the viewer exits. Redaction
 boxes are not annotations: no operation reads or changes them.

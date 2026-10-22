@@ -371,14 +371,16 @@ pub async fn native_annotations(
 /// The answer is the canonical list of step 1, and a read of the view
 /// right after the save shows exactly that list.
 ///
-/// It does not wait for the `--annotations` import: an edit made while the
-/// CSV is loading wins over the CSV's rows for that file.
+/// It waits for a document import ([`wait_for_import`]), not for a CSV: an
+/// edit made while the CSV is loading wins over the CSV's rows for that
+/// file.
 pub async fn replace_embed_rois(
     registry: &FileRegistry,
     store: &AnnotationStore,
     index: usize,
     rois: EmbedRoiAnnotations,
 ) -> Result<EmbedRoiAnnotations, AnnotationError> {
+    wait_for_import(store).await;
     let file = registry
         .get(index)
         .ok_or(AnnotationError::NotFound(index))?;
@@ -1248,10 +1250,10 @@ fn document_file_ref(
 ///   `the annotation store refused the import: ` and the first
 ///   violation's code (`{code:?}`), or `conflict`.
 ///
-/// While the import runs the EMBED reads wait, as for a CSV; writes do
-/// not, and a record a client makes meanwhile is kept. Records are added
-/// to the files they name whether or not the EMBED endpoint wrote to a
-/// file meanwhile.
+/// While the import runs the EMBED reads wait, as for a CSV, and so do
+/// the writes ([`replace_embed_rois`], [`apply_op`]) of a session made with
+/// `AnnotationStore::loading_document`, as the viewer makes one for a
+/// document.
 ///
 /// [`NATIVE_IMPORT_AUTHOR`]: crate::annotations::NATIVE_IMPORT_AUTHOR
 pub async fn import_native(
@@ -1923,15 +1925,17 @@ pub fn import_status(store: &AnnotationStore) -> Result<AnnotationImportResponse
 /// `revision` in the outcome is `Transacted::revision` of step 6, and the
 /// store's revision when the request was refused in step 1.
 ///
-/// It does not wait for the `--annotations` import. A patient, study or
-/// series id of the `missing:<file key>` form is text of the client's and
-/// is not translated.
+/// It waits for a document import ([`wait_for_import`]), so the envelope is
+/// checked against the schema the import leaves in force, and not for a
+/// CSV. A patient, study or series id of the `missing:<file key>` form is
+/// text of the client's and is not translated.
 pub async fn apply_op(
     registry: &FileRegistry,
     store: &AnnotationStore,
     envelope: OpEnvelope,
     file: Option<usize>,
 ) -> Result<OpOutcome, AnnotationError> {
+    wait_for_import(store).await;
     let mut envelope = envelope;
     let mut keys = Vec::new();
     let mut seen = HashSet::new();
@@ -2041,6 +2045,19 @@ fn file_digest(file: &FileEntry) -> Result<[u8; 32], crate::keys::KeyFailure> {
         if let crate::keys::HashProgress::Done(digest) = hasher.next_slice()? {
             return Ok(digest);
         }
+    }
+}
+
+/// For a session whose `--annotations` file is a document
+/// (`AnnotationStore::writes_wait`), waits until its import has ended,
+/// whichever way: the document may put a label schema in force when its
+/// records are applied, and a write is checked against the schema the
+/// import leaves. A failed import holds up no write. While a CSV loads,
+/// writes go on: an edit made then wins over the CSV's rows for its file.
+async fn wait_for_import(store: &AnnotationStore) {
+    if store.writes_wait() {
+        // A failed import is the reads' answer; writes go on without it.
+        let _ = store.wait_until_ready().await;
     }
 }
 

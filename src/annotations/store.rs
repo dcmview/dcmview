@@ -163,6 +163,8 @@ pub struct AnnotationStore {
     download_budget: u64,
     /// What the records of one document may be charged, written or read.
     document_budget: u64,
+    /// Whether writes wait for the import ([`AnnotationStore::writes_wait`]).
+    writes_wait: bool,
     /// Run by [`AnnotationStore::before_embed_write`], so a test can make a
     /// second write at exactly the point between a save's read of the view
     /// and its write.
@@ -186,6 +188,7 @@ impl AnnotationStore {
             downloads: Arc::new(Mutex::new(0)),
             download_budget: DOWNLOAD_BUDGET_BYTES,
             document_budget: dcmview_adapters::Limits::DEFAULT.held_bytes,
+            writes_wait: false,
             #[cfg(test)]
             before_embed_write: None,
         }
@@ -207,6 +210,22 @@ impl AnnotationStore {
     /// [`AnnotationStore::fail_loading`].
     pub fn loading() -> Self {
         Self::new(Self::session_backend(), LoadState::Loading)
+    }
+
+    /// [`AnnotationStore::loading`] for a `dcmview.annotations` document:
+    /// writes wait for its import ([`AnnotationStore::writes_wait`]),
+    /// because the document may bring the label schema they are checked
+    /// against. While a CSV loads, writes go on.
+    pub fn loading_document() -> Self {
+        let mut store = Self::loading();
+        store.writes_wait = true;
+        store
+    }
+
+    /// Whether writes wait for the import to end: a document import is to
+    /// come or running ([`AnnotationStore::loading_document`]).
+    pub fn writes_wait(&self) -> bool {
+        self.writes_wait
     }
 
     fn session_backend() -> MemoryBackend {

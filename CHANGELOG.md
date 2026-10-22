@@ -199,7 +199,7 @@ diagnostic viewer.
   failed to load. A document that fails to load leaves the session without
   a schema. A schema without a `roi` class gains the implicit one, the
   class of rectangles drawn in the viewer, so a session's export always
-  loads again.
+  loads again. Edits made while a document is loading wait for it.
 - `GET /api/file/{index}/annotations/native` answers one file's annotation
   records of every geometry type (point, line, polyline, polygon, rectangle,
   ellipse, mask) with their classes and layers, the session's label schema

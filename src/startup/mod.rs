@@ -88,10 +88,10 @@ pub(crate) async fn run_local_viewer(options: LocalViewerOptions) -> Result<Loca
     } else {
         FileRegistry::new()
     };
-    let annotation_store = if annotation_source.is_some() {
-        AnnotationStore::loading()
-    } else {
-        AnnotationStore::empty()
+    let annotation_store = match &annotation_source {
+        Some(AnnotationInput::Native(_)) => AnnotationStore::loading_document(),
+        Some(AnnotationInput::Embed(_)) => AnnotationStore::loading(),
+        None => AnnotationStore::empty(),
     }
     .with_document_budget(memory::document_budget());
     let (decode_limits, decode_memory_source) = memory::decode_limits(options.decode_limits);

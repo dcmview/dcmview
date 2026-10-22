@@ -2039,7 +2039,11 @@ and no label fields), and a native `--annotations` document that carries a
 schema puts that schema in force once its records are applied
 (`MemoryBackend::take_schema`), with the implicit `roi` class added when
 it has no class of that id, since the EMBED endpoints write `roi`
-rectangles whatever the schema. A schema in force is not replaced.
+rectangles whatever the schema. A schema in force is not replaced. Writes
+of a session whose `--annotations` file is a document
+(`AnnotationStore::loading_document`) wait for its import, so they are
+checked against the schema it leaves; writes during a CSV import do not
+wait.
 
 **Cost.** A transaction costs time and memory in proportion to its envelope
 plus the things it names, each counted once however many of its operations
