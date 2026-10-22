@@ -196,6 +196,119 @@ export function visibleShapes(
 	return shapes;
 }
 
+/** A rectangle the EMBED view shows on the current frame, at its index in that view. */
+export type EmbedRect = { index: number; ymin: number; xmin: number; ymax: number; xmax: number };
+
+export type NativeView = {
+	/** The records to draw: those not hidden, less those out of date (below). */
+	shapes: NativeShape[];
+	/** EMBED indices whose rectangle a shown native record stands for: the EMBED overlay does not outline or number them. */
+	embedDrawn: ReadonlySet<number>;
+	/**
+	 * EMBED indices whose rectangle a hidden native record stands for: the
+	 * viewport shows, lists and hit-tests them as little as the record.
+	 */
+	embedHidden: ReadonlySet<number>;
+};
+
+/** A rectangle as the EMBED view writes it: `[y0, x0, y1, x1]`, rounded outward and not below 0. */
+export type EmbedBox = [number, number, number, number];
+
+function embedBox(geometry: Geometry): EmbedBox | null {
+	if (geometry.type !== "rect") return null;
+	return [
+		Math.max(0, Math.floor(geometry.y0)),
+		Math.max(0, Math.floor(geometry.x0)),
+		Math.max(0, Math.ceil(geometry.y1)),
+		Math.max(0, Math.ceil(geometry.x1)),
+	];
+}
+
+/**
+ * One frame's drawable records, split once per response and frame so that
+ * what changes while a rectangle is edited is recomputed over the EMBED
+ * rectangles alone: `plain` are the records the EMBED view does not show,
+ * `embedded` those it does, each with the box the EMBED view writes for it.
+ */
+export type NativeFrame = {
+	plain: NativeShape[];
+	embedded: { shape: NativeShape; box: EmbedBox | null }[];
+};
+
+export function nativeFrame(
+	response: Pick<NativeAnnotationsResponse, "schema" | "layers" | "annotations">,
+	frame: number,
+): NativeFrame {
+	const records = new Map(response.annotations.map((record) => [record.id, record]));
+	const plain: NativeShape[] = [];
+	const embedded: NativeFrame["embedded"] = [];
+	for (const shape of visibleShapes(response, { frame })) {
+		if (shape.embedIndex === null) plain.push(shape);
+		else embedded.push({ shape, box: embedBox(records.get(shape.id)!.geometry) });
+	}
+	return { plain, embedded };
+}
+
+type Visibility = Pick<NativeDisplayFilter, "hiddenLayers" | "hiddenClasses">;
+
+function hidden(shape: NativeShape, { hiddenLayers, hiddenClasses }: Visibility): boolean {
+	return !!(hiddenLayers?.has(shape.layer) || hiddenClasses?.has(shape.classId));
+}
+
+/** The records of `shapes` that no hidden layer or class takes out. */
+export function shownShapes(shapes: readonly NativeShape[], visibility: Visibility): NativeShape[] {
+	return shapes.filter((shape) => !hidden(shape, visibility));
+}
+
+/**
+ * The EMBED view is the live copy of the rectangles it shows: a record with
+ * an `embed_index` stands for the rectangle at that index only while that
+ * rectangle is on the frame with the box the record reads as (rounded
+ * outward, as the EMBED view writes it). Otherwise the native copy is behind
+ * an edit (a rectangle being dragged, one saved and not read back yet, a
+ * deleted one shifting the indices), and the record is left out, so the
+ * EMBED overlay draws that rectangle as it always has and nothing is drawn
+ * twice. Linear in the EMBED rectangles; the other records are not read.
+ */
+export function matchEmbedRects(
+	embedded: NativeFrame["embedded"],
+	visibility: Visibility,
+	embedRects: readonly EmbedRect[],
+): NativeView {
+	const rects = new Map(embedRects.map((rect) => [rect.index, rect]));
+	const embedDrawn = new Set<number>();
+	const embedHidden = new Set<number>();
+	const shapes: NativeShape[] = [];
+	for (const { shape, box } of embedded) {
+		const rect = rects.get(shape.embedIndex!);
+		const current = box !== null && rect !== undefined
+			&& rect.ymin === box[0] && rect.xmin === box[1] && rect.ymax === box[2] && rect.xmax === box[3];
+		if (!current) continue;
+		if (hidden(shape, visibility)) {
+			embedHidden.add(shape.embedIndex!);
+		} else {
+			embedDrawn.add(shape.embedIndex!);
+			shapes.push(shape);
+		}
+	}
+	return { shapes, embedDrawn, embedHidden };
+}
+
+/**
+ * What the native overlay draws beside the EMBED rectangles on the same
+ * frame, in one call: the records the EMBED view does not show, then those
+ * that stand for its rectangles (`matchEmbedRects`).
+ */
+export function nativeView(
+	response: Pick<NativeAnnotationsResponse, "schema" | "layers" | "annotations">,
+	{ frame, ...visibility }: NativeDisplayFilter,
+	embedRects: readonly EmbedRect[],
+): NativeView {
+	const split = nativeFrame(response, frame);
+	const matched = matchEmbedRects(split.embedded, visibility, embedRects);
+	return { ...matched, shapes: [...shownShapes(split.plain, visibility), ...matched.shapes] };
+}
+
 export type ClassLegendEntry = {
 	id: string;
 	name: string;

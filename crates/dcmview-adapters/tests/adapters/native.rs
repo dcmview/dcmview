@@ -160,6 +160,7 @@ fn both_forms_and_a_pretty_document_read_back_as_the_same_records() {
             layers: document.layers.clone(),
             annotations: document.annotations.clone(),
             labels: document.labels.clone(),
+            schema: None,
         }
     );
     assert_eq!(
@@ -492,6 +493,52 @@ fn a_box_kept_as_read_is_taken_back_and_reported_and_nothing_else_is_lenient() {
     assert_eq!(
         report_json(&import_in(&session, &pool, &carried).expect("import").report)["warnings"],
         json!([{ "code": "schema_not_applied", "count": 1, "rows": [{ "row": 1 }] }])
+    );
+}
+
+/// A caller without a schema of its own may let the import take the
+/// document's: the records are checked against it and it is handed on. A
+/// caller with a schema keeps it, and an invalid schema is refused.
+#[test]
+fn a_document_schema_is_taken_only_where_the_caller_has_none_and_allows_it() {
+    let pool = pool();
+    let text = fixture_document_text();
+    let bare = Session::new(None);
+    let mut taking = bare.context(&pool);
+    taking.take_schema = true;
+    let imported = NativeJson
+        .import(&mut text.as_bytes(), &taking)
+        .expect("the fixture under its own schema");
+    assert_eq!(imported.fragment.schema, fixture().schema);
+    assert_eq!(imported.fragment.annotations.len(), 8);
+    assert_eq!(report_json(&imported.report)["warnings"], json!([]));
+
+    // A caller with a schema of its own does not take another.
+    let own = Session::new(Some(dcmview_annotation::LabelSchema::implicit()));
+    let mut keeping = own.context(&pool);
+    keeping.take_schema = true;
+    let refused = NativeJson.import(&mut text.as_bytes(), &keeping);
+    assert!(
+        matches!(
+            refused,
+            Err(ImportError::Invalid {
+                code: ViolationCode::UnknownClass,
+                ..
+            })
+        ),
+        "{refused:?}"
+    );
+
+    // A schema that breaks the model's rules is refused at the header.
+    let duplicated = small(json!([]), vec![]).replacen(
+        "\"version\":\"1.0\"",
+        "\"version\":\"1.0\",\"schema\":{\"schema_id\":\"s\",\"schema_version\":1,\"classes\":[{\"id\":\"a\",\"name\":\"A\",\"geometry\":[\"rect\"]},{\"id\":\"a\",\"name\":\"B\",\"geometry\":[\"rect\"]}],\"fields\":[]}",
+        1,
+    );
+    let invalid = NativeJson.import(&mut duplicated.as_bytes(), &taking);
+    assert!(
+        matches!(invalid, Err(ImportError::Invalid { row: 1, .. })),
+        "{invalid:?}"
     );
 }
 

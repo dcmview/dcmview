@@ -191,6 +191,30 @@ diagnostic viewer.
   (`evidence_conflict`); it never decodes to check and finds no file by a
   pixel digest. A document's reference to an image file also names the
   page of each frame (`frame_source`).
+- A `dcmview.annotations` document given to `--annotations` brings its
+  label schema: its classes, with their names and colours, and its label
+  fields become the session's, so its records and labels load, later
+  operations are checked against it and exports carry it. Before, a
+  document whose records used any class but `roi`, or that held labels,
+  failed to load. A document that fails to load leaves the session without
+  a schema. A schema without a `roi` class gains the implicit one, the
+  class of rectangles drawn in the viewer, so a session's export always
+  loads again. Edits made while a document is loading wait for it.
+- `GET /api/file/{index}/annotations/native` answers one file's annotation
+  records of every geometry type (point, line, polyline, polygon, rectangle,
+  ellipse, mask) with their classes and layers, the session's label schema
+  and layers, the labels on the file, its frames, series, study and
+  patient, and the store's revision. Each record carries `embed_index`, its
+  place in the file's EMBED view, so a client can pair it with the
+  rectangles it edits there. The read waits for `--annotations` like the
+  EMBED read, and never hashes a file.
+- The viewer shows a loaded `dcmview.annotations` document's annotations:
+  every point, line, polyline, polygon, rectangle and ellipse in its layer
+  or class color with its class name (and score), a legend of the classes
+  with their counts, layer and class toggles that hide and show them in
+  this viewer only, and the labels of the shown image by level. Its
+  rectangles are edited as ROIs. A session without a document looks as
+  before.
 
 ### Changed
 

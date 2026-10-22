@@ -88,12 +88,8 @@ pub(crate) async fn run_local_viewer(options: LocalViewerOptions) -> Result<Loca
     } else {
         FileRegistry::new()
     };
-    let annotation_store = if annotation_source.is_some() {
-        AnnotationStore::loading()
-    } else {
-        AnnotationStore::empty()
-    }
-    .with_document_budget(memory::document_budget());
+    let annotation_store = annotation_store_for(annotation_source.as_ref())
+        .with_document_budget(memory::document_budget());
     let (decode_limits, decode_memory_source) = memory::decode_limits(options.decode_limits);
     let mut state =
         AppState::new(registry.clone(), annotation_store.clone()).with_decode_limits(decode_limits);
@@ -163,10 +159,41 @@ fn friendly_bind_error(error: anyhow::Error, port: u16) -> anyhow::Error {
     }
 }
 
+/// The store a session starts with for its `--annotations` file: loading
+/// until the import ends, and for a document, with writes that wait for it
+/// (`AnnotationStore::loading_document`); empty without a file.
+fn annotation_store_for(source: Option<&AnnotationInput>) -> AnnotationStore {
+    match source {
+        Some(AnnotationInput::Native(_)) => AnnotationStore::loading_document(),
+        Some(AnnotationInput::Embed(_)) => AnnotationStore::loading(),
+        None => AnnotationStore::empty(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tokio::net::TcpListener;
+
+    /// A document's writes wait for its import; a CSV's do not.
+    #[test]
+    fn a_documents_session_makes_writes_wait_and_a_csvs_does_not() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let document = dir.path().join("document.json");
+        std::fs::write(
+            &document,
+            r#"{"format":"dcmview.annotations","version":"1.0","files":[]}"#,
+        )
+        .expect("document");
+        let csv = dir.path().join("rows.csv");
+        std::fs::write(&csv, "anon_dicom_path,num_roi,ROI_coords\n").expect("csv");
+        let input = |path: &std::path::Path| AnnotationInput::from_path(path, None).expect("input");
+        assert!(annotation_store_for(Some(&input(&document))).writes_wait());
+        let embed = input(&csv);
+        assert!(matches!(embed, AnnotationInput::Embed(_)));
+        assert!(!annotation_store_for(Some(&embed)).writes_wait());
+        assert!(!annotation_store_for(None).writes_wait());
+    }
 
     fn options(port: u16) -> LocalViewerOptions {
         LocalViewerOptions {

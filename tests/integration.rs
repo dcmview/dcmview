@@ -39,6 +39,7 @@ mod integration {
     mod redactions;
     mod reduced_thumbnails;
     mod remote_fixtures;
+    mod sample_annotations;
     mod semantic_context;
     mod semantic_overlays;
     mod series_catalog;

@@ -82,6 +82,10 @@ pub(crate) fn router(state: AppState) -> Router {
             get(handlers::annotations).put(handlers::update_annotations),
         )
         .route(
+            endpoints::FILE_ANNOTATIONS_NATIVE.path,
+            get(handlers::native_annotations),
+        )
+        .route(
             endpoints::FILE_REDACTIONS_GET.path,
             get(handlers::redactions).put(handlers::update_redactions),
         )

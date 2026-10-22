@@ -1,0 +1,1494 @@
+{
+  "format": "dcmview.annotations",
+  "version": "1.0",
+  "schema": {
+    "schema_id": "dcmview-sample",
+    "schema_version": 1,
+    "classes": [
+      {
+        "id": "mass",
+        "name": "Mass",
+        "color": "#E4572E",
+        "geometry": [
+          "rect",
+          "polygon",
+          "ellipse"
+        ],
+        "attributes": [],
+        "deprecated": false
+      },
+      {
+        "id": "calcification",
+        "name": "Calcification",
+        "color": "#2E86AB",
+        "geometry": [
+          "point",
+          "rect"
+        ],
+        "attributes": [],
+        "deprecated": false
+      },
+      {
+        "id": "distortion",
+        "name": "Architectural distortion",
+        "color": "#F2A541",
+        "geometry": [
+          "line",
+          "polyline"
+        ],
+        "attributes": [],
+        "deprecated": false
+      },
+      {
+        "id": "roi",
+        "name": "ROI",
+        "color": "#8E44AD",
+        "geometry": [
+          "point",
+          "line",
+          "polyline",
+          "polygon",
+          "rect",
+          "ellipse",
+          "mask"
+        ],
+        "attributes": [],
+        "deprecated": false
+      }
+    ],
+    "fields": [
+      {
+        "id": "quality",
+        "name": "Image quality",
+        "type": "category",
+        "options": [
+          {
+            "id": "limited",
+            "name": "Limited",
+            "deprecated": false
+          },
+          {
+            "id": "good",
+            "name": "Good",
+            "deprecated": false
+          }
+        ],
+        "ordered": true,
+        "applies_to": [
+          "file"
+        ],
+        "required": false
+      },
+      {
+        "id": "density",
+        "name": "Breast density",
+        "type": "category",
+        "options": [
+          {
+            "id": "a",
+            "name": "A",
+            "deprecated": false
+          },
+          {
+            "id": "b",
+            "name": "B",
+            "deprecated": false
+          },
+          {
+            "id": "c",
+            "name": "C",
+            "deprecated": false
+          },
+          {
+            "id": "d",
+            "name": "D",
+            "deprecated": false
+          }
+        ],
+        "ordered": true,
+        "applies_to": [
+          "study"
+        ],
+        "required": false
+      },
+      {
+        "id": "note",
+        "name": "Note",
+        "type": "text",
+        "max_length": 200,
+        "applies_to": [
+          "file",
+          "study"
+        ],
+        "required": false
+      }
+    ]
+  },
+  "files": [
+    {
+      "key": "sop:2.25.2000801",
+      "kind": "dicom",
+      "sop_instance_uid": "2.25.2000801",
+      "sop_class_uid": "1.2.840.10008.5.1.4.1.1.6.1",
+      "study_instance_uid": "2.25.2000821",
+      "series_instance_uid": "2.25.2000811",
+      "patient_id": "MRN-0042417",
+      "path": "golden-masking-patient-a-us-1.dcm",
+      "size_bytes": 78104,
+      "digest": null,
+      "rows": 240,
+      "columns": 320,
+      "frames": 1,
+      "space": {
+        "orientation": "stored"
+      },
+      "format": "dicom",
+      "pixel_digest": [],
+      "frame_source": null,
+      "external_id": null
+    },
+    {
+      "key": "sop:2.25.2000802",
+      "kind": "dicom",
+      "sop_instance_uid": "2.25.2000802",
+      "sop_class_uid": "1.2.840.10008.5.1.4.1.1.6.1",
+      "study_instance_uid": "2.25.2000821",
+      "series_instance_uid": "2.25.2000811",
+      "patient_id": "MRN-0042417",
+      "path": "golden-masking-patient-a-us-2.dcm",
+      "size_bytes": 78104,
+      "digest": null,
+      "rows": 240,
+      "columns": 320,
+      "frames": 1,
+      "space": {
+        "orientation": "stored"
+      },
+      "format": "dicom",
+      "pixel_digest": [],
+      "frame_source": null,
+      "external_id": null
+    },
+    {
+      "key": "sop:2.25.2000803",
+      "kind": "dicom",
+      "sop_instance_uid": "2.25.2000803",
+      "sop_class_uid": "1.2.840.10008.5.1.4.1.1.6.1",
+      "study_instance_uid": "2.25.2000822",
+      "series_instance_uid": "2.25.2000812",
+      "patient_id": "MRN-0077120",
+      "path": "golden-masking-patient-b-us.dcm",
+      "size_bytes": 78102,
+      "digest": null,
+      "rows": 240,
+      "columns": 320,
+      "frames": 1,
+      "space": {
+        "orientation": "stored"
+      },
+      "format": "dicom",
+      "pixel_digest": [],
+      "frame_source": null,
+      "external_id": null
+    },
+    {
+      "key": "sop:2.25.2000001",
+      "kind": "dicom",
+      "sop_instance_uid": "2.25.2000001",
+      "sop_class_uid": "1.2.840.10008.5.1.4.1.1.2",
+      "study_instance_uid": null,
+      "series_instance_uid": null,
+      "patient_id": "GOLDEN-UNCOMP",
+      "path": "golden-uncompressed-u16-multiframe.dcm",
+      "size_bytes": 668,
+      "digest": null,
+      "rows": 4,
+      "columns": 4,
+      "frames": 3,
+      "space": {
+        "orientation": "stored"
+      },
+      "format": "dicom",
+      "pixel_digest": [],
+      "frame_source": null,
+      "external_id": null
+    },
+    {
+      "key": "b3:c643c13616bab4e664748783d10fc35d9acfbdad42fcbceef410b52d1db2580f",
+      "kind": "raster",
+      "sop_instance_uid": null,
+      "sop_class_uid": null,
+      "study_instance_uid": null,
+      "series_instance_uid": null,
+      "patient_id": null,
+      "path": "tiff-jpeg/gray-150x133.tif",
+      "size_bytes": 1397,
+      "digest": "b3:c643c13616bab4e664748783d10fc35d9acfbdad42fcbceef410b52d1db2580f",
+      "rows": 133,
+      "columns": 150,
+      "frames": 1,
+      "space": {
+        "orientation": "stored"
+      },
+      "format": "tiff",
+      "pixel_digest": [],
+      "frame_source": null,
+      "external_id": null
+    }
+  ],
+  "layers": [
+    {
+      "id": "default",
+      "name": "Annotations",
+      "kind": "user",
+      "exclusive_masks": false,
+      "color": null,
+      "readonly": false,
+      "source": {
+        "author": "user:sample"
+      },
+      "rev": 1
+    },
+    {
+      "id": "reader-2",
+      "name": "Second reader",
+      "kind": "user",
+      "exclusive_masks": false,
+      "color": "#17BEBB",
+      "readonly": false,
+      "source": {
+        "author": "user:sample"
+      },
+      "rev": 1
+    }
+  ],
+  "annotations": [
+    {
+      "id": "0199d3e0-0000-7000-8000-000000000001",
+      "file": "sop:2.25.2000801",
+      "frames": "all",
+      "layer": "default",
+      "class": "mass",
+      "geometry": {
+        "type": "rect",
+        "x0": 32,
+        "y0": 24,
+        "x1": 128,
+        "y1": 84
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-000000000002",
+      "file": "sop:2.25.2000801",
+      "frames": "all",
+      "layer": "default",
+      "class": "mass",
+      "geometry": {
+        "type": "polygon",
+        "points": [
+          {
+            "x": 176,
+            "y": 24
+          },
+          {
+            "x": 288,
+            "y": 48
+          },
+          {
+            "x": 256,
+            "y": 108
+          },
+          {
+            "x": 192,
+            "y": 96
+          }
+        ]
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-000000000003",
+      "file": "sop:2.25.2000801",
+      "frames": "all",
+      "layer": "reader-2",
+      "class": "mass",
+      "geometry": {
+        "type": "ellipse",
+        "cx": 96,
+        "cy": 156,
+        "rx": 36,
+        "ry": 19.2,
+        "angle": 30
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-000000000004",
+      "file": "sop:2.25.2000801",
+      "frames": "all",
+      "layer": "default",
+      "class": "calcification",
+      "geometry": {
+        "type": "point",
+        "x": 224,
+        "y": 163.2
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-000000000005",
+      "file": "sop:2.25.2000801",
+      "frames": "all",
+      "layer": "default",
+      "class": "calcification",
+      "geometry": {
+        "type": "point",
+        "x": 243.2,
+        "y": 148.8
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-000000000006",
+      "file": "sop:2.25.2000801",
+      "frames": "all",
+      "layer": "reader-2",
+      "class": "calcification",
+      "geometry": {
+        "type": "rect",
+        "x0": 204.8,
+        "y0": 132,
+        "x1": 268.8,
+        "y1": 180
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-000000000007",
+      "file": "sop:2.25.2000801",
+      "frames": "all",
+      "layer": "reader-2",
+      "class": "distortion",
+      "geometry": {
+        "type": "line",
+        "points": [
+          {
+            "x": 32,
+            "y": 216
+          },
+          {
+            "x": 144,
+            "y": 192
+          }
+        ]
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-000000000008",
+      "file": "sop:2.25.2000801",
+      "frames": "all",
+      "layer": "default",
+      "class": "distortion",
+      "geometry": {
+        "type": "polyline",
+        "points": [
+          {
+            "x": 176,
+            "y": 220.8
+          },
+          {
+            "x": 208,
+            "y": 196.8
+          },
+          {
+            "x": 256,
+            "y": 216
+          },
+          {
+            "x": 294.4,
+            "y": 192
+          }
+        ]
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-000000000009",
+      "file": "sop:2.25.2000801",
+      "frames": "all",
+      "layer": "default",
+      "class": "roi",
+      "geometry": {
+        "type": "rect",
+        "x0": 144,
+        "y0": 108,
+        "x1": 176,
+        "y1": 132
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-00000000000c",
+      "file": "sop:2.25.2000802",
+      "frames": "all",
+      "layer": "default",
+      "class": "mass",
+      "geometry": {
+        "type": "rect",
+        "x0": 32,
+        "y0": 24,
+        "x1": 128,
+        "y1": 84
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-00000000000d",
+      "file": "sop:2.25.2000802",
+      "frames": "all",
+      "layer": "default",
+      "class": "mass",
+      "geometry": {
+        "type": "polygon",
+        "points": [
+          {
+            "x": 176,
+            "y": 24
+          },
+          {
+            "x": 288,
+            "y": 48
+          },
+          {
+            "x": 256,
+            "y": 108
+          },
+          {
+            "x": 192,
+            "y": 96
+          }
+        ]
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-00000000000e",
+      "file": "sop:2.25.2000802",
+      "frames": "all",
+      "layer": "reader-2",
+      "class": "mass",
+      "geometry": {
+        "type": "ellipse",
+        "cx": 96,
+        "cy": 156,
+        "rx": 36,
+        "ry": 19.2,
+        "angle": 30
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-00000000000f",
+      "file": "sop:2.25.2000802",
+      "frames": "all",
+      "layer": "default",
+      "class": "calcification",
+      "geometry": {
+        "type": "point",
+        "x": 224,
+        "y": 163.2
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-000000000010",
+      "file": "sop:2.25.2000802",
+      "frames": "all",
+      "layer": "default",
+      "class": "calcification",
+      "geometry": {
+        "type": "point",
+        "x": 243.2,
+        "y": 148.8
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-000000000011",
+      "file": "sop:2.25.2000802",
+      "frames": "all",
+      "layer": "reader-2",
+      "class": "calcification",
+      "geometry": {
+        "type": "rect",
+        "x0": 204.8,
+        "y0": 132,
+        "x1": 268.8,
+        "y1": 180
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-000000000012",
+      "file": "sop:2.25.2000802",
+      "frames": "all",
+      "layer": "reader-2",
+      "class": "distortion",
+      "geometry": {
+        "type": "line",
+        "points": [
+          {
+            "x": 32,
+            "y": 216
+          },
+          {
+            "x": 144,
+            "y": 192
+          }
+        ]
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-000000000013",
+      "file": "sop:2.25.2000802",
+      "frames": "all",
+      "layer": "default",
+      "class": "distortion",
+      "geometry": {
+        "type": "polyline",
+        "points": [
+          {
+            "x": 176,
+            "y": 220.8
+          },
+          {
+            "x": 208,
+            "y": 196.8
+          },
+          {
+            "x": 256,
+            "y": 216
+          },
+          {
+            "x": 294.4,
+            "y": 192
+          }
+        ]
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-000000000014",
+      "file": "sop:2.25.2000802",
+      "frames": "all",
+      "layer": "default",
+      "class": "roi",
+      "geometry": {
+        "type": "rect",
+        "x0": 144,
+        "y0": 108,
+        "x1": 176,
+        "y1": 132
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-000000000016",
+      "file": "sop:2.25.2000803",
+      "frames": "all",
+      "layer": "default",
+      "class": "mass",
+      "geometry": {
+        "type": "rect",
+        "x0": 32,
+        "y0": 24,
+        "x1": 128,
+        "y1": 84
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-000000000017",
+      "file": "sop:2.25.2000803",
+      "frames": "all",
+      "layer": "default",
+      "class": "mass",
+      "geometry": {
+        "type": "polygon",
+        "points": [
+          {
+            "x": 176,
+            "y": 24
+          },
+          {
+            "x": 288,
+            "y": 48
+          },
+          {
+            "x": 256,
+            "y": 108
+          },
+          {
+            "x": 192,
+            "y": 96
+          }
+        ]
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-000000000018",
+      "file": "sop:2.25.2000803",
+      "frames": "all",
+      "layer": "reader-2",
+      "class": "mass",
+      "geometry": {
+        "type": "ellipse",
+        "cx": 96,
+        "cy": 156,
+        "rx": 36,
+        "ry": 19.2,
+        "angle": 30
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-000000000019",
+      "file": "sop:2.25.2000803",
+      "frames": "all",
+      "layer": "default",
+      "class": "calcification",
+      "geometry": {
+        "type": "point",
+        "x": 224,
+        "y": 163.2
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-00000000001a",
+      "file": "sop:2.25.2000803",
+      "frames": "all",
+      "layer": "default",
+      "class": "calcification",
+      "geometry": {
+        "type": "point",
+        "x": 243.2,
+        "y": 148.8
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-00000000001b",
+      "file": "sop:2.25.2000803",
+      "frames": "all",
+      "layer": "reader-2",
+      "class": "calcification",
+      "geometry": {
+        "type": "rect",
+        "x0": 204.8,
+        "y0": 132,
+        "x1": 268.8,
+        "y1": 180
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-00000000001c",
+      "file": "sop:2.25.2000803",
+      "frames": "all",
+      "layer": "reader-2",
+      "class": "distortion",
+      "geometry": {
+        "type": "line",
+        "points": [
+          {
+            "x": 32,
+            "y": 216
+          },
+          {
+            "x": 144,
+            "y": 192
+          }
+        ]
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-00000000001d",
+      "file": "sop:2.25.2000803",
+      "frames": "all",
+      "layer": "default",
+      "class": "distortion",
+      "geometry": {
+        "type": "polyline",
+        "points": [
+          {
+            "x": 176,
+            "y": 220.8
+          },
+          {
+            "x": 208,
+            "y": 196.8
+          },
+          {
+            "x": 256,
+            "y": 216
+          },
+          {
+            "x": 294.4,
+            "y": 192
+          }
+        ]
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-00000000001e",
+      "file": "sop:2.25.2000803",
+      "frames": "all",
+      "layer": "default",
+      "class": "roi",
+      "geometry": {
+        "type": "rect",
+        "x0": 144,
+        "y0": 108,
+        "x1": 176,
+        "y1": 132
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-000000000020",
+      "file": "sop:2.25.2000001",
+      "frames": "all",
+      "layer": "default",
+      "class": "mass",
+      "geometry": {
+        "type": "rect",
+        "x0": 0.4,
+        "y0": 0.4,
+        "x1": 1.6,
+        "y1": 1.4
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-000000000021",
+      "file": "sop:2.25.2000001",
+      "frames": "all",
+      "layer": "default",
+      "class": "mass",
+      "geometry": {
+        "type": "polygon",
+        "points": [
+          {
+            "x": 2.2,
+            "y": 0.4
+          },
+          {
+            "x": 3.6,
+            "y": 0.8
+          },
+          {
+            "x": 3.2,
+            "y": 1.8
+          },
+          {
+            "x": 2.4,
+            "y": 1.6
+          }
+        ]
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-000000000022",
+      "file": "sop:2.25.2000001",
+      "frames": "all",
+      "layer": "reader-2",
+      "class": "mass",
+      "geometry": {
+        "type": "ellipse",
+        "cx": 1.2,
+        "cy": 2.6,
+        "rx": 0.6,
+        "ry": 0.32,
+        "angle": 30
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-000000000023",
+      "file": "sop:2.25.2000001",
+      "frames": "all",
+      "layer": "default",
+      "class": "calcification",
+      "geometry": {
+        "type": "point",
+        "x": 2.8,
+        "y": 2.72
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-000000000024",
+      "file": "sop:2.25.2000001",
+      "frames": "all",
+      "layer": "default",
+      "class": "calcification",
+      "geometry": {
+        "type": "point",
+        "x": 3.04,
+        "y": 2.48
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-000000000025",
+      "file": "sop:2.25.2000001",
+      "frames": "all",
+      "layer": "reader-2",
+      "class": "calcification",
+      "geometry": {
+        "type": "rect",
+        "x0": 2.56,
+        "y0": 2.2,
+        "x1": 3.36,
+        "y1": 3
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-000000000026",
+      "file": "sop:2.25.2000001",
+      "frames": {
+        "set": [
+          0
+        ]
+      },
+      "layer": "reader-2",
+      "class": "distortion",
+      "geometry": {
+        "type": "line",
+        "points": [
+          {
+            "x": 0.4,
+            "y": 3.6
+          },
+          {
+            "x": 1.8,
+            "y": 3.2
+          }
+        ]
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-000000000027",
+      "file": "sop:2.25.2000001",
+      "frames": "all",
+      "layer": "default",
+      "class": "distortion",
+      "geometry": {
+        "type": "polyline",
+        "points": [
+          {
+            "x": 2.2,
+            "y": 3.68
+          },
+          {
+            "x": 2.6,
+            "y": 3.28
+          },
+          {
+            "x": 3.2,
+            "y": 3.6
+          },
+          {
+            "x": 3.68,
+            "y": 3.2
+          }
+        ]
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-000000000028",
+      "file": "sop:2.25.2000001",
+      "frames": "all",
+      "layer": "default",
+      "class": "roi",
+      "geometry": {
+        "type": "rect",
+        "x0": 1.8,
+        "y0": 1.8,
+        "x1": 2.2,
+        "y1": 2.2
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-00000000002a",
+      "file": "b3:c643c13616bab4e664748783d10fc35d9acfbdad42fcbceef410b52d1db2580f",
+      "frames": "all",
+      "layer": "default",
+      "class": "mass",
+      "geometry": {
+        "type": "rect",
+        "x0": 15,
+        "y0": 13.3,
+        "x1": 60,
+        "y1": 46.55
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-00000000002b",
+      "file": "b3:c643c13616bab4e664748783d10fc35d9acfbdad42fcbceef410b52d1db2580f",
+      "frames": "all",
+      "layer": "default",
+      "class": "mass",
+      "geometry": {
+        "type": "polygon",
+        "points": [
+          {
+            "x": 82.5,
+            "y": 13.3
+          },
+          {
+            "x": 135,
+            "y": 26.6
+          },
+          {
+            "x": 120,
+            "y": 59.85
+          },
+          {
+            "x": 90,
+            "y": 53.2
+          }
+        ]
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-00000000002c",
+      "file": "b3:c643c13616bab4e664748783d10fc35d9acfbdad42fcbceef410b52d1db2580f",
+      "frames": "all",
+      "layer": "reader-2",
+      "class": "mass",
+      "geometry": {
+        "type": "ellipse",
+        "cx": 45,
+        "cy": 86.45,
+        "rx": 19.95,
+        "ry": 10.64,
+        "angle": 30
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-00000000002d",
+      "file": "b3:c643c13616bab4e664748783d10fc35d9acfbdad42fcbceef410b52d1db2580f",
+      "frames": "all",
+      "layer": "default",
+      "class": "calcification",
+      "geometry": {
+        "type": "point",
+        "x": 105,
+        "y": 90.44
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-00000000002e",
+      "file": "b3:c643c13616bab4e664748783d10fc35d9acfbdad42fcbceef410b52d1db2580f",
+      "frames": "all",
+      "layer": "default",
+      "class": "calcification",
+      "geometry": {
+        "type": "point",
+        "x": 114,
+        "y": 82.46
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-00000000002f",
+      "file": "b3:c643c13616bab4e664748783d10fc35d9acfbdad42fcbceef410b52d1db2580f",
+      "frames": "all",
+      "layer": "reader-2",
+      "class": "calcification",
+      "geometry": {
+        "type": "rect",
+        "x0": 96,
+        "y0": 73.15,
+        "x1": 126,
+        "y1": 99.75
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-000000000030",
+      "file": "b3:c643c13616bab4e664748783d10fc35d9acfbdad42fcbceef410b52d1db2580f",
+      "frames": "all",
+      "layer": "reader-2",
+      "class": "distortion",
+      "geometry": {
+        "type": "line",
+        "points": [
+          {
+            "x": 15,
+            "y": 119.7
+          },
+          {
+            "x": 67.5,
+            "y": 106.4
+          }
+        ]
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-000000000031",
+      "file": "b3:c643c13616bab4e664748783d10fc35d9acfbdad42fcbceef410b52d1db2580f",
+      "frames": "all",
+      "layer": "default",
+      "class": "distortion",
+      "geometry": {
+        "type": "polyline",
+        "points": [
+          {
+            "x": 82.5,
+            "y": 122.36
+          },
+          {
+            "x": 97.5,
+            "y": 109.06
+          },
+          {
+            "x": 120,
+            "y": 119.7
+          },
+          {
+            "x": 138,
+            "y": 106.4
+          }
+        ]
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-000000000032",
+      "file": "b3:c643c13616bab4e664748783d10fc35d9acfbdad42fcbceef410b52d1db2580f",
+      "frames": "all",
+      "layer": "default",
+      "class": "roi",
+      "geometry": {
+        "type": "rect",
+        "x0": 67.5,
+        "y0": 59.85,
+        "x1": 82.5,
+        "y1": 73.15
+      },
+      "attributes": {},
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    }
+  ],
+  "labels": [
+    {
+      "id": "0199d3e0-0000-7000-8000-00000000000a",
+      "target": {
+        "file": "sop:2.25.2000801"
+      },
+      "field": "quality",
+      "value": "good",
+      "layer": "default",
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-00000000000b",
+      "target": {
+        "file": "sop:2.25.2000801"
+      },
+      "field": "note",
+      "value": "Sample annotations: every shape type in four classes.",
+      "layer": "default",
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-000000000015",
+      "target": {
+        "file": "sop:2.25.2000802"
+      },
+      "field": "quality",
+      "value": "limited",
+      "layer": "default",
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-00000000001f",
+      "target": {
+        "file": "sop:2.25.2000803"
+      },
+      "field": "quality",
+      "value": "good",
+      "layer": "default",
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-000000000029",
+      "target": {
+        "file": "sop:2.25.2000001"
+      },
+      "field": "quality",
+      "value": "limited",
+      "layer": "default",
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-000000000033",
+      "target": {
+        "file": "b3:c643c13616bab4e664748783d10fc35d9acfbdad42fcbceef410b52d1db2580f"
+      },
+      "field": "quality",
+      "value": "good",
+      "layer": "default",
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-000000000034",
+      "target": {
+        "study": "2.25.2000821"
+      },
+      "field": "density",
+      "value": "b",
+      "layer": "default",
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    },
+    {
+      "id": "0199d3e0-0000-7000-8000-000000000035",
+      "target": {
+        "study": "2.25.2000822"
+      },
+      "field": "density",
+      "value": "c",
+      "layer": "default",
+      "rev": 1,
+      "created_by": "user:sample",
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "modified_by": "user:sample",
+      "modified_at": "2026-10-01T09:00:00.000Z",
+      "extensions": {}
+    }
+  ],
+  "extensions": {}
+}

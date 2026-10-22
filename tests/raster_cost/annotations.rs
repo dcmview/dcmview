@@ -1137,6 +1137,7 @@ mod documents {
             let context = ImportContext {
                 resolver: &NoFile,
                 schema: Option::None,
+                take_schema: false,
                 layer: &layer,
                 author: &author,
                 now: &stamp,

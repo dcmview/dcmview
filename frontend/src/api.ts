@@ -10,6 +10,7 @@ import type {
 	GraphicAnnotationsQuery,
 	GraphicAnnotationsResponse,
 	HealthResponse,
+	NativeAnnotationsResponse,
 	ParametricMapOverlayQuery,
 	PixelQuery,
 	RawFrameMetadata,
@@ -394,6 +395,12 @@ export function fetchSelectedTag(
 export function fetchAnnotations(fileIndex: number): Promise<EmbedRoiAnnotations> {
 	const endpoint = API_ENDPOINTS.fileAnnotationsGet;
 	return getJson(endpoint, endpointUrl(endpoint, { index: fileIndex }));
+}
+
+/** One file's annotation records in the model's types, with the schema, layers and labels they need. */
+export function fetchNativeAnnotations(fileIndex: number, signal?: AbortSignal): Promise<NativeAnnotationsResponse> {
+	const endpoint = API_ENDPOINTS.fileAnnotationsNative;
+	return getJson(endpoint, endpointUrl(endpoint, { index: fileIndex }), signal);
 }
 
 export async function updateAnnotations(

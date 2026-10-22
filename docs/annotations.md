@@ -287,10 +287,76 @@ Loaded records keep their ids, layers, classes, shapes, frames and
 attributes. The session that loads them stamps them as its own import
 (`import:native`), so the original author and times are not kept.
 
+A document's label schema (its classes, with names and colours, and its
+label fields) becomes the session's: the document's records are checked
+against it, operations after it are too, and exports carry it. Without a
+schema in the document the session has the implicit one: one class, `roi`,
+and no label fields, so a document without a schema can hold no labels.
+
+Rectangles drawn in the viewer, and the rows of an EMBED CSV, are of class
+`roi`. So that a session's export loads again whatever its document's
+schema, a document schema without a `roi` class gets the implicit one
+added (named `ROI`, without a colour, allowing every shape) when it becomes
+the session's; a schema with its own `roi` class is kept as it is. When
+the schema cannot hold rectangles of class `roi` (its own `roi` does not
+allow them, or it already has the most classes a schema may), a save that
+adds a ROI is refused and nothing is saved; moving and deleting ROIs still
+work. While a
+document is loading, edits wait for it, so they are checked against its
+schema; while a CSV is loading they do not.
+
+The viewer draws a file's records on the frames they apply to: points,
+lines, polylines, polygons, rectangles and ellipses, each in its layer's
+color, else its class's, and named by its class name and score. Masks are
+counted, not drawn. A panel at the top left of the image lists the classes
+with their colors and counts, the layers, and the labels on the file, the
+shown frame, its series, study and patient; a class or a layer is hidden
+and shown again from there, for this viewer only; a hidden rectangle
+cannot be selected or deleted until it is shown again. Rectangles keep
+their ROI editing: selecting, moving, resizing and deleting one works as
+for an EMBED ROI, and the shape is drawn again from the saved record once
+the edit is saved. With the Redact tool the panel and the shapes are
+hidden, as ROIs are. A session loaded from an EMBED CSV, or with no
+`--annotations`, shows its ROIs as before.
+
 Exporting a document needs the key of every file that has ROIs. For a file
 that must be hashed first the download waits; when a file can no longer be
 read, the document export answers an error naming it, and the CSV export
 still works.
+
+### A sample document
+
+`examples/generate_sample_annotations` writes a document for the images
+under some paths, to show what a document can hold:
+
+```bash
+cargo run --example generate_sample_annotations -- --out sample.json ./study_dir
+dcmview --annotations sample.json ./study_dir
+```
+
+It lists the paths as the viewer does (a recursive walk, every format) and
+annotates every file with pixels. The document has a label schema of four
+classes, each with its own colour (Mass, Calcification, Architectural
+distortion and ROI), and two layers, the second with a colour of its own.
+Every image gets one shape of each vector type the model has (point, line,
+polyline, polygon, rectangle and an ellipse turned by 30 degrees), spread
+over the classes and layers and placed as fractions of the image, so they
+fit any size; on a multi-frame image the line is on the first frame only.
+Every file gets an image quality label and the first a note, and every
+study a DICOM file names a density label. Each file is named by the key the
+viewer gives it (`sop:` for a DICOM file whose UID no other file carries,
+else the `b3:` digest of its bytes) and by its path below the folder the
+files share, so the same paths load the document again. Files with the
+same bytes share a key, which a document names once: only the first of them
+(by path) is annotated, the others are listed on standard error as left
+out, and the viewer shows them the records of that first file (a raster
+copy once it has been hashed). Ids and times are fixed: the same files give
+the same text. Without `--out` the document is written to standard output.
+
+The document is checked with the model's rules before it is written.
+`tests/fixtures/annotation-documents/sample.json` is its output for five
+committed fixtures, and a test keeps it current and loads it through
+`--annotations`.
 
 For symptom-oriented fixes, see the
 [troubleshooting guide](troubleshooting.md#annotation-csv-fails-to-load).
