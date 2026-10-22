@@ -2,3 +2,4 @@
 Cargo.toml text eol=lf
 Cargo.lock text eol=lf
 rustfmt.toml text eol=lf
+tests/fixtures/annotation-documents/*.json text eol=lf
