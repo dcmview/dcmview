@@ -1,0 +1,458 @@
+{
+ "native": {
+  "schema": {
+   "schema_id": "dcmview-sample",
+   "schema_version": 1,
+   "classes": [
+    {
+     "id": "mass",
+     "name": "Mass",
+     "color": "#E4572E",
+     "geometry": [
+      "rect",
+      "polygon",
+      "ellipse"
+     ],
+     "attributes": [],
+     "deprecated": false
+    },
+    {
+     "id": "calcification",
+     "name": "Calcification",
+     "color": "#2E86AB",
+     "geometry": [
+      "point",
+      "rect"
+     ],
+     "attributes": [],
+     "deprecated": false
+    },
+    {
+     "id": "distortion",
+     "name": "Architectural distortion",
+     "color": "#F2A541",
+     "geometry": [
+      "line",
+      "polyline"
+     ],
+     "attributes": [],
+     "deprecated": false
+    },
+    {
+     "id": "roi",
+     "name": "ROI",
+     "color": "#8E44AD",
+     "geometry": [
+      "point",
+      "line",
+      "polyline",
+      "polygon",
+      "rect",
+      "ellipse",
+      "mask"
+     ],
+     "attributes": [],
+     "deprecated": false
+    }
+   ],
+   "fields": [
+    {
+     "id": "quality",
+     "name": "Image quality",
+     "type": "category",
+     "options": [
+      {
+       "id": "limited",
+       "name": "Limited",
+       "deprecated": false
+      },
+      {
+       "id": "good",
+       "name": "Good",
+       "deprecated": false
+      }
+     ],
+     "ordered": true,
+     "applies_to": [
+      "file"
+     ],
+     "required": false
+    },
+    {
+     "id": "density",
+     "name": "Breast density",
+     "type": "category",
+     "options": [
+      {
+       "id": "a",
+       "name": "A",
+       "deprecated": false
+      },
+      {
+       "id": "b",
+       "name": "B",
+       "deprecated": false
+      },
+      {
+       "id": "c",
+       "name": "C",
+       "deprecated": false
+      },
+      {
+       "id": "d",
+       "name": "D",
+       "deprecated": false
+      }
+     ],
+     "ordered": true,
+     "applies_to": [
+      "study"
+     ],
+     "required": false
+    },
+    {
+     "id": "note",
+     "name": "Note",
+     "type": "text",
+     "max_length": 200,
+     "applies_to": [
+      "file",
+      "study"
+     ],
+     "required": false
+    }
+   ]
+  },
+  "layers": [
+   {
+    "id": "default",
+    "name": "Annotations",
+    "kind": "user",
+    "exclusive_masks": false,
+    "color": null,
+    "readonly": false,
+    "source": {
+     "author": "user:sample"
+    },
+    "rev": 1
+   },
+   {
+    "id": "reader-2",
+    "name": "Second reader",
+    "kind": "user",
+    "exclusive_masks": false,
+    "color": "#17BEBB",
+    "readonly": false,
+    "source": {
+     "author": "user:sample"
+    },
+    "rev": 1
+   }
+  ],
+  "annotations": [
+   {
+    "id": "0199d3e0-0000-7000-8000-000000000001",
+    "file": "sop:2.25.2000801",
+    "frames": "all",
+    "layer": "default",
+    "class": "mass",
+    "geometry": {
+     "type": "rect",
+     "x0": 32,
+     "y0": 24,
+     "x1": 128,
+     "y1": 84
+    },
+    "attributes": {},
+    "rev": 1,
+    "created_by": "import:native",
+    "created_at": "2026-10-01T00:00:00.000Z",
+    "modified_by": "import:native",
+    "modified_at": "2026-10-01T00:00:00.000Z",
+    "extensions": {},
+    "embed_index": 0
+   },
+   {
+    "id": "0199d3e0-0000-7000-8000-000000000002",
+    "file": "sop:2.25.2000801",
+    "frames": "all",
+    "layer": "default",
+    "class": "mass",
+    "geometry": {
+     "type": "polygon",
+     "points": [
+      {
+       "x": 176,
+       "y": 24
+      },
+      {
+       "x": 288,
+       "y": 48
+      },
+      {
+       "x": 256,
+       "y": 108
+      },
+      {
+       "x": 192,
+       "y": 96
+      }
+     ]
+    },
+    "attributes": {},
+    "rev": 1,
+    "created_by": "import:native",
+    "created_at": "2026-10-01T00:00:00.000Z",
+    "modified_by": "import:native",
+    "modified_at": "2026-10-01T00:00:00.000Z",
+    "extensions": {},
+    "embed_index": null
+   },
+   {
+    "id": "0199d3e0-0000-7000-8000-000000000003",
+    "file": "sop:2.25.2000801",
+    "frames": "all",
+    "layer": "reader-2",
+    "class": "mass",
+    "geometry": {
+     "type": "ellipse",
+     "cx": 96,
+     "cy": 156,
+     "rx": 36,
+     "ry": 19.2,
+     "angle": 30
+    },
+    "attributes": {},
+    "rev": 1,
+    "created_by": "import:native",
+    "created_at": "2026-10-01T00:00:00.000Z",
+    "modified_by": "import:native",
+    "modified_at": "2026-10-01T00:00:00.000Z",
+    "extensions": {},
+    "embed_index": null
+   },
+   {
+    "id": "0199d3e0-0000-7000-8000-000000000004",
+    "file": "sop:2.25.2000801",
+    "frames": "all",
+    "layer": "default",
+    "class": "calcification",
+    "geometry": {
+     "type": "point",
+     "x": 224,
+     "y": 163.2
+    },
+    "attributes": {},
+    "rev": 1,
+    "created_by": "import:native",
+    "created_at": "2026-10-01T00:00:00.000Z",
+    "modified_by": "import:native",
+    "modified_at": "2026-10-01T00:00:00.000Z",
+    "extensions": {},
+    "embed_index": null
+   },
+   {
+    "id": "0199d3e0-0000-7000-8000-000000000005",
+    "file": "sop:2.25.2000801",
+    "frames": "all",
+    "layer": "default",
+    "class": "calcification",
+    "geometry": {
+     "type": "point",
+     "x": 243.2,
+     "y": 148.8
+    },
+    "attributes": {},
+    "rev": 1,
+    "created_by": "import:native",
+    "created_at": "2026-10-01T00:00:00.000Z",
+    "modified_by": "import:native",
+    "modified_at": "2026-10-01T00:00:00.000Z",
+    "extensions": {},
+    "embed_index": null
+   },
+   {
+    "id": "0199d3e0-0000-7000-8000-000000000006",
+    "file": "sop:2.25.2000801",
+    "frames": "all",
+    "layer": "reader-2",
+    "class": "calcification",
+    "geometry": {
+     "type": "rect",
+     "x0": 204.8,
+     "y0": 132,
+     "x1": 268.8,
+     "y1": 180
+    },
+    "attributes": {},
+    "rev": 1,
+    "created_by": "import:native",
+    "created_at": "2026-10-01T00:00:00.000Z",
+    "modified_by": "import:native",
+    "modified_at": "2026-10-01T00:00:00.000Z",
+    "extensions": {},
+    "embed_index": 1
+   },
+   {
+    "id": "0199d3e0-0000-7000-8000-000000000007",
+    "file": "sop:2.25.2000801",
+    "frames": "all",
+    "layer": "reader-2",
+    "class": "distortion",
+    "geometry": {
+     "type": "line",
+     "points": [
+      {
+       "x": 32,
+       "y": 216
+      },
+      {
+       "x": 144,
+       "y": 192
+      }
+     ]
+    },
+    "attributes": {},
+    "rev": 1,
+    "created_by": "import:native",
+    "created_at": "2026-10-01T00:00:00.000Z",
+    "modified_by": "import:native",
+    "modified_at": "2026-10-01T00:00:00.000Z",
+    "extensions": {},
+    "embed_index": null
+   },
+   {
+    "id": "0199d3e0-0000-7000-8000-000000000008",
+    "file": "sop:2.25.2000801",
+    "frames": "all",
+    "layer": "default",
+    "class": "distortion",
+    "geometry": {
+     "type": "polyline",
+     "points": [
+      {
+       "x": 176,
+       "y": 220.8
+      },
+      {
+       "x": 208,
+       "y": 196.8
+      },
+      {
+       "x": 256,
+       "y": 216
+      },
+      {
+       "x": 294.4,
+       "y": 192
+      }
+     ]
+    },
+    "attributes": {},
+    "rev": 1,
+    "created_by": "import:native",
+    "created_at": "2026-10-01T00:00:00.000Z",
+    "modified_by": "import:native",
+    "modified_at": "2026-10-01T00:00:00.000Z",
+    "extensions": {},
+    "embed_index": null
+   },
+   {
+    "id": "0199d3e0-0000-7000-8000-000000000009",
+    "file": "sop:2.25.2000801",
+    "frames": "all",
+    "layer": "default",
+    "class": "roi",
+    "geometry": {
+     "type": "rect",
+     "x0": 144,
+     "y0": 108,
+     "x1": 176,
+     "y1": 132
+    },
+    "attributes": {},
+    "rev": 1,
+    "created_by": "import:native",
+    "created_at": "2026-10-01T00:00:00.000Z",
+    "modified_by": "import:native",
+    "modified_at": "2026-10-01T00:00:00.000Z",
+    "extensions": {},
+    "embed_index": 2
+   }
+  ],
+  "labels": [
+   {
+    "id": "0199d3e0-0000-7000-8000-00000000000a",
+    "target": {
+     "file": "sop:2.25.2000801"
+    },
+    "field": "quality",
+    "value": "good",
+    "layer": "default",
+    "rev": 1,
+    "created_by": "import:native",
+    "created_at": "2026-10-01T00:00:00.000Z",
+    "modified_by": "import:native",
+    "modified_at": "2026-10-01T00:00:00.000Z",
+    "extensions": {}
+   },
+   {
+    "id": "0199d3e0-0000-7000-8000-00000000000b",
+    "target": {
+     "file": "sop:2.25.2000801"
+    },
+    "field": "note",
+    "value": "Sample annotations: every shape type in four classes.",
+    "layer": "default",
+    "rev": 1,
+    "created_by": "import:native",
+    "created_at": "2026-10-01T00:00:00.000Z",
+    "modified_by": "import:native",
+    "modified_at": "2026-10-01T00:00:00.000Z",
+    "extensions": {}
+   },
+   {
+    "id": "0199d3e0-0000-7000-8000-000000000034",
+    "target": {
+     "study": "2.25.2000821"
+    },
+    "field": "density",
+    "value": "b",
+    "layer": "default",
+    "rev": 1,
+    "created_by": "import:native",
+    "created_at": "2026-10-01T00:00:00.000Z",
+    "modified_by": "import:native",
+    "modified_at": "2026-10-01T00:00:00.000Z",
+    "extensions": {}
+   }
+  ],
+  "revision": 1
+ },
+ "embed": {
+  "num_roi": 3,
+  "roi_coords": [
+   [
+    24,
+    32,
+    84,
+    128
+   ],
+   [
+    132,
+    204,
+    180,
+    269
+   ],
+   [
+    108,
+    144,
+    132,
+    176
+   ]
+  ],
+  "roi_frames": []
+ },
+ "rows": 240,
+ "columns": 320
+}

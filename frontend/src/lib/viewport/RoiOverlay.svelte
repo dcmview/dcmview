@@ -10,6 +10,7 @@
 		columns,
 		scale,
 		pixelAspectRatio,
+		nativeDrawn = new Set(),
 	}: {
 		rois: readonly VisibleRoi[];
 		selectedIndex: number | null;
@@ -20,6 +21,8 @@
 		/** View zoom applied to the layer by CSS, which non-scaling strokes do not undo. */
 		scale: number;
 		pixelAspectRatio: number;
+		/** ROI indices the native annotation overlay outlines: only the selected one's highlight and handles are drawn here. */
+		nativeDrawn?: ReadonlySet<number>;
 	} = $props();
 
 	const HANDLE_RADIUS = 4;
@@ -40,13 +43,16 @@
 >
 	{#each rois as roi (roi.index)}
 		<g class:selected={selectedIndex === roi.index}>
-			<rect
-				class="roi-rect"
-				x={Math.min(roi.xmin, roi.xmax)}
-				y={Math.min(roi.ymin, roi.ymax)}
-				width={Math.max(1, Math.abs(roi.xmax - roi.xmin))}
-				height={Math.max(1, Math.abs(roi.ymax - roi.ymin))}
-			></rect>
+			<!-- The selected ROI keeps its highlight over the native shape. -->
+			{#if !nativeDrawn.has(roi.index) || selectedIndex === roi.index}
+				<rect
+					class="roi-rect"
+					x={Math.min(roi.xmin, roi.xmax)}
+					y={Math.min(roi.ymin, roi.ymax)}
+					width={Math.max(1, Math.abs(roi.xmax - roi.xmin))}
+					height={Math.max(1, Math.abs(roi.ymax - roi.ymin))}
+				></rect>
+			{/if}
 			{#if selectedIndex === roi.index}
 				{#each roiHandles(roi) as handle}
 					<ellipse

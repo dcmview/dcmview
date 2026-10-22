@@ -21,6 +21,19 @@ function renderPanel(props: Partial<{ response: NativeAnnotationsResponse; frame
 }
 
 describe("NativeAnnotationPanel", () => {
+	it.each([" ", "Enter"])("keeps %j on a toggle from the window's shortcuts", async (key) => {
+		renderPanel();
+		const onWindowKey = vi.fn();
+		window.addEventListener("keydown", onWindowKey);
+
+		await fireEvent.keyDown(screen.getByRole("button", { name: /^Mass,/ }), { key });
+		await fireEvent.keyDown(screen.getByRole("button", { name: /^Reader,/ }), { key });
+		await fireEvent.keyDown(screen.getByRole("button", { name: /^Mass,/ }), { key: "ArrowRight" });
+
+		window.removeEventListener("keydown", onWindowKey);
+		expect(onWindowKey.mock.calls.map(([event]) => event.key)).toEqual(["ArrowRight"]);
+	});
+
 	it("lists each class with its color and count, masks included and noted", () => {
 		renderPanel();
 

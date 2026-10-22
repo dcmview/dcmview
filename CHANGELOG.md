@@ -208,6 +208,13 @@ diagnostic viewer.
   place in the file's EMBED view, so a client can pair it with the
   rectangles it edits there. The read waits for `--annotations` like the
   EMBED read, and never hashes a file.
+- The viewer shows a loaded `dcmview.annotations` document's annotations:
+  every point, line, polyline, polygon, rectangle and ellipse in its layer
+  or class color with its class name (and score), a legend of the classes
+  with their counts, layer and class toggles that hide and show them in
+  this viewer only, and the labels of the shown image by level. Its
+  rectangles are edited as ROIs. A session without a document looks as
+  before.
 
 ### Changed
 

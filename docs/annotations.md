@@ -305,6 +305,20 @@ work. While a
 document is loading, edits wait for it, so they are checked against its
 schema; while a CSV is loading they do not.
 
+The viewer draws a file's records on the frames they apply to: points,
+lines, polylines, polygons, rectangles and ellipses, each in its layer's
+color, else its class's, and named by its class name and score. Masks are
+counted, not drawn. A panel at the top left of the image lists the classes
+with their colors and counts, the layers, and the labels on the file, the
+shown frame, its series, study and patient; a class or a layer is hidden
+and shown again from there, for this viewer only; a hidden rectangle
+cannot be selected or deleted until it is shown again. Rectangles keep
+their ROI editing: selecting, moving, resizing and deleting one works as
+for an EMBED ROI, and the shape is drawn again from the saved record once
+the edit is saved. With the Redact tool the panel and the shapes are
+hidden, as ROIs are. A session loaded from an EMBED CSV, or with no
+`--annotations`, shows its ROIs as before.
+
 Exporting a document needs the key of every file that has ROIs. For a file
 that must be hashed first the download waits; when a file can no longer be
 read, the document export answers an error naming it, and the CSV export

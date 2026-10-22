@@ -14,7 +14,12 @@
 			applyRedactionsToSeries,
 		fetchRedactions,
 		updateRedactions,
+		updateAnnotations,
 	} from "../api";
+	import { matchEmbedRects, nativeFrame, shownShapes } from "./annotation/display";
+	import NativeAnnotationLabels from "./annotation/NativeAnnotationLabels.svelte";
+	import NativeAnnotationOverlay from "./annotation/NativeAnnotationOverlay.svelte";
+	import NativeAnnotationPanel from "./annotation/NativeAnnotationPanel.svelte";
 	import type { WindowDragBase } from "./annotation/tools/tool";
 	import {
 		canonicalRect,
@@ -37,6 +42,7 @@
 	import type { NavigationFrameRef } from "./seriesNavigation";
 	import type { ActiveTool } from "./viewerTools";
 	import { AnnotationStore } from "./viewport/annotationStore.svelte";
+	import { NativeAnnotations } from "./viewport/nativeAnnotations.svelte";
 	import { playDisplayCine } from "./viewport/displayCine";
 	import { LiveWindowPreview } from "./viewport/liveWindowPreview";
 	import { DisplayFrameSource } from "./viewport/displayFrameSource";
@@ -201,7 +207,15 @@
 	let rawWindowLevelFallbackByFile = $state<Record<number, boolean>>({});
 	// Color files: neither path windows them, so a drag sends no previews.
 	let colorFiles = $state<Record<number, boolean>>({});
-	const annotations = new AnnotationStore();
+	// A file's native records, read again once an EMBED save of it is applied.
+	const native = new NativeAnnotations();
+	const annotations = new AnnotationStore({
+		save: async (fileIndex, rois) => {
+			const saved = await updateAnnotations(fileIndex, rois);
+			native.refresh(fileIndex);
+			return saved;
+		},
+	});
 	// Redaction boxes are edited like ROIs. The server blanks them in the
 	// frames it sends, so a saved change reloads the frames on screen.
 	const redactions = new AnnotationStore({
@@ -441,9 +455,34 @@
 	$effect(() => {
 		if (annotatedFrame) annotationFrames.load(annotatedFrame);
 	});
+	// A ROI whose native record is hidden is hidden too: not drawn, listed or hit.
 	const visibleRois = $derived(
-		overlay ? [] : roisOnFrame(edited.annotations(presented?.target.file.index ?? activeFile.index), presented?.target.frameIndex ?? currentFrame),
+		overlay ? [] : roisOnFrame(edited.annotations(presented?.target.file.index ?? activeFile.index), presented?.target.frameIndex ?? currentFrame)
+			.filter((roi) => !nativeMatched?.embedHidden.has(roi.index)),
 	);
+	// Native records on the frame on screen, beside the EMBED ROIs of the same
+	// frame. Hidden in Redact mode, as ROIs are. Each step is derived apart, so
+	// a rectangle being dragged rematches only the EMBED-shown records.
+	const nativeFileIndex = $derived(presented?.target.file.index ?? activeFile.index);
+	const nativeFrameIndex = $derived(presented?.target.frameIndex ?? currentFrame);
+	const nativeResponse = $derived(overlay || redacting ? null : native.response(nativeFileIndex));
+	const nativeFrameShapes = $derived(nativeResponse ? nativeFrame(nativeResponse, nativeFrameIndex) : null);
+	const nativeVisibility = $derived({ hiddenLayers: native.hiddenLayers, hiddenClasses: native.hiddenClasses });
+	const nativePlain = $derived(nativeFrameShapes ? shownShapes(nativeFrameShapes.plain, nativeVisibility) : []);
+	const nativeMatched = $derived(nativeFrameShapes
+		? matchEmbedRects(nativeFrameShapes.embedded, nativeVisibility, roisOnFrame(annotations.annotations(nativeFileIndex), nativeFrameIndex))
+		: null);
+	const nativeShapes = $derived(nativeMatched ? [...nativePlain, ...nativeMatched.shapes] : []);
+	$effect(() => {
+		const fileIndex = activeFile.index;
+		if (!overlay && activeFile.has_pixels) untrack(() => native.ensureLoaded(fileIndex));
+	});
+	// Hiding a selected ROI's record leaves nothing selected to edit or delete.
+	$effect(() => {
+		const hidden = nativeMatched?.embedHidden;
+		const selected = selectedRoiIndex;
+		if (hidden && selected !== null && hidden.has(selected)) untrack(() => edited.select(activeFile.index, null));
+	});
 	const draftRoi = $derived(
 		tools.draft
 			? canonicalRect(tools.draft.start, tools.draft.current, imageRows, imageColumns)
@@ -1417,6 +1456,14 @@
 					scale={activeTransform.scale}
 				/>
 			{/if}
+			{#if nativeFrameShapes && imageColumns > 0 && imageRows > 0}
+				<NativeAnnotationOverlay
+					shapes={nativeShapes}
+					rows={imageRows}
+					columns={imageColumns}
+					scale={activeTransform.scale}
+				/>
+			{/if}
 			{#if !overlay && imageColumns > 0 && imageRows > 0}
 				<RoiOverlay
 					rois={visibleRois}
@@ -1426,6 +1473,7 @@
 					columns={imageColumns}
 					scale={activeTransform.scale}
 					pixelAspectRatio={displayGeometry.pixelAspectRatio}
+					nativeDrawn={nativeMatched?.embedDrawn}
 				/>
 			{/if}
 		</div>
@@ -1438,6 +1486,14 @@
 				geometry={displayGeometry}
 			/>
 		{/if}
+		{#if nativeFrameShapes && imageColumns > 0 && imageRows > 0}
+			<NativeAnnotationLabels
+				shapes={nativeShapes}
+				transform={activeTransform}
+				{orientation}
+				geometry={displayGeometry}
+			/>
+		{/if}
 		{#if !overlay && imageColumns > 0 && imageRows > 0}
 			<RoiLabels
 				rois={visibleRois}
@@ -1445,6 +1501,7 @@
 				transform={activeTransform}
 				{orientation}
 				geometry={displayGeometry}
+				nativeDrawn={nativeMatched?.embedDrawn}
 			/>
 		{/if}
 		<div class="hud">
@@ -1496,6 +1553,26 @@
 				onretrysave={() => edited.retrySave(activeFile.index)}
 				onrevert={() => edited.rollback(activeFile.index)}
 			/>
+		{/if}
+		{#if nativeResponse}
+			<!-- Its own pointer and wheel input: a click on a toggle or a scroll of the list is not a viewport gesture. -->
+			<div
+				class="native-annotation-side"
+				role="presentation"
+				onpointerdown={(event) => event.stopPropagation()}
+				onpointermove={(event) => event.stopPropagation()}
+				onwheel={(event) => event.stopPropagation()}
+				ondblclick={(event) => event.stopPropagation()}
+			>
+				<NativeAnnotationPanel
+					response={nativeResponse}
+					frame={nativeFrameIndex}
+					hiddenLayers={native.hiddenLayers}
+					hiddenClasses={native.hiddenClasses}
+					onlayertoggle={(layerId) => native.toggleLayer(layerId)}
+					onclasstoggle={(classId) => native.toggleClass(classId)}
+				/>
+			</div>
 		{/if}
 		{#if windowLegend || displayedValueOverlay}
 			<div class="legends">
@@ -1633,6 +1710,18 @@
 		.loading-wheel {
 			animation-duration: 1.8s;
 		}
+	}
+
+	/* Below the frame request indicator, above the HUD. */
+	.native-annotation-side {
+		position: absolute;
+		left: 12px;
+		top: 48px;
+		z-index: 2;
+		width: min(30ch, 40%);
+		max-height: calc(100% - 140px);
+		overflow: auto;
+		scrollbar-width: thin;
 	}
 
 	.legends {

@@ -3,6 +3,9 @@ import { act, createEvent, fireEvent, render, screen, waitFor } from "@testing-l
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "../api";
 import { fileSummary, rasterSummary, rawFrame } from "../testing/fixtures";
+import { nativeRecord, nativeResponse } from "../testing/nativeAnnotations";
+import type { NativeAnnotationsResponse } from "../generated/api-types";
+import recordedSample from "../testing/recorded/sample-document-native-read.json";
 import ImageViewport from "./ImageViewport.svelte";
 import * as frameOverlay from "./viewport/frameOverlay";
 import { navigationFramesForFile } from "./seriesNavigation";
@@ -14,6 +17,7 @@ import type { ComponentProps } from "svelte";
 vi.mock("../api", async (importOriginal) => ({
 	...await importOriginal<typeof import("../api")>(),
 	fetchAnnotations: vi.fn(async () => ({ num_roi: 0, roi_coords: [], roi_frames: [] })),
+	fetchNativeAnnotations: vi.fn(),
 	fetchDisplayFrame: vi.fn(async () => ({ blob: new Blob(["png"], { type: "image/png" }), window: null, appliedWindow: null })),
 	fetchRawFrame: vi.fn(),
 	fetchFrameValueMapping: vi.fn(),
@@ -113,6 +117,8 @@ function renderViewport({
 beforeEach(() => {
 	vi.mocked(api.fetchAnnotations).mockReset().mockResolvedValue({ num_roi: 0, roi_coords: [], roi_frames: [] });
 	vi.mocked(api.updateAnnotations).mockReset().mockImplementation(async (_file, annotations) => annotations);
+	// A session without a native document.
+	vi.mocked(api.fetchNativeAnnotations).mockReset().mockRejectedValue(new api.ApiError("not found", 404, null));
 	vi.mocked(api.fetchRedactions).mockReset().mockResolvedValue({ num_roi: 0, roi_coords: [], roi_frames: [] });
 	vi.mocked(api.applyRedactionsToSeries).mockReset().mockResolvedValue({ file_indices: [6] });
 	fetchDisplayFrame.mockReset();
@@ -1315,5 +1321,207 @@ describe("ImageViewport shared gestures", () => {
 		// A pan is not undone, but it stops following the pointer.
 		expectTransform(tool === "pan" ? { tx: 5, ty: 5, scale: 1 } : { tx: 0, ty: 0, scale: 1 });
 		if (tool === "window_level") await waitFor(() => expect(windowHud()).toBe("W: 1 · C: 0.5"));
+	});
+});
+
+describe("ImageViewport native annotations", () => {
+	// The fixture's a-rect, (10, 20)-(40, 60), is the file's one EMBED ROI.
+	const embedRoi: api.EmbedRoiAnnotations = { num_roi: 1, roi_coords: [[20, 10, 60, 40]], roi_frames: [] };
+
+	let restoreCanvas = () => {};
+	beforeEach(() => {
+		restoreCanvas = canvasContext().restore;
+		vi.stubGlobal("createImageBitmap", vi.fn(async () => ({ width: 64, height: 64, close: vi.fn() })));
+		vi.mocked(api.fetchAnnotations).mockResolvedValue(embedRoi);
+	});
+	afterEach(() => {
+		restoreCanvas();
+		vi.unstubAllGlobals();
+	});
+
+	const nativeIds = () => [...document.querySelectorAll(".native-annotations .native-shape")].map((shape) => shape.getAttribute("data-id"));
+	const roiOutlines = () => document.querySelectorAll(".roi-overlay .roi-rect:not(.draft)").length;
+	const roiNumbers = () => [...document.querySelectorAll(".roi-label")].map((label) => label.textContent);
+	const tags = () => [...document.querySelectorAll(".native-annotation-labels .tag")].map((tag) => tag.textContent);
+
+	async function renderShown(activeTool: ActiveTool = "pan") {
+		const view = renderViewport({ activeTool, file: fileSummary(5, { frame_count: 2 }) });
+		await waitFor(() => expect(document.querySelector(".dicom-canvas")?.getAttribute("data-capture-rendered")).toBe("5:0"));
+		await screen.findByText("ROIs 1 / 1");
+		return { ...view, viewport: screen.getByRole("application") };
+	}
+
+	it("draws and numbers EMBED ROIs as before when the session has no native document", async () => {
+		await renderShown();
+
+		await waitFor(() => expect(api.fetchNativeAnnotations).toHaveBeenCalledWith(5, expect.any(AbortSignal)));
+		expect(roiOutlines()).toBe(1);
+		expect(roiNumbers()).toEqual(["#1"]);
+		expect(document.querySelector(".native-annotations")).toBeNull();
+		expect(document.querySelector(".native-annotation-labels")).toBeNull();
+		expect(screen.queryByRole("region", { name: "Annotations" })).toBeNull();
+	});
+
+	it("draws native records in their colors with class tags and a panel, and each EMBED rectangle once", async () => {
+		vi.mocked(api.fetchNativeAnnotations).mockResolvedValue(nativeResponse());
+		await renderShown();
+
+		await waitFor(() => expect(nativeIds()).toEqual(["a-ellipse", "a-polyline", "a-line", "a-rect"]));
+		expect(roiOutlines()).toBe(0);
+		expect(roiNumbers()).toEqual([]);
+		expect(tags()).toEqual(["Mass 0.87", "Calcification", "Calcification", "Clip", "Mass"]);
+		const panel = screen.getByRole("region", { name: "Annotations" });
+		expect(panel.textContent).toContain("Heterogeneously dense");
+		// The ROI list still lists it.
+		expect(document.querySelectorAll(".roi-coords")).toHaveLength(1);
+	});
+
+	it("hides a class or a layer as view state, without asking the server", async () => {
+		vi.mocked(api.fetchNativeAnnotations).mockResolvedValue(nativeResponse());
+		await renderShown();
+		await waitFor(() => expect(nativeIds()).toHaveLength(4));
+
+		await fireEvent.click(screen.getByRole("button", { name: /^Mass,/ }));
+		expect(nativeIds()).toEqual(["a-polyline", "a-line"]);
+		await fireEvent.click(screen.getByRole("button", { name: /^Reader,/ }));
+		expect(nativeIds()).toEqual([]);
+		// A hidden record's rectangle is not drawn by the ROI overlay either.
+		expect(roiOutlines()).toBe(0);
+
+		expect(api.fetchNativeAnnotations).toHaveBeenCalledOnce();
+		expect(api.updateAnnotations).not.toHaveBeenCalled();
+	});
+
+	it("moves a natively drawn rectangle with the ROI overlay and reads the records again once saved", async () => {
+		vi.mocked(api.fetchNativeAnnotations)
+			.mockResolvedValueOnce(nativeResponse({ revision: 7 }))
+			.mockResolvedValueOnce(nativeResponse({ revision: 8, annotations: [
+				nativeRecord("a-rect", "mass", { type: "rect", x0: 5, y0: 15, x1: 35, y1: 55 }, { embed_index: 0 }),
+			] }));
+		const { viewport } = await renderShown("annotate_rect");
+		await waitFor(() => expect(nativeIds()).toContain("a-rect"));
+
+		await fireEvent.pointerDown(viewport, { button: 0, clientX: 20, clientY: 30, pointerId: 1 });
+		await fireEvent.pointerMove(viewport, { clientX: 15, clientY: 25, pointerId: 1 });
+		// Mid-drag the native copy is behind: the ROI overlay draws the rectangle, once, with its handles.
+		expect(nativeIds()).not.toContain("a-rect");
+		expect(roiOutlines()).toBe(1);
+		expect(document.querySelectorAll(".roi-handle")).toHaveLength(8);
+
+		await fireEvent.pointerUp(viewport, { clientX: 15, clientY: 25, pointerId: 1 });
+		await waitFor(() => expect(api.updateAnnotations).toHaveBeenCalledOnce());
+		expect(vi.mocked(api.updateAnnotations).mock.calls[0][1].roi_coords).toEqual([[15, 5, 55, 35]]);
+		await waitFor(() => expect(api.fetchNativeAnnotations).toHaveBeenCalledTimes(2));
+		await waitFor(() => expect(nativeIds()).toEqual(["a-rect"]));
+		expect(document.querySelector(".native-annotations .native-shape")?.getAttribute("d")).toBe("M5 15L35 15L35 55L5 55Z");
+		// Still selected: its highlight and handles stay for further edits.
+		expect(document.querySelectorAll(".roi-overlay g.selected .roi-rect")).toHaveLength(1);
+		expect(document.querySelectorAll(".roi-handle")).toHaveLength(8);
+		expect(roiNumbers()).toEqual([]);
+	});
+
+	it("shows a save the server refuses, and keeps the native copy as it was", async () => {
+		vi.mocked(api.fetchNativeAnnotations).mockResolvedValue(nativeResponse());
+		vi.mocked(api.updateAnnotations).mockRejectedValue(new api.ApiError("the label schema cannot hold this rectangle", 400, null));
+		const { viewport } = await renderShown("annotate_rect");
+		await waitFor(() => expect(nativeIds()).toHaveLength(4));
+
+		await fireEvent.pointerDown(viewport, { button: 0, clientX: 45, clientY: 5, pointerId: 1 });
+		await fireEvent.pointerMove(viewport, { clientX: 60, clientY: 15, pointerId: 1 });
+		await fireEvent.pointerUp(viewport, { clientX: 60, clientY: 15, pointerId: 1 });
+
+		await screen.findByText("the label schema cannot hold this rectangle");
+		expect(screen.getByRole("button", { name: "Revert" })).toBeTruthy();
+		expect(api.fetchNativeAnnotations).toHaveBeenCalledOnce();
+		expect(nativeIds()).toEqual(["a-ellipse", "a-polyline", "a-line", "a-rect"]);
+		// The refused rectangle is still on screen, drawn by the ROI overlay alone.
+		expect(roiOutlines()).toBe(1);
+	});
+
+	it("draws the real server's read of the sample document with no EMBED rectangle twice", async () => {
+		vi.mocked(api.fetchAnnotations).mockResolvedValue(recordedSample.embed as unknown as api.EmbedRoiAnnotations);
+		vi.mocked(api.fetchNativeAnnotations).mockResolvedValue(recordedSample.native as unknown as NativeAnnotationsResponse);
+		renderViewport({ file: fileSummary(5, { rows: recordedSample.rows, columns: recordedSample.columns }) });
+		await screen.findByText("ROIs 3 / 3");
+
+		// Every record but the two points is a shape; the points are marks beside their tags.
+		await waitFor(() => expect(nativeIds()).toHaveLength(7));
+		expect(document.querySelectorAll(".native-annotation-labels .point")).toHaveLength(2);
+		expect(roiOutlines()).toBe(0);
+		expect(roiNumbers()).toEqual([]);
+		expect(new Set(tags())).toEqual(new Set(["Mass", "Calcification", "Architectural distortion", "ROI"]));
+		const panel = screen.getByRole("region", { name: "Annotations" });
+		for (const name of ["Mass", "Calcification", "Architectural distortion", "ROI", "Annotations", "Second reader", "Breast density"]) {
+			expect(panel.textContent).toContain(name);
+		}
+	});
+
+	it("hides a hidden record's rectangle from editing: no hit, no handles, no delete", async () => {
+		vi.mocked(api.fetchNativeAnnotations).mockResolvedValue(nativeResponse());
+		const { viewport, component } = await renderShown("annotate_rect");
+		await waitFor(() => expect(nativeIds()).toContain("a-rect"));
+
+		// Selected first, then its class hidden: the selection goes with it.
+		await fireEvent.pointerDown(viewport, { button: 0, clientX: 20, clientY: 30, pointerId: 1 });
+		await fireEvent.pointerUp(viewport, { clientX: 20, clientY: 30, pointerId: 1 });
+		expect(document.querySelectorAll(".roi-handle")).toHaveLength(8);
+		await fireEvent.click(screen.getByRole("button", { name: /^Mass,/ }));
+		expect(document.querySelectorAll(".roi-handle")).toHaveLength(0);
+		expect(document.querySelectorAll(".roi-coords")).toHaveLength(0);
+		// With nothing clicked since, a delete finds no selection to remove.
+		const savesBeforeDelete = vi.mocked(api.updateAnnotations).mock.calls.length;
+		component.deleteSelectedRoi();
+		expect(vi.mocked(api.updateAnnotations).mock.calls.length).toBe(savesBeforeDelete);
+
+		// A click on where it is selects nothing.
+		await fireEvent.pointerDown(viewport, { button: 0, clientX: 20, clientY: 30, pointerId: 1 });
+		await fireEvent.pointerUp(viewport, { clientX: 20, clientY: 30, pointerId: 1 });
+		expect(document.querySelectorAll(".roi-handle")).toHaveLength(0);
+		expect(roiOutlines()).toBe(0);
+
+		// (A click on a ROI saves it as it is; nothing after that may save.)
+		const saves = vi.mocked(api.updateAnnotations).mock.calls.length;
+		component.deleteSelectedRoi();
+		expect(vi.mocked(api.updateAnnotations).mock.calls.length).toBe(saves);
+		expect(vi.mocked(api.updateAnnotations).mock.calls.every(([, sent]) => sent.num_roi === 1)).toBe(true);
+
+		// Shown again, it is drawn and editable as before.
+		await fireEvent.click(screen.getByRole("button", { name: /^Mass,/ }));
+		expect(nativeIds()).toContain("a-rect");
+		expect(document.querySelectorAll(".roi-coords")).toHaveLength(1);
+	});
+
+	it("shows no native shape, tag or panel in Redact mode, and outlines every redaction box", async () => {
+		vi.mocked(api.fetchNativeAnnotations).mockResolvedValue(nativeResponse());
+		// The box has the coordinates of the native rectangle at EMBED index 0.
+		vi.mocked(api.fetchRedactions).mockResolvedValue(embedRoi);
+		const view = renderViewport({ activeTool: "pan", file: fileSummary(5, { frame_count: 2 }) });
+		await screen.findByText("ROIs 1 / 1");
+		await waitFor(() => expect(nativeIds()).toHaveLength(4));
+
+		await view.rerender({ activeTool: "redact" });
+		await screen.findByText("Redactions 1 / 1");
+
+		expect(document.querySelector(".native-annotations")).toBeNull();
+		expect(document.querySelector(".native-annotation-labels")).toBeNull();
+		expect(screen.queryByRole("region", { name: "Annotations" })).toBeNull();
+		expect(roiOutlines()).toBe(1);
+		expect(roiNumbers()).toEqual(["#1"]);
+
+		await view.rerender({ activeTool: "pan" });
+		await waitFor(() => expect(nativeIds()).toHaveLength(4));
+		expect(roiOutlines()).toBe(0);
+	});
+
+	it("does not take a click on the panel for a viewport gesture", async () => {
+		vi.mocked(api.fetchNativeAnnotations).mockResolvedValue(nativeResponse());
+		await renderShown("annotate_rect");
+		const toggle = await screen.findByRole("button", { name: /^Mass,/ });
+
+		await fireEvent.pointerDown(toggle, { button: 0, clientX: 20, clientY: 30, pointerId: 1 });
+		await fireEvent.pointerUp(toggle, { clientX: 20, clientY: 30, pointerId: 1 });
+
+		expect(document.querySelector(".roi-rect.draft")).toBeNull();
+		expect(document.querySelectorAll(".roi-handle")).toHaveLength(0);
 	});
 });

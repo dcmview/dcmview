@@ -25,6 +25,11 @@
 	const layers = $derived(layerEntries(response));
 	const groups = $derived(labelGroups(response, frame, hiddenLayers));
 
+	// Enter and Space press the toggle and go no further: the window would take Space for cine.
+	function keepActivationLocal(event: KeyboardEvent): void {
+		if (event.key === "Enter" || event.key === " ") event.stopPropagation();
+	}
+
 	const shapeCount = (count: number) => `${count} ${count === 1 ? "shape" : "shapes"}`;
 </script>
 
@@ -40,6 +45,7 @@
 					<button
 						type="button"
 						class="native-toggle"
+						onkeydown={keepActivationLocal}
 						aria-pressed={shown}
 						aria-label={`${entry.name}, ${shapeCount(entry.count)}${entry.notDrawn ? `, ${entry.notDrawn} not drawn` : ""}`}
 						title={shown ? `Hide ${entry.name}` : `Show ${entry.name}`}
@@ -66,6 +72,7 @@
 					<button
 						type="button"
 						class="native-toggle"
+						onkeydown={keepActivationLocal}
 						aria-pressed={shown}
 						aria-label={`${entry.name}, ${shapeCount(entry.count)}${entry.readonly ? ", read-only" : ""}`}
 						title={shown ? `Hide ${entry.name}` : `Show ${entry.name}`}

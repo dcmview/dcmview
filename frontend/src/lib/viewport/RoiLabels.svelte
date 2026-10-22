@@ -10,12 +10,15 @@
 		transform,
 		orientation,
 		geometry,
+		nativeDrawn = new Set(),
 	}: {
 		rois: readonly VisibleRoi[];
 		selectedIndex: number | null;
 		transform: ViewTransform;
 		orientation: ImageOrientation;
 		geometry: ImageDisplayGeometry;
+		/** ROI indices the native annotation labels name: they get no number here. */
+		nativeDrawn?: ReadonlySet<number>;
 	} = $props();
 
 	// Baseline offsets in screen pixels; the label is 11px tall.
@@ -23,7 +26,7 @@
 	const INSIDE = 12;
 
 	/** Each label sits just above its ROI's on-screen top-left corner, or just inside it when the viewport top leaves no room. */
-	const labels = $derived(rois.map((roi) => {
+	const labels = $derived(rois.filter((roi) => !nativeDrawn.has(roi.index)).map((roi) => {
 		const corners = [
 			{ x: roi.xmin, y: roi.ymin },
 			{ x: roi.xmax, y: roi.ymin },

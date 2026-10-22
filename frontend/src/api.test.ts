@@ -7,6 +7,7 @@ import {
 	fetchDisplayFrame,
 	fetchDoseOverlayValues,
 	fetchFiles,
+	fetchNativeAnnotations,
 	fetchRawFrame,
 	fetchSelectedTag,
 	frameUrl,
@@ -271,6 +272,15 @@ describe("fetch wrappers", () => {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify(annotations),
 		});
+	});
+
+	it("reads a file's native annotations from its own path", async () => {
+		const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ schema: {}, layers: [], annotations: [], labels: [], revision: 3 }));
+		vi.stubGlobal("fetch", fetchMock);
+
+		await expect(fetchNativeAnnotations(5)).resolves.toMatchObject({ revision: 3 });
+		expect(fetchMock.mock.calls[0][0]).toBe("api/file/5/annotations/native");
+		expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "GET" });
 	});
 
 	it("encodes selective tag paths and sequence pages", async () => {
