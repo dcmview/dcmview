@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "../api";
 import { fileSummary, rasterSummary, rawFrame } from "../testing/fixtures";
 import { nativeRecord, nativeResponse } from "../testing/nativeAnnotations";
+import type { NativeAnnotationsResponse } from "../generated/api-types";
+import recordedSample from "../testing/recorded/sample-document-native-read.json";
 import ImageViewport from "./ImageViewport.svelte";
 import * as frameOverlay from "./viewport/frameOverlay";
 import { navigationFramesForFile } from "./seriesNavigation";
@@ -1415,6 +1417,42 @@ describe("ImageViewport native annotations", () => {
 		expect(roiOutlines()).toBe(0);
 		// Still selected: its handles stay for further edits.
 		expect(document.querySelectorAll(".roi-handle")).toHaveLength(8);
+	});
+
+	it("shows a save the server refuses, and keeps the native copy as it was", async () => {
+		vi.mocked(api.fetchNativeAnnotations).mockResolvedValue(nativeResponse());
+		vi.mocked(api.updateAnnotations).mockRejectedValue(new api.ApiError("the label schema cannot hold this rectangle", 400, null));
+		const { viewport } = await renderShown("annotate_rect");
+		await waitFor(() => expect(nativeIds()).toHaveLength(4));
+
+		await fireEvent.pointerDown(viewport, { button: 0, clientX: 45, clientY: 5, pointerId: 1 });
+		await fireEvent.pointerMove(viewport, { clientX: 60, clientY: 15, pointerId: 1 });
+		await fireEvent.pointerUp(viewport, { clientX: 60, clientY: 15, pointerId: 1 });
+
+		await screen.findByText("the label schema cannot hold this rectangle");
+		expect(screen.getByRole("button", { name: "Revert" })).toBeTruthy();
+		expect(api.fetchNativeAnnotations).toHaveBeenCalledOnce();
+		expect(nativeIds()).toEqual(["a-rect", "a-ellipse", "a-polyline", "a-line"]);
+		// The refused rectangle is still on screen, drawn by the ROI overlay alone.
+		expect(roiOutlines()).toBe(1);
+	});
+
+	it("draws the real server's read of the sample document with no EMBED rectangle twice", async () => {
+		vi.mocked(api.fetchAnnotations).mockResolvedValue(recordedSample.embed as unknown as api.EmbedRoiAnnotations);
+		vi.mocked(api.fetchNativeAnnotations).mockResolvedValue(recordedSample.native as unknown as NativeAnnotationsResponse);
+		renderViewport({ file: fileSummary(5, { rows: recordedSample.rows, columns: recordedSample.columns }) });
+		await screen.findByText("ROIs 3 / 3");
+
+		// Every record but the two points is a shape; the points are marks beside their tags.
+		await waitFor(() => expect(nativeIds()).toHaveLength(7));
+		expect(document.querySelectorAll(".native-annotation-labels .point")).toHaveLength(2);
+		expect(roiOutlines()).toBe(0);
+		expect(roiNumbers()).toEqual([]);
+		expect(new Set(tags())).toEqual(new Set(["Mass", "Calcification", "Architectural distortion", "ROI"]));
+		const panel = screen.getByRole("region", { name: "Annotations" });
+		for (const name of ["Mass", "Calcification", "Architectural distortion", "ROI", "Annotations", "Second reader", "Breast density"]) {
+			expect(panel.textContent).toContain(name);
+		}
 	});
 
 	it("does not take a click on the panel for a viewport gesture", async () => {
