@@ -229,7 +229,14 @@ masks are only counted. It filters records by frame scope and by the layers
 and classes the viewer hides, colors a shape by its layer, else its class,
 else one fixed fallback, names it by class and score, counts records per
 class and per layer, and groups labels by target level from patient to
-folder.
+folder. Three components in the same directory draw and list it, following
+the presentation-state overlay: `NativeAnnotationOverlay` draws the shapes in
+image pixels inside the transformed layer with a constant on-screen stroke,
+`NativeAnnotationLabels` draws point marks and class-name tags in each
+shape's color in unscaled viewport pixels, and `NativeAnnotationPanel` lists
+the classes (swatch and count, masks included), the layers, and the labels
+that apply to the shown image. Hiding a class or a layer is view state the
+panel's owner keeps; it never writes to the record store.
 
 The viewport retains the last complete presentation until its replacement is
 ready. `viewport/frameLayers.ts` shares cached colorwash and presentation
