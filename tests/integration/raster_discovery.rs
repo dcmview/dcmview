@@ -1156,6 +1156,7 @@ async fn every_endpoint_answers_for_a_decodable_raster() {
         (&endpoints::FILE_TAG_SELECT, 400, ""),
         (&endpoints::FILE_ANNOTATIONS_GET, 200, "application/json"),
         (&endpoints::FILE_ANNOTATIONS_UPDATE, 200, "application/json"),
+        (&endpoints::FILE_ANNOTATIONS_NATIVE, 200, "application/json"),
         (&endpoints::FILE_REDACTIONS_GET, 200, "application/json"),
         (&endpoints::FILE_REDACTIONS_UPDATE, 200, "application/json"),
         (

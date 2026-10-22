@@ -2002,6 +2002,7 @@ records and read and write the bytes they always did.
 flowchart LR
     ops["POST /api/annotations/ops<br/>one OpEnvelope"] --> service
     embed["GET, PUT /api/file/{index}/annotations<br/>GET /api/annotations/export.csv"] --> service
+    native["GET /api/file/{index}/annotations/native<br/>one file's records"] --> service
     csv["--annotations file<br/>annotations.rs, dcmview-adapters"] --> service
     documents["GET /api/annotations/export.json, export.jsonl<br/>GET /api/annotations/import"] --> service
     service["server/annotations.rs<br/>settle keys, translate shown keys"] --> registry["FileRegistry<br/>ensure_key, key_status"]
@@ -2075,8 +2076,16 @@ is still valid) is the table in the documentation of `MemoryBackend`. Every
 session starts with one layer, `default` ("Annotations"), which cannot be
 deleted, and holds at most 4,096 layers. A layer's `readonly` is advisory:
 the store does not refuse a write into a read-only layer. A session has no
-label schema yet, so the implicit one applies: one class, `roi`, and no
-label fields.
+label schema of its own: it starts with the implicit one (one class, `roi`,
+and no label fields), and a native `--annotations` document that carries a
+schema puts that schema in force once its records are applied
+(`MemoryBackend::take_schema`), with the implicit `roi` class added when
+it has no class of that id, since the EMBED endpoints write `roi`
+rectangles whatever the schema. A schema in force is not replaced. Writes
+of a session whose `--annotations` file is a document
+(`AnnotationStore::loading_document`) wait for its import, so they are
+checked against the schema it leaves; writes during a CSV import do not
+wait.
 
 **Cost.** A transaction costs time and memory in proportion to its envelope
 plus the things it names, each counted once however many of its operations
@@ -2114,7 +2123,11 @@ keeps these rules for every door:
   is not settled has no record, because no write got through for it, so a
   read answers at once from `FileRegistry::key_status` and from the rows
   the import staged. What the EMBED endpoints show and export costs what it
-  did before records had keys, whatever the size of the files. A document
+  did before records had keys, whatever the size of the files. The native
+  read of one file (`GET /api/file/{index}/annotations/native`) is such a
+  read: it answers the records of a settled key, with their EMBED view
+  positions, from one lock of the store (`MemoryBackend::file_records`),
+  and nothing for a file whose key is not settled. A document
   import does hash: it makes records, so it settles the key of each file
   it places and compares bytes with a reference that names them. A
   document export hashes the annotated files of a masked session.
@@ -2361,8 +2374,12 @@ the table above) that both contexts carry.
 
 The import is strict: every file reference, layer, annotation and label
 must pass the model's `validate`, against the label schema in force where
-the records will live (a schema the document carries is not taken, and the
-report says so). A failure names the row and the first rule broken.
+the records will live. A schema the document carries is taken only by a
+caller that has none and sets `ImportContext::take_schema`: it must pass
+`LabelSchema::validate`, the records are checked against it, and it is
+handed on in `Fragment::schema`. Otherwise it is not taken, and the report
+says so (`schema_not_applied`). A failure names the row and the first rule
+broken.
 
 **A box the EMBED import kept as read.** A record that was loaded
 leniently is held unchanged, and a native export writes records as they are

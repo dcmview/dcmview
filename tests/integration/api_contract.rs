@@ -164,6 +164,16 @@ async fn json_endpoints_match_frontend_contract_shapes() {
     );
     assert_eq!(annotations["roi_frames"][0], serde_json::json!([0]));
 
+    let native: Value = test_server
+        .get("/api/file/0/annotations/native")
+        .await
+        .json();
+    assert_object_keys(
+        &native,
+        &["annotations", "labels", "layers", "revision", "schema"],
+    );
+    assert_eq!(native["schema"]["schema_id"], "implicit");
+
     let missing = test_server.get("/api/file/99/info").await;
     missing.assert_status_not_found();
     let error: Value = missing.json();

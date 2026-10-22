@@ -209,6 +209,143 @@ pub async fn embed_rois(
     file_rois(registry, store, &file)
 }
 
+/// `GET /api/file/{index}/annotations/native`: what the file shows of the
+/// session's records, in the annotation model's types.
+///
+/// Waits for the `--annotations` import as [`embed_rois`] does. Then:
+///
+/// 1. **The key.** The file's key when it is settled
+///    (`FileRegistry::key_status`). The read never starts or waits for
+///    hashing, and settles no key: a DICOM file whose UID no other file
+///    carries is settled by the first write or import for it, without
+///    reading it; a raster, or a DICOM file whose UID is shared, is hashed
+///    only by a write or an import. A file whose key is not settled has no
+///    record (no write got through for it), so it answers no annotation
+///    and no file or frame label; the rows an EMBED CSV staged for it stay
+///    staged and are shown by the EMBED view alone.
+/// 2. Rows still staged for a file whose key is settled are made records
+///    first, as [`embed_rois`] makes them, so they are here with their ids
+///    and their places in the EMBED view.
+/// 3. **One read of the store** (`MemoryBackend::file_records`): its
+///    revision, the schema in force (`LabelSchema::implicit` when there is
+///    none), every layer, the file's live annotations (those of its key
+///    bound to this file's EMBED view or to none) each with its position
+///    in the file's EMBED view or `None`, and the labels with a value on
+///    the key, a frame of it, or the file's patient, study or series. Those
+///    three are named as the session shows them (`Masker::summary` in a
+///    masked session), and an id the file does not have as
+///    `missing:<file key>` with the key the session shows for it.
+/// 4. **Keys out.** Every annotation's `file` and every file or frame label
+///    target is written with `FileRegistry::shown_key_of`. A member
+///    `embed_index` among an annotation's unknown members is left out, so
+///    the answer has one.
+///
+/// A patient, study or series label read from a document under an id the
+/// session does not show (a real UID in a masked session) names no file
+/// here and is not sent.
+pub async fn native_annotations(
+    registry: &FileRegistry,
+    store: &AnnotationStore,
+    index: usize,
+) -> Result<crate::api::contracts::NativeAnnotationsResponse, AnnotationError> {
+    store
+        .wait_until_ready()
+        .await
+        .map_err(|error| AnnotationError::ImportFailed(error.to_string()))?;
+    let file = registry
+        .get(index)
+        .ok_or(AnnotationError::NotFound(index))?;
+    let key = settled_key(registry, index);
+    if let Some(key) = &key {
+        store_staged_rows(store, &file, key)?;
+    }
+    let summary = registry.masker().map(|masker| masker.summary(&file));
+    let shown = |real: &str, masked: Option<&str>| masked.unwrap_or(real).to_string();
+    let missing = registry
+        .shown_file_key(index)
+        .map(|key| format!("{}{key}", dcmview_annotation::MISSING_ID_PREFIX));
+    let id_of = |value: String| {
+        if value.is_empty() {
+            missing.clone()
+        } else {
+            Some(value)
+        }
+    };
+    let hierarchy: Vec<LabelTarget> = [
+        id_of(shown(
+            &file.patient_id,
+            summary.as_ref().map(|summary| summary.patient_id.as_str()),
+        ))
+        .map(|patient| LabelTarget::Patient { patient }),
+        id_of(shown(
+            &file.study_instance_uid,
+            summary
+                .as_ref()
+                .map(|summary| summary.study_instance_uid.as_str()),
+        ))
+        .map(|study| LabelTarget::Study { study }),
+        id_of(shown(
+            &file.series_instance_uid,
+            summary
+                .as_ref()
+                .map(|summary| summary.series_instance_uid.as_str()),
+        ))
+        .map(|series| LabelTarget::Series { series }),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let read = store
+        .backend()
+        .file_records(key.as_ref(), index, &hierarchy)
+        .map_err(store_error)?;
+    let shown_key = |key: &mut FileKey| -> Result<(), AnnotationError> {
+        *key = FileKey::parse(&registry.shown_key_of(key)).map_err(store_error)?;
+        Ok(())
+    };
+    let masked = registry.masker().is_some();
+    let mut layers = read.layers;
+    if masked {
+        for layer in &mut layers {
+            if let Some(author) = &mut layer.source.author {
+                unnamed(author);
+            }
+        }
+    }
+    let mut annotations = Vec::with_capacity(read.annotations.len());
+    for (mut record, embed_index) in read.annotations {
+        shown_key(&mut record.file)?;
+        record.unknown.remove("embed_index");
+        if masked {
+            unnamed(&mut record.meta.created_by);
+            unnamed(&mut record.meta.modified_by);
+        }
+        annotations.push(crate::api::contracts::NativeAnnotation {
+            record,
+            embed_index,
+        });
+    }
+    let mut labels = read.labels;
+    for label in &mut labels {
+        visit_target_key(&mut label.target, &mut |key| shown_key(key))?;
+        if masked {
+            unnamed(&mut label.meta.created_by);
+            unnamed(&mut label.meta.modified_by);
+        }
+    }
+    Ok(crate::api::contracts::NativeAnnotationsResponse {
+        schema: read
+            .schema
+            .map_or_else(dcmview_annotation::LabelSchema::implicit, |schema| {
+                schema.as_ref().clone()
+            }),
+        layers,
+        annotations,
+        labels,
+        revision: read.revision,
+    })
+}
+
 /// `PUT /api/file/{index}/annotations`: replaces the ROIs the file's EMBED
 /// view shows, and returns them in canonical form. What a client sees is
 /// what it saw before the store held records.
@@ -246,19 +383,24 @@ pub async fn embed_rois(
 ///    shows; ROIs of the other never remain beside it.
 ///
 ///    No operation means no transaction: saving what is already shown
-///    changes no record and no revision.
+///    changes no record and no revision. A save that would create a
+///    rectangle is [`AnnotationError::Rejected`], with nothing written,
+///    when the schema in force has no class `roi` that allows rectangles
+///    (`embed_class_allowed`); moving or deleting ROIs is not.
 ///
 /// The answer is the canonical list of step 1, and a read of the view
 /// right after the save shows exactly that list.
 ///
-/// It does not wait for the `--annotations` import: an edit made while the
-/// CSV is loading wins over the CSV's rows for that file.
+/// It waits for a document import ([`wait_for_import`]), not for a CSV: an
+/// edit made while the CSV is loading wins over the CSV's rows for that
+/// file.
 pub async fn replace_embed_rois(
     registry: &FileRegistry,
     store: &AnnotationStore,
     index: usize,
     rois: EmbedRoiAnnotations,
 ) -> Result<EmbedRoiAnnotations, AnnotationError> {
+    wait_for_import(store).await;
     let file = registry
         .get(index)
         .ok_or(AnnotationError::NotFound(index))?;
@@ -285,6 +427,12 @@ pub async fn replace_embed_rois(
         );
         if ops.is_empty() {
             return Ok(wanted);
+        }
+        if ops
+            .iter()
+            .any(|op| matches!(op, Op::CreateAnnotation { .. }))
+        {
+            embed_class_allowed(store)?;
         }
         let envelope = OpEnvelope {
             op_id: new_id(),
@@ -700,14 +848,6 @@ pub async fn export_native_within(
             document
                 .extensions
                 .insert("dcmview".to_string(), serde_json::json!({ "masked": true }));
-            // The name of whoever ran the viewer stays with the session.
-            let unnamed = |author: &mut Author| {
-                if author.kind() == dcmview_annotation::AuthorKind::User {
-                    if let Ok(local) = Author::parse(MASKED_USER_AUTHOR) {
-                        *author = local;
-                    }
-                }
-            };
             for layer in &mut document.layers {
                 if let Some(author) = &mut layer.source.author {
                     unnamed(author);
@@ -919,9 +1059,20 @@ fn document_file_ref(
 ///
 /// The file is opened and read on a blocking thread
 /// (`tokio::task::spawn_blocking`) by `dcmview_adapters::NativeJson`, with
-/// this context: the session's resolver (below); the store's label schema
-/// (`MemoryConfig::schema`); the store's default layer; the author
-/// [`NATIVE_IMPORT_AUTHOR`] and `now()`; and `keep_going`.
+/// this context: the session's resolver (below); the label schema in
+/// force (`MemoryBackend::schema`), and `take_schema` when there is none;
+/// the store's default layer; the author [`NATIVE_IMPORT_AUTHOR`] and
+/// `now()`; and `keep_going`.
+///
+/// **The document's schema.** A session has no label schema of its own,
+/// so the document's, when it carries one, is the one its records are
+/// checked against (`ImportContext::take_schema`), and it becomes the
+/// session's once the records are applied (`MemoryBackend::take_schema`):
+/// every later operation is checked against it and every export carries
+/// it. An import that fails puts no schema in force. A schema without the
+/// class `roi` gets the implicit schema's `roi` class added when it is put
+/// in force, because the EMBED endpoints make rectangles of that class: so
+/// a session's export loads again whatever its document's schema was.
 ///
 /// # Which file a record lands on
 ///
@@ -1117,10 +1268,10 @@ fn document_file_ref(
 ///   `the annotation store refused the import: ` and the first
 ///   violation's code (`{code:?}`), or `conflict`.
 ///
-/// While the import runs the EMBED reads wait, as for a CSV; writes do
-/// not, and a record a client makes meanwhile is kept. Records are added
-/// to the files they name whether or not the EMBED endpoint wrote to a
-/// file meanwhile.
+/// While the import runs the EMBED reads wait, as for a CSV, and so do
+/// the writes ([`replace_embed_rois`], [`apply_op`]) of a session made with
+/// `AnnotationStore::loading_document`, as the viewer makes one for a
+/// document.
 ///
 /// [`NATIVE_IMPORT_AUTHOR`]: crate::annotations::NATIVE_IMPORT_AUTHOR
 pub async fn import_native(
@@ -1240,9 +1391,11 @@ async fn read_native_into_store(
             ))
         })?;
         let stamp = now();
+        let in_force = backend.schema().map_err(|_| native_store_failure())?;
         let context = ImportContext {
             resolver: &resolver,
-            schema: backend.config().schema.as_ref(),
+            schema: in_force.as_deref(),
+            take_schema: in_force.is_none(),
             layer: backend.default_layer(),
             author: &import_author,
             now: &stamp,
@@ -1310,6 +1463,7 @@ async fn read_native_into_store(
             fragment,
             mut report,
         } = imported;
+        let schema = fragment.schema;
         let dropped = fragment
             .labels
             .iter()
@@ -1380,6 +1534,13 @@ async fn read_native_into_store(
                 }
                 ApplyResult::Conflict { .. } => return Err(native_store_failure()),
             }
+        }
+        // The document's schema becomes the session's once its records are
+        // in: an import that fails leaves the session's schema as it was.
+        if let Some(schema) = schema {
+            backend
+                .take_schema(with_embed_class(schema))
+                .map_err(|_| native_store_failure())?;
         }
         Ok::<_, AnnotationError>(report)
     })
@@ -1782,15 +1943,17 @@ pub fn import_status(store: &AnnotationStore) -> Result<AnnotationImportResponse
 /// `revision` in the outcome is `Transacted::revision` of step 6, and the
 /// store's revision when the request was refused in step 1.
 ///
-/// It does not wait for the `--annotations` import. A patient, study or
-/// series id of the `missing:<file key>` form is text of the client's and
-/// is not translated.
+/// It waits for a document import ([`wait_for_import`]), so the envelope is
+/// checked against the schema the import leaves in force, and not for a
+/// CSV. A patient, study or series id of the `missing:<file key>` form is
+/// text of the client's and is not translated.
 pub async fn apply_op(
     registry: &FileRegistry,
     store: &AnnotationStore,
     envelope: OpEnvelope,
     file: Option<usize>,
 ) -> Result<OpOutcome, AnnotationError> {
+    wait_for_import(store).await;
     let mut envelope = envelope;
     let mut keys = Vec::new();
     let mut seen = HashSet::new();
@@ -1900,6 +2063,83 @@ fn file_digest(file: &FileEntry) -> Result<[u8; 32], crate::keys::KeyFailure> {
         if let crate::keys::HashProgress::Done(digest) = hasher.next_slice()? {
             return Ok(digest);
         }
+    }
+}
+
+/// For a session whose `--annotations` file is a document
+/// (`AnnotationStore::writes_wait`), waits until its import has ended,
+/// whichever way: the document may put a label schema in force when its
+/// records are applied, and a write is checked against the schema the
+/// import leaves. A failed import holds up no write. While a CSV loads,
+/// writes go on: an edit made then wins over the CSV's rows for its file.
+async fn wait_for_import(store: &AnnotationStore) {
+    if store.writes_wait() {
+        // A failed import is the reads' answer; writes go on without it.
+        let _ = store.wait_until_ready().await;
+    }
+}
+
+/// A `user` author written as [`MASKED_USER_AUTHOR`], for what a masked
+/// session sends: the name of whoever ran the viewer stays with the session.
+fn unnamed(author: &mut Author) {
+    if author.kind() == dcmview_annotation::AuthorKind::User {
+        if let Ok(local) = Author::parse(MASKED_USER_AUTHOR) {
+            *author = local;
+        }
+    }
+}
+
+/// `schema` with the implicit class `roi` added when it has none: the
+/// EMBED endpoints make rectangles of that class whatever schema is in
+/// force, so a session's export holds records of it, and its schema must
+/// have it for the export to load again. The class is the implicit
+/// schema's own (named `ROI`, no colour, every geometry). A schema that
+/// already has `roi` is kept as it is, and so is one that cannot take
+/// another class.
+fn with_embed_class(
+    mut schema: dcmview_annotation::LabelSchema,
+) -> dcmview_annotation::LabelSchema {
+    if schema
+        .classes
+        .iter()
+        .any(|class| class.id == dcmview_annotation::IMPLICIT_CLASS_ID)
+    {
+        return schema;
+    }
+    let mut implicit = dcmview_annotation::LabelSchema::implicit().classes;
+    schema.classes.append(&mut implicit);
+    if schema.validate().is_err() {
+        schema.classes.pop();
+    }
+    schema
+}
+
+/// Whether the label schema in force holds the rectangles an EMBED save
+/// makes: class `roi` allowing `rect` (`IMPLICIT_CLASS_ID`). Always so
+/// without a schema, and for a document schema [`with_embed_class`] gave
+/// the class; not for one with its own `roi` class that does not allow
+/// rectangles, or one too full to take the class. A save that would make
+/// a rectangle such a schema cannot hold is
+/// [`AnnotationError::Rejected`], before anything is written: the session
+/// could not load its own export again. A deprecated `roi` class still
+/// holds them.
+fn embed_class_allowed(store: &AnnotationStore) -> Result<(), AnnotationError> {
+    let Some(schema) = store.backend().schema().map_err(store_error)? else {
+        return Ok(());
+    };
+    let allowed = schema.classes.iter().any(|class| {
+        class.id == dcmview_annotation::IMPLICIT_CLASS_ID
+            && class
+                .geometry
+                .contains(&dcmview_annotation::GeometryType::Rect)
+    });
+    if allowed {
+        Ok(())
+    } else {
+        Err(AnnotationError::Rejected(
+            "The session's label schema has no class `roi` that allows rectangles, so no ROI can be added."
+                .to_string(),
+        ))
     }
 }
 

@@ -287,6 +287,24 @@ Loaded records keep their ids, layers, classes, shapes, frames and
 attributes. The session that loads them stamps them as its own import
 (`import:native`), so the original author and times are not kept.
 
+A document's label schema (its classes, with names and colours, and its
+label fields) becomes the session's: the document's records are checked
+against it, operations after it are too, and exports carry it. Without a
+schema in the document the session has the implicit one: one class, `roi`,
+and no label fields, so a document without a schema can hold no labels.
+
+Rectangles drawn in the viewer, and the rows of an EMBED CSV, are of class
+`roi`. So that a session's export loads again whatever its document's
+schema, a document schema without a `roi` class gets the implicit one
+added (named `ROI`, without a colour, allowing every shape) when it becomes
+the session's; a schema with its own `roi` class is kept as it is. When
+the schema cannot hold rectangles of class `roi` (its own `roi` does not
+allow them, or it already has the most classes a schema may), a save that
+adds a ROI is refused and nothing is saved; moving and deleting ROIs still
+work. While a
+document is loading, edits wait for it, so they are checked against its
+schema; while a CSV is loading they do not.
+
 The viewer draws a file's records on the frames they apply to: points,
 lines, polylines, polygons, rectangles and ellipses, each in its layer's
 color, else its class's, and named by its class name and score. Masks are
