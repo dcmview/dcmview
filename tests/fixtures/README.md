@@ -48,6 +48,13 @@ decode with, and larger files for the cost tests: progressive 2,048 x
 their damaged files by editing a tag, a count or a frame header byte of
 these.
 
+`annotation-documents/sample.json` is not written by that example: it is
+what `cargo run --example generate_sample_annotations` writes for
+`golden-masking-patient-a-us-{1,2}.dcm`, `golden-masking-patient-b-us.dcm`,
+`golden-uncompressed-u16-multiframe.dcm` and `tiff-jpeg/gray-150x133.tif`
+(`docs/annotations.md`, "A sample document"), and
+`tests/integration/sample_annotations.rs` fails when it is stale.
+
 The committed corpus is intentionally small and synthetic:
 
 - `golden-uncompressed-u16-multiframe.dcm`

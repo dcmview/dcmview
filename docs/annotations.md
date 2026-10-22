@@ -310,6 +310,37 @@ that must be hashed first the download waits; when a file can no longer be
 read, the document export answers an error naming it, and the CSV export
 still works.
 
+### A sample document
+
+`examples/generate_sample_annotations` writes a document for the images
+under some paths, to show what a document can hold:
+
+```bash
+cargo run --example generate_sample_annotations -- --out sample.json ./study_dir
+dcmview --annotations sample.json ./study_dir
+```
+
+It lists the paths as the viewer does (a recursive walk, every format) and
+annotates every file with pixels. The document has a label schema of four
+classes, each with its own colour (Mass, Calcification, Architectural
+distortion and ROI), and two layers, the second with a colour of its own.
+Every image gets one shape of each vector type the model has (point, line,
+polyline, polygon, rectangle and an ellipse turned by 30 degrees), spread
+over the classes and layers and placed as fractions of the image, so they
+fit any size; on a multi-frame image the line is on the first frame only.
+Every file gets an image quality label and the first a note, and every
+study a DICOM file names a density label. Each file is named by the key the
+viewer gives it (`sop:` for a DICOM file whose UID no other file carries,
+else the `b3:` digest of its bytes) and by its path below the folder the
+files share, so the same paths load the document again. Ids and times are
+fixed: the same files give the same text. Without `--out` the document is
+written to standard output.
+
+The document is checked with the model's rules before it is written.
+`tests/fixtures/annotation-documents/sample.json` is its output for five
+committed fixtures, and a test keeps it current and loads it through
+`--annotations`.
+
 For symptom-oriented fixes, see the
 [troubleshooting guide](troubleshooting.md#annotation-csv-fails-to-load).
 
