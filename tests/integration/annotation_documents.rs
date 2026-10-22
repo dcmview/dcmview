@@ -2389,3 +2389,109 @@ async fn redaction_boxes_are_in_no_document() {
     assert_eq!(lines.lines().count(), 3, "{lines}");
     assert!(!lines.contains("\"annotation\""));
 }
+
+/// A label schema with two coloured classes and one field for files,
+/// studies and series.
+fn classed_schema() -> Value {
+    json!({
+        "schema_id": "reading", "schema_version": 2,
+        "classes": [
+            { "id": "mass", "name": "Mass", "color": "#E4572E",
+              "geometry": ["rect", "polygon", "ellipse"] },
+            { "id": "calc", "name": "Calcification", "color": "#3B8EA5",
+              "geometry": ["point", "rect"] },
+        ],
+        "fields": [{
+            "id": "density", "name": "Density", "type": "category",
+            "options": [{ "id": "a", "name": "A" }, { "id": "b", "name": "B" }],
+            "applies_to": ["file", "frame", "series", "study", "patient"],
+        }],
+    })
+}
+
+fn classed(n: u32, file: &str, class: &str, geometry: Value) -> Value {
+    let mut record = annotation(n, file, "default", geometry);
+    record["class"] = json!(class);
+    record
+}
+
+fn label_record(n: u32, target: Value, value: &str) -> Value {
+    json!({
+        "id": id(n), "target": target, "field": "density", "layer": "default", "value": value,
+        "rev": 1, "created_by": "user:someone", "created_at": "2001-01-01T00:00:00.000Z",
+        "modified_by": "user:someone", "modified_at": "2001-01-01T00:00:00.000Z",
+    })
+}
+
+/// A session has no label schema of its own, so the schema of its
+/// `--annotations` document becomes the session's: the document's classes
+/// and labels load, operations are checked against it, and the export
+/// carries it. A document that fails to load leaves no schema behind.
+#[tokio::test]
+async fn a_documents_schema_becomes_the_sessions() {
+    let dir = tempdir().expect("temp dir");
+    let files = || vec![entry(dir.path(), "a.dcm", "1.2.3.1")];
+    let mut document: Value = serde_json::from_str(&document_of(
+        vec![reference("sop:1.2.3.1", Some("1.2.3.1"), "a.dcm")],
+        vec![],
+        vec![classed(1, "sop:1.2.3.1", "mass", rect(1, 2, 30, 40))],
+    ))
+    .expect("document");
+    document["schema"] = classed_schema();
+    document["labels"] = json!([
+        label_record(2, json!({ "file": "sop:1.2.3.1" }), "a"),
+        label_record(3, json!({ "study": "1.2.3" }), "b"),
+    ]);
+
+    let session = Session::loading(files());
+    let report = session
+        .import(dir.path(), &document.to_string())
+        .await
+        .expect("import");
+    assert_eq!(report["warnings"], json!([]), "{report}");
+    assert_eq!(
+        (
+            &report["counts"]["annotations_out"],
+            &report["counts"]["labels_out"]
+        ),
+        (&json!(1), &json!(2))
+    );
+    let exported = session.document().await;
+    let schema: LabelSchema =
+        serde_json::from_value(classed_schema()).expect("the schema as the model reads it");
+    assert_eq!(
+        exported["schema"],
+        serde_json::to_value(&schema).expect("schema")
+    );
+    assert_eq!(exported["annotations"][0]["class"], "mass");
+
+    // An operation is checked against the session's schema now.
+    let post = |class: &str| {
+        session
+            .server
+            .post("/api/annotations/ops?file=0")
+            .json(&json!({
+                "op_id": dcmview_annotation::new_id(), "actor": "user:test",
+                "ts": "2026-10-10T08:00:00.000Z",
+                "op": { "type": "create_annotation", "annotation": classed(
+                    if class == "calc" { 4 } else { 5 }, "sop:1.2.3.1", class,
+                    json!({ "type": "point", "x": 3, "y": 4 })) },
+            }))
+    };
+    assert_eq!(post("calc").await.status_code(), StatusCode::OK);
+    let refused = post("roi").await;
+    assert_eq!(refused.status_code(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        refused.json::<Value>()["result"]["violations"][0]["code"],
+        "unknown_class"
+    );
+
+    // A document whose records do not fit it puts no schema in force.
+    document["annotations"][0]["class"] = json!("nodule");
+    let failed = Session::loading(files());
+    failed
+        .import(dir.path(), &document.to_string())
+        .await
+        .expect_err("a class the schema does not have");
+    assert!(failed.store.backend().schema().expect("schema").is_none());
+}

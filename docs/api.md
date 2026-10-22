@@ -1143,9 +1143,10 @@ made by the client. The body is read whatever its `Content-Type`.
   is `409 file_key_ambiguous`; any other key must be the settled key of the
   file it names. A key no loaded file has is `invalid` with `unknown_file`.
   In a masked session keys are built from masked UIDs in both directions.
-- **No label schema yet.** A session has one class, `roi`, which allows
-  every geometry type, and no label fields, so every `set_label` is
-  `invalid` with `unknown_field`.
+- **The label schema.** A session has the schema of its `--annotations`
+  document when that document carries one: its classes and label fields.
+  Otherwise it has one class, `roi`, which allows every geometry type, and
+  no label fields, so every `set_label` is `invalid` with `unknown_field`.
 
 Annotations are held in memory and are gone when the viewer exits. Redaction
 boxes are not annotations: no operation reads or changes them.

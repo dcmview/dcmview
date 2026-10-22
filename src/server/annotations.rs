@@ -919,9 +919,17 @@ fn document_file_ref(
 ///
 /// The file is opened and read on a blocking thread
 /// (`tokio::task::spawn_blocking`) by `dcmview_adapters::NativeJson`, with
-/// this context: the session's resolver (below); the store's label schema
-/// (`MemoryConfig::schema`); the store's default layer; the author
-/// [`NATIVE_IMPORT_AUTHOR`] and `now()`; and `keep_going`.
+/// this context: the session's resolver (below); the label schema in
+/// force (`MemoryBackend::schema`), and `take_schema` when there is none;
+/// the store's default layer; the author [`NATIVE_IMPORT_AUTHOR`] and
+/// `now()`; and `keep_going`.
+///
+/// **The document's schema.** A session has no label schema of its own,
+/// so the document's, when it carries one, is the one its records are
+/// checked against (`ImportContext::take_schema`), and it becomes the
+/// session's once the records are applied (`MemoryBackend::take_schema`):
+/// every later operation is checked against it and every export carries
+/// it. An import that fails puts no schema in force.
 ///
 /// # Which file a record lands on
 ///
@@ -1240,10 +1248,11 @@ async fn read_native_into_store(
             ))
         })?;
         let stamp = now();
+        let in_force = backend.schema().map_err(|_| native_store_failure())?;
         let context = ImportContext {
             resolver: &resolver,
-            schema: backend.config().schema.as_ref(),
-            take_schema: false,
+            schema: in_force.as_deref(),
+            take_schema: in_force.is_none(),
             layer: backend.default_layer(),
             author: &import_author,
             now: &stamp,
@@ -1311,6 +1320,7 @@ async fn read_native_into_store(
             fragment,
             mut report,
         } = imported;
+        let schema = fragment.schema;
         let dropped = fragment
             .labels
             .iter()
@@ -1381,6 +1391,13 @@ async fn read_native_into_store(
                 }
                 ApplyResult::Conflict { .. } => return Err(native_store_failure()),
             }
+        }
+        // The document's schema becomes the session's once its records are
+        // in: an import that fails leaves the session's schema as it was.
+        if let Some(schema) = schema {
+            backend
+                .take_schema(schema)
+                .map_err(|_| native_store_failure())?;
         }
         Ok::<_, AnnotationError>(report)
     })

@@ -287,6 +287,12 @@ Loaded records keep their ids, layers, classes, shapes, frames and
 attributes. The session that loads them stamps them as its own import
 (`import:native`), so the original author and times are not kept.
 
+A document's label schema (its classes, with names and colours, and its
+label fields) becomes the session's: the document's records are checked
+against it, operations after it are too, and exports carry it. Without a
+schema in the document the session has the implicit one: one class, `roi`,
+and no label fields, so a document without a schema can hold no labels.
+
 Exporting a document needs the key of every file that has ROIs. For a file
 that must be hashed first the download waits; when a file can no longer be
 read, the document export answers an error naming it, and the CSV export

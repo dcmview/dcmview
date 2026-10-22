@@ -11,7 +11,7 @@ use dcmview_annotation::{
     ViolationCode,
 };
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 /// The id of the layer every session starts with. The EMBED import and the
@@ -47,8 +47,9 @@ pub struct MemoryConfig {
     /// Who the store stamps on a record it creates or changes: the
     /// session's user ([`super::session_author`]).
     pub author: Author,
-    /// The label schema in force, or `None` for a session without one,
-    /// which is validated against `LabelSchema::implicit`.
+    /// The label schema the store starts with, or `None` for a session
+    /// without one, which is validated against `LabelSchema::implicit`
+    /// until a schema is put in force ([`MemoryBackend::take_schema`]).
     pub schema: Option<LabelSchema>,
 }
 
@@ -317,6 +318,8 @@ pub struct MemoryBackend {
 
 /// Everything the store holds, under its one lock.
 struct State {
+    /// The label schema in force ([`MemoryBackend::schema`]).
+    schema: Option<Arc<LabelSchema>>,
     /// How many records creating operations have been copied from, an
     /// operation that was lent keeping its own.
     copied_records: u64,
@@ -361,10 +364,12 @@ impl MemoryBackend {
             rev: 1,
             unknown: BTreeMap::new(),
         };
+        let schema = config.schema.clone().map(Arc::new);
         Self {
             config,
             default_layer,
             state: Mutex::new(State {
+                schema,
                 copied_records: 0,
                 revision: 0,
                 layer_ids: HashMap::from([(layer.id.clone(), 0)]),
@@ -398,6 +403,28 @@ impl MemoryBackend {
     /// The id of the default layer.
     pub fn default_layer(&self) -> &LayerId {
         &self.default_layer
+    }
+
+    /// The label schema in force: the one the store was made with, else
+    /// the one [`MemoryBackend::take_schema`] put in force, else `None`,
+    /// which is `LabelSchema::implicit`.
+    pub fn schema(&self) -> Result<Option<Arc<LabelSchema>>, BackendError> {
+        Ok(self.state.lock().map_err(lock_error)?.schema.clone())
+    }
+
+    /// Puts `schema` in force when the store has none, and answers whether
+    /// it did. Every operation from then on is checked against it, and an
+    /// export carries it. A schema in force is never replaced. The schema
+    /// is changed under the store's lock, so no transaction sees half of
+    /// it. For the session's `--annotations` document, whose schema becomes
+    /// the session's.
+    pub(crate) fn take_schema(&self, schema: LabelSchema) -> Result<bool, BackendError> {
+        let mut state = self.state.lock().map_err(lock_error)?;
+        if state.schema.is_some() {
+            return Ok(false);
+        }
+        state.schema = Some(Arc::new(schema));
+        Ok(true)
     }
 
     /// One envelope as one transaction (see [`AnnotationBackend`]), checked
@@ -478,8 +505,9 @@ impl MemoryBackend {
             }
         }
         let implicit;
-        let schema = match &self.config.schema {
-            Some(schema) => schema,
+        let in_force = state.schema.clone();
+        let schema = match &in_force {
+            Some(schema) => schema.as_ref(),
             None => {
                 implicit = LabelSchema::implicit();
                 &implicit
@@ -774,7 +802,7 @@ impl MemoryBackend {
             })
             .collect();
         let mut document = Document::new();
-        document.schema = self.config.schema.clone();
+        document.schema = state.schema.as_deref().cloned();
         document.layers = state
             .layers
             .iter()

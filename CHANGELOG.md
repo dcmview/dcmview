@@ -191,6 +191,13 @@ diagnostic viewer.
   (`evidence_conflict`); it never decodes to check and finds no file by a
   pixel digest. A document's reference to an image file also names the
   page of each frame (`frame_source`).
+- A `dcmview.annotations` document given to `--annotations` brings its
+  label schema: its classes, with their names and colours, and its label
+  fields become the session's, so its records and labels load, later
+  operations are checked against it and exports carry it. Before, a
+  document whose records used any class but `roi`, or that held labels,
+  failed to load. A document that fails to load leaves the session without
+  a schema.
 
 ### Changed
 
