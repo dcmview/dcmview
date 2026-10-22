@@ -13,6 +13,8 @@ permissions:
 jobs:
   validate-version:
     runs-on: ubuntu-22.04
+    outputs:
+      prerelease: ${{ steps.kind.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -20,6 +22,16 @@ jobs:
           python-version: "3.11"
       - name: Check release tag matches package versions
         run: python scripts/check_versions.py --tag "${GITHUB_REF_NAME}"
+      # A tag with a suffix (v0.5.0-beta.1, -alpha.N, -rc.N) is a
+      # pre-release: it is published to GitHub Releases as a pre-release
+      # and to PyPI, and skips the editor marketplaces and Homebrew.
+      - name: Classify the release
+        id: kind
+        run: |
+          case "${GITHUB_REF_NAME}" in
+            *-*) echo "prerelease=true" >> "$GITHUB_OUTPUT" ;;
+            *) echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
+          esac
 
   build:
     needs: validate-version
@@ -240,6 +252,7 @@ jobs:
 
   release:
     needs:
+      - validate-version
       - build
       - validate-linux
       - validate-windows
@@ -274,16 +287,32 @@ jobs:
             --x86-sha256 "$X86_SHA" \
             --output packaging/homebrew/dcmview.rb
           echo "formula_path=packaging/homebrew/dcmview.rb" >> "$GITHUB_OUTPUT"
+      # A pre-release attaches binaries, checksums and wheels only. Its
+      # VSIX files are kept as the vscode-vsix workflow artifact, and its
+      # formula as the homebrew-formula artifact.
+      - name: Select release files
+        id: files
+        env:
+          PRERELEASE: ${{ needs.validate-version.outputs.prerelease }}
+        run: |
+          {
+            echo "files<<EOF"
+            echo 'artifacts/**/*.tar.gz'
+            echo 'artifacts/**/*.zip'
+            echo 'artifacts/**/*.sha256'
+            echo 'artifacts/**/*.whl'
+            if [ "$PRERELEASE" != "true" ]; then
+              echo 'artifacts/**/*.vsix'
+              echo 'packaging/homebrew/dcmview.rb'
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            artifacts/**/*.tar.gz
-            artifacts/**/*.zip
-            artifacts/**/*.sha256
-            artifacts/**/*.whl
-            artifacts/**/*.vsix
-            packaging/homebrew/dcmview.rb
+          prerelease: ${{ needs.validate-version.outputs.prerelease == 'true' }}
+          make_latest: ${{ needs.validate-version.outputs.prerelease == 'true' && 'false' || 'true' }}
+          files: ${{ steps.files.outputs.files }}
       - uses: actions/upload-artifact@v4
         with:
           name: homebrew-formula
@@ -310,8 +339,10 @@ jobs:
           packages-dir: python-dist
 
   publish-open-vsx:
-    if: vars.PUBLISH_OPEN_VSX == '1'
-    needs: release
+    if: vars.PUBLISH_OPEN_VSX == '1' && needs.validate-version.outputs.prerelease != 'true'
+    needs:
+      - validate-version
+      - release
     runs-on: ubuntu-22.04
     environment:
       name: open-vsx
@@ -344,8 +375,10 @@ jobs:
           done
 
   publish-homebrew-tap:
-    if: vars.HOMEBREW_TAP_REPOSITORY != ''
-    needs: release
+    if: vars.HOMEBREW_TAP_REPOSITORY != '' && needs.validate-version.outputs.prerelease != 'true'
+    needs:
+      - validate-version
+      - release
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/download-artifact@v4
