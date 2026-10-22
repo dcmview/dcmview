@@ -26,10 +26,10 @@ describe("RoiOverlay", () => {
 		expect(container.querySelectorAll(".roi-rect")).toHaveLength(2);
 	});
 
-	it("leaves the outline of a ROI the native overlay draws, keeping its handles and the draft", () => {
+	it("leaves the outline of a ROI the native overlay draws, keeping the draft", () => {
 		const { container } = render(RoiOverlay, {
 			...overlay,
-			selectedIndex: 0,
+			selectedIndex: null,
 			draft: [70, 70, 80, 80],
 			nativeDrawn: new Set([0]),
 		});
@@ -37,6 +37,14 @@ describe("RoiOverlay", () => {
 		const outlines = [...container.querySelectorAll(".roi-rect")];
 		expect(outlines.map((rect) => rect.getAttribute("x"))).toEqual(["5", "70"]);
 		expect(outlines[1].classList.contains("draft")).toBe(true);
+	});
+
+	it("keeps the selection highlight and handles of a natively drawn ROI", () => {
+		const { container } = render(RoiOverlay, { ...overlay, selectedIndex: 0, draft: null, nativeDrawn: new Set([0, 1]) });
+
+		const outlines = [...container.querySelectorAll(".roi-rect")];
+		expect(outlines.map((rect) => rect.getAttribute("x"))).toEqual(["10"]);
+		expect(outlines[0].closest("g")?.classList.contains("selected")).toBe(true);
 		expect(container.querySelectorAll(".roi-handle")).toHaveLength(8);
 	});
 });
