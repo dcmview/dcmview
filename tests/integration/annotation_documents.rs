@@ -2457,8 +2457,10 @@ async fn a_documents_schema_becomes_the_sessions() {
         (&json!(1), &json!(2))
     );
     let exported = session.document().await;
-    let schema: LabelSchema =
+    // The document's schema, with the class the EMBED endpoints draw in.
+    let mut schema: LabelSchema =
         serde_json::from_value(classed_schema()).expect("the schema as the model reads it");
+    schema.classes.extend(LabelSchema::implicit().classes);
     assert_eq!(
         exported["schema"],
         serde_json::to_value(&schema).expect("schema")
@@ -2479,7 +2481,7 @@ async fn a_documents_schema_becomes_the_sessions() {
             }))
     };
     assert_eq!(post("calc").await.status_code(), StatusCode::OK);
-    let refused = post("roi").await;
+    let refused = post("nodule").await;
     assert_eq!(refused.status_code(), StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(
         refused.json::<Value>()["result"]["violations"][0]["code"],
@@ -2885,4 +2887,58 @@ async fn a_masked_session_reads_records_under_the_keys_it_shows() {
         answer["labels"][2]["target"],
         json!({ "study": shown_study })
     );
+}
+
+/// A session whose document schema has no `roi` class still writes an
+/// export it can load again: the EMBED endpoints make `roi` rectangles,
+/// and the session's schema gains the implicit `roi` class with the
+/// document's.
+#[tokio::test]
+async fn an_export_after_an_embed_save_loads_again_under_a_document_schema() {
+    let dir = tempdir().expect("temp dir");
+    let session = Session::loading(study_files(dir.path()));
+    session
+        .import(dir.path(), &classed_document().to_string())
+        .await
+        .expect("import");
+    let answer = session.native(0).await;
+    let classes: Vec<&Value> = answer["schema"]["classes"]
+        .as_array()
+        .expect("classes")
+        .iter()
+        .map(|class| &class["id"])
+        .collect();
+    assert_eq!(classes, [&json!("mass"), &json!("calc"), &json!("roi")]);
+    assert_eq!(answer["schema"]["classes"][2]["name"], "ROI");
+    assert!(answer["schema"]["classes"][2]["color"].is_null());
+
+    // One more rectangle through the EMBED view: a `roi` record.
+    session
+        .server
+        .put("/api/file/0/annotations")
+        .json(&rows(
+            &[[20, 10, 40, 30], [60, 60, 70, 70], [1, 2, 3, 4]],
+            &[],
+        ))
+        .await
+        .assert_status_ok();
+    let text = session.text("/api/annotations/export.json").await;
+    let exported: Value = serde_json::from_str(&text).expect("document");
+    assert!(exported["annotations"]
+        .as_array()
+        .expect("annotations")
+        .iter()
+        .any(|record| record["class"] == "roi"));
+
+    let again = Session::loading(study_files(dir.path()));
+    let report = again.import(dir.path(), &text).await.expect("reload");
+    assert_eq!(report["warnings"], json!([]), "{report}");
+    assert_eq!(
+        report["counts"]["annotations_out"],
+        exported["annotations"]
+            .as_array()
+            .expect("annotations")
+            .len()
+    );
+    assert_eq!(again.document().await["schema"], exported["schema"]);
 }

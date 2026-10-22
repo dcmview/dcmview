@@ -1049,7 +1049,10 @@ fn document_file_ref(
 /// checked against (`ImportContext::take_schema`), and it becomes the
 /// session's once the records are applied (`MemoryBackend::take_schema`):
 /// every later operation is checked against it and every export carries
-/// it. An import that fails puts no schema in force.
+/// it. An import that fails puts no schema in force. A schema without the
+/// class `roi` gets the implicit schema's `roi` class added when it is put
+/// in force, because the EMBED endpoints make rectangles of that class: so
+/// a session's export loads again whatever its document's schema was.
 ///
 /// # Which file a record lands on
 ///
@@ -1516,7 +1519,7 @@ async fn read_native_into_store(
         // in: an import that fails leaves the session's schema as it was.
         if let Some(schema) = schema {
             backend
-                .take_schema(schema)
+                .take_schema(with_embed_class(schema))
                 .map_err(|_| native_store_failure())?;
         }
         Ok::<_, AnnotationError>(report)
@@ -2039,6 +2042,31 @@ fn file_digest(file: &FileEntry) -> Result<[u8; 32], crate::keys::KeyFailure> {
             return Ok(digest);
         }
     }
+}
+
+/// `schema` with the implicit class `roi` added when it has none: the
+/// EMBED endpoints make rectangles of that class whatever schema is in
+/// force, so a session's export holds records of it, and its schema must
+/// have it for the export to load again. The class is the implicit
+/// schema's own (named `ROI`, no colour, every geometry). A schema that
+/// already has `roi` is kept as it is, and so is one that cannot take
+/// another class.
+fn with_embed_class(
+    mut schema: dcmview_annotation::LabelSchema,
+) -> dcmview_annotation::LabelSchema {
+    if schema
+        .classes
+        .iter()
+        .any(|class| class.id == dcmview_annotation::IMPLICIT_CLASS_ID)
+    {
+        return schema;
+    }
+    let mut implicit = dcmview_annotation::LabelSchema::implicit().classes;
+    schema.classes.append(&mut implicit);
+    if schema.validate().is_err() {
+        schema.classes.pop();
+    }
+    schema
 }
 
 fn store_error(error: impl std::fmt::Display) -> AnnotationError {

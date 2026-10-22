@@ -2037,7 +2037,9 @@ the store does not refuse a write into a read-only layer. A session has no
 label schema of its own: it starts with the implicit one (one class, `roi`,
 and no label fields), and a native `--annotations` document that carries a
 schema puts that schema in force once its records are applied
-(`MemoryBackend::take_schema`). A schema in force is not replaced.
+(`MemoryBackend::take_schema`), with the implicit `roi` class added when
+it has no class of that id, since the EMBED endpoints write `roi`
+rectangles whatever the schema. A schema in force is not replaced.
 
 **Cost.** A transaction costs time and memory in proportion to its envelope
 plus the things it names, each counted once however many of its operations

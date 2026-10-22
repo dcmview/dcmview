@@ -293,6 +293,12 @@ against it, operations after it are too, and exports carry it. Without a
 schema in the document the session has the implicit one: one class, `roi`,
 and no label fields, so a document without a schema can hold no labels.
 
+Rectangles drawn in the viewer, and the rows of an EMBED CSV, are of class
+`roi`. So that a session's export loads again whatever its document's
+schema, a document schema without a `roi` class gets the implicit one
+added (named `ROI`, without a colour, allowing every shape) when it becomes
+the session's; a schema with its own `roi` class is kept as it is.
+
 Exporting a document needs the key of every file that has ROIs. For a file
 that must be hashed first the download waits; when a file can no longer be
 read, the document export answers an error naming it, and the CSV export

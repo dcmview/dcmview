@@ -197,7 +197,9 @@ diagnostic viewer.
   operations are checked against it and exports carry it. Before, a
   document whose records used any class but `roi`, or that held labels,
   failed to load. A document that fails to load leaves the session without
-  a schema.
+  a schema. A schema without a `roi` class gains the implicit one, the
+  class of rectangles drawn in the viewer, so a session's export always
+  loads again.
 - `GET /api/file/{index}/annotations/native` answers one file's annotation
   records of every geometry type (point, line, polyline, polygon, rectangle,
   ellipse, mask) with their classes and layers, the session's label schema
