@@ -113,6 +113,7 @@ impl Session {
         ImportContext {
             resolver,
             schema: self.schema.as_ref(),
+            take_schema: false,
             layer: &self.layer,
             author: &self.author,
             now: &self.now,

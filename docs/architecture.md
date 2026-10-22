@@ -2319,8 +2319,12 @@ the table above) that both contexts carry.
 
 The import is strict: every file reference, layer, annotation and label
 must pass the model's `validate`, against the label schema in force where
-the records will live (a schema the document carries is not taken, and the
-report says so). A failure names the row and the first rule broken.
+the records will live. A schema the document carries is taken only by a
+caller that has none and sets `ImportContext::take_schema`: it must pass
+`LabelSchema::validate`, the records are checked against it, and it is
+handed on in `Fragment::schema`. Otherwise it is not taken, and the report
+says so (`schema_not_applied`). A failure names the row and the first rule
+broken.
 
 **A box the EMBED import kept as read.** A record that was loaded
 leniently is held unchanged, and a native export writes records as they are

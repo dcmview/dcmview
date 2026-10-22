@@ -1243,6 +1243,7 @@ async fn read_native_into_store(
         let context = ImportContext {
             resolver: &resolver,
             schema: backend.config().schema.as_ref(),
+            take_schema: false,
             layer: backend.default_layer(),
             author: &import_author,
             now: &stamp,
