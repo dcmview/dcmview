@@ -311,10 +311,12 @@ color, else its class's, and named by its class name and score. Masks are
 counted, not drawn. A panel at the top left of the image lists the classes
 with their colors and counts, the layers, and the labels on the file, the
 shown frame, its series, study and patient; a class or a layer is hidden
-and shown again from there, for this viewer only. Rectangles keep their
-ROI editing: selecting, moving, resizing and deleting one works as for
-an EMBED ROI, and the shape is drawn again from the saved record once the
-edit is saved. A session loaded from an EMBED CSV, or with no
+and shown again from there, for this viewer only; a hidden rectangle
+cannot be selected or deleted until it is shown again. Rectangles keep
+their ROI editing: selecting, moving, resizing and deleting one works as
+for an EMBED ROI, and the shape is drawn again from the saved record once
+the edit is saved. With the Redact tool the panel and the shapes are
+hidden, as ROIs are. A session loaded from an EMBED CSV, or with no
 `--annotations`, shows its ROIs as before.
 
 Exporting a document needs the key of every file that has ROIs. For a file

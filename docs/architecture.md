@@ -239,26 +239,37 @@ that apply to the shown image.
 
 `ImageViewport` mounts them through `viewport/nativeAnnotations.svelte.ts`
 (`NativeAnnotations`), which reads a file's native records the first time it
-is shown, again once each EMBED save of it is applied, and again after
-`forget`. Each read aborts the one before it, and a read that a later one,
-`forget`, or a copy at a newer store revision has overtaken is dropped. A
-404, or a read that shows no more than the EMBED view
+is shown and again once each EMBED save of it is applied. Its `forget` drops
+a file's copy so it is read again when next shown; nothing calls it yet,
+since nothing forgets the EMBED copy of a file either. Each read aborts the
+one before it, and a read that a later one, `forget`, or a copy at a newer
+store revision has overtaken is dropped. A refused EMBED save reads nothing
+and leaves the copy as it was. Copies are kept for the `RETAINED_FILES`
+files shown or read most recently, and an older one is read again when
+shown. A 404, or a read that shows no more than the EMBED view
 (`showsMoreThanEmbed`: the implicit schema, no labels, only EMBED rectangles
 in layers without a color), leaves the file with nothing native, and the
-viewport mounts none of the three. Hidden layers and classes are session
-view state in that store, never saved or sent.
+viewport mounts none of the three; so does Redact mode, which shows
+redaction boxes in place of ROIs. Hidden layers and classes are session view
+state in that store, never saved or sent.
 
 The EMBED rectangles stay with `RoiOverlay`, `RoiLabels` and the rectangle
-tool. `nativeView` (in `display.ts`) pairs each record with an `embed_index`
-with the live EMBED rectangle at that index, and draws it only while that
-rectangle is on the shown frame with the box the record reads as (rounded
-outward, as the EMBED view writes it). The indices it draws go to
-`RoiOverlay` and `RoiLabels` as `nativeDrawn`, which then draw no outline or
-number for them and keep the selected ROI's handles, the draft rectangle,
-the ROI list and hit testing. While the native copy is behind an edit (a
-drag, a save not read back, a delete that shifted the indices) the record
-is left out and the ROI overlay draws the rectangle as before, so a
-rectangle is never drawn twice or lost.
+tool. `display.ts` pairs each record with an `embed_index` with the live
+EMBED rectangle at that index, and draws it only while that rectangle is on
+the shown frame with the box the record reads as (rounded outward, as the
+EMBED view writes it). The viewport derives this in steps so that a drag
+recomputes only the pairing: `nativeFrame` splits a frame's shapes once per
+response and frame, `shownShapes` applies the hidden layers and classes, and
+`matchEmbedRects` pairs the EMBED-shown records with the live rectangles
+(`nativeView` composes the three). The indices whose record is drawn go to
+`RoiOverlay` and `RoiLabels` as `nativeDrawn`, which then draw no number
+for them and no outline except the selected ROI's highlight, and keep its
+handles, the draft rectangle, the ROI list and hit testing. The indices
+whose record is hidden are left out of the ROIs the viewport draws, lists
+and hit-tests, and a selected one is unselected. While the native copy is
+behind an edit (a drag, a save not read back, a delete that shifted the
+indices) the record is left out and the ROI overlay draws the rectangle as
+before, so a rectangle is never drawn twice or lost.
 
 The viewport retains the last complete presentation until its replacement is
 ready. `viewport/frameLayers.ts` shares cached colorwash and presentation
