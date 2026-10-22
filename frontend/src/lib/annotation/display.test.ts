@@ -249,14 +249,22 @@ describe("nativeView", () => {
 			const view = nativeView(nativeResponse(), { frame: 0 }, rects);
 			expect(view.shapes.map((shape) => shape.id)).not.toContain("a-rect");
 			expect(view.embedDrawn.size).toBe(0);
+			expect(view.embedHidden.size).toBe(0);
 		}
 	});
 
-	it("keeps a hidden record's rectangle from the EMBED overlay too", () => {
+	it("marks a hidden record's rectangle hidden, not drawn", () => {
 		const view = nativeView(nativeResponse(), { frame: 0, hiddenClasses: new Set(["mass"]) }, [embedRect]);
 
 		expect(view.shapes.map((shape) => shape.id)).not.toContain("a-rect");
-		expect([...view.embedDrawn]).toEqual([0]);
+		expect(view.embedDrawn.size).toBe(0);
+		expect([...view.embedHidden]).toEqual([0]);
+	});
+
+	it("draws the records the EMBED view does not show first, then those that stand for its rectangles", () => {
+		const view = nativeView(nativeResponse(), { frame: 0 }, [embedRect]);
+
+		expect(view.shapes.map((shape) => shape.id)).toEqual(["a-ellipse", "a-point", "a-polyline", "a-line", "a-rect"]);
 	});
 
 	it("draws records the EMBED view does not show whatever its rectangles", () => {
