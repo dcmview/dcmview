@@ -16,6 +16,13 @@ type Entry = { status: NativeAnnotationsStatus; response: NativeAnnotationsRespo
 
 const NOTHING = new Set<string>();
 
+/**
+ * How many files keep their copy: the one shown and those shown just before
+ * it. Cache hygiene, not a limit anyone sees: an evicted file is read again
+ * when it is shown.
+ */
+export const RETAINED_FILES = 8;
+
 function toggled(set: ReadonlySet<string>, id: string): ReadonlySet<string> {
 	const next = new Set(set);
 	if (!next.delete(id)) next.add(id);
@@ -34,6 +41,9 @@ function toggled(set: ReadonlySet<string>, id: string): ReadonlySet<string> {
  *
  * Which layers and classes are hidden is view state for the session: kept
  * here, never saved and never sent.
+ *
+ * Copies are kept for the `RETAINED_FILES` files shown or read most recently; an older
+ * one is dropped, its read aborted, and read again when it is shown.
  */
 export class NativeAnnotations {
 	#entries = $state.raw<Record<number, Entry | undefined>>({});
@@ -41,6 +51,8 @@ export class NativeAnnotations {
 	#hiddenClasses = $state.raw<ReadonlySet<string>>(NOTHING);
 	readonly #requests = new Map<number, { token: number; controller: AbortController }>();
 	#nextToken = 0;
+	// Most recently read first.
+	#recent: number[] = [];
 	readonly #load: (fileIndex: number, signal: AbortSignal) => Promise<NativeAnnotationsResponse>;
 
 	constructor({ load = fetchNativeAnnotations }: NativeAnnotationsOptions = {}) {
@@ -74,6 +86,7 @@ export class NativeAnnotations {
 
 	/** Reads the file the first time it is shown. */
 	ensureLoaded(fileIndex: number): void {
+		this.#retain(fileIndex);
 		if (this.#entries[fileIndex] !== undefined) return;
 		this.refresh(fileIndex);
 	}
@@ -83,6 +96,7 @@ export class NativeAnnotations {
 	 * shown until the new one arrives, and a read still running is dropped.
 	 */
 	refresh(fileIndex: number): void {
+		this.#retain(fileIndex);
 		this.#requests.get(fileIndex)?.controller.abort();
 		const token = ++this.#nextToken;
 		const controller = new AbortController();
@@ -119,8 +133,19 @@ export class NativeAnnotations {
 
 	/** Drops a file's copy, to read it again the next time it is shown. */
 	forget(fileIndex: number): void {
+		this.#recent = this.#recent.filter((file) => file !== fileIndex);
+		this.#drop(fileIndex);
+	}
+
+	#retain(fileIndex: number): void {
+		this.#recent = [fileIndex, ...this.#recent.filter((file) => file !== fileIndex)];
+		for (const evicted of this.#recent.splice(RETAINED_FILES)) this.#drop(evicted);
+	}
+
+	#drop(fileIndex: number): void {
 		this.#requests.get(fileIndex)?.controller.abort();
 		this.#requests.delete(fileIndex);
+		if (this.#entries[fileIndex] === undefined) return;
 		const { [fileIndex]: _dropped, ...rest } = this.#entries;
 		this.#entries = rest;
 	}

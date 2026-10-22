@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ApiError } from "../../api";
 import type { NativeAnnotationsResponse } from "../annotation/nativeAnnotations";
 import { nativeLayer, nativeRecord, nativeResponse } from "../../testing/nativeAnnotations";
-import { NativeAnnotations } from "./nativeAnnotations.svelte";
+import { NativeAnnotations, RETAINED_FILES } from "./nativeAnnotations.svelte";
 
 async function flush(): Promise<void> {
 	for (let index = 0; index < 6; index += 1) await Promise.resolve();
@@ -192,6 +192,49 @@ describe("NativeAnnotations", () => {
 		store.refresh(0);
 		await flush();
 		expect(store.response(0)?.revision).toBe(2);
+	});
+
+	it("keeps copies of the files read last only, and reads an evicted one again when shown", async () => {
+		const load = vi.fn(async (file: number) => nativeResponse({ revision: file }));
+		const store = new NativeAnnotations({ load });
+
+		for (let file = 0; file <= RETAINED_FILES; file += 1) store.ensureLoaded(file);
+		await flush();
+
+		expect(store.response(0)).toBeNull();
+		expect(store.response(1)?.revision).toBe(1);
+		expect(store.response(RETAINED_FILES)?.revision).toBe(RETAINED_FILES);
+		store.ensureLoaded(0);
+		await flush();
+		expect(load).toHaveBeenCalledTimes(RETAINED_FILES + 2);
+		expect(store.response(0)?.revision).toBe(0);
+	});
+
+	it("keeps the copy of a file shown again before it would be evicted", async () => {
+		const load = vi.fn(async (file: number) => nativeResponse({ revision: file }));
+		const store = new NativeAnnotations({ load });
+
+		store.ensureLoaded(0);
+		for (let file = 1; file < RETAINED_FILES; file += 1) store.ensureLoaded(file);
+		store.ensureLoaded(0);
+		store.ensureLoaded(RETAINED_FILES);
+		await flush();
+
+		expect(store.response(0)?.revision).toBe(0);
+		expect(store.response(1)).toBeNull();
+	});
+
+	it("aborts the read of a file it evicts", () => {
+		const signals: AbortSignal[] = [];
+		const store = new NativeAnnotations({ load: vi.fn((_file: number, signal: AbortSignal) => {
+			signals.push(signal);
+			return new Promise<NativeAnnotationsResponse>(() => {});
+		}) });
+
+		for (let file = 0; file <= RETAINED_FILES; file += 1) store.ensureLoaded(file);
+
+		expect(signals[0].aborted).toBe(true);
+		expect(signals.slice(1).every((signal) => !signal.aborted)).toBe(true);
 	});
 
 	it("toggles layer and class visibility as view state", () => {
