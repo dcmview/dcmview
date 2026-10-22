@@ -10,6 +10,8 @@ diagnostic viewer.
 
 ## Unreleased
 
+## 0.5.0-beta.1 - 2026-10-22
+
 ### Breaking changes
 
 - Image files now appear in mixed folders by default. Use `--formats dicom`
@@ -208,13 +210,20 @@ diagnostic viewer.
   place in the file's EMBED view, so a client can pair it with the
   rectangles it edits there. The read waits for `--annotations` like the
   EMBED read, and never hashes a file.
-- The viewer shows a loaded `dcmview.annotations` document's annotations:
-  every point, line, polyline, polygon, rectangle and ellipse in its layer
-  or class color with its class name (and score), a legend of the classes
-  with their counts, layer and class toggles that hide and show them in
-  this viewer only, and the labels of the shown image by level. Its
-  rectangles are edited as ROIs. A session without a document looks as
-  before.
+- The viewer shows the annotation records of the shown file, such as those
+  of a loaded `dcmview.annotations` document or made through
+  `POST /api/annotations/ops`: every point, line, polyline, polygon,
+  rectangle and ellipse in its layer or class color with its class name
+  (and score), a legend of the classes with their counts, layer and class
+  toggles that hide and show them in this viewer only, and the labels of
+  the shown image by level. Its rectangles are edited as ROIs. A session
+  whose annotations are only EMBED-style ROIs and rectangles drawn in the
+  viewer looks as before.
+- `cargo run --example generate_sample_annotations` writes a sample
+  `dcmview.annotations` document for a folder, with several classes and
+  layers, every vector shape type and labels; `docs/annotations.md`
+  describes it. Python's `view(annotations=...)` takes such a document as
+  well as an EMBED-style CSV, as `--annotations` does.
 
 ### Changed
 
@@ -269,9 +278,9 @@ diagnostic viewer.
 
 - The `error` text of a failed decode is now `frame decode failed` or
   `raw frame decode failed`, with a reason only where the viewer states one
-  itself ("pixel data disagrees with the header" and its numbers, native
-  pixel data shorter than its frames, a truncated fragment, a raster file
-  that changed since it was listed). The decoder's own message moved
+  itself, such as "pixel data disagrees with the header" and its numbers,
+  native pixel data that is missing or shorter than its frames, a truncated
+  fragment, or a raster file that changed since it was listed. The decoder's own message moved
   to the log at debug level (`RUST_LOG=dcmview=debug`), and for PNG, JPEG,
   TIFF and WebP files the log names the kind of failure instead. The
   overlay endpoints and the endpoints that read a file's metadata (tags,
