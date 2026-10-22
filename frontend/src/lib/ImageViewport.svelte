@@ -14,7 +14,12 @@
 			applyRedactionsToSeries,
 		fetchRedactions,
 		updateRedactions,
+		updateAnnotations,
 	} from "../api";
+	import { nativeView } from "./annotation/display";
+	import NativeAnnotationLabels from "./annotation/NativeAnnotationLabels.svelte";
+	import NativeAnnotationOverlay from "./annotation/NativeAnnotationOverlay.svelte";
+	import NativeAnnotationPanel from "./annotation/NativeAnnotationPanel.svelte";
 	import type { WindowDragBase } from "./annotation/tools/tool";
 	import {
 		canonicalRect,
@@ -37,6 +42,7 @@
 	import type { NavigationFrameRef } from "./seriesNavigation";
 	import type { ActiveTool } from "./viewerTools";
 	import { AnnotationStore } from "./viewport/annotationStore.svelte";
+	import { NativeAnnotations } from "./viewport/nativeAnnotations.svelte";
 	import { playDisplayCine } from "./viewport/displayCine";
 	import { LiveWindowPreview } from "./viewport/liveWindowPreview";
 	import { DisplayFrameSource } from "./viewport/displayFrameSource";
@@ -201,7 +207,15 @@
 	let rawWindowLevelFallbackByFile = $state<Record<number, boolean>>({});
 	// Color files: neither path windows them, so a drag sends no previews.
 	let colorFiles = $state<Record<number, boolean>>({});
-	const annotations = new AnnotationStore();
+	// A file's native records, read again once an EMBED save of it is applied.
+	const native = new NativeAnnotations();
+	const annotations = new AnnotationStore({
+		save: async (fileIndex, rois) => {
+			const saved = await updateAnnotations(fileIndex, rois);
+			native.refresh(fileIndex);
+			return saved;
+		},
+	});
 	// Redaction boxes are edited like ROIs. The server blanks them in the
 	// frames it sends, so a saved change reloads the frames on screen.
 	const redactions = new AnnotationStore({
@@ -444,6 +458,23 @@
 	const visibleRois = $derived(
 		overlay ? [] : roisOnFrame(edited.annotations(presented?.target.file.index ?? activeFile.index), presented?.target.frameIndex ?? currentFrame),
 	);
+	// Native records on the frame on screen, beside the EMBED ROIs of the same frame.
+	const nativeFileIndex = $derived(presented?.target.file.index ?? activeFile.index);
+	const nativeFrame = $derived(presented?.target.frameIndex ?? currentFrame);
+	const nativeResponse = $derived(overlay ? null : native.response(nativeFileIndex));
+	const nativeShown = $derived(nativeResponse
+		? nativeView(
+			nativeResponse,
+			{ frame: nativeFrame, hiddenLayers: native.hiddenLayers, hiddenClasses: native.hiddenClasses },
+			roisOnFrame(annotations.annotations(nativeFileIndex), nativeFrame),
+		)
+		: null);
+	// Redaction boxes are drawn in place of ROIs and have no native records.
+	const nativeDrawnRois = $derived(redacting ? undefined : nativeShown?.embedDrawn);
+	$effect(() => {
+		const fileIndex = activeFile.index;
+		if (!overlay && activeFile.has_pixels) untrack(() => native.ensureLoaded(fileIndex));
+	});
 	const draftRoi = $derived(
 		tools.draft
 			? canonicalRect(tools.draft.start, tools.draft.current, imageRows, imageColumns)
@@ -1417,6 +1448,14 @@
 					scale={activeTransform.scale}
 				/>
 			{/if}
+			{#if nativeShown && imageColumns > 0 && imageRows > 0}
+				<NativeAnnotationOverlay
+					shapes={nativeShown.shapes}
+					rows={imageRows}
+					columns={imageColumns}
+					scale={activeTransform.scale}
+				/>
+			{/if}
 			{#if !overlay && imageColumns > 0 && imageRows > 0}
 				<RoiOverlay
 					rois={visibleRois}
@@ -1426,6 +1465,7 @@
 					columns={imageColumns}
 					scale={activeTransform.scale}
 					pixelAspectRatio={displayGeometry.pixelAspectRatio}
+					nativeDrawn={nativeDrawnRois}
 				/>
 			{/if}
 		</div>
@@ -1438,6 +1478,14 @@
 				geometry={displayGeometry}
 			/>
 		{/if}
+		{#if nativeShown && imageColumns > 0 && imageRows > 0}
+			<NativeAnnotationLabels
+				shapes={nativeShown.shapes}
+				transform={activeTransform}
+				{orientation}
+				geometry={displayGeometry}
+			/>
+		{/if}
 		{#if !overlay && imageColumns > 0 && imageRows > 0}
 			<RoiLabels
 				rois={visibleRois}
@@ -1445,6 +1493,7 @@
 				transform={activeTransform}
 				{orientation}
 				geometry={displayGeometry}
+				nativeDrawn={nativeDrawnRois}
 			/>
 		{/if}
 		<div class="hud">
@@ -1496,6 +1545,26 @@
 				onretrysave={() => edited.retrySave(activeFile.index)}
 				onrevert={() => edited.rollback(activeFile.index)}
 			/>
+		{/if}
+		{#if nativeResponse}
+			<!-- Its own pointer and wheel input: a click on a toggle or a scroll of the list is not a viewport gesture. -->
+			<div
+				class="native-annotation-side"
+				role="presentation"
+				onpointerdown={(event) => event.stopPropagation()}
+				onpointermove={(event) => event.stopPropagation()}
+				onwheel={(event) => event.stopPropagation()}
+				ondblclick={(event) => event.stopPropagation()}
+			>
+				<NativeAnnotationPanel
+					response={nativeResponse}
+					frame={nativeFrame}
+					hiddenLayers={native.hiddenLayers}
+					hiddenClasses={native.hiddenClasses}
+					onlayertoggle={(layerId) => native.toggleLayer(layerId)}
+					onclasstoggle={(classId) => native.toggleClass(classId)}
+				/>
+			</div>
 		{/if}
 		{#if windowLegend || displayedValueOverlay}
 			<div class="legends">
@@ -1633,6 +1702,18 @@
 		.loading-wheel {
 			animation-duration: 1.8s;
 		}
+	}
+
+	/* Below the frame request indicator, above the HUD. */
+	.native-annotation-side {
+		position: absolute;
+		left: 12px;
+		top: 48px;
+		z-index: 2;
+		width: min(30ch, 40%);
+		max-height: calc(100% - 140px);
+		overflow: auto;
+		scrollbar-width: thin;
 	}
 
 	.legends {
