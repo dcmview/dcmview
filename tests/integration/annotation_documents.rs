@@ -82,6 +82,15 @@ impl Session {
         Self::over(FileRegistry::from_files(files), AnnotationStore::loading())
     }
 
+    /// A session over `files` whose `--annotations` document has not been
+    /// imported yet, as the viewer makes one: writes wait for the import.
+    fn loading_document(files: Vec<FileEntry>) -> Self {
+        Self::over(
+            FileRegistry::from_files(files),
+            AnnotationStore::loading_document(),
+        )
+    }
+
     /// A session over `files` that had no `--annotations`.
     fn plain(files: Vec<FileEntry>) -> Self {
         Self::over(FileRegistry::from_files(files), AnnotationStore::empty())
@@ -2388,4 +2397,835 @@ async fn redaction_boxes_are_in_no_document() {
     // The header, the default layer every session has, and the end.
     assert_eq!(lines.lines().count(), 3, "{lines}");
     assert!(!lines.contains("\"annotation\""));
+}
+
+/// A label schema with two coloured classes and one field for files,
+/// studies and series.
+fn classed_schema() -> Value {
+    json!({
+        "schema_id": "reading", "schema_version": 2,
+        "classes": [
+            { "id": "mass", "name": "Mass", "color": "#E4572E",
+              "geometry": ["rect", "polygon", "ellipse"] },
+            { "id": "calc", "name": "Calcification", "color": "#3B8EA5",
+              "geometry": ["point", "rect"] },
+        ],
+        "fields": [{
+            "id": "density", "name": "Density", "type": "category",
+            "options": [{ "id": "a", "name": "A" }, { "id": "b", "name": "B" }],
+            "applies_to": ["file", "frame", "series", "study", "patient"],
+        }],
+    })
+}
+
+fn classed(n: u32, file: &str, class: &str, geometry: Value) -> Value {
+    let mut record = annotation(n, file, "default", geometry);
+    record["class"] = json!(class);
+    record
+}
+
+fn label_record(n: u32, target: Value, value: &str) -> Value {
+    json!({
+        "id": id(n), "target": target, "field": "density", "layer": "default", "value": value,
+        "rev": 1, "created_by": "user:someone", "created_at": "2001-01-01T00:00:00.000Z",
+        "modified_by": "user:someone", "modified_at": "2001-01-01T00:00:00.000Z",
+    })
+}
+
+/// A session has no label schema of its own, so the schema of its
+/// `--annotations` document becomes the session's: the document's classes
+/// and labels load, operations are checked against it, and the export
+/// carries it. A document that fails to load leaves no schema behind.
+#[tokio::test]
+async fn a_documents_schema_becomes_the_sessions() {
+    let dir = tempdir().expect("temp dir");
+    let files = || vec![entry(dir.path(), "a.dcm", "1.2.3.1")];
+    let mut document: Value = serde_json::from_str(&document_of(
+        vec![reference("sop:1.2.3.1", Some("1.2.3.1"), "a.dcm")],
+        vec![],
+        vec![classed(1, "sop:1.2.3.1", "mass", rect(1, 2, 30, 40))],
+    ))
+    .expect("document");
+    document["schema"] = classed_schema();
+    document["labels"] = json!([
+        label_record(2, json!({ "file": "sop:1.2.3.1" }), "a"),
+        label_record(3, json!({ "study": "1.2.3" }), "b"),
+    ]);
+
+    let session = Session::loading(files());
+    let report = session
+        .import(dir.path(), &document.to_string())
+        .await
+        .expect("import");
+    assert_eq!(report["warnings"], json!([]), "{report}");
+    assert_eq!(
+        (
+            &report["counts"]["annotations_out"],
+            &report["counts"]["labels_out"]
+        ),
+        (&json!(1), &json!(2))
+    );
+    let exported = session.document().await;
+    // The document's schema, with the class the EMBED endpoints draw in.
+    let mut schema: LabelSchema =
+        serde_json::from_value(classed_schema()).expect("the schema as the model reads it");
+    schema.classes.extend(LabelSchema::implicit().classes);
+    assert_eq!(
+        exported["schema"],
+        serde_json::to_value(&schema).expect("schema")
+    );
+    assert_eq!(exported["annotations"][0]["class"], "mass");
+
+    // An operation is checked against the session's schema now.
+    let post = |class: &str| {
+        session
+            .server
+            .post("/api/annotations/ops?file=0")
+            .json(&json!({
+                "op_id": dcmview_annotation::new_id(), "actor": "user:test",
+                "ts": "2026-10-10T08:00:00.000Z",
+                "op": { "type": "create_annotation", "annotation": classed(
+                    if class == "calc" { 4 } else { 5 }, "sop:1.2.3.1", class,
+                    json!({ "type": "point", "x": 3, "y": 4 })) },
+            }))
+    };
+    assert_eq!(post("calc").await.status_code(), StatusCode::OK);
+    let refused = post("nodule").await;
+    assert_eq!(refused.status_code(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        refused.json::<Value>()["result"]["violations"][0]["code"],
+        "unknown_class"
+    );
+
+    // A document whose records do not fit it puts no schema in force.
+    document["annotations"][0]["class"] = json!("nodule");
+    let failed = Session::loading(files());
+    failed
+        .import(dir.path(), &document.to_string())
+        .await
+        .expect_err("a class the schema does not have");
+    assert!(failed.store.backend().schema().expect("schema").is_none());
+}
+
+impl Session {
+    async fn native(&self, index: usize) -> Value {
+        let response = self
+            .server
+            .get(&format!("/api/file/{index}/annotations/native"))
+            .await;
+        assert_eq!(
+            response.status_code(),
+            StatusCode::OK,
+            "{}",
+            response.text()
+        );
+        response.json()
+    }
+}
+
+/// `(id, class, geometry type, embed_index)` of each record a native read
+/// answers, in its order.
+fn native_records(answer: &Value) -> Vec<(String, String, String, Value)> {
+    answer["annotations"]
+        .as_array()
+        .expect("annotations")
+        .iter()
+        .map(|record| {
+            (
+                record["id"].as_str().expect("id").to_string(),
+                record["class"].as_str().expect("class").to_string(),
+                record["geometry"]["type"]
+                    .as_str()
+                    .expect("geometry")
+                    .to_string(),
+                record["embed_index"].clone(),
+            )
+        })
+        .collect()
+}
+
+fn label_ids(answer: &Value) -> Vec<String> {
+    answer["labels"]
+        .as_array()
+        .expect("labels")
+        .iter()
+        .map(|label| label["id"].as_str().expect("id").to_string())
+        .collect()
+}
+
+/// Two files of one study, a document with classes, a coloured second
+/// layer, every vector geometry and labels on files, a frame, the study,
+/// the patient and another series.
+fn classed_document() -> Value {
+    let a = "sop:1.2.3.1";
+    let b = "sop:1.2.3.2";
+    let mut document: Value = serde_json::from_str(&document_of(
+        vec![
+            reference(a, Some("1.2.3.1"), "a.dcm"),
+            reference(b, Some("1.2.3.2"), "b.dcm"),
+        ],
+        vec![
+            json!({ "id": "second", "name": "Second reader", "kind": "user",
+                     "color": "#22AA44" }),
+        ],
+        vec![
+            classed(1, a, "mass", rect(10, 20, 30, 40)),
+            classed(
+                2,
+                a,
+                "mass",
+                json!({ "type": "polygon", "points": [
+                    { "x": 1, "y": 1 }, { "x": 9, "y": 1 }, { "x": 5, "y": 9 }] }),
+            ),
+            classed(3, a, "calc", json!({ "type": "point", "x": 3, "y": 4 })),
+            classed(
+                4,
+                a,
+                "mass",
+                json!({ "type": "ellipse", "cx": 50, "cy": 40, "rx": 10, "ry": 5, "angle": 30 }),
+            ),
+            classed(5, a, "calc", rect(60, 60, 70, 70)),
+            classed(6, b, "mass", rect(1, 1, 5, 5)),
+        ],
+    ))
+    .expect("document");
+    document["annotations"][4]["layer"] = json!("second");
+    document["schema"] = classed_schema();
+    document["labels"] = json!([
+        label_record(11, json!({ "file": a }), "a"),
+        label_record(12, json!({ "frame": a, "index": 2 }), "b"),
+        label_record(13, json!({ "study": "1.2.3" }), "a"),
+        label_record(14, json!({ "patient": "TEST" }), "b"),
+        label_record(15, json!({ "file": b }), "b"),
+        label_record(16, json!({ "series": "9.9.9" }), "a"),
+    ]);
+    document
+}
+
+fn study_files(directory: &Path) -> Vec<FileEntry> {
+    let mut files = vec![
+        entry(directory, "a.dcm", "1.2.3.1"),
+        entry(directory, "b.dcm", "1.2.3.2"),
+    ];
+    for file in &mut files {
+        file.study_instance_uid = "1.2.3".to_string();
+        file.series_instance_uid = "1.2.3.4".to_string();
+    }
+    files
+}
+
+/// The per-file native read: the session's schema and layers, the file's
+/// records of every geometry with their places in the EMBED view, and the
+/// labels on the file, its frames, its study and its patient.
+#[tokio::test]
+async fn a_files_records_are_read_with_their_classes_layers_and_labels() {
+    let dir = tempdir().expect("temp dir");
+    let session = Session::loading(study_files(dir.path()));
+
+    // The read waits for the import, as the EMBED read does.
+    let waiting = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        session.server.get("/api/file/0/annotations/native"),
+    )
+    .await;
+    assert!(waiting.is_err(), "a native read waits for the import");
+    session
+        .import(dir.path(), &classed_document().to_string())
+        .await
+        .expect("import");
+
+    let answer = session.native(0).await;
+    let keys: Vec<&String> = answer.as_object().expect("object").keys().collect();
+    assert_eq!(
+        keys,
+        ["annotations", "labels", "layers", "revision", "schema"]
+    );
+    assert_eq!(answer["schema"]["schema_id"], "reading");
+    assert_eq!(answer["schema"]["classes"][0]["color"], "#E4572E");
+    let layers: Vec<(&Value, &Value)> = answer["layers"]
+        .as_array()
+        .expect("layers")
+        .iter()
+        .map(|layer| (&layer["id"], &layer["color"]))
+        .collect();
+    assert_eq!(
+        layers,
+        [
+            (&json!("default"), &Value::Null),
+            (&json!("second"), &json!("#22AA44"))
+        ]
+    );
+    let text = |n: u32, class: &str, kind: &str, index: Value| {
+        (id(n), class.to_string(), kind.to_string(), index)
+    };
+    assert_eq!(
+        native_records(&answer),
+        [
+            text(1, "mass", "rect", json!(0)),
+            text(2, "mass", "polygon", Value::Null),
+            text(3, "calc", "point", Value::Null),
+            text(4, "mass", "ellipse", Value::Null),
+            text(5, "calc", "rect", json!(1)),
+        ]
+    );
+    assert_eq!(answer["annotations"][3]["geometry"]["angle"], 30);
+    assert_eq!(answer["annotations"][4]["layer"], "second");
+    assert_eq!(answer["annotations"][0]["file"], "sop:1.2.3.1");
+    // The EMBED view shows the two rectangles, in those places (as EMBED
+    // writes them: y0, x0, y1, x1).
+    assert_eq!(
+        session.rois(0).await,
+        rows(&[[20, 10, 40, 30], [60, 60, 70, 70]], &[])
+    );
+    assert_eq!(
+        label_ids(&answer),
+        [id(11), id(12), id(13), id(14)],
+        "the file's, its frame's, its study's and its patient's"
+    );
+    let revision = answer["revision"].as_u64().expect("revision");
+    assert_eq!(
+        revision,
+        session.store.backend().revision().expect("revision")
+    );
+
+    // The other file has its own records and labels, and the shared ones.
+    let other = session.native(1).await;
+    assert_eq!(native_records(&other), [text(6, "mass", "rect", json!(0))]);
+    assert_eq!(label_ids(&other), [id(13), id(14), id(15)]);
+
+    // No file is a 404 in the error envelope.
+    let missing = session.server.get("/api/file/9/annotations/native").await;
+    assert_eq!(missing.status_code(), StatusCode::NOT_FOUND);
+    assert_eq!(missing.json::<Value>()["code"], "not_found");
+}
+
+/// A save of the EMBED view changes the rectangles it shows, by their
+/// places in it, and leaves every other record; the native read then gives
+/// each rectangle its place in the view, and the store's new revision.
+#[tokio::test]
+async fn embed_indexes_follow_a_save_of_the_embed_view() {
+    let dir = tempdir().expect("temp dir");
+    let session = Session::loading(study_files(dir.path()));
+    session
+        .import(dir.path(), &classed_document().to_string())
+        .await
+        .expect("import");
+    let before = session.native(0).await;
+    let others = |answer: &Value| -> Vec<(String, String, String, Value)> {
+        native_records(answer)
+            .into_iter()
+            .filter(|record| record.2 != "rect")
+            .collect()
+    };
+    let unshown = others(&before);
+    assert_eq!(unshown.len(), 3);
+
+    // The first rectangle stays, the second moves, and one is added.
+    let save = |rois: EmbedRoiAnnotations| {
+        let server = &session.server;
+        async move {
+            server
+                .put("/api/file/0/annotations")
+                .json(&rois)
+                .await
+                .assert_status_ok();
+        }
+    };
+    save(rows(&[[20, 10, 40, 30], [5, 5, 15, 15], [1, 2, 3, 4]], &[])).await;
+    let after = session.native(0).await;
+    let records = native_records(&after);
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record.2 == "rect")
+            .map(|record| (record.0.clone(), record.3.clone()))
+            .collect::<Vec<_>>()[..2],
+        [(id(1), json!(0)), (id(5), json!(1))]
+    );
+    assert_eq!(records.len(), 6, "{after}");
+    assert_eq!(records[5].1, "roi", "a new rectangle has the EMBED class");
+    assert_eq!(records[5].3, json!(2));
+    assert_eq!(others(&after), unshown, "the other records are left");
+    assert!(
+        after["revision"].as_u64() > before["revision"].as_u64(),
+        "{} then {}",
+        before["revision"],
+        after["revision"]
+    );
+    let in_view = |answer: &Value, view: &EmbedRoiAnnotations| {
+        for record in answer["annotations"].as_array().expect("annotations") {
+            if let Some(index) = record["embed_index"].as_u64() {
+                let [y0, x0, y1, x1] = view.roi_coords[index as usize];
+                assert_eq!(rect(x0, y0, x1, y1), record["geometry"], "{record}");
+            }
+        }
+    };
+    in_view(&after, &session.rois(0).await);
+
+    // A save of one ROI keeps the first rectangle and deletes the rest.
+    save(rows(&[[20, 10, 40, 30]], &[])).await;
+    let last = session.native(0).await;
+    assert_eq!(
+        native_records(&last)
+            .into_iter()
+            .filter(|record| record.2 == "rect")
+            .collect::<Vec<_>>(),
+        [(id(1), "mass".into(), "rect".into(), json!(0))]
+    );
+    assert_eq!(others(&last), unshown);
+    in_view(&last, &session.rois(0).await);
+}
+
+/// A read hashes nothing. A file whose key needs its bytes (a raster)
+/// answers empty, its staged CSV rows staying in the EMBED view, until
+/// something that writes settles its key; once a document import has
+/// placed records on it, they are there.
+#[tokio::test]
+async fn a_file_whose_key_is_not_settled_answers_empty_and_is_not_hashed() {
+    let dir = tempdir().expect("temp dir");
+    let mut raster = unnamed(dir.path(), "scan.png", b"raster bytes");
+    raster.format = dcmview::api::contracts::FileFormat::Png;
+    let session = Session::loading(vec![raster.clone()]);
+    session.stage(HashMap::from([(0, rows(&[[1, 2, 3, 4]], &[]))]));
+
+    let answer = session.native(0).await;
+    assert_eq!(answer["annotations"], json!([]));
+    assert_eq!(answer["labels"], json!([]));
+    assert_eq!(answer["schema"]["schema_id"], "implicit");
+    assert_eq!(answer["schema"]["classes"][0]["id"], "roi");
+    assert_eq!(answer["layers"][0]["id"], "default");
+    let stats = session.registry.key_stats();
+    assert_eq!((stats.files_hashed, stats.bytes_hashed), (0, 0));
+    assert_eq!(session.registry.files_page(None, None).keys_hashing, 0);
+    assert!(!session.registry.key_status(0).expect("status").settled);
+    assert_eq!(session.rois(0).await, rows(&[[1, 2, 3, 4]], &[]));
+
+    // A document import hashes the files it places records on; the read
+    // then shows them.
+    let key = content_key(b"raster bytes");
+    let mut named = reference(&key, None, "scan.png");
+    named["size_bytes"] = json!(12);
+    named["kind"] = json!("raster");
+    named["format"] = json!("png");
+    let imported = Session::loading(vec![raster]);
+    imported
+        .import(
+            dir.path(),
+            &document_of(
+                vec![named],
+                vec![],
+                vec![annotation(1, &key, "default", rect(1, 1, 2, 2))],
+            ),
+        )
+        .await
+        .expect("import");
+    let answer = imported.native(0).await;
+    assert_eq!(
+        native_records(&answer),
+        [(id(1), "roi".into(), "rect".into(), json!(0))]
+    );
+    assert_eq!(answer["annotations"][0]["file"], key);
+}
+
+/// A masked session sends keys and hierarchy ids as it shows them, and no
+/// real one: a label on the study as the session shows it applies, one
+/// read from a document under the real UID names nothing here.
+#[tokio::test]
+async fn a_masked_session_reads_records_under_the_keys_it_shows() {
+    let dir = tempdir().expect("temp dir");
+    let registry = FileRegistry::masked(Arc::new(Masker::new()));
+    for file in study_files(dir.path()) {
+        registry.insert(file);
+    }
+    registry.mark_scan_complete();
+    let session = Session::over(registry, AnnotationStore::loading());
+    let mut document = classed_document();
+    document["files"] = json!([
+        reference("sop:1.2.3.1", Some("1.2.3.1"), "a.dcm"),
+        reference("sop:1.2.3.2", Some("1.2.3.2"), "b.dcm"),
+    ]);
+    // Found by their paths, and checked against their keys.
+    session
+        .import(dir.path(), &document.to_string())
+        .await
+        .expect("import");
+    let catalog: Value = serde_json::from_str(&session.text("/api/files").await).expect("files");
+    // Left out of the catalog: `sop:` and the UID the session shows.
+    assert!(catalog["files"][0].get("file_key").is_none());
+    let shown_key = format!(
+        "sop:{}",
+        catalog["files"][0]["sop_instance_uid"]
+            .as_str()
+            .expect("uid")
+    );
+    let shown_study = catalog["files"][0]["study_instance_uid"]
+        .as_str()
+        .expect("study")
+        .to_string();
+    assert_ne!(shown_key, "sop:1.2.3.1");
+
+    // A label on the study as this session shows it.
+    session
+        .op(
+            Some(0),
+            json!({ "type": "set_label", "id": id(20), "base_rev": null,
+                    "target": { "study": shown_study }, "field": "density",
+                    "layer": "default", "before": null, "after": "b" }),
+        )
+        .await;
+    let response = session.server.get("/api/file/0/annotations/native").await;
+    response.assert_status_ok();
+    let text = response.text();
+    for real in ["1.2.3.1", "\"1.2.3\"", "1.2.3.2", "\"TEST\""] {
+        assert!(!text.contains(real), "{real}: {text}");
+    }
+    let answer: Value = serde_json::from_str(&text).expect("answer");
+    assert_eq!(native_records(&answer).len(), 5);
+    assert!(answer["annotations"]
+        .as_array()
+        .expect("annotations")
+        .iter()
+        .all(|record| record["file"] == shown_key.as_str()));
+    // The file's and its frame's labels under the shown key, and the
+    // study's under the shown UID; the document's study and patient
+    // labels name a real UID and a real id, which this session does not
+    // show.
+    assert_eq!(label_ids(&answer), [id(11), id(12), id(20)]);
+    assert_eq!(answer["labels"][0]["target"], json!({ "file": shown_key }));
+    assert_eq!(
+        answer["labels"][2]["target"],
+        json!({ "study": shown_study })
+    );
+    // No user name: authors are written as a masked export writes them,
+    // also on a record an operation made.
+    session
+        .op(
+            Some(0),
+            json!({ "type": "create_annotation", "annotation": classed(
+                21, &shown_key, "calc", json!({ "type": "point", "x": 3, "y": 4 })) }),
+        )
+        .await;
+    let response = session.server.get("/api/file/0/annotations/native").await;
+    response.assert_status_ok();
+    let text = response.text();
+    let answer: Value = serde_json::from_str(&text).expect("answer");
+    let made = answer["annotations"]
+        .as_array()
+        .expect("annotations")
+        .iter()
+        .find(|record| record["id"] == id(21).as_str())
+        .expect("the record the operation made");
+    assert_eq!(made["created_by"], "user:local");
+    assert_eq!(made["modified_by"], "user:local");
+    assert_eq!(answer["labels"][2]["created_by"], "user:local");
+    assert_eq!(answer["labels"][2]["modified_by"], "user:local");
+    assert_eq!(answer["layers"][0]["source"]["author"], "user:local");
+    let user = dcmview::annotations::session_author();
+    if user.as_str() != "user:local" {
+        assert!(!text.contains(user.as_str()), "{user}: {text}");
+    }
+}
+
+/// A session whose document schema has no `roi` class still writes an
+/// export it can load again: the EMBED endpoints make `roi` rectangles,
+/// and the session's schema gains the implicit `roi` class with the
+/// document's.
+#[tokio::test]
+async fn an_export_after_an_embed_save_loads_again_under_a_document_schema() {
+    let dir = tempdir().expect("temp dir");
+    let session = Session::loading(study_files(dir.path()));
+    session
+        .import(dir.path(), &classed_document().to_string())
+        .await
+        .expect("import");
+    let answer = session.native(0).await;
+    let classes: Vec<&Value> = answer["schema"]["classes"]
+        .as_array()
+        .expect("classes")
+        .iter()
+        .map(|class| &class["id"])
+        .collect();
+    assert_eq!(classes, [&json!("mass"), &json!("calc"), &json!("roi")]);
+    assert_eq!(answer["schema"]["classes"][2]["name"], "ROI");
+    assert!(answer["schema"]["classes"][2]["color"].is_null());
+
+    // One more rectangle through the EMBED view: a `roi` record.
+    session
+        .server
+        .put("/api/file/0/annotations")
+        .json(&rows(
+            &[[20, 10, 40, 30], [60, 60, 70, 70], [1, 2, 3, 4]],
+            &[],
+        ))
+        .await
+        .assert_status_ok();
+    let text = session.text("/api/annotations/export.json").await;
+    let exported: Value = serde_json::from_str(&text).expect("document");
+    assert!(exported["annotations"]
+        .as_array()
+        .expect("annotations")
+        .iter()
+        .any(|record| record["class"] == "roi"));
+
+    let again = Session::loading(study_files(dir.path()));
+    let report = again.import(dir.path(), &text).await.expect("reload");
+    assert_eq!(report["warnings"], json!([]), "{report}");
+    assert_eq!(
+        report["counts"]["annotations_out"],
+        exported["annotations"]
+            .as_array()
+            .expect("annotations")
+            .len()
+    );
+    assert_eq!(again.document().await["schema"], exported["schema"]);
+}
+
+/// Writes of a session with a document wait for its import, so they are
+/// checked against the schema it brings; a CSV session's do not
+/// (`annotations_endpoint`).
+#[tokio::test]
+async fn writes_wait_for_a_document_import() {
+    let dir = tempdir().expect("temp dir");
+    let session = Session::loading_document(study_files(dir.path()));
+    let body = json!({
+        "op_id": dcmview_annotation::new_id(), "actor": "user:test",
+        "ts": "2026-10-10T08:00:00.000Z",
+        "op": { "type": "create_annotation", "annotation": classed(
+            30, "sop:1.2.3.1", "calc", json!({ "type": "point", "x": 3, "y": 4 })) },
+    });
+    let waiting = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        session
+            .server
+            .post("/api/annotations/ops?file=0")
+            .json(&body),
+    )
+    .await;
+    assert!(waiting.is_err(), "an operation waits for the document");
+    let saving = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        session
+            .server
+            .put("/api/file/0/annotations")
+            .json(&rows(&[[1, 2, 3, 4]], &[])),
+    )
+    .await;
+    assert!(saving.is_err(), "an EMBED save waits for the document");
+    session
+        .import(dir.path(), &classed_document().to_string())
+        .await
+        .expect("import");
+    // Checked against the document's schema: `calc` is one of its classes.
+    let response = session
+        .server
+        .post("/api/annotations/ops?file=0")
+        .json(&body)
+        .await;
+    assert_eq!(
+        response.status_code(),
+        StatusCode::OK,
+        "{}",
+        response.text()
+    );
+
+    // A failed import holds up no write.
+    let failed = Session::loading_document(study_files(dir.path()));
+    let mut broken = classed_document();
+    broken["annotations"][0]["class"] = json!("nodule");
+    failed
+        .import(dir.path(), &broken.to_string())
+        .await
+        .expect_err("a class the schema does not have");
+    failed
+        .server
+        .put("/api/file/0/annotations")
+        .json(&rows(&[[1, 2, 3, 4]], &[]))
+        .await
+        .assert_status_ok();
+}
+
+/// A document the store refuses after the adapter took it (a layer id the
+/// session already has) fails whole, and puts no schema in force.
+#[tokio::test]
+async fn an_import_the_store_refuses_puts_no_schema_in_force() {
+    let dir = tempdir().expect("temp dir");
+    // A CSV-like session, whose writes do not wait, so a layer can be
+    // made before the import.
+    let session = Session::loading(study_files(dir.path()));
+    session
+        .op(
+            None,
+            json!({ "type": "create_layer",
+                    "layer": { "id": "second", "name": "Taken", "kind": "user" } }),
+        )
+        .await;
+    let error = session
+        .import(dir.path(), &classed_document().to_string())
+        .await
+        .expect_err("the layer id is taken");
+    assert!(error.to_string().contains("refused"), "{error}");
+    assert!(session.store.backend().schema().expect("schema").is_none());
+}
+
+/// Of byte-identical files, which share a key, a rectangle the EMBED view
+/// of one made is that file's alone; a record made through an operation
+/// is on both.
+#[tokio::test]
+async fn a_copys_embed_rows_are_not_read_for_the_other_copy() {
+    let dir = tempdir().expect("temp dir");
+    let files = vec![
+        written(dir.path(), "a.dcm", "1.2.3.9", b"the same bytes"),
+        written(dir.path(), "b.dcm", "1.2.3.9", b"the same bytes"),
+    ];
+    let session = Session::plain(files);
+    session
+        .server
+        .put("/api/file/0/annotations")
+        .json(&rows(&[[1, 2, 3, 4]], &[]))
+        .await
+        .assert_status_ok();
+    let key = session
+        .registry
+        .key_status(0)
+        .and_then(|status| status.key)
+        .expect("key");
+    assert_eq!(
+        session.registry.key_status(1).and_then(|status| status.key),
+        Some(key.clone())
+    );
+    session
+        .op(
+            Some(0),
+            create(
+                40,
+                key.as_str(),
+                "default",
+                json!({ "type": "point", "x": 3, "y": 4 }),
+            ),
+        )
+        .await;
+    let own = native_records(&session.native(0).await);
+    let other = native_records(&session.native(1).await);
+    assert_eq!(own.len(), 2, "{own:?}");
+    assert_eq!(own[0].2, "rect");
+    assert_eq!(
+        other,
+        [(id(40), "roi".to_string(), "point".to_string(), Value::Null)]
+    );
+}
+
+/// A label that lost its value is not read; an `embed_index` a document
+/// carried among a record's unknown members is not sent beside the real
+/// one.
+#[tokio::test]
+async fn a_cleared_label_and_a_carried_embed_index_are_not_sent() {
+    let dir = tempdir().expect("temp dir");
+    let session = Session::loading(study_files(dir.path()));
+    let mut document = classed_document();
+    document["annotations"][0]["embed_index"] = json!(99);
+    session
+        .import(dir.path(), &document.to_string())
+        .await
+        .expect("import");
+    session
+        .op(
+            Some(0),
+            json!({ "type": "set_label", "id": id(11), "base_rev": 1,
+                    "target": { "file": "sop:1.2.3.1" }, "field": "density",
+                    "layer": "default", "before": "a", "after": null }),
+        )
+        .await;
+    let response = session.server.get("/api/file/0/annotations/native").await;
+    response.assert_status_ok();
+    let text = response.text();
+    let answer: Value = serde_json::from_str(&text).expect("answer");
+    assert_eq!(label_ids(&answer), [id(12), id(13), id(14)]);
+    assert_eq!(
+        text.matches("\"embed_index\"").count(),
+        answer["annotations"].as_array().expect("annotations").len(),
+        "{text}"
+    );
+    assert_eq!(answer["annotations"][0]["embed_index"], 0);
+}
+
+/// A document schema the session cannot give the class `roi` to (one with
+/// 4,096 classes), and one whose own `roi` does not allow rectangles,
+/// cannot hold the rectangles an EMBED save makes: a save that adds one is
+/// refused with nothing written, while moving and deleting ROIs goes on,
+/// and the export loads again. A deprecated `roi` that allows rectangles
+/// holds them as before.
+#[tokio::test]
+async fn an_embed_save_is_refused_where_the_schema_cannot_hold_its_rectangles() {
+    let dir = tempdir().expect("temp dir");
+    let mut full = classed_schema();
+    let classes = full["classes"].as_array_mut().expect("classes");
+    for n in classes.len()..4_096 {
+        classes.push(json!({ "id": format!("c{n}"), "name": format!("C{n}"),
+                             "geometry": ["rect"] }));
+    }
+    let mut narrow = classed_schema();
+    narrow["classes"]
+        .as_array_mut()
+        .expect("classes")
+        .push(json!({ "id": "roi", "name": "Spot", "geometry": ["point"] }));
+    let mut deprecated = classed_schema();
+    deprecated["classes"]
+        .as_array_mut()
+        .expect("classes")
+        .push(json!({ "id": "roi", "name": "Old", "geometry": ["rect"], "deprecated": true }));
+    for (what, schema, adds) in [
+        ("full", full, false),
+        ("narrow", narrow, false),
+        ("deprecated", deprecated, true),
+    ] {
+        let session = Session::loading_document(study_files(dir.path()));
+        let mut document = classed_document();
+        document["schema"] = schema;
+        session
+            .import(dir.path(), &document.to_string())
+            .await
+            .unwrap_or_else(|error| panic!("{what}: {error}"));
+        let answer = session.native(0).await;
+        let in_force = answer["schema"]["classes"].as_array().expect("classes");
+        assert!(in_force.len() <= 4_096, "{what}");
+        assert_eq!(
+            in_force.iter().filter(|class| class["id"] == "roi").count(),
+            usize::from(what != "full"),
+            "{what}"
+        );
+        let before = session.store.backend().revision().expect("revision");
+        let added = session
+            .server
+            .put("/api/file/0/annotations")
+            .json(&rows(
+                &[[20, 10, 40, 30], [60, 60, 70, 70], [1, 2, 3, 4]],
+                &[],
+            ))
+            .await;
+        if adds {
+            added.assert_status_ok();
+        } else {
+            assert_eq!(added.status_code(), StatusCode::BAD_REQUEST, "{what}");
+            assert_eq!(added.json::<Value>()["code"], "bad_request", "{what}");
+            assert_eq!(
+                session.store.backend().revision().expect("revision"),
+                before,
+                "{what}: nothing written"
+            );
+            // Moving one and deleting the other makes no rectangle.
+            session
+                .server
+                .put("/api/file/0/annotations")
+                .json(&rows(&[[21, 11, 41, 31]], &[]))
+                .await
+                .assert_status_ok();
+        }
+        let text = session.text("/api/annotations/export.json").await;
+        let again = Session::loading_document(study_files(dir.path()));
+        let report = again
+            .import(dir.path(), &text)
+            .await
+            .unwrap_or_else(|error| panic!("{what}: the export reloads: {error}"));
+        assert_eq!(report["warnings"], json!([]), "{what}: {report}");
+    }
 }

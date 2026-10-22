@@ -11,7 +11,7 @@ use dcmview_annotation::{
     ViolationCode,
 };
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 /// The id of the layer every session starts with. The EMBED import and the
@@ -47,8 +47,9 @@ pub struct MemoryConfig {
     /// Who the store stamps on a record it creates or changes: the
     /// session's user ([`super::session_author`]).
     pub author: Author,
-    /// The label schema in force, or `None` for a session without one,
-    /// which is validated against `LabelSchema::implicit`.
+    /// The label schema the store starts with, or `None` for a session
+    /// without one, which is validated against `LabelSchema::implicit`
+    /// until a schema is put in force ([`MemoryBackend::take_schema`]).
     pub schema: Option<LabelSchema>,
 }
 
@@ -317,6 +318,8 @@ pub struct MemoryBackend {
 
 /// Everything the store holds, under its one lock.
 struct State {
+    /// The label schema in force ([`MemoryBackend::schema`]).
+    schema: Option<Arc<LabelSchema>>,
     /// How many records creating operations have been copied from, an
     /// operation that was lent keeping its own.
     copied_records: u64,
@@ -361,10 +364,12 @@ impl MemoryBackend {
             rev: 1,
             unknown: BTreeMap::new(),
         };
+        let schema = config.schema.clone().map(Arc::new);
         Self {
             config,
             default_layer,
             state: Mutex::new(State {
+                schema,
                 copied_records: 0,
                 revision: 0,
                 layer_ids: HashMap::from([(layer.id.clone(), 0)]),
@@ -398,6 +403,28 @@ impl MemoryBackend {
     /// The id of the default layer.
     pub fn default_layer(&self) -> &LayerId {
         &self.default_layer
+    }
+
+    /// The label schema in force: the one the store was made with, else
+    /// the one [`MemoryBackend::take_schema`] put in force, else `None`,
+    /// which is `LabelSchema::implicit`.
+    pub fn schema(&self) -> Result<Option<Arc<LabelSchema>>, BackendError> {
+        Ok(self.state.lock().map_err(lock_error)?.schema.clone())
+    }
+
+    /// Puts `schema` in force when the store has none, and answers whether
+    /// it did. Every operation from then on is checked against it, and an
+    /// export carries it. A schema in force is never replaced. The schema
+    /// is changed under the store's lock, so no transaction sees half of
+    /// it. For the session's `--annotations` document, whose schema becomes
+    /// the session's.
+    pub(crate) fn take_schema(&self, schema: LabelSchema) -> Result<bool, BackendError> {
+        let mut state = self.state.lock().map_err(lock_error)?;
+        if state.schema.is_some() {
+            return Ok(false);
+        }
+        state.schema = Some(Arc::new(schema));
+        Ok(true)
     }
 
     /// One envelope as one transaction (see [`AnnotationBackend`]), checked
@@ -478,8 +505,9 @@ impl MemoryBackend {
             }
         }
         let implicit;
-        let schema = match &self.config.schema {
-            Some(schema) => schema,
+        let in_force = state.schema.clone();
+        let schema = match &in_force {
+            Some(schema) => schema.as_ref(),
             None => {
                 implicit = LabelSchema::implicit();
                 &implicit
@@ -647,6 +675,98 @@ impl MemoryBackend {
     }
 }
 
+/// What one file shows of the store ([`MemoryBackend::file_records`]),
+/// read at one moment.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct FileRecords {
+    /// The store's revision when it was read.
+    pub revision: u64,
+    /// The label schema in force, `None` for the implicit one.
+    pub schema: Option<Arc<LabelSchema>>,
+    /// Every layer that is not deleted, in creation order.
+    pub layers: Vec<Layer>,
+    /// The file's annotations, in creation order, each with its position
+    /// in the file's EMBED view, `None` for one that view does not show.
+    pub annotations: Vec<(Annotation, Option<usize>)>,
+    /// The labels with a value whose target is the file, a frame of it, or
+    /// one of the hierarchy targets asked for, in creation order.
+    pub labels: Vec<Label>,
+}
+
+impl MemoryBackend {
+    /// What the file with the settled key `key` and the catalog index
+    /// `slot` shows, read under one lock: the store's revision, the schema
+    /// in force, every layer, the live annotations on `key` that are bound
+    /// to `slot` or to no file (an annotation another copy's EMBED write
+    /// made stays with that copy, as in [`MemoryBackend::embed_records`]),
+    /// each with its position in [`MemoryBackend::embed_records`] for that
+    /// key and slot, and the labels with a value on `key`, a frame of it,
+    /// or one of `hierarchy` (the file's patient, study and series targets,
+    /// as the caller names them).
+    ///
+    /// `key` is `None` for a file whose key is not settled: no record is
+    /// on it, and only the layers and the labels of `hierarchy` are read.
+    ///
+    /// Costs a look at the file's annotations and at every label.
+    pub(crate) fn file_records(
+        &self,
+        key: Option<&FileKey>,
+        slot: usize,
+        hierarchy: &[LabelTarget],
+    ) -> Result<FileRecords, BackendError> {
+        let state = self.state.lock().map_err(lock_error)?;
+        let mut annotations = Vec::new();
+        if let Some(key) = key {
+            let positions: HashMap<Uuid, usize> = embed_view(&state, key, slot)
+                .enumerate()
+                .map(|(position, record)| (record.id, position))
+                .collect();
+            annotations = state
+                .files
+                .get(key)
+                .into_iter()
+                .flatten()
+                .map(|&place| &state.annotations[place])
+                .filter(|entry| {
+                    !entry.deleted && entry.embed_slot.is_none_or(|bound| bound == slot)
+                })
+                .map(|entry| {
+                    (
+                        entry.record.clone(),
+                        positions.get(&entry.record.id).copied(),
+                    )
+                })
+                .collect();
+        }
+        let labels = state
+            .labels
+            .iter()
+            .filter(|entry| {
+                !entry.cleared
+                    && match &entry.record.target {
+                        LabelTarget::File { file } | LabelTarget::Frame { frame: file, .. } => {
+                            key == Some(file)
+                        }
+                        target => hierarchy.contains(target),
+                    }
+            })
+            .map(|entry| entry.record.clone())
+            .collect();
+        Ok(FileRecords {
+            revision: state.revision,
+            schema: state.schema.clone(),
+            layers: state
+                .layers
+                .iter()
+                .filter(|entry| !entry.deleted)
+                .map(|entry| entry.record.clone())
+                .collect(),
+            annotations,
+            labels,
+        })
+    }
+}
+
 /// The records of one EMBED view, in view order: the rows of the import
 /// first, then every other record, each group in creation order.
 fn embed_view<'a>(
@@ -774,7 +894,7 @@ impl MemoryBackend {
             })
             .collect();
         let mut document = Document::new();
-        document.schema = self.config.schema.clone();
+        document.schema = state.schema.as_deref().cloned();
         document.layers = state
             .layers
             .iter()

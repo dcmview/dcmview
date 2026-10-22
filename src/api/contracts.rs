@@ -406,6 +406,13 @@ pub mod endpoints {
         ApiMethod::Put,
         "/file/{index}/annotations",
     );
+    /// `NativeAnnotationsResponse`: the file's annotation records with the
+    /// session's label schema, layers and the labels that apply to it.
+    pub const FILE_ANNOTATIONS_NATIVE: Endpoint = json(
+        "fileAnnotationsNative",
+        ApiMethod::Get,
+        "/file/{index}/annotations/native",
+    );
     /// The file's redaction boxes, as `EmbedRoiAnnotations`.
     pub const FILE_REDACTIONS_GET: Endpoint = json(
         "fileRedactionsGet",
@@ -506,6 +513,7 @@ pub mod endpoints {
         FILE_TAG_SELECT,
         FILE_ANNOTATIONS_GET,
         FILE_ANNOTATIONS_UPDATE,
+        FILE_ANNOTATIONS_NATIVE,
         FILE_REDACTIONS_GET,
         FILE_REDACTIONS_UPDATE,
         FILE_REDACTIONS_APPLY_TO_SERIES,
@@ -1588,6 +1596,61 @@ pub struct AnnotationImportResponse {
     #[ts(optional)]
     pub error: Option<String>,
 }
+
+/// The answer of `endpoints::FILE_ANNOTATIONS_NATIVE`: what one file shows
+/// of the session's annotation records, read at one moment, in the
+/// annotation model's types (`frontend/src/generated/annotation-types.ts`).
+///
+/// Every file key in it is in the form this session sends keys
+/// (`FileSummary::file_key`).
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct NativeAnnotationsResponse {
+    /// The label schema in force: the session's `--annotations` document's,
+    /// or `LabelSchema::implicit` (one class, `roi`, named "ROI", without a
+    /// colour) when there is none. Every class an annotation names is
+    /// looked up here; a class it does not list has no name or colour.
+    #[ts(type = "LabelSchema")]
+    pub schema: dcmview_annotation::LabelSchema,
+    /// Every layer of the session, in creation order: layers are
+    /// session-wide, whether or not the file has a record in them.
+    #[ts(type = "Array<Layer>")]
+    pub layers: Vec<dcmview_annotation::Layer>,
+    /// The live annotations on the file's settled key, in creation order,
+    /// every geometry type. Of byte-identical files, which share a key, a
+    /// rectangle an EMBED write made for another copy is that copy's and is
+    /// not here. Empty for a file whose key is not settled: no record is
+    /// on such a file, and the read settles no key.
+    #[ts(type = "Array<NativeAnnotation>")]
+    pub annotations: Vec<NativeAnnotation>,
+    /// The labels with a value on the file, on one of its frames, or on its
+    /// series, study or patient, in creation order. A patient, study or
+    /// series is named as the session shows it (masked in a masked
+    /// session), or `missing:<file key>` for an id the file does not have.
+    #[ts(type = "Array<Label>")]
+    pub labels: Vec<dcmview_annotation::Label>,
+    /// The store's revision when this was read (`AnnotationOpResponse`'s
+    /// `revision`): two answers with the same revision show the same
+    /// records.
+    pub revision: u64,
+}
+
+/// One annotation record of a `NativeAnnotationsResponse`: the model's
+/// `Annotation` with one member more.
+#[derive(Debug, Clone, Serialize)]
+pub struct NativeAnnotation {
+    #[serde(flatten)]
+    pub record: dcmview_annotation::Annotation,
+    /// The record's position in the file's EMBED view
+    /// (`endpoints::FILE_ANNOTATIONS_GET`: `roi_coords[embed_index]`) at
+    /// the same moment, or `null` for a record that view does not show:
+    /// one that is not a rectangle.
+    pub embed_index: Option<usize>,
+}
+
+/// The TypeScript of [`NativeAnnotation`], which the generated contract
+/// declares as the model's `Annotation` with `embed_index`.
+pub const NATIVE_ANNOTATION_TS: &str =
+    "export type NativeAnnotation = Annotation & { embed_index: number | null };";
 
 /// The longest body `endpoints::ANNOTATION_OPS` reads, in bytes: the
 /// annotation model's bound on one operation envelope, 16,777,216.

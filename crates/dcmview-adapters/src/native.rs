@@ -85,10 +85,14 @@
 //!    ([`ImportError::TooLarge`]); in the JSON Lines form this is checked
 //!    as the lines are read, before the line past the bound is kept, and
 //!    so is the bound on layers of step 4.
-//! 2. **The schema** the input carries is not taken. When it is there and
-//!    is not equal to `context.schema`, the report warns
-//!    `schema_not_applied` at row 1. Records are checked against
-//!    `context.schema`, or `LabelSchema::implicit` without one.
+//! 2. **The schema** the input carries is taken only when
+//!    `context.take_schema` is set and `context.schema` is `None`: it must
+//!    then pass `LabelSchema::validate` (at row 1), records are checked
+//!    against it, and it is handed on in `Fragment::schema`. Otherwise it
+//!    is not taken: when it is there and is not equal to `context.schema`,
+//!    the report warns `schema_not_applied` at row 1, and records are
+//!    checked against `context.schema`, or `LabelSchema::implicit` without
+//!    one.
 //! 3. **Files**, in order. Each must pass `FileRef::validate`, and no two
 //!    may share a key (`duplicate_file_key`, at the second). Each is then
 //!    resolved (`context.resolver.resolve`):
@@ -1227,7 +1231,7 @@ enum Placement {
 }
 
 fn place_document(
-    document: Document,
+    mut document: Document,
     rows: RecordRows,
     context: &ImportContext<'_>,
 ) -> Result<Imported, ImportError> {
@@ -1245,11 +1249,23 @@ fn place_document(
         },
         Direction::Import,
     );
-    if document.schema.is_some() && document.schema.as_ref() != context.schema {
-        report.warn(WarningCode::SchemaNotApplied, RowRef { row: 1, roi: None });
-    }
+    let carried = document.schema.take();
+    let taken = match &carried {
+        Some(schema) if context.take_schema && context.schema.is_none() => {
+            schema.validate().map_err(|error| invalid_at(1, error))?;
+            true
+        }
+        Some(schema) if Some(schema) != context.schema => {
+            report.warn(WarningCode::SchemaNotApplied, RowRef { row: 1, roi: None });
+            false
+        }
+        _ => false,
+    };
     let implicit = LabelSchema::implicit();
-    let schema = context.schema.unwrap_or(&implicit);
+    let schema = match &carried {
+        Some(schema) if taken => schema,
+        _ => context.schema.unwrap_or(&implicit),
+    };
     // Every structure with an entry a record is made once, at its final
     // size: none of them doubles while records are placed.
     let mut files = HashMap::with_capacity(document.files.len());
@@ -1414,6 +1430,9 @@ fn place_document(
             .map_err(|error| invalid_at(row, error))?;
         report.counts.labels_out += 1;
         fragment.labels.push(label);
+    }
+    if taken {
+        fragment.schema = carried;
     }
     Ok(Imported { fragment, report })
 }

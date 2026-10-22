@@ -158,8 +158,14 @@ pub struct ImportContext<'a> {
     pub resolver: &'a dyn FileResolver,
     /// The label schema in force where the records will live, or `None`
     /// for the implicit one (`LabelSchema::implicit`). Records are checked
-    /// against it, not against a schema the input carries.
+    /// against it, not against a schema the input carries, unless
+    /// `take_schema` lets the import take that one.
     pub schema: Option<&'a LabelSchema>,
+    /// Whether a format that carries a schema (native) may put it in force
+    /// where `schema` is `None`: records are then checked against the
+    /// input's schema, which is handed on in [`Fragment::schema`]. A
+    /// session that has no schema of its own sets it.
+    pub take_schema: bool,
     /// The caller's default layer. A format without layers (EMBED) puts
     /// its records in it; a format with layers lets records that name this
     /// id join it and does not hand the layer itself on.
@@ -189,6 +195,9 @@ pub struct Fragment {
     pub annotations: Vec<Annotation>,
     /// In the input's order.
     pub labels: Vec<Label>,
+    /// The input's schema, when the import took it
+    /// ([`ImportContext::take_schema`]); `None` otherwise.
+    pub schema: Option<LabelSchema>,
 }
 
 /// An import's result.
