@@ -218,6 +218,19 @@ holding the pointer is drawing (the draft rectangle). The viewport keeps
 rendering, the readout, and the overlays, the presentation state's
 annotations among them.
 
+Native annotations (the records of a `dcmview.annotations` document) are
+read for one file as `NativeAnnotationsResponse`
+(`lib/annotation/nativeAnnotations.ts`). `lib/annotation/display.ts` turns
+that response into what is drawn and listed, with no Svelte in it: each
+vector geometry becomes the same SVG shape the presentation-state overlay
+draws (through `viewport/graphicAnnotations.ts`, in image pixels with the
+corner origin), an ellipse's `angle` its rotation, and a mask nothing, since
+masks are only counted. It filters records by frame scope and by the layers
+and classes the viewer hides, colors a shape by its layer, else its class,
+else one fixed fallback, names it by class and score, counts records per
+class and per layer, and groups labels by target level from patient to
+folder.
+
 The viewport retains the last complete presentation until its replacement is
 ready. `viewport/frameLayers.ts` shares cached colorwash and presentation
 payloads and owns decoded layers for each prepared frame. Raw and display
