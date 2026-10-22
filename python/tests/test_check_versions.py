@@ -103,3 +103,39 @@ class ReleaseVersionTests(unittest.TestCase):
 		member.parent.rmdir()
 		(self.root / "crates").rmdir()
 		self.assertEqual(self.run_check()[0], 0)
+
+	def set_release_version(self, semver: str, python: str) -> None:
+		for path in self.root.rglob("*"):
+			if path.is_file():
+				text = path.read_text().replace("0.3.0", semver)
+				if path.name == "pyproject.toml":
+					text = text.replace(semver, python)
+				path.write_text(text)
+
+	def test_pre_release_maps_to_pep440_in_pyproject(self) -> None:
+		for semver, python in (("0.5.0-alpha.2", "0.5.0a2"), ("0.5.0-beta.1", "0.5.0b1"), ("1.0.0-rc.10", "1.0.0rc10")):
+			with self.subTest(version=semver):
+				self.setUp()
+				self.set_release_version(semver, python)
+				self.assertEqual(self.run_check("--tag", f"v{semver}", "--print-version"), (0, f"{semver}\n"))
+				self.assertEqual(self.run_check("--print-python-version"), (0, f"{python}\n"))
+				status, output = self.run_check("--tag", f"v{semver.split('-')[0]}")
+				self.assertEqual(status, 1, output)
+
+	def test_pre_release_rejects_semver_or_mismatched_pyproject(self) -> None:
+		for python in ("0.5.0-beta.1", "0.5.0b2", "0.5.0", "0.5.0rc1"):
+			with self.subTest(pyproject=python):
+				self.setUp()
+				self.set_release_version("0.5.0-beta.1", python)
+				status, output = self.run_check()
+				self.assertEqual(status, 1, output)
+				self.assertIn("pyproject.toml must be 0.5.0b1", output)
+
+	def test_unsupported_pre_release_forms_are_rejected(self) -> None:
+		for semver in ("0.5.0-beta", "0.5.0-dev.1", "0.5.0-beta.1+build", "0.5"):
+			with self.subTest(version=semver):
+				self.setUp()
+				self.set_release_version(semver, semver)
+				status, output = self.run_check()
+				self.assertEqual(status, 1, output)
+				self.assertIn("release version must be", output)
