@@ -113,6 +113,7 @@ and redirects the bare prefix to its trailing-slash form.
 | GET | `/file/{index}/tags/select` | One `TagNode`. Query: `path`, `offset`, `limit`. |
 | GET | `/file/{index}/annotations` | `EmbedRoiAnnotations` for one file. |
 | PUT | `/file/{index}/annotations` | Replaces one file's annotations with a JSON `EmbedRoiAnnotations` body and returns the canonical result. |
+| GET | `/file/{index}/annotations/native` | `NativeAnnotationsResponse`: the file's annotation records of every geometry type, with the label schema, the layers and the labels that apply to the file. See [A file's records](#a-files-records). |
 | GET | `/file/{index}/redactions` | `EmbedRoiAnnotations`: one file's redaction boxes. |
 | PUT | `/file/{index}/redactions` | Replaces one file's redaction boxes with a JSON `EmbedRoiAnnotations` body and returns the canonical result. |
 | PUT | `/file/{index}/redactions/series` | `RedactionSeriesResponse`: copies the file's redaction boxes to every file of its series with the same rows and columns, and lists those files. Takes no body. |
@@ -855,6 +856,60 @@ a CSV are shown and exported as the CSV wrote them for every matched file,
 including one that cannot be given a key. `--annotations` with a document
 does hash: it gives each file it places its key, and compares a file's
 bytes with a reference that names them, while the import is `loading`.
+
+### A file's records
+
+`GET /api/file/{index}/annotations/native` answers what one file shows of
+the annotation store in the model's own types, for a client that draws
+every shape with its class:
+
+```json
+{
+  "schema": { "schema_id": "reading", "schema_version": 1,
+              "classes": [{ "id": "mass", "name": "Mass", "color": "#E4572E",
+                            "geometry": ["rect", "polygon"], "attributes": [],
+                            "deprecated": false }],
+              "fields": [] },
+  "layers": [{ "id": "default", "name": "Annotations", "kind": "user", "rev": 1,
+               "exclusive_masks": false, "color": null, "readonly": false,
+               "source": { "author": "user:local" } }],
+  "annotations": [{ "id": "0199...", "file": "sop:1.2.840.1", "frames": "all",
+                    "layer": "default", "class": "mass",
+                    "geometry": { "type": "rect", "x0": 10, "y0": 20, "x1": 30, "y1": 40 },
+                    "attributes": {}, "rev": 1, "embed_index": 0, "...": "..." }],
+  "labels": [],
+  "revision": 3
+}
+```
+
+- `schema` is the label schema in force: the `--annotations` document's
+  when it carries one, else the implicit schema (one class, `roi`, named
+  `ROI`, without a colour).
+- `layers` are every layer of the session, whether or not the file has a
+  record in them.
+- `annotations` are the file's live records in the order they were made:
+  `Annotation` of `frontend/src/generated/annotation-types.ts` with one
+  member more, `embed_index`, the record's position in the file's EMBED
+  view (`roi_coords[embed_index]` of `GET /api/file/{index}/annotations`
+  read at the same moment), or `null` for a record that view does not show
+  (any geometry but a rectangle). A save of the EMBED view matches ROIs to
+  records by position, so read the records again after one.
+- `labels` are the labels with a value on the file, on one of its frames,
+  or on its series, study or patient, named as the session shows them
+  (masked in a `--mask` session), or `missing:<file key>` for an id the
+  file does not have.
+- `revision` is the store's revision when the answer was read, the one
+  `POST /api/annotations/ops` answers with: two answers with the same
+  revision show the same records.
+
+It waits for the `--annotations` import as the EMBED read does. It never
+hashes a file or waits for hashing: a file whose key is not settled (a
+raster, or a DICOM file whose UID other files carry, before anything was
+written or imported for it) has no record, and answers no annotation and
+no file or frame label; rows a CSV staged for it are shown by the EMBED
+view. Rows staged for a file whose key is settled are made records first,
+as the EMBED read makes them. Keys are in the form the session sends them,
+so a masked session answers no real UID.
 
 ### Annotation documents
 

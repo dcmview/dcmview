@@ -198,6 +198,14 @@ diagnostic viewer.
   document whose records used any class but `roi`, or that held labels,
   failed to load. A document that fails to load leaves the session without
   a schema.
+- `GET /api/file/{index}/annotations/native` answers one file's annotation
+  records of every geometry type (point, line, polyline, polygon, rectangle,
+  ellipse, mask) with their classes and layers, the session's label schema
+  and layers, the labels on the file, its frames, series, study and
+  patient, and the store's revision. Each record carries `embed_index`, its
+  place in the file's EMBED view, so a client can pair it with the
+  rectangles it edits there. The read waits for `--annotations` like the
+  EMBED read, and never hashes a file.
 
 ### Changed
 

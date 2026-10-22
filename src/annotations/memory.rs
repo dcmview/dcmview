@@ -675,6 +675,98 @@ impl MemoryBackend {
     }
 }
 
+/// What one file shows of the store ([`MemoryBackend::file_records`]),
+/// read at one moment.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct FileRecords {
+    /// The store's revision when it was read.
+    pub revision: u64,
+    /// The label schema in force, `None` for the implicit one.
+    pub schema: Option<Arc<LabelSchema>>,
+    /// Every layer that is not deleted, in creation order.
+    pub layers: Vec<Layer>,
+    /// The file's annotations, in creation order, each with its position
+    /// in the file's EMBED view, `None` for one that view does not show.
+    pub annotations: Vec<(Annotation, Option<usize>)>,
+    /// The labels with a value whose target is the file, a frame of it, or
+    /// one of the hierarchy targets asked for, in creation order.
+    pub labels: Vec<Label>,
+}
+
+impl MemoryBackend {
+    /// What the file with the settled key `key` and the catalog index
+    /// `slot` shows, read under one lock: the store's revision, the schema
+    /// in force, every layer, the live annotations on `key` that are bound
+    /// to `slot` or to no file (an annotation another copy's EMBED write
+    /// made stays with that copy, as in [`MemoryBackend::embed_records`]),
+    /// each with its position in [`MemoryBackend::embed_records`] for that
+    /// key and slot, and the labels with a value on `key`, a frame of it,
+    /// or one of `hierarchy` (the file's patient, study and series targets,
+    /// as the caller names them).
+    ///
+    /// `key` is `None` for a file whose key is not settled: no record is
+    /// on it, and only the layers and the labels of `hierarchy` are read.
+    ///
+    /// Costs a look at the file's annotations and at every label.
+    pub(crate) fn file_records(
+        &self,
+        key: Option<&FileKey>,
+        slot: usize,
+        hierarchy: &[LabelTarget],
+    ) -> Result<FileRecords, BackendError> {
+        let state = self.state.lock().map_err(lock_error)?;
+        let mut annotations = Vec::new();
+        if let Some(key) = key {
+            let positions: HashMap<Uuid, usize> = embed_view(&state, key, slot)
+                .enumerate()
+                .map(|(position, record)| (record.id, position))
+                .collect();
+            annotations = state
+                .files
+                .get(key)
+                .into_iter()
+                .flatten()
+                .map(|&place| &state.annotations[place])
+                .filter(|entry| {
+                    !entry.deleted && entry.embed_slot.is_none_or(|bound| bound == slot)
+                })
+                .map(|entry| {
+                    (
+                        entry.record.clone(),
+                        positions.get(&entry.record.id).copied(),
+                    )
+                })
+                .collect();
+        }
+        let labels = state
+            .labels
+            .iter()
+            .filter(|entry| {
+                !entry.cleared
+                    && match &entry.record.target {
+                        LabelTarget::File { file } | LabelTarget::Frame { frame: file, .. } => {
+                            key == Some(file)
+                        }
+                        target => hierarchy.contains(target),
+                    }
+            })
+            .map(|entry| entry.record.clone())
+            .collect();
+        Ok(FileRecords {
+            revision: state.revision,
+            schema: state.schema.clone(),
+            layers: state
+                .layers
+                .iter()
+                .filter(|entry| !entry.deleted)
+                .map(|entry| entry.record.clone())
+                .collect(),
+            annotations,
+            labels,
+        })
+    }
+}
+
 /// The records of one EMBED view, in view order: the rows of the import
 /// first, then every other record, each group in creation order.
 fn embed_view<'a>(

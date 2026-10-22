@@ -209,6 +209,126 @@ pub async fn embed_rois(
     file_rois(registry, store, &file)
 }
 
+/// `GET /api/file/{index}/annotations/native`: what the file shows of the
+/// session's records, in the annotation model's types.
+///
+/// Waits for the `--annotations` import as [`embed_rois`] does. Then:
+///
+/// 1. **The key.** The file's key when it is settled
+///    (`FileRegistry::key_status`). The read never starts or waits for
+///    hashing, and settles no key: a DICOM file whose UID no other file
+///    carries is settled by the first write or import for it, without
+///    reading it; a raster, or a DICOM file whose UID is shared, is hashed
+///    only by a write or an import. A file whose key is not settled has no
+///    record (no write got through for it), so it answers no annotation
+///    and no file or frame label; the rows an EMBED CSV staged for it stay
+///    staged and are shown by the EMBED view alone.
+/// 2. Rows still staged for a file whose key is settled are made records
+///    first, as [`embed_rois`] makes them, so they are here with their ids
+///    and their places in the EMBED view.
+/// 3. **One read of the store** (`MemoryBackend::file_records`): its
+///    revision, the schema in force (`LabelSchema::implicit` when there is
+///    none), every layer, the file's live annotations (those of its key
+///    bound to this file's EMBED view or to none) each with its position
+///    in the file's EMBED view or `None`, and the labels with a value on
+///    the key, a frame of it, or the file's patient, study or series. Those
+///    three are named as the session shows them (`Masker::summary` in a
+///    masked session), and an id the file does not have as
+///    `missing:<file key>` with the key the session shows for it.
+/// 4. **Keys out.** Every annotation's `file` and every file or frame label
+///    target is written with `FileRegistry::shown_key_of`. A member
+///    `embed_index` among an annotation's unknown members is left out, so
+///    the answer has one.
+///
+/// A patient, study or series label read from a document under an id the
+/// session does not show (a real UID in a masked session) names no file
+/// here and is not sent.
+pub async fn native_annotations(
+    registry: &FileRegistry,
+    store: &AnnotationStore,
+    index: usize,
+) -> Result<crate::api::contracts::NativeAnnotationsResponse, AnnotationError> {
+    store
+        .wait_until_ready()
+        .await
+        .map_err(|error| AnnotationError::ImportFailed(error.to_string()))?;
+    let file = registry
+        .get(index)
+        .ok_or(AnnotationError::NotFound(index))?;
+    let key = settled_key(registry, index);
+    if let Some(key) = &key {
+        store_staged_rows(store, &file, key)?;
+    }
+    let summary = registry.masker().map(|masker| masker.summary(&file));
+    let shown = |real: &str, masked: Option<&str>| masked.unwrap_or(real).to_string();
+    let missing = registry
+        .shown_file_key(index)
+        .map(|key| format!("{}{key}", dcmview_annotation::MISSING_ID_PREFIX));
+    let id_of = |value: String| {
+        if value.is_empty() {
+            missing.clone()
+        } else {
+            Some(value)
+        }
+    };
+    let hierarchy: Vec<LabelTarget> = [
+        id_of(shown(
+            &file.patient_id,
+            summary.as_ref().map(|summary| summary.patient_id.as_str()),
+        ))
+        .map(|patient| LabelTarget::Patient { patient }),
+        id_of(shown(
+            &file.study_instance_uid,
+            summary
+                .as_ref()
+                .map(|summary| summary.study_instance_uid.as_str()),
+        ))
+        .map(|study| LabelTarget::Study { study }),
+        id_of(shown(
+            &file.series_instance_uid,
+            summary
+                .as_ref()
+                .map(|summary| summary.series_instance_uid.as_str()),
+        ))
+        .map(|series| LabelTarget::Series { series }),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let read = store
+        .backend()
+        .file_records(key.as_ref(), index, &hierarchy)
+        .map_err(store_error)?;
+    let shown_key = |key: &mut FileKey| -> Result<(), AnnotationError> {
+        *key = FileKey::parse(&registry.shown_key_of(key)).map_err(store_error)?;
+        Ok(())
+    };
+    let mut annotations = Vec::with_capacity(read.annotations.len());
+    for (mut record, embed_index) in read.annotations {
+        shown_key(&mut record.file)?;
+        record.unknown.remove("embed_index");
+        annotations.push(crate::api::contracts::NativeAnnotation {
+            record,
+            embed_index,
+        });
+    }
+    let mut labels = read.labels;
+    for label in &mut labels {
+        visit_target_key(&mut label.target, &mut |key| shown_key(key))?;
+    }
+    Ok(crate::api::contracts::NativeAnnotationsResponse {
+        schema: read
+            .schema
+            .map_or_else(dcmview_annotation::LabelSchema::implicit, |schema| {
+                schema.as_ref().clone()
+            }),
+        layers: read.layers,
+        annotations,
+        labels,
+        revision: read.revision,
+    })
+}
+
 /// `PUT /api/file/{index}/annotations`: replaces the ROIs the file's EMBED
 /// view shows, and returns them in canonical form. What a client sees is
 /// what it saw before the store held records.

@@ -7,12 +7,12 @@ use dcmview::api::contracts::{
     endpoints, AnnotationImportResponse, AnnotationOpQuery, AnnotationOpResponse, DoseOverlayQuery,
     EmbedRoiAnnotations, ErrorResponse, FilesQuery, FilesResponse, FrameInfo, FrameQuery,
     FrameValueMapping, FrameWindowApplied, GraphicAnnotationsQuery, GraphicAnnotationsResponse,
-    HealthResponse, ParametricMapOverlayQuery, PixelQuery, RawFrameMetadata,
-    RedactionSeriesResponse, ReferenceCatalogResponse, SemanticContextResponse,
+    HealthResponse, NativeAnnotationsResponse, ParametricMapOverlayQuery, PixelQuery,
+    RawFrameMetadata, RedactionSeriesResponse, ReferenceCatalogResponse, SemanticContextResponse,
     SeriesCatalogResponse, TagNode, TagQuery, ThumbnailQuery, ThumbnailSource,
     WsiFrameContextResponse, API_PREFIX, API_RESPONSE_HEADERS, DISPLAY_FRAME_HEADERS,
-    FILE_KEY_HEADER, RAW_FRAME_HEADERS, THUMBNAIL_DEFAULT_SIZE, THUMBNAIL_HEADERS,
-    THUMBNAIL_SIZE_BUCKETS,
+    FILE_KEY_HEADER, NATIVE_ANNOTATION_TS, RAW_FRAME_HEADERS, THUMBNAIL_DEFAULT_SIZE,
+    THUMBNAIL_HEADERS, THUMBNAIL_SIZE_BUCKETS,
 };
 use std::any::TypeId;
 use std::collections::{BTreeMap, HashSet};
@@ -83,6 +83,7 @@ fn render() -> String {
     declarations.visit::<AnnotationOpResponse>();
     declarations.visit::<AnnotationOpQuery>();
     declarations.visit::<AnnotationImportResponse>();
+    declarations.visit::<NativeAnnotationsResponse>();
     declarations.visit::<ErrorResponse>();
 
     let mut out = String::from(
@@ -92,7 +93,12 @@ fn render() -> String {
 
     // The annotation model's own types are generated from its crate; this
     // file names the ones the HTTP contract carries and declares none.
-    out.push_str("import type { ApplyResult } from \"./annotation-types\";\n\n");
+    out.push_str(
+        "import type { Annotation, ApplyResult, Label, LabelSchema, Layer } from \"./annotation-types\";\n\n",
+    );
+    out.push_str("/** One annotation record of a `NativeAnnotationsResponse`: the model's `Annotation`, and its position in the file's EMBED view (`roi_coords[embed_index]`), or `null` for a record that view does not show. */\n");
+    out.push_str(NATIVE_ANNOTATION_TS);
+    out.push_str("\n\n");
 
     out.push_str("export const API_ENDPOINTS = {\n");
     for endpoint in endpoints::ALL {

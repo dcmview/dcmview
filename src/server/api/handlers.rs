@@ -5,10 +5,10 @@ use crate::api::contracts::RedactionSeriesResponse;
 use crate::api::contracts::{
     AnnotationImportResponse, AnnotationOpQuery, AnnotationOpResponse, ApiErrorCode,
     DiscoveryResult, EmbedRoiAnnotations, FileSummary, FilesQuery, FilesResponse, FrameInfo,
-    FrameQuery, GraphicAnnotationsQuery, GraphicAnnotationsResponse, HealthResponse, PixelQuery,
-    ReferenceCatalogResponse, SemanticContextResponse, TagNode, TagQuery, ThumbnailQuery,
-    ViewerIdentity, CACHE_HEADER, CACHE_HIT, CACHE_MISS, CSV_MEDIA_TYPE,
-    DISPLAY_FRAME_HEADER_WINDOW_APPLIED, DISPLAY_FRAME_HEADER_WINDOW_CENTER,
+    FrameQuery, GraphicAnnotationsQuery, GraphicAnnotationsResponse, HealthResponse,
+    NativeAnnotationsResponse, PixelQuery, ReferenceCatalogResponse, SemanticContextResponse,
+    TagNode, TagQuery, ThumbnailQuery, ViewerIdentity, CACHE_HEADER, CACHE_HIT, CACHE_MISS,
+    CSV_MEDIA_TYPE, DISPLAY_FRAME_HEADER_WINDOW_APPLIED, DISPLAY_FRAME_HEADER_WINDOW_CENTER,
     DISPLAY_FRAME_HEADER_WINDOW_WIDTH, EXPORT_CONTENT_DISPOSITION_HEADER,
     EXPORT_CONTENT_DISPOSITION_VALUE, EXPORT_JSONL_CONTENT_DISPOSITION_VALUE,
     EXPORT_JSON_CONTENT_DISPOSITION_VALUE, FILE_KEY_HEADER, JPEG_MEDIA_TYPE, JSONL_MEDIA_TYPE,
@@ -384,6 +384,18 @@ pub(super) async fn annotations(
     let Path(index) = path.map_err(error::path_rejection)?;
     registered_file(&state, index, "file")?;
     annotations::embed_rois(state.registry(), state.annotations(), index)
+        .await
+        .map(Json)
+        .map_err(error::annotation_error)
+}
+
+pub(super) async fn native_annotations(
+    State(state): State<AppState>,
+    path: Result<Path<usize>, PathRejection>,
+) -> Result<Json<NativeAnnotationsResponse>, ApiError> {
+    let Path(index) = path.map_err(error::path_rejection)?;
+    registered_file(&state, index, "file")?;
+    annotations::native_annotations(state.registry(), state.annotations(), index)
         .await
         .map(Json)
         .map_err(error::annotation_error)
