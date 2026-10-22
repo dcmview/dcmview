@@ -33,13 +33,16 @@ async fn main() -> Result<()> {
     if inputs.is_empty() {
         bail!("usage: generate_sample_annotations [--out FILE] PATH...");
     }
-    let files = document::describe(&inputs).await?;
-    let text = document::document(&files)?;
+    let listed = document::describe(&inputs).await?;
+    let text = document::document(&listed.files)?;
     match out {
         Some(path) => std::fs::write(&path, text)
             .with_context(|| format!("{} could not be written", path.display()))?,
         None => print!("{text}"),
     }
-    eprintln!("annotated {} file(s)", files.len());
+    eprintln!("annotated {} file(s)", listed.files.len());
+    for (copy, first) in &listed.copies {
+        eprintln!("left out {copy}: the same bytes as {first}, which it shows the records of");
+    }
     Ok(())
 }

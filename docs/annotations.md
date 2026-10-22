@@ -332,9 +332,12 @@ Every file gets an image quality label and the first a note, and every
 study a DICOM file names a density label. Each file is named by the key the
 viewer gives it (`sop:` for a DICOM file whose UID no other file carries,
 else the `b3:` digest of its bytes) and by its path below the folder the
-files share, so the same paths load the document again. Ids and times are
-fixed: the same files give the same text. Without `--out` the document is
-written to standard output.
+files share, so the same paths load the document again. Files with the
+same bytes share a key, which a document names once: only the first of them
+(by path) is annotated, the others are listed on standard error as left
+out, and the viewer shows them the records of that first file (a raster
+copy once it has been hashed). Ids and times are fixed: the same files give
+the same text. Without `--out` the document is written to standard output.
 
 The document is checked with the model's rules before it is written.
 `tests/fixtures/annotation-documents/sample.json` is its output for five

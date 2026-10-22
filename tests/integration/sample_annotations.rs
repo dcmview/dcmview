@@ -41,8 +41,9 @@ fn committed() -> PathBuf {
 /// [`inputs`] (`docs/annotations.md`, "A sample document").
 #[tokio::test]
 async fn the_committed_sample_document_is_what_the_generator_writes() {
-    let files = document::describe(&inputs()).await.expect("describe");
-    let text = document::document(&files).expect("document");
+    let listed = document::describe(&inputs()).await.expect("describe");
+    assert!(listed.copies.is_empty());
+    let text = document::document(&listed.files).expect("document");
     let on_disk = std::fs::read_to_string(committed()).expect("committed document");
     assert!(
         text == on_disk,
@@ -160,4 +161,39 @@ async fn the_sample_document_loads_through_annotations() {
         count("annotations")
     );
     let _ = child.kill().await;
+}
+
+/// Byte-identical copies share a key, which a document names once: each
+/// key is annotated once, at the first of its files, and the copies are
+/// said to be left out. The document loads over all of them.
+#[tokio::test]
+async fn copies_are_annotated_once_for_their_key() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let dicom = fixtures().join("golden-masking-patient-a-us-1.dcm");
+    let raster = fixtures().join("tiff-jpeg/gray-150x133.tif");
+    for (from, name) in [
+        (&dicom, "a.dcm"),
+        (&dicom, "copy/a.dcm"),
+        (&raster, "b.tif"),
+        (&raster, "copy/b.tif"),
+    ] {
+        let to = dir.path().join(name);
+        std::fs::create_dir_all(to.parent().expect("folder")).expect("folder");
+        std::fs::copy(from, to).expect("copy");
+    }
+    let listed = document::describe(&[dir.path().to_path_buf()])
+        .await
+        .expect("describe");
+    let paths: Vec<&str> = listed.files.iter().map(|file| file.path.as_str()).collect();
+    assert_eq!(paths, ["a.dcm", "b.tif"]);
+    assert_eq!(
+        listed.copies,
+        [
+            ("copy/a.dcm".to_string(), "a.dcm".to_string()),
+            ("copy/b.tif".to_string(), "b.tif".to_string()),
+        ]
+    );
+    let text = document::document(&listed.files).expect("a valid document");
+    let parsed: Value = serde_json::from_str(&text).expect("JSON");
+    assert_eq!(parsed["files"].as_array().expect("files").len(), 2);
 }

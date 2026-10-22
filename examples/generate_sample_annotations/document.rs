@@ -28,11 +28,23 @@ pub struct Described {
     pub path: String,
 }
 
+/// What [`describe`] found.
+pub struct Listed {
+    /// The files to annotate, one for each key.
+    pub files: Vec<Described>,
+    /// The files left out because they hold the bytes of a file before
+    /// them, which has their key: each copy's path and that file's. The
+    /// viewer shows a copy the records of the file it copies, so it needs
+    /// none of its own (and a document may name a key once).
+    pub copies: Vec<(String, String)>,
+}
+
 /// The image files the viewer lists under `inputs`, as it would load them
 /// (a recursive walk, every format), sorted by path, each with the key the
 /// viewer settles for it. A file without pixels, or with no rows, columns
-/// or frames, is left out.
-pub async fn describe(inputs: &[PathBuf]) -> Result<Vec<Described>> {
+/// or frames, is left out, and so is a file whose key a file before it
+/// has ([`Listed::copies`]).
+pub async fn describe(inputs: &[PathBuf]) -> Result<Listed> {
     let (events, mut received) = mpsc::channel(64);
     let scan = loader::discover_progressive(
         inputs,
@@ -67,7 +79,8 @@ pub async fn describe(inputs: &[PathBuf]) -> Result<Vec<Described>> {
     }
     let base = common_folder(&files);
     let registry = FileRegistry::from_files(files.clone());
-    let mut described = Vec::with_capacity(files.len());
+    let mut described: Vec<Described> = Vec::with_capacity(files.len());
+    let mut copies = Vec::new();
     for file in files {
         let key = registry
             .ensure_key(file.index)
@@ -81,9 +94,16 @@ pub async fn describe(inputs: &[PathBuf]) -> Result<Vec<Described>> {
             .map(|part| part.as_os_str().to_string_lossy().into_owned())
             .collect::<Vec<_>>()
             .join("/");
+        if let Some(first) = described.iter().find(|earlier| earlier.key == key) {
+            copies.push((path, first.path.clone()));
+            continue;
+        }
         described.push(Described { file, key, path });
     }
-    Ok(described)
+    Ok(Listed {
+        files: described,
+        copies,
+    })
 }
 
 /// The deepest folder that holds every file.
