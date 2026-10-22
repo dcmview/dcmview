@@ -469,6 +469,7 @@ dcmview/
 |                       the released baseline
 |-- examples/generate_test_fixtures.rs
 |-- examples/generate_api_types.rs
+|-- examples/generate_sample_annotations/
 |-- build.rs
 |-- Cargo.toml          workspace root and the dcmview package
 `-- pyproject.toml
@@ -1272,6 +1273,7 @@ the warning path in `server/runtime.rs`.
 | `python/dcmview_py/wrapper.py` | Python subprocess wrapper |
 | `examples/generate_test_fixtures.rs` | Synthetic fixture generator |
 | `examples/generate_api_types.rs` | TypeScript contract generator and drift check |
+| `examples/generate_sample_annotations/` | Sample `dcmview.annotations` document for the images under some paths |
 | `crates/dcmview-annotation/examples/generate_annotation_model.rs` | Annotation model TypeScript and JSON Schema generator and drift check |
 
 ---
