@@ -290,6 +290,12 @@ diagnostic viewer.
 
 ### Fixed
 
+- Thin detail no longer comes and goes as an image is zoomed out. Below
+  100% (counting the display's pixel density) the viewer sampled the
+  full-resolution image, so one-pixel lines and specks were drawn or
+  skipped depending on the zoom. It now shows an area-averaged copy at
+  those zooms: a one-pixel line shows at every zoom, fainter the further
+  out. At 100% and above, pixels are still drawn as sharp squares.
 - Discovery no longer sizes what it reads from the lengths a DICOM file
   declares. Before, a file whose header declared more data than the file
   held could make the viewer allocate that much memory while scanning a

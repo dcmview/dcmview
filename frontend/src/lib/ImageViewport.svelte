@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { tick, untrack } from "svelte";
+	import { devicePixelRatio } from "svelte/reactivity/window";
 	import {
 		ApiError,
 		fetchDisplayFrame,
@@ -39,6 +40,7 @@
 	import { AnnotationStore } from "./viewport/annotationStore.svelte";
 	import { playDisplayCine } from "./viewport/displayCine";
 	import { LiveWindowPreview } from "./viewport/liveWindowPreview";
+	import { MinifiedCanvas, minificationFor } from "./viewport/minifiedCanvas";
 	import { DisplayFrameSource } from "./viewport/displayFrameSource";
 	import {
 		composeOverlayFrame,
@@ -174,6 +176,10 @@
 	let viewportEl: HTMLElement | undefined = $state();
 	let viewportSize = $state({ width: 0, height: 0 });
 	let canvasEl: HTMLCanvasElement | undefined = $state();
+	let minifiedCanvasEl: HTMLCanvasElement | undefined = $state();
+	let minifiedLayerCanvas: HTMLCanvasElement | undefined = $state();
+	const imageMinifier = new MinifiedCanvas({ alpha: false });
+	const layerMinifier = new MinifiedCanvas({ alpha: true });
 	// Raw, not a deep proxy: the frame is posted to the W/L worker, and a
 	// proxied metadata object cannot be structured-cloned.
 	type FrameTarget = {
@@ -430,6 +436,21 @@
 		presented?.target.imageFile.pixel_aspect_ratio ?? overlay?.sourceFile.pixel_aspect_ratio ?? activeFile.pixel_aspect_ratio));
 
 	const transformCss = $derived(layerTransformCss(activeTransform, orientation, displayGeometry));
+	// Device pixels per stored pixel along the more reduced axis.
+	const minification = $derived(minificationFor(
+		activeTransform.scale * (devicePixelRatio.current ?? 1) * Math.min(1, displayGeometry.pixelAspectRatio),
+		imageColumns,
+		imageRows,
+	));
+	const minifyLevel = $derived(minification.level);
+	$effect(() => {
+		void minifyLevel;
+		void canvasEl;
+		void minifiedCanvasEl;
+		void presentationLayerCanvas;
+		void minifiedLayerCanvas;
+		untrack(refreshMinified);
+	});
 	const annotationFrames = new GraphicAnnotationFrames();
 	// The frame on screen, which trails the requested one while it loads.
 	const annotatedFrame = $derived(graphicAnnotation && !overlay ? {
@@ -501,6 +522,7 @@
 		if (valueOverlayCanvas && layers.value.image) drawOverlayLayer(valueOverlayCanvas, layers.value.image);
 		valueOverlayState = layers.value.status === "none" ? null : { key: layers.value.key, status: layers.value.status };
 		presented = { target, window, raw, mapping, valueOverlay: value, presentation: layers.presentation.status };
+		refreshMinified();
 		rendered.mark(target.file.index, target.frameIndex);
 		loading = false;
 		loadError = null;
@@ -570,6 +592,13 @@
 		const ctx = canvasEl.getContext("2d", { alpha: false });
 		if (!ctx) return;
 		ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
+		refreshMinified();
+	}
+
+	/** Redraws the reduced copies shown below 1:1 after the canvases change. */
+	function refreshMinified(): void {
+		if (canvasEl && minifiedCanvasEl) imageMinifier.update(canvasEl, minifiedCanvasEl, minifyLevel);
+		if (presentationLayerCanvas && minifiedLayerCanvas) layerMinifier.update(presentationLayerCanvas, minifiedLayerCanvas, minifyLevel);
 	}
 
 	function invalidateWindowLevelRenders(): void {
@@ -682,6 +711,7 @@
 			canvasEl.width = image.width;
 			canvasEl.height = image.height;
 			ctx?.drawImage(image.source, 0, 0);
+			refreshMinified();
 			shownDisplay = { window, appliedWindow };
 			shownUnitRequest = windowDragging && !!liveWindowUnit && !mappedScale;
 			if (presented) presented = { ...presented, window: resolvedWindow };
@@ -816,6 +846,7 @@
 					window: resolveWindow({ raw: null, mapping: null, requested: null, live: null, mode: "default",
 						defaultWindow: overlay.sourceFile.default_window, server: source, unitRequest: false }) };
 				valueOverlayState = null;
+				refreshMinified();
 				rendered.mark(target.file.index, target.frameIndex);
 			} finally {
 				base.dispose();
@@ -1391,6 +1422,8 @@
 		{/if}
 		<div
 			class="image-layer"
+			data-minified={minifyLevel > 0 || undefined}
+			data-smooth={minification.smooth || undefined}
 			style={`transform:${transformCss}; width:${Math.max(displayGeometry.width, 1)}px; height:${Math.max(displayGeometry.height, 1)}px;`}
 		>
 			<canvas
@@ -1398,7 +1431,9 @@
 				class="dicom-canvas"
 				data-capture-rendered={rendered.token}
 			></canvas>
+			<canvas bind:this={minifiedCanvasEl} class="minified-canvas" aria-hidden="true"></canvas>
 			<canvas bind:this={presentationLayerCanvas} class="layer-canvas" hidden={presented?.presentation !== "shown"} aria-hidden="true"></canvas>
+			<canvas bind:this={minifiedLayerCanvas} class="minified-canvas" hidden={presented?.presentation !== "shown"} aria-hidden="true"></canvas>
 			{#if valueOverlayVolume || displayedValueOverlay}
 				<canvas
 					bind:this={valueOverlayCanvas}
@@ -1568,6 +1603,24 @@
 		width: 100%;
 		height: 100%;
 		image-rendering: pixelated;
+	}
+	/* Below 1:1 the browser reduces what it draws: smooth it, and draw the
+	   frame and its presentation layer from their halved copies. */
+	.image-layer[data-smooth] canvas {
+		image-rendering: auto;
+	}
+	.minified-canvas {
+		position: absolute;
+		inset: 0;
+		width: 100%;
+		height: 100%;
+		pointer-events: none;
+	}
+	.image-layer:not([data-minified]) .minified-canvas,
+	.minified-canvas[hidden],
+	.image-layer[data-minified] .dicom-canvas,
+	.image-layer[data-minified] .layer-canvas {
+		visibility: hidden;
 	}
 	.placeholder {
 		color: var(--ink-muted);
