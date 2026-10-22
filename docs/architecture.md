@@ -1960,6 +1960,7 @@ records and read and write the bytes they always did.
 flowchart LR
     ops["POST /api/annotations/ops<br/>one OpEnvelope"] --> service
     embed["GET, PUT /api/file/{index}/annotations<br/>GET /api/annotations/export.csv"] --> service
+    native["GET /api/file/{index}/annotations/native<br/>one file's records"] --> service
     csv["--annotations file<br/>annotations.rs, dcmview-adapters"] --> service
     documents["GET /api/annotations/export.json, export.jsonl<br/>GET /api/annotations/import"] --> service
     service["server/annotations.rs<br/>settle keys, translate shown keys"] --> registry["FileRegistry<br/>ensure_key, key_status"]
@@ -2074,7 +2075,11 @@ keeps these rules for every door:
   is not settled has no record, because no write got through for it, so a
   read answers at once from `FileRegistry::key_status` and from the rows
   the import staged. What the EMBED endpoints show and export costs what it
-  did before records had keys, whatever the size of the files. A document
+  did before records had keys, whatever the size of the files. The native
+  read of one file (`GET /api/file/{index}/annotations/native`) is such a
+  read: it answers the records of a settled key, with their EMBED view
+  positions, from one lock of the store (`MemoryBackend::file_records`),
+  and nothing for a file whose key is not settled. A document
   import does hash: it makes records, so it settles the key of each file
   it places and compares bytes with a reference that names them. A
   document export hashes the annotated files of a masked session.
