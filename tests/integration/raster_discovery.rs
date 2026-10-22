@@ -1378,15 +1378,37 @@ async fn rasters_the_viewer_does_not_decode_say_why_and_their_frames_are_refused
 
     // (name, bytes, support_reason)
     let cases: Vec<(&str, Vec<u8>, &str)> = vec![
-        // TIFF compressions without a decoder here, JPEG among them.
+        // TIFF compressions without a decoder here. JPEG is decoded for
+        // 8-bit unsigned gray, RGB and YCbCr with interleaved samples.
         (
-            "jpeg-compressed.tif",
-            tiff(&[gray8[0], gray8[1], (259, &[7])]),
+            "jpeg-16-bit.tif",
+            tiff(&[(258, &[16]), (259, &[7]), (262, &[1])]),
             "raster.unsupported_compression",
         ),
         (
-            "ycbcr-jpeg.tif",
-            tiff(&[(258, &[8, 8, 8]), (259, &[7]), (262, &[6]), (277, &[3])]),
+            "ycbcr-jpeg-16-bit.tif",
+            tiff(&[(258, &[16, 16, 16]), (259, &[7]), (262, &[6]), (277, &[3])]),
+            "raster.unsupported_compression",
+        ),
+        (
+            "jpeg-signed.tif",
+            tiff(&[gray8[0], gray8[1], (259, &[7]), (339, &[2])]),
+            "raster.unsupported_compression",
+        ),
+        (
+            "jpeg-planar-gray.tif",
+            tiff(&[gray8[0], gray8[1], (259, &[7]), (284, &[2])]),
+            "raster.unsupported_compression",
+        ),
+        (
+            "jpeg-rgba.tif",
+            tiff(&[
+                (258, &[8, 8, 8, 8]),
+                (259, &[7]),
+                (262, &[2]),
+                (277, &[4]),
+                (338, &[2]),
+            ]),
             "raster.unsupported_compression",
         ),
         (

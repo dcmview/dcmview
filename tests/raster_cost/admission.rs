@@ -377,6 +377,13 @@ fn frames_to_measure() -> Vec<(&'static str, Vec<u8>)> {
         "bilevel-g4.tif",
         super::raster_bilevel_files::fixture("g4-4096x3072.tif"),
     ));
+    // JPEG pages, decoded by the same chunk decoder.
+    for name in [
+        "ycbcr-progressive-2048x2048.tif",
+        "ycbcr-strips-65500x32.tif",
+    ] {
+        cases.push((name, super::raster_jpeg_files::fixture(name)));
+    }
     cases
 }
 

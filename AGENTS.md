@@ -151,9 +151,7 @@ would remove behavior, raise it as a question instead of acting.
   metadata are masked in a masked session, not shifted.
 - **The decode memory budget is not a process limit.** Beside it are the
   frame caches and response bodies while they are sent.
-- **Some TIFF layouts the design lists are not decoded.** JPEG-compressed
-  TIFF is reported as `raster.unsupported_compression`: the linked `tiff`
-  crate decodes it without a limit on what a tile declares. Palette, CMYK
+- **Some TIFF layouts the design lists are not decoded.** Palette, CMYK
   and gray-with-alpha TIFF are out of scope by design.
 
 - **VOI LUT Function is not interpreted.** DICOM VOI LUT Function

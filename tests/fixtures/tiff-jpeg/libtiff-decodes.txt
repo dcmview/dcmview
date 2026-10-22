@@ -1,0 +1,12 @@
+gray-150x133.tif gray-150x133.libtiff.tif
+rgb-150x133.tif rgb-150x133.libtiff.tif
+gray-strips-150x133.tif gray-150x133.libtiff.tif
+rgb-strips-150x133.tif rgb-150x133.libtiff.tif
+ycbcr-strips-150x133.tif ycbcr-strips-150x133.libtiff.tif
+gray-tiles-150x133.tif gray-tiles-150x133.libtiff.tif
+rgb-tiles-150x133.tif rgb-tiles-150x133.libtiff.tif
+ycbcr-tiles-150x133.tif ycbcr-tiles-150x133.libtiff.tif
+gray-progressive-150x133.tif gray-150x133.libtiff.tif
+rgb-progressive-150x133.tif rgb-150x133.libtiff.tif
+ycbcr-progressive-150x133.tif ycbcr-progressive-150x133.libtiff.tif
+rgb-ycbcr-coded-150x133.tif rgb-ycbcr-coded-150x133.libtiff.tif

@@ -1,6 +1,7 @@
 //! TIFF pages decoded here rather than by the `tiff` crate: bilevel gray
 //! (one sample of one bit), with compression none, PackBits, LZW, Deflate or
-//! CCITT Group 4.
+//! CCITT Group 4; and JPEG-compressed pages (`Compression` 7) of 8-bit gray,
+//! RGB or YCbCr.
 //!
 //! `tiff.rs` sends a page here only after every check it makes of a page
 //! has passed: the page matches the catalog entry, its tiles are within the
@@ -10,14 +11,20 @@
 //! through the same budget-charging reader, and writes the pixels that lie
 //! inside the image into one frame of exactly the catalog's size.
 //!
-//! Beside the frame it holds one packed row of a strip or tile, a fixed
-//! input buffer, the fixed state of the LZW and Deflate decoders, and for
-//! Group 4 the transitions of two lines; none of these is sized by a length
-//! the file declares. [`group4`] says what bounds the transitions.
+//! Beside the frame a bilevel page holds one packed row of a strip or tile,
+//! a fixed input buffer, the fixed state of the LZW and Deflate decoders,
+//! and for Group 4 the transitions of two lines; none of these is sized by a
+//! length the file declares. [`group4`] says what bounds the transitions.
+//! [`decode_jpeg`] says what a JPEG page holds.
 use super::reader::Reader;
+use super::{RASTER_JPEG_MAX_SCANS, RASTER_TIFF_TILE_MARGIN};
 use anyhow::{bail, ensure, Context, Result};
 use std::cell::Cell;
 use std::io::{self, BufRead, Read, Seek, SeekFrom};
+use zune_jpeg::zune_core::bytestream::ZCursor;
+use zune_jpeg::zune_core::colorspace::ColorSpace;
+use zune_jpeg::zune_core::options::DecoderOptions;
+use zune_jpeg::JpegDecoder;
 
 /// The bytes of a strip or tile read from the file at a time.
 const INPUT_BUFFER_BYTES: usize = 8 * 1024;
@@ -419,6 +426,375 @@ impl Iterator for Group4Bytes<'_, '_, '_> {
     }
 }
 
+/// The largest frame header a JPEG strip or tile may declare in either
+/// direction: the 16 bits of its height and width.
+const JPEG_MAX_SIDE: u64 = u16::MAX as u64;
+
+/// What a JPEG-compressed page needs beside its layout.
+pub(super) struct Jpeg {
+    /// `JPEGTables` (tag 347): the quantization and Huffman tables its
+    /// strips or tiles share, from SOI to EOI, when the page has them.
+    pub tables: Option<Vec<u8>>,
+    /// `SamplesPerPixel`: 1 or 3.
+    pub samples: u64,
+    /// `PhotometricInterpretation` 6: the stream's YCbCr is converted to
+    /// RGB. Gray and RGB are served as the stream stores them.
+    pub ycbcr: bool,
+    /// The most bytes one strip or tile may decode to
+    /// (`raster_tiff_jpeg_chunk_bytes`).
+    pub chunk_bytes: u64,
+    /// The file's length: no strip or tile is buffered at more than the
+    /// bytes of it the file holds.
+    pub file_length: u64,
+}
+
+/// Decodes a JPEG-compressed page: `expected` bytes, `samples` a pixel.
+///
+/// Each strip or tile is one JPEG stream. When the page has `JPEGTables`,
+/// the stream is those tables without their EOI followed by the strip's or
+/// tile's bytes without their SOI, as libtiff joins them. Before the
+/// decoder is given a stream, its frame header must declare 8-bit samples,
+/// `samples` components sampled as [`frame_header`] allows, and the strip's
+/// or tile's own size: a tile's width and length, a strip's width and
+/// `RowsPerStrip`, or for the last strip the rows that remain (as libtiff
+/// writes it). A strip taller than the image by the tile margin or more
+/// may declare only the image's rows. The decoder is also told that size
+/// as its limit. So no stream is decoded at any size but the one the
+/// page's layout gives.
+///
+/// Beside the frame this holds the bytes of one strip or tile and the
+/// tables (at most the file's length), one decoded strip or tile (at most
+/// `chunk_bytes`), and what `zune-jpeg` holds while it decodes one; its
+/// bound is stated at `raster_decode_heap_limit`.
+pub(super) fn decode_jpeg(
+    reader: &mut Reader<'_>,
+    layout: &Layout,
+    jpeg: &Jpeg,
+    expected: u64,
+) -> Result<Vec<u8>> {
+    let samples = jpeg.samples;
+    ensure!(
+        expected == u64::from(layout.width) * u64::from(layout.height) * samples,
+        "TIFF JPEG frame size differs from catalog"
+    );
+    let tables = match &jpeg.tables {
+        Some(tables) => shared_tables(tables)?,
+        None => Vec::new(),
+    };
+    // The height every frame header but the last strip's must declare: a
+    // tile's length, or `RowsPerStrip`. A strip as tall as the image or
+    // taller is the only one, and may declare the image's rows; it may
+    // declare `RowsPerStrip` too only when that is within the tile margin,
+    // so no strip or tile is decoded taller than the image and the margin.
+    let tallest = if layout.tiled
+        || layout.chunk_height < u64::from(layout.height) + u64::from(RASTER_TIFF_TILE_MARGIN)
+    {
+        layout.chunk_height
+    } else {
+        u64::from(layout.height)
+    };
+    ensure!(
+        layout.chunk_width <= JPEG_MAX_SIDE && tallest <= JPEG_MAX_SIDE,
+        "a TIFF JPEG strip or tile is larger than a JPEG frame can be"
+    );
+    // Every tile decodes to its whole size; a strip need not decode to
+    // more rows than the image has, so a page whose one strip is declared
+    // a few rows taller is refused only if that strip declares them.
+    let rows = if layout.tiled {
+        tallest
+    } else {
+        tallest.min(u64::from(layout.height))
+    };
+    let too_large = || {
+        anyhow::anyhow!(
+            "a TIFF JPEG strip or tile decodes to more than {} bytes",
+            jpeg.chunk_bytes
+        )
+    };
+    if layout.chunk_width * rows * samples > jpeg.chunk_bytes {
+        return Err(too_large());
+    }
+    // The bytes of the longest strip or tile the file holds, joined to the
+    // tables: never more than exist.
+    let longest = layout
+        .offsets
+        .iter()
+        .zip(&layout.counts)
+        .map(|(&offset, &count)| count.min(jpeg.file_length.saturating_sub(offset)))
+        .max()
+        .unwrap_or(0);
+    let mut stream = Vec::with_capacity(usize::try_from(tables.len() as u64 + longest)?);
+    // One decoded strip or tile, grown to the largest decoded so far.
+    let mut decoded = Vec::new();
+    let mut frame = vec![0_u8; usize::try_from(expected)?];
+    let row_bytes = (u64::from(layout.width) * samples) as usize;
+    layout.each_chunk(reader, false, |chunk, input| {
+        stream.clear();
+        stream.extend_from_slice(&tables);
+        if !tables.is_empty() {
+            let mut start = [0; 2];
+            input
+                .read_exact(&mut start)
+                .context("the JPEG data ends early")?;
+            ensure!(start == [0xFF, 0xD8], "the JPEG data has no start of image");
+        }
+        input
+            .read_to_end(&mut stream)
+            .context("the JPEG data could not be read from the file")?;
+        let header = frame_header(&stream, jpeg.ycbcr)?;
+        let height = u64::from(header.height);
+        ensure!(
+            u64::from(header.width) == layout.chunk_width
+                && (height == tallest || (!layout.tiled && height == chunk.rows)),
+            "a JPEG frame header declares {} x {}, not the size of its {}",
+            header.width,
+            header.height,
+            if layout.tiled { "tile" } else { "strip" }
+        );
+        ensure!(
+            header.precision == 8,
+            "a JPEG frame header declares {}-bit samples",
+            header.precision
+        );
+        ensure!(
+            u64::from(header.components) == samples,
+            "a JPEG frame header declares {} components for {samples} samples",
+            header.components
+        );
+        let size = layout.chunk_width * height * samples;
+        if size > jpeg.chunk_bytes {
+            return Err(too_large());
+        }
+        let size = size as usize;
+        let mut options = DecoderOptions::default()
+            .set_strict_mode(false)
+            .set_max_width(layout.chunk_width as usize)
+            .set_max_height(tallest as usize)
+            .jpeg_set_max_scans(RASTER_JPEG_MAX_SCANS)
+            .jpeg_set_out_colorspace(if samples == 1 {
+                ColorSpace::Luma
+            } else {
+                ColorSpace::RGB
+            });
+        let mut decoder = JpegDecoder::new_with_options(ZCursor::new(stream.as_slice()), options);
+        decoder
+            .decode_headers()
+            .context("the JPEG decoder refused the strip or tile")?;
+        if !jpeg.ycbcr && samples == 3 {
+            // RGB is served as stored, unconverted, as libtiff decodes an
+            // RGB page: the output is whatever the decoder takes the stream
+            // to hold. zune-jpeg 0.5 takes a stream of three components to
+            // be YCbCr unless its Adobe marker says it is untransformed,
+            // which it reports as CMYK until it decodes it, and then as
+            // RGB.
+            let stored = match decoder.input_colorspace() {
+                Some(ColorSpace::CMYK | ColorSpace::RGB) => ColorSpace::RGB,
+                _ => ColorSpace::YCbCr,
+            };
+            options = options.jpeg_set_out_colorspace(stored);
+            decoder.set_options(options);
+        }
+        // The decoder finds markers its own way: it steps over stuffed
+        // bytes to the next marker where the check above steps over a
+        // segment by its length, so the frame it decodes must be shown to
+        // be the one checked. A smaller one would leave the rest of the
+        // buffer as the last strip or tile left it.
+        ensure!(
+            decoder.output_buffer_size() == Some(size),
+            "the JPEG decoder read another frame header than the strip's or tile's"
+        );
+        if decoded.len() < size {
+            decoded.reserve_exact(size - decoded.len());
+            decoded.resize(size, 0);
+        }
+        decoder
+            .decode_into(&mut decoded[..size])
+            .context("the JPEG decoder could not decode the strip or tile")?;
+        let left = (chunk.left * samples) as usize;
+        let across = (chunk.columns * samples) as usize;
+        let stride = (layout.chunk_width * samples) as usize;
+        for (row, line) in decoded[..size]
+            .chunks_exact(stride)
+            .take(chunk.rows as usize)
+            .enumerate()
+        {
+            let at = (chunk.top as usize + row) * row_bytes + left;
+            frame[at..at + across].copy_from_slice(&line[..across]);
+        }
+        Ok(())
+    })?;
+    Ok(frame)
+}
+
+/// The tables a page's strips or tiles share, read once from `JPEGTables`
+/// (SOI, then table segments, then EOI) and written again as the start of
+/// a stream to join each strip or tile to: SOI and the last definition of
+/// each quantization table, each Huffman table and the restart interval,
+/// in that order. A later definition of a table replaces an earlier one,
+/// so the stream decodes as the tables as written would. What each strip
+/// or tile is joined to is then at most four quantization and eight
+/// Huffman tables, a few KiB, however the tables were written; application
+/// and comment segments are left out, and any other segment is an error.
+fn shared_tables(tables: &[u8]) -> Result<Vec<u8>> {
+    ensure!(
+        tables.starts_with(&[0xFF, 0xD8]),
+        "the TIFF JPEG tables are not one JPEG stream"
+    );
+    let mut quantization: [Option<&[u8]>; 4] = [None; 4];
+    let mut huffman: [Option<&[u8]>; 8] = [None; 8];
+    let mut restart: Option<&[u8]> = None;
+    let mut at = 2;
+    loop {
+        ensure!(
+            tables.get(at) == Some(&0xFF),
+            "the TIFF JPEG tables are not one JPEG stream"
+        );
+        let mut marker = *tables
+            .get(at + 1)
+            .context("the TIFF JPEG tables end early")?;
+        while marker == 0xFF {
+            at += 1;
+            marker = *tables
+                .get(at + 1)
+                .context("the TIFF JPEG tables end early")?;
+        }
+        if marker == 0xD9 {
+            break;
+        }
+        let length = tables
+            .get(at + 2..at + 4)
+            .map(|bytes| usize::from(bytes[0]) << 8 | usize::from(bytes[1]))
+            .context("the TIFF JPEG tables end early")?;
+        let body = tables
+            .get(at + 4..at + 2 + length.max(2))
+            .context("the TIFF JPEG tables end early")?;
+        match marker {
+            0xDB => {
+                let mut rest = body;
+                while let [table, ..] = rest {
+                    let size = 1 + 64 * (1 + usize::from(table >> 4));
+                    ensure!(
+                        table >> 4 <= 1 && table & 15 < 4 && rest.len() >= size,
+                        "a TIFF JPEG quantization table is malformed"
+                    );
+                    quantization[usize::from(table & 15)] = Some(&rest[..size]);
+                    rest = &rest[size..];
+                }
+            }
+            0xC4 => {
+                let mut rest = body;
+                while let [table, ..] = rest {
+                    ensure!(
+                        table >> 4 <= 1 && table & 15 < 4 && rest.len() >= 17,
+                        "a TIFF JPEG Huffman table is malformed"
+                    );
+                    let codes: usize = rest[1..17].iter().map(|&count| usize::from(count)).sum();
+                    let size = 17 + codes;
+                    ensure!(
+                        codes <= 256 && rest.len() >= size,
+                        "a TIFF JPEG Huffman table is malformed"
+                    );
+                    huffman[usize::from(table >> 4) * 4 + usize::from(table & 15)] =
+                        Some(&rest[..size]);
+                    rest = &rest[size..];
+                }
+            }
+            0xDD => restart = Some(body),
+            0xE0..=0xEF | 0xFE => {}
+            _ => bail!("the TIFF JPEG tables hold a segment other than tables"),
+        }
+        at += 2 + length;
+    }
+    let mut shared = vec![0xFF, 0xD8];
+    let segments = quantization
+        .iter()
+        .flatten()
+        .map(|table| (0xDB, *table))
+        .chain(huffman.iter().flatten().map(|table| (0xC4, *table)))
+        .chain(restart.map(|body| (0xDD, body)));
+    for (marker, body) in segments {
+        shared.extend_from_slice(&[0xFF, marker]);
+        shared.extend_from_slice(&(body.len() as u16 + 2).to_be_bytes());
+        shared.extend_from_slice(body);
+    }
+    Ok(shared)
+}
+
+/// What the frame header (SOF) of a JPEG stream declares.
+#[derive(Debug, PartialEq, Eq)]
+struct FrameHeader {
+    precision: u8,
+    height: u16,
+    width: u16,
+    components: u8,
+}
+
+/// Reads the frame header of `stream`, the first SOF marker segment after
+/// its SOI, stepping over the segments before it by their lengths.
+///
+/// As libtiff requires, only the luma of a YCbCr page (`ycbcr`) may be
+/// sampled more often than the other components; it may be sampled 1, 2 or
+/// 4 times in each direction, the factors `YCbCrSubSampling` may have.
+/// Every other component is sampled once. So a decoder's unit of decoding
+/// is at most 32 pixels across and down.
+fn frame_header(stream: &[u8], ycbcr: bool) -> Result<FrameHeader> {
+    ensure!(
+        stream.starts_with(&[0xFF, 0xD8]),
+        "the JPEG data has no start of image"
+    );
+    let byte = |at: usize| {
+        stream
+            .get(at)
+            .copied()
+            .context("the JPEG data ends before its frame header")
+    };
+    let mut at = 2;
+    loop {
+        ensure!(byte(at)? == 0xFF, "the JPEG data has no frame header");
+        let mut marker = byte(at + 1)?;
+        while marker == 0xFF {
+            at += 1;
+            marker = byte(at + 1)?;
+        }
+        if matches!(marker, 0x01 | 0xD0..=0xD7) {
+            at += 2;
+            continue;
+        }
+        ensure!(
+            !matches!(marker, 0xD8..=0xDA),
+            "the JPEG data has no frame header"
+        );
+        let length = usize::from(byte(at + 2)?) << 8 | usize::from(byte(at + 3)?);
+        ensure!(length >= 2, "a JPEG marker segment is too short");
+        if matches!(marker, 0xC0..=0xCF) && !matches!(marker, 0xC4 | 0xC8 | 0xCC) {
+            let components = byte(at + 9)?;
+            ensure!(
+                length == 8 + 3 * usize::from(components),
+                "the JPEG frame header has the wrong length"
+            );
+            for component in 0..usize::from(components) {
+                let factors = byte(at + 11 + 3 * component)?;
+                let allowed = if ycbcr && component == 0 {
+                    matches!(factors >> 4, 1 | 2 | 4) && matches!(factors & 15, 1 | 2 | 4)
+                } else {
+                    factors == 0x11
+                };
+                ensure!(
+                    allowed,
+                    "a JPEG component is sampled other than its page allows"
+                );
+            }
+            return Ok(FrameHeader {
+                precision: byte(at + 4)?,
+                height: u16::from(byte(at + 5)?) << 8 | u16::from(byte(at + 6)?),
+                width: u16::from(byte(at + 7)?) << 8 | u16::from(byte(at + 8)?),
+                components,
+            });
+        }
+        at += 2 + length;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -491,5 +867,67 @@ mod tests {
             (edge.left, edge.top, edge.columns, edge.rows),
             (32, 16, 5, 5)
         );
+    }
+
+    #[test]
+    fn frame_header_is_read_after_the_tables() {
+        // SOI, a DQT segment of two bytes' payload, a fill byte, then a
+        // SOF0 of one component sampled 2 x 1.
+        let stream = [
+            0xFF, 0xD8, 0xFF, 0xDB, 0x00, 0x04, 0x00, 0x00, 0xFF, 0xFF, 0xC0, 0x00, 0x0B, 0x08,
+            0x00, 0x10, 0x00, 0x20, 0x01, 0x01, 0x21, 0x00,
+        ];
+        // Only the luma of a YCbCr page may be sampled more than once.
+        assert!(frame_header(&stream, false).is_err());
+        assert_eq!(
+            frame_header(&stream, true).expect("frame header"),
+            FrameHeader {
+                precision: 8,
+                height: 16,
+                width: 32,
+                components: 1
+            }
+        );
+        let mut sampled = stream;
+        sampled[20] = 0x81;
+        assert!(frame_header(&sampled, true).is_err());
+        assert!(frame_header(&stream[..stream.len() - 2], true).is_err());
+        // A scan before any frame header.
+        assert!(frame_header(&[0xFF, 0xD8, 0xFF, 0xDA, 0x00, 0x02], true).is_err());
+    }
+
+    #[test]
+    fn shared_tables_keep_the_last_definition_of_each_table() {
+        let quantization = |id: u8, value: u8| {
+            let mut segment = vec![0xFF, 0xDB, 0x00, 67, id];
+            segment.extend([value; 64]);
+            segment
+        };
+        let huffman = {
+            let mut segment = vec![0xFF, 0xC4, 0x00, 20, 0x00];
+            let mut counts = [0_u8; 16];
+            counts[0] = 1;
+            segment.extend(counts);
+            segment.push(0);
+            segment
+        };
+        let mut tables = vec![0xFF, 0xD8];
+        tables.extend(quantization(0, 1));
+        // A comment, which is left out.
+        tables.extend([0xFF, 0xFE, 0x00, 0x03, b'x']);
+        for _ in 0..1000 {
+            tables.extend(&huffman);
+        }
+        tables.extend(quantization(0, 2));
+        tables.extend([0xFF, 0xD9]);
+        let mut expected = vec![0xFF, 0xD8];
+        expected.extend(quantization(0, 2));
+        expected.extend(&huffman);
+        assert_eq!(shared_tables(&tables).expect("tables"), expected);
+        // A scan is not a table.
+        let mut scan = vec![0xFF, 0xD8, 0xFF, 0xDA, 0x00, 0x02];
+        scan.extend([0xFF, 0xD9]);
+        assert!(shared_tables(&scan).is_err());
+        assert!(shared_tables(&tables[..tables.len() - 3]).is_err());
     }
 }

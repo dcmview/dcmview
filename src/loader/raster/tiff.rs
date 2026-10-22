@@ -126,7 +126,14 @@ impl Page {
         } else if !(matches!(self.compression, 1 | 5 | 8 | 32946 | 32773)
             // CCITT Group 4, for bilevel pages; its decoder counts pixel
             // positions in 16 bits.
-            || (self.compression == 4 && depth == 1 && self.width <= u32::from(u16::MAX)))
+            || (self.compression == 4 && depth == 1 && self.width <= u32::from(u16::MAX))
+            // JPEG, for 8-bit unsigned gray and colour (RGB or YCbCr) whose
+            // samples are interleaved.
+            || (jpeg
+                && depth == 8
+                && sample_format == RasterSampleFormat::Uint
+                && matches!(color, RasterColorType::Gray | RasterColorType::Rgb)
+                && self.planar == 1))
         {
             Some(RasterUnsupported::Compression)
         } else {
@@ -172,6 +179,7 @@ pub(super) fn inspect(input: &mut HeaderReader) -> Result<Header> {
     let (first, next) = read_page(input, encoding, offset)?;
     let mut header = first.header()?;
     header.metadata.frame_offsets = vec![offset];
+    header.metadata.tiff_jpeg = first.compression == 7;
     // Keep exact cycle detection so a repeated page is never counted twice.
     // The step check precedes insertion, bounding this set to 65,535 offsets.
     let mut seen = HashSet::from([offset]);
@@ -208,6 +216,7 @@ pub(super) fn inspect(input: &mut HeaderReader) -> Result<Header> {
         } else {
             header.metadata.frame_pages.push(page);
             header.metadata.frame_offsets.push(offset);
+            header.metadata.tiff_jpeg |= current.compression == 7;
             if current.icc != first.icc {
                 note(
                     &mut header,

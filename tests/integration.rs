@@ -32,6 +32,8 @@ mod integration {
     mod raster_decode;
     mod raster_discovery;
     mod raster_files;
+    mod raster_jpeg;
+    mod raster_jpeg_files;
     mod raster_tag_files;
     mod raster_tags;
     mod redactions;

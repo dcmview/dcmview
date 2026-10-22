@@ -110,7 +110,7 @@ pub enum DecodeWork {
 ///
 /// | Entry | `decode` |
 /// |---|---|
-/// | raster (`file.format.is_raster()`) | [`raster_decode_heap_limit`]`(file, raster.file_length)`: 32 MiB and one read buffer, `6 * F`, and four times the file as discovery measured it or the read budget if that is less |
+/// | raster (`file.format.is_raster()`) | [`raster_decode_heap_limit`]`(file, raster.file_length)`: 32 MiB and one read buffer, `6 * F`, and four times the file as discovery measured it or the read budget if that is less; for a TIFF with a JPEG-compressed page, also three times the larger of `F` and 16 MiB and 1 KiB for each pixel of the widest and the tallest strip or tile it may have |
 /// | DICOM: native, RLE, deflated frame | [`DICOM_DECODE_BASE_BYTES`]` + 3 * F` |
 /// | DICOM: JPEG Baseline, JPEG Lossless, JPEG-LS | [`DICOM_DECODE_BASE_BYTES`]` + 5 * F` |
 /// | DICOM: JPEG 2000, JPEG XL | [`DICOM_DECODE_BASE_BYTES`]` + 16 * S + 2 * F` |

@@ -962,7 +962,10 @@ for an overlay, the `T` pixels of the displayed frame it is drawn on and the
 
 where `decode` is, for a raster, `raster_decode_heap_limit` at the file
 length discovery recorded (32 MiB and a read buffer, `6 * F`, and four times
-the file or its read budget if that is less); for DICOM, 16 MiB plus `3 * F`
+the file or its read budget if that is less; for a TIFF with a
+JPEG-compressed page also three times the larger of `F` and 16 MiB, and
+1 KiB for each pixel of the widest and the tallest strip or tile its pages
+may have); for DICOM, 16 MiB plus `3 * F`
 (native, RLE, deflated frame), `5 * F` (JPEG Baseline, JPEG Lossless,
 JPEG-LS) or `16 * S + 2 * F` (JPEG 2000, JPEG XL). The raster row is the
 limit the raster decoder is held to for every file, so a raster's
@@ -1318,8 +1321,9 @@ Discovery lists PNG, JPEG, TIFF and still WebP files beside DICOM
   4-bit or 64-bit integer samples, or colour that is not 8- or 16-bit
   unsigned;
   `raster.unsupported_compression` for a TIFF compressed with anything but
-  none, LZW, Deflate or PackBits, or CCITT Group 4 on a bilevel page at most
-  65,535 pixels wide (JPEG-compressed TIFF, CCITT Group 3 and Modified
+  none, LZW, Deflate or PackBits, CCITT Group 4 on a bilevel page at most
+  65,535 pixels wide, or JPEG on an 8-bit unsigned gray, RGB or YCbCr page
+  with interleaved samples (old-style JPEG, CCITT Group 3 and Modified
   Huffman included);
   `raster.jpeg_unsupported_process` for a JPEG that is not 8-bit baseline,
   extended sequential or progressive Huffman;
@@ -1418,8 +1422,9 @@ the file, for a raster that has one.
   - at most 100 scans in a progressive JPEG;
   - at most `raster_decode_heap_limit` bytes of heap on the decoding thread
     (a fixed 32 MiB and one read buffer, six times the frame, four times the
-    bytes read), so a profile, text chunk, strip or tile is never allocated
-    at a size it merely declares. Half of the fixed part is for the one
+    bytes read, and for a TIFF with a JPEG-compressed page one decoded strip
+    or tile and the JPEG decoder's buffers for it), so a profile, text
+    chunk, strip or tile is never allocated at a size it merely declares. Half of the fixed part is for the one
     allocation a file sizes unchecked: the decoder of a lossy WebP
     allocates a partition of coefficients at its declared length, under
     16 MiB, before reading it, and stops at the first the file does not
@@ -1485,13 +1490,37 @@ the file, for a raster that has one.
   row may take at most two bytes of the strip a pixel and end with at most
   one change more than the width; how many changes the decoder collects
   from those bytes is the pinned `fax` 0.2.7's own (at most one a bit),
-  which keeps a row to a few MiB at the widest strip. Every other TIFF
-  page is decoded by the `tiff` crate.
+  which keeps a row to a few MiB at the widest strip.
+- **JPEG-compressed TIFF is decoded by the same chunk decoder**, since the
+  linked `tiff` crate hands each strip or tile to a JPEG decoder that sizes
+  its buffers from the size the stream declares: 8-bit gray, RGB and YCbCr,
+  interleaved, in strips or tiles, through `zune-jpeg` 0.5. The page's
+  `JPEGTables` are read once, keeping the last definition of each table,
+  and each strip or tile is joined to them the way libtiff joins them, so
+  the tables cost the same however many strips or tiles share them and
+  however they were written. Before the decoder is given a strip or tile
+  the viewer reads its frame header itself: 8-bit samples, `SamplesPerPixel` components, only a YCbCr
+  page's luma sampled more than once (1, 2 or 4 times each way), and
+  exactly the size the page lays out (the last strip may declare the rows
+  that remain). The decoder is given that size as its limit too, so a tile
+  that declares itself 65,535 pixels square is refused having allocated
+  nothing for it. Gray and RGB are served as the stream stores them, as
+  libtiff decodes an RGB page; YCbCr is converted to RGB with the stream's
+  own chroma sampling (`YCbCrSubSampling` and `ReferenceBlackWhite` are
+  not read). No strip or tile may decode to more than the frame or 16 MiB,
+  whichever is more. Beside the frame a decode holds the bytes of one strip
+  or tile with the tables, never more than the file holds, the decoded
+  strip or tile, and what the decoder holds for it: its coefficients, two
+  bytes a sample, whole for a progressive stream, and rows of at most a
+  few hundred bytes a pixel across. These are the allocations of the pinned
+  `zune-jpeg` 0.5.15. An entry whose file has a JPEG-compressed page
+  (`RasterMetadata.tiff_jpeg`) reserves room for one such strip or tile
+  ("Decode Admission"); a JPEG page in a file discovery listed without one
+  is a decode error. Every other TIFF page is decoded by the `tiff` crate.
 - **Not decoded in this version**, each reported with its reason:
-  JPEG-compressed TIFF (the linked `tiff` crate hands a tile to a JPEG
-  decoder with no limit on the size the tile declares), CCITT Group 3 and
-  Modified Huffman TIFF, palette, CMYK and gray-with-alpha TIFF, and
-  planar colour. Animated PNG and WebP show their first frame only.
+  old-style JPEG TIFF, CCITT Group 3 and Modified Huffman TIFF, palette,
+  CMYK and gray-with-alpha TIFF, and planar colour. Animated PNG and WebP
+  show their first frame only.
 
 **Metadata.** `/tags` and `/tags/select` serve a raster's metadata in the
 `TagNode` shape of the DICOM tag tree, so the Metadata panel shows it with

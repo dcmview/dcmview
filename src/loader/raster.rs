@@ -148,9 +148,10 @@ use std::path::Path;
 ///     16-bit unsigned. The
 ///     `color_type`, `bit_depth` and `sample_format` are reported as stored.
 ///   - `Compression` (TIFF): `Compression` other than 1 (none), 5 (LZW), 8
-///     or 32946 (Deflate) or 32773 (PackBits), and other than 4 (CCITT
-///     Group 4) on a one-bit page at most 65,535 pixels wide, read from
-///     page 0.
+///     or 32946 (Deflate) or 32773 (PackBits), other than 4 (CCITT Group 4)
+///     on a one-bit page at most 65,535 pixels wide, and other than 7
+///     (JPEG) on an 8-bit unsigned gray, RGB or YCbCr page with
+///     `PlanarConfiguration` 1, read from page 0.
 ///   - `JpegProcess`: a frame header other than `SOF0`, `SOF1` or `SOF2`, or
 ///     a sample precision other than 8.
 ///   - `TooLarge`: more than `RASTER_MAX_FRAME_PIXELS` pixels in a frame.
@@ -459,6 +460,7 @@ impl Header {
                 unsupported: None,
                 animated: false,
                 significant_bits: None,
+                tiff_jpeg: false,
                 warnings: Vec::new(),
             },
         }

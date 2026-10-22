@@ -75,6 +75,15 @@ pub const RASTER_TIFF_MAX_TAGS: usize = 4096;
 /// rounded up to a multiple of 16.
 pub const RASTER_TIFF_TILE_MARGIN: u32 = 4096;
 
+/// The largest `JPEGTables` (TIFF tag 347) a JPEG-compressed page may
+/// have; a page with larger tables is a decode error before they are read.
+/// Real tables are a few hundred bytes.
+pub const RASTER_TIFF_JPEG_TABLES_MAX_BYTES: usize = 64 * 1024;
+
+/// The least [`raster_tiff_jpeg_chunk_bytes`] is, however small the frame:
+/// room for a 2,048 x 2,048 RGB tile, larger than writers use.
+pub const RASTER_TIFF_JPEG_CHUNK_MIN_BYTES: u64 = 16 * 1024 * 1024;
+
 /// The most scans a progressive JPEG may have and be decoded. Every scan is a
 /// pass over the whole image, and a scan can be a few bytes long, so without
 /// a limit a small file buys unbounded work. Encoders write about ten.
@@ -137,6 +146,7 @@ pub fn raster_read_budget(file: &FileEntry) -> Option<u64> {
 /// RASTER_DECODE_HEAP_BASE_BYTES
 ///   + 6 * raster_frame_bytes(file)
 ///   + 4 * min(length, raster_read_budget(file))
+///   + tiff_jpeg_chunk_heap(file)
 /// ```
 ///
 /// The first term covers decoder state, the read buffer, the copies made
@@ -148,14 +158,74 @@ pub fn raster_read_budget(file: &FileEntry) -> Option<u64> {
 /// strip); the second
 /// the frame, the decoder's own copy of it and its working rows, planes or
 /// coefficients; the third an encoded image held in memory while it is
-/// decoded (JPEG and WebP) and what is assembled from its segments. Nothing
-/// in it is a number the file declares: the frame size is the catalog's,
+/// decoded (JPEG and WebP, and a JPEG strip or tile of TIFF with its
+/// tables) and what is assembled from its segments; the fourth, for an
+/// entry with a JPEG-compressed TIFF page, one such strip or tile decoded
+/// and what the JPEG decoder holds while it decodes it. Nothing in it is a
+/// number the file declares: the frame size is the catalog's,
 /// checked against the file before anything is allocated for it, and
 /// `length` is bytes that exist. `None` exactly when [`raster_frame_bytes`]
 /// is.
 pub fn raster_decode_heap_limit(file: &FileEntry, length: u64) -> Option<u64> {
     let budget = raster_read_budget(file)?;
-    Some(RASTER_DECODE_HEAP_BASE_BYTES + 6 * raster_frame_bytes(file)? + 4 * length.min(budget))
+    Some(
+        RASTER_DECODE_HEAP_BASE_BYTES
+            + 6 * raster_frame_bytes(file)?
+            + 4 * length.min(budget)
+            + tiff_jpeg_chunk_heap(file)?,
+    )
+}
+
+/// The most bytes one JPEG strip or tile of a TIFF frame of `file` may
+/// decode to: [`raster_frame_bytes`] or [`RASTER_TIFF_JPEG_CHUNK_MIN_BYTES`],
+/// whichever is more. A page with a larger strip or tile is a decode error
+/// before any of it is read. A tile may be up to
+/// [`RASTER_TIFF_TILE_MARGIN`] pixels larger than its image each way, so
+/// without this a tiny image could carry a tile of 4,095 x 4,095 RGB.
+/// `None` exactly when [`raster_frame_bytes`] is.
+pub fn raster_tiff_jpeg_chunk_bytes(file: &FileEntry) -> Option<u64> {
+    Some(raster_frame_bytes(file)?.max(RASTER_TIFF_JPEG_CHUNK_MIN_BYTES))
+}
+
+/// The part of [`raster_decode_heap_limit`] for one JPEG strip or tile of
+/// a TIFF frame, for each pixel of the widest and the tallest one a frame of
+/// the entry may decode; see [`tiff_jpeg_chunk_heap`].
+pub const RASTER_TIFF_JPEG_HEAP_PER_SIDE_BYTES: u64 = 1024;
+
+/// What one JPEG strip or tile of a TIFF frame of `file` holds while it is
+/// decoded, beside the frame and the strip's bytes: 0 unless the entry
+/// lists a JPEG-compressed page (`raster.tiff_jpeg`), and otherwise
+///
+/// ```text
+/// 3 * raster_tiff_jpeg_chunk_bytes(file)
+///   + RASTER_TIFF_JPEG_HEAP_PER_SIDE_BYTES * (widest + tallest)
+/// ```
+///
+/// where `widest` and `tallest` are `columns` and `rows` plus the tile
+/// margin less one, at most 65,535: the largest frame header a strip or
+/// tile may declare (`tiff_chunks.rs`). The first term is the decoded
+/// strip or tile and the decoder's coefficients of it, two bytes a sample,
+/// which it holds whole for a progressive stream or one whose components
+/// are scanned apart. The second is what the decoder holds a row at a time
+/// (at most 305 bytes a pixel across, measured on the widest strip libjpeg
+/// writes with every sampling a YCbCr page may have) and the padding of
+/// its coefficients to a whole number of 32 x 32 units, 186 bytes a pixel
+/// of each side.
+///
+/// These are the allocations of `zune-jpeg` 0.5.15, which `Cargo.toml`
+/// pins, for the frame headers the decode accepts; `tests/raster_cost`
+/// measures them. A newer version must be measured again before the pin
+/// moves.
+fn tiff_jpeg_chunk_heap(file: &FileEntry) -> Option<u64> {
+    if !file.raster.as_ref().is_some_and(|raster| raster.tiff_jpeg) {
+        return Some(0);
+    }
+    let side =
+        |pixels: u32| (u64::from(pixels) + u64::from(RASTER_TIFF_TILE_MARGIN) - 1).min(65_535);
+    Some(
+        3 * raster_tiff_jpeg_chunk_bytes(file)?
+            + RASTER_TIFF_JPEG_HEAP_PER_SIDE_BYTES * (side(file.columns) + side(file.rows)),
+    )
 }
 
 /// One decoded frame of a raster file.
@@ -273,6 +343,26 @@ impl<T: Read + Seek> RasterSource for T {}
 ///   stream goes on to say.
 /// - **TIFF photometric interpretation** may be stored as a SHORT or a
 ///   LONG; discovery reads both, so a decode does.
+/// - **JPEG-compressed TIFF.** A page with `Compression` 7 is decoded here,
+///   not by the `tiff` crate, once every check above has passed, and only
+///   when discovery listed a JPEG-compressed page in the file
+///   (`raster.tiff_jpeg`); otherwise it is a decode error. It must be 8-bit
+///   unsigned gray, RGB or YCbCr (photometric 6, three samples) with
+///   `PlanarConfiguration` 1, or it is `raster.unsupported_compression`.
+///   Its `JPEGTables` may be at most [`RASTER_TIFF_JPEG_TABLES_MAX_BYTES`]
+///   and must be one JPEG stream of tables, which is read once, keeping
+///   the last definition of each table. Each strip or tile, joined to
+///   those tables as libtiff joins them, must have a frame header (SOF) of 8-bit
+///   samples, `SamplesPerPixel` components and exactly the strip's or
+///   tile's size: a tile's width and length, a strip's width and
+///   `RowsPerStrip`, or for the last strip the rows that remain. A strip
+///   taller than the image by [`RASTER_TIFF_TILE_MARGIN`] or more may only
+///   declare the image's rows. Only the luma of a YCbCr page may be
+///   sampled more than once, 1, 2 or 4 times each way, as libtiff
+///   requires. No strip or tile may decode to more than
+///   [`raster_tiff_jpeg_chunk_bytes`]. A page that breaks any of these is a
+///   decode error before the decoder is given the strip or tile, which is
+///   also given that size as its limit.
 /// - **Bilevel TIFF.** A page of one one-bit sample is decoded here, not by
 ///   the `tiff` crate, once every check above has passed. `FillOrder` must
 ///   be 1 or 2 and `Predictor` 1 (the format allows no other for bilevel
@@ -342,8 +432,11 @@ impl<T: Read + Seek> RasterSource for T {}
 ///   frame, one packed row of a strip or tile (at most the image's width and
 ///   the tile margin, in bits), an 8 KiB input buffer, the LZW or Deflate
 ///   decoder's fixed state and, for Group 4, the colour changes of two rows,
-///   each bounded by the bytes a row may take. One allocation is sized by the file
-///   unchecked, and the limit has room for it: a partition of a lossy
+///   each bounded by the bytes a row may take. A JPEG-compressed TIFF page
+///   holds, beside its frame, the bytes of one strip or tile and the page's
+///   tables (never more than the file holds), one decoded strip or tile and
+///   what the JPEG decoder holds for it (`tiff_jpeg_chunk_heap`). One
+///   allocation is sized by the file unchecked, and the limit has room for it: a partition of a lossy
 ///   WebP's coefficients, at the length its bitstream declares, which is
 ///   less than 16 MiB. The decoder stops at the first partition the file
 ///   does not hold, so at most one is held without bytes behind it.
@@ -357,7 +450,8 @@ impl<T: Read + Seek> RasterSource for T {}
 /// |---|---|---|
 /// | PNG | every colour type and bit depth, Adam7 interlacing | the `png` crate with no output transformation; only the image itself (`IDAT`) of an animated file |
 /// | JPEG | 8-bit baseline, extended sequential and progressive Huffman; one, three or four components | `image`'s JPEG decoder; never rotated by EXIF |
-/// | TIFF | gray of 8, 16 or 32 bits unsigned or signed, or 32- or 64-bit float; RGB and RGB with alpha of 8 or 16 bits unsigned. Strips and tiles; none, LZW, Deflate (8 and 32946) and PackBits; predictors 1, 2 and 3; classic and BigTIFF, either byte order | the `tiff` crate, on the frame's own page. JPEG compression (7) is not decoded: the crate hands a strip or tile to a JPEG decoder with no limit on the size that stream declares |
+/// | TIFF | gray of 8, 16 or 32 bits unsigned or signed, or 32- or 64-bit float; RGB and RGB with alpha of 8 or 16 bits unsigned. Strips and tiles; none, LZW, Deflate (8 and 32946) and PackBits; predictors 1, 2 and 3; classic and BigTIFF, either byte order | the `tiff` crate, on the frame's own page |
+/// | TIFF JPEG | `Compression` 7: gray, RGB and YCbCr of 8 bits unsigned, interleaved; strips and tiles; baseline, extended sequential and progressive Huffman streams, with or without `JPEGTables` | the viewer's own chunk decoder (`tiff_chunks.rs`) with `zune-jpeg` 0.5. Old-style JPEG (6) is not decoded |
 /// | TIFF bilevel | gray of one bit unsigned; strips and tiles; none, LZW, Deflate (8 and 32946), PackBits and CCITT Group 4; `FillOrder` 1 and 2 | the viewer's own chunk decoder (`tiff_chunks.rs`), with `weezl` for LZW, `flate2` for Deflate and `fax` for Group 4. CCITT Group 3 and Modified Huffman (3 and 2) are not decoded |
 /// | WebP | lossy and lossless stills, with or without alpha; the first frame of an animation, composed on the canvas | `image`'s WebP decoder |
 ///
@@ -378,6 +472,8 @@ impl<T: Read + Seek> RasterSource for T {}
 /// | RGB + alpha | 4, 8 or 16 | R, G, B, A with unassociated alpha |
 /// | PNG palette | 3, 8, or 4, 8 with `tRNS` | each index replaced by its palette colour, and by its `tRNS` alpha (255 beyond the end of `tRNS`); an index beyond the palette is a decode error |
 /// | JPEG YCbCr | 3, 8 | the decoder's RGB |
+/// | TIFF JPEG gray, RGB | 1 or 3, 8 | the stream's samples, unconverted, as libtiff decodes an RGB page |
+/// | TIFF JPEG YCbCr | 3, 8 | the decoder's RGB, upsampled from the stream's own chroma sampling |
 /// | JPEG CMYK, YCCK | 3, 8 | the decoder's approximate RGB; no profile |
 /// | WebP | 3, 8, or 4, 8 with alpha | R, G, B (, A) |
 ///
