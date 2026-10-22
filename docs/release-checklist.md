@@ -64,7 +64,9 @@ at the end of this checklist.
 
 - [ ] Set the release version consistently in `Cargo.toml`, every
       `crates/*/Cargo.toml`, `pyproject.toml`, `frontend/package.json`, and
-      `vscode/package.json`.
+      `vscode/package.json`. `pyproject.toml` holds the canonical PEP 440
+      spelling of the version, which differs only for a pre-release
+      (`0.5.0b1` for `0.5.0-beta.1`).
 - [ ] Regenerate `Cargo.lock`, `frontend/package-lock.json`, and
       `vscode/package-lock.json`; do not hand-edit resolved dependency records.
       The version check covers the root package in Cargo.lock, each

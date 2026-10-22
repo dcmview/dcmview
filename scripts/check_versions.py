@@ -9,6 +9,11 @@ import sys
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
+# A release version is `X.Y.Z`, or a pre-release `X.Y.Z-alpha.N`,
+# `X.Y.Z-beta.N` or `X.Y.Z-rc.N`, in Cargo and npm (semver) form.
+RELEASE_VERSION = re.compile(r"^(\d+\.\d+\.\d+)(?:-(alpha|beta|rc)\.(\d+))?$")
+PEP440_PRE_RELEASE = {"alpha": "a", "beta": "b", "rc": "rc"}
+
 
 def read_toml_version(path: pathlib.Path, section: str) -> str:
 	try:
@@ -50,6 +55,23 @@ def normalize_tag(tag: str) -> str:
 	if not version:
 		raise ValueError("release tag is missing a version after 'v'")
 	return version
+
+
+def python_version(version: str) -> str:
+	"""Return the canonical PEP 440 form of a semver release version.
+
+	`0.5.0` stays `0.5.0`; `0.5.0-beta.1` becomes `0.5.0b1`, the version
+	the wheel is built and published under.
+	"""
+	match = RELEASE_VERSION.match(version)
+	if match is None:
+		raise ValueError(
+			f"release version must be X.Y.Z or X.Y.Z-alpha.N, -beta.N or -rc.N: {version}"
+		)
+	release, kind, number = match.groups()
+	if kind is None:
+		return release
+	return f"{release}{PEP440_PRE_RELEASE[kind]}{int(number)}"
 
 
 def read_package_json_version(path: pathlib.Path, *, package_root: bool = False) -> str:
@@ -101,12 +123,17 @@ def main() -> int:
 	parser = argparse.ArgumentParser(description="Validate dcmview release versions")
 	parser.add_argument(
 		"--tag",
-		help="Release tag to compare against Cargo.toml, e.g. v0.1.0",
+		help="Release tag to compare against Cargo.toml, e.g. v0.1.0 or v0.2.0-beta.1",
 	)
 	parser.add_argument(
 		"--print-version",
 		action="store_true",
 		help="Print only the canonical Cargo version",
+	)
+	parser.add_argument(
+		"--print-python-version",
+		action="store_true",
+		help="Print only the PEP 440 version of the Python package",
 	)
 	args = parser.parse_args()
 
@@ -117,9 +144,21 @@ def main() -> int:
 		return 1
 
 	cargo_version = versions["Cargo.toml"]
-	if any(version != cargo_version for version in versions.values()):
+	try:
+		expected_python_version = python_version(cargo_version)
+	except ValueError as error:
+		print(f"Cargo.toml: {error}", file=sys.stderr)
+		return 1
+	# pyproject.toml carries the canonical PEP 440 spelling of the same
+	# version; every other manifest carries the semver spelling.
+	expected = {
+		name: expected_python_version if name == "pyproject.toml" else cargo_version
+		for name in versions
+	}
+	if versions != expected:
 		print(
-			"version mismatch: " + ", ".join(f"{name} has {version}" for name, version in versions.items()),
+			"version mismatch: " + ", ".join(f"{name} has {version}" for name, version in versions.items())
+			+ f" (pyproject.toml must be {expected_python_version}, every other manifest {cargo_version})",
 			file=sys.stderr,
 		)
 		return 1
@@ -140,6 +179,8 @@ def main() -> int:
 
 	if args.print_version:
 		print(cargo_version)
+	elif args.print_python_version:
+		print(expected_python_version)
 	else:
 		print(f"dcmview version ok: {cargo_version}")
 	return 0
