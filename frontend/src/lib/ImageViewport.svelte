@@ -16,7 +16,7 @@
 		updateRedactions,
 		updateAnnotations,
 	} from "../api";
-	import { nativeView } from "./annotation/display";
+	import { matchEmbedRects, nativeFrame, shownShapes } from "./annotation/display";
 	import NativeAnnotationLabels from "./annotation/NativeAnnotationLabels.svelte";
 	import NativeAnnotationOverlay from "./annotation/NativeAnnotationOverlay.svelte";
 	import NativeAnnotationPanel from "./annotation/NativeAnnotationPanel.svelte";
@@ -455,25 +455,33 @@
 	$effect(() => {
 		if (annotatedFrame) annotationFrames.load(annotatedFrame);
 	});
+	// A ROI whose native record is hidden is hidden too: not drawn, listed or hit.
 	const visibleRois = $derived(
-		overlay ? [] : roisOnFrame(edited.annotations(presented?.target.file.index ?? activeFile.index), presented?.target.frameIndex ?? currentFrame),
+		overlay ? [] : roisOnFrame(edited.annotations(presented?.target.file.index ?? activeFile.index), presented?.target.frameIndex ?? currentFrame)
+			.filter((roi) => !nativeMatched?.embedHidden.has(roi.index)),
 	);
-	// Native records on the frame on screen, beside the EMBED ROIs of the same frame.
+	// Native records on the frame on screen, beside the EMBED ROIs of the same
+	// frame. Hidden in Redact mode, as ROIs are. Each step is derived apart, so
+	// a rectangle being dragged rematches only the EMBED-shown records.
 	const nativeFileIndex = $derived(presented?.target.file.index ?? activeFile.index);
-	const nativeFrame = $derived(presented?.target.frameIndex ?? currentFrame);
-	const nativeResponse = $derived(overlay ? null : native.response(nativeFileIndex));
-	const nativeShown = $derived(nativeResponse
-		? nativeView(
-			nativeResponse,
-			{ frame: nativeFrame, hiddenLayers: native.hiddenLayers, hiddenClasses: native.hiddenClasses },
-			roisOnFrame(annotations.annotations(nativeFileIndex), nativeFrame),
-		)
+	const nativeFrameIndex = $derived(presented?.target.frameIndex ?? currentFrame);
+	const nativeResponse = $derived(overlay || redacting ? null : native.response(nativeFileIndex));
+	const nativeFrameShapes = $derived(nativeResponse ? nativeFrame(nativeResponse, nativeFrameIndex) : null);
+	const nativeVisibility = $derived({ hiddenLayers: native.hiddenLayers, hiddenClasses: native.hiddenClasses });
+	const nativePlain = $derived(nativeFrameShapes ? shownShapes(nativeFrameShapes.plain, nativeVisibility) : []);
+	const nativeMatched = $derived(nativeFrameShapes
+		? matchEmbedRects(nativeFrameShapes.embedded, nativeVisibility, roisOnFrame(annotations.annotations(nativeFileIndex), nativeFrameIndex))
 		: null);
-	// Redaction boxes are drawn in place of ROIs and have no native records.
-	const nativeDrawnRois = $derived(redacting ? undefined : nativeShown?.embedDrawn);
+	const nativeShapes = $derived(nativeMatched ? [...nativePlain, ...nativeMatched.shapes] : []);
 	$effect(() => {
 		const fileIndex = activeFile.index;
 		if (!overlay && activeFile.has_pixels) untrack(() => native.ensureLoaded(fileIndex));
+	});
+	// Hiding a selected ROI's record leaves nothing selected to edit or delete.
+	$effect(() => {
+		const hidden = nativeMatched?.embedHidden;
+		const selected = selectedRoiIndex;
+		if (hidden && selected !== null && hidden.has(selected)) untrack(() => edited.select(activeFile.index, null));
 	});
 	const draftRoi = $derived(
 		tools.draft
@@ -1448,9 +1456,9 @@
 					scale={activeTransform.scale}
 				/>
 			{/if}
-			{#if nativeShown && imageColumns > 0 && imageRows > 0}
+			{#if nativeFrameShapes && imageColumns > 0 && imageRows > 0}
 				<NativeAnnotationOverlay
-					shapes={nativeShown.shapes}
+					shapes={nativeShapes}
 					rows={imageRows}
 					columns={imageColumns}
 					scale={activeTransform.scale}
@@ -1465,7 +1473,7 @@
 					columns={imageColumns}
 					scale={activeTransform.scale}
 					pixelAspectRatio={displayGeometry.pixelAspectRatio}
-					nativeDrawn={nativeDrawnRois}
+					nativeDrawn={nativeMatched?.embedDrawn}
 				/>
 			{/if}
 		</div>
@@ -1478,9 +1486,9 @@
 				geometry={displayGeometry}
 			/>
 		{/if}
-		{#if nativeShown && imageColumns > 0 && imageRows > 0}
+		{#if nativeFrameShapes && imageColumns > 0 && imageRows > 0}
 			<NativeAnnotationLabels
-				shapes={nativeShown.shapes}
+				shapes={nativeShapes}
 				transform={activeTransform}
 				{orientation}
 				geometry={displayGeometry}
@@ -1493,7 +1501,7 @@
 				transform={activeTransform}
 				{orientation}
 				geometry={displayGeometry}
-				nativeDrawn={nativeDrawnRois}
+				nativeDrawn={nativeMatched?.embedDrawn}
 			/>
 		{/if}
 		<div class="hud">
@@ -1558,7 +1566,7 @@
 			>
 				<NativeAnnotationPanel
 					response={nativeResponse}
-					frame={nativeFrame}
+					frame={nativeFrameIndex}
 					hiddenLayers={native.hiddenLayers}
 					hiddenClasses={native.hiddenClasses}
 					onlayertoggle={(layerId) => native.toggleLayer(layerId)}
