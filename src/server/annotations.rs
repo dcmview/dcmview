@@ -303,10 +303,23 @@ pub async fn native_annotations(
         *key = FileKey::parse(&registry.shown_key_of(key)).map_err(store_error)?;
         Ok(())
     };
+    let masked = registry.masker().is_some();
+    let mut layers = read.layers;
+    if masked {
+        for layer in &mut layers {
+            if let Some(author) = &mut layer.source.author {
+                unnamed(author);
+            }
+        }
+    }
     let mut annotations = Vec::with_capacity(read.annotations.len());
     for (mut record, embed_index) in read.annotations {
         shown_key(&mut record.file)?;
         record.unknown.remove("embed_index");
+        if masked {
+            unnamed(&mut record.meta.created_by);
+            unnamed(&mut record.meta.modified_by);
+        }
         annotations.push(crate::api::contracts::NativeAnnotation {
             record,
             embed_index,
@@ -315,6 +328,10 @@ pub async fn native_annotations(
     let mut labels = read.labels;
     for label in &mut labels {
         visit_target_key(&mut label.target, &mut |key| shown_key(key))?;
+        if masked {
+            unnamed(&mut label.meta.created_by);
+            unnamed(&mut label.meta.modified_by);
+        }
     }
     Ok(crate::api::contracts::NativeAnnotationsResponse {
         schema: read
@@ -322,7 +339,7 @@ pub async fn native_annotations(
             .map_or_else(dcmview_annotation::LabelSchema::implicit, |schema| {
                 schema.as_ref().clone()
             }),
-        layers: read.layers,
+        layers,
         annotations,
         labels,
         revision: read.revision,
@@ -822,14 +839,6 @@ pub async fn export_native_within(
             document
                 .extensions
                 .insert("dcmview".to_string(), serde_json::json!({ "masked": true }));
-            // The name of whoever ran the viewer stays with the session.
-            let unnamed = |author: &mut Author| {
-                if author.kind() == dcmview_annotation::AuthorKind::User {
-                    if let Ok(local) = Author::parse(MASKED_USER_AUTHOR) {
-                        *author = local;
-                    }
-                }
-            };
             for layer in &mut document.layers {
                 if let Some(author) = &mut layer.source.author {
                     unnamed(author);
@@ -2058,6 +2067,16 @@ async fn wait_for_import(store: &AnnotationStore) {
     if store.writes_wait() {
         // A failed import is the reads' answer; writes go on without it.
         let _ = store.wait_until_ready().await;
+    }
+}
+
+/// A `user` author written as [`MASKED_USER_AUTHOR`], for what a masked
+/// session sends: the name of whoever ran the viewer stays with the session.
+fn unnamed(author: &mut Author) {
+    if author.kind() == dcmview_annotation::AuthorKind::User {
+        if let Ok(local) = Author::parse(MASKED_USER_AUTHOR) {
+            *author = local;
+        }
     }
 }
 

@@ -909,7 +909,9 @@ written or imported for it) has no record, and answers no annotation and
 no file or frame label; rows a CSV staged for it are shown by the EMBED
 view. Rows staged for a file whose key is settled are made records first,
 as the EMBED read makes them. Keys are in the form the session sends them,
-so a masked session answers no real UID.
+so a masked session answers no real UID, and a masked session writes every
+`user` author (a record's `created_by` and `modified_by`, a layer's
+`source.author`) as `user:local`, as its document export does.
 
 ### Annotation documents
 

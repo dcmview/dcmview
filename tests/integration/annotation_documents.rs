@@ -2896,6 +2896,14 @@ async fn a_masked_session_reads_records_under_the_keys_it_shows() {
         answer["labels"][2]["target"],
         json!({ "study": shown_study })
     );
+    // No user name: authors are written as a masked export writes them.
+    assert_eq!(answer["labels"][2]["created_by"], "user:local");
+    assert_eq!(answer["labels"][2]["modified_by"], "user:local");
+    assert_eq!(answer["layers"][0]["source"]["author"], "user:local");
+    let user = dcmview::annotations::session_author();
+    if user.as_str() != "user:local" {
+        assert!(!text.contains(user.as_str()), "{user}: {text}");
+    }
 }
 
 /// A session whose document schema has no `roi` class still writes an
