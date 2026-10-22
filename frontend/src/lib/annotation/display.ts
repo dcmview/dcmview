@@ -196,6 +196,64 @@ export function visibleShapes(
 	return shapes;
 }
 
+/** A rectangle the EMBED view shows on the current frame, at its index in that view. */
+export type EmbedRect = { index: number; ymin: number; xmin: number; ymax: number; xmax: number };
+
+export type NativeView = {
+	/** The records to draw, as `visibleShapes` gives them, less those out of date (below). */
+	shapes: NativeShape[];
+	/**
+	 * EMBED indices whose rectangle a native record stands for on this frame,
+	 * hidden or not: the EMBED overlay does not outline or number them.
+	 */
+	embedDrawn: ReadonlySet<number>;
+};
+
+/** A rectangle as the EMBED view writes it: `[y0, x0, y1, x1]`, rounded outward and not below 0. */
+function embedBox(geometry: Geometry): [number, number, number, number] | null {
+	if (geometry.type !== "rect") return null;
+	return [
+		Math.max(0, Math.floor(geometry.y0)),
+		Math.max(0, Math.floor(geometry.x0)),
+		Math.max(0, Math.ceil(geometry.y1)),
+		Math.max(0, Math.ceil(geometry.x1)),
+	];
+}
+
+/**
+ * What the native overlay draws beside the EMBED rectangles on the same
+ * frame. The EMBED view is the live copy of the rectangles it shows: a
+ * record with an `embed_index` stands for the rectangle at that index only
+ * while that rectangle is on this frame with the box the record reads as.
+ * Otherwise the native copy is behind an edit (a rectangle being dragged,
+ * one saved and not read back yet, a deleted one shifting the indices), and
+ * the record is left out, so the EMBED overlay draws that rectangle as it
+ * always has and nothing is drawn twice.
+ */
+export function nativeView(
+	response: Pick<NativeAnnotationsResponse, "schema" | "layers" | "annotations">,
+	{ frame, hiddenLayers, hiddenClasses }: NativeDisplayFilter,
+	embedRects: readonly EmbedRect[],
+): NativeView {
+	const records = new Map(response.annotations.map((record) => [record.id, record]));
+	const rects = new Map(embedRects.map((rect) => [rect.index, rect]));
+	const embedDrawn = new Set<number>();
+	const shapes: NativeShape[] = [];
+	for (const shape of visibleShapes(response, { frame })) {
+		if (shape.embedIndex !== null) {
+			const box = embedBox(records.get(shape.id)!.geometry);
+			const rect = rects.get(shape.embedIndex);
+			const current = box !== null && rect !== undefined
+				&& rect.ymin === box[0] && rect.xmin === box[1] && rect.ymax === box[2] && rect.xmax === box[3];
+			if (!current) continue;
+			embedDrawn.add(shape.embedIndex);
+		}
+		if (hiddenLayers?.has(shape.layer) || hiddenClasses?.has(shape.classId)) continue;
+		shapes.push(shape);
+	}
+	return { shapes, embedDrawn };
+}
+
 export type ClassLegendEntry = {
 	id: string;
 	name: string;

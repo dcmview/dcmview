@@ -13,6 +13,7 @@ import {
 	geometryShape,
 	labelGroups,
 	layerEntries,
+	nativeView,
 	safeColor,
 	targetLevel,
 	visibleShapes,
@@ -220,5 +221,47 @@ describe("labels", () => {
 		expect(labelGroups(nativeResponse()).find((group) => group.level === "frame")!.labels).toHaveLength(2);
 		const file = labelGroups(nativeResponse(), 0, new Set(["L-model"])).find((group) => group.level === "file")!;
 		expect(file.labels.map((label) => label.id)).toEqual(["l-artifact"]);
+	});
+});
+
+describe("nativeView", () => {
+	// The fixture's a-rect (10, 20)-(40, 60) is EMBED ROI 0: [20, 10, 60, 40].
+	const embedRect = { index: 0, ymin: 20, xmin: 10, ymax: 60, xmax: 40 };
+
+	it("draws a record for the EMBED rectangle it matches and marks that rectangle as drawn", () => {
+		const view = nativeView(nativeResponse(), { frame: 0 }, [embedRect]);
+
+		expect(view.shapes.map((shape) => shape.id)).toContain("a-rect");
+		expect([...view.embedDrawn]).toEqual([0]);
+	});
+
+	it("matches a fractional rectangle as the EMBED view rounds it, outward", () => {
+		const response = nativeResponse({ annotations: [
+			nativeRecord("f", "mass", { type: "rect", x0: 10.4, y0: 20.6, x1: 39.2, y1: 59.1 }, { embed_index: 0 }),
+		] });
+
+		expect([...nativeView(response, { frame: 0 }, [embedRect]).embedDrawn]).toEqual([0]);
+	});
+
+	it("leaves the EMBED overlay a rectangle the native copy is behind on", () => {
+		const moved = { ...embedRect, xmin: 12, xmax: 42 };
+		for (const rects of [[moved], [], [{ ...embedRect, index: 1 }]]) {
+			const view = nativeView(nativeResponse(), { frame: 0 }, rects);
+			expect(view.shapes.map((shape) => shape.id)).not.toContain("a-rect");
+			expect(view.embedDrawn.size).toBe(0);
+		}
+	});
+
+	it("keeps a hidden record's rectangle from the EMBED overlay too", () => {
+		const view = nativeView(nativeResponse(), { frame: 0, hiddenClasses: new Set(["mass"]) }, [embedRect]);
+
+		expect(view.shapes.map((shape) => shape.id)).not.toContain("a-rect");
+		expect([...view.embedDrawn]).toEqual([0]);
+	});
+
+	it("draws records the EMBED view does not show whatever its rectangles", () => {
+		const view = nativeView(nativeResponse(), { frame: 0 }, []);
+
+		expect(view.shapes.map((shape) => shape.id)).toEqual(["a-ellipse", "a-point", "a-polyline", "a-line"]);
 	});
 });
