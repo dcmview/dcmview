@@ -892,8 +892,7 @@ every shape with its class:
   member more, `embed_index`, the record's position in the file's EMBED
   view (`roi_coords[embed_index]` of `GET /api/file/{index}/annotations`
   read at the same moment), or `null` for a record that view does not show
-  (any geometry but a rectangle). A save of the EMBED view matches ROIs to
-  records by position, so read the records again after one.
+  (any geometry but a rectangle).
 - `labels` are the labels with a value on the file, on one of its frames,
   or on its series, study or patient, named as the session shows them
   (masked in a `--mask` session), or `missing:<file key>` for an id the
