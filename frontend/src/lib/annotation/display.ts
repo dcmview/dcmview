@@ -51,10 +51,10 @@ function closeRing(points: Vertex[]): Vertex[] {
 
 /**
  * The drawable form of a vector geometry, in image pixel coordinates, or
- * `null` for a mask, which this display does not draw. A polygon and a
- * rectangle are closed paths; a line and a polyline are open ones unless the
- * polyline's last point repeats its first. An ellipse's `angle` (degrees)
- * becomes its rotation.
+ * `null` for a mask or a geometry type this viewer does not know, which it
+ * does not draw. A polygon and a rectangle are closed paths; a line and a
+ * polyline are always open ones. An ellipse's `angle` (degrees) becomes its
+ * rotation.
  */
 export function geometryShape(geometry: Geometry): GraphicShape | null {
 	switch (geometry.type) {
@@ -62,7 +62,8 @@ export function geometryShape(geometry: Geometry): GraphicShape | null {
 			return { kind: "point", x: geometry.x, y: geometry.y };
 		case "line":
 		case "polyline":
-			return graphicShape({ graphic_type: "polyline", points: toPoints(geometry.points) });
+			// Open even when the last point repeats the first: the model's polygon is the closed form.
+			return { kind: "path", d: geometry.points.map(({ x, y }, index) => `${index === 0 ? "M" : "L"}${x} ${y}`).join(""), closed: false };
 		case "polygon":
 			return graphicShape({ graphic_type: "polyline", points: closeRing(toPoints(geometry.points)) });
 		case "rect": {
@@ -72,6 +73,9 @@ export function geometryShape(geometry: Geometry): GraphicShape | null {
 		case "ellipse":
 			return { kind: "ellipse", cx: geometry.cx, cy: geometry.cy, rx: geometry.rx, ry: geometry.ry, rotation: geometry.angle };
 		case "mask":
+			return null;
+		default:
+			// A geometry type newer than this viewer is counted but not drawn.
 			return null;
 	}
 }
@@ -106,6 +110,7 @@ export function geometryBounds(geometry: Geometry): ImageBounds | null {
 			};
 		}
 		case "mask":
+		default:
 			return null;
 	}
 }
@@ -115,14 +120,24 @@ export function appliesToFrame(frames: FrameScope, frame: number): boolean {
 	return frames === "all" || frames.set.includes(frame);
 }
 
+const HEX_COLOR = /^#[0-9a-f]{6}$/i;
+
+/**
+ * A stored color when it is `#RRGGBB`, else `null`. Colors reach CSS custom
+ * properties, so anything else (a `url(...)` among them) is never passed on.
+ */
+export function safeColor(color: string | null | undefined): string | null {
+	return typeof color === "string" && HEX_COLOR.test(color) ? color : null;
+}
+
 /** A shape's color: its layer's, else its class's, else the fixed fallback. */
 export function annotationColor(layer: Layer | undefined, classDef: ClassDef | undefined): string {
-	return layer?.color ?? classDef?.color ?? FALLBACK_ANNOTATION_COLOR;
+	return safeColor(layer?.color) ?? safeColor(classDef?.color) ?? FALLBACK_ANNOTATION_COLOR;
 }
 
 /** A class's own color, as the legend shows it: its color, else the fallback. */
 export function classColor(classDef: ClassDef | undefined): string {
-	return classDef?.color ?? FALLBACK_ANNOTATION_COLOR;
+	return safeColor(classDef?.color) ?? FALLBACK_ANNOTATION_COLOR;
 }
 
 /** A class's name, or its id when the schema does not hold it. */
@@ -152,7 +167,7 @@ export type NativeDisplayFilter = {
 
 /**
  * The records to draw on the shown frame, in response order, without hidden
- * layers or classes and without masks.
+ * layers or classes and without records that are not drawn.
  */
 export function visibleShapes(
 	response: Pick<NativeAnnotationsResponse, "schema" | "layers" | "annotations">,
@@ -187,8 +202,8 @@ export type ClassLegendEntry = {
 	color: string;
 	/** Records of this class in the file, on every frame and layer, masks included. */
 	count: number;
-	/** How many of `count` are masks, which are counted but not drawn. */
-	masks: number;
+	/** How many of `count` are not drawn: masks, and geometry types this viewer does not know. */
+	notDrawn: number;
 };
 
 /**
@@ -196,11 +211,11 @@ export type ClassLegendEntry = {
  * schema order, then ids the schema does not hold in first-seen order.
  */
 export function classLegend(response: Pick<NativeAnnotationsResponse, "schema" | "annotations">): ClassLegendEntry[] {
-	const counts = new Map<string, { count: number; masks: number }>();
+	const counts = new Map<string, { count: number; notDrawn: number }>();
 	for (const record of response.annotations) {
-		const entry = counts.get(record.class) ?? { count: 0, masks: 0 };
+		const entry = counts.get(record.class) ?? { count: 0, notDrawn: 0 };
 		entry.count += 1;
-		if (record.geometry.type === "mask") entry.masks += 1;
+		if (geometryShape(record.geometry) === null) entry.notDrawn += 1;
 		counts.set(record.class, entry);
 	}
 	const known = response.schema.classes.filter((entry) => counts.has(entry.id));
@@ -230,7 +245,7 @@ export function layerEntries(response: Pick<NativeAnnotationsResponse, "layers" 
 	return response.layers.map((layer) => ({
 		id: layer.id,
 		name: layer.name,
-		color: layer.color,
+		color: safeColor(layer.color),
 		readonly: layer.readonly,
 		count: counts.get(layer.id) ?? 0,
 	}));

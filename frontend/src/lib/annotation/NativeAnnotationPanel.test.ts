@@ -32,7 +32,7 @@ describe("NativeAnnotationPanel", () => {
 			"Clip, 1 shape",
 		]);
 		expect((buttons[0].querySelector(".swatch") as HTMLElement).style.getPropertyValue("--swatch")).toBe("#e4572e");
-		expect(within(classes).getByText("1 mask not drawn")).toBeTruthy();
+		expect(within(classes).getByText("1 not drawn")).toBeTruthy();
 	});
 
 	it("toggles classes and layers from the keyboard-reachable buttons", async () => {

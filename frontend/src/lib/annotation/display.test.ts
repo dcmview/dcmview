@@ -1,16 +1,19 @@
 import { describe, expect, it } from "vitest";
+import type { Geometry } from "../../generated/annotation-types";
 import { nativeLayer, nativeRecord, nativeResponse } from "../../testing/nativeAnnotations";
 import {
 	FALLBACK_ANNOTATION_COLOR,
 	annotationColor,
 	annotationText,
 	appliesToFrame,
+	classColor,
 	classLegend,
 	formatLabelValue,
 	geometryBounds,
 	geometryShape,
 	labelGroups,
 	layerEntries,
+	safeColor,
 	targetLevel,
 	visibleShapes,
 } from "./display";
@@ -22,6 +25,17 @@ describe("geometryShape", () => {
 			.toEqual({ kind: "path", d: "M1 2L3 4", closed: false });
 		expect(geometryShape({ type: "polyline", points: [{ x: 0, y: 0 }, { x: 5, y: 5 }, { x: 10, y: 0 }] }))
 			.toEqual({ kind: "path", d: "M0 0L5 5L10 0", closed: false });
+	});
+
+	it("keeps a polyline open even when its last point repeats its first", () => {
+		expect(geometryShape({ type: "polyline", points: [{ x: 0, y: 0 }, { x: 4, y: 0 }, { x: 4, y: 3 }, { x: 0, y: 0 }] }))
+			.toEqual({ kind: "path", d: "M0 0L4 0L4 3L0 0", closed: false });
+	});
+
+	it("does not draw a geometry type it does not know", () => {
+		const future = { type: "spline", points: [] } as unknown as Geometry;
+		expect(geometryShape(future)).toBeNull();
+		expect(geometryBounds(future)).toBeNull();
 	});
 
 	it("closes a polygon whether or not its last point repeats its first", () => {
@@ -80,6 +94,16 @@ describe("annotationColor", () => {
 		expect(annotationColor(nativeLayer("L", "L", null), { ...classDef, color: undefined })).toBe(FALLBACK_ANNOTATION_COLOR);
 		expect(annotationColor(undefined, undefined)).toBe(FALLBACK_ANNOTATION_COLOR);
 	});
+
+	it("passes on only #RRGGBB colors", () => {
+		expect(safeColor("#A1b2C3")).toBe("#A1b2C3");
+		for (const color of ["url(https://example.invalid/x)", "#abc", "red", "#1234567", " #123456", "", null, undefined]) {
+			expect(safeColor(color)).toBeNull();
+		}
+		expect(annotationColor(nativeLayer("L", "L", "url(https://example.invalid/x)"), classDef)).toBe("#e4572e");
+		expect(annotationColor(undefined, { ...classDef, color: "var(--x)" })).toBe(FALLBACK_ANNOTATION_COLOR);
+		expect(classColor({ ...classDef, color: "url(x)" })).toBe(FALLBACK_ANNOTATION_COLOR);
+	});
 });
 
 describe("annotationText", () => {
@@ -122,10 +146,17 @@ describe("visibleShapes", () => {
 describe("classLegend", () => {
 	it("counts every record of each class, masks included, in schema order", () => {
 		expect(classLegend(nativeResponse())).toEqual([
-			{ id: "mass", name: "Mass", color: "#e4572e", count: 4, masks: 1 },
-			{ id: "calc", name: "Calcification", color: "#29a3a3", count: 2, masks: 0 },
-			{ id: "clip", name: "Clip", color: FALLBACK_ANNOTATION_COLOR, count: 1, masks: 0 },
+			{ id: "mass", name: "Mass", color: "#e4572e", count: 4, notDrawn: 1 },
+			{ id: "calc", name: "Calcification", color: "#29a3a3", count: 2, notDrawn: 0 },
+			{ id: "clip", name: "Clip", color: FALLBACK_ANNOTATION_COLOR, count: 1, notDrawn: 0 },
 		]);
+	});
+
+	it("counts a geometry type it does not know as not drawn", () => {
+		const future = { type: "spline", points: [] } as unknown as Geometry;
+		expect(classLegend(nativeResponse({ annotations: [nativeRecord("f", "clip", future)] })))
+			.toEqual([{ id: "clip", name: "Clip", color: FALLBACK_ANNOTATION_COLOR, count: 1, notDrawn: 1 }]);
+		expect(visibleShapes(nativeResponse({ annotations: [nativeRecord("f", "clip", future)] }), { frame: 0 })).toEqual([]);
 	});
 
 	it("leaves out unused classes and lists ids the schema lacks last", () => {
@@ -143,6 +174,11 @@ describe("classLegend", () => {
 });
 
 describe("layerEntries", () => {
+	it("drops a layer color that is not #RRGGBB", () => {
+		const layers = [nativeLayer("L-user", "Reader", "url(https://example.invalid/x)")];
+		expect(layerEntries(nativeResponse({ layers }))[0].color).toBeNull();
+	});
+
 	it("lists every session layer with the file's records in it", () => {
 		expect(layerEntries(nativeResponse())).toEqual([
 			{ id: "L-user", name: "Reader", color: null, readonly: false, count: 6 },

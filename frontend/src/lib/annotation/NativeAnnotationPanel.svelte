@@ -41,7 +41,7 @@
 						type="button"
 						class="native-toggle"
 						aria-pressed={shown}
-						aria-label={`${entry.name}, ${shapeCount(entry.count)}${entry.masks ? `, ${entry.masks} not drawn` : ""}`}
+						aria-label={`${entry.name}, ${shapeCount(entry.count)}${entry.notDrawn ? `, ${entry.notDrawn} not drawn` : ""}`}
 						title={shown ? `Hide ${entry.name}` : `Show ${entry.name}`}
 						onclick={() => onclasstoggle(entry.id)}
 					>
@@ -49,8 +49,8 @@
 						<span class="native-name">{entry.name}</span>
 						<span class="native-count">{entry.count}</span>
 					</button>
-					{#if entry.masks}
-						<span class="native-note">{entry.masks} {entry.masks === 1 ? "mask" : "masks"} not drawn</span>
+					{#if entry.notDrawn}
+						<span class="native-note">{entry.notDrawn} not drawn</span>
 					{/if}
 				</li>
 			{/each}
