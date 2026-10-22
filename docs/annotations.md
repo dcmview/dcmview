@@ -308,6 +308,11 @@ The viewer-internal HTTP API represents annotations as:
 ```
 
 `PUT /api/file/{index}/annotations` replaces one file's in-memory annotations and
-returns the canonicalized payload. Invalid coordinates or frame mappings return
+returns the canonicalized payload. A ROI that the save leaves as it was keeps
+its record, with its class, layer and history, whatever was deleted, moved or
+added around it; a moved, resized or rescoped ROI keeps its record too, and
+only a deleted ROI's record is deleted (see the
+[internal API reference](api.md) for how the list is paired with records).
+Invalid coordinates or frame mappings return
 `400 {"code": "bad_request", "error": "..."}`. See the [internal API reference](api.md) for endpoint
 details.

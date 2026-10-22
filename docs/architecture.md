@@ -2168,13 +2168,23 @@ real binary.
   every file with the key. Each path is exported as its own row.
 - **`PUT` is a diff, checked by the endpoint's own rule.** The list is
   accepted or refused whole by `canonicalize_annotations`, exactly as
-  before, and by nothing else. The view's records are then matched to the
-  list by position and changed by one transaction: an update for each
-  position whose rectangle or frame scope differs, a delete for each record
-  past the end, a create for each ROI past the end. A record that does not
+  before, and by nothing else. The view's records are then paired with the
+  list's ROIs (`embed::pairing`) and changed by one transaction: an update
+  for each record paired with a ROI whose rectangle or frame scope differs
+  from it, a delete for each record paired with none, a create for each ROI
+  paired with none. The pairing keeps both orders, leaves only the last
+  ROIs unpaired, and of the pairings that do, pairs the most records with a
+  ROI that is the same rectangle over the same frames, then the most of the
+  rest with each other, earlier first (exactly, up to a table of about a
+  million cells; past it, unchanged runs at both ends are paired first and
+  the rest by a narrower table or by position). So a record keeps its id,
+  class, layer and history while its ROI is in the list, and a save after
+  one edit in the viewer changes no other record's rectangle; it may still
+  update other records' frames, because the viewer lists every frame for a
+  record that covers every frame. A record that does not
   change keeps its id and revision, and saving what is shown is no
   transaction at all. A read right after a save shows exactly the list the
-  save answered.
+  save answered, in its order.
 - **A `PUT` replaces the file's ROIs whole.** The transaction carries the
   view it was worked out from (`ViewCheck`: the ids and revisions it read),
   and the store refuses it, under the same lock as the write, when the view

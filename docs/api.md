@@ -834,7 +834,26 @@ the annotation model (`frontend/src/generated/annotation-types.ts`,
 outward to whole pixels, and other geometries do not. A file's ROIs are
 listed with the rows `--annotations` read for it first, then every other
 record in the order it was made. A `PUT` changes only the records that
-differ from the list it sends, matched by position.
+differ from the list it sends. The list carries no ids, so each ROI it sends
+is paired with a record of the view: both orders are kept, and a record
+that is the same rectangle over the same frames as a ROI of the list stays
+that ROI's record, whatever was deleted, moved or added around it, so its
+id, class, layer and attributes stay with it. The remaining records and
+ROIs are paired in order: a paired record is updated to its ROI, a record
+left over is deleted, and a ROI left over is created. Only the last ROIs of
+the list can be created, because a new record is listed last; a ROI sent
+before others that keep their records takes the record in its place. A
+save after one edit in the viewer (a move, a resize, a change of frames, a
+delete, or a ROI drawn, which is appended) therefore keeps every other
+record, and changes no other record's rectangle. The viewer sends a frame
+list for every ROI, every frame listed for one that covers every frame, so
+such a save also gives each record that covers every frame those frames as
+a list; it keeps its id, class and layer. The pairing is the best by these
+rules whenever its table of remaining records by remaining ROIs has at most
+about a million cells; for a larger one it is not, but it still keeps both
+orders and pairs the unchanged runs at the start and the end of the list
+first. Of two records that are one rectangle over the same frames,
+which one a save that drops one of them keeps follows from the order only.
 
 A `PUT` replaces the file's ROIs whole: of two saves of one file, the one
 applied last decides everything a `GET` then shows, which is exactly the

@@ -290,6 +290,11 @@ diagnostic viewer.
 
 ### Fixed
 
+- Deleting a rectangle in the viewer no longer moves another rectangle into
+  its record, so classes and history stay with their shapes. Before, saving
+  the ROI list after deleting any ROI but the last moved each later
+  rectangle into the record before it, which kept its class, layer,
+  attributes and history, and deleted the last record instead.
 - Discovery no longer sizes what it reads from the lengths a DICOM file
   declares. Before, a file whose header declared more data than the file
   held could make the viewer allocate that much memory while scanning a
