@@ -338,9 +338,9 @@ path. A session can also be downloaded as a `dcmview.annotations` document
 (`/api/annotations/export.json` or `export.jsonl`) and loaded again with
 `--annotations`. The viewer draws a loaded document's shapes in their class
 or layer colors with their class names, and lists its classes, layers and
-the labels of the shown image beside the frame. For the required columns, coordinate format, frame scoping
-rules, validation behavior, the import's report, and examples, see the
-[annotation reference](docs/annotations.md).
+the labels of the shown image beside the frame. For the required columns,
+coordinate format, frame scoping rules, validation behavior, the import's
+report, and examples, see the [annotation reference](docs/annotations.md).
 
 ## Screen Sharing: Masking And Redaction
 
