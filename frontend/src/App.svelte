@@ -26,9 +26,12 @@
 	import { Catalog } from "./lib/app/catalog.svelte";
 	import { annotationEntryFrame, GraphicAnnotations } from "./lib/app/graphicAnnotations.svelte";
 	import {
+		FILE_NAV_MAX_WIDTH_PX,
+		FILE_NAV_MIN_WIDTH_PX,
 		SidebarLayout,
 		TAG_PANEL_MAX_WIDTH_PX,
 		TAG_PANEL_MIN_WIDTH_PX,
+		type Sidebar,
 	} from "./lib/app/sidebarLayout.svelte";
 	import { TabNavigation } from "./lib/app/tabNavigation.svelte";
 	import { overlayEntryFrame, ValueOverlays } from "./lib/app/valueOverlays.svelte";
@@ -327,6 +330,28 @@
 	}
 </script>
 
+{#snippet sidebarHandle(sidebar: Sidebar, name: string, collapsed: boolean, width: number, min: number, max: number)}
+	<!-- A focusable separator is an interactive widget in ARIA; Svelte's check treats it as static. -->
+	<!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+	<div
+		class="sidebar-handle {sidebar}"
+		class:dragging={layout.resizing?.sidebar === sidebar}
+		class:disabled={collapsed}
+		role="separator"
+		tabindex={collapsed ? -1 : 0}
+		aria-label={`Resize ${name}`}
+		aria-orientation="vertical"
+		aria-valuemin={min}
+		aria-valuemax={max}
+		aria-valuenow={width}
+		onpointerdown={(event) => layout.startResize(sidebar, event)}
+		onpointermove={(event) => layout.moveResize(event)}
+		onpointerup={(event) => layout.endResize(event)}
+		onpointercancel={() => layout.cancelResize()}
+		onkeydown={(event) => layout.resizeWithKeyboard(sidebar, event)}
+	></div>
+{/snippet}
+
 <svelte:window
 	onkeydown={handleWindowKeydown}
 	onresize={() => layout.viewportResized()}
@@ -398,7 +423,18 @@
 			onrotateCW={() => reorient(rotateClockwise)}
 			onrotateCCW={() => reorient(rotateCounterClockwise)}
 			onexportAnnotations={() => void exportAnnotations()}
-		/>
+		>
+			{#snippet fileControls()}
+				{#if activeFile !== null}
+					<ReferenceNavigator bind:this={references}
+						scanProgress={catalog.referenceRevision}
+						fileIndex={activeFile.index}
+						files={catalog.shownFiles}
+						onopenreference={(fileIndex, frameIndex) => tabs.openReference(fileIndex, frameIndex)}
+					/>
+				{/if}
+			{/snippet}
+		</ViewerToolbar>
 		{#if exportError}
 			<div class="action-error" role="alert">
 				<StatusBadge status="negative">Export failed</StatusBadge>
@@ -437,6 +473,8 @@
 					onopenfile={openFileFromNavigator}
 					onnavigationorderchange={updateFileNavigationOrder}
 				/>
+				{@render sidebarHandle("explorer", "file navigator", layout.fileNavigatorCollapsed,
+					layout.fileNavigatorExpandedWidthPx, FILE_NAV_MIN_WIDTH_PX, FILE_NAV_MAX_WIDTH_PX)}
 			</div>
 			<section class="viewer-column">
 				{#if activeFile === null}
@@ -466,12 +504,6 @@
 									onstep={stepAnnotationItem}
 								/>
 							{/if}
-							<ReferenceNavigator bind:this={references}
-								scanProgress={catalog.referenceRevision}
-								fileIndex={activeFile.index}
-								files={catalog.shownFiles}
-								onopenreference={(fileIndex, frameIndex) => tabs.openReference(fileIndex, frameIndex)}
-							/>
 						</div>
 						{#if supportsSemanticContext(activeFile.object_kind, activeFile.sop_class_uid)}
 							<SemanticContextPanel bind:this={semanticPanel}
@@ -543,21 +575,8 @@
 				aria-label={tagPanelName.title}
 				onkeydown={(event) => layout.trapDrawerFocus(event)}
 			>
-				<div
-					class="sidebar-handle"
-					class:dragging={layout.resizing !== null}
-					class:disabled={layout.tagPanelCollapsed}
-					role="separator"
-					aria-label={`Resize ${tagPanelName.panel}`}
-					aria-orientation="vertical"
-					aria-valuemin={TAG_PANEL_MIN_WIDTH_PX}
-					aria-valuemax={TAG_PANEL_MAX_WIDTH_PX}
-					aria-valuenow={layout.tagPanelWidthPx}
-					onpointerdown={(event) => layout.startTagPanelResize(event)}
-					onpointermove={(event) => layout.moveTagPanelResize(event)}
-					onpointerup={(event) => layout.endTagPanelResize(event)}
-					onpointercancel={() => layout.cancelTagPanelResize()}
-				></div>
+				{@render sidebarHandle("tags", tagPanelName.panel, layout.tagPanelCollapsed, layout.tagPanelWidthPx,
+					TAG_PANEL_MIN_WIDTH_PX, TAG_PANEL_MAX_WIDTH_PX)}
 				<span class="panel-toggle">
 					<Button
 						variant="ghost"
@@ -660,10 +679,11 @@
 		min-height: 0;
 	}
 
+	/* Not clipped, so the resize handle can straddle the edge; the navigator clips itself. */
 	.file-navigator-shell {
+		position: relative;
 		min-width: 0;
 		min-height: 0;
-		overflow: hidden;
 	}
 
 	.file-navigator-shell :global(.navigator) {
@@ -684,7 +704,7 @@
 		background: var(--paper);
 	}
 
-	/* Overlay choice and references share one row; with neither, the row is gone. */
+	/* Overlay and annotation choices share one row; with neither, the row is gone. */
 	.context-strip {
 		display: flex;
 		flex-wrap: wrap;
@@ -730,16 +750,30 @@
 		background: var(--surface);
 	}
 
+	/* Straddles the sidebar's edge facing the image; the tag panel's own border draws its line. */
 	.sidebar-handle {
 		position: absolute;
-		left: 0;
 		top: 0;
 		bottom: 0;
 		width: 10px;
-		transform: translateX(-50%);
 		cursor: col-resize;
 		touch-action: none;
 		z-index: 5;
+	}
+
+	.sidebar-handle.tags {
+		left: 0;
+		transform: translateX(-50%);
+	}
+
+	.sidebar-handle.explorer {
+		right: 0;
+		transform: translateX(50%);
+	}
+
+	.sidebar-handle:focus-visible {
+		outline: 2px solid var(--focus-ring);
+		outline-offset: -2px;
 	}
 
 	.sidebar-handle::after {
@@ -877,7 +911,8 @@
 			transition-delay: 0s;
 		}
 
-		.file-navigator-shell :global(.collapse-button) {
+		.file-navigator-shell :global(.collapse-button),
+		.file-navigator-shell .sidebar-handle {
 			display: none;
 		}
 	}
