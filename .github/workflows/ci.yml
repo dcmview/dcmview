@@ -80,7 +80,7 @@ jobs:
       matrix:
         runner:
           - windows-latest
-          - macos-14
+          - macos-15
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
