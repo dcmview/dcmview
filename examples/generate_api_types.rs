@@ -8,11 +8,11 @@ use dcmview::api::contracts::{
     EmbedRoiAnnotations, ErrorResponse, FilesQuery, FilesResponse, FrameInfo, FrameQuery,
     FrameValueMapping, FrameWindowApplied, GraphicAnnotationsQuery, GraphicAnnotationsResponse,
     HealthResponse, NativeAnnotationsResponse, ParametricMapOverlayQuery, PixelQuery,
-    RawFrameMetadata, RedactionSeriesResponse, ReferenceCatalogResponse, SemanticContextResponse,
-    SeriesCatalogResponse, TagNode, TagQuery, ThumbnailQuery, ThumbnailSource,
-    WsiFrameContextResponse, API_PREFIX, API_RESPONSE_HEADERS, DISPLAY_FRAME_HEADERS,
-    FILE_KEY_HEADER, NATIVE_ANNOTATION_TS, RAW_FRAME_HEADERS, THUMBNAIL_DEFAULT_SIZE,
-    THUMBNAIL_HEADERS, THUMBNAIL_SIZE_BUCKETS,
+    PresentationLayerQuery, RawFrameMetadata, RedactionSeriesResponse, ReferenceCatalogResponse,
+    SemanticContextResponse, SeriesCatalogResponse, TagNode, TagQuery, ThumbnailQuery,
+    ThumbnailSource, WsiFrameContextResponse, API_PREFIX, API_RESPONSE_HEADERS,
+    DISPLAY_FRAME_HEADERS, FILE_KEY_HEADER, NATIVE_ANNOTATION_TS, RAW_FRAME_HEADERS,
+    THUMBNAIL_DEFAULT_SIZE, THUMBNAIL_HEADERS, THUMBNAIL_SIZE_BUCKETS,
 };
 use std::any::TypeId;
 use std::collections::{BTreeMap, HashSet};
@@ -71,6 +71,7 @@ fn render() -> String {
     declarations.visit::<FrameWindowApplied>();
     declarations.visit::<DoseOverlayQuery>();
     declarations.visit::<ParametricMapOverlayQuery>();
+    declarations.visit::<PresentationLayerQuery>();
     declarations.visit::<GraphicAnnotationsQuery>();
     declarations.visit::<GraphicAnnotationsResponse>();
     declarations.visit::<RawFrameMetadata>();

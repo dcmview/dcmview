@@ -95,6 +95,12 @@ describe("shortcutFor", () => {
 		expect(shortcutFor(press(" "), single)).toBeNull();
 	});
 
+	it("toggles overlay planes with O only when the file has them", () => {
+		expect(shortcutFor(press("o"), { ...idle, overlayPlanes: true })).toEqual({ type: "toggle-overlay-planes" });
+		expect(shortcutFor(press("O"), { ...idle, overlayPlanes: true })).toEqual({ type: "toggle-overlay-planes" });
+		expect(shortcutFor(press("o"), idle)).toBeNull();
+	});
+
 	it("deletes the selected ROI only while the ROI tool is active", () => {
 		const roi = { ...idle, roiToolActive: true };
 		expect(shortcutFor(press("Delete"), roi)).toEqual({ type: "delete-roi" });

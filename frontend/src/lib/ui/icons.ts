@@ -42,6 +42,7 @@ export const ICONS = {
 	progress: "<circle cx=\"8\" cy=\"8\" r=\"5.5\"/><g class=\"icon-hand\"><path d=\"M8 8V4.8\"/></g><path d=\"M8 8l1.8 1.2\"/>",
 	partial: "<circle cx=\"8\" cy=\"8\" r=\"5.5\"/><path d=\"M8 2.5a5.5 5.5 0 0 1 0 11z\" style=\"fill: var(--status-partial)\"/>",
 	negative: "<path d=\"M5 5l6 6M11 5l-6 6\"/>",
+	"overlay-planes": "<path d=\"M8 2.5l5.5 3-5.5 3-5.5-3z\"/><path d=\"M2.5 8.5l5.5 3 5.5-3\"/><path d=\"M2.5 11l5.5 3 5.5-3\"/>",
 } as const;
 
 export type IconName = keyof typeof ICONS;

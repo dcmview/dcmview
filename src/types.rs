@@ -7,7 +7,8 @@ pub use crate::api::contracts::{
     RAW_FRAME_HEADER_SAMPLES_PER_PIXEL,
 };
 use crate::api::contracts::{
-    RasterColorType, RasterExcludedPage, RasterSampleFormat, RasterSummary,
+    PresentationLayerContent, RasterColorType, RasterExcludedPage, RasterSampleFormat,
+    RasterSummary,
 };
 use std::path::PathBuf;
 
@@ -332,6 +333,31 @@ pub struct SeriesMetadata {
 }
 
 impl FileEntry {
+    /// This entry drawing only `content` of its presentation graphics: its
+    /// overlay planes left out for `Shutter`, its display shutters for
+    /// `Overlays`. `None` when that leaves the entry as it is.
+    pub fn with_presentation_content(&self, content: PresentationLayerContent) -> Option<Self> {
+        let presentation = &self.series_metadata.presentation;
+        let drops_anything = match content {
+            PresentationLayerContent::All => false,
+            PresentationLayerContent::Shutter => !presentation.overlay_planes.is_empty(),
+            PresentationLayerContent::Overlays => presentation.has_display_shutter(),
+        };
+        if !drops_anything {
+            return None;
+        }
+        let mut entry = self.clone();
+        let presentation = &mut entry.series_metadata.presentation;
+        match content {
+            PresentationLayerContent::Shutter => presentation.overlay_planes.clear(),
+            _ => {
+                presentation.display_shutter = None;
+                presentation.frame_display_shutters.clear();
+            }
+        }
+        Some(entry)
+    }
+
     pub fn frame_image_position_patient(&self, frame: u32) -> Option<PatientPosition> {
         frame_geometry_value(
             &self.series_metadata.frame_image_positions_patient,
@@ -428,6 +454,8 @@ impl From<&FileEntry> for FileSummary {
             raw_windowing_reason: None,
             presentation_layer: !value.series_metadata.presentation.overlay_planes.is_empty()
                 || value.series_metadata.presentation.has_display_shutter(),
+            overlay_planes: u32::try_from(value.series_metadata.presentation.overlay_planes.len())
+                .unwrap_or(u32::MAX),
             burned_in_annotation: value.series_metadata.burned_in_annotation,
             has_pixels: value.has_pixels,
             frame_count: value.frame_count,
@@ -460,6 +488,9 @@ pub struct FrameCacheKey {
     pub window_unit: Option<String>,
     /// Revision of the redaction boxes painted on the frame; 0 without any.
     pub redaction: u64,
+    /// Whether overlay planes are drawn on the frame: the entry rendered
+    /// has some ([`FileEntry::with_presentation_content`] removes them).
+    pub overlays: bool,
 }
 
 impl FrameCacheKey {
@@ -483,6 +514,7 @@ impl FrameCacheKey {
             window_mode,
             window_unit: window_center.and(window_unit).map(str::to_string),
             redaction: 0,
+            overlays: false,
         }
     }
 }
@@ -713,6 +745,8 @@ pub struct OverlayCacheKey {
     /// file set decides the volume's mapping and so its scale. `None` for a
     /// SEG overlay and a presentation layer, which have no legend.
     pub file_set: Option<usize>,
+    /// What a presentation layer draws; `All` for every other overlay.
+    pub content: PresentationLayerContent,
 }
 
 /// The range of an RT Dose or Parametric Map's mapped values, which its

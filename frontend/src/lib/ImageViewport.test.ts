@@ -85,6 +85,7 @@ function renderViewport({
 	overlay = null as frameOverlay.FrameOverlay | null,
 	graphicAnnotation = null as ComponentProps<typeof ImageViewport>["graphicAnnotation"],
 	onnavigationchange = vi.fn() as (position: number) => void,
+	showOverlayPlanes = true,
 } = {}) {
 	const state = reactiveProps<ComponentProps<typeof ImageViewport>>({
 		activeFile: file,
@@ -109,6 +110,7 @@ function renderViewport({
 		valueOverlay,
 		overlay,
 		graphicAnnotation,
+		showOverlayPlanes,
 	});
 	const view = render(ImageViewport, { props: state.props });
 	return { ...view, rerender: async (props: Partial<ComponentProps<typeof ImageViewport>>) => act(() => state.update(props)) };
@@ -240,12 +242,31 @@ describe("ImageViewport window/level path", () => {
 		expect(screen.getByText("server presentation retained").getAttribute("title")).toBe("32-bit float");
 	});
 
-	it("draws the frame's shutter and overlays over the browser-windowed image", async () => {
+	it("draws the frame's shutter over the browser-windowed image", async () => {
 		renderViewport({ activeTool: "window_level", file: fileSummary(5, { presentation_layer: true }) });
 
-		await waitFor(() => expect(api.fetchPresentationLayerBlob).toHaveBeenCalledWith(5, 0, expect.any(AbortSignal)));
+		await waitFor(() => expect(api.fetchPresentationLayerBlob).toHaveBeenCalledWith(5, 0, "shutter", expect.any(AbortSignal)));
 		await waitFor(() => expect(drawOverlayLayer).toHaveBeenCalled());
+		expect(api.fetchPresentationLayerBlob).not.toHaveBeenCalledWith(5, 0, "overlays", expect.anything());
 		expect(fetchDisplayFrame).not.toHaveBeenCalled();
+	});
+
+	it("draws overlay planes on a layer of their own that can be hidden", async () => {
+		const file = fileSummary(5, { presentation_layer: true, overlay_planes: 1 });
+		const { container, rerender } = renderViewport({ activeTool: "window_level", file });
+
+		await waitFor(() => expect(api.fetchPresentationLayerBlob).toHaveBeenCalledWith(5, 0, "overlays", expect.any(AbortSignal)));
+		const shownLayers = () => [...container.querySelectorAll<HTMLCanvasElement>("canvas.layer-canvas")]
+			.filter((canvas) => !canvas.hidden);
+		await waitFor(() => expect(shownLayers()).toHaveLength(2));
+		const requests = vi.mocked(api.fetchPresentationLayerBlob).mock.calls.length;
+
+		await rerender({ showOverlayPlanes: false });
+		expect(shownLayers()).toHaveLength(1);
+		await rerender({ showOverlayPlanes: true });
+		expect(shownLayers()).toHaveLength(2);
+		// Toggling only shows or hides the layer; nothing is fetched again.
+		expect(api.fetchPresentationLayerBlob).toHaveBeenCalledTimes(requests);
 	});
 
 	it("keeps server windowing when the file's value mapping cannot load", async () => {

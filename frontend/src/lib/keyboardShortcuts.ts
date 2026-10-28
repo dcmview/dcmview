@@ -7,6 +7,7 @@ export type ShortcutAction =
 	| { type: "select-tool"; tool: ActiveTool }
 	| { type: "step-frame"; step: -1 | 1 }
 	| { type: "toggle-cine" }
+	| { type: "toggle-overlay-planes" }
 	| { type: "step-annotation-item"; step: -1 | 1 }
 	| { type: "delete-roi" };
 
@@ -19,6 +20,8 @@ export type ShortcutContext = {
 	roiToolActive: boolean;
 	/** A presentation state with annotation items is shown. */
 	annotationItems: boolean;
+	/** The open file has DICOM overlay planes (60xx). */
+	overlayPlanes?: boolean;
 };
 
 export type ShortcutKeyEvent = Pick<KeyboardEvent, "key" | "target" | "altKey" | "ctrlKey" | "metaKey" | "shiftKey">;
@@ -84,6 +87,7 @@ export function shortcutFor(event: ShortcutKeyEvent, context: ShortcutContext): 
 	}
 	const tool = TOOL_KEYS.get(event.key.toLowerCase());
 	if (tool) return { type: "select-tool", tool };
+	if (context.overlayPlanes && event.key.toLowerCase() === "o") return { type: "toggle-overlay-planes" };
 	if (context.multiFrame) {
 		if (event.key === "ArrowLeft") return { type: "step-frame", step: -1 };
 		if (event.key === "ArrowRight") return { type: "step-frame", step: 1 };

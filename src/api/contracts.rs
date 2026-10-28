@@ -292,7 +292,8 @@ pub mod endpoints {
     );
     /// RGBA PNG of the display shutter fill and overlay graphics a grayscale
     /// display frame carries, opaque where drawn and transparent elsewhere;
-    /// fully transparent when the file declares neither.
+    /// fully transparent when the file declares neither. Query
+    /// `PresentationLayerQuery` narrows it to the shutter or the overlays.
     pub const FILE_PRESENTATION_LAYER: Endpoint = binary(
         "filePresentationLayer",
         "/file/{index}/frame/{frame}/presentation-layer",
@@ -572,6 +573,10 @@ pub struct FileSummary {
     /// Whether grayscale display frames carry a display shutter or overlay
     /// graphics, which `presentation-layer` draws for a raw-rendered frame.
     pub presentation_layer: bool,
+    /// How many Overlay Planes (60xx) the file declares and the viewer
+    /// draws; 0 without any. A bitmap shutter's plane is the shutter's and
+    /// is not counted.
+    pub overlay_planes: u32,
     /// Whether the file declares burned-in annotation, which display masking
     /// cannot hide.
     pub burned_in_annotation: bool,
@@ -1760,6 +1765,31 @@ pub struct FrameQuery {
     /// `true` for a window/level drag preview: served from the display cache
     /// when present, otherwise rendered without being cached.
     pub preview: Option<bool>,
+    /// `false` leaves the file's overlay planes off the frame, for a viewer
+    /// that draws them itself (`PresentationLayerQuery`); the display
+    /// shutter is still drawn. Absent means `true`.
+    pub overlays: Option<bool>,
+}
+
+/// What a `presentation-layer` request draws.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Default, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum PresentationLayerContent {
+    /// The display shutter, then the overlay planes over it.
+    #[default]
+    All,
+    /// The display shutter alone.
+    Shutter,
+    /// The overlay planes alone.
+    Overlays,
+}
+
+/// Presentation-layer query.
+#[derive(Debug, Clone, Copy, Deserialize, TS)]
+#[ts(optional_fields)]
+pub struct PresentationLayerQuery {
+    /// Absent means `all`.
+    pub content: Option<PresentationLayerContent>,
 }
 
 /// Thumbnail query.

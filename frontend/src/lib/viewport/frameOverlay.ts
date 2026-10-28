@@ -68,13 +68,19 @@ export function valueOverlayLayerRequest(
 }
 
 /**
- * A frame's own shutter and overlay graphics, drawn over the frame when the
- * browser windows it (server display frames already carry them).
+ * A frame's own presentation graphics: its display shutter, drawn over the
+ * frame when the browser windows it (server display frames already carry
+ * it), or its overlay planes, which every frame shows on a layer of its own
+ * so they can be hidden (display frames are requested without them).
  */
-export function presentationLayerRequest(fileIndex: number, frameIndex: number): OverlayLayerRequest {
+export function presentationLayerRequest(
+	fileIndex: number,
+	frameIndex: number,
+	content: "shutter" | "overlays",
+): OverlayLayerRequest {
 	return {
-		key: `presentation:${fileIndex}:${frameIndex}`,
-		load: (signal) => fetchPresentationLayerBlob(fileIndex, frameIndex, signal),
+		key: `presentation:${content}:${fileIndex}:${frameIndex}`,
+		load: (signal) => fetchPresentationLayerBlob(fileIndex, frameIndex, content, signal),
 	};
 }
 

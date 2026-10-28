@@ -133,6 +133,7 @@
 		overlay = null,
 		valueOverlay = null,
 		graphicAnnotation = null,
+		showOverlayPlanes = true,
 	}: {
 		activeFile: FileSummary;
 		currentFrame: number;
@@ -163,6 +164,8 @@
 		valueOverlay?: ValueOverlay | null;
 		/** A presentation state's annotations drawn over the displayed frame; ignored under a SEG overlay. */
 		graphicAnnotation?: GraphicAnnotationSelection | null;
+		/** Whether the file's own overlay planes (60xx) are drawn over the frame. */
+		showOverlayPlanes?: boolean;
 	} = $props();
 
 	// The guard for a raster image file the server cannot decode: it is
@@ -189,7 +192,7 @@
 	type PreparedRaw = { target: FrameTarget; frame: RawFrame; mapping: FrameValueMapping; layers: PreparedFrameLayers; generation: number };
 	type PresentedFrame = {
 		target: FrameTarget; raw: RawFrame | null; mapping: FrameValueMapping | null; window: WindowResolution;
-		valueOverlay: ValueOverlay | null; presentation: LayerStatus;
+		valueOverlay: ValueOverlay | null; presentation: LayerStatus; overlayPlanes: LayerStatus;
 	};
 	let preparedRaw = $state.raw<PreparedRaw | null>(null);
 	let presented = $state.raw<PresentedFrame | null>(null);
@@ -254,6 +257,7 @@
 	const frameLayers = new FrameLayers();
 	const segmentationLayers = new OverlayLayerCache();
 	let presentationLayerCanvas: HTMLCanvasElement | undefined = $state();
+	let overlayPlaneCanvas: HTMLCanvasElement | undefined = $state();
 	const overlayValues = new OverlayLayerCache<Float32Array>();
 	let overlayValueState = $state<{ key: string; state: OverlayValueState } | null>(null);
 	let valueOverlayCanvas: HTMLCanvasElement | undefined = $state();
@@ -537,9 +541,11 @@
 	function commitFrame(target: FrameTarget, window: WindowResolution, layers: PreparedFrameLayers,
 		raw: RawFrame | null, mapping: FrameValueMapping | null, value: ValueOverlay | null): void {
 		if (presentationLayerCanvas && layers.presentation.image) drawOverlayLayer(presentationLayerCanvas, layers.presentation.image);
+		if (overlayPlaneCanvas && layers.overlayPlanes.image) drawOverlayLayer(overlayPlaneCanvas, layers.overlayPlanes.image);
 		if (valueOverlayCanvas && layers.value.image) drawOverlayLayer(valueOverlayCanvas, layers.value.image);
 		valueOverlayState = layers.value.status === "none" ? null : { key: layers.value.key, status: layers.value.status };
-		presented = { target, window, raw, mapping, valueOverlay: value, presentation: layers.presentation.status };
+		presented = { target, window, raw, mapping, valueOverlay: value, presentation: layers.presentation.status,
+			overlayPlanes: layers.overlayPlanes.status };
 		rendered.mark(target.file.index, target.frameIndex);
 		loading = false;
 		loadError = null;
@@ -851,7 +857,7 @@
 				loadError = null;
 				shownDisplay = { window: source.window, appliedWindow: source.appliedWindow };
 				shownUnitRequest = false;
-				presented = { target, raw: null, mapping: null, valueOverlay: null, presentation: "none",
+				presented = { target, raw: null, mapping: null, valueOverlay: null, presentation: "none", overlayPlanes: "none",
 					window: resolveWindow({ raw: null, mapping: null, requested: null, live: null, mode: "default",
 						defaultWindow: overlay.sourceFile.default_window, server: source, unitRequest: false }) };
 				valueOverlayState = null;
@@ -1438,6 +1444,12 @@
 				data-capture-rendered={rendered.token}
 			></canvas>
 			<canvas bind:this={presentationLayerCanvas} class="layer-canvas" hidden={presented?.presentation !== "shown"} aria-hidden="true"></canvas>
+			<canvas
+				bind:this={overlayPlaneCanvas}
+				class="layer-canvas"
+				hidden={!showOverlayPlanes || presented?.overlayPlanes !== "shown"}
+				aria-hidden="true"
+			></canvas>
 			{#if valueOverlayVolume || displayedValueOverlay}
 				<canvas
 					bind:this={valueOverlayCanvas}

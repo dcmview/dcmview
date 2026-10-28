@@ -617,6 +617,7 @@ impl DisplayWindow {
     fn cache_key(self, file: &FileEntry, unit: Option<&str>) -> FrameCacheKey {
         FrameCacheKey {
             redaction: self.redaction,
+            overlays: !file.series_metadata.presentation.overlay_planes.is_empty(),
             ..FrameCacheKey::new(
                 file.index,
                 self.frame,

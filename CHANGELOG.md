@@ -10,6 +10,16 @@ diagnostic viewer.
 
 ## Unreleased
 
+## 0.5.0-beta.2 - 2026-10-28
+
+### Added
+
+- DICOM overlay planes (60xx) can be hidden. A file with overlays shows an
+  Overlay toggle in the viewer toolbar (key `O`) with its On or Off state;
+  the choice holds for every file until changed. Overlays stay shown by
+  default. Display frames take `overlays=false`, `presentation-layer` takes
+  `content=shutter|overlays`, and file summaries report `overlay_planes`.
+
 ### Changed
 
 - References moved from the bar above the image to a References button in

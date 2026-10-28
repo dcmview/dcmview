@@ -39,6 +39,7 @@ function file(overrides: Partial<FileSummary>): FileSummary {
 		raw_windowing_compatible: true,
 		raw_windowing_reason: null,
 		presentation_layer: false,
+		overlay_planes: 0,
 		burned_in_annotation: false,
 		has_pixels: true,
 		frame_count: 1,

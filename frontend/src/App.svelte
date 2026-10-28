@@ -9,6 +9,7 @@
 	import GraphicAnnotationBar from "./lib/GraphicAnnotationBar.svelte";
 	import ImageViewport from "./lib/ImageViewport.svelte";
 	import OpenImageTabs from "./lib/OpenImageTabs.svelte";
+	import OverlayPlanesToggle from "./lib/OverlayPlanesToggle.svelte";
 	import ReferenceNavigator from "./lib/ReferenceNavigator.svelte";
 	import SemanticContextPanel from "./lib/SemanticContextPanel.svelte";
 	import {
@@ -95,6 +96,8 @@
 	let tagPanel = $state<ReturnType<typeof TagPanel>>();
 	let references = $state<ReturnType<typeof ReferenceNavigator>>();
 	let semanticPanel = $state<ReturnType<typeof SemanticContextPanel>>();
+	/** DICOM overlay planes (60xx) are drawn unless hidden; one choice for every file. */
+	let showOverlayPlanes = $state(true);
 	let wsiContext = $state<ReturnType<typeof WsiTileContext>>();
 
 	const activeFile = $derived(tabs.activeFile);
@@ -219,6 +222,7 @@
 			multiFrame: activeFile !== null && tabs.frames.length > 1,
 			roiToolActive: activeFile !== null && isRectangleTool(activeTool),
 			annotationItems: (shownAnnotationState?.items.length ?? 0) > 0,
+			overlayPlanes: (activeFile?.overlay_planes ?? 0) > 0,
 		});
 		if (!action) return;
 		switch (action.type) {
@@ -246,6 +250,9 @@
 			case "toggle-cine":
 				event.preventDefault();
 				frameSlider?.togglePlay();
+				return;
+			case "toggle-overlay-planes":
+				showOverlayPlanes = !showOverlayPlanes;
 				return;
 			case "step-annotation-item":
 				event.preventDefault();
@@ -426,6 +433,7 @@
 		>
 			{#snippet fileControls()}
 				{#if activeFile !== null}
+					<OverlayPlanesToggle planes={activeFile.overlay_planes} bind:shown={showOverlayPlanes} />
 					<ReferenceNavigator bind:this={references}
 						scanProgress={catalog.referenceRevision}
 						fileIndex={activeFile.index}
@@ -539,6 +547,7 @@
 						overlay={frameOverlay}
 						{valueOverlay}
 						{graphicAnnotation}
+						{showOverlayPlanes}
 						bind:cinePlaying
 						{cineFps}
 						{cineMode}
