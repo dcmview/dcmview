@@ -10,6 +10,8 @@ diagnostic viewer.
 
 ## Unreleased
 
+## 0.5.0-beta.2 - 2026-10-28
+
 ### Changed
 
 - References moved from the bar above the image to a References button in
