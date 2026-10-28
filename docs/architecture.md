@@ -727,10 +727,13 @@ integers through a per-stored-value table, 32-bit integers and float samples
 one at a time. The renderer takes what the raw headers cannot say from the
 frame's value mapping (stored value type, Modality LUT, VOI LUT) and waits for
 it; a file whose value mapping cannot load keeps server windowing. For files
-with a display shutter or overlay planes (`presentation_layer`), the viewport
-draws the frame's `presentation-layer` on a canvas above the windowed image
-and below any value colorwash, which reproduces the server's display frame
-exactly because neither depends on the window. Color frames, and frames over
+with a display shutter (`presentation_layer`), the viewport draws the frame's
+`presentation-layer?content=shutter` on a canvas above the windowed image and
+below any value colorwash, which reproduces the server's display frame
+exactly because it does not depend on the window. Overlay planes
+(`overlay_planes`) are left off display frames (`overlays=false`) and drawn
+from `presentation-layer?content=overlays` on a canvas of their own above the
+shutter on either path, which the toolbar's Overlay toggle (key `O`) hides. Color frames, and frames over
 the pixel limit, stay on parameterized display PNG requests; the latter go
 there without downloading their samples first. A window/level drag over such a
 frame shows server previews (`preview=true`, never cached): one request in

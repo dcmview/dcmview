@@ -275,6 +275,12 @@ raw_windowing_reason: string | null,
  */
 presentation_layer: boolean, 
 /**
+ * How many Overlay Planes (60xx) the file declares and the viewer
+ * draws; 0 without any. A bitmap shutter's plane is the shutter's and
+ * is not counted.
+ */
+overlay_planes: number, 
+/**
  * Whether the file declares burned-in annotation, which display masking
  * cannot hide.
  */
@@ -411,7 +417,13 @@ unit?: string,
  * `true` for a window/level drag preview: served from the display cache
  * when present, otherwise rendered without being cached.
  */
-preview?: boolean, };
+preview?: boolean, 
+/**
+ * `false` leaves the file's overlay planes off the frame, for a viewer
+ * that draws them itself (`PresentationLayerQuery`); the display
+ * shutter is still drawn. Absent means `true`.
+ */
+overlays?: boolean, };
 
 export type FrameRefSummary = { virtual_index: number, file_index: number, frame_index: number, sop_instance_uid: string, instance_number: number | null, position_along_normal_mm: number | null, };
 
@@ -662,6 +674,20 @@ export type ParametricMapOverlayQuery = { map: number, };
  * Raw-pixel query: the zero-based image row and column.
  */
 export type PixelQuery = { row: number, column: number, };
+
+/**
+ * What a `presentation-layer` request draws.
+ */
+export type PresentationLayerContent = "all" | "shutter" | "overlays";
+
+/**
+ * Presentation-layer query.
+ */
+export type PresentationLayerQuery = { 
+/**
+ * Absent means `all`.
+ */
+content?: PresentationLayerContent, };
 
 /**
  * A Grayscale or Color Softcopy Presentation State's graphic annotations

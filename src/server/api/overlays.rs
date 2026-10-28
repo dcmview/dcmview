@@ -14,8 +14,9 @@ use super::handlers::{registered_file, semantic_context_for, value_mappings_for}
 use super::state::AppState;
 use crate::api::contracts::{
     DoseOverlayQuery, OverlayEligibility, OverlayLegend, ParametricMapOverlayQuery,
-    ResolvedSegmentSourceFrame, SemanticContext, SemanticContextResponse, CACHE_HEADER, CACHE_HIT,
-    CACHE_MISS, OCTET_STREAM_MEDIA_TYPE, PNG_MEDIA_TYPE,
+    PresentationLayerContent, PresentationLayerQuery, ResolvedSegmentSourceFrame, SemanticContext,
+    SemanticContextResponse, CACHE_HEADER, CACHE_HIT, CACHE_MISS, OCTET_STREAM_MEDIA_TYPE,
+    PNG_MEDIA_TYPE,
 };
 use crate::geometry::frame_geometry;
 use crate::pixels::{
@@ -78,6 +79,7 @@ pub(super) async fn segmentation_overlay(
         target_frame: plan.source_frame_index,
         encoding: OverlayEncoding::Png,
         file_set: None,
+        content: PresentationLayerContent::All,
     };
     let work = DecodeWork::SegmentationOverlay {
         target_rows: target.rows,
@@ -113,14 +115,22 @@ pub(super) async fn segmentation_overlay(
     Ok(overlay_response(png, cache_hit, OverlayEncoding::Png))
 }
 
-/// The frame's own shutter and overlay graphics, for a frame windowed in the
-/// browser.
+/// The frame's own shutter and overlay graphics, or one of the two, for a
+/// frame windowed in the browser or a display frame drawn without its
+/// overlay planes.
 pub(super) async fn presentation_layer(
     State(state): State<AppState>,
     path: Result<Path<(usize, u32)>, PathRejection>,
+    query: Result<Query<PresentationLayerQuery>, QueryRejection>,
 ) -> Result<Response, ApiError> {
     let Path((index, frame)) = path.map_err(error::path_rejection)?;
+    let Query(query) = query.map_err(error::query_rejection)?;
+    let content = query.content.unwrap_or_default();
     let file = registered_file(&state, index, "file")?;
+    let file = match file.with_presentation_content(content) {
+        Some(narrowed) => Arc::new(narrowed),
+        None => file,
+    };
     if !file.has_pixels {
         return Err(error::pixel_error(PixelError::NoPixelData {
             file_index: index,
@@ -144,6 +154,7 @@ pub(super) async fn presentation_layer(
         target_frame: frame,
         encoding: OverlayEncoding::Png,
         file_set: None,
+        content,
     };
     let redaction = state
         .redactions()
@@ -281,6 +292,7 @@ async fn value_overlay(
         target_frame: frame,
         encoding,
         file_set: Some(file_set),
+        content: PresentationLayerContent::All,
     };
     if let Some(body) = state.cached_overlay(&key) {
         return Ok(overlay_response(body, true, encoding));

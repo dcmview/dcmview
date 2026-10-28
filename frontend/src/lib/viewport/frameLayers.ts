@@ -7,7 +7,10 @@ import {
 export type LayerStatus = "none" | "shown" | "not_covering" | "error";
 export type PreparedLayer = { key: string; status: LayerStatus; image: DecodedCanvasImage | null };
 export type PreparedFrameLayers = {
+	/** The display shutter of a frame the browser windows. */
 	presentation: PreparedLayer;
+	/** The file's overlay planes (60xx), on every pipeline. */
+	overlayPlanes: PreparedLayer;
 	value: PreparedLayer;
 	dispose: () => void;
 };
@@ -32,9 +35,8 @@ export class FrameLayers {
 		}
 	}
 
-	async #presentation(file: FileSummary, frameIndex: number, raw: boolean): Promise<LayerPayload> {
-		if (!raw || !file.presentation_layer) return NONE;
-		const request = presentationLayerRequest(file.index, frameIndex);
+	async #presentation(file: FileSummary, frameIndex: number, content: "shutter" | "overlays"): Promise<LayerPayload> {
+		const request = presentationLayerRequest(file.index, frameIndex, content);
 		try {
 			return { key: request.key, status: "shown", blob: await this.#presentations.load(request) };
 		} catch (error) {
@@ -45,15 +47,18 @@ export class FrameLayers {
 
 	async prepare(file: FileSummary, frameIndex: number, raw: boolean, overlay: ValueOverlay | null): Promise<PreparedFrameLayers> {
 		const payloads = await Promise.all([
-			this.#presentation(file, frameIndex, raw),
+			raw && file.presentation_layer ? this.#presentation(file, frameIndex, "shutter") : NONE,
+			file.overlay_planes > 0 ? this.#presentation(file, frameIndex, "overlays") : NONE,
 			this.value(overlay, file.index, frameIndex, overlay?.coversFrame),
 		]);
-		const [presentation, value] = await Promise.all(payloads.map(async ({ key, status, blob }): Promise<PreparedLayer> => {
+		const [presentation, overlayPlanes, value] = await Promise.all(payloads.map(async ({ key, status, blob }): Promise<PreparedLayer> => {
 			if (!blob) return { key, status, image: null };
 			try { return { key, status, image: await decodeCanvasImage(blob) }; }
 			catch { return { key, status: "error", image: null }; }
 		}));
-		return { presentation, value, dispose: () => { presentation.image?.dispose(); value.image?.dispose(); } };
+		return { presentation, overlayPlanes, value, dispose: () => {
+			presentation.image?.dispose(); overlayPlanes.image?.dispose(); value.image?.dispose();
+		} };
 	}
 
 	clear(): void {

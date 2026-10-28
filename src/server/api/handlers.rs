@@ -6,15 +6,15 @@ use crate::api::contracts::{
     AnnotationImportResponse, AnnotationOpQuery, AnnotationOpResponse, ApiErrorCode,
     DiscoveryResult, EmbedRoiAnnotations, FileSummary, FilesQuery, FilesResponse, FrameInfo,
     FrameQuery, GraphicAnnotationsQuery, GraphicAnnotationsResponse, HealthResponse,
-    NativeAnnotationsResponse, PixelQuery, ReferenceCatalogResponse, SemanticContextResponse,
-    TagNode, TagQuery, ThumbnailQuery, ViewerIdentity, CACHE_HEADER, CACHE_HIT, CACHE_MISS,
-    CSV_MEDIA_TYPE, DISPLAY_FRAME_HEADER_WINDOW_APPLIED, DISPLAY_FRAME_HEADER_WINDOW_CENTER,
-    DISPLAY_FRAME_HEADER_WINDOW_WIDTH, EXPORT_CONTENT_DISPOSITION_HEADER,
-    EXPORT_CONTENT_DISPOSITION_VALUE, EXPORT_JSONL_CONTENT_DISPOSITION_VALUE,
-    EXPORT_JSON_CONTENT_DISPOSITION_VALUE, FILE_KEY_HEADER, JPEG_MEDIA_TYPE, JSONL_MEDIA_TYPE,
-    JSON_MEDIA_TYPE, OCTET_STREAM_MEDIA_TYPE, RAW_FRAME_HEADER_BITS_ALLOCATED,
-    RAW_FRAME_HEADER_COLUMNS, RAW_FRAME_HEADER_DEFAULT_WC, RAW_FRAME_HEADER_DEFAULT_WW,
-    RAW_FRAME_HEADER_PADDING_HIGH, RAW_FRAME_HEADER_PADDING_LOW,
+    NativeAnnotationsResponse, PixelQuery, PresentationLayerContent, ReferenceCatalogResponse,
+    SemanticContextResponse, TagNode, TagQuery, ThumbnailQuery, ViewerIdentity, CACHE_HEADER,
+    CACHE_HIT, CACHE_MISS, CSV_MEDIA_TYPE, DISPLAY_FRAME_HEADER_WINDOW_APPLIED,
+    DISPLAY_FRAME_HEADER_WINDOW_CENTER, DISPLAY_FRAME_HEADER_WINDOW_WIDTH,
+    EXPORT_CONTENT_DISPOSITION_HEADER, EXPORT_CONTENT_DISPOSITION_VALUE,
+    EXPORT_JSONL_CONTENT_DISPOSITION_VALUE, EXPORT_JSON_CONTENT_DISPOSITION_VALUE, FILE_KEY_HEADER,
+    JPEG_MEDIA_TYPE, JSONL_MEDIA_TYPE, JSON_MEDIA_TYPE, OCTET_STREAM_MEDIA_TYPE,
+    RAW_FRAME_HEADER_BITS_ALLOCATED, RAW_FRAME_HEADER_COLUMNS, RAW_FRAME_HEADER_DEFAULT_WC,
+    RAW_FRAME_HEADER_DEFAULT_WW, RAW_FRAME_HEADER_PADDING_HIGH, RAW_FRAME_HEADER_PADDING_LOW,
     RAW_FRAME_HEADER_PHOTOMETRIC_INTERPRETATION, RAW_FRAME_HEADER_PIXEL_REPRESENTATION,
     RAW_FRAME_HEADER_RESCALE_INTERCEPT, RAW_FRAME_HEADER_RESCALE_SLOPE, RAW_FRAME_HEADER_ROWS,
     RAW_FRAME_HEADER_SAMPLES_PER_PIXEL, THUMBNAIL_CACHE_CONTROL, THUMBNAIL_HEADER_SOURCE,
@@ -657,6 +657,14 @@ pub(super) async fn frame(
     let Query(query) = query.map_err(error::query_rejection)?;
     let file = registered_file(&state, index, "file")?;
     ensure_pixels_shown(&state, &file)?;
+    // A viewer that draws the overlay planes itself asks for the frame
+    // without them; the entry's cache key records which was drawn.
+    let file = match query.overlays {
+        Some(false) => file
+            .with_presentation_content(PresentationLayerContent::Shutter)
+            .map_or(file, Arc::new),
+        _ => file,
+    };
     let source = file.path.clone();
     let window_mode = query.mode.unwrap_or_default();
 

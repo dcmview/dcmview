@@ -13,6 +13,8 @@ import type {
 	NativeAnnotationsResponse,
 	ParametricMapOverlayQuery,
 	PixelQuery,
+	PresentationLayerContent,
+	PresentationLayerQuery,
 	RawFrameMetadata,
 	RedactionSeriesResponse,
 	ReferenceCatalogResponse,
@@ -87,7 +89,8 @@ type PathParams = { index?: number; frame?: number };
 function endpointUrl(
 	endpoint: Endpoint,
 	params: PathParams = {},
-	query?: FrameQuery | TagQuery | DoseOverlayQuery | ParametricMapOverlayQuery | GraphicAnnotationsQuery | PixelQuery,
+	query?: FrameQuery | TagQuery | DoseOverlayQuery | ParametricMapOverlayQuery | GraphicAnnotationsQuery | PixelQuery
+		| PresentationLayerQuery,
 ): string {
 	const path = endpoint.path.slice(1).replace(/\{(\w+)\}/g, (_, name: string) => {
 		const value = params[name as keyof PathParams];
@@ -271,10 +274,12 @@ export function fetchSemanticContext(fileIndex: number): Promise<SemanticContext
 export async function fetchPresentationLayerBlob(
 	fileIndex: number,
 	frame: number,
+	content: PresentationLayerContent = "all",
 	signal?: AbortSignal,
 ): Promise<Blob> {
 	const endpoint = API_ENDPOINTS.filePresentationLayer;
-	const response = await send(endpoint, endpointUrl(endpoint, { index: fileIndex, frame }), { signal });
+	const query: PresentationLayerQuery = content === "all" ? {} : { content };
+	const response = await send(endpoint, endpointUrl(endpoint, { index: fileIndex, frame }, query), { signal });
 	return response.blob();
 }
 
@@ -464,7 +469,10 @@ export function frameUrl(
 		windowMode === "full_dynamic"
 			? { mode: "full_dynamic" }
 			: { wc: wc ?? undefined, ww: ww ?? undefined, unit: unit ?? undefined };
-	const query: FrameQuery = preview ? { ...window, preview: true } : window;
+	// The viewer draws a file's overlay planes on a layer of their own, so
+	// they can be hidden (`presentationLayerRequest`); display frames come
+	// without them.
+	const query: FrameQuery = { ...window, ...(preview ? { preview: true } : {}), overlays: false };
 	return endpointUrl(API_ENDPOINTS.fileFrame, { index: fileIndex, frame }, query);
 }
 

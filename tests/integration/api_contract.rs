@@ -89,6 +89,7 @@ async fn json_endpoints_match_frontend_contract_shapes() {
             "label",
             "modality",
             "object_kind",
+            "overlay_planes",
             "path",
             "patient_id",
             "patient_name",
