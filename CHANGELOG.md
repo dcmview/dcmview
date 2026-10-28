@@ -10,6 +10,20 @@ diagnostic viewer.
 
 ## Unreleased
 
+### Changed
+
+- References moved from the bar above the image to a References button in
+  the viewer toolbar, which opens them in a popover. The button keeps its
+  place while the next file's references load, so stepping through a series
+  stored as one file per image no longer shifts or resizes the image.
+- The explorer sidebar can be resized by dragging its edge, like the tag
+  panel. Both sidebar edges also take the arrow keys, Home and End, and stop
+  widening where the image would get narrower than 320px.
+- Tag table columns resize within the panel: a column dragged wider takes
+  room from Value until Value reaches its minimum, and a drag starts from
+  the width on screen, so narrowing a squeezed Keyword column responds at
+  once. Column resizers also take the arrow keys.
+
 ## 0.5.0-beta.1 - 2026-10-22
 
 ### Breaking changes

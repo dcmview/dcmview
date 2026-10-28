@@ -9,23 +9,19 @@
 	/**
 	 * One declared reference: its relationship, the declared target identity,
 	 * and an Open button for every match that resolves to a loaded frame.
-	 * `inline` keeps the edge on one line for the horizontal reference strip;
-	 * otherwise it wraps inside a panel.
 	 */
 	let {
 		reference,
 		files,
 		onopenreference,
-		inline = false,
 	}: {
 		reference: ReferenceSummary;
 		files: FileSummary[];
 		onopenreference: (fileIndex: number, frameIndex: number) => void;
-		inline?: boolean;
 	} = $props();
 </script>
 
-<div class="edge" class:inline>
+<div class="edge">
 	<code>{reference.relationship}</code>
 	<span class="identity" title={referenceIdentity(reference.target)}>
 		{referenceIdentity(reference.target)}
@@ -65,12 +61,6 @@
 		border-left: 1px solid var(--line);
 		color: var(--text);
 		font: var(--t-meta);
-	}
-
-	.edge.inline {
-		flex: 0 0 auto;
-		flex-wrap: nowrap;
-		max-width: min(38rem, 70vw);
 	}
 
 	code {

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import type { Snippet } from 'svelte';
 	import type { ActiveTool, WlPreset } from './viewerTools';
 	import { TOOL_LABELS, TOOL_ORDER, TOOL_SHORTCUTS, WL_PRESETS } from './viewerTools';
 	import Button from './ui/Button.svelte';
@@ -17,6 +18,7 @@
 		onrotateCW,
 		onrotateCCW,
 		onexportAnnotations,
+		fileControls,
 	}: {
 		activeTool: ActiveTool;
 		selectedPresetId: string;
@@ -27,6 +29,8 @@
 		onrotateCW: () => void;
 		onrotateCCW: () => void;
 		onexportAnnotations: () => void;
+		/** Controls about the active file (its references), laid out before the actions. */
+		fileControls?: Snippet;
 	} = $props();
 
 	const TOOL_ICONS: Record<ActiveTool, IconName> = {
@@ -73,6 +77,7 @@
 		<Button icon="rotate-cw" onclick={onrotateCW} aria-label="Rotate 90° clockwise" title="Rotate 90° clockwise" />
 	</ButtonGroup>
 	<span class="grow"></span>
+	{@render fileControls?.()}
 	<Button icon="export" onclick={onexportAnnotations} title="Export annotations as EMBED CSV">Export ROIs</Button>
 	<Button variant="ghost" icon="reset" onclick={onreset} title="Reset viewport (double-click)">Reset view</Button>
 </div>

@@ -34,9 +34,14 @@
 	const TAG_COLUMN_MIN_PX = 72;
 	const TAG_COLUMN_MAX_PX = 260;
 	const KEYWORD_COLUMN_MIN_PX = 80;
-	const KEYWORD_COLUMN_MAX_PX = 320;
+	const KEYWORD_COLUMN_MAX_PX = 480;
 	const VR_COLUMN_MIN_PX = 28;
 	const VR_COLUMN_MAX_PX = 140;
+	/** Value keeps at least this much of the panel; the other columns stop growing there. */
+	const VALUE_COLUMN_MIN_PX = 96;
+	/** A row's side padding plus the gaps between its four columns. */
+	const ROW_CHROME_PX = 2 * 12 + 3 * 8;
+	const KEYBOARD_STEP_PX = 8;
 
 	let { fileIndex, title = "DICOM tags" }: {
 		fileIndex: number;
@@ -54,6 +59,7 @@
 	let keywordColumnWidthPx = $state(KEYWORD_COLUMN_DEFAULT_PX);
 	let vrColumnWidthPx = $state(VR_COLUMN_DEFAULT_PX);
 	let columnResizeState = $state<ColumnResizeState | null>(null);
+	let tableWidthPx = $state(0);
 	const tagResources = new KeyedAsyncResource<number, TagNode[]>({
 		load: fetchTags,
 		capacity: METADATA_CACHE_FILES,
@@ -65,7 +71,7 @@
 
 	const tableColumns = $derived(
 		// Keyword gives way before Value: Value always keeps at least 96px on screen.
-		`${tagColumnWidthPx}px minmax(0, ${keywordColumnWidthPx}px) ${vrColumnWidthPx}px minmax(96px, 1fr)`,
+		`${tagColumnWidthPx}px minmax(0, ${keywordColumnWidthPx}px) ${vrColumnWidthPx}px minmax(${VALUE_COLUMN_MIN_PX}px, 1fr)`,
 	);
 	const activeTagResource = $derived(tagResourcesByFile[fileIndex]);
 	// A file waiting out the settle delay counts as loading.
@@ -109,15 +115,22 @@
 		}
 	}
 
+	/**
+	 * Clamps a column to its own range and to the room the panel has, so a
+	 * drag always moves the boundary under the pointer and the trade is with
+	 * Value: widening a column narrows Value until it reaches its minimum.
+	 */
 	function clampColumnWidth(column: ColumnKey, width: number): number {
-		switch (column) {
-			case "tag":
-				return Math.min(TAG_COLUMN_MAX_PX, Math.max(TAG_COLUMN_MIN_PX, width));
-			case "keyword":
-				return Math.min(KEYWORD_COLUMN_MAX_PX, Math.max(KEYWORD_COLUMN_MIN_PX, width));
-			case "vr":
-				return Math.min(VR_COLUMN_MAX_PX, Math.max(VR_COLUMN_MIN_PX, width));
-		}
+		const [min, max] = column === "tag"
+			? [TAG_COLUMN_MIN_PX, TAG_COLUMN_MAX_PX]
+			: column === "keyword"
+				? [KEYWORD_COLUMN_MIN_PX, KEYWORD_COLUMN_MAX_PX]
+				: [VR_COLUMN_MIN_PX, VR_COLUMN_MAX_PX];
+		const others = (["tag", "keyword", "vr"] as const)
+			.filter((other) => other !== column)
+			.reduce((sum, other) => sum + getColumnWidth(other), 0);
+		const room = tableWidthPx > 0 ? tableWidthPx - ROW_CHROME_PX - VALUE_COLUMN_MIN_PX - others : Infinity;
+		return Math.max(min, Math.min(max, room, width));
 	}
 
 	function setColumnWidth(column: ColumnKey, width: number) {
@@ -139,11 +152,14 @@
 
 		const handle = event.currentTarget as HTMLElement;
 		handle.setPointerCapture(event.pointerId);
+		// Start from the width on screen: a narrow panel can show Keyword
+		// narrower than its set width, and the drag must not start in a dead zone.
+		const shownWidth = handle.parentElement?.getBoundingClientRect().width ?? 0;
 		columnResizeState = {
 			pointerId: event.pointerId,
 			column,
 			startX: event.clientX,
-			startWidth: getColumnWidth(column),
+			startWidth: shownWidth > 0 ? Math.min(shownWidth, getColumnWidth(column)) : getColumnWidth(column),
 		};
 		event.preventDefault();
 	}
@@ -174,6 +190,14 @@
 
 	function cancelColumnResize() {
 		columnResizeState = null;
+	}
+
+	function resizeColumnWithKeyboard(column: ColumnKey, event: KeyboardEvent) {
+		const step = event.key === "ArrowRight" ? KEYBOARD_STEP_PX : event.key === "ArrowLeft" ? -KEYBOARD_STEP_PX : 0;
+		if (step === 0) return;
+		event.preventDefault();
+		event.stopPropagation();
+		setColumnWidth(column, clampColumnWidth(column, getColumnWidth(column) + step));
 	}
 
 	function keepActivationLocal(event: KeyboardEvent): void {
@@ -219,7 +243,7 @@
 	{:else if loading}
 		<p class="loading">Loading tags…</p>
 	{:else}
-		<div class="table" style={`--tag-grid-columns:${tableColumns};`}>
+		<div class="table" style={`--tag-grid-columns:${tableColumns};`} bind:clientWidth={tableWidthPx}>
 			<div class="header-row row-grid" role="row">
 				<div class="header-cell resizable">
 					<span>Tag</span>
@@ -229,6 +253,7 @@
 						class:dragging={columnResizeState?.column === "tag"}
 						aria-label="Resize tag column"
 						onpointerdown={(event) => startColumnResize("tag", event)}
+						onkeydown={(event) => resizeColumnWithKeyboard("tag", event)}
 						onpointermove={moveColumnResize}
 						onpointerup={endColumnResize}
 						onpointercancel={cancelColumnResize}
@@ -242,6 +267,7 @@
 						class:dragging={columnResizeState?.column === "keyword"}
 						aria-label="Resize keyword column"
 						onpointerdown={(event) => startColumnResize("keyword", event)}
+						onkeydown={(event) => resizeColumnWithKeyboard("keyword", event)}
 						onpointermove={moveColumnResize}
 						onpointerup={endColumnResize}
 						onpointercancel={cancelColumnResize}
@@ -255,6 +281,7 @@
 						class:dragging={columnResizeState?.column === "vr"}
 						aria-label="Resize VR column"
 						onpointerdown={(event) => startColumnResize("vr", event)}
+						onkeydown={(event) => resizeColumnWithKeyboard("vr", event)}
 						onpointermove={moveColumnResize}
 						onpointerup={endColumnResize}
 						onpointercancel={cancelColumnResize}
